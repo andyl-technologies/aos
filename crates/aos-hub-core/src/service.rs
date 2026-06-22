@@ -352,6 +352,74 @@ fn visibility_rank(visibility: &str) -> u8 {
     }
 }
 
+/// The verdict of checking a proposed cache⇄registry link against the
+/// visibility policy.
+///
+/// Returned by [`assess_cache_link`], the single chokepoint both the
+/// `LinkCache` RPC and the web console route through, so the policy is enforced
+/// identically regardless of entry point.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LinkAdvisory {
+    /// A blocking rejection reason, or `None` if the link is permitted.
+    ///
+    /// Set when *advertising* a cache **less** visible than the registry: the
+    /// registry's consumers would be handed a substituter URL they cannot read
+    /// (e.g. a private cache advertised on a public registry → anonymous
+    /// consumers get a 403). Such a link is refused.
+    pub reject: Option<String>,
+    /// A non-blocking warning the operator should see, or `None`.
+    ///
+    /// Set when *rooting* a **less**-visible registry's packages into a **more**-
+    /// visible cache (e.g. a private registry's closures pinned into a public
+    /// cache): the link is allowed — an operator may intend a public mirror —
+    /// but it publishes that registry's build outputs more widely than the
+    /// registry's own metadata, which is a content-exposure foot-gun.
+    pub warning: Option<String>,
+}
+
+/// Assess a proposed cache⇄registry link against the visibility policy.
+///
+/// Visibility ranks `public > internal > private` ([`visibility_rank`]). The
+/// rules, in terms of "who can read what":
+///
+/// - A registry's consumers must be able to read any cache it **advertises** —
+///   so advertising a cache *less* visible than the registry is rejected
+///   ([`LinkAdvisory::reject`]).
+/// - A cache holding a registry's **package closures** is at least as readable
+///   as the cache itself — so rooting a *less*-visible registry into a *more*-
+///   visible cache is warned ([`LinkAdvisory::warning`]), since it widens who
+///   can fetch those closures.
+///
+/// The two pull in opposite directions; the calm configuration is a cache whose
+/// visibility equals the registry's.
+#[must_use]
+pub fn assess_cache_link(
+    cache_slug: &str,
+    cache_visibility: &str,
+    registry_slug: &str,
+    registry_visibility: &str,
+    advertised: bool,
+    roots_packages: bool,
+) -> LinkAdvisory {
+    let reg_rank = visibility_rank(registry_visibility);
+    let cache_rank = visibility_rank(cache_visibility);
+    let reject = (advertised && cache_rank < reg_rank).then(|| {
+        format!(
+            "cannot advertise cache '{cache_slug}' ({cache_visibility}) on the more-visible \
+             registry '{registry_slug}' ({registry_visibility}): its consumers could not read \
+             the cache"
+        )
+    });
+    let warning = (roots_packages && reg_rank < cache_rank).then(|| {
+        format!(
+            "rooting the less-visible registry '{registry_slug}' ({registry_visibility}) into the \
+             more-visible cache '{cache_slug}' ({cache_visibility}) exposes that registry's \
+             package closures more widely than its metadata"
+        )
+    });
+    LinkAdvisory { reject, warning }
+}
+
 /// Project a [`CacheObject`](crate::db::CacheObject) onto the wire [`pb::CacheObject`].
 fn cache_object_message(o: crate::db::CacheObject) -> pb::CacheObject {
     pb::CacheObject {
@@ -2117,30 +2185,21 @@ impl RpcService {
         let c = self.cache_or_not_found(&req.cache_slug).await?;
         self.require_cache_admin(auth, c.org_id).await?;
         let r = self.registry_or_not_found(&req.registry_slug).await?;
-        // Cross-visibility safety (RFC-0004 "11-caches"). Visibility ranks
-        // public > internal > private.
-        let reg_rank = visibility_rank(&r.visibility);
-        let cache_rank = visibility_rank(&c.visibility);
-        // Advertising a cache *less* visible than the registry points the
-        // registry's consumers at a substituter they cannot read — reject it.
-        if req.advertised && cache_rank < reg_rank {
-            return Err(RpcError::invalid(format!(
-                "cannot advertise cache '{}' ({}) on the more-visible registry '{}' ({}): \
-                 its consumers could not read the cache",
-                c.slug, c.visibility, r.slug, r.visibility,
-            )));
+        // Cross-visibility safety (RFC-0004 "11-caches"), enforced through the
+        // shared chokepoint so the RPC and the web console agree exactly.
+        let advisory = assess_cache_link(
+            &c.slug,
+            &c.visibility,
+            &r.slug,
+            &r.visibility,
+            req.advertised,
+            req.roots_packages,
+        );
+        if let Some(reject) = advisory.reject {
+            return Err(RpcError::invalid(reject));
         }
-        // Rooting a less-private registry's packages into a *more* visible cache
-        // exposes that registry's closures publicly — allowed (the operator may
-        // intend a public mirror) but warned, since it is a content-exposure foot-gun.
-        if req.roots_packages && reg_rank < cache_rank {
-            tracing::warn!(
-                registry = %r.slug,
-                registry_visibility = %r.visibility,
-                cache = %c.slug,
-                cache_visibility = %c.visibility,
-                "rooting a less-visible registry's packages into a more-visible cache exposes its closures"
-            );
+        if let Some(warning) = advisory.warning {
+            tracing::warn!("{warning}");
         }
         self.db
             .link_cache(c.id, r.id, req.roots_packages, req.advertised)
@@ -4272,7 +4331,10 @@ async fn apply_revert_revision(
 
 #[cfg(test)]
 mod cache_facade_tests {
-    use super::{narinfo_store_hash, parse_cache_narinfo, render_nix_cache_info, visibility_rank};
+    use super::{
+        assess_cache_link, narinfo_store_hash, parse_cache_narinfo, render_nix_cache_info,
+        visibility_rank, LinkAdvisory,
+    };
 
     #[test]
     fn visibility_rank_orders_public_over_internal_over_private() {
@@ -4280,6 +4342,36 @@ mod cache_facade_tests {
         assert!(visibility_rank("internal") > visibility_rank("private"));
         // An unknown value is treated as the most restrictive, never widening.
         assert_eq!(visibility_rank("bogus"), visibility_rank("private"));
+    }
+
+    #[test]
+    fn assess_cache_link_rejects_advertising_a_less_visible_cache() {
+        // Public registry, private cache, advertised → consumers couldn't read
+        // it, so the link is refused.
+        let a = assess_cache_link("c", "private", "r", "public", true, false);
+        assert!(a.reject.is_some(), "{a:?}");
+        assert!(a.warning.is_none());
+        // Not advertised: no consumer is handed the cache, so nothing to reject.
+        let a = assess_cache_link("c", "private", "r", "public", false, false);
+        assert_eq!(a, LinkAdvisory::default());
+    }
+
+    #[test]
+    fn assess_cache_link_warns_on_rooting_into_a_more_visible_cache() {
+        // Private registry, public cache, rooting its packages → exposes the
+        // registry's closures more widely. Allowed (no reject) but warned.
+        let a = assess_cache_link("c", "public", "r", "private", false, true);
+        assert!(a.reject.is_none(), "{a:?}");
+        assert!(a.warning.is_some());
+        // Advertising the more-visible cache is fine — consumers can read it.
+        let a = assess_cache_link("c", "public", "r", "private", true, false);
+        assert_eq!(a, LinkAdvisory::default());
+    }
+
+    #[test]
+    fn assess_cache_link_is_calm_at_equal_visibility() {
+        let a = assess_cache_link("c", "internal", "r", "internal", true, true);
+        assert_eq!(a, LinkAdvisory::default());
     }
 
     #[test]

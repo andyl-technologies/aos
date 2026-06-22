@@ -108,6 +108,24 @@ fn pending_outcome() -> IndexOutcome {
     }
 }
 
+/// The [`IndexOutcome`] for a run that *successfully* indexed an empty registry
+/// — no surface published yet, so nothing to index, and the run is complete.
+///
+/// Shaped like [`pending_outcome`] (it indexed nothing, so it raises no
+/// `index.completed`/`release.published` events), but it is recorded as the
+/// terminal `empty` state rather than `pending`: it is done, not awaiting a
+/// retry.
+fn empty_outcome() -> IndexOutcome {
+    IndexOutcome {
+        commit: String::new(),
+        packages: 0,
+        releases: 0,
+        channels: 0,
+        incremental: false,
+        pending: true,
+    }
+}
+
 /// Reports whether `err` is a *transient* surface-backend error the platform
 /// asks callers to retry, rather than a permanent failure.
 ///
@@ -244,11 +262,15 @@ pub async fn index_registry(
         Ok(Some(bytes)) => bytes,
         Ok(None) => {
             // No `info/refs` object: the registry has no published surface yet (a
-            // freshly-created registry nobody has pushed to). That is not a failure
-            // — record the benign `pending` state and return, so its home page
-            // reads "nothing published yet" rather than "index failed".
-            db.mark_index_pending(registry.id).await?;
-            return Ok(pending_outcome());
+            // freshly-created registry nobody has pushed to). Indexing an empty
+            // registry is a *successful, complete* run — it's done, there's just
+            // nothing in it — so record the terminal `empty` state (stamped with
+            // `indexed_at`), NOT `pending`. `pending` is reserved below for a
+            // transient backend error that genuinely warrants a retry. The home
+            // page reads "nothing published yet" either way; the difference is
+            // that `empty` no longer masquerades as in-progress work.
+            db.mark_index_empty(registry.id).await?;
+            return Ok(empty_outcome());
         }
         Err(err) if is_transient_backend_error(&err) => {
             // The surface backend is *transiently* unavailable — e.g. Cloudflare

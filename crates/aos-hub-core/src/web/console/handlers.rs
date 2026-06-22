@@ -1729,19 +1729,31 @@ async fn render_cache_detail(
             .into_iter()
             .filter(|r| r.org_id == Some(org.id))
             .collect();
-        let id_to_slug: std::collections::HashMap<i64, String> = org_registries
-            .iter()
-            .map(|r| (r.id, r.slug.clone()))
-            .collect();
+        let id_to_reg: std::collections::HashMap<i64, &crate::db::RegistryRecord> =
+            org_registries.iter().map(|r| (r.id, r)).collect();
         let mut link_rows = Vec::new();
         let mut linked: std::collections::HashSet<i64> = std::collections::HashSet::new();
         for l in deps.db.list_cache_links(cache.id).await? {
             linked.insert(l.registry_id);
-            if let Some(slug) = id_to_slug.get(&l.registry_id) {
+            if let Some(registry) = id_to_reg.get(&l.registry_id) {
+                // Surface the same closure-exposure warning the link chokepoint
+                // computes, so a risky config (e.g. a private registry rooted
+                // into this more-visible cache) is visible at rest, not only at
+                // link time.
+                let warning = crate::service::assess_cache_link(
+                    &cache.slug,
+                    &cache.visibility,
+                    &registry.slug,
+                    &registry.visibility,
+                    l.advertised,
+                    l.roots_packages,
+                )
+                .warning;
                 link_rows.push(console::CacheLinkRow {
-                    registry_slug: slug.clone(),
+                    registry_slug: registry.slug.clone(),
                     roots_packages: l.roots_packages,
                     advertised: l.advertised,
+                    warning,
                 });
             }
         }
@@ -2004,10 +2016,26 @@ pub(crate) async fn cache_link(
     };
     let result = async {
         let Some(registry) = deps.db.registry_by_slug(form.registry.trim()).await? else {
-            return Ok(Some("unknown registry"));
+            return Ok(Some("unknown registry".to_string()));
         };
         if registry.org_id != Some(org.id) {
-            return Ok(Some("registry is not in this organization"));
+            return Ok(Some("registry is not in this organization".to_string()));
+        }
+        // Same cross-visibility policy the RPC enforces (single chokepoint): a
+        // cache advertised on a more-visible registry is refused here too,
+        // rather than being silently written and then handing consumers an
+        // unreadable substituter. The closure-exposure warning is non-blocking
+        // and is surfaced persistently on the cache page.
+        let advisory = crate::service::assess_cache_link(
+            &cache.slug,
+            &cache.visibility,
+            &registry.slug,
+            &registry.visibility,
+            form.advertised.is_some(),
+            form.roots_packages.is_some(),
+        );
+        if let Some(reject) = advisory.reject {
+            return Ok(Some(reject));
         }
         deps.db
             .link_cache(

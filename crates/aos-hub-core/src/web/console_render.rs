@@ -1170,6 +1170,9 @@ pub struct CacheLinkRow {
     pub roots_packages: bool,
     /// This cache's URL is advertised in the registry's cache stack.
     pub advertised: bool,
+    /// A non-blocking visibility warning for this link (e.g. a private
+    /// registry's closures rooted into this more-visible cache), or `None`.
+    pub warning: Option<String>,
 }
 
 /// A linked binary cache shown on a *registry's* settings page (the reverse of
@@ -1681,12 +1684,21 @@ pub fn cache_page(
         let rows: Vec<Vec<String>> = links
             .iter()
             .map(|l| {
-                let mut flags = Vec::new();
+                let mut flags: Vec<String> = Vec::new();
                 if l.advertised {
-                    flags.push("<span class=\"chip\">advertised</span>");
+                    flags.push("<span class=\"chip\">advertised</span>".to_string());
                 }
                 if l.roots_packages {
-                    flags.push("<span class=\"chip\">gc roots</span>");
+                    flags.push("<span class=\"chip\">gc roots</span>".to_string());
+                }
+                let mut flags_cell = flags.join(" ");
+                if let Some(warning) = &l.warning {
+                    let _ = write!(
+                        flags_cell,
+                        "<span class=\"chip warn\">⚠ closure exposure</span>\
+                         <div class=\"warn\">{}</div>",
+                        escape(warning),
+                    );
                 }
                 let action = if can_admin {
                     format!(
@@ -1702,7 +1714,7 @@ pub fn cache_page(
                 } else {
                     String::new()
                 };
-                vec![escape(&l.registry_slug), flags.join(" "), action]
+                vec![escape(&l.registry_slug), flags_cell, action]
             })
             .collect();
         body.push_str(&table(&["registry", "", ""], &rows));
@@ -3185,6 +3197,8 @@ pub fn publishes_page(
     let class = match state.as_str() {
         "fresh" => "ok",
         "failed" => "bad",
+        // Indexed, nothing published yet — benign, not a warning.
+        "empty" => "dim",
         _ => "warn",
     };
     let _ = writeln!(
