@@ -59,6 +59,7 @@ in {
     engineeringHygiene = import ./phase1-engineering-hygiene.nix {inherit pkgs lib;};
     gateTargetMapping = import ./phase1-gate-target-mapping.nix {inherit pkgs lib;};
     harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};
+    icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
     phaseGateWiring = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};
     rfcConsistency = import ./phase1-rfc-consistency.nix {inherit pkgs lib;};
     rustdocBar = import ./phase1-rustdoc-bar.nix {inherit pkgs lib;};

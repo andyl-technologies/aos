@@ -650,7 +650,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   guest icount with virtual ns derived by the fixed `ns = icount << shift` mapping
   and no host clock influencing guest-visible time. — satisfies [DET-8], [DET-9],
   [DET-10], [DET-19], [DET-20], [DET-23], [DET-16]; spec §4.3, §4.6.
-- [ ] **T-DET-2** Port the QEMU patch that drops `QEMU_CLOCK_REALTIME` deadlines
+- [x] **T-DET-2** Port the QEMU patch that drops `QEMU_CLOCK_REALTIME` deadlines
   from the icount budget in fixed-shift mode, with a micro-test that the
   instruction-per-TB count is host-speed-independent. — satisfies [DET-9],
   [DET-18] (E3); spec §4.6 (E3).

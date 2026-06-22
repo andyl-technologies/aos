@@ -4,9 +4,11 @@
 }: let
   s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
   qemuNixSource = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  qemuPatchSource = builtins.readFile ../../pkgs/emulation/qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch;
+  qemuPatch1Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch;
+  qemuPatch2Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0002-crucible-icount-no-realtime.patch;
   qemuNixHash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu.nix;
-  qemuPatchHash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch;
+  qemuPatch1Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch;
+  qemuPatch2Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0002-crucible-icount-no-realtime.patch;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-s9-qemu-build-identity";
@@ -14,10 +16,12 @@ in
     src = null;
 
     qemuNix = qemuNixSource;
-    qemuPatch = qemuPatchSource;
+    qemuPatch1 = qemuPatch1Source;
+    qemuPatch2 = qemuPatch2Source;
     passAsFile = [
       "qemuNix"
-      "qemuPatch"
+      "qemuPatch1"
+      "qemuPatch2"
     ];
 
     buildDeps = [
@@ -33,8 +37,10 @@ in
     QEMU_DRV = builtins.unsafeDiscardStringContext pkgs.qemu-crucible.drvPath;
     QEMU_VERSION = pkgs.qemu-crucible.version;
     QEMU_NIX_HASH = qemuNixHash;
-    PATCH_NAME = "0001-add-crucible-rr-fingerprint-helpers.patch";
-    PATCH_HASH = qemuPatchHash;
+    PATCH_0001_NAME = "0001-add-crucible-rr-fingerprint-helpers.patch";
+    PATCH_0001_HASH = qemuPatch1Hash;
+    PATCH_0002_NAME = "0002-crucible-icount-no-realtime.patch";
+    PATCH_0002_HASH = qemuPatch2Hash;
 
     phases = [
       {
@@ -75,28 +81,35 @@ in
           s1_pause_overshoot=$(get_kv pause_overshoot)
 
           cp "$qemuNixPath" qemu.nix
-          cp "$qemuPatchPath" "$PATCH_NAME"
+          cp "$qemuPatch1Path" "$PATCH_0001_NAME"
+          cp "$qemuPatch2Path" "$PATCH_0002_NAME"
 
           require_fixed qemu.nix 'pname ? "qemu"'
           require_fixed qemu.nix 'enablePlugins ? false'
           require_fixed qemu.nix 'pluginFlag ='
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch}'
+          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0002-crucible-icount-no-realtime.patch}'
           require_fixed qemu.nix '--target-list=x86_64-softmmu'
           require_fixed qemu.nix 'https://download.qemu.org/qemu-'
           require_fixed qemu.nix '.tar.xz'
 
-          require_fixed "$PATCH_NAME" 'qemu_plugin_crucible_pause_vm'
-          require_fixed "$PATCH_NAME" 'qemu_plugin_crucible_ram_hash'
-          require_fixed "$PATCH_NAME" 'qemu_plugin_crucible_get_vcpu_registers'
-          require_fixed "$PATCH_NAME" 'rr_switch_quantum'
-          require_fixed "$PATCH_NAME" 'qemu_opt_get_number(opts, "rr_switch_quantum", 0)'
-          require_fixed "$PATCH_NAME" 'rr_wait_io_event'
-          require_fixed "$PATCH_NAME" 'icount_start_warp_timer'
-          require_fixed "$PATCH_NAME" 'vmstate_info_crucible_icount_host_timer_int64'
+          require_fixed "$PATCH_0001_NAME" 'qemu_plugin_crucible_pause_vm'
+          require_fixed "$PATCH_0001_NAME" 'qemu_plugin_crucible_ram_hash'
+          require_fixed "$PATCH_0001_NAME" 'qemu_plugin_crucible_get_vcpu_registers'
+          require_fixed "$PATCH_0001_NAME" 'rr_switch_quantum'
+          require_fixed "$PATCH_0001_NAME" 'qemu_opt_get_number(opts, "rr_switch_quantum", 0)'
+          require_fixed "$PATCH_0001_NAME" 'rr_wait_io_event'
+          require_fixed "$PATCH_0001_NAME" 'icount_start_warp_timer'
+          require_fixed "$PATCH_0001_NAME" 'vmstate_info_crucible_icount_host_timer_int64'
+          require_fixed "$PATCH_0002_NAME" 'icount_enabled() != ICOUNT_PRECISE'
+          require_fixed "$PATCH_0002_NAME" 'qemu_clock_deadline_ns_all(QEMU_CLOCK_REALTIME'
 
-          patch_count=1
+          patch_count=2
           patch_series_hash=$(
-            printf '%s  %s\n' "$PATCH_HASH" "$PATCH_NAME" \
+            {
+              printf '%s  %s\n' "$PATCH_0001_HASH" "$PATCH_0001_NAME"
+              printf '%s  %s\n' "$PATCH_0002_HASH" "$PATCH_0002_NAME"
+            } \
               | sha256sum \
               | gawk '{ print $1 }'
           )
@@ -107,8 +120,10 @@ in
             echo "qemu_version=$QEMU_VERSION"
             echo "qemu_nix_hash=$QEMU_NIX_HASH"
             echo "patch_count=$patch_count"
-            echo "patch_0001_name=$PATCH_NAME"
-            echo "patch_0001_hash=$PATCH_HASH"
+            echo "patch_0001_name=$PATCH_0001_NAME"
+            echo "patch_0001_hash=$PATCH_0001_HASH"
+            echo "patch_0002_name=$PATCH_0002_NAME"
+            echo "patch_0002_hash=$PATCH_0002_HASH"
             echo "patch_series_hash=$patch_series_hash"
             echo "plugins_enabled=true"
             echo "s1_horizon_extended_hash=$s1_horizon_extended_hash"
@@ -174,7 +189,8 @@ in
           cp build-id-material.txt "$out/build-id-material.txt"
           cp repro-artifact.json "$out/repro-artifact.json"
           cp qemu.nix "$out/qemu.nix"
-          cp "$PATCH_NAME" "$out/$PATCH_NAME"
+          cp "$PATCH_0001_NAME" "$out/$PATCH_0001_NAME"
+          cp "$PATCH_0002_NAME" "$out/$PATCH_0002_NAME"
           {
             echo PASS_WITH_FALLBACK
             echo spike=qemu-build-identity-and-inertness
@@ -186,8 +202,10 @@ in
             echo qemu_build_id="$qemu_build_id"
             echo qemu_nix_hash="$QEMU_NIX_HASH"
             echo patch_count="$patch_count"
-            echo patch_0001_name="$PATCH_NAME"
-            echo patch_0001_hash="$PATCH_HASH"
+            echo patch_0001_name="$PATCH_0001_NAME"
+            echo patch_0001_hash="$PATCH_0001_HASH"
+            echo patch_0002_name="$PATCH_0002_NAME"
+            echo patch_0002_hash="$PATCH_0002_HASH"
             echo patch_series_hash="$patch_series_hash"
             echo plugins_enabled=true
             echo patch_apply_list_matches="$patch_apply_list_matches"
