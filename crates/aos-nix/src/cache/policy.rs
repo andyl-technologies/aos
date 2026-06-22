@@ -131,6 +131,16 @@ impl MaterializationReuse {
         }
     }
 
+    /// Returns counters for the next run, carrying current demand into history.
+    pub const fn advance_run(self) -> Self {
+        Self {
+            previous_run_demands: self
+                .previous_run_demands
+                .saturating_add(self.current_run_demands),
+            current_run_demands: 0,
+        }
+    }
+
     /// Returns whether prior metadata predicts cross-run reuse.
     pub const fn likely_redemanded_across_runs(self) -> bool {
         self.previous_run_demands > 0
@@ -319,6 +329,23 @@ mod tests {
     }
 
     #[test]
+    fn materialization_reuse_advances_current_demand_to_history() {
+        let reuse = MaterializationReuse::new(2, 3).advance_run();
+
+        assert_eq!(reuse.previous_run_demands(), 5);
+        assert_eq!(reuse.current_run_demands(), 0);
+        assert!(reuse.likely_redemanded_across_runs());
+    }
+
+    #[test]
+    fn materialization_reuse_advance_saturates_history() {
+        let reuse = MaterializationReuse::new(u64::MAX - 1, 2).advance_run();
+
+        assert_eq!(reuse.previous_run_demands(), u64::MAX);
+        assert_eq!(reuse.current_run_demands(), 0);
+    }
+
+    #[test]
     fn materialization_reuse_builds_policy_signals_from_prior_runs() {
         let profitable = MaterializationCosts::new(100, 10, 20, 30);
 
@@ -334,6 +361,14 @@ mod tests {
                 .signals(profitable)
                 .decide(),
             MaterializationDecision::KeepInMemory
+        );
+        assert_eq!(
+            MaterializationReuse::from_previous_run(0)
+                .record_current_demand()
+                .advance_run()
+                .signals(profitable)
+                .decide(),
+            MaterializationDecision::Materialize
         );
     }
 
