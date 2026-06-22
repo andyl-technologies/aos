@@ -176,9 +176,12 @@ hold invariant.
       `S-6`/`M-4`), `heap/arena.rs` (bump-arena Tier A, allocate-never-free,
       all alloc behind `aos_alloc_*`), `attrs.rs` (sorted-vec + binary-search,
       `u32`-interned symbols, deterministic iteration order).
-- [ ] Tree-walk oracle: `eval/tree_walk.rs` (call-by-need; thunks
-      `Suspended → Blackhole → Forced`; `with`/`rec`/`let`/`if`/operators) — the
-      permanent correctness oracle ([08](08-execution-tiers-and-cranelift.md) §2.1).
+- [x] Tree-walk oracle core: `eval/tree_walk` current sequential call-by-need
+      evaluator with serial `Suspended → Blackhole → Forced` thunks, forcing,
+      closures, `with`, `rec`, `let`, `if`, and operators — the permanent
+      sequential correctness oracle ([08](08-execution-tiers-and-cranelift.md)
+      §2.1). The P3.5 parallel thunk protocol, full conformance, and full
+      `.drv` parity gates remain separate open rows.
 - [ ] `runtime/builtins/` — the primop surface ([10](10-primops-and-runtime-abi.md))
       as plain Rust, interned-symbol dispatch; `import` cached by realpath +
       content hash (`S-12`).

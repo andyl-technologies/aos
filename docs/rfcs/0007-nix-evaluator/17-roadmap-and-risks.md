@@ -502,13 +502,22 @@ AOS package set. Build it in this order.
 
 **Tree-walk oracle ([08](08-execution-tiers-and-cranelift.md) §2.1).**
 
-- [ ] `eval/tree_walk.rs` — the call-by-need interpreter: thunks
-      (`Suspended → Blackhole → Forced`), forcing, closures, `with`, `rec`,
-      `let`, `if`, operators. This is the permanent **sequential** correctness
-      oracle. Thunk state is an `AtomicU64` **from day 1** (release/acquire
-      stores) so the P3.5 parallel tier ([13](13-parallel-evaluation.md)) needs
-      no thunk-representation change — only a scheduler — even though P1 itself
-      runs single-threaded.
+- [x] `eval/tree_walk.rs` — the current sequential call-by-need interpreter:
+      thunks (`Suspended → Blackhole → Forced`), forcing, closures, `with`,
+      `rec`, `let`, `if`, and operators. This is the permanent **sequential**
+      correctness oracle. Implemented by the safe tree-walk evaluator over
+      lowered IR, `ThunkCell`/`ForceGuard`, environment-capturing thunk
+      allocation, and the core-form evaluator modules. Covered by the
+      `eval::thunk` tests and tree-walk tests for lazy attr/list values,
+      recursive attrsets, `let`/`with` scoping, lambda application, control
+      flow, operators, thunk memoization, blackhole detection, and error
+      unwinding.
+- [ ] P3.5 parallel thunk protocol over the same semantic lifecycle: the P1
+      state word is already atomic, but the parallel superset
+      `Suspended → Pending → Awaited → Forced/Failed`, waiter wakeups,
+      same-thread `Blackhole` distinction, thread-safe result publication, and
+      `loom`/Miri/TSan proof remain owned by
+      [13](13-parallel-evaluation.md). P1 itself stays single-threaded.
 - [ ] Conformance: the full [language surface](20-nix-language-conformance.md)
       and [pure builtins](21-builtins-conformance.md) must diff-green under this
       oracle. **Parity is a Phase-1 requirement, then held invariant** through
