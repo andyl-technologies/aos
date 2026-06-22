@@ -1,5 +1,8 @@
+use std::fs;
+use std::path::Path;
 use std::time::Duration;
 
+use super::corpus;
 use super::*;
 
 fn sample(elapsed_seconds: f64, cpu_time: f64, thunks: u64) -> BenchmarkSample {
@@ -15,9 +18,26 @@ fn sample(elapsed_seconds: f64, cpu_time: f64, thunks: u64) -> BenchmarkSample {
 }
 
 fn record(name: &str, samples: Vec<BenchmarkSample>) -> BenchmarkRecord {
+    record_with_context(
+        name,
+        samples,
+        context("/repo/default.nix", Some("x86_64-linux")),
+    )
+}
+
+fn record_with_context(
+    name: &str,
+    samples: Vec<BenchmarkSample>,
+    context: BenchmarkContext,
+) -> BenchmarkRecord {
+    let attr = name.rsplit(':').next().unwrap_or(name).to_string();
     BenchmarkRecord {
         name: name.to_string(),
-        attr: name.trim_start_matches("eval:").to_string(),
+        file: context.file.clone(),
+        attr,
+        category: "test".to_string(),
+        temperature: "cold".to_string(),
+        context,
         summary: summarize_samples(&samples),
         samples,
     }
@@ -112,14 +132,12 @@ fn comparison_flags_significant_regression_with_stats_delta() {
 fn previous_benchmark_skips_current_commit_records() {
     let current = record("eval:pkgs.zlib", vec![sample(1.0, 0.5, 10)]);
     let previous = record("eval:pkgs.zlib", vec![sample(0.9, 0.4, 9)]);
-    let bench_context = context("/repo/default.nix", Some("x86_64-linux"));
     let history = vec![
         BenchmarkRunRecord {
             version: BENCH_HISTORY_VERSION,
             commit: "older".to_string(),
             timestamp_unix_ms: 1,
             file: "default.nix".to_string(),
-            context: bench_context.clone(),
             benchmarks: vec![previous],
         },
         BenchmarkRunRecord {
@@ -127,94 +145,154 @@ fn previous_benchmark_skips_current_commit_records() {
             commit: "current".to_string(),
             timestamp_unix_ms: 2,
             file: "default.nix".to_string(),
-            context: bench_context.clone(),
             benchmarks: vec![current],
         },
     ];
+    let current = record("eval:pkgs.zlib", vec![sample(1.1, 0.5, 10)]);
 
-    let found = previous_benchmark(&history, &bench_context, "eval:pkgs.zlib", "current")
-        .expect("older benchmark exists");
+    let found = previous_benchmark(&history, &current, "current").expect("older benchmark exists");
 
     assert_eq!(found.commit, "older");
 }
 
 #[test]
 fn previous_benchmark_requires_matching_file_context() {
-    let previous = record("eval:pkgs.zlib", vec![sample(0.9, 0.4, 9)]);
+    let previous = record_with_context(
+        "eval:pkgs.zlib",
+        vec![sample(0.9, 0.4, 9)],
+        context("/repo/other.nix", Some("x86_64-linux")),
+    );
     let history = vec![BenchmarkRunRecord {
         version: BENCH_HISTORY_VERSION,
         commit: "older".to_string(),
         timestamp_unix_ms: 1,
         file: "/repo/other.nix".to_string(),
-        context: context("/repo/other.nix", Some("x86_64-linux")),
         benchmarks: vec![previous],
     }];
-
-    let found = previous_benchmark(
-        &history,
-        &context("/repo/default.nix", Some("x86_64-linux")),
+    let current = record_with_context(
         "eval:pkgs.zlib",
-        "current",
+        vec![sample(1.0, 0.5, 10)],
+        context("/repo/default.nix", Some("x86_64-linux")),
     );
+
+    let found = previous_benchmark(&history, &current, "current");
 
     assert!(found.is_none());
 }
 
 #[test]
 fn previous_benchmark_requires_matching_eval_system_context() {
-    let previous = record("eval:pkgs.zlib", vec![sample(0.9, 0.4, 9)]);
+    let previous = record_with_context(
+        "eval:pkgs.zlib",
+        vec![sample(0.9, 0.4, 9)],
+        context("/repo/default.nix", Some("aarch64-linux")),
+    );
     let history = vec![BenchmarkRunRecord {
         version: BENCH_HISTORY_VERSION,
         commit: "older".to_string(),
         timestamp_unix_ms: 1,
         file: "/repo/default.nix".to_string(),
-        context: context("/repo/default.nix", Some("aarch64-linux")),
         benchmarks: vec![previous],
     }];
-
-    let found = previous_benchmark(
-        &history,
-        &context("/repo/default.nix", Some("x86_64-linux")),
+    let current = record_with_context(
         "eval:pkgs.zlib",
-        "current",
+        vec![sample(1.0, 0.5, 10)],
+        context("/repo/default.nix", Some("x86_64-linux")),
     );
+
+    let found = previous_benchmark(&history, &current, "current");
 
     assert!(found.is_none());
 }
 
 #[test]
 fn previous_benchmark_requires_matching_eval_environment_context() {
-    let previous = record("eval:pkgs.zlib", vec![sample(0.9, 0.4, 9)]);
-    let history = vec![BenchmarkRunRecord {
-        version: BENCH_HISTORY_VERSION,
-        commit: "older".to_string(),
-        timestamp_unix_ms: 1,
-        file: "/repo/default.nix".to_string(),
-        context: context_with_env(
+    let previous = record_with_context(
+        "eval:pkgs.zlib",
+        vec![sample(0.9, 0.4, 9)],
+        context_with_env(
             "/repo/default.nix",
             Some("x86_64-linux"),
             b"TEST_VAR",
             b"foo",
         ),
+    );
+    let history = vec![BenchmarkRunRecord {
+        version: BENCH_HISTORY_VERSION,
+        commit: "older".to_string(),
+        timestamp_unix_ms: 1,
+        file: "/repo/default.nix".to_string(),
         benchmarks: vec![previous],
     }];
-
-    let found = previous_benchmark(
-        &history,
-        &context_with_env(
+    let current = record_with_context(
+        "eval:pkgs.zlib",
+        vec![sample(1.0, 0.5, 10)],
+        context_with_env(
             "/repo/default.nix",
             Some("x86_64-linux"),
             b"TEST_VAR",
             b"bar",
         ),
-        "eval:pkgs.zlib",
-        "current",
     );
+
+    let found = previous_benchmark(&history, &current, "current");
 
     assert!(found.is_none());
 }
 
 #[test]
-fn selected_attrs_defaults_to_fixed_scaffold_corpus() {
-    assert_eq!(selected_attrs(&[]), vec!["pkgs.zlib".to_string()]);
+fn read_history_accepts_legacy_run_context_records() {
+    let temp = tempfile::tempdir().expect("temporary directory is created");
+    let path = temp.path().join("nix-eval.jsonl");
+    let samples = vec![sample(1.0, 0.5, 10)];
+    let legacy = serde_json::json!({
+        "version": BENCH_HISTORY_VERSION,
+        "commit": "older",
+        "timestamp_unix_ms": 1,
+        "file": "/repo/default.nix",
+        "context": context("/repo/default.nix", Some("x86_64-linux")),
+        "benchmarks": [
+            {
+                "name": "eval:pkgs.zlib",
+                "attr": "pkgs.zlib",
+                "samples": samples,
+                "summary": summarize_samples(&[sample(1.0, 0.5, 10)]),
+            }
+        ],
+    });
+    fs::write(&path, format!("{legacy}\n")).expect("legacy history is written");
+
+    let records = read_history(&path).expect("legacy history parses");
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].benchmarks[0].category, "legacy");
+    assert_eq!(records[0].benchmarks[0].temperature, "cold");
+    assert_eq!(records[0].benchmarks[0].context.file, "/repo/default.nix");
+}
+
+#[test]
+fn explicit_benchmark_specs_use_cold_explicit_category() {
+    let specs =
+        corpus::explicit_benchmark_specs(Path::new("/repo/default.nix"), &["pkgs.zlib".into()]);
+
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].name, "explicit:cold:pkgs.zlib");
+    assert_eq!(specs[0].category, "explicit");
+    assert_eq!(specs[0].temperature, "cold");
+}
+
+#[test]
+fn toolchain_attr_expr_includes_bootstrap_roots_and_gcc_tiers() {
+    let expr = corpus::toolchain_attr_expr(Path::new("/repo/default.nix"))
+        .expect("toolchain expression renders");
+
+    assert!(expr.contains("attr = \"stdenv.bootstrap.gcc\";"));
+    assert!(expr.contains("attr = \"pkgs.rust-1_74\";"));
+    assert!(expr.contains("attr = \"pkgs.openjdk-8\";"));
+    assert!(expr.contains("attr = \"pkgs.bazel-bootstrap\";"));
+    assert!(expr.contains("attr = \"pkgs.llvm-17\";"));
+    assert!(expr.contains("root.stdenv.toolchainTiers"));
+    assert!(expr.contains("stdenv.toolchainTiers.${tierName}.${componentName}"));
+    assert!(expr.contains("\"gccStage2\""));
+    assert!(expr.contains("\"linuxHeaders\""));
 }

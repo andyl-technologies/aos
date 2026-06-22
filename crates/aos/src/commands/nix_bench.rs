@@ -1,5 +1,7 @@
 //! `aos nix-bench` -- record per-commit Nix evaluation benchmarks.
 
+mod corpus;
+
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -15,11 +17,12 @@ use aos_core::error::AosError;
 use aos_core::nix::{NixCli, NixEvalConfig, NixEvalMode, NixRunner};
 use aos_core::output::{OutputMode, Printer};
 
+use corpus::{BenchmarkSpec, benchmark_specs};
+
 const BENCH_HISTORY_VERSION: u32 = 1;
 const DEFAULT_SAMPLES: usize = 3;
 const DEFAULT_REGRESSION_THRESHOLD: f64 = 0.10;
 const SIGNIFICANCE_Z: f64 = 2.0;
-const DEFAULT_BENCH_ATTRS: &[&str] = &["pkgs.zlib"];
 const STATS_DELTA_KEYS: &[&str] = &[
     "cpuTime",
     "nrThunks",
@@ -87,20 +90,19 @@ pub fn run(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| root.join(".aos-benchmarks").join("nix-eval.jsonl"));
     let commit = current_commit_sha()?;
-    let attrs = selected_attrs(attrs);
     let previous_runs = read_history(&history)?;
-    let context = BenchmarkContext::from_eval_config(&file, &eval_config);
-    let oracle = NixCli::with_eval_config(verbose, eval_config);
+    let oracle = NixCli::with_eval_config(verbose, eval_config.clone());
+    let specs = benchmark_specs(&oracle, &root, &file, attrs)?;
 
     printer.info(&format!(
         "Running {} Nix eval benchmark(s) with {samples} sample(s)...",
-        attrs.len()
+        specs.len()
     ));
 
-    let mut outcomes = Vec::with_capacity(attrs.len());
-    for attr in attrs {
-        let record = run_one_benchmark(&oracle, &file, &attr, samples)?;
-        let comparison = previous_benchmark(&previous_runs, &context, &record.name, &commit)
+    let mut outcomes = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let record = run_one_benchmark(&oracle, &spec, &eval_config, samples)?;
+        let comparison = previous_benchmark(&previous_runs, &record, &commit)
             .map(|previous| compare_benchmarks(&record, previous, regression_threshold));
         outcomes.push(BenchmarkOutcome { record, comparison });
     }
@@ -110,7 +112,6 @@ pub fn run(
         commit,
         timestamp_unix_ms: unix_timestamp_millis()?,
         file: file.to_string_lossy().into_owned(),
-        context,
         benchmarks: outcomes
             .iter()
             .map(|outcome| outcome.record.clone())
@@ -193,16 +194,6 @@ fn validate_args(samples: usize, regression_threshold: f64) -> Result<()> {
     Ok(())
 }
 
-fn selected_attrs(attrs: &[String]) -> Vec<String> {
-    if attrs.is_empty() {
-        return DEFAULT_BENCH_ATTRS
-            .iter()
-            .map(|attr| (*attr).to_string())
-            .collect();
-    }
-    attrs.to_vec()
-}
-
 fn absolute_eval_file(path: &Path) -> Result<std::path::PathBuf> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
@@ -218,14 +209,41 @@ struct BenchmarkOutcome {
     comparison: Option<BenchmarkComparison>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 struct BenchmarkRunRecord {
     version: u32,
     commit: String,
     timestamp_unix_ms: u64,
     file: String,
-    context: BenchmarkContext,
     benchmarks: Vec<BenchmarkRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryRunRecord {
+    version: u32,
+    commit: String,
+    timestamp_unix_ms: u64,
+    file: String,
+    #[serde(default)]
+    context: Option<BenchmarkContext>,
+    benchmarks: Vec<HistoryBenchmarkRecord>,
+}
+
+impl HistoryRunRecord {
+    fn into_record(self) -> BenchmarkRunRecord {
+        let benchmarks = self
+            .benchmarks
+            .into_iter()
+            .map(|record| record.into_record(self.context.as_ref(), &self.file))
+            .collect();
+        BenchmarkRunRecord {
+            version: self.version,
+            commit: self.commit,
+            timestamp_unix_ms: self.timestamp_unix_ms,
+            file: self.file,
+            benchmarks,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -269,6 +287,25 @@ impl BenchmarkContext {
             eval_env_sha256: eval_env_fingerprint(eval_config.eval_env_vars()),
         }
     }
+
+    fn legacy_missing(file: &str) -> Self {
+        Self {
+            file: file.to_string(),
+            eval_mode: "legacy-missing".to_string(),
+            current_system: None,
+            trace_verbose: false,
+            allowed_paths: Vec::new(),
+            allowed_uris: Vec::new(),
+            nix_path: None,
+            store_dir: None,
+            state_dir: None,
+            log_dir: None,
+            working_dir: None,
+            home_dir: None,
+            eval_env_sha256: "legacy-missing".to_string(),
+            eval_env_count: 0,
+        }
+    }
 }
 
 fn eval_mode_name(mode: NixEvalMode) -> &'static str {
@@ -301,12 +338,58 @@ fn eval_env_fingerprint<'a>(vars: impl Iterator<Item = (&'a [u8], &'a [u8])>) ->
     hex_bytes(&hasher.finalize())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 struct BenchmarkRecord {
     name: String,
+    file: String,
     attr: String,
+    category: String,
+    temperature: String,
+    context: BenchmarkContext,
     samples: Vec<BenchmarkSample>,
     summary: BenchmarkSummary,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryBenchmarkRecord {
+    name: String,
+    attr: String,
+    #[serde(default)]
+    file: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    temperature: Option<String>,
+    #[serde(default)]
+    context: Option<BenchmarkContext>,
+    samples: Vec<BenchmarkSample>,
+    summary: BenchmarkSummary,
+}
+
+impl HistoryBenchmarkRecord {
+    fn into_record(
+        self,
+        run_context: Option<&BenchmarkContext>,
+        run_file: &str,
+    ) -> BenchmarkRecord {
+        let context = self
+            .context
+            .or_else(|| run_context.cloned())
+            .unwrap_or_else(|| BenchmarkContext::legacy_missing(run_file));
+        let file = self.file.unwrap_or_else(|| {
+            run_context.map_or_else(|| run_file.to_string(), |ctx| ctx.file.clone())
+        });
+        BenchmarkRecord {
+            name: self.name,
+            file,
+            attr: self.attr,
+            category: self.category.unwrap_or_else(|| "legacy".to_string()),
+            temperature: self.temperature.unwrap_or_else(|| "cold".to_string()),
+            context,
+            samples: self.samples,
+            summary: self.summary,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,15 +434,15 @@ struct StatsDelta {
 
 fn run_one_benchmark(
     oracle: &NixCli,
-    file: &Path,
-    attr: &str,
+    spec: &BenchmarkSpec,
+    eval_config: &NixEvalConfig,
     samples: usize,
 ) -> Result<BenchmarkRecord> {
     let mut records = Vec::with_capacity(samples);
     for _ in 0..samples {
         let stats = oracle
-            .instantiate_with_stats(file, attr)
-            .with_context(|| format!("capturing NIX_SHOW_STATS for {attr}"))?;
+            .instantiate_with_stats(&spec.file, &spec.attr)
+            .with_context(|| format!("capturing NIX_SHOW_STATS for {}", spec.name))?;
         records.push(BenchmarkSample {
             elapsed_seconds: stats.elapsed.as_secs_f64(),
             elapsed_nanos: duration_nanos(stats.elapsed),
@@ -369,8 +452,12 @@ fn run_one_benchmark(
     }
 
     Ok(BenchmarkRecord {
-        name: format!("eval:{attr}"),
-        attr: attr.to_string(),
+        name: spec.name.clone(),
+        file: spec.file.to_string_lossy().into_owned(),
+        attr: spec.attr.clone(),
+        category: spec.category.clone(),
+        temperature: spec.temperature.clone(),
+        context: BenchmarkContext::from_eval_config(&spec.file, eval_config),
         summary: summarize_samples(&records),
         samples: records,
     })
@@ -530,17 +617,16 @@ struct PreviousBenchmark<'a> {
 
 fn previous_benchmark<'a>(
     history: &'a [BenchmarkRunRecord],
-    context: &BenchmarkContext,
-    name: &str,
+    current: &BenchmarkRecord,
     current_commit: &str,
 ) -> Option<PreviousBenchmark<'a>> {
     history.iter().rev().find_map(|run| {
-        if run.commit == current_commit || run.context != *context {
+        if run.commit == current_commit {
             return None;
         }
         run.benchmarks
             .iter()
-            .find(|record| record.name == name)
+            .find(|record| record.name == current.name && record.context == current.context)
             .map(|record| PreviousBenchmark {
                 commit: run.commit.as_str(),
                 record,
@@ -560,14 +646,14 @@ fn read_history(path: &Path) -> Result<Vec<BenchmarkRunRecord>> {
         if line.is_empty() {
             continue;
         }
-        let record = serde_json::from_str::<BenchmarkRunRecord>(line).with_context(|| {
+        let record = serde_json::from_str::<HistoryRunRecord>(line).with_context(|| {
             format!(
                 "parsing benchmark history {} line {}",
                 path.display(),
                 index + 1
             )
         })?;
-        records.push(record);
+        records.push(record.into_record());
     }
     Ok(records)
 }
@@ -601,7 +687,6 @@ fn run_json(
         "commit": run.commit,
         "timestamp_unix_ms": run.timestamp_unix_ms,
         "file": run.file,
-        "context": &run.context,
         "history": history.to_string_lossy(),
         "recorded": recorded,
         "blocked": blocked,
@@ -616,7 +701,11 @@ fn run_json(
 fn outcome_json(outcome: &BenchmarkOutcome) -> serde_json::Value {
     serde_json::json!({
         "name": &outcome.record.name,
+        "file": &outcome.record.file,
         "attr": &outcome.record.attr,
+        "category": &outcome.record.category,
+        "temperature": &outcome.record.temperature,
+        "context": &outcome.record.context,
         "samples": &outcome.record.samples,
         "summary": &outcome.record.summary,
         "comparison": &outcome.comparison,
