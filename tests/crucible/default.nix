@@ -123,13 +123,14 @@ in {
         attrPath = "checks.crucible.phase1.gates.singleVmFingerprint";
         taskIds = ["T-PLAN-3" "T-HARN-7" "T-DET-8" "T-DET-9"];
       };
-      divergenceBisect = redGate {
+      divergenceBisect = import ./phase1-divergence-bisect.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase1.gates.divergenceBisect";
-        gateName = "gate:divergence-bisect";
-        owner = "crucible-harness";
-        phase = "phase1";
-        taskIds = ["T-PLAN-3" "T-HARN-10"];
-        reason = "divergence bisection gate is intentionally pending";
+        taskIds = [
+          "T-PLAN-3"
+          "T-HARN-9"
+          "T-HARN-10"
+        ];
       };
     };
   };

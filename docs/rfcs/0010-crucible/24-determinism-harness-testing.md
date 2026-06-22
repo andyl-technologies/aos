@@ -877,10 +877,10 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [x] **T-HARN-8** Implement `gate:layer1-injection` (Contract B: identical
   observed-injection-icount vectors across host interleavings, against the
   double). — satisfies [HARN-8]; spec §4.4.
-- [ ] **T-HARN-9** Implement the divergence-bisection tool (coarse fingerprint
+- [x] **T-HARN-9** Implement the divergence-bisection tool (coarse fingerprint
   walk → fine icount binary search via resume → both-sides state dump). —
   satisfies [HARN-9], [HARN-10]; spec §5.
-- [ ] **T-HARN-10** Implement `gate:divergence-bisect` (seed a known divergence;
+- [x] **T-HARN-10** Implement `gate:divergence-bisect` (seed a known divergence;
   assert the tool localizes exactly that icount/node, deterministically). —
   satisfies [HARN-10]; spec §5.1.
 - [x] **T-HARN-11** Implement `gate:content-address` (hash stability, equal

@@ -185,7 +185,7 @@
       package = "crucible-harness";
       testTarget = "gate_divergence_bisect";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:adversarial-determinism";
@@ -374,7 +374,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=19
+            placeholder_targets=18
             RESULT
           '';
         }

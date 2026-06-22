@@ -162,7 +162,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:divergence-bisect",
         phase: GatePhase::Phase1,
         owner: "crucible-harness",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:scheduler-liveness",
