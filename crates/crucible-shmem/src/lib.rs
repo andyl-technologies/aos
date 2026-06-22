@@ -164,6 +164,86 @@ pub fn deliverable_frames_at(
     deliverable
 }
 
+/// An advance authorization bounded by the lookahead gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdvanceCeiling {
+    current_icount: u64,
+    max_advance_icount: u64,
+}
+
+impl AdvanceCeiling {
+    /// Returns the consumer icount observed before authorization.
+    #[must_use]
+    pub fn current_icount(&self) -> u64 {
+        self.current_icount
+    }
+
+    /// Returns the scheduler-authorized maximum icount the consumer may reach.
+    #[must_use]
+    pub fn max_advance_icount(&self) -> u64 {
+        self.max_advance_icount
+    }
+}
+
+/// Authorizes a max-advance ceiling under the conservative lookahead gate.
+///
+/// When `earliest_possible_delivery_icount` is present, the returned ceiling is
+/// strictly before that icount. The scheduler must publish a fresh
+/// authorization once the input group is present and deliverable.
+///
+/// # Errors
+///
+/// Returns [`LookaheadGateError::CeilingBeforeCurrent`] when `max_advance_icount`
+/// is behind `current_icount`, and
+/// [`LookaheadGateError::AdvanceReachesPossibleDelivery`] when the requested
+/// ceiling would reach or pass an input that could become visible.
+pub fn authorize_advance_ceiling(
+    current_icount: u64,
+    max_advance_icount: u64,
+    earliest_possible_delivery_icount: Option<u64>,
+) -> Result<AdvanceCeiling, LookaheadGateError> {
+    if max_advance_icount < current_icount {
+        return Err(LookaheadGateError::CeilingBeforeCurrent {
+            current_icount,
+            max_advance_icount,
+        });
+    }
+
+    if let Some(earliest_possible_delivery_icount) = earliest_possible_delivery_icount {
+        if max_advance_icount >= earliest_possible_delivery_icount {
+            return Err(LookaheadGateError::AdvanceReachesPossibleDelivery {
+                max_advance_icount,
+                earliest_possible_delivery_icount,
+            });
+        }
+    }
+
+    Ok(AdvanceCeiling {
+        current_icount,
+        max_advance_icount,
+    })
+}
+
+/// Verifies that a newly enqueued frame has not already missed its delivery.
+///
+/// # Errors
+///
+/// Returns [`LookaheadGateError::DeliveryAlreadyPassed`] when the consumer has
+/// already reached or passed the frame's delivery icount.
+pub fn validate_frame_delivery_is_future(
+    frame: &FrameEntry,
+    consumer_current_icount: u64,
+) -> Result<(), LookaheadGateError> {
+    if frame.delivery_icount <= consumer_current_icount {
+        Err(LookaheadGateError::DeliveryAlreadyPassed {
+            consumer_current_icount,
+            frame: frame.delivery_key(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
 /// A validation error for shared-memory frame entries.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FrameEntryError {
@@ -174,5 +254,38 @@ pub enum FrameEntryError {
         len: usize,
         /// The configured frame payload capacity.
         capacity: usize,
+    },
+}
+
+/// A lookahead-gate validation error.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum LookaheadGateError {
+    /// A scheduler attempted to publish a ceiling behind the consumer.
+    #[error("max advance icount {max_advance_icount} is before current icount {current_icount}")]
+    CeilingBeforeCurrent {
+        /// The consumer icount observed before authorization.
+        current_icount: u64,
+        /// The requested maximum advance icount.
+        max_advance_icount: u64,
+    },
+    /// A scheduler attempted to let a node reach an input's possible delivery.
+    #[error(
+        "max advance icount {max_advance_icount} reaches possible delivery icount {earliest_possible_delivery_icount}"
+    )]
+    AdvanceReachesPossibleDelivery {
+        /// The requested maximum advance icount.
+        max_advance_icount: u64,
+        /// The earliest icount at which an input could become visible.
+        earliest_possible_delivery_icount: u64,
+    },
+    /// A frame was enqueued after the consumer reached its delivery icount.
+    #[error(
+        "frame {frame:?} delivery icount is not in the future of consumer icount {consumer_current_icount}"
+    )]
+    DeliveryAlreadyPassed {
+        /// The consumer icount observed when the frame was enqueued.
+        consumer_current_icount: u64,
+        /// The late frame's deterministic delivery key.
+        frame: FrameDeliveryKey,
     },
 }
