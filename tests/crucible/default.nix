@@ -58,6 +58,7 @@ in {
     determinismReview = import ./phase1-determinism-review.nix {inherit pkgs lib;};
     documentationHygiene = import ./phase1-documentation-hygiene.nix {inherit pkgs lib;};
     engineeringHygiene = import ./phase1-engineering-hygiene.nix {inherit pkgs lib;};
+    executionFingerprintDefinition = import ./phase1-execution-fingerprint-definition.nix {inherit pkgs lib;};
     gateTargetMapping = import ./phase1-gate-target-mapping.nix {inherit pkgs lib;};
     guestEntropyLaunch = import ./phase1-guest-entropy-launch.nix {inherit pkgs lib;};
     harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};
@@ -112,8 +113,11 @@ in {
         gateName = "gate:single-vm-fingerprint";
         owner = "crucible-qemu";
         phase = "phase1";
-        taskIds = ["T-PLAN-3" "T-HARN-7"];
-        reason = "single-VM fingerprint gate over the test double is intentionally pending";
+        taskIds = ["T-PLAN-3" "T-HARN-7" "T-DET-8"];
+        dependencies = [
+          (import ./phase1-execution-fingerprint-definition.nix {inherit pkgs lib;})
+        ];
+        reason = "single-VM fingerprint gate over the test double is intentionally pending after the fingerprint definition leaf check";
       };
       divergenceBisect = redGate {
         attrPath = "checks.crucible.phase1.gates.divergenceBisect";

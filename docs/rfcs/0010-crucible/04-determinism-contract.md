@@ -672,7 +672,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [x] **T-DET-7** Implement Contract A in isolation: a single-VM driver that
   feeds an icount-stamped recorded input list `I` and runs `run` with no
   scheduler/transport. — satisfies [DET-5], [DET-1]; spec §4.2.1.
-- [ ] **T-DET-8** Implement the execution fingerprint (periodic icount +
+- [x] **T-DET-8** Implement the execution fingerprint (periodic icount +
   register/memory/device digest), computed black-box from the host, with a fixed
   content-addressed definition. — satisfies [DET-29], [DET-31], [DET-17]; spec
   §4.8.

@@ -14,7 +14,8 @@ use crucible_harness::adversarial::{
 };
 use crucible_harness::divergence::{bisect_first_different_icount, locate_first_divergence};
 use crucible_harness::fingerprint::{
-    FingerprintMismatchKind, FingerprintSample, FingerprintStream, compare_fingerprint_streams,
+    FingerprintMismatchKind, FingerprintSample, FingerprintSampleTrigger, FingerprintStream,
+    compare_fingerprint_streams,
 };
 use crucible_harness::replay_oracle::{ReplayOracleCase, check_replay_oracle};
 use crucible_harness::{find_gate, harness_components};
@@ -67,10 +68,12 @@ fn harness_component_catalog_hosts_required_gate_building_blocks() {
 #[test]
 fn component_building_blocks_report_first_mismatch() -> Result<(), Box<dyn Error>> {
     let left_stream = FingerprintStream {
+        definition_digest: vec![8],
         samples: vec![sample(0, "node-a", 10, &[1]), sample(1, "node-a", 20, &[2])],
         final_fingerprint: vec![9],
     };
     let right_stream = FingerprintStream {
+        definition_digest: vec![8],
         samples: vec![sample(0, "node-a", 10, &[1]), sample(1, "node-a", 20, &[3])],
         final_fingerprint: vec![9],
     };
@@ -342,6 +345,7 @@ fn sample(seq: u64, node: &str, icount: u64, rolling_fingerprint: &[u8]) -> Fing
         seq,
         node: node.to_string(),
         icount,
+        trigger: FingerprintSampleTrigger::Periodic,
         rolling_fingerprint: rolling_fingerprint.to_vec(),
     }
 }
