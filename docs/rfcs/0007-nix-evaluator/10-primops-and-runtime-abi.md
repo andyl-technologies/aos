@@ -748,7 +748,19 @@ harness, never cut for scope.
 ### The runtime symbol table
 
 - [ ] Fixed named symbol set registered once via `JITBuilder::symbol`: allocation (`aos_alloc_*`), forcing/control (`aos_force`/`aos_force_deep`/`aos_blackhole_check`), attrset access (`aos_select_ic`/`aos_has_attr`/`aos_update`), builtins (`nix.builtin.*`) ([§3.1](#31-what-lives-in-it)–[§3.2](#32-how-symbols-are-registered-with-cranelift)) — P6, `S-12`.
-- [ ] Allocation indirection so the GC strategy swaps (bump arena ↔ generational) with byte-identical JIT output ([§3.1](#31-what-lives-in-it)) — P3/P6, `S-8`.
+- [x] Current P1 tree-walk allocation substrate: `EvalHeap` routes tree-walk
+      heap object creation through `BumpArena::aos_alloc_*`
+      entry-point-shaped Rust helpers for strings and paths, contiguous lists,
+      attrs, lambdas, primops, thunks, and raw records, giving the safe oracle a
+      single allocation helper surface and arena accounting. This is direct Rust
+      plumbing, not the frozen runtime/JIT ABI
+      ([06](06-memory-management-and-gc.md) §2).
+- [ ] Frozen runtime/JIT allocation indirection remains: `aos_alloc_*` exported
+      as `unsafe extern "C"` or equivalent runtime symbols, registered with
+      `JITBuilder::symbol`, selected by the startup allocator/vtable strategy,
+      routed through every tier/primop allocation path, and swappable between
+      bump-arena and generational bodies with byte-identical JIT output
+      ([§3.1](#31-what-lives-in-it)) — P3/P6, `S-8`.
 - [ ] Frozen, stable symbol naming scheme (`nix.builtin.<name>`, `aos_<verb>`) so persisted compiled-IR artifacts re-link across runs ([§3.3](#33-symbol-naming-and-stability)) — P2/P6, `R-14`.
 
 ### Perfect-hash builtin dispatch

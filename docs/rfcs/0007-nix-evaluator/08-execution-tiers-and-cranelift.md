@@ -895,7 +895,19 @@ harness, never cut for scope.
 
 - [ ] Uniform `extern "C"` `ThunkFn`/`LambdaFn` signature `(rt, env[, arg]) -> Value`, 16-byte `Value` register-passed ([§7.1](#71-the-uniform-calling-convention)) — P6, `S-4`/`S-12`; gate: differential `.drv` harness.
 - [ ] Runtime symbol table registered via `JITBuilder::symbol`: `aos_force`, `aos_apply`, `aos_alloc_thunk`, `aos_alloc_attrs`, `aos_select_ic`, `aos_env_get`, `aos_prim_<name>`, `aos_deopt`, `aos_throw` ([§7.2](#72-the-runtime-symbol-table)) — P6, `S-12`.
-- [ ] GC-strategy-agnostic allocation indirection (all alloc through `aos_alloc_*`, body swaps arena ↔ generational with byte-identical compiled code) ([§7.2](#72-the-runtime-symbol-table)) — P3/P6, `S-8`.
+- [x] Current P1 tree-walk allocation substrate: `EvalHeap` routes tree-walk
+      heap object creation through `BumpArena::aos_alloc_*`
+      entry-point-shaped Rust helpers for strings and paths, contiguous lists,
+      attrs, lambdas, primops, thunks, and raw records, giving the safe oracle a
+      single allocation helper surface and arena accounting. This is direct Rust
+      plumbing, not the frozen runtime/JIT ABI
+      ([06](06-memory-management-and-gc.md) §2).
+- [ ] Frozen runtime/JIT allocation indirection remains: `aos_alloc_*` exported
+      as `unsafe extern "C"` or equivalent runtime symbols, registered with
+      `JITBuilder::symbol`, selected by the startup allocator/vtable strategy,
+      routed through every tier/primop allocation path, and swappable between
+      bump-arena and generational bodies with byte-identical compiled code
+      ([§7.2](#72-the-runtime-symbol-table)) — P3/P6, `S-8`.
 - [ ] `import` at the ABI seam (`aos_prim_import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.
 
 ### Tier 1 — the Cranelift baseline JIT
