@@ -4,8 +4,8 @@
 //! with verifying traces and content-addressed artifacts. This module owns the
 //! on-disk layout contract and schema-version guard those stores share.
 
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -214,6 +214,33 @@ impl PersistBlobRecordHeader {
     }
 }
 
+/// A byte range for one immutable blob record in a packfile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistBlobLocation {
+    record_offset: u64,
+    payload_len: u64,
+}
+
+impl PersistBlobLocation {
+    /// Creates a blob location from its record offset and payload length.
+    pub const fn new(record_offset: u64, payload_len: u64) -> Self {
+        Self {
+            record_offset,
+            payload_len,
+        }
+    }
+
+    /// Returns the byte offset of this blob's record header in the packfile.
+    pub const fn record_offset(self) -> u64 {
+        self.record_offset
+    }
+
+    /// Returns the number of payload bytes following this blob's record header.
+    pub const fn payload_len(self) -> u64 {
+        self.payload_len
+    }
+}
+
 /// Filesystem paths for one persistent eval-cache root.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersistLayout {
@@ -275,6 +302,192 @@ impl PersistLayout {
             PersistBlobStore::Values => self.values_dir(),
             PersistBlobStore::Files => self.files_dir(),
         }
+    }
+}
+
+/// An initialized immutable blob packfile.
+#[derive(Clone, Debug)]
+pub struct PersistBlobPack {
+    path: PathBuf,
+}
+
+impl PersistBlobPack {
+    /// Opens or initializes an immutable blob packfile at `path`.
+    ///
+    /// An empty file is initialized with the current packfile header. A
+    /// non-empty file must already contain a valid current header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if parent directories or the packfile
+    /// cannot be created/opened/read/written, or if existing packfile metadata
+    /// is invalid.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistBlobPackError> {
+        let path = path.into();
+        ensure_blob_pack_file(&path)?;
+        Ok(Self { path })
+    }
+
+    /// Returns this packfile's filesystem path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Appends `payload` as a content-addressed immutable blob.
+    ///
+    /// The payload is checked against `hash` before any bytes are appended.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
+    /// validated, or written, or if `hash` does not match `payload`.
+    pub fn append_blob(
+        &self,
+        hash: DurableBlake3Hash,
+        payload: &[u8],
+    ) -> Result<PersistBlobLocation, PersistBlobPackError> {
+        ensure_blob_pack_file(&self.path)?;
+        let actual = DurableBlake3Hash::for_bytes(payload);
+        if actual != hash {
+            return Err(PersistBlobPackError::PayloadHashMismatch {
+                expected: hash,
+                actual,
+            });
+        }
+        let payload_len =
+            u64::try_from(payload.len()).map_err(|_| PersistBlobPackError::PayloadTooLarge {
+                payload_len: payload.len() as u128,
+            })?;
+        let header = PersistBlobRecordHeader::new(hash, payload_len);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| PersistBlobPackError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let record_offset = file
+            .metadata()
+            .map_err(|source| PersistBlobPackError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        if record_offset < PERSIST_BLOB_PACK_HEADER_LEN as u64 {
+            return Err(PersistBlobPackError::InvalidRecordOffset { record_offset });
+        }
+        file.write_all(&header.encode())
+            .and_then(|()| file.write_all(payload))
+            .and_then(|()| file.flush())
+            .map_err(|source| PersistBlobPackError::Write {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(PersistBlobLocation::new(record_offset, payload_len))
+    }
+
+    /// Reads and verifies a blob at `location`.
+    ///
+    /// The record header's hash and length must match `expected_hash` and
+    /// `location`, and the payload bytes must hash to `expected_hash`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened or
+    /// read, if `location` is invalid, if record metadata does not match the
+    /// expected lookup, or if the payload hash does not verify.
+    pub fn read_blob(
+        &self,
+        location: PersistBlobLocation,
+        expected_hash: DurableBlake3Hash,
+    ) -> Result<Vec<u8>, PersistBlobPackError> {
+        if location.record_offset() < PERSIST_BLOB_PACK_HEADER_LEN as u64 {
+            return Err(PersistBlobPackError::InvalidRecordOffset {
+                record_offset: location.record_offset(),
+            });
+        }
+        let mut file = open_validated_blob_pack_for_read(&self.path)?;
+        file.seek(SeekFrom::Start(location.record_offset()))
+            .map_err(|source| PersistBlobPackError::Seek {
+                path: self.path.clone(),
+                source,
+            })?;
+        let mut record_header = [0; PERSIST_BLOB_RECORD_HEADER_LEN];
+        file.read_exact(&mut record_header)
+            .map_err(|source| PersistBlobPackError::Read {
+                path: self.path.clone(),
+                source,
+            })?;
+        let record = PersistBlobRecordHeader::decode(&record_header).map_err(|source| {
+            PersistBlobPackError::Format {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        if record.hash() != expected_hash {
+            return Err(PersistBlobPackError::RecordHashMismatch {
+                expected: expected_hash,
+                actual: record.hash(),
+            });
+        }
+        if record.payload_len() != location.payload_len() {
+            return Err(PersistBlobPackError::RecordLengthMismatch {
+                expected: location.payload_len(),
+                actual: record.payload_len(),
+            });
+        }
+        let payload_start = location
+            .record_offset()
+            .checked_add(PERSIST_BLOB_RECORD_HEADER_LEN as u64)
+            .ok_or(PersistBlobPackError::RecordBoundsOverflow {
+                record_offset: location.record_offset(),
+                payload_len: record.payload_len(),
+            })?;
+        let payload_end = payload_start.checked_add(record.payload_len()).ok_or(
+            PersistBlobPackError::RecordBoundsOverflow {
+                record_offset: location.record_offset(),
+                payload_len: record.payload_len(),
+            },
+        )?;
+        let pack_len = file
+            .metadata()
+            .map_err(|source| PersistBlobPackError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        if payload_end > pack_len {
+            return Err(PersistBlobPackError::RecordExtendsPastEnd {
+                payload_end,
+                pack_len,
+            });
+        }
+        let payload_len = usize::try_from(record.payload_len()).map_err(|_| {
+            PersistBlobPackError::PayloadTooLarge {
+                payload_len: record.payload_len() as u128,
+            }
+        })?;
+        let mut payload = Vec::new();
+        payload.try_reserve_exact(payload_len).map_err(|_| {
+            PersistBlobPackError::PayloadTooLarge {
+                payload_len: record.payload_len() as u128,
+            }
+        })?;
+        payload.resize(payload_len, 0);
+        file.read_exact(&mut payload)
+            .map_err(|source| PersistBlobPackError::Read {
+                path: self.path.clone(),
+                source,
+            })?;
+        let actual = DurableBlake3Hash::for_bytes(&payload);
+        if actual != expected_hash {
+            return Err(PersistBlobPackError::PayloadHashMismatch {
+                expected: expected_hash,
+                actual,
+            });
+        }
+        Ok(payload)
     }
 }
 
@@ -357,6 +570,121 @@ pub enum PersistPackFormatError {
         expected: usize,
         /// The available bytes.
         actual: usize,
+    },
+}
+
+/// Immutable blob packfile IO failed.
+#[derive(Debug, Error)]
+pub enum PersistBlobPackError {
+    /// The packfile's parent directory could not be created.
+    #[error("failed to create persistent blob pack parent directory {path}")]
+    CreateParent {
+        /// The parent directory path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The packfile could not be opened.
+    #[error("failed to open persistent blob pack {path}")]
+    Open {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The packfile metadata could not be read.
+    #[error("failed to inspect persistent blob pack {path}")]
+    Metadata {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The packfile could not be seeked.
+    #[error("failed to seek persistent blob pack {path}")]
+    Seek {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The packfile could not be read.
+    #[error("failed to read persistent blob pack {path}")]
+    Read {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The packfile could not be written.
+    #[error("failed to write persistent blob pack {path}")]
+    Write {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The packfile metadata has an unsupported or malformed format.
+    #[error("persistent blob pack {path} has invalid metadata")]
+    Format {
+        /// The packfile path.
+        path: PathBuf,
+        /// The format error.
+        source: PersistPackFormatError,
+    },
+    /// A caller supplied a record offset inside the fixed packfile header.
+    #[error("persistent blob pack record offset {record_offset} points inside the pack header")]
+    InvalidRecordOffset {
+        /// The invalid record offset.
+        record_offset: u64,
+    },
+    /// A blob payload cannot fit in the local address space or on-disk length field.
+    #[error("persistent blob payload length {payload_len} is too large")]
+    PayloadTooLarge {
+        /// The oversized payload length.
+        payload_len: u128,
+    },
+    /// Record metadata did not match the hash looked up through the index.
+    #[error("persistent blob record hash mismatch: expected {expected}, got {actual}")]
+    RecordHashMismatch {
+        /// The expected durable hash from the lookup key.
+        expected: DurableBlake3Hash,
+        /// The durable hash declared by the record.
+        actual: DurableBlake3Hash,
+    },
+    /// Record metadata did not match the length looked up through the index.
+    #[error("persistent blob record length mismatch: expected {expected}, got {actual}")]
+    RecordLengthMismatch {
+        /// The expected payload length from the lookup location.
+        expected: u64,
+        /// The payload length declared by the record.
+        actual: u64,
+    },
+    /// Record metadata cannot be represented as an in-pack byte range.
+    #[error(
+        "persistent blob record at offset {record_offset} with payload length {payload_len} overflows"
+    )]
+    RecordBoundsOverflow {
+        /// The record offset.
+        record_offset: u64,
+        /// The record payload length.
+        payload_len: u64,
+    },
+    /// Record metadata points beyond the end of the packfile.
+    #[error("persistent blob record ends at {payload_end}, past pack length {pack_len}")]
+    RecordExtendsPastEnd {
+        /// The byte offset one past the declared record payload.
+        payload_end: u64,
+        /// The current packfile length.
+        pack_len: u64,
+    },
+    /// Blob payload bytes did not match the expected content hash.
+    #[error("persistent blob payload hash mismatch: expected {expected}, got {actual}")]
+    PayloadHashMismatch {
+        /// The expected durable hash.
+        expected: DurableBlake3Hash,
+        /// The hash computed from the payload bytes.
+        actual: DurableBlake3Hash,
     },
 }
 
@@ -443,6 +771,108 @@ fn read_u64(bytes: &[u8]) -> u64 {
     let mut raw = [0; 8];
     raw.copy_from_slice(bytes);
     u64::from_le_bytes(raw)
+}
+
+fn ensure_blob_pack_file(path: &Path) -> Result<(), PersistBlobPackError> {
+    ensure_blob_pack_parent(path)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)
+        .map_err(|source| PersistBlobPackError::Open {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let len = file
+        .metadata()
+        .map_err(|source| PersistBlobPackError::Metadata {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    match len {
+        0 => file
+            .write_all(&PersistBlobPackHeader::current().encode())
+            .and_then(|()| file.flush())
+            .map_err(|source| PersistBlobPackError::Write {
+                path: path.to_path_buf(),
+                source,
+            }),
+        len if len < PERSIST_BLOB_PACK_HEADER_LEN as u64 => Err(PersistBlobPackError::Format {
+            path: path.to_path_buf(),
+            source: PersistPackFormatError::ShortPackHeader {
+                expected: PERSIST_BLOB_PACK_HEADER_LEN,
+                actual: len as usize,
+            },
+        }),
+        _ => validate_blob_pack_header(path, &mut file),
+    }
+}
+
+fn ensure_blob_pack_parent(path: &Path) -> Result<(), PersistBlobPackError> {
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return Ok(());
+    };
+    fs::create_dir_all(parent).map_err(|source| PersistBlobPackError::CreateParent {
+        path: parent.to_path_buf(),
+        source,
+    })
+}
+
+fn open_validated_blob_pack_for_read(path: &Path) -> Result<std::fs::File, PersistBlobPackError> {
+    let mut file =
+        OpenOptions::new()
+            .read(true)
+            .open(path)
+            .map_err(|source| PersistBlobPackError::Open {
+                path: path.to_path_buf(),
+                source,
+            })?;
+    validate_blob_pack_header(path, &mut file)?;
+    Ok(file)
+}
+
+fn validate_blob_pack_header(
+    path: &Path,
+    file: &mut std::fs::File,
+) -> Result<(), PersistBlobPackError> {
+    let len = file
+        .metadata()
+        .map_err(|source| PersistBlobPackError::Metadata {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    if len < PERSIST_BLOB_PACK_HEADER_LEN as u64 {
+        return Err(PersistBlobPackError::Format {
+            path: path.to_path_buf(),
+            source: PersistPackFormatError::ShortPackHeader {
+                expected: PERSIST_BLOB_PACK_HEADER_LEN,
+                actual: len as usize,
+            },
+        });
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|source| PersistBlobPackError::Seek {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let mut bytes = [0; PERSIST_BLOB_PACK_HEADER_LEN];
+    file.read_exact(&mut bytes)
+        .map_err(|source| PersistBlobPackError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    PersistBlobPackHeader::decode(&bytes)
+        .map(|_| ())
+        .map_err(|source| PersistBlobPackError::Format {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 fn ensure_payload_dirs(layout: &PersistLayout) -> Result<(), PersistError> {
@@ -731,6 +1161,201 @@ mod tests {
                 actual: 8,
             }
         );
+    }
+
+    #[test]
+    fn blob_pack_open_initializes_header() {
+        let path = temp_root().join("values").join("pack.blob");
+        let pack = PersistBlobPack::open(&path).expect("pack opens");
+
+        assert_eq!(pack.path(), path.as_path());
+        assert_eq!(
+            fs::read(&path).expect("pack header reads").as_slice(),
+            PersistBlobPackHeader::current().encode().as_slice()
+        );
+        PersistBlobPack::open(&path).expect("initialized pack reopens");
+
+        let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+    }
+
+    #[test]
+    fn blob_pack_open_rejects_corrupt_header_without_rewriting() {
+        let path = temp_root().join("values").join("pack.blob");
+        fs::create_dir_all(path.parent().expect("pack parent exists")).expect("parent creates");
+        fs::write(&path, b"bad").expect("corrupt pack writes");
+
+        let error = PersistBlobPack::open(&path).expect_err("corrupt pack errors");
+
+        assert!(matches!(
+            error,
+            PersistBlobPackError::Format {
+                source: PersistPackFormatError::ShortPackHeader { actual: 3, .. },
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(&path).expect("corrupt pack reads").as_slice(),
+            b"bad"
+        );
+
+        let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+    }
+
+    #[test]
+    fn blob_pack_appends_and_reads_verified_payloads() {
+        let path = temp_root().join("values").join("pack.blob");
+        let pack = PersistBlobPack::open(&path).expect("pack opens");
+        let first_payload = b"first payload";
+        let first_hash = DurableBlake3Hash::for_bytes(first_payload);
+        let second_payload = b"second payload";
+        let second_hash = DurableBlake3Hash::for_bytes(second_payload);
+
+        let first = pack
+            .append_blob(first_hash, first_payload)
+            .expect("first blob appends");
+        let second = pack
+            .append_blob(second_hash, second_payload)
+            .expect("second blob appends");
+
+        assert_eq!(first.record_offset(), PERSIST_BLOB_PACK_HEADER_LEN as u64);
+        assert_eq!(first.payload_len(), first_payload.len() as u64);
+        assert_eq!(
+            second.record_offset(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+                + PERSIST_BLOB_RECORD_HEADER_LEN as u64
+                + first_payload.len() as u64
+        );
+        assert_eq!(
+            pack.read_blob(first, first_hash)
+                .expect("first blob reads")
+                .as_slice(),
+            first_payload
+        );
+        assert_eq!(
+            pack.read_blob(second, second_hash)
+                .expect("second blob reads")
+                .as_slice(),
+            second_payload
+        );
+
+        let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+    }
+
+    #[test]
+    fn blob_pack_rejects_append_payload_hash_mismatch() {
+        let path = temp_root().join("values").join("pack.blob");
+        let pack = PersistBlobPack::open(&path).expect("pack opens");
+        let payload = b"payload";
+        let wrong_hash = DurableBlake3Hash::for_bytes(b"other payload");
+
+        let error = pack
+            .append_blob(wrong_hash, payload)
+            .expect_err("hash mismatch errors");
+
+        assert!(matches!(
+            error,
+            PersistBlobPackError::PayloadHashMismatch { .. }
+        ));
+        assert_eq!(
+            fs::metadata(&path).expect("pack metadata reads").len(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+
+        let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+    }
+
+    #[test]
+    fn blob_pack_read_rejects_mismatched_lookup_metadata() {
+        let path = temp_root().join("values").join("pack.blob");
+        let pack = PersistBlobPack::open(&path).expect("pack opens");
+        let payload = b"payload";
+        let hash = DurableBlake3Hash::for_bytes(payload);
+        let location = pack.append_blob(hash, payload).expect("blob appends");
+
+        let error = pack
+            .read_blob(location, DurableBlake3Hash::for_bytes(b"other payload"))
+            .expect_err("wrong hash errors");
+        assert!(matches!(
+            error,
+            PersistBlobPackError::RecordHashMismatch { .. }
+        ));
+
+        let error = pack
+            .read_blob(
+                PersistBlobLocation::new(location.record_offset(), location.payload_len() + 1),
+                hash,
+            )
+            .expect_err("wrong length errors");
+        assert!(matches!(
+            error,
+            PersistBlobPackError::RecordLengthMismatch { .. }
+        ));
+
+        let error = pack
+            .read_blob(PersistBlobLocation::new(0, location.payload_len()), hash)
+            .expect_err("header offset errors");
+        assert!(matches!(
+            error,
+            PersistBlobPackError::InvalidRecordOffset { record_offset: 0 }
+        ));
+
+        let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+    }
+
+    #[test]
+    fn blob_pack_read_rejects_truncated_payload_before_allocation() {
+        let path = temp_root().join("values").join("pack.blob");
+        let pack = PersistBlobPack::open(&path).expect("pack opens");
+        let payload = b"payload";
+        let hash = DurableBlake3Hash::for_bytes(payload);
+        let location = pack.append_blob(hash, payload).expect("blob appends");
+        let payload_offset = location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
+        OpenOptions::new()
+            .write(true)
+            .open(pack.path())
+            .expect("pack opens for truncation")
+            .set_len(payload_offset + 1)
+            .expect("pack truncates");
+
+        let error = pack
+            .read_blob(location, hash)
+            .expect_err("truncated payload errors");
+
+        assert!(matches!(
+            error,
+            PersistBlobPackError::RecordExtendsPastEnd { .. }
+        ));
+
+        let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+    }
+
+    #[test]
+    fn blob_pack_read_rejects_corrupt_payload() {
+        let path = temp_root().join("values").join("pack.blob");
+        let pack = PersistBlobPack::open(&path).expect("pack opens");
+        let payload = b"payload";
+        let hash = DurableBlake3Hash::for_bytes(payload);
+        let location = pack.append_blob(hash, payload).expect("blob appends");
+        let payload_offset = location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .open(pack.path())
+            .expect("pack opens for mutation");
+        file.seek(SeekFrom::Start(payload_offset))
+            .expect("payload offset seeks");
+        file.write_all(b"X").expect("payload corrupts");
+        file.flush().expect("payload corruption flushes");
+
+        let error = pack
+            .read_blob(location, hash)
+            .expect_err("corrupt payload errors");
+
+        assert!(matches!(
+            error,
+            PersistBlobPackError::PayloadHashMismatch { .. }
+        ));
+
+        let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
     }
 
     #[test]

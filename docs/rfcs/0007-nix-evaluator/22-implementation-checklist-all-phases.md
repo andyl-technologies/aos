@@ -486,6 +486,13 @@ alone (`M-1`/`Q-A`).
       plus payload length as stable little-endian metadata. This is format
       metadata only; file creation, append/read, mmap, payload verification,
       offset-index writes, GC/repack, and harness proof remain open (`C-13`).
+- [x] Current buffered blob pack append/read substrate: `PersistBlobPack`
+      initializes headers without replacing corrupt non-empty files, appends
+      only payloads matching the caller's `DurableBlake3Hash`, returns record
+      offsets plus lengths, and reads payloads back with record and payload hash
+      verification. This is ordinary `std::fs` IO only; mmap zero-copy reads,
+      LMDB/redb index integration, batched writing, crash-durability policy,
+      GC/repack, Attic transport, and harness proof remain open (`C-13`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and
