@@ -950,7 +950,18 @@ The seam itself is the *least clever* part of the RFC and is **P1** scope (`S-16
 ### The `unsafe` policy and tooling discipline (§10)
 
 - [ ] Standing, scoped waiver of the workspace "avoid `unsafe` at all costs" rule for the `ratchet-*` UNSAFE engine crates only (the Nix-band `aos-nix-*` crates stay safe; see [28](28-generalization-and-language-dialects.md) §3), covering the six irreducibly-`unsafe` mechanisms (tagged values, JIT fn-ptr calls, raw heap/GC, stackful fibers, lock-free CAS, `mmap`/out-of-core) — *enlarged* by the unlimited-budget mandate, hence heavier verification (§10, §10.0) — `S-17`; this checklist only **references** the §10 policy, it does not restate it.
-- [ ] The fence: `#![forbid(unsafe_code)]` on the tree-walk oracle / frontend / `nix-compat` glue / harness; `#![deny(unsafe_op_in_unsafe_fn)]` + per-block `// SAFETY:` on value-repr/jit/gc/runtime-abi modules; the safe oracle is the `miri`-clean trust core (§10.1, §10.2) — **P1** discipline, held every later phase, `S-17`.
+- [x] Current Phase-1 safe-crate fence: the monolithic `aos-nix`
+      frontend/tree-walk/native-glue crate carries `#![forbid(unsafe_code)]`,
+      checks under that fence, and source scans find no Rust `unsafe` forms in
+      the evaluator crate; remaining `unsafe*` spellings there are Nix builtin
+      names or docs/comments (§10.1, §10.2) — **P1** discipline, `S-17`; gate
+      today: `aos-nix` check under the crate-level fence.
+- [ ] Final safe/unsafe workspace fence remains: split safe
+      oracle/frontend/compat/harness crates with `#![forbid(unsafe_code)]`,
+      future unsafe value-repr/JIT/GC/runtime-ABI crates with
+      `#![deny(unsafe_op_in_unsafe_fn)]` and per-block `// SAFETY:`, and wire
+      the miri/sanitizer clean trust-core CI (§10.1, §10.2) — discipline held
+      every later phase, `S-17`.
 - [ ] Tooling discipline as standing CI controls: `cargo miri` on the conformance suite, ASan/UBSan, `cargo fuzz` (value decode / GC / ATerm), `loom` (CAS protocol, deques — `R-4`), ThreadSanitizer (parallel binary), two-maintainer review of every new `unsafe` block; `.unwrap()`/`.expect()` ban still applies (§10.3) — **P1**→**P8** as each mechanism lands, `S-17`.
 
 ### Observability and operator controls (§11)
