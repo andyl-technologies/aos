@@ -26,6 +26,10 @@
   --paper: #f9f9f6;
   --ink: #1f1d18;
   --rule: #d8d4c8;
+  /* A fainter rule for in-table data-row separators, so a table reads as a data
+   * grid and never as a run of section dividers (`--rule` is the section/heading
+   * weight). Derived from `--rule`+`--paper`, so it tracks the theme. */
+  --rule-faint: color-mix(in srgb, var(--rule) 50%, var(--paper));
   --dim: #6e6a5e;
   --ok: #1c6f4a;
   --warn: #9c5a00;
@@ -114,7 +118,9 @@ table {
 th, td {
   text-align: left;
   padding: 0.45rem 1.1rem 0.45rem 0;
-  border-bottom: 1px solid var(--rule);
+  /* Data rows use the faint rule, distinct from the heavier `--rule` of section
+   * headings (which the eye otherwise reads as another table line). */
+  border-bottom: 1px solid var(--rule-faint);
   vertical-align: top;
   /* Long unbreakable strings (trust keys, store paths, NAR hashes) must
    * wrap inside the cell rather than widen the table past the page. */
@@ -127,6 +133,8 @@ th {
   text-transform: uppercase;
   font-size: 0.8rem;
   letter-spacing: 0.06em;
+  /* The header row keeps the full-weight rule, anchoring the grid. */
+  border-bottom: 1px solid var(--rule);
 }
 td.num { text-align: right; }
 
@@ -396,10 +404,11 @@ input[type="button"]:hover {
 }
 button:disabled { color: var(--dim); border-color: var(--rule); cursor: default; }
 
-input[type="text"],
-input[type="email"],
-input[type="password"],
-input[type="search"],
+/* Every text-like input plus selects — matched by exclusion so a new field
+ * type (url, number, tel, …) is styled automatically and never slips through
+ * looking like an unstyled browser default. Buttons/checkboxes/radios opt out. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="file"]),
+textarea,
 select {
   font: inherit;
   padding: 0.2rem 0.4rem;
@@ -451,11 +460,8 @@ form.console label {
   margin: 0.5rem 0;
   max-width: 42rem;
 }
-/* The control fills the second column. */
-form.console label input[type="text"],
-form.console label input[type="email"],
-form.console label input[type="password"],
-form.console label input[type="search"],
+/* The control fills the second column (any text-like input, select, textarea). */
+form.console label input:not([type="checkbox"]):not([type="radio"]),
 form.console label select,
 form.console label textarea {
   width: 100%;
