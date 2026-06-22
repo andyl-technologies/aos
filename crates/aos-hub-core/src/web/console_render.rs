@@ -1233,7 +1233,11 @@ pub fn org_dashboard(
         escape(slug),
     );
 
-    body.push_str("<h2>Registries</h2>\n");
+    // Publishing — the two things an org actually serves to consumers: the
+    // package catalogs (registries) and the prebuilt binaries (caches). Settings
+    // (members, projects, storage) follow below.
+    body.push_str("<h2>Publishing</h2>\n");
+    body.push_str("<h3>Registries</h3>\n");
     if registries.is_empty() {
         body.push_str("<p class=\"dim\">No registries.</p>\n");
     } else {
@@ -1264,7 +1268,80 @@ pub fn org_dashboard(
         );
     }
 
-    body.push_str("<h2>Projects</h2>\n");
+    // -- Binary caches (the second Publishing product) -----------------------
+    body.push_str("<h3>Binary caches</h3>\n");
+    if caches.is_empty() {
+        body.push_str("<p class=\"dim\">No binary caches.</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = caches
+            .iter()
+            .map(|c| {
+                let signed = if c.signed {
+                    "<span class=\"chip\">signed</span>".to_string()
+                } else {
+                    String::new()
+                };
+                vec![
+                    format!(
+                        "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
+                        org = escape(slug),
+                        slug = escape(&c.slug),
+                    ),
+                    escape(&c.visibility),
+                    signed,
+                    c.priority.to_string(),
+                    c.object_count.to_string(),
+                    human_size(c.used_bytes.max(0) as u64),
+                ]
+            })
+            .collect();
+        body.push_str(&table(
+            &["cache", "visibility", "", "priority", "objects", "size"],
+            &rows,
+        ));
+    }
+    if can_configure {
+        // A cache uses the deployment's default storage unless a custom binding
+        // is selected — the first option, mirroring the registry create form.
+        let mut binding_options = String::from("<option value=\"\">default storage</option>");
+        for b in bindings {
+            let _ = write!(
+                binding_options,
+                "<option value=\"{name}\">{name}</option>",
+                name = escape(&b.name),
+            );
+        }
+        body.push_str("<h4>Create a binary cache</h4>\n");
+        let _ = write!(
+            body,
+            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches\">\n{csrf}\
+             <label>slug <input type=\"text\" name=\"slug\" required placeholder=\"cache\"></label>\n\
+             <label>name <input type=\"text\" name=\"name\" placeholder=\"Build cache\"> \
+             <span class=\"dim\">optional</span></label>\n\
+             <label>storage binding <select name=\"binding\">{bindings}</select></label>\n\
+             <label>visibility <select name=\"visibility\">\
+             <option value=\"private\">private</option>\
+             <option value=\"internal\">internal</option>\
+             <option value=\"public\">public</option></select></label>\n\
+             <label>priority <input type=\"number\" name=\"priority\" value=\"40\"></label>\n\
+             <label>compression <select name=\"compression\">\
+             <option value=\"zstd\">zstd</option>\
+             <option value=\"xz\">xz</option>\
+             <option value=\"none\">none</option></select></label>\n\
+             <label><input type=\"checkbox\" name=\"want_mass_query\" value=\"1\" checked> \
+             advertise mass-query</label>\n\
+             <button>create cache</button>\n</form>\n",
+            org = escape(slug),
+            csrf = csrf_field(csrf),
+            bindings = binding_options,
+        );
+    }
+
+    // Settings — the supporting cast: who's a member, how registries are
+    // organized (projects), and where bytes physically live (storage). The
+    // hosted-keys / webhooks / SSO links live in the header line above.
+    body.push_str("<h2>Settings</h2>\n");
+    body.push_str("<h3>Projects</h3>\n");
     if projects.is_empty() {
         body.push_str("<p class=\"dim\">No projects.</p>\n");
     } else {
@@ -1294,7 +1371,7 @@ pub fn org_dashboard(
         body.push_str(&table(&["path", "name", ""], &rows));
     }
     if can_configure {
-        body.push_str("<h3>Create a project</h3>\n");
+        body.push_str("<h4>Create a project</h4>\n");
         let _ = write!(
             body,
             "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/projects\">\n{csrf}\
@@ -1307,7 +1384,7 @@ pub fn org_dashboard(
         );
     }
 
-    body.push_str("<h2>Storage bindings</h2>\n");
+    body.push_str("<h3>Storage</h3>\n");
     // The deployment's default storage is always present and is what new
     // registries use with no binding at all. Render it as the first row — a
     // `default` chip, "automatic" location, no delete — so it is *apparent* that
@@ -1351,7 +1428,7 @@ pub fn org_dashboard(
     body.push_str(&table(&["name", "kind", "location", ""], &rows));
     if can_configure {
         let creatable = RuntimeKind::current().creatable_binding_kinds();
-        body.push_str("<h3>Add a storage binding</h3>\n");
+        body.push_str("<h4>Add a storage binding</h4>\n");
         let mut kind_options = String::new();
         for kind in &creatable {
             let _ = write!(
@@ -1388,76 +1465,7 @@ pub fn org_dashboard(
         );
     }
 
-    // -- Binary caches -------------------------------------------------------
-    body.push_str("<h2>Binary caches</h2>\n");
-    if caches.is_empty() {
-        body.push_str("<p class=\"dim\">No binary caches.</p>\n");
-    } else {
-        let rows: Vec<Vec<String>> = caches
-            .iter()
-            .map(|c| {
-                let signed = if c.signed {
-                    "<span class=\"chip\">signed</span>".to_string()
-                } else {
-                    String::new()
-                };
-                vec![
-                    format!(
-                        "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
-                        org = escape(slug),
-                        slug = escape(&c.slug),
-                    ),
-                    escape(&c.visibility),
-                    signed,
-                    c.priority.to_string(),
-                    c.object_count.to_string(),
-                    human_size(c.used_bytes.max(0) as u64),
-                ]
-            })
-            .collect();
-        body.push_str(&table(
-            &["cache", "visibility", "", "priority", "objects", "size"],
-            &rows,
-        ));
-    }
-    if can_configure {
-        // A cache uses the deployment's default storage unless a custom binding
-        // is selected — the first option, mirroring the registry create form.
-        let mut binding_options = String::from("<option value=\"\">default storage</option>");
-        for b in bindings {
-            let _ = write!(
-                binding_options,
-                "<option value=\"{name}\">{name}</option>",
-                name = escape(&b.name),
-            );
-        }
-        body.push_str("<h3>Create a binary cache</h3>\n");
-        let _ = write!(
-            body,
-            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches\">\n{csrf}\
-             <label>slug <input type=\"text\" name=\"slug\" required placeholder=\"cache\"></label>\n\
-             <label>name <input type=\"text\" name=\"name\" placeholder=\"Build cache\"> \
-             <span class=\"dim\">optional</span></label>\n\
-             <label>storage binding <select name=\"binding\">{bindings}</select></label>\n\
-             <label>visibility <select name=\"visibility\">\
-             <option value=\"private\">private</option>\
-             <option value=\"internal\">internal</option>\
-             <option value=\"public\">public</option></select></label>\n\
-             <label>priority <input type=\"number\" name=\"priority\" value=\"40\"></label>\n\
-             <label>compression <select name=\"compression\">\
-             <option value=\"zstd\">zstd</option>\
-             <option value=\"xz\">xz</option>\
-             <option value=\"none\">none</option></select></label>\n\
-             <label><input type=\"checkbox\" name=\"want_mass_query\" value=\"1\" checked> \
-             advertise mass-query</label>\n\
-             <button>create cache</button>\n</form>\n",
-            org = escape(slug),
-            csrf = csrf_field(csrf),
-            bindings = binding_options,
-        );
-    }
-
-    body.push_str("<h2>Members</h2>\n");
+    body.push_str("<h3>Members</h3>\n");
     let rows: Vec<Vec<String>> = mem_pager
         .slice(members)
         .iter()
@@ -1509,7 +1517,7 @@ pub fn org_dashboard(
     body.push_str(&mem_pager.nav_with(&format!("/-/org/{slug}"), &mem_keep, "members_page"));
 
     if can_manage_members {
-        body.push_str("<h3>Invite a member</h3>\n");
+        body.push_str("<h4>Invite a member</h4>\n");
         let _ = write!(
             body,
             "<form class=\"console\" method=\"post\" action=\"/-/org/{}/members\">\n{}\
