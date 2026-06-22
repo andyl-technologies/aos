@@ -534,8 +534,16 @@ mod tests {
         let source = "1 + \"x\"";
         let ir = lower(resolve(parse_str(source).unwrap()).unwrap()).unwrap();
         let error = eval_whnf_owned(&ir).expect_err("type mismatch should fail");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::Type { .. }));
+        let typed_message = error.to_string();
         let diagnostic = EvalDiagnostic::new("expr.nix", source, error);
 
+        assert!(matches!(
+            diagnostic.error().kind(),
+            TreeWalkErrorKind::Type { .. }
+        ));
+        assert_eq!(diagnostic.to_string(), typed_message);
+        assert!(!diagnostic.to_string().contains("aos_nix::eval::type"));
         assert_eq!(
             diagnostic.code().map(|code| code.to_string()),
             Some("aos_nix::eval::type".to_string())
@@ -543,6 +551,13 @@ mod tests {
         assert!(diagnostic.help().is_some());
         assert!(diagnostic.url().is_some());
         assert!(diagnostic.source_code().is_some());
+
+        let report = render_fancy_report(&diagnostic).expect("diagnostic renders");
+        assert!(report.contains("aos_nix::eval::type"), "{report}");
+        assert!(
+            report.contains("Use a value with the type expected here."),
+            "{report}"
+        );
     }
 
     #[test]

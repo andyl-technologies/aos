@@ -472,7 +472,7 @@ The governing rule binds every item: **presentation is not parity.** How an erro
 
 ### The presentation-vs-parity separation (§3)
 
-- [ ] Encode error **class** in the `EvalError`/`ParseError`/`TypeError` enum variants (the parity-relevant axis, hard-gated by conformance + `.drv`-diff) and error **presentation** in the `Diagnostic` impl (the free axis); adding a `help` or recoloring a label is never a parity event, while renaming/merging a variant so a former `TypeError` surfaces as a `throw` *is* — caught by the conformance suite (§3) — **P1**, `C-26`; error-text parity stays best-effort, soft-gated, per-case enumerated.
+- [ ] Encode error **class** in the `EvalError`/`ParseError`/`TypeError` enum variants (the parity-relevant axis, hard-gated by conformance + `.drv`-diff) and error **presentation** in the `Diagnostic` impl (the free axis): AOS now keeps lexical, parse, resolver, lowering, and tree-walk evaluator classes in `LexErrorKind`, `ParseErrorKind`, `ScopeErrorKind`, `IrErrorKind`, and `TreeWalkErrorKind` (`TreeWalkErrorKind::Type` is the concrete type-error class), while only `SourceDiagnostic<E>` implements miette `Diagnostic` and owns codes/help/source labels. Diagnostic regression tests assert the wrapper preserves the original typed error and plain display while the rendered report carries the presentation code/help, so adding a `help` or recoloring a label is not a parity event. Remaining before completion: wire the conformance gate that catches class regressions such as type-vs-throw-vs-assert; `.drv` diff currently gates error/no-error parity, not every evaluator error class (§3) — **P1**, `C-26`; error-text parity stays best-effort, soft-gated, per-case enumerated.
 
 ### Spans: diagnostics into the original `.nix` (§4)
 
