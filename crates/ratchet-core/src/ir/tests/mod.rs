@@ -76,6 +76,7 @@ pub(super) fn symbol_text<'a>(ir: &'a Ir, symbol: Symbol) -> &'a [u8] {
     ir.symbols.resolve(symbol).expect("symbol exists")
 }
 
+mod habit_guard;
 mod lowering_tests;
 mod primop_shadowing_tests;
 mod primop_tests;
