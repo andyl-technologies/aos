@@ -395,8 +395,18 @@ alone (`M-1`/`Q-A`).
       the C-1 combiner rule only, not demand-graph integration, canonical
       free-variable set/order production, real durable value-hash production, or
       false-hit harness coverage.
-- [ ] Full cache-key integration remains: wire expression identity from source
-      content + IR node position into demand-graph nodes, reuse the
+- [x] Current expression-node allocation/keying substrate:
+      `DemandGraph::get_or_insert_expression_node` and
+      `EvalCache::get_or_insert_expression_node` centralize graph insertion for
+      a caller-supplied `CacheExprIdentity`, ordered free-variable value hashes,
+      and optional node value hash; existing nodes keep their first value hash.
+      This is explicit allocation/keying only; canonical free-variable
+      discovery/order from strictness/escape analysis, real durable value-hash
+      production, `force_memoized`, evaluator node lifecycle, automatic
+      `NixNative` ownership/use, persistence, currentTime taint propagation, and
+      cached/uncached harness proof remain open (`C-1`/`C-2`/`S-14`).
+- [ ] Full cache-key integration remains: feed source content + IR node position
+      from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real
       durable value hashes, and run the differential false-hit gate (`C-1`/`C-2`).
 - [x] Current `cache/cutoff.rs` standalone decision primitive: typed

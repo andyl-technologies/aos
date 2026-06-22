@@ -5,7 +5,8 @@
 //! when to observe a completed evaluation outcome.
 
 use super::{
-    DemandGraph, DemandGraphError, DemandNodeId, ImpureInputFingerprint, ImpureTraceObservation,
+    CacheExprIdentity, DemandGraph, DemandGraphError, DemandNodeId, DurableBlake3Hash,
+    ImpureInputFingerprint, ImpureTraceObservation, ValueHash,
 };
 
 /// A source of evaluator-observed impure input trace entries.
@@ -52,6 +53,29 @@ impl EvalCache {
     /// Consumes this cache into its demand graph.
     pub fn into_graph(self) -> DemandGraph {
         self.graph
+    }
+
+    /// Gets or inserts an expression node in the underlying demand graph.
+    ///
+    /// This is an explicit graph-allocation helper. Callers still supply the
+    /// expression identity, ordered free-variable value hashes, and optional
+    /// current value hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails or if the
+    /// underlying graph cannot reserve node/key storage.
+    pub fn get_or_insert_expression_node<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        value_hash: Option<ValueHash>,
+    ) -> Result<DemandNodeId, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        self.graph
+            .get_or_insert_expression_node(identity, free_var_value_hashes, value_hash)
     }
 
     /// Observes impure inputs from one completed evaluator trace source.
@@ -106,10 +130,7 @@ impl EvalCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{
-        CacheExprIdentity, DemandCacheKey, DurableBlake3Hash, ImpureTraceStatus, NodeFreshness,
-        UncacheableInput, ValueHash,
-    };
+    use crate::cache::{DemandCacheKey, ImpureTraceStatus, NodeFreshness, UncacheableInput};
     use crate::compile::IrId;
 
     #[derive(Clone, Debug)]
@@ -136,9 +157,16 @@ mod tests {
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(bytes))
     }
 
+    fn durable_hash(bytes: &[u8]) -> DurableBlake3Hash {
+        DurableBlake3Hash::for_bytes(bytes)
+    }
+
+    fn identity(source: &[u8], node: u32) -> CacheExprIdentity {
+        CacheExprIdentity::new(durable_hash(source), IrId::new(node))
+    }
+
     fn key(node: u32, label: &[u8]) -> DemandCacheKey {
-        let identity = CacheExprIdentity::new(DurableBlake3Hash::for_bytes(label), IrId::new(node));
-        DemandCacheKey::for_free_vars(identity, [DurableBlake3Hash::for_bytes(label)])
+        DemandCacheKey::for_free_vars(identity(label, node), [durable_hash(label)])
             .expect("key builds")
     }
 
@@ -233,6 +261,37 @@ mod tests {
                 .expect("dependent exists")
                 .freshness(),
             NodeFreshness::Dirty
+        );
+    }
+
+    #[test]
+    fn eval_cache_expression_node_can_observe_impure_edges() {
+        let source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/version", b"1")],
+            complete: true,
+        };
+        let mut cache = EvalCache::new();
+        let dependent = cache
+            .get_or_insert_expression_node(
+                identity(b"source", 7),
+                [durable_hash(b"free-var")],
+                Some(value_hash(b"value")),
+            )
+            .expect("expression node inserts");
+
+        let observation = cache
+            .observe_impure_inputs_for_node(dependent, &source)
+            .expect("trace observes and wires");
+
+        assert_eq!(observation.status(), ImpureTraceStatus::Cacheable);
+        let dependency = observation.leaves()[0].node();
+        assert!(
+            cache
+                .graph()
+                .node(dependent)
+                .expect("dependent exists")
+                .dependencies()
+                .contains(&dependency)
         );
     }
 

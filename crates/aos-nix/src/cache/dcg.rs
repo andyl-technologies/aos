@@ -10,8 +10,8 @@ use std::collections::{BTreeSet, HashMap};
 use thiserror::Error;
 
 use super::{
-    CacheableInputFingerprint, CutoffDecision, DemandCacheKey, EarlyCutoff, ImpureInputFingerprint,
-    UncacheableInput, ValueHash,
+    CacheExprIdentity, CacheKeyError, CacheableInputFingerprint, CutoffDecision, DemandCacheKey,
+    DurableBlake3Hash, EarlyCutoff, ImpureInputFingerprint, UncacheableInput, ValueHash,
 };
 
 /// A stable id for one node in a [`DemandGraph`].
@@ -282,6 +282,33 @@ impl DemandGraph {
         Ok(id)
     }
 
+    /// Gets or inserts a node keyed by an expression identity and free variables.
+    ///
+    /// Existing nodes keep their current value hash; callers update hashes by
+    /// reconsidering the node. This helper only centralizes demand-cache key
+    /// construction and graph interning. It does not compute free-variable
+    /// order, evaluate the expression, or perform memo lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DemandGraphError::CacheKey`] if the expression/free-variable
+    /// key cannot be built. Returns [`DemandGraphError::TooManyNodes`] if the
+    /// graph cannot address another node. Returns an allocation error if node
+    /// or key storage cannot reserve capacity.
+    pub fn get_or_insert_expression_node<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        value_hash: Option<ValueHash>,
+    ) -> Result<DemandNodeId, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
+            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        self.get_or_insert_node(key, value_hash)
+    }
+
     /// Observes one cacheable impure input as a demand-graph leaf.
     ///
     /// New input identities insert a clean leaf with the observed-result hash.
@@ -499,6 +526,12 @@ pub enum DemandGraphError {
         /// The requested key capacity.
         keys: usize,
     },
+    /// An expression demand-cache key could not be built.
+    #[error("demand graph failed to build cache key: {source}")]
+    CacheKey {
+        /// The cache-key construction failure.
+        source: CacheKeyError,
+    },
     /// Trace observation storage could not reserve capacity.
     #[error("demand graph failed to reserve {observations} trace observations")]
     TraceObservationAllocationFailed {
@@ -531,9 +564,16 @@ mod tests {
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(bytes))
     }
 
+    fn durable_hash(bytes: &[u8]) -> DurableBlake3Hash {
+        DurableBlake3Hash::for_bytes(bytes)
+    }
+
+    fn identity(source: &[u8], node: u32) -> CacheExprIdentity {
+        CacheExprIdentity::new(durable_hash(source), IrId::new(node))
+    }
+
     fn key(node: u32, label: &[u8]) -> DemandCacheKey {
-        let identity = CacheExprIdentity::new(DurableBlake3Hash::for_bytes(label), IrId::new(node));
-        DemandCacheKey::for_free_vars(identity, [DurableBlake3Hash::for_bytes(label)])
+        DemandCacheKey::for_free_vars(identity(label, node), [durable_hash(label)])
             .expect("key builds")
     }
 
@@ -961,6 +1001,87 @@ mod tests {
             graph.node(first).expect("node exists").value_hash(),
             Some(value_hash(b"first"))
         );
+    }
+
+    #[test]
+    fn expression_nodes_are_interned_by_identity_and_free_vars() {
+        let mut graph = DemandGraph::new();
+        let identity = identity(b"source", 7);
+        let first = graph
+            .get_or_insert_expression_node(
+                identity,
+                [durable_hash(b"left"), durable_hash(b"right")],
+                Some(value_hash(b"first")),
+            )
+            .expect("first expression node inserts");
+        let second = graph
+            .get_or_insert_expression_node(
+                identity,
+                [durable_hash(b"left"), durable_hash(b"right")],
+                Some(value_hash(b"second")),
+            )
+            .expect("existing expression node returns");
+
+        assert_eq!(first, second);
+        assert_eq!(graph.len(), 1);
+        assert_eq!(
+            graph.node(first).expect("node exists").value_hash(),
+            Some(value_hash(b"first"))
+        );
+    }
+
+    #[test]
+    fn expression_identity_changes_node_key() {
+        let mut graph = DemandGraph::new();
+        let base = graph
+            .get_or_insert_expression_node(
+                identity(b"source", 7),
+                [durable_hash(b"value")],
+                Some(value_hash(b"base")),
+            )
+            .expect("base expression node inserts");
+        let source_changed = graph
+            .get_or_insert_expression_node(
+                identity(b"other-source", 7),
+                [durable_hash(b"value")],
+                Some(value_hash(b"source")),
+            )
+            .expect("source-changed expression node inserts");
+        let node_changed = graph
+            .get_or_insert_expression_node(
+                identity(b"source", 8),
+                [durable_hash(b"value")],
+                Some(value_hash(b"node")),
+            )
+            .expect("node-changed expression node inserts");
+
+        assert_ne!(base, source_changed);
+        assert_ne!(base, node_changed);
+        assert_ne!(source_changed, node_changed);
+        assert_eq!(graph.len(), 3);
+    }
+
+    #[test]
+    fn expression_free_var_order_changes_node_key() {
+        let mut graph = DemandGraph::new();
+        let identity = identity(b"source", 7);
+        let left_then_right = graph
+            .get_or_insert_expression_node(
+                identity,
+                [durable_hash(b"left"), durable_hash(b"right")],
+                Some(value_hash(b"left-right")),
+            )
+            .expect("left-right expression node inserts");
+        let right_then_left = graph
+            .get_or_insert_expression_node(
+                identity,
+                [durable_hash(b"right"), durable_hash(b"left")],
+                Some(value_hash(b"right-left")),
+            )
+            .expect("right-left expression node inserts");
+
+        assert_ne!(left_then_right, right_then_left);
+        assert_eq!(graph.len(), 2);
     }
 
     #[test]
