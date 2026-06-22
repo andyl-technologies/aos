@@ -669,7 +669,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   Phase 0 retired [RISK-13] with `T-RISK-6`, recording that randomization may be
   enabled as a per-image capability but is not a global default flip. —
   satisfies [DET-18] (E11, E12), [DET-33]; spec §4.6 (E11, E12), §4.9.
-- [ ] **T-DET-7** Implement Contract A in isolation: a single-VM driver that
+- [x] **T-DET-7** Implement Contract A in isolation: a single-VM driver that
   feeds an icount-stamped recorded input list `I` and runs `run` with no
   scheduler/transport. — satisfies [DET-5], [DET-1]; spec §4.2.1.
 - [ ] **T-DET-8** Implement the execution fingerprint (periodic icount +

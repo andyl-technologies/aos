@@ -45,6 +45,7 @@ in {
   };
   phase1 = {
     aosWorkspaceBuild = import ./phase1-aos-workspace-build.nix {inherit pkgs lib;};
+    contractAIsolation = import ./phase1-contract-a-isolation.nix {inherit pkgs lib;};
     controlPlaneBoundary = import ./phase1-control-plane-boundary.nix {inherit pkgs lib;};
     crateArtifactTypes = import ./phase1-crate-artifact-types.nix {inherit pkgs lib;};
     crateFeaturePowerset = import ./phase1-crate-feature-powerset.nix {inherit pkgs lib;};
@@ -80,14 +81,15 @@ in {
         gateName = "gate:layer0-determinism";
         owner = "crucible-sim";
         phase = "phase1";
-        taskIds = ["T-PLAN-3" "T-HARN-5" "T-DET-1" "T-DET-4" "T-DET-5" "T-DET-6"];
+        taskIds = ["T-PLAN-3" "T-HARN-5" "T-DET-1" "T-DET-4" "T-DET-5" "T-DET-6" "T-DET-7"];
         dependencies = [
           (import ./phase1-deterministic-launch.nix {inherit pkgs lib;})
           (import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;})
           (import ./phase1-guest-entropy-launch.nix {inherit pkgs lib;})
           (import ./phase1-kaslr-aslr-default.nix {inherit pkgs lib;})
+          (import ./phase1-contract-a-isolation.nix {inherit pkgs lib;})
         ];
-        reason = "L0 aggregate suite is intentionally pending after completed launch and entropy leaf checks";
+        reason = "L0 aggregate suite is intentionally pending after completed launch, entropy, and Contract A isolation leaf checks";
       };
       contentAddress = redGate {
         attrPath = "checks.crucible.phase1.gates.contentAddress";
