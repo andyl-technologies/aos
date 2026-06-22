@@ -466,8 +466,11 @@ because `foldl'`'s strictness is statically known and Nix values are immutable.
 
 `tryEval` must catch exactly the errors C++ Nix's `tryEval` catches (assertion
 failures, `throw`, `abort` is *not* caught) and no others, and must restore
-evaluator state cleanly. In the tree-walk oracle this is a Rust `Result`
-unwinding boundary; in the JIT tiers it is implemented as a runtime symbol
+evaluator state cleanly. In the tree-walk oracle this is implemented as a Rust
+`Result` boundary: only `Thrown` and `AssertionFailed` are converted into
+`tryEval`'s `{ success = false; value = false; }`; `abort`, type errors, missing
+attrs, bounds errors, and other evaluator failures continue outward. In the JIT
+tiers the same semantic boundary becomes a runtime symbol
 (`aos_try_begin`/`aos_try_end`) that installs a catch frame, because we do *not*
 want C++-exception-style unwinding through JIT frames. This is also where the
 "catchable error" distinction (which Snix makes explicit) is encoded: only
@@ -743,7 +746,7 @@ harness, never cut for scope.
 - [ ] Full primop surface as plain Rust obeying the §2 ABI; authoritative set validated against `builtins.attrNames builtins` of the pinned Nix ([§5.1](#51-inventory-and-structure)) — P1, `S-12`/`C-9`; gate: conformance 21.
 - [x] Compatibility-critical primops with adversarial coverage: `derivationStrict` is covered by the checked doc 11 wire-format/algorithm rows and the doc 21 builtin row; string-context primops and context-unioning are covered by configured C++ oracle tests plus focused coercion/string tests; `hashString`/`hashFile`/`toJSON` have configured C++ oracle coverage for bytes, key order, escapes, algorithms, and float formatting; `sort` matches C++ Nix's libc++ stable-sort/tie behavior with configured oracle and order-specific tests. The full transitive `.drv` closure gate remains tracked separately ([§5.2](#52-the-compatibility-critical-primops)) — P1, `S-13`; gate: differential `.drv` harness.
 - [ ] `foldl'` worker/wrapper payoff: unboxed accumulator, no per-step thunk ([§5.3](#53-strict-fold-and-the-workerwrapper-payoff), [07](07-laziness-and-whole-program-analyses.md)) — P4, `S-9`.
-- [ ] `tryEval`/`throw`/`abort` error model: catchable-error distinction; `aos_try_begin`/`aos_try_end` catch frames in the JIT (no C++-style unwinding through JIT frames) ([§5.4](#54-tryeval-throw-and-the-error-model)) — P1/P6; gate: conformance 21 (hazard #9).
+- [x] `tryEval`/`throw`/`abort` tree-walk error model: `throw` and failed `assert` are catchable, `abort` and non-catchable evaluator errors propagate, `tryEval` is shallow, failed thunks reset and retry, and first-class `throw`/`abort` preserve the same classes. Implemented through the tree-walk `Result` boundary and covered by doc 20/doc 21 checked rows, focused control tests, and configured C++ control-flow/error-semantics oracle tests. The JIT catch-frame ABI (`aos_try_begin`/`aos_try_end`) remains future P6 work, not claimed here ([§5.4](#54-tryeval-throw-and-the-error-model)) — P1 complete / P6 pending; gate: conformance 21 (hazard #9).
 - [ ] Inline hottest primops (`map`/`elemAt`/`length`/`concatMap`/`++`) as Cranelift IR bodies; default symbol-call only ([§9](#9-open-questions-and-research-grade-items)) — P6, `M-9`; gate: per-primop benchmark.
 
 ### `import` and import caching
