@@ -454,6 +454,32 @@ fn assert_tree_walk_source_report(error: &anyhow::Error) {
 }
 
 #[test]
+fn native_instantiation_reports_parse_errors_with_source() -> Result<()> {
+    let native = NixNative::new(0)?;
+
+    let error = native
+        .instantiate_expr("let { body = 1; }")
+        .expect_err("parse errors should stay fallback-eligible");
+
+    let Some(NativeEvalError::Unsupported {
+        feature,
+        span: Some(_),
+    }) = error.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("parse errors should surface as unsupported fallback errors: {error:?}");
+    };
+    assert!(
+        feature.contains("native expression parse failure"),
+        "{feature}"
+    );
+    assert!(feature.contains("aos_nix::parse::"), "{feature}");
+    assert!(feature.contains("expr.nix"), "{feature}");
+    assert!(feature.contains("let { body = 1; }"), "{feature}");
+    assert!(!feature.contains(".drvPath"), "{feature}");
+    Ok(())
+}
+
+#[test]
 fn native_instantiation_rejects_fabricated_drv_path_attrsets() -> Result<()> {
     let native = NixNative::new(0)?;
 

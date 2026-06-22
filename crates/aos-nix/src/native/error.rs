@@ -7,7 +7,8 @@
 
 use super::*;
 
-use crate::diagnostic::{EvalDiagnostic, render_fancy_report};
+use crate::diagnostic::{EvalDiagnostic, ParseDiagnostic, render_fancy_report};
+use crate::syntax::ParseError;
 
 #[derive(Clone, Copy)]
 pub(super) struct NativeDiagnosticSource<'a> {
@@ -33,13 +34,13 @@ impl<'a> NativeDiagnosticSource<'a> {
 pub(super) fn parse_cache_frontend_error(
     error: ParseCacheError,
     source_map: Option<WrappedSourceMap>,
+    diagnostic_source: Option<NativeDiagnosticSource<'_>>,
 ) -> Option<NativeEvalError> {
     match error {
-        ParseCacheError::Parse { source } => Some(unsupported_frontend_error(
-            "parse",
-            source.to_string(),
-            source.span(),
+        ParseCacheError::Parse { source } => Some(unsupported_parse_error(
+            source,
             source_map,
+            diagnostic_source,
         )),
         ParseCacheError::Scope { source } => Some(unsupported_frontend_error(
             "resolve",
@@ -64,6 +65,20 @@ pub(super) fn parse_cache_frontend_error(
     }
 }
 
+pub(super) fn unsupported_parse_error(
+    error: ParseError,
+    source_map: Option<WrappedSourceMap>,
+    diagnostic_source: Option<NativeDiagnosticSource<'_>>,
+) -> NativeEvalError {
+    let rendered = diagnostic_source.and_then(|source| rendered_parse_diagnostic(&error, source));
+    unsupported_frontend_error(
+        "parse",
+        rendered.unwrap_or_else(|| error.to_string()),
+        error.span(),
+        source_map,
+    )
+}
+
 pub(super) fn unsupported_frontend_error(
     stage: &'static str,
     message: String,
@@ -74,6 +89,26 @@ pub(super) fn unsupported_frontend_error(
         feature: format!("native expression {stage} failure: {message}"),
         span: source_map.and_then(|source_map| source_span_from_wrapped(span, source_map)),
     }
+}
+
+fn rendered_parse_diagnostic(
+    error: &ParseError,
+    source: NativeDiagnosticSource<'_>,
+) -> Option<String> {
+    let span = match source.source_map {
+        Some(source_map) => wrapped_source_span(error.span(), source_map)?,
+        None => error.span(),
+    };
+    if !span_fits_source(span, source.source) {
+        return None;
+    }
+
+    let diagnostic = ParseDiagnostic::new(
+        source.name,
+        source.source,
+        ParseError::new(error.kind().clone(), span),
+    );
+    render_fancy_report(&diagnostic).ok()
 }
 
 pub(super) fn native_eval_error(

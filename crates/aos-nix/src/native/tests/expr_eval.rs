@@ -75,19 +75,39 @@ fn native_expression_parse_cache_preserves_frontend_error_spans() -> Result<()> 
         .eval_expr("let { body = 1; }")
         .expect_err("frontend gaps should fall back through the cached path");
 
-    assert!(
-        matches!(
-            err.downcast_ref::<NativeEvalError>(),
-            Some(NativeEvalError::Unsupported {
-                feature,
-                span: Some(_),
-            }) if feature.contains("native expression parse failure")
-        ),
-        "{err:?}"
-    );
+    assert_parse_source_report(&err);
 
     fs::remove_dir_all(root)?;
     Ok(())
+}
+
+#[test]
+fn native_expression_parse_error_uses_source_report() -> Result<()> {
+    let native = NixNative::new(0)?;
+    let err = native
+        .eval_expr("let { body = 1; }")
+        .expect_err("parse errors should stay fallback-eligible");
+
+    assert_parse_source_report(&err);
+    Ok(())
+}
+
+fn assert_parse_source_report(err: &anyhow::Error) {
+    let Some(NativeEvalError::Unsupported {
+        feature,
+        span: Some(_),
+    }) = err.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("parse errors should stay unsupported fallback errors: {err:?}");
+    };
+    assert!(
+        feature.contains("native expression parse failure"),
+        "{feature}"
+    );
+    assert!(feature.contains("aos_nix::parse::"), "{feature}");
+    assert!(feature.contains("expr.nix"), "{feature}");
+    assert!(feature.contains("let { body = 1; }"), "{feature}");
+    assert!(!feature.contains("builtins.toJSON"), "{feature}");
 }
 
 #[test]

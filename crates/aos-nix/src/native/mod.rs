@@ -175,15 +175,8 @@ impl NixNative {
             prefix_len: DRV_PATH_WRAPPER_PREFIX.len(),
             expr_len: expr.len(),
         };
-        self.eval_derivation_materialized_source(
-            &source,
-            Some(source_map),
-            Some(NativeDiagnosticSource::new(
-                "expr.nix",
-                expr,
-                Some(source_map),
-            )),
-        )
+        let diagnostic_source = NativeDiagnosticSource::new("expr.nix", expr, Some(source_map));
+        self.eval_derivation_materialized_source(&source, Some(source_map), Some(diagnostic_source))
     }
 
     /// Evaluates a raw expression to an in-memory derivation closure.
@@ -200,15 +193,8 @@ impl NixNative {
             prefix_len: DRV_PATH_WRAPPER_PREFIX.len(),
             expr_len: expr.len(),
         };
-        self.eval_derivation_closure_source(
-            &source,
-            Some(source_map),
-            Some(NativeDiagnosticSource::new(
-                "expr.nix",
-                expr,
-                Some(source_map),
-            )),
-        )
+        let diagnostic_source = NativeDiagnosticSource::new("expr.nix", expr, Some(source_map));
+        self.eval_derivation_closure_source(&source, Some(source_map), Some(diagnostic_source))
     }
 
     /// Evaluates a raw expression and renders it as strict JSON text.
@@ -225,14 +211,12 @@ impl NixNative {
             prefix_len: JSON_WRAPPER_PREFIX.len(),
             expr_len: expr.len(),
         };
-        let ir = self.lower_native_source(&source, Some(source_map))?;
+        let diagnostic_source = NativeDiagnosticSource::new("expr.nix", expr, Some(source_map));
+        let ir = self.lower_native_source(&source, Some(source_map), Some(diagnostic_source))?;
         ensure_native_json_subset(&ir, expr.len(), &self.options)?;
-        let outcome = self.eval_ir(&ir).map_err(|error| {
-            native_eval_error_with_source(
-                error,
-                NativeDiagnosticSource::new("expr.nix", expr, Some(source_map)),
-            )
-        })?;
+        let outcome = self
+            .eval_ir(&ir)
+            .map_err(|error| native_eval_error_with_source(error, diagnostic_source))?;
         let string = outcome
             .heap()
             .get_string(outcome.value())
@@ -258,7 +242,7 @@ impl NixNative {
         source: &str,
         source_map: Option<WrappedSourceMap>,
     ) -> Result<PathBuf> {
-        let ir = self.lower_native_source(source, source_map)?;
+        let ir = self.lower_native_source(source, source_map, None)?;
         let outcome = self
             .eval_instantiation_ir(&ir)
             .map_err(|error| native_eval_error(error, source_map))?;
@@ -282,7 +266,7 @@ impl NixNative {
         source_map: Option<WrappedSourceMap>,
         diagnostic_source: Option<NativeDiagnosticSource<'_>>,
     ) -> Result<NativeDrvClosure> {
-        let ir = self.lower_native_source(source, source_map)?;
+        let ir = self.lower_native_source(source, source_map, diagnostic_source)?;
         if let Some((feature, span)) = native_instantiation_cli_fallback_feature(&ir, &self.options)
         {
             return Err(NativeEvalError::Unsupported {
@@ -307,7 +291,7 @@ impl NixNative {
     ) -> Result<NativeDrvClosure> {
         let attr_path = attr_path_drv_path_segments(attr)?;
         let source = file_import_source(file)?;
-        let ir = self.lower_native_source(&source, None)?;
+        let ir = self.lower_native_source(&source, None, None)?;
         if let Some((feature, span)) = native_instantiation_cli_fallback_feature(&ir, &self.options)
         {
             return Err(NativeEvalError::Unsupported {
@@ -361,6 +345,7 @@ impl NixNative {
         &self,
         source: &str,
         source_map: Option<WrappedSourceMap>,
+        diagnostic_source: Option<NativeDiagnosticSource<'_>>,
     ) -> Result<Ir> {
         if let Some(root) = self.options.parse_cache_root() {
             let cache = ParseCache::new(root);
@@ -369,23 +354,25 @@ impl NixNative {
                     return Ok(cached.ir);
                 }
                 Err(error) => {
-                    if let Some(error) = parse_cache_frontend_error(error, source_map) {
+                    if let Some(error) =
+                        parse_cache_frontend_error(error, source_map, diagnostic_source)
+                    {
                         return Err(error.into());
                     }
                 }
             }
         }
 
-        Self::lower_native_source_uncached(source, source_map)
+        Self::lower_native_source_uncached(source, source_map, diagnostic_source)
     }
 
     fn lower_native_source_uncached(
         source: &str,
         source_map: Option<WrappedSourceMap>,
+        diagnostic_source: Option<NativeDiagnosticSource<'_>>,
     ) -> Result<Ir> {
-        let parsed = parse_str(source).map_err(|source| {
-            unsupported_frontend_error("parse", source.to_string(), source.span(), source_map)
-        })?;
+        let parsed = parse_str(source)
+            .map_err(|source| unsupported_parse_error(source, source_map, diagnostic_source))?;
         let resolved = resolve(parsed).map_err(|source| {
             unsupported_frontend_error("resolve", source.to_string(), source.span(), source_map)
         })?;
