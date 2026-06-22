@@ -216,6 +216,7 @@
     isCross = buildPlatform.system != hostPlatform.system;
     canExecHost = lib.canRun buildPlatform hostPlatform.constraints;
     inherit buildPlatform hostPlatform targetPlatform;
+    toolchainTiers = tc.toolchainTiers or {};
 
     # Raw toolchain components (direct access for packages that need them)
     inherit

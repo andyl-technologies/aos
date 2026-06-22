@@ -117,6 +117,38 @@ const EXPLICIT_TOOLCHAIN_CORPUS_ATTRS: &[&str] = &[
     "pkgs.ninja",
 ];
 
+const GCC_TOOLCHAIN_TIER_COMPONENTS: &[&str] = &[
+    "gcc",
+    "gccStage2",
+    "glibc",
+    "binutils",
+    "linuxHeaders",
+    "bash",
+    "coreutils",
+    "gnumake",
+    "sed",
+    "grep",
+    "gawk",
+    "findutils",
+    "diffutils",
+    "tar",
+    "gzip",
+    "patch",
+    "m4",
+    "flex",
+    "bison",
+    "perl",
+    "autoconf",
+    "automake",
+    "texinfo",
+    "help2man",
+    "gperf",
+    "python3",
+    "xz",
+    "bzip2",
+    "patchelf",
+];
+
 /// Error returned after `aos nix-diff` has already rendered a failure report.
 #[derive(Debug, Clone)]
 pub struct NixDiffReportedFailure {
@@ -569,6 +601,11 @@ fn toolchain_attr_expr(file: &Path) -> Result<String> {
         })
         .collect::<Vec<_>>()
         .join("\n    ");
+    let tier_components = GCC_TOOLCHAIN_TIER_COMPONENTS
+        .iter()
+        .map(|component| nix_string_literal(component))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     Ok(format!(
         r#"
@@ -576,9 +613,30 @@ let
   loaded = import (builtins.toPath {});
   root = if builtins.isFunction loaded then loaded {{}} else loaded;
   missing = {{ __aosNixDiffMissing = true; }};
-  wanted = [
+  explicit = [
     {}
   ];
+  gccTierComponentNames = [ {} ];
+  gccTierItems =
+    if builtins.isAttrs root
+      && builtins.hasAttr "stdenv" root
+      && builtins.isAttrs root.stdenv
+      && builtins.hasAttr "toolchainTiers" root.stdenv
+    then
+      let
+        tiers = root.stdenv.toolchainTiers;
+        tierNames = builtins.attrNames tiers;
+        tierItems = tierName:
+          builtins.map (
+            componentName: {{
+              attr = "stdenv.toolchainTiers.${{tierName}}.${{componentName}}";
+              path = [ "stdenv" "toolchainTiers" tierName componentName ];
+            }}
+          ) gccTierComponentNames;
+      in
+        builtins.concatLists (builtins.map tierItems tierNames)
+    else [];
+  wanted = explicit ++ gccTierItems;
   isDerivation = value:
     builtins.isAttrs value && (value ? type) && value.type == "derivation";
   getPath = path:
@@ -595,7 +653,8 @@ in
   builtins.map (item: item.attr) (builtins.filter shouldCheck wanted)
 "#,
         nix_string_literal(file),
-        wanted
+        wanted,
+        tier_components
     ))
 }
 
@@ -2302,12 +2361,26 @@ mod tests {
     }
 
     #[test]
+    fn gcc_toolchain_tier_components_name_derivation_roots() {
+        assert!(GCC_TOOLCHAIN_TIER_COMPONENTS.contains(&"gcc"));
+        assert!(GCC_TOOLCHAIN_TIER_COMPONENTS.contains(&"gccStage2"));
+        assert!(GCC_TOOLCHAIN_TIER_COMPONENTS.contains(&"glibc"));
+        assert!(GCC_TOOLCHAIN_TIER_COMPONENTS.contains(&"binutils"));
+        assert!(GCC_TOOLCHAIN_TIER_COMPONENTS.contains(&"linuxHeaders"));
+        assert!(GCC_TOOLCHAIN_TIER_COMPONENTS.contains(&"bash"));
+    }
+
+    #[test]
     fn toolchain_attr_expr_absolutizes_and_filters_existing_derivations() -> Result<()> {
         let expr = toolchain_attr_expr(Path::new("default.nix"))?;
 
         assert!(expr.contains("builtins.hasAttr name value"));
         assert!(expr.contains("builtins.tryEval"));
         assert!(expr.contains("if probe.success then probe.value else false"));
+        assert!(expr.contains("root.stdenv.toolchainTiers"));
+        assert!(expr.contains("builtins.attrNames tiers"));
+        assert!(expr.contains("stdenv.toolchainTiers.${tierName}.${componentName}"));
+        assert!(expr.contains("\"gccStage2\""));
         assert!(expr.contains(
             "attr = \"stdenv.bootstrap.gcc\"; path = [ \"stdenv\" \"bootstrap\" \"gcc\" ];"
         ));

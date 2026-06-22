@@ -137,9 +137,23 @@
     hostPlatform = mkBuildable hostPlatform;
     targetPlatform = mkBuildable targetPlatform;
   };
+  toolchainTiers = {
+    inherit
+      gcc3_4
+      gcc3_4_cross
+      gcc4_1
+      gcc4_4
+      gcc4_8
+      gcc4_8_cross
+      gcc8
+      gcc8_cross
+      gcc11
+      gcc14
+      ;
+  };
   # ── latest: change this when adding a new GCC tier ──────────────
   # Points to the newest tier directory.
   # TODO: Re-enable self-recompile once GCC 14's in-tree GMP configure
   # CC_FOR_BUILD issue is resolved (sysroot path invalidated after install).
 in
-  gcc14
+  gcc14 // {inherit toolchainTiers;}
