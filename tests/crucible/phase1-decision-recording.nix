@@ -1,0 +1,229 @@
+{
+  pkgs,
+  lib,
+}: let
+  root = ../..;
+  decisionRust = builtins.readFile ../../crates/crucible/src/decision.rs;
+  libRust = builtins.readFile ../../crates/crucible/src/lib.rs;
+  manifest = builtins.readFile ../../crates/crucible/Cargo.toml;
+  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
+  defaultChecks = builtins.readFile ./default.nix;
+
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
+
+  rustFilesUnder = relativeRoot: let
+    absoluteRoot = root + "/${relativeRoot}";
+    entries = builtins.readDir absoluteRoot;
+  in
+    lib.concatMap (
+      name: let
+        kind = entries.${name};
+        relative = "${relativeRoot}/${name}";
+      in
+        if kind == "regular" && lib.hasSuffix ".rs" name
+        then [relative]
+        else if kind == "directory"
+        then rustFilesUnder relative
+        else []
+    )
+    (builtins.attrNames entries);
+
+  engineCode =
+    builtins.concatStringsSep "\n" (
+      map (relative: builtins.readFile (root + "/${relative}"))
+      (rustFilesUnder "crates/crucible/src")
+    );
+  engineCodeOutsideDecision =
+    builtins.concatStringsSep "\n" (
+      map (relative: builtins.readFile (root + "/${relative}"))
+      (builtins.filter (
+          relative: relative != "crates/crucible/src/decision.rs"
+        )
+        (rustFilesUnder "crates/crucible/src"))
+    );
+
+  failuresFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (!(hasInfix requirement.needle content)) [
+          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  forbiddenFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (hasInfix requirement.needle content) [
+          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  failures =
+    failuresFor "crates/crucible/src/decision.rs" decisionRust [
+      {
+        label = "decision recorder type";
+        needle = "pub struct DecisionRecorder";
+      }
+      {
+        label = "seeded decision RNG ownership";
+        needle = "rng: DecisionRng";
+      }
+      {
+        label = "per-stream fork cache";
+        needle = "streams: BTreeMap<RngStreamId, DecisionStream>";
+      }
+      {
+        label = "name-hash fork path";
+        needle = ".or_insert_with(|| self.rng.fork(&stream.name))";
+      }
+      {
+        label = "existing schedule hydration";
+        needle = "hydrate_streams(&rng, configuration.schedule.decisions())";
+      }
+      {
+        label = "raw draw is recorded";
+        needle = "Decision::RngDraw";
+      }
+      {
+        label = "probabilistic fault is recorded";
+        needle = "Decision::FaultFires";
+      }
+      {
+        label = "app-random draw is recorded";
+        needle = "Decision::AppRandom";
+      }
+      {
+        label = "schedule append path";
+        needle = "self.configuration = step(&self.configuration, decision);";
+      }
+      {
+        label = "branch coverage marker";
+        needle = "assert_decision_rng_branch_coverage(";
+      }
+      {
+        label = "per-entity coverage marker";
+        needle = "assert_per_entity_rng_forking_coverage(";
+      }
+      {
+        label = "resume coverage marker";
+        needle = "decision_recorder_resumes_stream_positions_from_existing_schedule";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/lib.rs" libRust [
+      {
+        label = "decision module";
+        needle = "pub mod decision;";
+      }
+      {
+        label = "decision recorder export";
+        needle = "pub use decision::{DecisionRecordError, DecisionRecorder};";
+      }
+    ]
+    ++ failuresFor "crates/crucible/Cargo.toml" manifest [
+      {
+        label = "engine depends on deterministic L0 primitives";
+        needle = "crucible-sim = { path = \"../crucible-sim\" }";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
+      {
+        label = "T-DET-16 checklist complete";
+        needle = "- [x] **T-DET-16**";
+      }
+    ]
+    ++ failuresFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase1 exposes decision recording check";
+        needle = "decisionRecording = import ./phase1-decision-recording.nix";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible/src" engineCode [
+      {
+        label = "ambient rand crate use";
+        needle = "rand::";
+      }
+      {
+        label = "thread/global RNG";
+        needle = "thread_rng";
+      }
+      {
+        label = "thread/global RNG";
+        needle = "rng()";
+      }
+      {
+        label = "default randomized hasher";
+        needle = "DefaultHasher";
+      }
+      {
+        label = "randomized hash state";
+        needle = "RandomState";
+      }
+      {
+        label = "host wall clock";
+        needle = "SystemTime";
+      }
+      {
+        label = "host monotonic clock";
+        needle = "Instant";
+      }
+      {
+        label = "ordering-significant unordered map";
+        needle = "HashMap";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible/src outside decision.rs" engineCodeOutsideDecision [
+      {
+        label = "direct decision RNG use outside recorder";
+        needle = "DecisionRng";
+      }
+      {
+        label = "direct decision stream use outside recorder";
+        needle = "DecisionStream";
+      }
+    ];
+in
+  if failures != []
+  then throw "crucible phase1 decision recording check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase1-decision-recording";
+      version = "0";
+      src = null;
+
+      buildDeps = [pkgs.coreutils];
+
+      phases = [
+        {
+          name = "record-decision-recording";
+          script = ''
+            set -eu
+            mkdir -p "$out"
+            cat > "$out/result" <<'RESULT'
+            PASS
+            check=checks.crucible.phase1.decisionRecording
+            tasks=T-DET-16
+            crate=crucible
+            recorder=DecisionRecorder
+            rng_source=crucible-sim::DecisionRng
+            schedule_records=rng-draw,fault-fires,app-random
+            engine_ambient_randomness=false
+            RESULT
+          '';
+        }
+      ];
+    }

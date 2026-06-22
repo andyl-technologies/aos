@@ -287,6 +287,11 @@
           require_covered_function scheduled_event_keys_cover_producer_tie_break
           require_covered_function schedule_prefix_bounds_are_checked
           require_covered_function engine_and_backend_errors_render_all_variants_deterministically
+          require_covered_function decision_recorder_records_rng_draws_and_fault_outcomes
+          require_covered_function decision_recorder_keeps_per_entity_streams_stable
+          require_covered_function decision_recorder_records_app_random_after_rng_draw
+          require_covered_function decision_recorder_rejects_invalid_app_random_widths
+          require_covered_function decision_recorder_resumes_stream_positions_from_existing_schedule
           require_covered_function sim_backend_rejects_backward_advance_and_post_shutdown_mutation
           require_covered_function sim_backend_rejects_unknown_checkpoint_deterministically
           require_covered_function stable_hasher_is_repeatable
@@ -426,6 +431,39 @@
             1 \
             "Self::BoundaryViolation { message } => f.write_str(message)," \
             "scheduler boundary display variant"
+          require_line_marker_after \
+            "crucible/src/decision.rs" \
+            "crucible/src/decision.rs" \
+            1 \
+            "pub fn draw_u64" \
+            "Decision::RngDraw" \
+            "decision recorder raw draw decision"
+          require_line_marker_after \
+            "crucible/src/decision.rs" \
+            "crucible/src/decision.rs" \
+            1 \
+            "pub fn decide_fault" \
+            "Decision::FaultFires" \
+            "decision recorder fault decision"
+          require_line_marker_after \
+            "crucible/src/decision.rs" \
+            "crucible/src/decision.rs" \
+            1 \
+            "pub fn serve_app_random" \
+            "Decision::AppRandom" \
+            "decision recorder app-random decision"
+          require_line_marker \
+            "crucible/src/decision.rs" \
+            "crucible/src/decision.rs" \
+            1 \
+            "hydrate_streams(&rng, configuration.schedule.decisions());" \
+            "decision recorder resumes existing RNG stream positions"
+          require_line_marker \
+            "crucible/src/decision.rs" \
+            "crucible/src/decision.rs" \
+            1 \
+            "return Err(DecisionRecordError::InvalidAppRandomWidth { width });" \
+            "decision recorder invalid app-random width branch"
           require_line_marker \
             "crucible/src/sim_backend.rs" \
             "crucible/src/sim_backend.rs" \
@@ -489,12 +527,6 @@
     ];
   };
 
-  decisionRngActivationMarkers = [
-    "DecisionRng"
-    "fork_rng"
-    "fork_stream"
-    "per_entity_rng"
-  ];
   spscRingActivationMarkers = [
     "Atomic"
     "compare_exchange"
@@ -596,22 +628,27 @@
         "replay_oracle_reports_first_mismatch"
       ];
     }
-  ];
-
-  plannedSurfaces = [
     {
       id = "decision-rng-and-forking";
-      sourcePath = "crates/crucible/src/lib.rs";
-      testPath = "crates/crucible/tests/gate_layer0_determinism.rs";
-      status = "planned";
+      sourcePath = "crates/crucible/src/decision.rs";
+      testPath = "crates/crucible/src/decision.rs";
+      status = "active";
       instrumentation = "separate-deterministic-build";
-      activationMarkers = decisionRngActivationMarkers;
-      activationSourceRoots = ["crates/crucible/src"];
+      activationMarkers = [];
+      activationSourceRoots = [];
       requiredMarkers = [
+        "decision_recorder_records_rng_draws_and_fault_outcomes"
+        "decision_recorder_keeps_per_entity_streams_stable"
+        "decision_recorder_records_app_random_after_rng_draw"
+        "decision_recorder_rejects_invalid_app_random_widths"
+        "decision_recorder_resumes_stream_positions_from_existing_schedule"
         "assert_decision_rng_branch_coverage("
         "assert_per_entity_rng_forking_coverage("
       ];
     }
+  ];
+
+  plannedSurfaces = [
     {
       id = "spsc-ring";
       sourcePath = "crates/crucible-shmem/src/lib.rs";
@@ -711,7 +748,7 @@
     || (
       builtins.pathExists (root + "/${surface.sourcePath}")
       && builtins.any (
-        marker: hasInfix marker (scrubCommentsAndStrings (activationSourceContent surface))
+        marker: hasInfix marker (activationSourceContent surface)
       )
       surface.activationMarkers
     );
@@ -808,6 +845,11 @@
       "sim_backend_rejects_unknown_checkpoint_deterministically"
       "stable_hasher_covers_chunk_remainder_and_bool_inputs"
       "replay_oracle_reports_first_mismatch"
+      "decision_recorder_records_rng_draws_and_fault_outcomes"
+      "decision_recorder_keeps_per_entity_streams_stable"
+      "decision_recorder_records_app_random_after_rng_draw"
+      "decision_recorder_rejects_invalid_app_random_widths"
+      "decision_recorder_resumes_stream_positions_from_existing_schedule"
     ];
   in
     lib.concatMap (

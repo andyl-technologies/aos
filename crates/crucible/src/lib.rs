@@ -9,15 +9,16 @@
 //! drivers and driver-specific details live outside the engine crate.
 //!
 //! Module map: [`model`] owns the content-addressed execution vocabulary,
-//! [`backend`] owns the VM backend boundary, [`scheduler`] owns the
-//! quantum-loop boundary, `sim_backend` provides the gated in-process test
-//! double.
+//! [`decision`] owns seeded decision recording, [`backend`] owns the VM backend
+//! boundary, [`scheduler`] owns the quantum-loop boundary, and `sim_backend`
+//! provides the gated in-process test double.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod backend;
+pub mod decision;
 pub mod model;
 pub mod scheduler;
 #[cfg(feature = "test-double")]
@@ -26,6 +27,7 @@ mod sim_backend;
 pub use backend::{
     AdvanceOutcome, Backend, BackendError, BackendInput, ExecutionFingerprint, ExecutionHorizon,
 };
+pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use model::{
     AppRandomDecision, Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, Decision,
     DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, GenesisCheckpoint,

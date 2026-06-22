@@ -2,7 +2,27 @@
   pkgs,
   lib,
 }: let
-  launchRust = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  root = ../..;
+  rustFilesUnder = relativeRoot: let
+    absoluteRoot = root + "/${relativeRoot}";
+    entries = builtins.readDir absoluteRoot;
+  in
+    lib.concatMap (
+      name: let
+        kind = entries.${name};
+        relative = "${relativeRoot}/${name}";
+      in
+        if kind == "regular" && lib.hasSuffix ".rs" name
+        then [relative]
+        else if kind == "directory"
+        then rustFilesUnder relative
+        else []
+    )
+    (builtins.attrNames entries);
+  launchRust =
+    builtins.concatStringsSep "\n"
+    (map (relative: builtins.readFile (root + "/${relative}"))
+      (["crates/crucible-qemu/src/launch.rs"] ++ rustFilesUnder "crates/crucible-qemu/src/launch"));
   launchTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
   kernelVirtualizationConfig = builtins.readFile ../../pkgs/kernel/config/virtualization.config;
 
@@ -241,7 +261,7 @@
   ];
 
   failures =
-    failuresFor "crates/crucible-qemu/src/launch.rs" launchRust sourceRequirements
+    failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust sourceRequirements
     ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest testRequirements
     ++ failuresFor "pkgs/kernel/config/virtualization.config" kernelVirtualizationConfig [
       {

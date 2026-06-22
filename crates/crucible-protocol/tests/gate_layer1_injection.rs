@@ -10,11 +10,15 @@ fn gate_layer1_injection_control_protocol_carries_no_runtime_injection_data() {
         RUNTIME_DATA_PLANE_CONTRACT.runtime_data_plane,
         RuntimeDataPlane::SharedMemory
     );
-    assert!(!RUNTIME_DATA_PLANE_CONTRACT.control_channel_carries_runtime_frames);
-    assert!(!RUNTIME_DATA_PLANE_CONTRACT.control_channel_carries_delivery_icounts);
+    const {
+        assert!(!RUNTIME_DATA_PLANE_CONTRACT.control_channel_carries_runtime_frames);
+        assert!(!RUNTIME_DATA_PLANE_CONTRACT.control_channel_carries_delivery_icounts);
+    }
 }
 
 #[test]
 fn gate_layer1_injection_control_protocol_is_silent_on_hot_path() {
-    assert!(RUNTIME_DATA_PLANE_CONTRACT.control_channel_silent_between_setup_ack_and_quit);
+    const {
+        assert!(RUNTIME_DATA_PLANE_CONTRACT.control_channel_silent_between_setup_ack_and_quit);
+    }
 }

@@ -700,7 +700,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [x] **T-DET-15** Implement the single seeded decision RNG with name-hash
   forking (`seed XOR stable_hash(name)`) using a fixed cross-platform PRNG and a
   fixed stable hash. — satisfies [DET-24], [DET-25], [DET-26]; spec §4.7.
-- [ ] **T-DET-16** Route every probabilistic decision through a decision stream
+- [x] **T-DET-16** Route every probabilistic decision through a decision stream
   and record it as a `Decision` in the `Schedule`; assert no other randomness
   exists in the engine. — satisfies [DET-24], [DET-27]; spec §4.7.
 - [ ] **T-DET-17** Implement `gate:harness-lint`: ban host wall-clock, thread

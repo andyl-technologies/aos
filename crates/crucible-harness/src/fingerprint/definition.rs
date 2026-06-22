@@ -62,7 +62,7 @@ impl FingerprintCadence {
     /// Returns true when `icount` falls on the periodic cadence.
     #[must_use]
     pub fn samples_periodic_icount(&self, icount: u64) -> bool {
-        icount != 0 && icount % self.period_icount == 0
+        icount != 0 && icount.is_multiple_of(self.period_icount)
     }
 }
 

@@ -2,7 +2,27 @@
   pkgs,
   lib,
 }: let
-  launchRust = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  root = ../..;
+  rustFilesUnder = relativeRoot: let
+    absoluteRoot = root + "/${relativeRoot}";
+    entries = builtins.readDir absoluteRoot;
+  in
+    lib.concatMap (
+      name: let
+        kind = entries.${name};
+        relative = "${relativeRoot}/${name}";
+      in
+        if kind == "regular" && lib.hasSuffix ".rs" name
+        then [relative]
+        else if kind == "directory"
+        then rustFilesUnder relative
+        else []
+    )
+    (builtins.attrNames entries);
+  launchRust =
+    builtins.concatStringsSep "\n"
+    (map (relative: builtins.readFile (root + "/${relative}"))
+      (["crates/crucible-qemu/src/launch.rs"] ++ rustFilesUnder "crates/crucible-qemu/src/launch"));
   launchTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
   deterministicLaunchCheck = builtins.readFile ./phase1-deterministic-launch.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
@@ -34,7 +54,7 @@
     requirements;
 
   failures =
-    failuresFor "crates/crucible-qemu/src/launch.rs" launchRust [
+    failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust [
       {
         label = "conservative default disables KASLR";
         needle = "nokaslr norandmaps random.trust_cpu=off";

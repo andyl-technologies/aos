@@ -2,10 +2,30 @@
   pkgs,
   lib,
 }: let
+  root = ../..;
   engineModel = builtins.readFile ../../crates/crucible/src/model.rs;
   engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
   qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
-  launchRust = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  rustFilesUnder = relativeRoot: let
+    absoluteRoot = root + "/${relativeRoot}";
+    entries = builtins.readDir absoluteRoot;
+  in
+    lib.concatMap (
+      name: let
+        kind = entries.${name};
+        relative = "${relativeRoot}/${name}";
+      in
+        if kind == "regular" && lib.hasSuffix ".rs" name
+        then [relative]
+        else if kind == "directory"
+        then rustFilesUnder relative
+        else []
+    )
+    (builtins.attrNames entries);
+  launchRust =
+    builtins.concatStringsSep "\n"
+    (map (relative: builtins.readFile (root + "/${relative}"))
+      (["crates/crucible-qemu/src/launch.rs"] ++ rustFilesUnder "crates/crucible-qemu/src/launch"));
   launchTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
 
   hasInfix = needle: haystack: let
@@ -571,7 +591,7 @@
     failuresFor "crates/crucible/src/model.rs" engineModel engineModelRequirements
     ++ failuresFor "crates/crucible/src/lib.rs" engineLib engineLibRequirements
     ++ failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo qemuCargoRequirements
-    ++ failuresFor "crates/crucible-qemu/src/launch.rs" launchRust sourceRequirements
+    ++ failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust sourceRequirements
     ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest testRequirements
     ;
 in

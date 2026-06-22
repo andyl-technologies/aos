@@ -178,7 +178,7 @@
   featureFailures =
     assertFeatureSet "crucible" {
       default = [];
-      test-double = ["dep:crucible-sim"];
+      test-double = [];
       qemu-backend = [];
     }
     ++ assertFeatureSet "crucible-device" {

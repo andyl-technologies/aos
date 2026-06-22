@@ -7,8 +7,8 @@
 //! described by its indexed RFC-0010 files. It is an unsafe-boundary crate
 //! because future implementations may cross FFI and raw descriptor boundaries.
 //!
-//! Module map: [`launch`] owns the deterministic Contract-A launch profile and
-//! canonical QEMU argument construction; [`single_vm_fingerprint`] owns the
+//! Module map: `launch` owns the deterministic Contract-A launch profile and
+//! canonical QEMU argument construction; `single_vm_fingerprint` owns the
 //! safe run-twice-and-diff hook consumed by `gate:single-vm-fingerprint`.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
