@@ -874,9 +874,17 @@ The cutover is permitted **iff all** of the following are simultaneously true:
       least **10,000** real CI evaluations with **zero** divergences reported —
       real traffic, not the enumerated corpus, so it covers the configurations the
       corpus never thought to name.
-- [ ] **Benchmark premise met.** The per-commit benchmark (§5) shows aos-nix at or
-      below C++ Nix wall-clock on the real AOS workloads (the project's premise:
-      correct *and* faster). A correct-but-slower evaluator does not cut over.
+- [x] **Benchmark/measurement substrate wired.** `aos nix-bench` records
+      parity-gated cold samples over the P1 real-workload corpus plus diagnostic
+      microbenchmarks, with `NIX_SHOW_STATS` deltas, commit-keyed history,
+      regression blocking, and perf-win admissibility tooling; `aos nix-measure`
+      records eval/build phase attribution plus cold/warm samples for the
+      non-diagnostic real-workload measure-first gate (§5, §6.1). This supports
+      the benchmark premise but does not establish a speed win.
+- [ ] **Benchmark premise result remains.** Before default-on, run the
+      representative real AOS workload benchmark gate and show aos-nix at or below
+      C++ Nix wall-clock with green `.drv` parity and explanatory counters; a
+      correct-but-slower evaluator does not cut over (§5, §8.1).
 - [ ] **Fallback retained permanently.** `NixCli` remains a wired, exercised
       fallback path **after** cutover — not removed, not bit-rotted — with the
       `AOS_NIX_NATIVE_VERIFY` sampling canary (§8, D→E) kept on. The cutover flips
