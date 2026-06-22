@@ -378,9 +378,16 @@ alone (`M-1`/`Q-A`).
 
 **Deliverables.**
 
-- [ ] `cache/dcg.rs` — the demand-driven incremental computation graph (Salsa /
-      Adapton / *Build Systems à la Carte* model): nodes, demand edges,
-      change-propagation, early cutoff ([12](12-incremental-evaluation-cache.md) §1).
+- [x] Current `cache/dcg.rs` in-memory demand-graph substrate: nodes keyed by
+      opaque `DemandCacheKey`, deterministic dependency/dependent edges,
+      clean/dirty freshness, and local `EarlyCutoff` reconsideration that newly
+      dirties direct dependents only when a recomputed `ValueHash` changes or no
+      prior hash exists.
+- [ ] Full demand-driven incremental graph remains: create nodes on actual
+      force/eval demand, capture dependencies dynamically Adapton-style,
+      separate inner/outer observers, schedule transitive
+      propagation/recomputation, integrate impure leaves and persistence, and
+      prove cached/uncached `.drv` parity.
 - [x] Current `cache/key.rs` standalone combiner substrate: `CacheExprIdentity`
       plus opaque `DemandCacheKey` compute one order-sensitive xxh3 key over a
       domain/version prefix, expression identity bytes, and caller-supplied

@@ -6,11 +6,15 @@
 //! hash.
 
 pub mod cutoff;
+pub mod dcg;
 pub mod hashing;
 pub mod key;
 pub mod parse;
 
 pub use cutoff::{CutoffDecision, EarlyCutoff, ValueHash};
+pub use dcg::{
+    DemandGraph, DemandGraphError, DemandNode, DemandNodeId, NodeFreshness, Reconsideration,
+};
 pub use hashing::{DurableBlake3Hash, HotXxh3Hash};
 pub use key::{CacheExprIdentity, CacheKeyError, DemandCacheKey};
 pub use parse::{
