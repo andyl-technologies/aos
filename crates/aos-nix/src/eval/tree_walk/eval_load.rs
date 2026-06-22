@@ -7,34 +7,47 @@ impl TreeWalk {
         argument: IrId,
         argument_span: Span,
         path: &[u8],
+        source_bytes: &[u8],
         source: ParseCacheError,
     ) -> TreeWalkError {
         let path = path.to_vec();
         match source {
-            ParseCacheError::Parse { source } => TreeWalkError::new(
-                TreeWalkErrorKind::ImportParse {
-                    id: argument,
-                    path,
-                    message: source.to_string(),
-                },
-                argument_span,
-            ),
-            ParseCacheError::Scope { source } => TreeWalkError::new(
-                TreeWalkErrorKind::ImportScope {
-                    id: argument,
-                    path,
-                    message: source.to_string(),
-                },
-                argument_span,
-            ),
-            ParseCacheError::LowerIr { source } => TreeWalkError::new(
-                TreeWalkErrorKind::ImportLower {
-                    id: argument,
-                    path,
-                    message: source.to_string(),
-                },
-                argument_span,
-            ),
+            ParseCacheError::Parse { source } => {
+                let span = source.span();
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportParse {
+                        id: argument,
+                        path: path.clone(),
+                        message: source.to_string(),
+                    },
+                    span,
+                )
+                .with_source(EvalErrorSource::new(path, source_bytes.to_vec()))
+            }
+            ParseCacheError::Scope { source } => {
+                let span = source.span();
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportScope {
+                        id: argument,
+                        path: path.clone(),
+                        message: source.to_string(),
+                    },
+                    span,
+                )
+                .with_source(EvalErrorSource::new(path, source_bytes.to_vec()))
+            }
+            ParseCacheError::LowerIr { source } => {
+                let span = source.span();
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportLower {
+                        id: argument,
+                        path: path.clone(),
+                        message: source.to_string(),
+                    },
+                    span,
+                )
+                .with_source(EvalErrorSource::new(path, source_bytes.to_vec()))
+            }
             other => TreeWalkError::new(
                 TreeWalkErrorKind::ImportParse {
                     id: argument,
@@ -93,51 +106,57 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         argument: IrId,
-        argument_span: Span,
+        _argument_span: Span,
         path: &[u8],
         base: &[u8],
         source: &[u8],
         global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
-        let parsed = parse_bytes_with_symbols(source, self.symbols.clone()).map_err(|source| {
+        let parsed = parse_bytes_with_symbols(source, self.symbols.clone()).map_err(|error| {
+            let span = error.span();
             TreeWalkError::new(
                 TreeWalkErrorKind::ImportParse {
                     id: argument,
                     path: path.to_vec(),
-                    message: source.to_string(),
+                    message: error.to_string(),
                 },
-                argument_span,
+                span,
             )
+            .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
         let resolved = if global_scope.is_scoped() {
             ScopeResolver::with_options(ResolverOptions::with_unresolved_globals()).resolve(parsed)
         } else {
             resolve(parsed)
         }
-        .map_err(|source| {
+        .map_err(|error| {
+            let span = error.span();
             TreeWalkError::new(
                 TreeWalkErrorKind::ImportScope {
                     id: argument,
                     path: path.to_vec(),
-                    message: source.to_string(),
+                    message: error.to_string(),
                 },
-                argument_span,
+                span,
             )
+            .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
         let ir = if global_scope.is_scoped() {
             lower_with_options(resolved, IrLowerOptions::with_dynamic_builtin_scope())
         } else {
             lower(resolved)
         }
-        .map_err(|source| {
+        .map_err(|error| {
+            let span = error.span();
             TreeWalkError::new(
                 TreeWalkErrorKind::ImportLower {
                     id: argument,
                     path: path.to_vec(),
-                    message: source.to_string(),
+                    message: error.to_string(),
                 },
-                argument_span,
+                span,
             )
+            .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
         self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
     }

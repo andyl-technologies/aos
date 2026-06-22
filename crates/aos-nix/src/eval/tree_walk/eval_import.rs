@@ -979,6 +979,8 @@ impl TreeWalk {
         cache
             .load_or_parse_bytes(source, source_hint)
             .map(Some)
-            .map_err(|source| Self::parse_cache_import_error(argument, argument_span, path, source))
+            .map_err(|error| {
+                Self::parse_cache_import_error(argument, argument_span, path, source, error)
+            })
     }
 }

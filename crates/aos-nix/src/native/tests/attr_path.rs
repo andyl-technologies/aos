@@ -182,6 +182,75 @@ fn native_file_instantiation_reports_parse_errors_with_source() -> Result<()> {
 }
 
 #[test]
+fn native_file_instantiation_reports_imported_parse_cache_errors_with_source() -> Result<()> {
+    let root = unique_temp_dir("aos-nix-native-instantiate-imported-parse-cache-error");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let store = root.join("store");
+    let mut options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+    options.set_parse_cache_root(root.join("parse-cache"));
+    let native = NixNative::with_options(0, options)?;
+    let file = root.join("default.nix");
+    let child = root.join("child.nix");
+    fs::write(&file, b"{ broken = import ./child.nix; }")?;
+    fs::write(&child, b"let { body = 1; }")?;
+
+    let error = native
+        .instantiate(&file, "broken")
+        .expect_err("imported parse errors should not instantiate");
+
+    let Some(NativeEvalError::EvalError { message }) = error.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("imported parse error should surface as a native eval error: {error:?}");
+    };
+    assert!(
+        message.contains("failed to parse imported file"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&child.to_string_lossy().to_string()),
+        "{message}"
+    );
+    assert!(message.contains("let { body = 1; }"), "{message}");
+    assert!(!message.contains("import ./child.nix"), "{message}");
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_file_instantiation_reports_imported_scope_errors_with_source() -> Result<()> {
+    let (native, root, _store) =
+        native_with_temp_store("aos-nix-native-instantiate-imported-scope-error")?;
+    let file = root.join("default.nix");
+    let child = root.join("child.nix");
+    fs::write(&file, b"{ broken = import ./child.nix; }")?;
+    fs::write(&child, b"missingImportedName")?;
+
+    let error = native
+        .instantiate(&file, "broken")
+        .expect_err("imported scope errors should not instantiate");
+
+    let Some(NativeEvalError::EvalError { message }) = error.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("imported scope error should surface as a native eval error: {error:?}");
+    };
+    assert!(
+        message.contains("failed to resolve imported file"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&child.to_string_lossy().to_string()),
+        "{message}"
+    );
+    assert!(message.contains("missingImportedName"), "{message}");
+    assert!(!message.contains("import ./child.nix"), "{message}");
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_file_instantiation_reports_tree_walk_errors_with_source() -> Result<()> {
     let (native, root, _store) = native_with_temp_store("aos-nix-native-instantiate-eval-error")?;
     let file = root.join("default.nix");
