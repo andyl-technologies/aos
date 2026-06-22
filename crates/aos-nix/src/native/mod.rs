@@ -171,12 +171,18 @@ impl NixNative {
     /// evaluate to a derivation-like attribute set with a string `drvPath`.
     pub fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
         let source = derivation_path_wrapper_source(expr);
+        let source_map = WrappedSourceMap {
+            prefix_len: DRV_PATH_WRAPPER_PREFIX.len(),
+            expr_len: expr.len(),
+        };
         self.eval_derivation_materialized_source(
             &source,
-            Some(WrappedSourceMap {
-                prefix_len: DRV_PATH_WRAPPER_PREFIX.len(),
-                expr_len: expr.len(),
-            }),
+            Some(source_map),
+            Some(NativeDiagnosticSource::new(
+                "expr.nix",
+                expr,
+                Some(source_map),
+            )),
         )
     }
 
@@ -190,12 +196,18 @@ impl NixNative {
     /// evaluate to a derivation-like attribute set with a string `drvPath`.
     pub fn instantiate_expr_closure(&self, expr: &str) -> Result<NativeDrvClosure> {
         let source = derivation_path_wrapper_source(expr);
+        let source_map = WrappedSourceMap {
+            prefix_len: DRV_PATH_WRAPPER_PREFIX.len(),
+            expr_len: expr.len(),
+        };
         self.eval_derivation_closure_source(
             &source,
-            Some(WrappedSourceMap {
-                prefix_len: DRV_PATH_WRAPPER_PREFIX.len(),
-                expr_len: expr.len(),
-            }),
+            Some(source_map),
+            Some(NativeDiagnosticSource::new(
+                "expr.nix",
+                expr,
+                Some(source_map),
+            )),
         )
     }
 
@@ -257,8 +269,9 @@ impl NixNative {
         &self,
         source: &str,
         source_map: Option<WrappedSourceMap>,
+        diagnostic_source: Option<NativeDiagnosticSource<'_>>,
     ) -> Result<PathBuf> {
-        let closure = self.eval_derivation_closure_source(source, source_map)?;
+        let closure = self.eval_derivation_closure_source(source, source_map, diagnostic_source)?;
         materialize_drv_closure(&closure)?;
         Ok(closure.root().to_path_buf())
     }
@@ -267,6 +280,7 @@ impl NixNative {
         &self,
         source: &str,
         source_map: Option<WrappedSourceMap>,
+        diagnostic_source: Option<NativeDiagnosticSource<'_>>,
     ) -> Result<NativeDrvClosure> {
         let ir = self.lower_native_source(source, source_map)?;
         if let Some((feature, span)) = native_instantiation_cli_fallback_feature(&ir, &self.options)
@@ -279,7 +293,10 @@ impl NixNative {
         }
         let outcome = self
             .eval_instantiation_ir(&ir)
-            .map_err(|error| native_eval_error(error, source_map))?;
+            .map_err(|error| match diagnostic_source {
+                Some(diagnostic_source) => native_eval_error_with_source(error, diagnostic_source),
+                None => native_eval_error(error, source_map),
+            })?;
         self.native_drv_closure_from_outcome(outcome)
     }
 

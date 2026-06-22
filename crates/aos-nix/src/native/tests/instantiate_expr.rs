@@ -426,6 +426,34 @@ fn native_instantiation_rejects_non_derivations() -> Result<()> {
 }
 
 #[test]
+fn native_instantiation_reports_tree_walk_errors_with_source() -> Result<()> {
+    let native = NixNative::new(0)?;
+
+    let materialized_error = native
+        .instantiate_expr("1 + true")
+        .expect_err("tree-walk semantic errors should not instantiate");
+    assert_tree_walk_source_report(&materialized_error);
+
+    let closure_error = native
+        .instantiate_expr_closure("1 + true")
+        .expect_err("tree-walk semantic errors should not produce closures");
+    assert_tree_walk_source_report(&closure_error);
+    Ok(())
+}
+
+fn assert_tree_walk_source_report(error: &anyhow::Error) {
+    let Some(NativeEvalError::EvalError { message }) = error.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("type error should surface as a native eval error: {error:?}");
+    };
+    assert!(message.contains("type error"), "{message}");
+    assert!(message.contains("aos_nix::eval::type"), "{message}");
+    assert!(message.contains("expr.nix"), "{message}");
+    assert!(message.contains("1 + true"), "{message}");
+    assert!(!message.contains(".drvPath"), "{message}");
+}
+
+#[test]
 fn native_instantiation_rejects_fabricated_drv_path_attrsets() -> Result<()> {
     let native = NixNative::new(0)?;
 
