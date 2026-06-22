@@ -5,6 +5,7 @@ members = [
     "aos-core",
     "aos-nix",
     "aos-nix-syntax",
+    "ratchet-value",
     "aos-net",
     "aos-proto",
     "aos-server",
@@ -112,6 +113,7 @@ rcgen = "0.14"
 aos-core = { path = "aos-core" }
 aos-nix = { path = "aos-nix" }
 aos-nix-syntax = { path = "aos-nix-syntax" }
+ratchet-value = { path = "ratchet-value" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
 aos-server = { path = "aos-server" }

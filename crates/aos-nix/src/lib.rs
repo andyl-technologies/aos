@@ -56,13 +56,13 @@ pub mod diagnostic;
 mod drv_materialize;
 pub mod error;
 pub mod eval;
-pub mod heap;
-pub mod list;
+pub use ratchet_value::heap;
+pub use ratchet_value::list;
 pub mod native;
 pub mod runtime;
 pub mod string;
 pub use aos_nix_syntax as syntax;
-pub mod value;
+pub use ratchet_value::value;
 
 pub use error::{NativeCliFallbackReason, NativeEvalError, SrcSpan};
 pub use native::{NativeDrvClosure, NixNative};

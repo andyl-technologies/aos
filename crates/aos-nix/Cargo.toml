@@ -9,6 +9,7 @@ default = []
 [dependencies]
 anyhow = { workspace = true }
 aos-nix-syntax = { workspace = true }
+ratchet-value = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }
 bzip2 = { workspace = true }

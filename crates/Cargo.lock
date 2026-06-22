@@ -256,6 +256,7 @@ dependencies = [
  "miette",
  "nix-compat",
  "proptest",
+ "ratchet-value",
  "regex",
  "reqwest",
  "serde_json",
@@ -3657,6 +3658,13 @@ dependencies = [
  "unicode-segmentation",
  "unicode-truncate",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "ratchet-value"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]
