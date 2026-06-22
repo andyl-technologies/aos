@@ -540,7 +540,21 @@ The governing rule binds every item: **presentation is not parity.** How an erro
 ### Internal instrumentation: the `tracing` crate (§7)
 
 - [ ] Use `tracing` (already a workspace dep, runtime-agnostic) for all internal spans/events/counters — orthogonal to miette — carrying the aos-nix statistics counters (`thunks_forced`/`allocated`/`elided`, `inline_cache_hits`/`misses`, `shape_transitions`, `tier_promotions`, `deopts`, `cache_hits`/`early_cutoffs`) and the `NixEval`-seam counters (native successes/fallbacks/shadow divergences), named to parallel `NIX_SHOW_STATS` for a field-by-field diff (§7.1): the `NixEval` seam now exposes grouped native success/fallback/shadow/verify counters, logs top-level evaluator selection, records fallback evaluator pair/reasons/counts, and carries operation plus file/attr context on shadow/verify `.drv` divergence events when available. Remaining before completion: add the later aos-nix subsystem counters as cache/shapes/tiers land and promote divergence events into the full report surface — counters land as each subsystem does (cache **P2**, shapes **P5**, tiers **P6/P7**); `D-OBS-4` ([15](15-differential-testing-and-benchmarking.md) §4.2).
-- [ ] Keep `builtins.trace` / `builtins.traceVerbose` as user-facing stderr output, not `tracing`: tree-walk emits `trace: ...` to its stderr sink and records `EvalTraceOutput`; public `aos-core` eval commands stream successful eval stderr so plain `builtins.trace` is not swallowed; `traceVerbose` is gated by native `TreeWalkOptions::trace_verbose` and C++ `--option trace-verbose true`; both return the second argument. Remaining before completion: run the pinned C++ Nix 2.24.12 oracle check for exact stderr parity (the local `nix-instantiate` is 2.24.5) (§7.2) — **P1**, builtins surface ([21](21-builtins-conformance.md)).
+- [x] Current `builtins.trace` / `builtins.traceVerbose` user-facing output
+      path stays out of internal `tracing`: tree-walk emits `trace: ...` to
+      its stderr sink, records `EvalTraceOutput`, and returns the second
+      argument; `traceVerbose` is gated by native
+      `TreeWalkOptions::trace_verbose`; `aos-core` maps trace-verbose config to
+      native options and C++ `--option trace-verbose true`; and public eval
+      commands stream successful eval stderr so plain `builtins.trace` output is
+      visible (§7.2) — **P1**, builtins surface
+      ([21](21-builtins-conformance.md)); gate today: trace/tree-walk/aos-core
+      runner tests, including configured local oracle coverage.
+- [ ] Pinned exact stderr parity remains: run the pinned C++ Nix 2.24.12 oracle
+      check for byte-exact `builtins.trace` / `builtins.traceVerbose` stderr
+      formatting; configured/local oracle tests are coverage, not this
+      acceptance gate (§7.2) — **P1**, builtins surface
+      ([21](21-builtins-conformance.md)).
 
 ### Open questions (research-grade, in scope)
 
