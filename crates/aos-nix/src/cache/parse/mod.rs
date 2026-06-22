@@ -27,6 +27,7 @@ use std::sync::atomic::AtomicU64;
 
 use thiserror::Error;
 
+use crate::cache::DurableBlake3Hash;
 use crate::compile::{
     EffectClass, FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, Ir, IrArena,
     IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrError,
@@ -79,7 +80,7 @@ impl ParseCacheFlags {
 
 /// A BLAKE3 parse-cache key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ParseCacheKey([u8; 32]);
+pub struct ParseCacheKey(DurableBlake3Hash);
 
 impl ParseCacheKey {
     /// Computes a parse-cache key for source bytes.
@@ -89,18 +90,18 @@ impl ParseCacheKey {
         hasher.update(&schema_version.to_le_bytes());
         flags.update_hasher(&mut hasher);
         hasher.update(source);
-        Self(*hasher.finalize().as_bytes())
+        Self(DurableBlake3Hash::from_hasher(hasher))
     }
 
     /// Returns the raw 32-byte BLAKE3 digest.
     pub const fn as_bytes(self) -> [u8; 32] {
-        self.0
+        self.0.as_bytes()
     }
 
     /// Returns the lowercase hexadecimal representation used as the directory
     /// name.
     pub fn to_hex(self) -> String {
-        blake3::Hash::from(self.0).to_hex().to_string()
+        self.0.to_hex()
     }
 }
 
@@ -118,12 +119,12 @@ impl fmt::Display for ParseCacheKey {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParseFileKey {
     realpath: PathBuf,
-    content_hash: [u8; 32],
+    content_hash: DurableBlake3Hash,
 }
 
 impl ParseFileKey {
     /// Creates a file memo key from a canonical path and content hash.
-    pub fn new(realpath: impl Into<PathBuf>, content_hash: [u8; 32]) -> Self {
+    pub fn new(realpath: impl Into<PathBuf>, content_hash: DurableBlake3Hash) -> Self {
         Self {
             realpath: realpath.into(),
             content_hash,
@@ -140,14 +141,14 @@ impl ParseFileKey {
         &self.realpath
     }
 
-    /// Returns the raw 32-byte BLAKE3 content hash.
-    pub const fn content_hash(&self) -> [u8; 32] {
+    /// Returns the typed BLAKE3 content hash.
+    pub const fn content_hash(&self) -> DurableBlake3Hash {
         self.content_hash
     }
 
     /// Returns the lowercase hexadecimal content hash.
     pub fn content_hash_hex(&self) -> String {
-        blake3::Hash::from(self.content_hash).to_hex().to_string()
+        self.content_hash.to_hex()
     }
 }
 
@@ -734,8 +735,8 @@ pub enum ParseCacheError {
     EncodeArtifact(String),
 }
 
-fn file_content_hash(source: &[u8]) -> [u8; 32] {
-    *blake3::hash(source).as_bytes()
+fn file_content_hash(source: &[u8]) -> DurableBlake3Hash {
+    DurableBlake3Hash::for_bytes(source)
 }
 
 fn write_cache_file_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {

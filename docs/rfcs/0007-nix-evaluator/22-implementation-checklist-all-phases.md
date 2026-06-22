@@ -397,16 +397,17 @@ alone (`M-1`/`Q-A`).
       values: generic post-force interning for composite values, O(1) equality,
       cached value hashes that make value-hashing a field load, and integration
       with the demand graph/early cutoff (`S-7`).
-- [x] Current hash-routing precursor outside the future `cache/hashing.rs`:
+- [x] Current hash-routing and typed-domain precursor in `cache/hashing.rs`:
       evaluator-local string/path cons tables use xxh3 structural hashes with
-      equality confirmation; durable frontend parse-cache keys use BLAKE3 over
-      source bytes plus schema/flags, with file memo keys pairing canonical
-      realpath and BLAKE3(file bytes); Nix-observed `.drv`/store-path surfaces
-      use SHA-256 and hash/fetch builtins use their requested Nix hash APIs
-      rather than evaluator-local xxh3/BLAKE3 digests. This is the current
-      substrate only, not the full P2 cache hashing layer (`S-15`).
-- [ ] `cache/hashing.rs` full P2 hashing split remains: demand-graph xxh3 keys,
-      BLAKE3 durable/shared value and file CA keys, type-enforced leak-invariant
+      equality confirmation and are typed as `HotXxh3Hash`; durable frontend
+      parse-cache keys use BLAKE3 over source bytes plus schema/flags, with
+      file memo keys pairing canonical realpath and BLAKE3(file bytes), and are
+      typed as `DurableBlake3Hash`; Nix-observed `.drv`/store-path surfaces use
+      SHA-256 and hash/fetch builtins use their requested Nix hash APIs rather
+      than evaluator-local xxh3/BLAKE3 digests. This is the current substrate
+      only, not the full P2 cache hashing layer (`S-15`).
+- [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
+      durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
       reach Nix-observed store-path or `.drv` SHA-256 inputs (`S-15`).
 - [ ] `cache/persist.rs` — versioned on-disk `nodes/values/files` schema with a

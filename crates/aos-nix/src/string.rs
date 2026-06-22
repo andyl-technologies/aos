@@ -8,10 +8,11 @@
 //! element set and the propagation rules exercised here.
 
 use std::cmp::Ordering;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
 use thiserror::Error;
-use xxhash_rust::xxh3::Xxh3;
+
+use crate::cache::HotXxh3Hash;
 
 /// The deriving-path kind carried by a string-context element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -309,10 +310,8 @@ impl NixString {
     /// The hash covers both bytes and context. It is only an accelerator for
     /// evaluator-local cons tables; callers must still confirm equality because
     /// xxh3 is not collision-free and is not a Nix-observable hash.
-    pub fn structural_hash_xxh3(&self) -> u64 {
-        let mut hasher = Xxh3::new();
-        self.hash(&mut hasher);
-        hasher.finish()
+    pub fn structural_hash_xxh3(&self) -> HotXxh3Hash {
+        HotXxh3Hash::for_hashable(self)
     }
 
     /// Concatenates two strings and unions their contexts.

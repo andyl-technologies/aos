@@ -513,7 +513,7 @@ impl EvalHeap {
 
     fn lookup_string_cons(
         &self,
-        hash: u64,
+        hash: HotXxh3Hash,
         string: &NixString,
     ) -> Result<Option<Value>, EvalHeapError> {
         let Some(bucket) = self.string_cons.get(&hash) else {
@@ -533,7 +533,7 @@ impl EvalHeap {
 
     fn lookup_path_cons(
         &self,
-        hash: u64,
+        hash: HotXxh3Hash,
         path: &NixString,
     ) -> Result<Option<Value>, EvalHeapError> {
         let Some(bucket) = self.path_cons.get(&hash) else {
@@ -551,7 +551,7 @@ impl EvalHeap {
         Ok(None)
     }
 
-    fn reserve_cons_slot(&mut self, tag: ValueTag, hash: u64) -> Result<(), EvalHeapError> {
+    fn reserve_cons_slot(&mut self, tag: ValueTag, hash: HotXxh3Hash) -> Result<(), EvalHeapError> {
         let table = match tag {
             ValueTag::String => &mut self.string_cons,
             ValueTag::Path => &mut self.path_cons,
@@ -582,7 +582,7 @@ impl EvalHeap {
         Ok(())
     }
 
-    fn push_cons_value(&mut self, tag: ValueTag, hash: u64, value: Value) {
+    fn push_cons_value(&mut self, tag: ValueTag, hash: HotXxh3Hash, value: Value) {
         let table = match tag {
             ValueTag::String => &mut self.string_cons,
             ValueTag::Path => &mut self.path_cons,

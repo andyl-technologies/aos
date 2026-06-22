@@ -5,8 +5,10 @@
 //! in-process import/file memo keyed by canonical realpath and file-content
 //! hash.
 
+pub mod hashing;
 pub mod parse;
 
+pub use hashing::{DurableBlake3Hash, HotXxh3Hash};
 pub use parse::{
     CachedFileParse, CachedParse, FileParseMemo, PARSE_CACHE_SCHEMA_VERSION, ParseCache,
     ParseCacheEntry, ParseCacheError, ParseCacheFlags, ParseCacheKey, ParseCacheMeta, ParseFileKey,

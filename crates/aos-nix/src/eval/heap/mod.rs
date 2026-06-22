@@ -17,6 +17,7 @@ use super::env::{EvalEnv, EvalScopedGlobalEnv, EvalWithEnv};
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::ThunkCell;
 use crate::attrs::FlatAttrs;
+use crate::cache::HotXxh3Hash;
 use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::heap::arena::{ArenaError, ArenaStats, BumpArena};
 use crate::list::NixList;
@@ -152,8 +153,8 @@ pub struct EvalPrimOp {
 pub struct EvalHeap {
     arena: BumpArena,
     records: Vec<HeapRecord>,
-    string_cons: HashMap<u64, Vec<Value>>,
-    path_cons: HashMap<u64, Vec<Value>>,
+    string_cons: HashMap<HotXxh3Hash, Vec<Value>>,
+    path_cons: HashMap<HotXxh3Hash, Vec<Value>>,
 }
 
 impl Default for EvalHeap {
@@ -165,7 +166,7 @@ impl Default for EvalHeap {
 #[derive(Debug)]
 struct HeapRecord {
     ptr: NonNull<HeapObject>,
-    structural_hash: Option<u64>,
+    structural_hash: Option<HotXxh3Hash>,
     object: HeapObjectValue,
 }
 
