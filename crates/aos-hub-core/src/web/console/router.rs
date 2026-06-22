@@ -296,6 +296,45 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             }),
         )
         .route(
+            "/-/org/{org}/caches",
+            post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::org_create_cache(from_state(s), h, p, f))
+            }),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}",
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                send_bridge(handlers::cache_detail(from_state(s), h, r, p))
+            })
+            .post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::cache_update(from_state(s), h, p, f))
+            }),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}/link",
+            post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::cache_link(from_state(s), h, p, f))
+            }),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}/unlink",
+            post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::cache_unlink(from_state(s), h, p, f))
+            }),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}/gc",
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::cache_gc(from_state(s), h, r, p, f))
+            }),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}/delete",
+            post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::cache_delete(from_state(s), h, p, f))
+            }),
+        )
+        .route(
             "/-/org/{org}/registries/new",
             get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
                 send_bridge(handlers::org_new_registry_form(from_state(s), h, r, p))
