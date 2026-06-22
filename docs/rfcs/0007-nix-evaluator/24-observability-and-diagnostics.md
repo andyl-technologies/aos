@@ -468,7 +468,7 @@ The governing rule binds every item: **presentation is not parity.** How an erro
 
 ### Error reporting: miette as the diagnostic framework (§2)
 
-- [ ] Adopt `miette` as the `Diagnostic`-trait error *framework* for all user-facing parse/eval errors (codes, severity, help, url, multi-span labels, `thiserror` derive integration, built-in fancy renderer, pure-Rust/hermetic); ariadne considered, kept only as a future *renderer* swap behind the report-printing seam (§2.1–§2.3) — **P1**, `C-26`/`D-OBS-1`.
+- [ ] Adopt `miette` as the `Diagnostic`-trait error *framework* for all user-facing parse/eval errors: `aos-nix::diagnostic` now wraps `LexError`, `ParseError`, and `TreeWalkError` in `SourceDiagnostic` with `NamedSource`, stable codes, severity, help, single-span `LabeledSpan`s, and a `render_fancy_report` seam over miette's built-in graphical renderer; `miette` is pinned in `Cargo.lock`. Remaining before completion: route the CLI/user-facing parse/eval surfaces through the wrapper, add URLs and true multi-label cases, and keep the `Diagnostic` presentation separate from the typed `thiserror` error classes (§2.1–§2.3) — **P1**, `C-26`/`D-OBS-1`.
 
 ### The presentation-vs-parity separation (§3)
 
