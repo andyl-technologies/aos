@@ -832,7 +832,8 @@ harness, never cut for scope.
 
 ### Acceptance gate and RFC-0005/0006 tie-in
 
-- [ ] Byte-identical `.drv` + drv-path + output-path parity over the **full transitive closure**, deepest-divergence-first reporting; binary gate, default-off until green ([§11](#11-the-acceptance-gate-for-this-layer)) — P1, `S-2`/`C-18`; gate: differential `.drv` harness.
+- [x] Current differential `.drv` harness substrate for this layer: `aos_core::nix::diff::diff_closure` compares C++-Nix-oracle and candidate root `.drv` paths in path/byte/structural modes; byte/structural modes walk input derivations when closure bytes are available through `instantiate_closure` or bundle-backed reruns, compare ATerm bytes per node, and structural mode localizes parsed-field differences through `nix-compat`. `DrvDiffReport` classifies root-vs-contaminated divergence nodes, and `aos nix-diff` exposes direct node reruns ([§11](#11-the-acceptance-gate-for-this-layer), [15 §2](15-differential-testing-and-benchmarking.md#2-the-differential-drv-diff-harness-the-acceptance-gate)) — P1, `S-2`/`C-18`; gate: `aos-core` diff/CLI tests plus native-eval integration when available.
+- [ ] Full green acceptance result remains: run the binary gate over the auto-derived full AOS package/system/toolchain/conformance corpus and require zero divergences for `.drv` roots, ATerm bytes, drv paths, and serialized output paths before any default-on decision; keep default-off until that full transitive-closure result is green ([§11](#11-the-acceptance-gate-for-this-layer)) — P1, `S-2`/`C-18`; gate: full differential `.drv` harness run.
 - [ ] Deriving-path parity so RFC-0005's realisation graph is identical regardless of front evaluator; correct CA emission so RFC-0005 can do build-layer early cutoff ([§10](#10-rfc-0005-tie-in-the-realisation-graph-and-ca-derivations)) — P1, `C-11`; gate: harness + RFC-0005 graph.
 
 ---
