@@ -871,7 +871,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [x] **T-HARN-6** Implement the execution fingerprint (icount + register +
   memory-region rolling hash) with icount-driven, observation-only sampling via
   plugin/QMP. — satisfies [HARN-4], [HARN-7]; spec §4.
-- [ ] **T-HARN-7** Implement `gate:single-vm-fingerprint` (Contract A: boot one
+- [x] **T-HARN-7** Implement `gate:single-vm-fingerprint` (Contract A: boot one
   unmodified guest twice, compare fingerprint streams; on mismatch emit streams +
   bisection result). — satisfies [HARN-5]; spec §4.3.
 - [x] **T-HARN-8** Implement `gate:layer1-injection` (Contract B: identical

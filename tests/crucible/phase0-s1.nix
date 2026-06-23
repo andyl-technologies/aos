@@ -569,13 +569,39 @@ in
                   component
                 '
             )
+            first_different_sample_icount=$(
+              jq -n -r \
+                --slurpfile left "$TMPDIR/first-left.json" \
+                --slurpfile right "$TMPDIR/first-right.json" \
+                '[$left[0].retired, $right[0].retired] | min'
+            )
+            previous_matching_icount=none
+            if [ "$first_differing_line" -gt 1 ]; then
+              previous_line_number=$((first_differing_line - 1))
+              previous_matching_icount=$(
+                sed -n "''${previous_line_number}p" "$TMPDIR/trace-a-cadence.jsonl" \
+                  | jq -r '.retired'
+              )
+            fi
+            cp "$TMPDIR/trace-a-cadence.jsonl" "$out/trace-a-cadence.jsonl"
+            cp "$TMPDIR/trace-b-cadence.jsonl" "$out/trace-b-cadence.jsonl"
             {
               echo "first_differing_line=$first_differing_line"
               echo "first_differing_component=$first_differing_component"
+              echo "bisection_result=trace-sample-bisection"
+              echo "previous_matching_icount=$previous_matching_icount"
+              echo "first_different_sample_icount=$first_different_sample_icount"
+              echo "first_different_icount=$first_different_sample_icount"
+              echo "bisection_precision=sample"
+              echo "state_dump_artifact=trace-a-cadence.jsonl,trace-b-cadence.jsonl"
               echo "left=$left_json"
               echo "right=$right_json"
             } > "$out/first-difference.txt"
             cat "$out/first-difference.txt" >&2
+            echo "trace_stream=left" >&2
+            cat "$TMPDIR/trace-a-cadence.jsonl" >&2
+            echo "trace_stream=right" >&2
+            cat "$TMPDIR/trace-b-cadence.jsonl" >&2
             fail "S1 extended fingerprint mismatch"
           fi
           if ! diff -u "$TMPDIR/trace-a.jsonl" "$TMPDIR/trace-b.jsonl" > "$out/trace-full.diff"; then

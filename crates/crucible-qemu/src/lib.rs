@@ -29,10 +29,12 @@ pub use launch::{
     NodeIcountShift,
 };
 pub use single_vm_fingerprint::{
-    SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintEventBoundary,
-    SingleVmFingerprintGateError, SingleVmFingerprintGateReport, SingleVmFingerprintMismatch,
-    SingleVmFingerprintMismatchKind, SingleVmFingerprintRunError, SingleVmFingerprintRunOrdinal,
-    SingleVmFingerprintRunRequest, SingleVmFingerprintRunner, SingleVmFingerprintSample,
-    SingleVmFingerprintScenario, SingleVmFingerprintStream, SingleVmFingerprintTrigger,
-    SingleVmHostProfile, compare_single_vm_fingerprint_streams, run_single_vm_fingerprint_gate,
+    SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintBisectionError,
+    SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionRequest,
+    SingleVmFingerprintEventBoundary, SingleVmFingerprintGateError, SingleVmFingerprintGateReport,
+    SingleVmFingerprintMismatch, SingleVmFingerprintMismatchKind, SingleVmFingerprintRunError,
+    SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest, SingleVmFingerprintRunner,
+    SingleVmFingerprintSample, SingleVmFingerprintScenario, SingleVmFingerprintStream,
+    SingleVmFingerprintTrigger, SingleVmHostProfile, compare_single_vm_fingerprint_streams,
+    run_single_vm_fingerprint_gate,
 };

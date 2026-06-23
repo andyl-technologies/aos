@@ -21,9 +21,10 @@ pub use compare::{
 };
 pub use run::run_single_vm_fingerprint_gate;
 pub use types::{
-    SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintEventBoundary,
-    SingleVmFingerprintGateError, SingleVmFingerprintGateReport, SingleVmFingerprintRunError,
-    SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest, SingleVmFingerprintRunner,
-    SingleVmFingerprintSample, SingleVmFingerprintScenario, SingleVmFingerprintStream,
-    SingleVmFingerprintTrigger, SingleVmHostProfile,
+    SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintBisectionError,
+    SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionRequest,
+    SingleVmFingerprintEventBoundary, SingleVmFingerprintGateError, SingleVmFingerprintGateReport,
+    SingleVmFingerprintRunError, SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest,
+    SingleVmFingerprintRunner, SingleVmFingerprintSample, SingleVmFingerprintScenario,
+    SingleVmFingerprintStream, SingleVmFingerprintTrigger, SingleVmHostProfile,
 };

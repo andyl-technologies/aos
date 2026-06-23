@@ -2,12 +2,13 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.singleVmFingerprint",
-  taskIds ? ["T-HARN-6" "T-DET-9"],
+  taskIds ? ["T-HARN-6" "T-HARN-7" "T-DET-9"],
 }: let
   s1Fingerprint = import ./phase0-s1.nix {
     inherit pkgs lib;
   };
 
+  phase0S1 = builtins.readFile ./phase0-s1.nix;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qemuGateRoot = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint.rs;
   qemuGateCompare = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/compare.rs;
@@ -117,6 +118,26 @@
         needle = "pub struct SingleVmFingerprintMismatch";
       }
       {
+        label = "bisection request";
+        needle = "pub struct SingleVmFingerprintBisectionRequest";
+      }
+      {
+        label = "bisection report";
+        needle = "pub struct SingleVmFingerprintBisectionReport";
+      }
+      {
+        label = "private bisection report constructor";
+        needle = "pub fn state_dump_artifact(&self) -> &str";
+      }
+      {
+        label = "backend bisection hook";
+        needle = "fn bisect_single_vm_fingerprint_mismatch";
+      }
+      {
+        label = "bisection failure error";
+        needle = "BisectionFailed";
+      }
+      {
         label = "previous matching icount";
         needle = "previous_matching_icount";
       }
@@ -127,6 +148,18 @@
       {
         label = "diagnostic streams on mismatch";
         needle = "first_stream: Box<SingleVmFingerprintStream>";
+      }
+      {
+        label = "diagnostic bisection on mismatch";
+        needle = "bisection: Box<SingleVmFingerprintBisectionReport>";
+      }
+      {
+        label = "mismatch path invokes bisection";
+        needle = ".bisect_single_vm_fingerprint_mismatch(&request)";
+      }
+      {
+        label = "bisection alignment validation";
+        needle = "validate_bisection_report_for_mismatch";
       }
       {
         label = "no tolerance on mismatches";
@@ -145,6 +178,14 @@
       {
         label = "sample window localization";
         needle = "gate_single_vm_fingerprint_reports_first_sample_window";
+      }
+      {
+        label = "bisection required on mismatch";
+        needle = "gate_single_vm_fingerprint_requires_bisection_on_mismatch";
+      }
+      {
+        label = "misaligned bisection rejection";
+        needle = "gate_single_vm_fingerprint_rejects_misaligned_bisection_report";
       }
       {
         label = "final mismatch horizon localization";
@@ -167,6 +208,28 @@
       {
         label = "ignored placeholder target";
         needle = "#[ignore";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase0-s1.nix" phase0S1 [
+      {
+        label = "real-QEMU mismatch bisection result";
+        needle = "bisection_result=trace-sample-bisection";
+      }
+      {
+        label = "real-QEMU first differing sample icount";
+        needle = "first_different_sample_icount=";
+      }
+      {
+        label = "real-QEMU left stream emitted on mismatch";
+        needle = "cat \"$TMPDIR/trace-a-cadence.jsonl\" >&2";
+      }
+      {
+        label = "real-QEMU right stream emitted on mismatch";
+        needle = "cat \"$TMPDIR/trace-b-cadence.jsonl\" >&2";
+      }
+      {
+        label = "real-QEMU state dump artifact";
+        needle = "state_dump_artifact=trace-a-cadence.jsonl,trace-b-cadence.jsonl";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-trace-plugin.c" qemuTracePlugin [
@@ -259,12 +322,22 @@
         needle = "attrPath = \"checks.crucible.phase1.gates.singleVmFingerprint\"";
       }
       {
+        label = "phase2 real-QEMU gate no longer uses red placeholder";
+        needle = "attrPath = \"checks.crucible.phase2.gates.singleVmFingerprint\"";
+      }
+      {
         label = "phase1 gate lists T-HARN-6";
         needle = "\"T-HARN-6\"";
       }
       {
         label = "phase1 gate lists T-DET-9";
         needle = "\"T-DET-9\"";
+      }
+    ]
+    ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase2 single-VM fingerprint red placeholder";
+        needle = "single-VM fingerprint gate is intentionally pending";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
@@ -277,6 +350,10 @@
       {
         label = "T-HARN-6 checklist complete";
         needle = "- [x] **T-HARN-6**";
+      }
+      {
+        label = "T-HARN-7 checklist complete";
+        needle = "- [x] **T-HARN-7**";
       }
     ];
 in
@@ -365,7 +442,8 @@ in
             register_read_failures=0
             ram_bytes=nonzero
             mismatch_policy=first-mismatch-is-failure
-            mismatch_output=streams-and-icount-window
+            bisection_result=required-on-mismatch
+            mismatch_output=streams-and-bisection-result
             RESULT
           '';
         }
