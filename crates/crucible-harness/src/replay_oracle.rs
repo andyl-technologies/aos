@@ -7,6 +7,9 @@
 use std::error::Error;
 use std::fmt;
 
+const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x00000100000001b3;
+
 /// One replay-oracle comparison case.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayOracleCase {
@@ -66,6 +69,162 @@ pub struct ReplayOracleMismatch {
     /// Canonical hash of the thin reconstruction from an ancestor.
     pub thin_hash: Vec<u8>,
 }
+
+/// Configures deterministic in-search replay-oracle sampling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayOracleSamplingConfig {
+    numerator: u64,
+    denominator: u64,
+    seed_tag: String,
+}
+
+impl ReplayOracleSamplingConfig {
+    /// Builds a deterministic sampling-rate configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReplayOracleSearchSamplingError::InvalidSamplingConfig`] when
+    /// the denominator is zero, the numerator exceeds the denominator, the
+    /// numerator is zero, or the seed tag is empty.
+    pub fn new(
+        numerator: u64,
+        denominator: u64,
+        seed_tag: impl Into<String>,
+    ) -> Result<Self, ReplayOracleSearchSamplingError> {
+        if denominator == 0 {
+            return Err(ReplayOracleSearchSamplingError::InvalidSamplingConfig {
+                reason: "sampling denominator must be non-zero",
+            });
+        }
+        if numerator == 0 {
+            return Err(ReplayOracleSearchSamplingError::InvalidSamplingConfig {
+                reason: "sampling numerator must be non-zero",
+            });
+        }
+        if numerator > denominator {
+            return Err(ReplayOracleSearchSamplingError::InvalidSamplingConfig {
+                reason: "sampling numerator cannot exceed denominator",
+            });
+        }
+        let seed_tag = seed_tag.into();
+        if seed_tag.is_empty() {
+            return Err(ReplayOracleSearchSamplingError::InvalidSamplingConfig {
+                reason: "sampling seed tag must be non-empty",
+            });
+        }
+
+        Ok(Self {
+            numerator,
+            denominator,
+            seed_tag,
+        })
+    }
+
+    /// Returns the sampling-rate numerator.
+    #[must_use]
+    pub fn numerator(&self) -> u64 {
+        self.numerator
+    }
+
+    /// Returns the sampling-rate denominator.
+    #[must_use]
+    pub fn denominator(&self) -> u64 {
+        self.denominator
+    }
+
+    /// Returns the deterministic sampling seed tag.
+    #[must_use]
+    pub fn seed_tag(&self) -> &str {
+        &self.seed_tag
+    }
+
+    fn samples(&self, materialization: &ReplayOracleSearchMaterialization) -> bool {
+        sampling_score(
+            &self.seed_tag,
+            materialization.sequence,
+            &materialization.case.checkpoint_id,
+        ) % self.denominator
+            < self.numerator
+    }
+}
+
+/// A fat checkpoint materialized during search or fuzzing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayOracleSearchMaterialization {
+    /// Stable materialization sequence in search order.
+    pub sequence: u64,
+    /// Materialized fat-vs-thin replay-oracle case for this checkpoint.
+    pub case: ReplayOracleMaterializedCase,
+}
+
+impl ReplayOracleSearchMaterialization {
+    /// Builds one search materialization record.
+    #[must_use]
+    pub fn new(sequence: u64, case: ReplayOracleMaterializedCase) -> Self {
+        Self { sequence, case }
+    }
+}
+
+/// A bisection request emitted when sampled search oracle validation fails.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayOracleBisectionRequest {
+    /// Stable materialization sequence in search order.
+    pub sequence: u64,
+    /// Stable checkpoint identifier whose fat/thin reconstructions differed.
+    pub checkpoint_id: String,
+    /// Last known diagnostic reason for the bisection request.
+    pub reason: &'static str,
+}
+
+/// Summary of a sampled in-search replay-oracle pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayOracleSearchSamplingReport {
+    /// Number of materialized fat checkpoints considered.
+    pub considered: usize,
+    /// Number of materialized fat checkpoints sampled and checked.
+    pub sampled: usize,
+    /// Number of materialized fat checkpoints skipped by the sampling policy.
+    pub skipped: usize,
+    /// Checkpoint ids sampled in deterministic search order.
+    pub sampled_checkpoints: Vec<String>,
+}
+
+/// A failed in-search replay-oracle sampling run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplayOracleSearchSamplingError {
+    /// The sampling configuration is invalid.
+    InvalidSamplingConfig {
+        /// Human-readable validation failure.
+        reason: &'static str,
+    },
+    /// A sampled materialized checkpoint disagrees with its thin reconstruction.
+    Mismatch {
+        /// First replay-oracle mismatch.
+        mismatch: ReplayOracleMismatch,
+        /// Required bisection request for the fat/thin disagreement.
+        bisection: ReplayOracleBisectionRequest,
+    },
+}
+
+impl fmt::Display for ReplayOracleSearchSamplingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidSamplingConfig { reason } => {
+                write!(formatter, "invalid replay-oracle sampling config: {reason}")
+            }
+            Self::Mismatch {
+                mismatch,
+                bisection,
+            } => write!(
+                formatter,
+                "{mismatch}; bisection required for checkpoint {} at materialization {}",
+                bisection.checkpoint_id, bisection.sequence
+            ),
+        }
+    }
+}
+
+impl Error for ReplayOracleSearchSamplingError {}
 
 impl fmt::Display for ReplayOracleMismatch {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -155,12 +314,73 @@ pub fn check_materialized_replay_oracle(
     Ok(())
 }
 
+/// Checks a deterministic sample of materialized search checkpoints.
+///
+/// # Errors
+///
+/// Returns [`ReplayOracleSearchSamplingError::Mismatch`] when any sampled fat
+/// checkpoint disagrees with its thin reconstruction. The error includes the
+/// replay-oracle mismatch and a bisection request for the fat/thin pair.
+pub fn check_sampled_search_replay_oracle(
+    materializations: &[ReplayOracleSearchMaterialization],
+    config: &ReplayOracleSamplingConfig,
+) -> Result<ReplayOracleSearchSamplingReport, ReplayOracleSearchSamplingError> {
+    let mut report = ReplayOracleSearchSamplingReport {
+        considered: materializations.len(),
+        sampled: 0,
+        skipped: 0,
+        sampled_checkpoints: Vec::new(),
+    };
+
+    for materialization in materializations {
+        if !config.samples(materialization) {
+            report.skipped += 1;
+            continue;
+        }
+
+        report.sampled += 1;
+        report
+            .sampled_checkpoints
+            .push(materialization.case.checkpoint_id.clone());
+        if let Err(mismatch) =
+            check_materialized_replay_oracle(std::slice::from_ref(&materialization.case))
+        {
+            return Err(ReplayOracleSearchSamplingError::Mismatch {
+                bisection: ReplayOracleBisectionRequest {
+                    sequence: materialization.sequence,
+                    checkpoint_id: mismatch.checkpoint_id.clone(),
+                    reason: "sampled fat checkpoint differs from thin reconstruction",
+                },
+                mismatch,
+            });
+        }
+    }
+
+    Ok(report)
+}
+
 fn mismatch(checkpoint_id: &str, fat_hash: &[u8], thin_hash: &[u8]) -> ReplayOracleMismatch {
     ReplayOracleMismatch {
         checkpoint_id: checkpoint_id.to_owned(),
         fat_hash: fat_hash.to_vec(),
         thin_hash: thin_hash.to_vec(),
     }
+}
+
+fn sampling_score(seed_tag: &str, sequence: u64, checkpoint_id: &str) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    hash = fold_bytes(hash, b"crucible.replay-oracle.search-sampling.v1");
+    hash = fold_bytes(hash, seed_tag.as_bytes());
+    hash = fold_bytes(hash, &sequence.to_le_bytes());
+    fold_bytes(hash, checkpoint_id.as_bytes())
+}
+
+fn fold_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
 }
 
 #[cfg(test)]
@@ -290,5 +510,108 @@ mod tests {
         assert_eq!(mismatch.checkpoint_id, "cp-1");
         assert_eq!(mismatch.fat_hash, vec![5]);
         assert_eq!(mismatch.thin_hash, vec![6]);
+    }
+
+    #[test]
+    fn sampled_search_oracle_checks_deterministic_subset() {
+        let materializations = [
+            search_materialization(0, "cp-1", vec![1], vec![1]),
+            search_materialization(1, "cp-2", vec![2], vec![2]),
+            search_materialization(2, "cp-3", vec![3], vec![3]),
+            search_materialization(3, "cp-4", vec![4], vec![4]),
+        ];
+        let config = match ReplayOracleSamplingConfig::new(1, 1, "seed-a") {
+            Ok(config) => config,
+            Err(error) => panic!("sampling config should be valid: {error}"),
+        };
+
+        let first = match check_sampled_search_replay_oracle(&materializations, &config) {
+            Ok(report) => report,
+            Err(error) => panic!("matching sampled checkpoints should pass: {error}"),
+        };
+        let second = match check_sampled_search_replay_oracle(&materializations, &config) {
+            Ok(report) => report,
+            Err(error) => panic!("matching sampled checkpoints should pass again: {error}"),
+        };
+
+        assert_eq!(first, second);
+        assert_eq!(first.considered, 4);
+        assert_eq!(first.sampled, 4);
+        assert_eq!(first.skipped, 0);
+        assert_eq!(first.sampled_checkpoints, ["cp-1", "cp-2", "cp-3", "cp-4"]);
+    }
+
+    #[test]
+    fn sampled_search_oracle_mismatch_requires_bisection() {
+        let materializations = [
+            search_materialization(0, "cp-1", vec![1], vec![1]),
+            search_materialization(1, "cp-2", vec![2], vec![9]),
+        ];
+        let config = match ReplayOracleSamplingConfig::new(1, 1, "sample-all") {
+            Ok(config) => config,
+            Err(error) => panic!("sampling config should be valid: {error}"),
+        };
+
+        let error = match check_sampled_search_replay_oracle(&materializations, &config) {
+            Ok(_) => panic!("sampled mismatch should fail"),
+            Err(error) => error,
+        };
+
+        let ReplayOracleSearchSamplingError::Mismatch {
+            mismatch,
+            bisection,
+        } = error
+        else {
+            panic!("sampled mismatch should request bisection");
+        };
+
+        assert_eq!(mismatch.checkpoint_id, "cp-2");
+        assert_eq!(bisection.sequence, 1);
+        assert_eq!(bisection.checkpoint_id, "cp-2");
+        assert_eq!(
+            bisection.reason,
+            "sampled fat checkpoint differs from thin reconstruction"
+        );
+    }
+
+    #[test]
+    fn sampled_search_oracle_rejects_invalid_sampling_rate() {
+        assert_eq!(
+            ReplayOracleSamplingConfig::new(0, 4, "seed"),
+            Err(ReplayOracleSearchSamplingError::InvalidSamplingConfig {
+                reason: "sampling numerator must be non-zero",
+            })
+        );
+        assert_eq!(
+            ReplayOracleSamplingConfig::new(5, 4, "seed"),
+            Err(ReplayOracleSearchSamplingError::InvalidSamplingConfig {
+                reason: "sampling numerator cannot exceed denominator",
+            })
+        );
+    }
+
+    fn search_materialization(
+        sequence: u64,
+        checkpoint_id: &str,
+        fat_hash: Vec<u8>,
+        thin_hash: Vec<u8>,
+    ) -> ReplayOracleSearchMaterialization {
+        ReplayOracleSearchMaterialization::new(
+            sequence,
+            ReplayOracleMaterializedCase {
+                checkpoint_id: checkpoint_id.to_owned(),
+                kind: ReplayOracleCheckpointKind::Fat,
+                fat_checkpoint_hash: vec![1],
+                thin_checkpoint_hash: vec![1],
+                fat_configuration_hash: vec![2],
+                thin_configuration_hash: vec![2],
+                fat_ancestor_hash: vec![3],
+                thin_ancestor_hash: vec![3],
+                fat_schedule_delta_hash: vec![4],
+                thin_schedule_delta_hash: vec![4],
+                fat_hash,
+                thin_hash,
+            },
+        )
     }
 }

@@ -11,7 +11,8 @@ use crucible::{
 };
 use crucible_harness::replay_oracle::{
     ReplayOracleCheckpointKind, ReplayOracleMaterializedCase, ReplayOracleMismatch,
-    check_materialized_replay_oracle,
+    ReplayOracleSamplingConfig, ReplayOracleSearchMaterialization, ReplayOracleSearchSamplingError,
+    check_materialized_replay_oracle, check_sampled_search_replay_oracle,
 };
 
 struct SimDouble;
@@ -129,6 +130,40 @@ fn gate_replay_oracle_rejects_corrupt_materialized_checkpoint() -> Result<(), Bo
     Ok(())
 }
 
+#[test]
+fn gate_replay_oracle_samples_materialized_checkpoints_during_search() -> Result<(), Box<dyn Error>>
+{
+    let corpus = assert_replay_oracle_fixed_checkpoint_corpus()?;
+    let report = assert_replay_oracle_in_search_sampling(&corpus)?;
+
+    assert_eq!(report.considered, corpus.len());
+    assert_eq!(report.sampled, corpus.len());
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.sampled_checkpoints.len(), corpus.len());
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_sampled_mismatch_requests_bisection() -> Result<(), Box<dyn Error>> {
+    let corpus = assert_replay_oracle_fixed_checkpoint_corpus()?;
+    let error = assert_replay_oracle_mismatch_bisects(&corpus)?;
+
+    let ReplayOracleSearchSamplingError::Mismatch {
+        mismatch,
+        bisection,
+    } = error
+    else {
+        panic!("sampled mismatch should require bisection");
+    };
+
+    assert_eq!(mismatch.checkpoint_id, "cp-1");
+    assert_eq!(bisection.checkpoint_id, "cp-1");
+    assert_eq!(bisection.sequence, 1);
+
+    Ok(())
+}
+
 fn assert_replay_oracle_fixed_checkpoint_corpus()
 -> Result<Vec<ReplayOracleMaterializedCase>, Box<dyn Error>> {
     let scenario =
@@ -182,6 +217,45 @@ fn assert_replay_oracle_fixed_checkpoint_corpus()
     }
 
     Ok(cases)
+}
+
+fn assert_replay_oracle_in_search_sampling(
+    corpus: &[ReplayOracleMaterializedCase],
+) -> Result<crucible_harness::replay_oracle::ReplayOracleSearchSamplingReport, Box<dyn Error>> {
+    let config = ReplayOracleSamplingConfig::new(1, 1, "gate-replay-oracle-search")?;
+    let materializations = search_materializations(corpus);
+    let report = check_sampled_search_replay_oracle(&materializations, &config)?;
+    Ok(report)
+}
+
+fn assert_replay_oracle_mismatch_bisects(
+    corpus: &[ReplayOracleMaterializedCase],
+) -> Result<ReplayOracleSearchSamplingError, Box<dyn Error>> {
+    let mut corrupted = corpus.to_vec();
+    if let Some(case) = corrupted.get_mut(1) {
+        case.fat_hash = hash_bytes(ContentHash::from_canonical_material(
+            "crucible.test.replay-oracle.search-corrupt",
+            "cp-1",
+        ));
+    }
+    let config = ReplayOracleSamplingConfig::new(1, 1, "gate-replay-oracle-search")?;
+    let materializations = search_materializations(&corrupted);
+
+    match check_sampled_search_replay_oracle(&materializations, &config) {
+        Ok(_) => panic!("sampled corrupt materialization should fail the replay oracle"),
+        Err(error) => Ok(error),
+    }
+}
+
+fn search_materializations(
+    corpus: &[ReplayOracleMaterializedCase],
+) -> Vec<ReplayOracleSearchMaterialization> {
+    corpus
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, case)| ReplayOracleSearchMaterialization::new(index as u64, case))
+        .collect()
 }
 
 fn assert_replay_oracle_excludes_observational_entries(

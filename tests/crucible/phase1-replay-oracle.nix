@@ -194,14 +194,6 @@
         needle = "#[ignore";
       }
       {
-        label = "phase1 gate overclaiming in-search sampling";
-        needle = "assert_replay_oracle_in_search_sampling";
-      }
-      {
-        label = "phase1 gate overclaiming divergence bisection";
-        needle = "assert_replay_oracle_mismatch_bisects";
-      }
-      {
         label = "direct byte-only corpus check";
         needle = "check_replay_oracle(&corpus)";
       }
