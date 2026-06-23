@@ -82,7 +82,9 @@ in {
     };
 
     target = {
-      system = systems.server;
+      # server-test for the CLI tools the upgrade/verification steps run
+      # in-guest (image slimming dropped them from the plain server PATH).
+      system = systems.server-test;
       # The download lands twice on /var: the NAR cache under
       # /var/lib/apm/cache and the imported store paths (the /nix overlay
       # upper lives on the var partition) — the full sysroot closure.
