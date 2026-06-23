@@ -29,10 +29,7 @@
   desiredCredentialsType = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
   desiredSystemCredentialsType = lib.types.attrsOf (lib.types.attrsOf credentialNameType);
 
-  uriEncode =
-    builtins.replaceStrings
-    ["%" "\n" "\r" "\t" " " "!" "\"" "#" "$" "&" "'" "(" ")" "*" "+" "," "/" ":" ";" "<" "=" ">" "?" "@" "[" "\\" "]" "^" "`" "{" "|" "}"]
-    ["%25" "%0A" "%0D" "%09" "%20" "%21" "%22" "%23" "%24" "%26" "%27" "%28" "%29" "%2A" "%2B" "%2C" "%2F" "%3A" "%3B" "%3C" "%3D" "%3E" "%3F" "%40" "%5B" "%5C" "%5D" "%5E" "%60" "%7B" "%7C" "%7D"];
+  uriEncode = lib.uriEncode;
   dataUrl = content: let
     encoded = uriEncode content;
   in

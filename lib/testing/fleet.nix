@@ -46,18 +46,7 @@
     else lib.optionalString (n < 16) "0" + lib.toHexString n;
   mkMac = vlan: n: "52:54:00:12:${zeroPad vlan}:${zeroPad n}";
 
-  # ── Minimal URI encoder for ignition `data:` URLs ──────────────────
-  # builtins.replaceStrings scans the input and emits replacements
-  # without rescanning the output, so listing `%` first is safe — the
-  # `%` we emit when escaping `\n` (→ `%0A`) does NOT trigger another
-  # round of escaping. Covers every reserved char that arises in the
-  # content we synthesise here (hostnames, /etc/hosts, systemd unit
-  # bodies including `[Section]` headers, ssh authorized_keys lines);
-  # callers needing more should add to the lists in lockstep.
-  uriEncode =
-    builtins.replaceStrings
-    ["%" "\n" "\"" "\\" "{" "}" ":" "," "#" "?" " " "&" "+" "=" "[" "]"]
-    ["%25" "%0A" "%22" "%5C" "%7B" "%7D" "%3A" "%2C" "%23" "%3F" "%20" "%26" "%2B" "%3D" "%5B" "%5D"];
+  uriEncode = lib.uriEncode;
   dataUrl = content: "data:,${uriEncode content}";
 
   mkFleetPackageFragment = m: let
