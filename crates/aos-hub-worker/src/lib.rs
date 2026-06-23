@@ -165,6 +165,11 @@ mod entry {
     const HUB_SEAL_KEY: &str = "HUB_SEAL_KEY";
     /// The Wrangler `[vars]` entry holding the hub's externally-reachable URL.
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
+    /// Optional `[vars]` entry: the name of the deployment's default R2 bucket
+    /// (the store unbound registries/caches push to). Baked by `worker deploy`
+    /// so instance settings can show where the default storage lives; unset on
+    /// older deploys, where the UI falls back to "configured at deploy time".
+    const HUB_DEFAULT_BUCKET: &str = "HUB_DEFAULT_BUCKET";
     /// Optional `[vars]` entry: the email-relay endpoint magic links are
     /// `POST`ed to. Unset → [`WorkerMailer`] logs the link instead.
     const HUB_EMAIL_API_URL: &str = "HUB_EMAIL_API_URL";
@@ -338,6 +343,13 @@ mod entry {
             surface,
             surface_write,
             reindexer,
+            // The default store is this Worker's R2 bucket; show its name (as
+            // `r2://<bucket>`) on instance settings when the deploy baked it.
+            default_storage_location: env
+                .var(HUB_DEFAULT_BUCKET)
+                .ok()
+                .map(|v| format!("r2://{}", v.to_string()))
+                .filter(|s| s != "r2://"),
         };
 
         // The service is returned alongside the router so the bridge can run the

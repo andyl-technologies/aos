@@ -3425,6 +3425,7 @@ async fn render_instance_settings(
         &session.email,
         &session.csrf(),
         policy,
+        deps.default_storage_location.as_deref(),
         notice,
         started,
     ))

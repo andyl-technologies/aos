@@ -85,6 +85,13 @@ pub struct ConsoleDeps {
     /// channel advance after its signed partitions land: the native hub
     /// re-indexes inline; the Worker defers to its Cron indexer.
     pub reindexer: Arc<dyn Reindexer>,
+    /// Human-readable location of the deployment's **default** storage — what a
+    /// registry/cache with no explicit binding pushes to (the Worker's R2 bucket
+    /// name, or the native hub's storage root). Surfaced read-only on the
+    /// instance-settings page; `None` when the deployment did not advertise it
+    /// (e.g. an older Worker deploy without `HUB_DEFAULT_BUCKET`), so the UI
+    /// falls back to "configured at deploy time".
+    pub default_storage_location: Option<String>,
 }
 
 /// A minimal outbound HTTP client for the OIDC authorization-code flow.

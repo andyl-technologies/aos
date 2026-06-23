@@ -189,8 +189,55 @@ pre {
 h2.danger { color: var(--bad); }
 button.danger { color: var(--bad); border-color: var(--bad); }
 
-/* The per-registry management link hub on the settings landing page. */
-ul.manage-links { columns: 2; list-style: square; }
+/* Unified settings layout: a left sidebar nav beside the content, shared by the
+ * registry, org, and instance settings scopes so the management IA is identical
+ * across them. Collapses to a horizontal strip on a narrow viewport. */
+.settings {
+  display: grid;
+  grid-template-columns: 12rem 1fr;
+  gap: 2rem;
+  align-items: start;
+  margin-top: 1.2rem;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  border-right: 1px solid var(--rule);
+  padding-right: 1rem;
+}
+.settings-nav a {
+  display: block;
+  padding: 0.3rem 0.7rem;
+  color: var(--ink);
+  border-left: 2px solid transparent;
+}
+.settings-nav a:hover {
+  background: color-mix(in srgb, var(--ink) 5%, var(--paper));
+  text-decoration: none;
+}
+.settings-nav a.active {
+  border-left-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+}
+/* The content column; min-width:0 lets wide tables/pre scroll instead of
+ * blowing out the grid track. The first heading aligns with the nav's top. */
+.settings-body { min-width: 0; }
+.settings-body > :first-child { margin-top: 0; }
+@media (max-width: 48rem) {
+  .settings { grid-template-columns: 1fr; gap: 0.6rem; }
+  .settings-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: none;
+    border-bottom: 1px solid var(--rule);
+    padding-right: 0;
+    padding-bottom: 0.5rem;
+  }
+  .settings-nav a { border-left: none; border-bottom: 2px solid transparent; }
+  .settings-nav a.active { border-left: none; border-bottom-color: var(--accent); }
+}
 
 /* The 16x16 channel partition grid: glyph + color per release, so the
  * encoding survives monochrome and colorblind rendering. r0..r5 follow

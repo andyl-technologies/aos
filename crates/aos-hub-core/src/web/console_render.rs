@@ -1063,9 +1063,6 @@ pub fn orgs_page(
     if can_create {
         body.push_str("<p><a href=\"/new\">+ create an organization</a></p>\n");
     }
-    if is_instance_admin {
-        body.push_str("<p><a href=\"/-/instance\">instance settings →</a></p>\n");
-    }
     if orgs.is_empty() {
         body.push_str("<p class=\"dim\">You are not a member of any organization.</p>\n");
     } else {
@@ -1086,6 +1083,16 @@ pub fn orgs_page(
             .collect();
         body.push_str(&table(&["organization", "slug"], &rows));
         body.push_str(&pager.nav("/-/orgs", ""));
+    }
+    // Instance administration is deployment-wide, distinct from "your orgs", so
+    // it is its own clearly-labelled section rather than a stray link up top.
+    if is_instance_admin {
+        body.push_str("<h2>Instance administration</h2>\n");
+        body.push_str(
+            "<p class=\"dim\">Deployment-wide settings for instance admins — the signup \
+             policy and the default storage backend.</p>\n\
+             <p><a href=\"/-/instance\">instance settings →</a></p>\n",
+        );
     }
     page_with_session(
         "organizations",
@@ -1211,7 +1218,9 @@ pub fn org_dashboard(
     bindings: &[StorageBindingRecord],
     caches: &[CacheSummary],
     can_manage_members: bool,
-    can_read_audit: bool,
+    // Retained for the caller's signature; the audit link is now an always-present
+    // sidebar tab whose page enforces `audit.read` itself.
+    _can_read_audit: bool,
     can_configure: bool,
     can_delete: bool,
     owner_count: usize,
@@ -1230,24 +1239,11 @@ pub fn org_dashboard(
         .then(|| format!("registries_page={}", reg_pager.page()))
         .unwrap_or_default();
     let slug = &org.slug;
+    // The org's management sub-pages (hosted keys, webhooks, SSO, audit) now
+    // live in the shared left sidebar — see `org_settings_chrome` — so the page
+    // body is just the org name plus its overview sections.
     let mut body = format!("<h1>{}</h1>\n", escape(&org.name));
-    let _ = writeln!(
-        body,
-        "<p class=\"dim\"><code>{}</code> · <a href=\"/-/org/{}/audit\">{}</a> · \
-         <a href=\"/-/org/{}/keys\">hosted keys →</a> · \
-         <a href=\"/-/org/{}/webhooks\">webhooks →</a> · \
-         <a href=\"/-/org/{}/sso\">SSO →</a></p>",
-        escape(slug),
-        escape(slug),
-        if can_read_audit {
-            "audit feed →"
-        } else {
-            "audit (admin only)"
-        },
-        escape(slug),
-        escape(slug),
-        escape(slug),
-    );
+    let _ = writeln!(body, "<p class=\"dim\"><code>{}</code></p>", escape(slug));
 
     // Publishing — the two things an org actually serves to consumers: the
     // package catalogs (registries) and the prebuilt binaries (caches). Settings
@@ -1407,13 +1403,14 @@ pub fn org_dashboard(
     body.push_str("<h3>Storage</h3>\n");
     // The deployment's default storage is always present and is what new
     // registries use with no binding at all. Render it as the first row — a
-    // `default` chip, "automatic" location, no delete — so it is *apparent* that
-    // storage already works and any custom binding is purely additive (no prose
-    // needed to say so).
+    // `default` chip, no delete — so it is *apparent* that storage already works
+    // and any custom binding is purely additive (no prose needed to say so). Its
+    // concrete location is a deployment-global setting shown on instance
+    // settings, so the location cell links there rather than repeating it.
     let mut rows: Vec<Vec<String>> = vec![vec![
         "<span class=\"chip\">default</span>".to_string(),
         escape(RuntimeKind::current().default_storage_kind()),
-        "<span class=\"dim\">automatic</span>".to_string(),
+        "<a href=\"/-/instance#storage\">deployment default →</a>".to_string(),
         String::new(),
     ]];
     rows.extend(bindings.iter().map(|b| {
@@ -1572,16 +1569,7 @@ pub fn org_dashboard(
         );
     }
 
-    page_with_session(
-        &org.name,
-        &[
-            ("/-/orgs".into(), "organizations".into()),
-            (String::new(), org.slug.clone()),
-        ],
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    org_settings_chrome(email, slug, "overview", &body, started)
 }
 
 /// A managed binary cache's detail page: configuration, usage, linked
@@ -1863,17 +1851,7 @@ pub fn audit_page(
         ));
         body.push_str(&pager.nav(&format!("/-/org/{}/audit", org.slug), ""));
     }
-    page_with_session(
-        "audit",
-        &[
-            ("/-/orgs".into(), "organizations".into()),
-            (format!("/-/org/{}", org.slug), org.slug.clone()),
-            (String::new(), "audit".into()),
-        ],
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    org_settings_chrome(email, &org.slug, "audit", &body, started)
 }
 
 /// The "create a registry" form (`/-/org/{org}/registries/new`).
@@ -1994,6 +1972,171 @@ pub fn new_registry_page(
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
+/// One entry in a settings left-sidebar nav.
+///
+/// The settings IA is uniform across the registry, org, and instance scopes
+/// (RFC-0004 console): every management page in a scope renders the same
+/// [`settings_layout`] with one of these marked active.
+pub struct SettingsTab {
+    /// The destination URL.
+    pub href: String,
+    /// The visible label.
+    pub label: String,
+    /// Whether this is the current page.
+    pub active: bool,
+}
+
+impl SettingsTab {
+    /// Builds a tab, marking it active when `key == active`.
+    fn new(key: &str, label: &str, href: String, active: &str) -> SettingsTab {
+        SettingsTab {
+            href,
+            label: label.to_string(),
+            active: key == active,
+        }
+    }
+}
+
+/// Wraps settings `content` in the shared left-sidebar layout.
+///
+/// Renders a vertical nav of `tabs` (the active one highlighted) beside the
+/// content, so the registry, org, and instance settings scopes share one
+/// information architecture. The page heading lives at the top of `content`
+/// (in the content column, beside the nav — the GitHub settings convention).
+/// On a narrow viewport the sidebar stacks above the content (see the
+/// `.settings` rules in `style.css`).
+fn settings_layout(tabs: &[SettingsTab], content: &str) -> String {
+    let mut nav = String::from("<nav class=\"settings-nav\" aria-label=\"Settings sections\">\n");
+    for tab in tabs {
+        let _ = write!(
+            nav,
+            "<a href=\"{href}\"{active}>{label}</a>\n",
+            href = escape(&tab.href),
+            active = if tab.active {
+                " class=\"active\" aria-current=\"page\""
+            } else {
+                ""
+            },
+            label = escape(&tab.label),
+        );
+    }
+    nav.push_str("</nav>\n");
+    format!("<div class=\"settings\">\n{nav}<div class=\"settings-body\">\n{content}</div>\n</div>\n")
+}
+
+/// The registry-scope settings sidebar (one of the management pages active).
+///
+/// `active` is the key of the current page (`general`, `tokens`, `keys`,
+/// `changes`, `config`, `serving`, `publishes`, `health`); an unknown key
+/// leaves none highlighted.
+fn registry_settings_tabs(slug: &str, active: &str) -> Vec<SettingsTab> {
+    vec![
+        SettingsTab::new("general", "General", format!("/{slug}/-/settings"), active),
+        SettingsTab::new(
+            "tokens",
+            "Tokens",
+            format!("/{slug}/-/settings/tokens"),
+            active,
+        ),
+        SettingsTab::new("keys", "Keys", format!("/{slug}/-/keys"), active),
+        SettingsTab::new(
+            "changes",
+            "Change requests",
+            format!("/{slug}/-/changes"),
+            active,
+        ),
+        SettingsTab::new(
+            "config",
+            "Config",
+            format!("/{slug}/-/settings/config"),
+            active,
+        ),
+        SettingsTab::new(
+            "serving",
+            "Serving & mirror",
+            format!("/{slug}/-/settings/serving"),
+            active,
+        ),
+        SettingsTab::new(
+            "publishes",
+            "Publishes",
+            format!("/{slug}/-/publishes"),
+            active,
+        ),
+        SettingsTab::new("health", "Health", format!("/{slug}/-/health"), active),
+    ]
+}
+
+/// Renders a registry management page: the shared sidebar (with `active`
+/// highlighted) beside `content`, under a `Manage · {slug}` heading, in the
+/// standard session chrome. Every per-registry settings sub-page funnels
+/// through here so the left nav is identical across them.
+pub fn registry_settings_chrome(
+    email: &str,
+    slug: &str,
+    active: &str,
+    content: &str,
+    started: Instant,
+) -> String {
+    let inner = format!("<h1>Manage · {}</h1>\n{content}", escape(slug));
+    let body = settings_layout(&registry_settings_tabs(slug, active), &inner);
+    page_with_session(
+        &format!("manage · {slug}"),
+        &registry_crumbs(slug),
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// The org-scope settings sidebar (one of the org management pages active).
+///
+/// `active` is the key of the current page (`overview`, `keys`, `webhooks`,
+/// `sso`, `audit`).
+fn org_settings_tabs(org_slug: &str, active: &str) -> Vec<SettingsTab> {
+    vec![
+        SettingsTab::new("overview", "Overview", format!("/-/org/{org_slug}"), active),
+        SettingsTab::new(
+            "keys",
+            "Hosted keys",
+            format!("/-/org/{org_slug}/keys"),
+            active,
+        ),
+        SettingsTab::new(
+            "webhooks",
+            "Webhooks",
+            format!("/-/org/{org_slug}/webhooks"),
+            active,
+        ),
+        SettingsTab::new("sso", "SSO", format!("/-/org/{org_slug}/sso"), active),
+        SettingsTab::new("audit", "Audit", format!("/-/org/{org_slug}/audit"), active),
+    ]
+}
+
+/// Renders an org management page: the shared sidebar (with `active`
+/// highlighted) beside `content` (which carries its own `<h1>`), in the
+/// standard session chrome. Mirrors [`registry_settings_chrome`] so the org and
+/// registry settings IAs are identical.
+fn org_settings_chrome(
+    email: &str,
+    org_slug: &str,
+    active: &str,
+    content: &str,
+    started: Instant,
+) -> String {
+    let body = settings_layout(&org_settings_tabs(org_slug, active), content);
+    page_with_session(
+        &format!("{org_slug} · settings"),
+        &[
+            ("/-/orgs".into(), "organizations".into()),
+            (format!("/-/org/{org_slug}"), org_slug.to_string()),
+        ],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
 pub fn registry_settings_page(
     email: &str,
     registry: &RegistryRecord,
@@ -2008,7 +2151,7 @@ pub fn registry_settings_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = format!("<h1>Manage · {}</h1>\n", escape(slug));
+    let mut body = String::new();
 
     if let Some(change_id) = result {
         let _ = writeln!(
@@ -2106,7 +2249,8 @@ pub fn registry_settings_page(
             };
             let _ = writeln!(
                 body,
-                "<p><span class=\"chip\">default storage</span> · prefix <code>{}</code></p>",
+                "<p><span class=\"chip\">default storage</span> · prefix <code>{}</code> · \
+                 <a href=\"/-/instance#storage\">deployment default →</a></p>",
                 escape(prefix),
             );
         }
@@ -2257,24 +2401,6 @@ pub fn registry_settings_page(
         slug = escape(slug),
     );
 
-    // The management link hub.
-    body.push_str("<h2>Manage this registry</h2>\n");
-    let _ = write!(
-        body,
-        "<ul class=\"manage-links\">\n\
-         <li><a href=\"/{slug}/-/settings/tokens\">tokens</a></li>\n\
-         <li><a href=\"/{slug}/-/keys\">keys</a></li>\n\
-         <li><a href=\"/{slug}/-/changes\">change requests</a></li>\n\
-         <li><a href=\"/{slug}/-/settings/config\">config</a></li>\n\
-         <li><a href=\"/{slug}/-/settings/serving\">serving &amp; mirror</a></li>\n\
-         <li><a href=\"/{slug}/-/publishes\">publishes</a></li>\n\
-         <li><a href=\"/{slug}/-/health\">health</a></li>\n\
-         <li><a href=\"/{slug}/-/packages\">packages</a></li>\n\
-         <li><a href=\"/{slug}/\">registry home</a></li>\n\
-         </ul>\n",
-        slug = escape(slug),
-    );
-
     if can_delete {
         body.push_str("<h2 class=\"danger\">Remove registry</h2>\n");
         let _ = write!(
@@ -2291,14 +2417,7 @@ pub fn registry_settings_page(
         );
     }
 
-    let crumbs = registry_crumbs(slug);
-    page_with_session(
-        &format!("manage · {slug}"),
-        &crumbs,
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    registry_settings_chrome(email, slug, "general", &body, started)
 }
 
 /// The per-registry token management page.
@@ -2392,17 +2511,7 @@ pub fn tokens_page(
         body.push_str("<p class=\"dim\">You need a developer role here to mint tokens.</p>\n");
     }
 
-    page_with_session(
-        &format!("{slug} tokens"),
-        &[
-            ("/".into(), "registries".into()),
-            (format!("/{slug}/"), slug.clone()),
-            (String::new(), "tokens".into()),
-        ],
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    registry_settings_chrome(email, slug, "tokens", &body, started)
 }
 
 /// The channel rollout console.
@@ -2588,17 +2697,7 @@ pub fn keys_page(
         );
     }
 
-    page_with_session(
-        &format!("{slug} keys"),
-        &[
-            ("/".into(), "registries".into()),
-            (format!("/{slug}/"), slug.clone()),
-            (String::new(), "keys".into()),
-        ],
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    registry_settings_chrome(email, slug, "keys", &body, started)
 }
 
 /// The key rotation wizard page.
@@ -2635,18 +2734,7 @@ pub fn keys_rotate_page(email: &str, registry: &RegistryRecord, started: Instant
         "<p class=\"dim\">The <code>--vouched-by</code> flag is mandatory: a retirement must be \
          signed by a key that remains in the roster, so consumers can verify the transition.</p>\n",
     );
-    page_with_session(
-        "key rotation",
-        &[
-            ("/".into(), "registries".into()),
-            (format!("/{slug}/"), slug.clone()),
-            (format!("/{slug}/-/keys"), "keys".into()),
-            (String::new(), "rotate".into()),
-        ],
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    registry_settings_chrome(email, slug, "keys", &body, started)
 }
 
 /// The org hosted-key enrollment page.
@@ -2753,17 +2841,7 @@ pub fn org_hosted_keys_page(
         }
     }
 
-    page_with_session(
-        &format!("{org_slug} hosted keys"),
-        &[
-            ("/-/orgs".into(), "orgs".into()),
-            (format!("/-/org/{org_slug}"), org_slug.clone()),
-            (String::new(), "hosted keys".into()),
-        ],
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    org_settings_chrome(email, org_slug, "keys", &body, started)
 }
 
 /// The subscribable webhook event types, with a short human label each.
@@ -2878,17 +2956,7 @@ pub fn org_webhooks_page(
          <button>add webhook</button>\n</form>\n",
     );
 
-    page_with_session(
-        &format!("{org_slug} webhooks"),
-        &[
-            ("/-/orgs".into(), "orgs".into()),
-            (format!("/-/org/{org_slug}"), org_slug.clone()),
-            (String::new(), "webhooks".into()),
-        ],
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    org_settings_chrome(email, org_slug, "webhooks", &body, started)
 }
 
 /// The org single-sign-on page: the OIDC IdP configuration and the captured
@@ -3061,17 +3129,7 @@ pub fn org_sso_page(
         csrf = csrf_field(csrf),
     );
 
-    page_with_session(
-        &format!("{org_slug} single sign-on"),
-        &[
-            ("/-/orgs".into(), "orgs".into()),
-            (format!("/-/org/{org_slug}"), org_slug.clone()),
-            (String::new(), "single sign-on".into()),
-        ],
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    org_settings_chrome(email, org_slug, "sso", &body, started)
 }
 
 /// The instance-settings page (instance admins only): the signup policy.
@@ -3083,6 +3141,7 @@ pub fn instance_settings_page(
     email: &str,
     csrf: &str,
     policy: SignupPolicy,
+    default_storage_location: Option<&str>,
     notice: Option<&str>,
     started: Instant,
 ) -> String {
@@ -3092,7 +3151,7 @@ pub fn instance_settings_page(
     }
     let _ = write!(
         body,
-        "<h2>Signup policy{help}</h2>\n",
+        "<h2 id=\"general\">Signup policy{help}</h2>\n",
         help = help::marker("instance.signup_policy"),
     );
     let open_sel = if matches!(policy, SignupPolicy::Open) {
@@ -3116,10 +3175,49 @@ pub fn instance_settings_page(
         csrf = csrf_field(csrf),
     );
 
+    // Default storage — the deployment-wide store a registry/cache with no
+    // explicit binding pushes to. Global, read-only here (it is set when the
+    // hub is deployed), and the natural home for "where does this push?".
+    body.push_str("<h2 id=\"storage\">Default storage</h2>\n");
+    body.push_str(
+        "<p>Registries and caches with no explicit storage binding push to the \
+         deployment's own storage.</p>\n",
+    );
+    let kind = RuntimeKind::current().default_storage_kind();
+    let location = match default_storage_location {
+        Some(loc) if !loc.trim().is_empty() => format!("<code>{}</code>", escape(loc)),
+        _ => "<span class=\"dim\">configured at deploy time</span>".to_string(),
+    };
+    let _ = writeln!(
+        body,
+        "<p>kind <span class=\"chip\">{kind}</span> · location {location}</p>",
+        kind = escape(kind),
+        location = location,
+    );
+    body.push_str(
+        "<p class=\"dim\">The default store is fixed at deploy time — the Worker's R2 \
+         bucket binding, or the native hub's storage root — and is not editable here. \
+         To push elsewhere, add an org-scoped storage binding and point a registry or \
+         cache at it.</p>\n",
+    );
+
+    let tabs = [
+        SettingsTab {
+            href: "#general".into(),
+            label: "General".into(),
+            active: true,
+        },
+        SettingsTab {
+            href: "#storage".into(),
+            label: "Storage".into(),
+            active: false,
+        },
+    ];
+    let layout = settings_layout(&tabs, &body);
     page_with_session(
         "instance settings",
         &[(String::new(), "instance settings".into())],
-        &body,
+        &layout,
         &StateLine::timed(started),
         &indicator(email),
     )
@@ -3287,15 +3385,7 @@ pub fn serving_page(
         );
     }
 
-    let mut crumbs = registry_crumbs(slug);
-    crumbs.push((String::new(), "serving".into()));
-    page_with_session(
-        &format!("{slug} serving"),
-        &crumbs,
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    registry_settings_chrome(email, slug, "serving", &body, started)
 }
 
 /// The publish-pipeline status view.
@@ -3384,6 +3474,8 @@ pub fn publishes_page(
          A live phase-by-phase pipeline stream is a later phase.</p>\n",
     );
 
+    // Keep the index-aware footer state line, but render the body inside the
+    // shared registry settings sidebar for a uniform IA.
     let state_line = match status {
         Some(s) => StateLine {
             surface_commit: s.last_indexed_commit.clone(),
@@ -3393,14 +3485,12 @@ pub fn publishes_page(
         },
         None => StateLine::timed(started),
     };
+    let inner = format!("<h1>Manage · {}</h1>\n{body}", escape(slug));
+    let content = settings_layout(&registry_settings_tabs(slug, "publishes"), &inner);
     page_with_session(
-        &format!("{slug} publishes"),
-        &[
-            ("/".into(), "registries".into()),
-            (format!("/{slug}/"), slug.clone()),
-            (String::new(), "publishes".into()),
-        ],
-        &body,
+        &format!("manage · {slug}"),
+        &registry_crumbs(slug),
+        &content,
         &state_line,
         &indicator(email),
     )
@@ -3498,14 +3588,7 @@ pub fn config_edit_page(
         let _ = writeln!(body, "<pre>{}</pre>", escape(current_toml));
     }
 
-    let crumbs = registry_crumbs(slug);
-    page_with_session(
-        &format!("edit config · {slug}"),
-        &crumbs,
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    registry_settings_chrome(email, slug, "config", &body, started)
 }
 
 /// Renders one editable `[[caches]]` row (URL + priority + remove button).
@@ -3577,14 +3660,7 @@ pub fn registry_config_form_page(
         body.push_str(
             "<p class=\"dim\">You need <code>registry.configure</code> to propose a change.</p>\n",
         );
-        let crumbs = registry_crumbs(slug);
-        return page_with_session(
-            &format!("edit config · {slug}"),
-            &crumbs,
-            &body,
-            &StateLine::timed(started),
-            &indicator(email),
-        );
+        return registry_settings_chrome(email, slug, "config", &body, started);
     }
 
     if let Some(err) = &model.error {
@@ -3639,14 +3715,7 @@ pub fn registry_config_form_page(
         cache_stack_note = cache_stack_note,
     );
 
-    let crumbs = registry_crumbs(slug);
-    page_with_session(
-        &format!("edit config · {slug}"),
-        &crumbs,
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    registry_settings_chrome(email, slug, "config", &body, started)
 }
 
 /// The change-requests list page for a registry (RFC-0004 "Configuration
@@ -3700,14 +3769,7 @@ pub fn changes_page(
         body.push_str("</section>\n");
     }
 
-    let crumbs = registry_crumbs(slug);
-    page_with_session(
-        &format!("change requests · {slug}"),
-        &crumbs,
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    registry_settings_chrome(email, slug, "changes", &body, started)
 }
 
 /// A rendered change request for [`changes_page`].
