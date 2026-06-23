@@ -10,6 +10,7 @@
   kaslrAslrDefault = import ./phase1-kaslr-aslr-default.nix {inherit pkgs lib;};
   contractAIsolation = import ./phase1-contract-a-isolation.nix {inherit pkgs lib;};
   timeContractADeterminism = import ./phase1-time-contract-a-determinism.nix {inherit pkgs lib;};
+  timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix {inherit pkgs lib;};
   noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
   icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
   singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {inherit pkgs lib;};
@@ -285,6 +286,13 @@ in
               "time_trajectory=icount_shift_pure_function" \
               "time_fingerprint_fields=final_icount,final_virtual_time_ns,trajectory_digest,time_derived_fields_digest" \
               "host_time_reads_on_time_path=false"
+            require_leaf ${timeMultiVcpuAggregateClock} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-TIME-9" \
+              "aggregate_node_clock=true" \
+              "per_vcpu_shmem_fields=false" \
+              "rr_switch_quantum_units=node-icount" \
+              "multi_vcpu_deadline=min-armed-vcpu-deadline"
             require_leaf ${noWarpWithPlugin} \
               "gate=gate:layer0-determinism" \
               "tasks=T-DET-3" \
@@ -328,12 +336,12 @@ in
             evidence.E8=guestEntropyLaunch.firmware_seed_source+guest_csprng_same_seed_reproducible
             evidence.E9=qemuDeterministicEntropy.qemu_seed_option_controls_guest_random+qemu_seed_option_controls_glib_global_prng
             evidence.E10=deterministicLaunch.cpu+singleVmFingerprint.run_model
-            evidence.E13=deterministicLaunch.smp_vcpus+contractAIsolation.rr_vcpu_cursor
+            evidence.E13=deterministicLaunch.smp_vcpus+contractAIsolation.rr_vcpu_cursor+timeMultiVcpuAggregateClock.aggregate_node_clock
             evidence.E14=noWarpWithPlugin.time_control_predicate+notify_preserved_under_time_control
             evidence.E15=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E16=deterministicLaunch.machine_reset+ram_reset
             evidence.E17=deterministicLaunch.input_policy+contractAIsolation.recorded_inputs_enforced
-            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,timeContractADeterminism,noWarpWithPlugin,icountNoRealtime,singleVmFingerprint
+            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,timeContractADeterminism,timeMultiVcpuAggregateClock,noWarpWithPlugin,icountNoRealtime,singleVmFingerprint
             RESULT
           '';
         }

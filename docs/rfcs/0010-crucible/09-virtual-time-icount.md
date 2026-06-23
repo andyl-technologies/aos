@@ -674,7 +674,7 @@ instruction-primary.
   `(icount, virtual_time)` trajectory and matching time-derived fingerprint
   fields under adversarial host conditions; lint-ban all host-time reads on the
   time path. — satisfies [TIME-31], [TIME-32], [TIME-33]; spec §9.10.
-- [ ] **T-TIME-9** Implement the multi-vCPU single-aggregate-icount clock: derive
+- [x] **T-TIME-9** Implement the multi-vCPU single-aggregate-icount clock: derive
   the node clock from the aggregate retired-instruction count across all `N`
   vCPUs (no per-vCPU shift/epoch), keep per-vCPU counts plugin-internal, pin the
   node-icount `rr_switch_quantum` into the content hash, and compute the node's

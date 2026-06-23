@@ -42,6 +42,93 @@ pub enum ExactDeadlineReport {
     },
 }
 
+/// One vCPU's plugin-internal exact-deadline observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PerVcpuDeadlineReport {
+    vcpu_id: u64,
+    report: ExactDeadlineReport,
+}
+
+impl PerVcpuDeadlineReport {
+    /// Builds a deadline observation for one vCPU.
+    #[must_use]
+    pub fn new(vcpu_id: u64, report: ExactDeadlineReport) -> Self {
+        Self { vcpu_id, report }
+    }
+
+    /// Returns the zero-based vCPU identifier for this observation.
+    #[must_use]
+    pub fn vcpu_id(&self) -> u64 {
+        self.vcpu_id
+    }
+
+    /// Returns this vCPU's exact virtual-clock deadline report.
+    #[must_use]
+    pub fn report(&self) -> ExactDeadlineReport {
+        self.report
+    }
+}
+
+/// Reduces per-vCPU exact-deadline observations to the node deadline.
+///
+/// The returned value is the minimum armed `QEMU_CLOCK_VIRTUAL` deadline across
+/// all `0..vcpu_count` vCPUs. `NoArmedTimer` observations are ignored unless
+/// every vCPU is idle, in which case the node also reports
+/// [`ExactDeadlineReport::NoArmedTimer`].
+///
+/// # Errors
+///
+/// Returns [`ExactDeadlineError`] when `vcpu_count` is zero, no vCPU reports are
+/// supplied, a report names a vCPU outside `0..vcpu_count`, the same vCPU id
+/// appears more than once, or any expected vCPU did not report.
+pub fn aggregate_multi_vcpu_deadline(
+    vcpu_count: u64,
+    reports: &[PerVcpuDeadlineReport],
+) -> Result<ExactDeadlineReport, ExactDeadlineError> {
+    if vcpu_count == 0 {
+        return Err(ExactDeadlineError::ZeroVcpuDeadlineCount);
+    }
+    if reports.is_empty() {
+        return Err(ExactDeadlineError::EmptyVcpuDeadlineSet);
+    }
+
+    let mut min_deadline_ns: Option<u64> = None;
+    for (index, report) in reports.iter().enumerate() {
+        if report.vcpu_id >= vcpu_count {
+            return Err(ExactDeadlineError::VcpuDeadlineOutOfRange {
+                vcpu_id: report.vcpu_id,
+                vcpu_count,
+            });
+        }
+        if reports[..index]
+            .iter()
+            .any(|previous| previous.vcpu_id == report.vcpu_id)
+        {
+            return Err(ExactDeadlineError::DuplicateVcpuDeadline {
+                vcpu_id: report.vcpu_id,
+            });
+        }
+
+        if let ExactDeadlineReport::Armed { deadline_ns } = report.report {
+            min_deadline_ns = Some(match min_deadline_ns {
+                Some(current) => current.min(deadline_ns),
+                None => deadline_ns,
+            });
+        }
+    }
+
+    for vcpu_id in 0..vcpu_count {
+        if !reports.iter().any(|report| report.vcpu_id == vcpu_id) {
+            return Err(ExactDeadlineError::MissingVcpuDeadline { vcpu_id });
+        }
+    }
+
+    Ok(match min_deadline_ns {
+        Some(deadline_ns) => ExactDeadlineReport::Armed { deadline_ns },
+        None => ExactDeadlineReport::NoArmedTimer,
+    })
+}
+
 /// A policy and capability check for exact deadline introspection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExactDeadlineIntrospection {
@@ -131,6 +218,32 @@ pub enum ExactDeadlineError {
     /// Overshoot-and-correct fallback was requested.
     #[error("overshoot-and-correct fallback is forbidden for exact deadlines")]
     OvershootFallbackForbidden,
+    /// A multi-vCPU deadline aggregation was requested for zero vCPUs.
+    #[error("multi-vCPU deadline aggregation requires a non-zero vCPU count")]
+    ZeroVcpuDeadlineCount,
+    /// No vCPU deadline observations were supplied for a multi-vCPU node.
+    #[error("multi-vCPU deadline aggregation requires at least one vCPU report")]
+    EmptyVcpuDeadlineSet,
+    /// A multi-vCPU deadline report named a vCPU outside the configured range.
+    #[error("multi-vCPU deadline report named vCPU {vcpu_id}, outside vCPU count {vcpu_count}")]
+    VcpuDeadlineOutOfRange {
+        /// The out-of-range vCPU id.
+        vcpu_id: u64,
+        /// The configured vCPU count.
+        vcpu_count: u64,
+    },
+    /// A multi-vCPU deadline set contained two reports for the same vCPU.
+    #[error("multi-vCPU deadline aggregation received duplicate report for vCPU {vcpu_id}")]
+    DuplicateVcpuDeadline {
+        /// The duplicated vCPU id.
+        vcpu_id: u64,
+    },
+    /// A multi-vCPU deadline set did not include an expected vCPU.
+    #[error("multi-vCPU deadline aggregation is missing report for vCPU {vcpu_id}")]
+    MissingVcpuDeadline {
+        /// The expected vCPU id with no report.
+        vcpu_id: u64,
+    },
 }
 
 #[cfg(test)]
@@ -196,6 +309,98 @@ mod tests {
         assert_eq!(
             introspection.report(4096),
             Err(ExactDeadlineError::OvershootFallbackForbidden)
+        );
+    }
+
+    #[test]
+    fn multi_vcpu_deadline_uses_minimum_armed_virtual_deadline() {
+        let reports = [
+            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ns: 90 }),
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::NoArmedTimer),
+            PerVcpuDeadlineReport::new(1, ExactDeadlineReport::Armed { deadline_ns: 40 }),
+            PerVcpuDeadlineReport::new(3, ExactDeadlineReport::Armed { deadline_ns: 70 }),
+        ];
+
+        assert_eq!(
+            aggregate_multi_vcpu_deadline(4, &reports),
+            Ok(ExactDeadlineReport::Armed { deadline_ns: 40 })
+        );
+    }
+
+    #[test]
+    fn multi_vcpu_deadline_returns_no_armed_timer_when_every_vcpu_is_idle() {
+        let reports = [
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::NoArmedTimer),
+            PerVcpuDeadlineReport::new(1, ExactDeadlineReport::NoArmedTimer),
+        ];
+
+        assert_eq!(
+            aggregate_multi_vcpu_deadline(2, &reports),
+            Ok(ExactDeadlineReport::NoArmedTimer)
+        );
+    }
+
+    #[test]
+    fn multi_vcpu_deadline_rejects_duplicate_vcpu_reports() {
+        let reports = [
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 90 }),
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 40 }),
+        ];
+
+        assert_eq!(
+            aggregate_multi_vcpu_deadline(2, &reports),
+            Err(ExactDeadlineError::DuplicateVcpuDeadline { vcpu_id: 0 })
+        );
+    }
+
+    #[test]
+    fn multi_vcpu_deadline_rejects_empty_report_sets() {
+        assert_eq!(
+            aggregate_multi_vcpu_deadline(2, &[]),
+            Err(ExactDeadlineError::EmptyVcpuDeadlineSet)
+        );
+    }
+
+    #[test]
+    fn multi_vcpu_deadline_rejects_zero_expected_vcpus() {
+        let reports = [PerVcpuDeadlineReport::new(
+            0,
+            ExactDeadlineReport::Armed { deadline_ns: 40 },
+        )];
+
+        assert_eq!(
+            aggregate_multi_vcpu_deadline(0, &reports),
+            Err(ExactDeadlineError::ZeroVcpuDeadlineCount)
+        );
+    }
+
+    #[test]
+    fn multi_vcpu_deadline_rejects_out_of_range_vcpu_reports() {
+        let reports = [
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 90 }),
+            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ns: 40 }),
+        ];
+
+        assert_eq!(
+            aggregate_multi_vcpu_deadline(2, &reports),
+            Err(ExactDeadlineError::VcpuDeadlineOutOfRange {
+                vcpu_id: 2,
+                vcpu_count: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn multi_vcpu_deadline_rejects_incomplete_vcpu_report_sets() {
+        let reports = [
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 90 }),
+            PerVcpuDeadlineReport::new(1, ExactDeadlineReport::Armed { deadline_ns: 40 }),
+            PerVcpuDeadlineReport::new(3, ExactDeadlineReport::Armed { deadline_ns: 70 }),
+        ];
+
+        assert_eq!(
+            aggregate_multi_vcpu_deadline(4, &reports),
+            Err(ExactDeadlineError::MissingVcpuDeadline { vcpu_id: 2 })
         );
     }
 }

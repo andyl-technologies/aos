@@ -24,7 +24,8 @@ pub mod time_control;
 
 pub use deadline::{
     ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,
-    ExactDeadlineReport, QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
+    ExactDeadlineReport, PerVcpuDeadlineReport, QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
+    aggregate_multi_vcpu_deadline,
 };
 pub use time_control::{
     CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, PluginRegistrationStep,
