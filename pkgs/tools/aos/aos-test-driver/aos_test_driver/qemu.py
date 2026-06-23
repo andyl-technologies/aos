@@ -194,7 +194,7 @@ class QemuMachine(Machine):
         # this system variant (Nix dedups), but each VM needs a writable
         # copy because QEMU opens it rw. clone_or_copy reflinks it on a
         # CoW filesystem (the common case: the Nix store and build scratch
-        # are the same btrfs/XFS volume), so the copy is near-instant and
+        # are the same btrfs/XFS/ZFS volume), so the copy is near-instant and
         # free until the guest writes — it falls back to a full copy
         # otherwise. The metadata ISO is per-machine already; its local
         # copy isolates the run from any read-side caching quirks with

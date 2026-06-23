@@ -6,23 +6,36 @@ machines with identical inputs to a single store path — see mkTestDisk in
 lib/testing/vm.nix), so the per-VM copy is the same large file cloned N
 times into the build's scratch directory.
 
-On a copy-on-write filesystem (btrfs, XFS with reflink) that copy can be a
-reflink clone instead of a full byte copy: the clone is near-instant and
-consumes no extra space until the guest writes to it, with divergence
-handled lazily by the filesystem. `clone_or_copy` prefers the clone and
-falls back to a plain copy when the filesystem can't honor it.
+On a copy-on-write filesystem (btrfs, XFS with reflink, or OpenZFS >= 2.2
+with block cloning) that copy can be a reflink clone instead of a full byte
+copy: the clone is near-instant and consumes no extra space until the guest
+writes to it, with divergence handled lazily by the filesystem.
+`clone_or_copy` prefers the clone and falls back to a plain copy when the
+filesystem can't honor it.
 """
 
 import fcntl
 import shutil
 
-# FICLONE = _IOW(0x94, 9, int): reflink the entire content of one file
-# onto another on the same filesystem — the same ioctl `cp --reflink`
-# issues. The _IOC encoding for a 4-byte int argument is identical across
-# the Linux architectures this driver runs on (x86-64, aarch64), so the
-# literal is portable here. A filesystem that can't clone fails with
-# EOPNOTSUPP/EINVAL, or EXDEV across filesystems; the caller's fallback
-# handles all of these.
+# FICLONE = _IOW(0x94, 9, int): the generic VFS ioctl that reflinks one
+# whole file onto another — the same call `cp --reflink` issues. It is NOT
+# btrfs-specific: the kernel routes it (fs/ioctl.c FICLONE -> ioctl_file_
+# clone -> vfs_clone_file_range) to the filesystem's ->remap_file_range, so
+# every copy-on-write filesystem that implements that op honors it — btrfs,
+# XFS (reflink=1), bcachefs, OCFS2, and OpenZFS >= 2.2 whose pool has the
+# block_cloning feature enabled (zpl_remap_file_range, on by default since
+# zfs_bclone_enabled = 1). FICLONE is just FICLONERANGE over the whole file
+# and shares its code path. The _IOC encoding for a 4-byte int argument is
+# identical across the architectures this driver runs on (x86-64, aarch64),
+# so the literal is portable here.
+#
+# The clone is all-or-nothing: the kernel passes no REMAP_FILE_CAN_SHORTEN
+# flag for FICLONE, so it fails with EOPNOTSUPP/EINVAL (no reflink support,
+# or block_cloning off), EXDEV (cross-filesystem source), or — on ZFS —
+# EINVAL when the source still holds unsynced dirty data it would have to
+# shorten the clone around. Our source is an immutable, long-synced Nix
+# store path, so that last case doesn't arise; the caller's copy fallback
+# covers the rest.
 _FICLONE = 0x40049409
 
 
