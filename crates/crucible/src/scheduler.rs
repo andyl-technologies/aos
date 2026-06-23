@@ -10,7 +10,8 @@ use std::error::Error;
 use std::fmt;
 
 use crate::{
-    BackendError, BackendInput, Configuration, Decision, FaultId, Icount, NodeId, VirtualTime,
+    BackendError, BackendInput, Configuration, Decision, FaultId, Icount, NodeCounter, NodeId,
+    Shift, SimInstant, TimeConversionError, VirtualTime,
 };
 
 /// Advances the system by one scheduler quantum.
@@ -103,17 +104,187 @@ pub enum SchedulingNodeKind {
     ControlPlane,
 }
 
-/// Canonical key for resolving due events in one total order.
+/// Shared virtual-timeline projection used by scheduler ordering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SharedTimeline {
+    shift: Shift,
+}
+
+impl SharedTimeline {
+    /// Builds a shared timeline using one fixed scenario shift.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeConversionError::InvalidShift`] when `shift` cannot name a
+    /// `u64` power-of-two scale.
+    pub fn new(shift: Shift) -> Result<Self, TimeConversionError> {
+        NodeCounter::default().to_virtual(shift)?;
+        Ok(Self { shift })
+    }
+
+    /// Returns the fixed scenario shift used by every node projection.
+    #[must_use]
+    pub fn shift(&self) -> Shift {
+        self.shift
+    }
+
+    /// Projects a VM icount or deterministic I/O counter onto the shared axis.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeConversionError`] when the counter cannot be converted to a
+    /// virtual-time point under this timeline's fixed shift.
+    pub fn project_counter(
+        &self,
+        node: SchedulerNodeId,
+        counter: NodeCounter,
+    ) -> Result<NodeTimelineProjection, TimeConversionError> {
+        Ok(NodeTimelineProjection {
+            node,
+            counter,
+            virtual_time: counter.to_virtual(self.shift)?,
+        })
+    }
+
+    /// Projects a node counter into a scheduler ordering key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeConversionError`] when the counter cannot be converted to a
+    /// virtual-time point under this timeline's fixed shift.
+    pub fn timeline_key(
+        &self,
+        node: SchedulerNodeId,
+        counter: NodeCounter,
+        sequence: u64,
+    ) -> Result<SharedTimelineKey, TimeConversionError> {
+        let projection = self.project_counter(node, counter)?;
+        Ok(projection.timeline_key(sequence))
+    }
+}
+
+/// A node-local counter projected onto the shared virtual timeline.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NodeTimelineProjection {
+    /// The VM node or deterministic I/O sub-node owning the counter.
+    pub node: SchedulerNodeId,
+    /// The node-local counter before projection.
+    pub counter: NodeCounter,
+    /// The derived point on the shared virtual timeline.
+    pub virtual_time: SimInstant,
+}
+
+impl NodeTimelineProjection {
+    /// Returns the scheduler ordering key for an event from this projection.
+    #[must_use]
+    pub fn timeline_key(&self, sequence: u64) -> SharedTimelineKey {
+        SharedTimelineKey {
+            virtual_time: self.virtual_time,
+            node: self.node.clone(),
+            sequence,
+        }
+    }
+}
+
+/// Canonical key for shared-timeline scheduler ordering.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SharedTimelineKey {
+    /// The icount-derived point on the shared virtual timeline.
+    pub virtual_time: SimInstant,
+    /// The VM node or deterministic I/O sub-node ordered on that timeline.
+    pub node: SchedulerNodeId,
+    /// The node-local sequence number used to resolve simultaneity.
+    pub sequence: u64,
+}
+
+/// Returns shared-timeline keys in canonical deterministic scheduler order.
+#[must_use]
+pub fn ordered_timeline_keys(keys: &[SharedTimelineKey]) -> Vec<&SharedTimelineKey> {
+    let mut ordered = keys.iter().collect::<Vec<_>>();
+
+    ordered.sort();
+
+    ordered
+}
+
+/// Canonical key for resolving due events in one total order.
+///
+/// The key consumes the shared timeline projection first, then refines
+/// simultaneity with the producer node before the sequence number. This preserves
+/// the same-icount producer tie-break while making the scheduler event order
+/// explicitly depend on `(virtual_time, consumer node, sequence)` from the
+/// shared timeline.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScheduledEventKey {
-    /// The virtual time at which the event is due.
-    pub virtual_time: VirtualTime,
-    /// The event consumer.
-    pub consumer: SchedulerNodeId,
+    /// The shared-timeline consumer ordering key.
+    pub timeline: SharedTimelineKey,
     /// The event producer.
     pub producer: SchedulerNodeId,
-    /// The producer-local sequence number.
-    pub sequence: u64,
+}
+
+impl ScheduledEventKey {
+    /// Builds a scheduled-event key from the shared timeline and producer.
+    #[must_use]
+    pub fn new(timeline: SharedTimelineKey, producer: SchedulerNodeId) -> Self {
+        Self { timeline, producer }
+    }
+
+    /// Builds a scheduled-event key from legacy event-ordering parts.
+    #[must_use]
+    pub fn from_parts(
+        virtual_time: VirtualTime,
+        consumer: SchedulerNodeId,
+        producer: SchedulerNodeId,
+        sequence: u64,
+    ) -> Self {
+        Self {
+            timeline: SharedTimelineKey {
+                virtual_time: SimInstant {
+                    nanos: virtual_time.ticks,
+                },
+                node: consumer,
+                sequence,
+            },
+            producer,
+        }
+    }
+
+    /// Returns the shared virtual time at which the event is due.
+    #[must_use]
+    pub fn virtual_time(&self) -> VirtualTime {
+        VirtualTime {
+            ticks: self.timeline.virtual_time.nanos,
+        }
+    }
+
+    /// Returns the event consumer.
+    #[must_use]
+    pub fn consumer(&self) -> &SchedulerNodeId {
+        &self.timeline.node
+    }
+
+    /// Returns the producer-local sequence number.
+    #[must_use]
+    pub fn sequence(&self) -> u64 {
+        self.timeline.sequence
+    }
+}
+
+impl Ord for ScheduledEventKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.timeline
+            .virtual_time
+            .cmp(&other.timeline.virtual_time)
+            .then_with(|| self.timeline.node.cmp(&other.timeline.node))
+            .then_with(|| self.producer.cmp(&other.producer))
+            .then_with(|| self.timeline.sequence.cmp(&other.timeline.sequence))
+    }
+}
+
+impl PartialOrd for ScheduledEventKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// A due event resolved by the scheduler.
@@ -331,6 +502,96 @@ mod tests {
     }
 
     #[test]
+    fn shared_timeline_projects_vm_and_io_counters_uniformly() {
+        let timeline = shared_timeline(2);
+        let vm = scheduler_node("a", SchedulingNodeKind::Vm);
+        let disk = scheduler_node("a", SchedulingNodeKind::Disk);
+        let network = scheduler_node("link-a-b", SchedulingNodeKind::Network);
+
+        let vm_projection = project_counter(
+            &timeline,
+            vm.clone(),
+            NodeCounter::from_icount(Icount { retired: 7 }),
+        );
+        let disk_projection = project_counter(&timeline, disk.clone(), NodeCounter { ticks: 7 });
+        let network_projection =
+            project_counter(&timeline, network.clone(), NodeCounter { ticks: 11 });
+
+        assert_eq!(vm_projection.node, vm);
+        assert_eq!(vm_projection.counter, NodeCounter { ticks: 7 });
+        assert_eq!(vm_projection.virtual_time, SimInstant { nanos: 28 });
+        assert_eq!(disk_projection.node, disk);
+        assert_eq!(disk_projection.virtual_time, SimInstant { nanos: 28 });
+        assert_eq!(network_projection.node, network);
+        assert_eq!(network_projection.virtual_time, SimInstant { nanos: 44 });
+    }
+
+    #[test]
+    fn shared_timeline_keys_order_by_time_node_and_sequence() {
+        let timeline = shared_timeline(1);
+        let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
+        let vm_b = scheduler_node("b", SchedulingNodeKind::Vm);
+        let disk_a = scheduler_node("a", SchedulingNodeKind::Disk);
+        let arrival_order = vec![
+            timeline_key(&timeline, vm_b, 2, 0),
+            timeline_key(&timeline, vm_a.clone(), 1, 5),
+            timeline_key(&timeline, disk_a, 1, 2),
+            timeline_key(&timeline, vm_a, 1, 1),
+        ];
+
+        let ordered = ordered_timeline_keys(&arrival_order);
+
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|key| {
+                    (
+                        key.virtual_time.nanos,
+                        key.node.node.name.as_str(),
+                        key.node.kind,
+                        key.sequence,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (2, "a", SchedulingNodeKind::Vm, 1),
+                (2, "a", SchedulingNodeKind::Vm, 5),
+                (2, "a", SchedulingNodeKind::Disk, 2),
+                (4, "b", SchedulingNodeKind::Vm, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn scheduled_event_keys_consume_shared_timeline_and_refine_by_producer() {
+        let timeline = shared_timeline(0);
+        let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
+        let disk_a = scheduler_node("a", SchedulingNodeKind::Disk);
+        let network_a = scheduler_node("a", SchedulingNodeKind::Network);
+        let mut keys = [
+            ScheduledEventKey::new(
+                timeline_key(&timeline, vm_a.clone(), 8, 9),
+                network_a.clone(),
+            ),
+            ScheduledEventKey::new(timeline_key(&timeline, vm_a.clone(), 8, 3), disk_a.clone()),
+            ScheduledEventKey::new(timeline_key(&timeline, vm_a.clone(), 8, 1), network_a),
+        ];
+
+        keys.sort();
+
+        assert_eq!(
+            keys.iter()
+                .map(|key| (key.producer.kind, key.sequence()))
+                .collect::<Vec<_>>(),
+            vec![
+                (SchedulingNodeKind::Disk, 3),
+                (SchedulingNodeKind::Network, 1),
+                (SchedulingNodeKind::Network, 9),
+            ]
+        );
+    }
+
+    #[test]
     fn quantum_outcome_carries_step_decisions() {
         let config = Configuration::genesis(ScenarioDef {
             id: ContentHash::default(),
@@ -383,20 +644,54 @@ mod tests {
         }
     }
 
+    fn shared_timeline(bits: u8) -> SharedTimeline {
+        let shift = match Shift::new(bits) {
+            Ok(shift) => shift,
+            Err(error) => panic!("test shift should be valid: {error}"),
+        };
+        match SharedTimeline::new(shift) {
+            Ok(timeline) => timeline,
+            Err(error) => panic!("test timeline should be valid: {error}"),
+        }
+    }
+
+    fn project_counter(
+        timeline: &SharedTimeline,
+        node: SchedulerNodeId,
+        counter: NodeCounter,
+    ) -> NodeTimelineProjection {
+        match timeline.project_counter(node, counter) {
+            Ok(projection) => projection,
+            Err(error) => panic!("test counter should project: {error}"),
+        }
+    }
+
+    fn timeline_key(
+        timeline: &SharedTimeline,
+        node: SchedulerNodeId,
+        counter: u64,
+        sequence: u64,
+    ) -> SharedTimelineKey {
+        match timeline.timeline_key(node, NodeCounter { ticks: counter }, sequence) {
+            Ok(key) => key,
+            Err(error) => panic!("test timeline key should project: {error}"),
+        }
+    }
+
     fn event_key(
         virtual_time: u64,
         consumer: &SchedulerNodeId,
         producer: &SchedulerNodeId,
         sequence: u64,
     ) -> ScheduledEventKey {
-        ScheduledEventKey {
-            virtual_time: VirtualTime {
+        ScheduledEventKey::from_parts(
+            VirtualTime {
                 ticks: virtual_time,
             },
-            consumer: consumer.clone(),
-            producer: producer.clone(),
+            consumer.clone(),
+            producer.clone(),
             sequence,
-        }
+        )
     }
 
     fn event(

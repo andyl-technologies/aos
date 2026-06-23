@@ -645,7 +645,7 @@ instruction-primary.
   content hash; reject `-icount shift=auto` and any per-node shift mismatch; ship
   and document a default shift with rationale in the decision register. —
   satisfies [TIME-5], [TIME-6], [TIME-7], [TIME-14]; spec §9.3, §9.5.
-- [ ] **T-TIME-3** Implement per-node icount-derived virtual time and the shared
+- [x] **T-TIME-3** Implement per-node icount-derived virtual time and the shared
   virtual timeline projection, with the `(virtual_time, node_id, sequence)` total
   order consumed by the scheduler; cover VM nodes and I/O sub-nodes uniformly. —
   satisfies [TIME-1], [TIME-2], [TIME-13], [TIME-15]; spec §9.1, §9.2, §9.5.
