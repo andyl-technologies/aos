@@ -203,10 +203,7 @@ impl LaunchProfileCandidate {
         }
 
         let icount_shift = match self.icount_shift {
-            IcountShiftSetting::Fixed(shift) if shift <= MAX_ICOUNT_SHIFT => shift,
-            IcountShiftSetting::Fixed(shift) => {
-                return Err(LaunchProfileError::IcountShiftTooLarge { shift });
-            }
+            IcountShiftSetting::Fixed(shift) => validate_icount_shift(shift)?,
             IcountShiftSetting::Auto => return Err(LaunchProfileError::IcountShiftAuto),
         };
 
@@ -281,6 +278,26 @@ impl LaunchProfileCandidate {
             run_seed: self.run_seed,
             guest_entropy_seed: GuestEntropySeed::from_scenario_seed(self.scenario_seed),
         })
+    }
+}
+
+/// A node-local icount shift declaration from scenario launch content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeIcountShift {
+    /// The stable scenario node identifier.
+    pub node_id: String,
+    /// The node's fixed `-icount shift=N` value.
+    pub shift: u8,
+}
+
+impl NodeIcountShift {
+    /// Builds a node-local icount shift declaration.
+    #[must_use]
+    pub fn new(node_id: impl Into<String>, shift: u8) -> Self {
+        Self {
+            node_id: node_id.into(),
+            shift,
+        }
     }
 }
 
@@ -391,6 +408,31 @@ impl DeterministicLaunchProfile {
         .join("\n")
     }
 
+    /// Returns canonical scenario hash material after validating node shifts.
+    ///
+    /// Node shift declarations are sorted by node identifier before they enter
+    /// the material so callers do not have to preserve a host-dependent
+    /// iteration order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LaunchProfileError`] when a node identifier is not stable text,
+    /// a node is declared more than once, a node requests an unsupported fixed
+    /// shift, or a node shift differs from the scenario-wide launch-profile
+    /// shift.
+    pub fn scenario_hash_material_for_nodes(
+        &self,
+        node_shifts: &[NodeIcountShift],
+    ) -> Result<String, LaunchProfileError> {
+        let node_shift_lines = canonical_node_icount_shift_lines(self.icount_shift, node_shifts)?;
+        let mut material = self.scenario_hash_material();
+        for line in node_shift_lines {
+            material.push('\n');
+            material.push_str(&line);
+        }
+        Ok(material)
+    }
+
     /// Returns the scenario seed used for guest entropy derivation.
     #[must_use]
     pub fn scenario_seed(&self) -> u64 {
@@ -412,6 +454,27 @@ impl DeterministicLaunchProfile {
         }
     }
 
+    /// Returns the fixed `-icount shift=N` value pinned by this launch profile.
+    #[must_use]
+    pub fn icount_shift(&self) -> u8 {
+        self.icount_shift
+    }
+
+    /// Validates that every node launch declaration uses this profile's shift.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LaunchProfileError`] when a node identifier is not stable text,
+    /// a node is declared more than once, a node requests an unsupported fixed
+    /// shift, or a node shift differs from the scenario-wide launch-profile
+    /// shift.
+    pub fn validate_node_icount_shifts(
+        &self,
+        node_shifts: &[NodeIcountShift],
+    ) -> Result<(), LaunchProfileError> {
+        validate_node_icount_shifts(self.icount_shift, node_shifts)
+    }
+
     /// Converts an instruction count to virtual nanoseconds.
     ///
     /// # Errors
@@ -426,6 +489,57 @@ impl DeterministicLaunchProfile {
                 icount,
                 shift: self.icount_shift,
             })
+    }
+}
+
+fn validate_node_icount_shifts(
+    scenario_shift: u8,
+    node_shifts: &[NodeIcountShift],
+) -> Result<(), LaunchProfileError> {
+    canonical_node_icount_shift_lines(scenario_shift, node_shifts)?;
+    Ok(())
+}
+
+fn canonical_node_icount_shift_lines(
+    scenario_shift: u8,
+    node_shifts: &[NodeIcountShift],
+) -> Result<Vec<String>, LaunchProfileError> {
+    validate_icount_shift(scenario_shift)?;
+
+    let mut ordered = Vec::with_capacity(node_shifts.len());
+    for node_shift in node_shifts {
+        validate_fixed_text("node_id", &node_shift.node_id)?;
+        validate_icount_shift(node_shift.shift)?;
+        if node_shift.shift != scenario_shift {
+            return Err(LaunchProfileError::IcountShiftMismatch {
+                node_id: node_shift.node_id.clone(),
+                scenario_shift,
+                node_shift: node_shift.shift,
+            });
+        }
+        ordered.push((node_shift.node_id.clone(), node_shift.shift));
+    }
+
+    ordered.sort_by(|left, right| left.0.cmp(&right.0));
+    for adjacent in ordered.windows(2) {
+        if adjacent[0].0 == adjacent[1].0 {
+            return Err(LaunchProfileError::DuplicateNodeIcountShift {
+                node_id: adjacent[0].0.clone(),
+            });
+        }
+    }
+
+    Ok(ordered
+        .into_iter()
+        .map(|(node_id, shift)| format!("node_icount_shift[{node_id}]={shift}"))
+        .collect())
+}
+
+fn validate_icount_shift(shift: u8) -> Result<u8, LaunchProfileError> {
+    if shift <= MAX_ICOUNT_SHIFT {
+        Ok(shift)
+    } else {
+        Err(LaunchProfileError::IcountShiftTooLarge { shift })
     }
 }
 

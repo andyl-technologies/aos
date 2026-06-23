@@ -6,7 +6,7 @@
 use crucible::ScenarioDef;
 use crucible_qemu::{
     DeterministicLaunchProfile, DiskImageMode, IcountShiftSetting, InputPolicy,
-    LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
+    LaunchProfileCandidate, LaunchProfileError, MachineResetMode, NodeIcountShift,
 };
 
 fn default_profile() -> DeterministicLaunchProfile {
@@ -21,6 +21,15 @@ fn deterministic(candidate: LaunchProfileCandidate) -> DeterministicLaunchProfil
         Ok(profile) => profile,
         Err(error) => panic!("candidate should be deterministic: {error}"),
     }
+}
+
+fn scenario_material_for_nodes(
+    profile: &DeterministicLaunchProfile,
+    node_shifts: &[NodeIcountShift],
+) -> String {
+    profile
+        .scenario_hash_material_for_nodes(node_shifts)
+        .unwrap_or_else(|error| panic!("node shift material should be valid: {error}"))
 }
 
 #[test]
@@ -241,6 +250,67 @@ fn launch_profile_rejects_mutating_or_interactive_state() {
             .try_into_deterministic(),
         Err(LaunchProfileError::InteractiveInputEnabled {
             policy: InputPolicy::HostInteractive,
+        })
+    );
+}
+
+#[test]
+fn launch_profile_rejects_per_node_icount_shift_mismatch() {
+    let profile = default_profile();
+
+    assert_eq!(profile.icount_shift(), 0);
+    assert_eq!(
+        profile.validate_node_icount_shifts(&[
+            NodeIcountShift::new("vm-a", 0),
+            NodeIcountShift::new("vm-b", 0),
+        ]),
+        Ok(())
+    );
+    let material = scenario_material_for_nodes(
+        &profile,
+        &[
+            NodeIcountShift::new("vm-b", 0),
+            NodeIcountShift::new("vm-a", 0),
+        ],
+    );
+    let vm_a_line = material
+        .lines()
+        .position(|line| line == "node_icount_shift[vm-a]=0")
+        .unwrap_or_else(|| panic!("missing vm-a node shift line in {material}"));
+    let vm_b_line = material
+        .lines()
+        .position(|line| line == "node_icount_shift[vm-b]=0")
+        .unwrap_or_else(|| panic!("missing vm-b node shift line in {material}"));
+    assert!(
+        vm_a_line < vm_b_line,
+        "node shift material must be sorted by node id"
+    );
+    assert_eq!(
+        profile.scenario_hash_material_for_nodes(&[
+            NodeIcountShift::new("vm-a", 0),
+            NodeIcountShift::new("vm-b", 1),
+        ]),
+        Err(LaunchProfileError::IcountShiftMismatch {
+            node_id: String::from("vm-b"),
+            scenario_shift: 0,
+            node_shift: 1,
+        })
+    );
+    assert_eq!(
+        profile.scenario_hash_material_for_nodes(&[NodeIcountShift::new("vm-a", 63)]),
+        Err(LaunchProfileError::IcountShiftTooLarge { shift: 63 })
+    );
+    assert_eq!(
+        profile.scenario_hash_material_for_nodes(&[NodeIcountShift::new("", 0)]),
+        Err(LaunchProfileError::InvalidFixedText { field: "node_id" })
+    );
+    assert_eq!(
+        profile.scenario_hash_material_for_nodes(&[
+            NodeIcountShift::new("vm-a", 0),
+            NodeIcountShift::new("vm-a", 0),
+        ]),
+        Err(LaunchProfileError::DuplicateNodeIcountShift {
+            node_id: String::from("vm-a"),
         })
     );
 }

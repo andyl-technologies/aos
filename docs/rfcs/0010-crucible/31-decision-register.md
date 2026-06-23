@@ -96,7 +96,11 @@ genuinely unresolved and is tracked as a spike in
   function of how fast the host is — directly destroying [DET-1]. A fixed shift
   makes timer deadlines map to deterministic icounts on any host. Deriving ns
   from icount (rather than tracking ns independently) means there is exactly one
-  clock and no second quantity to keep consistent.
+  clock and no second quantity to keep consistent. The shipped default is
+  `shift=0`, so one retired guest instruction advances virtual time by one
+  nanosecond. That default preserves the finest timer resolution while the
+  scheduler and plugin ABI are still being hardened, and any later tuning is an
+  explicit scenario-hash change rather than an invisible launch drift.
 - **Alternatives considered:**
   - *`-icount shift=auto`.* Rejected: host-speed-dependent by construction;
     incompatible with cross-host reproducibility ([DET-9]).

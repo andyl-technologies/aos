@@ -40,6 +40,24 @@ pub enum LaunchProfileError {
         /// The rejected shift.
         shift: u8,
     },
+    /// A node requested a fixed icount shift different from the scenario shift.
+    #[error(
+        "node `{node_id}` icount shift {node_shift} differs from scenario shift {scenario_shift}"
+    )]
+    IcountShiftMismatch {
+        /// The node whose launch declaration mismatched the scenario.
+        node_id: String,
+        /// The scenario-wide fixed shift.
+        scenario_shift: u8,
+        /// The node-local fixed shift.
+        node_shift: u8,
+    },
+    /// A node had more than one icount shift declaration in scenario content.
+    #[error("node `{node_id}` has duplicate icount shift declarations")]
+    DuplicateNodeIcountShift {
+        /// The node declared more than once.
+        node_id: String,
+    },
     /// The fixed RAM size was zero.
     #[error("memory size must be a fixed non-zero number of MiB")]
     MemorySizeZero,

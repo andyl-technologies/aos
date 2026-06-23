@@ -641,7 +641,7 @@ instruction-primary.
   no `point + point`, no negative `SimDuration`, derived `Ord`/`Eq`/`Hash` on
   integers. — satisfies [TIME-3], [TIME-4], [TIME-8], [TIME-9], [TIME-10],
   [TIME-11], [TIME-12]; spec §9.3, §9.4.
-- [ ] **T-TIME-2** Pin the fixed shift into the launch configuration and scenario
+- [x] **T-TIME-2** Pin the fixed shift into the launch configuration and scenario
   content hash; reject `-icount shift=auto` and any per-node shift mismatch; ship
   and document a default shift with rationale in the decision register. —
   satisfies [TIME-5], [TIME-6], [TIME-7], [TIME-14]; spec §9.3, §9.5.
