@@ -71,8 +71,18 @@ fn measure_activated_packages_inner(
     pcrextend_override: Option<&Path>,
 ) -> Result<()> {
     let events = measurement_events(root, installed)?;
-    let needs_baseline = live_root && !event_log_has_records(root)?;
-    let mut logged_events = Vec::with_capacity(events.len() + usize::from(live_root));
+    // PCR 15 measurement requires a TPM. On systems without one — most VMs,
+    // TPM-less hardware — the live baseline read and PCR extension are skipped:
+    // the package event log is still written deterministically, but there is no
+    // PCR to anchor it to, so the seed/activation path degrades gracefully
+    // rather than failing the whole reconcile. Measured-boot systems (TPM
+    // present) keep the full read-then-extend path. `tpm2_tcti` already encodes
+    // presence detection (the `AOS_TPM2_TCTI` override, then `/dev/tpmrm0` /
+    // `/dev/tpm0`). An explicit `pcrextend_override` forces the live path so
+    // unit tests can exercise extension/rollback without a TPM.
+    let measure_pcr = live_root && (pcrextend_override.is_some() || tpm2_tcti()?.is_some());
+    let needs_baseline = measure_pcr && !event_log_has_records(root)?;
+    let mut logged_events = Vec::with_capacity(events.len() + usize::from(measure_pcr));
     if needs_baseline {
         let pcr15 = read_current_pcr15()
             .context("reading current PCR 15 before first live package measurement")?;
@@ -80,7 +90,7 @@ fn measure_activated_packages_inner(
     }
     logged_events.extend(events.iter().cloned());
     let append = append_event_log(root, &logged_events)?;
-    if live_root {
+    if measure_pcr {
         let pcrextend = match pcrextend_override {
             Some(path) => path.to_path_buf(),
             None => trusted_systemd_pcrextend_path()?,
@@ -2657,6 +2667,26 @@ mod tests {
             fs::read_to_string(&log_path).expect("log after rollback"),
             "existing\n"
         );
+    }
+
+    #[test]
+    fn measure_activated_packages_skips_pcr_when_no_tpm() {
+        // A live root with no TPM and no forced pcrextend must not fail: the
+        // package event log is still written, but no baseline event is added
+        // and no PCR extension is attempted. Self-skip on the rare build host
+        // that exposes a real TPM, where the live path would (correctly) run.
+        if tpm2_tcti().ok().flatten().is_some() {
+            return;
+        }
+        let tmp = TempDir::new().expect("tempdir");
+        let installed = installed_fixture(&tmp, br#"{"permissions":{}}"#);
+
+        measure_activated_packages_inner(tmp.path(), &[installed], true, None)
+            .expect("measure without a tpm succeeds");
+
+        let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
+        assert!(log.contains("\"event_type\":\"aos-package\""));
+        assert!(!log.contains(PCR_BASELINE_EVENT_TYPE));
     }
 
     #[test]

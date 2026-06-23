@@ -20,7 +20,6 @@
 # the bundled aos-test-agent package). This is the first CI proof that the
 # sd-boot/UKI chain is signed AND that the firmware rejects tampering.
 {
-  lib,
   pkgs,
   systems,
 }: let

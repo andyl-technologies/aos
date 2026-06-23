@@ -1,7 +1,31 @@
 {
   lib,
   pkgs,
-}: {
+}: let
+  k3sModprobe = pkgs.writeShellScriptBin "modprobe" ''
+    set -eu
+
+    handled=false
+    for arg in "$@"; do
+      case "$arg" in
+        -*)
+          ;;
+        nft-expr-counter)
+          handled=true
+          ;;
+        *)
+          handled=false
+          break
+          ;;
+      esac
+    done
+    if [ "$handled" = true ]; then
+      exit 0
+    fi
+
+    exec ${pkgs.kmod}/sbin/modprobe "$@"
+  '';
+in {
   runtimePath = [
     pkgs.k3s
     pkgs.containerd # provides containerd-shim-runc-v2
@@ -14,6 +38,9 @@
     pkgs.ethtool
     pkgs.iproute2
     pkgs.util-linux # mount/umount/findmnt
+    # Linux 6.18 folds the nft counter expression into nf_tables core, but
+    # kube-proxy still probes its historical loadable alias.
+    k3sModprobe
     pkgs.kmod # modprobe/lsmod
     pkgs.coreutils
   ];

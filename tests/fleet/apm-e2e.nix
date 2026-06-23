@@ -26,10 +26,21 @@
 # (JWT, NAR_HASH, etc.) stay in scope across the dance.
 {
   lib,
+  mkSystem,
   pkgs,
   systems,
 }: let
   tomlFmt = lib.formats.toml {inherit lib pkgs;};
+
+  # server-test bundles the guest agent and the CLI tools fleet scripts need
+  # (git/sqlite/socat to hand-seed the registry, curl/jq to probe it) — image
+  # slimming keeps those out of the production server. The registry machine
+  # additionally re-bundles aos-registry-server; the client just needs the
+  # tools (systems.server-test).
+  serverWithRegistry = mkSystem [
+    ../../systems/server-test.nix
+    {aos.packages.aos-registry-server.bundle = true;}
+  ];
 
   # Stable test values. The 32-char store hash is fixed so the
   # resulting store path is predictable across runs and stable for
@@ -109,12 +120,12 @@ in {
   machines = {
     # Lexicographic order → client=192.168.50.10, server=192.168.50.11.
     client = {
-      system = systems.server;
+      system = systems.server-test;
       # No registry package. `apm` ships via modules/base/apm.nix.
     };
 
     server = {
-      system = systems.server;
+      system = serverWithRegistry;
       packages = ["aos-registry-server"];
     };
   };

@@ -254,6 +254,11 @@
         bundle = true;
         preset = false;
       };
+      # The target inspects exposed-image metadata with `${pkgs.jq}/bin/jq`, so
+      # jq's closure must ride this (measured) image — image slimming dropped it
+      # from the server profile. Only jq is added (not the full fleet CLI tools
+      # module) to keep this Secure Boot / measured image minimal.
+      environment.systemPackages = [pkgs.jq];
     }
   ];
   verifierSystem = mkSystem [

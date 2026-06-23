@@ -183,6 +183,13 @@ in
           # above — /boot would otherwise be missing in production.
           mkdir -p rootfs/boot
           mkdir -m 0700 rootfs/root
+          # Root-owned APM authoring config lives on the read-only rootfs,
+          # so create it here instead of asking tmpfiles to mutate /root at
+          # boot.
+          mkdir -p rootfs/root/.config/apm/registries.d
+          chmod 0700 rootfs/root/.config
+          chmod 0755 rootfs/root/.config/apm
+          chmod 0755 rootfs/root/.config/apm/registries.d
           mkdir -p rootfs/run/current-system
 
           # ── 2. Copy the closure into /nix/store ─────────────────────────

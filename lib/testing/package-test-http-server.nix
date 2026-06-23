@@ -28,6 +28,9 @@
           bundle = true;
           preset = true;
         };
+        # The test probes the served port with bare `curl`; image slimming
+        # dropped it from the server PATH (modules/profiles/server.nix).
+        environment.systemPackages = [pkgs.curl];
       }
     ];
   };

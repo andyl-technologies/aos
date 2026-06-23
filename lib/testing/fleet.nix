@@ -182,6 +182,7 @@
       extraClosures = m.extraClosures or [];
       varSizeMiB = m.varSizeMiB or 256;
       imageDiskMiB = m.imageDiskMiB or 40960;
+      memoryMiB = m.memoryMiB or 2048;
       tpm = m.tpm or false;
       name = mname;
       ip = "192.168.50.${toString (i + 10)}";
@@ -431,7 +432,7 @@
     builtins.map (
       m:
         {
-          inherit (m) name ip mac debugMac index system packages bootMode tpm varProvisioning varSizeMiB;
+          inherit (m) name ip mac debugMac index system packages bootMode tpm varProvisioning varSizeMiB memoryMiB;
         }
         // (
           if m.bootMode == "image"
@@ -487,9 +488,9 @@
     # Driver manifest. One entry per fleet machine; transport pinned to
     # qemu. The driver consumes this JSON and starts each VM in order,
     # then exposes each machine to the testScript as a Python global
-    # named after `mb.name` (e.g. controlplane, worker). v1 fleet QEMU
-    # uniformly uses 2 GiB / 2 vCPU per machine — matching the previous
-    # hardcoded `-m 2048 -smp 2`.
+    # named after `mb.name` (e.g. controlplane, worker). Per-machine RAM
+    # comes from the spec's `memoryMiB` (default 2 GiB); vCPU count is a
+    # uniform 2 per machine.
     manifest =
       {
         inherit name timeout;
@@ -502,7 +503,7 @@
               {
                 inherit (mb) name mac ip;
                 transport = "qemu";
-                memory_mib = 8192;
+                memory_mib = mb.memoryMiB;
                 vcpu_count = 2;
                 # vTPM (RFC-0006 phase 3): when set, the driver launches a
                 # per-machine swtpm and wires QEMU's tpm-tis to it.
@@ -709,7 +710,7 @@
             "${pkgs.qemu}/bin/qemu-system-x86_64" \
               -machine q35,accel=kvm \
               -cpu host \
-              -m 8192 \
+              -m ${toString mb.memoryMiB} \
               -smp 2 \
               -nographic \
               -kernel "''${VMLINUZ_${mb.name}}" \

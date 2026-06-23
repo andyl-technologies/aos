@@ -50,13 +50,17 @@
   # forces the same workaround here. Both `combined` (running
   # `k3s server` without `--disable-agent`) and `worker` run the
   # flannel daemon, so both need the iface pin.
-  configFile = ip: {
+  configFile = {
+    ip,
+    extraConfig ? "",
+  }: {
     path = "/etc/rancher/k3s/config.yaml";
     mode = 420; # 0644
     overwrite = true;
     contents.source = dataUrl ''
       node-ip: ${ip}
       flannel-iface: eth0
+      ${extraConfig}
     '';
   };
 
@@ -100,7 +104,19 @@ in {
           (envFile ''
             K3S_TOKEN=${testToken}
           '')
-          (configFile "192.168.50.10")
+          # k3s starts both kube-controller-manager and its embedded cloud
+          # controller with PodCIDR allocation enabled. In the combined
+          # topology that can produce stale duplicate allocation attempts
+          # while the worker node annotations settle. Keep allocation owned by
+          # kube-controller in this smoke test; cloud-node initialization still
+          # runs.
+          (configFile {
+            ip = "192.168.50.10";
+            extraConfig = ''
+              kube-cloud-controller-arg:
+                - allocate-node-cidrs=false
+            '';
+          })
         ];
       };
     };
@@ -114,7 +130,7 @@ in {
             K3S_TOKEN=${testToken}
             K3S_URL=https://192.168.50.10:6443
           '')
-          (configFile "192.168.50.11")
+          (configFile {ip = "192.168.50.11";})
         ];
       };
     };

@@ -43,6 +43,14 @@ in
     pname = "linux";
     inherit (linuxSource) version src;
 
+    # `out` is the slim runtime kernel (compressed vmlinuz + modules). The
+    # separate `vmlinux` output carries the uncompressed ELF that test VMMs
+    # need (Firecracker cannot boot a compressed bzImage) — it is built here
+    # anyway, so exposing it costs no extra build, and keeping it in its own
+    # output means it never enters the production system closure (only a
+    # test's closure, via lib/testing/vm.nix). See the install phase.
+    outputs = ["out" "vmlinux"];
+
     buildDeps = [
       gnumake
       perl
@@ -145,10 +153,17 @@ in
 
           # NOTE: the unstripped `vmlinux` ELF (~480 MiB of DWARF, produced
           # because CONFIG_DEBUG_INFO_BTF requires CONFIG_DEBUG_INFO) is
-          # deliberately NOT shipped. The running kernel exposes BTF for eBPF
-          # CO-RE via /sys/kernel/btf/vmlinux from its in-memory .BTF section;
-          # vmlinux is only needed at build time (pahole reads it to embed
-          # BTF). Keeping it out of the runtime closure saves ~480 MiB.
+          # deliberately NOT shipped in `out`. The running kernel exposes BTF
+          # for eBPF CO-RE via /sys/kernel/btf/vmlinux from its in-memory .BTF
+          # section; vmlinux is only needed at build time (pahole reads it to
+          # embed BTF). Keeping it out of the runtime closure saves ~480 MiB.
+          #
+          # It IS placed in the separate `vmlinux` output for test VMMs:
+          # Firecracker boots an uncompressed ELF, not the self-decompressing
+          # bzImage. This output is referenced only by lib/testing/vm.nix, so
+          # the production system closure (which references `out`) is unaffected.
+          mkdir -p $vmlinux/boot
+          cp vmlinux $vmlinux/boot/vmlinux-${linuxSource.version}
 
           # Install modules, stripped of DWARF (INSTALL_MOD_STRIP). BTF stays
           # in the kernel image, so eBPF CO-RE still works; this only drops
