@@ -208,20 +208,11 @@ fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<S
 /// Runs hermetically (see [`crate::gitcmd`]): host git configuration is
 /// hidden. Network transport commands must use [`git_transport`] instead.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = gitcmd::hermetic()
-        .args(args)
-        .current_dir(dir)
-        .output()
+    let output = crate::registry::porcelain::dispatch(dir, args)
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
-
-    if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            git_failure_details(&output)
-        );
+    if !output.success {
+        bail!("git {} failed: {}", args.join(" "), output.stderr);
     }
-
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
@@ -231,39 +222,21 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
 /// Unlike [`git`], the host configuration stays visible: credential
 /// helpers, proxies, and URL rewrites live there.
 fn git_transport(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = gitcmd::transport()
-        .args(args)
-        .current_dir(dir)
-        .output()
+    let output = crate::registry::porcelain::dispatch(dir, args)
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
-
-    if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            git_failure_details(&output)
-        );
+    if !output.success {
+        bail!("git {} failed: {}", args.join(" "), output.stderr);
     }
-
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Run a git command in the registry directory, returning raw stdout bytes.
 fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = gitcmd::hermetic()
-        .args(args)
-        .current_dir(dir)
-        .output()
+    let output = crate::registry::porcelain::dispatch(dir, args)
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
-
-    if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            git_failure_details(&output)
-        );
+    if !output.success {
+        bail!("git {} failed: {}", args.join(" "), output.stderr);
     }
-
     Ok(output.stdout)
 }
 
@@ -292,15 +265,10 @@ fn nix_command(program: &str) -> Command {
 /// Run a git command that is allowed to fail, returning (success, stdout, stderr).
 #[allow(dead_code)]
 fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String, String)> {
-    let output = gitcmd::hermetic()
-        .args(args)
-        .current_dir(dir)
-        .output()
+    let output = crate::registry::porcelain::dispatch(dir, args)
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
-
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Ok((output.status.success(), stdout, stderr))
+    Ok((output.success, stdout, output.stderr.trim().to_string()))
 }
 
 /// A registry clone present in the scope's registry-storage directory but

@@ -29,6 +29,7 @@ pub mod nixcache;
 pub mod objectstore;
 pub mod pack;
 pub mod parse;
+pub(crate) mod porcelain;
 pub(crate) mod repo;
 pub mod sb_certs;
 pub mod state;
