@@ -595,6 +595,10 @@ form.console input[type="checkbox"]:checked::after,
   border-bottom: 1px solid var(--rule);
   padding-bottom: 0.35rem;
   white-space: nowrap;
+  /* Bottom-align all header cells so their underlines form one continuous rule
+   * — without this the empty "actions" header centers in the row and its border
+   * floats above the text cells'. */
+  align-self: end;
 }
 .linkrow-name {
   overflow-wrap: anywhere;
