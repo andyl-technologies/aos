@@ -359,6 +359,17 @@ in {
           exit "$status"
         }
         trap cleanup EXIT
+        # Package attestation produces a TPM quote over PCR 15. On TPM-less
+        # machines the PCR measurement is skipped entirely (see
+        # `measure_activated_packages` in crates/aos-package), so there is
+        # nothing to quote — skip cleanly instead of failing. This keeps the
+        # `apm upgrade --system` reconcile from failing on TPM-less hosts that
+        # bundle an exposed package (the same "degrade gracefully" intent as the
+        # measurement gate). `tpm2_tcti` probes these same device nodes.
+        if [ ! -e /dev/tpmrm0 ] && [ ! -e /dev/tpm0 ]; then
+          echo "no TPM device; skipping package attestation quote" >&2
+          exit 0
+        fi
         if [ ! -s "$nonce_file" ]; then
           echo "write verifier nonce hex to $nonce_file before starting aos-attest.service" >&2
           exit 2

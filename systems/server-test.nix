@@ -22,8 +22,11 @@
 {pkgs, ...}: {
   imports = [./server.nix];
 
-  # Guest agent for image/ignition machines (baked machines get it from the
-  # /var seed instead). See lib/testing/fleet.nix `mkMachinesWithIndex`.
+  # Guest agent for image/ignition machines (baked machines also get it from
+  # their /var seed; the extra bundled copy is inert there). See
+  # lib/testing/fleet.nix `mkMachinesWithIndex`. Bundling this exposed package
+  # is safe on TPM-less test machines because aos-attest.service skips cleanly
+  # without a TPM (modules/base/apm.nix) rather than failing the reconcile.
   aos.packages.aos-test-agent.bundle = true;
 
   # CLI tools fleet scripts run in-guest by bare name; image slimming dropped
