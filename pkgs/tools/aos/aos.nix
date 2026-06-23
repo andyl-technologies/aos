@@ -4,7 +4,9 @@
   mkCargoPackage,
   fetchCargoDeps,
   bash,
+  git-minimal,
   nix,
+  openssh,
   perl,
   openssl,
   aos-landlock,
@@ -74,7 +76,13 @@ in
 
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here
     # (CMake build) with SSH smart-transport support against system libssh2.
-    buildDeps = [perl pkg-config openssl protobuf cmake libssh2];
+    #
+    # git-minimal + openssh are *build-only* (the `doCheck` workspace tests use
+    # the host `git`/`ssh-keygen` to build repository fixtures via the test-only
+    # `gitcmd`/`testutil` helpers). They are deliberately NOT in `runtimeDeps`,
+    # so scrubPhase nukes their references and they never enter the runtime
+    # closure — production code uses libgit2 + ssh-key, never these binaries.
+    buildDeps = [perl pkg-config openssl protobuf cmake libssh2 git-minimal openssh];
     runtimeDeps = [openssl zlib aos-landlock aos-selinux-run aos-verity-root-guard aos-ebpf-net-policy aos-ebpf-lsm-policy checkpolicy policycoreutils semodule-utils tpm2-tools] ++ runtimeTools;
 
     preBuild = ''
