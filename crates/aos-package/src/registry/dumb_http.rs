@@ -31,7 +31,7 @@
 //! *commit* trust (signatures, fast-forward) is enforced by the caller after
 //! the fetch, exactly as for the smart transports.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
@@ -77,48 +77,60 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
         resolve_refspec(spec, &advertised, head.as_deref(), &mut targets)?;
     }
 
-    // Walk and download the object graph reachable from all target OIDs,
-    // breadth-first. Each level's objects are fetched concurrently (bounded by
-    // MAX_CONCURRENCY) since dumb-HTTP is one round-trip per object; children
-    // are only known after a parent is parsed, so concurrency is per-level.
-    let objects_dir = repo::objects_dir(repo_dir);
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut frontier: Vec<String> = Vec::new();
-    for (oid, _) in &targets {
-        if visited.insert(oid.clone()) {
-            frontier.push(oid.clone());
-        }
-    }
+    let target_oids: Vec<String> = targets.iter().map(|(oid, _)| oid.clone()).collect();
 
-    while !frontier.is_empty() {
-        if visited.len() > MAX_OBJECTS {
-            bail!("registry object graph exceeded {MAX_OBJECTS} objects; refusing to continue");
-        }
+    // Phase 1: download and index all advertised packs. This is the fast path —
+    // a handful of large requests instead of one round trip per loose object —
+    // and libgit2's pack indexer verifies each pack on commit. Most or all of
+    // the reachable graph typically lands here.
+    let pack_names = fetch_pack_list(&client, base_url).await?;
+    if !pack_names.is_empty() {
         let client = &client;
-        let objects_dir = &objects_dir;
-        let fetched: Vec<(String, Vec<u8>)> = stream::iter(frontier.into_iter())
-            .map(|oid| async move {
-                let inflated = fetch_one(client, base_url, objects_dir, &oid).await?;
-                Ok::<_, anyhow::Error>((oid, inflated))
-            })
+        let packs: Vec<Vec<u8>> = stream::iter(pack_names.into_iter())
+            .map(|name| async move { fetch_pack(client, base_url, &name).await })
             .buffer_unordered(MAX_CONCURRENCY)
             .collect::<Vec<_>>()
             .await
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
+        let repo_path = repo_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || repo::index_packs_blocking(&repo_path, &packs))
+            .await
+            .context("pack-indexing task panicked")??;
+    }
 
-        let mut next = Vec::new();
-        let mut children = VecDeque::new();
-        for (oid, inflated) in &fetched {
-            children.clear();
-            enqueue_referenced_oids(inflated, oid, &mut children)?;
-            for child in children.drain(..) {
-                if visited.insert(child.clone()) {
-                    next.push(child);
-                }
-            }
+    // Phase 2: fetch any objects still missing as loose files (a registry's
+    // dumb-HTTP layout guarantees loose completeness, so anything not packed is
+    // available loose). Each round walks the local graph for the missing
+    // frontier (objects already in a pack or loose are traversed with no
+    // network), then downloads that frontier concurrently; reading a fetched
+    // object can reveal deeper references, so it iterates to a fixpoint.
+    let objects_dir = repo::objects_dir(repo_dir);
+    let mut total_fetched = 0usize;
+    loop {
+        let repo_path = repo_dir.to_path_buf();
+        let targets = target_oids.clone();
+        let missing = tokio::task::spawn_blocking(move || {
+            repo::missing_objects_blocking(&repo_path, &targets)
+        })
+        .await
+        .context("object-walk task panicked")??;
+        if missing.is_empty() {
+            break;
         }
-        frontier = next;
+        total_fetched += missing.len();
+        if total_fetched > MAX_OBJECTS {
+            bail!("registry object graph exceeded {MAX_OBJECTS} objects; refusing to continue");
+        }
+        let client = &client;
+        let objects_dir = &objects_dir;
+        stream::iter(missing.into_iter())
+            .map(|oid| async move { fetch_loose(client, base_url, objects_dir, &oid).await })
+            .buffer_unordered(MAX_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
     }
 
     // Point destination refs at the resolved OIDs.
@@ -143,27 +155,88 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
     Ok(())
 }
 
-/// Fetch a single object for the graph walk.
+/// Download one missing object and install it as a loose file.
 ///
-/// Reads an existing local loose copy (a prior sync) without a round trip;
-/// otherwise downloads it, verifies its SHA-256 matches `oid`, and writes the
-/// compressed object loose. Returns the inflated `"<type> <size>\0<body>"`
-/// bytes for reference discovery.
-async fn fetch_one(
+/// Downloads the compressed object, verifies its SHA-256 matches `oid` (the
+/// inflated bytes are git's `"<type> <size>\0<body>"` pre-image), and writes it
+/// verbatim under `objects/<2>/<62>`.
+async fn fetch_loose(
     client: &reqwest::Client,
     base_url: &str,
     objects_dir: &Path,
     oid: &str,
-) -> Result<Vec<u8>> {
+) -> Result<()> {
     let loose_path = loose_object_path(objects_dir, oid)?;
-    if loose_path.exists() {
-        return inflate_loose_file(&loose_path).await;
-    }
     let compressed = fetch_object(client, base_url, oid).await?;
     let inflated = inflate(&compressed).with_context(|| format!("inflating object {oid}"))?;
     verify_oid(oid, &inflated)?;
-    write_loose_verbatim(&loose_path, &compressed).await?;
-    Ok(inflated)
+    write_loose_verbatim(&loose_path, &compressed).await
+}
+
+/// Fetch the list of packfile names from `objects/info/packs`.
+///
+/// The file holds `P pack-<hash>.pack` lines. A missing file (404) means the
+/// origin serves no packs (loose-only), returning an empty list.
+async fn fetch_pack_list(client: &reqwest::Client, base_url: &str) -> Result<Vec<String>> {
+    let url = join_cache_url(base_url, "objects/info/packs");
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("fetching {url}"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(Vec::new());
+    }
+    let body = response
+        .error_for_status()
+        .with_context(|| format!("fetching {url}"))?
+        .text()
+        .await
+        .with_context(|| format!("reading {url}"))?;
+
+    let mut names = Vec::new();
+    for line in body.lines() {
+        let line = line.trim();
+        // Lines are "P <pack-name>.pack"; ignore blanks and other markers.
+        if let Some(name) = line.strip_prefix("P ") {
+            let name = name.trim();
+            if name.ends_with(".pack") && is_safe_pack_name(name) {
+                names.push(name.to_string());
+            } else {
+                bail!("malformed pack name in objects/info/packs: {name:?}");
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// Download one packfile's raw bytes from `objects/pack/<name>`.
+///
+/// Only the `.pack` is fetched; libgit2's indexer regenerates and verifies the
+/// `.idx`, so a server-supplied index is never trusted.
+async fn fetch_pack(client: &reqwest::Client, base_url: &str, name: &str) -> Result<Vec<u8>> {
+    let url = join_cache_url(base_url, &format!("objects/pack/{name}"));
+    let bytes = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("fetching pack {name}"))?
+        .error_for_status()
+        .with_context(|| format!("fetching pack {name}"))?
+        .bytes()
+        .await
+        .with_context(|| format!("reading pack {name}"))?;
+    Ok(bytes.to_vec())
+}
+
+/// `true` for a `pack-<hex>.pack` name with no path-traversal characters.
+fn is_safe_pack_name(name: &str) -> bool {
+    name.starts_with("pack-")
+        && !name.contains('/')
+        && !name.contains("..")
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_')
 }
 
 /// Fetch and parse `info/refs` into a `refname -> oid` map.
@@ -301,14 +374,6 @@ fn inflate(compressed: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Read and inflate an existing loose object file.
-async fn inflate_loose_file(path: &Path) -> Result<Vec<u8>> {
-    let compressed = tokio::fs::read(path)
-        .await
-        .with_context(|| format!("reading {}", path.display()))?;
-    inflate(&compressed)
-}
-
 /// Verify that the inflated object hashes to `oid` under git's SHA-256 object
 /// id (the inflated bytes already are git's `"<type> <size>\0<body>"`
 /// pre-image).
@@ -338,88 +403,6 @@ async fn write_loose_verbatim(loose_path: &Path, compressed: &[u8]) -> Result<()
     tokio::fs::rename(&tmp, loose_path)
         .await
         .with_context(|| format!("installing {}", loose_path.display()))?;
-    Ok(())
-}
-
-/// Enqueue the OIDs referenced by an inflated object for further walking.
-fn enqueue_referenced_oids(inflated: &[u8], oid: &str, queue: &mut VecDeque<String>) -> Result<()> {
-    let sep = inflated
-        .iter()
-        .position(|&b| b == 0)
-        .with_context(|| format!("object {oid} has no header NUL"))?;
-    let header = std::str::from_utf8(&inflated[..sep])
-        .with_context(|| format!("object {oid} has a non-UTF-8 header"))?;
-    let kind = header
-        .split(' ')
-        .next()
-        .with_context(|| format!("object {oid} has an empty header"))?;
-    let body = &inflated[sep + 1..];
-    match kind {
-        "commit" => enqueue_commit_refs(body, queue)?,
-        "tag" => enqueue_tag_refs(body, queue)?,
-        "tree" => enqueue_tree_refs(body, queue)?,
-        "blob" => {}
-        other => bail!("object {oid} has unknown type {other:?}"),
-    }
-    Ok(())
-}
-
-/// Enqueue the `tree` and `parent` OIDs of a commit object.
-fn enqueue_commit_refs(body: &[u8], queue: &mut VecDeque<String>) -> Result<()> {
-    let text = std::str::from_utf8(body).context("commit body is not UTF-8")?;
-    for line in text.lines() {
-        if line.is_empty() {
-            break; // header ends at the blank line before the message
-        }
-        if let Some(oid) = line
-            .strip_prefix("tree ")
-            .or_else(|| line.strip_prefix("parent "))
-        {
-            let oid = oid.trim();
-            validate_oid(oid)?;
-            queue.push_back(oid.to_string());
-        }
-    }
-    Ok(())
-}
-
-/// Enqueue the target OID of a tag object.
-fn enqueue_tag_refs(body: &[u8], queue: &mut VecDeque<String>) -> Result<()> {
-    let text = std::str::from_utf8(body).context("tag body is not UTF-8")?;
-    for line in text.lines() {
-        if line.is_empty() {
-            break;
-        }
-        if let Some(oid) = line.strip_prefix("object ") {
-            let oid = oid.trim();
-            validate_oid(oid)?;
-            queue.push_back(oid.to_string());
-        }
-    }
-    Ok(())
-}
-
-/// Enqueue every entry OID of a tree object.
-///
-/// Tree entries are `"<mode> <name>\0<raw-oid>"` with raw OIDs sized to the
-/// repository's hash (32 bytes for SHA-256).
-fn enqueue_tree_refs(body: &[u8], queue: &mut VecDeque<String>) -> Result<()> {
-    const OID_LEN: usize = 32; // SHA-256 raw length
-    let mut i = 0;
-    while i < body.len() {
-        let nul = body[i..]
-            .iter()
-            .position(|&b| b == 0)
-            .context("tree entry missing NUL")?
-            + i;
-        let oid_start = nul + 1;
-        let oid_end = oid_start + OID_LEN;
-        if oid_end > body.len() {
-            bail!("tree entry OID truncated");
-        }
-        queue.push_back(hex::encode(&body[oid_start..oid_end]));
-        i = oid_end;
-    }
     Ok(())
 }
 
@@ -487,24 +470,18 @@ mod tests {
     }
 
     #[test]
-    fn enqueue_tree_refs_parses_sha256_entries() {
-        let mut body = Vec::new();
-        body.extend_from_slice(b"100644 file\0");
-        body.extend_from_slice(&[0x11; 32]);
-        body.extend_from_slice(b"40000 dir\0");
-        body.extend_from_slice(&[0x22; 32]);
-        let mut queue = VecDeque::new();
-        enqueue_tree_refs(&body, &mut queue).unwrap();
-        assert_eq!(queue.len(), 2);
-        assert_eq!(queue[0], "11".repeat(32));
-        assert_eq!(queue[1], "22".repeat(32));
+    fn is_safe_pack_name_rejects_traversal() {
+        assert!(is_safe_pack_name("pack-abc123.pack"));
+        assert!(!is_safe_pack_name("../evil.pack"));
+        assert!(!is_safe_pack_name("pack-/etc/passwd"));
+        assert!(!is_safe_pack_name("notapack.pack"));
     }
 
-    /// End-to-end: serve a real SHA-256 repository as a static dumb-HTTP tree
-    /// and confirm the reader walks the object graph, lands every object, and
-    /// sets the destination ref — the production HTTPS transport path.
-    #[tokio::test]
-    async fn fetch_reads_static_sha256_repo_over_http() {
+    /// Build a SHA-256 repo (optionally repacked), serve its `.git` as a static
+    /// dumb-HTTP tree, run the reader, and assert the graph + ref landed.
+    ///
+    /// Returns early (skips) when a loopback socket cannot be bound.
+    async fn build_serve_and_fetch(repack: bool) {
         use std::io::{Read as _, Write as _};
         use std::net::TcpListener;
         use std::process::Command;
@@ -540,6 +517,11 @@ mod tests {
         std::fs::write(work.join("sub/nested.txt"), b"nested").unwrap();
         git(&["add", "."]);
         git(&["commit", "-m", "init"]);
+        if repack {
+            // Move every object into a single pack and drop the loose copies,
+            // so the reader must use the pack path (objects/info/packs).
+            git(&["repack", "-a", "-d"]);
+        }
         git(&["update-server-info"]);
 
         let head = {
@@ -612,5 +594,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(nested.as_deref(), Some(&b"nested"[..]));
+    }
+
+    /// End-to-end over the loose-object path (no packs advertised).
+    #[tokio::test]
+    async fn fetch_reads_static_sha256_repo_loose() {
+        build_serve_and_fetch(false).await;
+    }
+
+    /// End-to-end over the pack path: a repacked repo serves `objects/info/packs`
+    /// and the reader downloads + indexes the pack instead of walking loose.
+    #[tokio::test]
+    async fn fetch_reads_static_sha256_repo_packed() {
+        build_serve_and_fetch(true).await;
     }
 }
