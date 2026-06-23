@@ -312,6 +312,44 @@ mod tests {
     }
 
     #[test]
+    fn resume_continue_matches_uninterrupted_run_by_fingerprint() {
+        let scenario = generated_scenario(0x500);
+        let seed = 0x0010_5005;
+        let mut uninterrupted =
+            DecisionRecorder::new(Configuration::genesis(scenario.clone()), seed);
+        for index in 0..8 {
+            record_representative_decision(&mut uninterrupted, index);
+        }
+        let uninterrupted = uninterrupted.into_configuration();
+
+        let mut prefix = DecisionRecorder::new(Configuration::genesis(scenario), seed);
+        for index in 0..4 {
+            record_representative_decision(&mut prefix, index);
+        }
+        let prefix = prefix.into_configuration();
+        let prefix_len = prefix.schedule.len();
+        let mut resumed = DecisionRecorder::new(prefix.clone(), seed);
+        for index in 4..8 {
+            record_representative_decision(&mut resumed, index);
+        }
+        let resumed = resumed.into_configuration();
+
+        assert_eq!(
+            uninterrupted.schedule.prefix(prefix_len),
+            Ok(prefix.schedule.clone())
+        );
+        assert_ne!(
+            configuration_execution_fingerprint(&prefix),
+            configuration_execution_fingerprint(&uninterrupted)
+        );
+        assert_eq!(uninterrupted, resumed);
+        assert_eq!(
+            configuration_execution_fingerprint(&uninterrupted),
+            configuration_execution_fingerprint(&resumed)
+        );
+    }
+
+    #[test]
     fn backend_trait_is_object_safe() {
         struct StubBackend;
 
@@ -409,6 +447,48 @@ mod tests {
         }
 
         swapped
+    }
+
+    fn record_representative_decision(recorder: &mut DecisionRecorder, index: u64) {
+        match index % 3 {
+            0 => {
+                let _ = recorder.draw_u64(RngStreamId {
+                    name: format!("node-a/faults/{index}"),
+                });
+            }
+            1 => {
+                let _ = recorder.decide_fault(
+                    VirtualTime { ticks: index + 1 },
+                    FaultId {
+                        name: format!("link-a-b/drop-{index}"),
+                    },
+                    RngStreamId {
+                        name: String::from("node-b/faults"),
+                    },
+                    u64::MAX / 2,
+                );
+            }
+            _ => {
+                let served = recorder.serve_app_random(
+                    NodeId {
+                        name: String::from("node-a"),
+                    },
+                    RngStreamId {
+                        name: String::from("node-a/app-random"),
+                    },
+                    16,
+                );
+                assert!(served.is_ok());
+            }
+        }
+    }
+
+    fn configuration_execution_fingerprint(configuration: &Configuration) -> ExecutionFingerprint {
+        let state = match reduce(&configuration.def, &configuration.schedule) {
+            Ok(state) => state,
+            Err(error) => panic!("pure configuration fingerprint should reduce: {error}"),
+        };
+        ExecutionFingerprint { hash: state.id }
     }
 
     fn generated_decision(seed: u64, index: u64) -> Decision {
