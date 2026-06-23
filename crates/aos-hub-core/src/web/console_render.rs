@@ -2136,46 +2136,53 @@ pub fn registry_settings_page(
     // upsert, so editing a link's flags works from either.
     body.push_str("<h2>Binary caches</h2>\n");
     if caches.is_empty() {
-        body.push_str(
-            "<p class=\"dim\">No binary caches serve this registry yet.</p>\n",
-        );
-    }
-    // Each linked cache is an editable row: toggle its flags and save (an upsert
-    // over the existing link), or unlink it.
-    for c in caches {
-        let label = if org_slug.is_empty() {
-            escape(&c.cache_slug)
-        } else {
-            format!(
-                "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
-                org = escape(org_slug),
-                slug = escape(&c.cache_slug),
-            )
-        };
-        let adv = if c.advertised { " checked" } else { "" };
-        let roots = if c.roots_packages { " checked" } else { "" };
+        body.push_str("<p class=\"dim\">No binary caches serve this registry yet.</p>\n");
+    } else {
+        // An aligned table of linked caches. Each row is a single form (laid out
+        // across the shared grid via `display:contents`): toggle the link's flags
+        // and `save` (an upsert), or `unlink` (the same form re-submitted to the
+        // unlink route via `formaction`). The `?` help sits once in the header.
+        body.push_str("<div class=\"linktable\">\n");
         let _ = write!(
             body,
-            "<h3>{label}</h3>\n\
-             <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/cache-link\">{csrf}\
-             <input type=\"hidden\" name=\"cache\" value=\"{cache}\">\
-             <label><span class=\"lbl\">advertise to consumers{adv_help}</span> \
-             <input type=\"checkbox\" name=\"advertised\" value=\"1\"{adv}></label>\n\
-             <label><span class=\"lbl\">pin GC roots from its packages{roots_help}</span> \
-             <input type=\"checkbox\" name=\"roots_packages\" value=\"1\"{roots}></label>\n\
-             <button>save</button>\n</form>\n\
-             <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/cache-unlink\" \
-             style=\"display:inline\">{csrf}<input type=\"hidden\" name=\"cache\" value=\"{cache}\">\
-             <button class=\"danger\">unlink</button></form>\n",
-            label = label,
-            slug = escape(slug),
-            csrf = csrf_field(csrf),
-            cache = escape(&c.cache_slug),
+            "<span class=\"linktable-h\">cache</span>\
+             <span class=\"linktable-h\">advertised{adv_help}</span>\
+             <span class=\"linktable-h\">gc roots{roots_help}</span>\
+             <span class=\"linktable-h\"></span>\n",
             adv_help = help::marker("link.advertised"),
             roots_help = help::marker("link.roots_packages"),
-            adv = adv,
-            roots = roots,
         );
+        for c in caches {
+            let label = if org_slug.is_empty() {
+                escape(&c.cache_slug)
+            } else {
+                format!(
+                    "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
+                    org = escape(org_slug),
+                    slug = escape(&c.cache_slug),
+                )
+            };
+            let adv = if c.advertised { " checked" } else { "" };
+            let roots = if c.roots_packages { " checked" } else { "" };
+            let _ = write!(
+                body,
+                "<form class=\"linkrow\" method=\"post\" action=\"/{slug}/-/settings/cache-link\">{csrf}\
+                 <input type=\"hidden\" name=\"cache\" value=\"{cache}\">\
+                 <span class=\"linkrow-name\">{label}</span>\
+                 <input type=\"checkbox\" name=\"advertised\" value=\"1\"{adv}>\
+                 <input type=\"checkbox\" name=\"roots_packages\" value=\"1\"{roots}>\
+                 <span class=\"linkrow-actions\"><button>save</button>\
+                 <button class=\"danger\" formaction=\"/{slug}/-/settings/cache-unlink\">unlink</button>\
+                 </span></form>\n",
+                slug = escape(slug),
+                csrf = csrf_field(csrf),
+                cache = escape(&c.cache_slug),
+                label = label,
+                adv = adv,
+                roots = roots,
+            );
+        }
+        body.push_str("</div>\n");
     }
     // Link another of the org's caches to this registry.
     if !linkable_caches.is_empty() {
