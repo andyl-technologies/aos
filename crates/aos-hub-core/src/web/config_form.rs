@@ -319,9 +319,201 @@ fn set_or_remove(table: &mut toml::map::Map<String, toml::Value>, key: &str, val
     }
 }
 
+/// Parses `existing` into an editable document table, guaranteeing a
+/// `[registry].name` so the result will pass [`RegistryRootConfig`] validation.
+///
+/// An empty input starts a fresh table; a missing or blank `[registry].name`
+/// is seeded from `registry_name` (the registry record's name) so adding a
+/// cache to a not-yet-configured registry still produces a valid file.
+fn open_doc(existing: &str, registry_name: &str) -> Result<toml::Value> {
+    let mut doc: toml::Value = if existing.trim().is_empty() {
+        toml::Value::Table(toml::map::Map::new())
+    } else {
+        toml::from_str(existing).context("parsing existing registry.toml")?
+    };
+    let root = doc
+        .as_table_mut()
+        .context("registry.toml is not a TOML table")?;
+    let reg = root
+        .entry("registry")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("[registry] is not a table")?;
+    let has_name = reg
+        .get("name")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|n| !n.trim().is_empty());
+    if !has_name {
+        reg.insert("name".into(), toml::Value::String(registry_name.to_string()));
+    }
+    Ok(doc)
+}
+
+/// Serializes an edited document and validates it against [`RegistryRootConfig`].
+fn finalize(doc: &toml::Value) -> Result<String> {
+    let rendered = toml::to_string_pretty(doc).context("serializing registry.toml")?;
+    toml::from_str::<RegistryRootConfig>(&rendered)
+        .context("the rebuilt registry.toml is not valid")?;
+    Ok(rendered)
+}
+
+/// Returns the `[[caches]]` array of `root`, creating an empty one if absent.
+///
+/// # Errors
+///
+/// Returns an error when a `caches` key exists but is not an array.
+fn caches_array(root: &mut toml::map::Map<String, toml::Value>) -> Result<&mut Vec<toml::Value>> {
+    root.entry("caches")
+        .or_insert_with(|| toml::Value::Array(Vec::new()))
+        .as_array_mut()
+        .context("[[caches]] is not an array")
+}
+
+/// Whether `entry` is a `[[caches]]` table whose `url` equals `url`.
+fn cache_entry_matches(entry: &toml::Value, url: &str) -> bool {
+    entry.get("url").and_then(toml::Value::as_str) == Some(url)
+}
+
+/// Adds a `[[caches]]` entry for `url` to `existing`, preserving everything else.
+///
+/// This is the surgical counterpart to [`build_toml`] used by the cache-link
+/// advertise flow: it edits the parsed [`toml::Value`] in place, so `[registry]`
+/// metadata, an advanced `[cache_stack]`, and any unmodeled keys round-trip
+/// untouched. The committed entry carries only the `url` — the cache's real nix
+/// substituter priority travels in its own `nix-cache-info`, while the
+/// `[[caches]].priority` is merely the registry's advertised-list ordering, so a
+/// bare `url` (default priority) is the honest default.
+///
+/// Idempotent: returns `Ok(None)` when an entry for `url` is already present, so
+/// the caller proposes no change. Otherwise returns `Ok(Some(rendered))`.
+///
+/// # Errors
+///
+/// Returns an error when the existing file is malformed or not a TOML table, or
+/// when the rebuilt document fails schema validation.
+pub fn add_cache_to_toml(
+    existing: &str,
+    registry_name: &str,
+    url: &str,
+) -> Result<Option<String>> {
+    let mut doc = open_doc(existing, registry_name)?;
+    let root = doc
+        .as_table_mut()
+        .context("registry.toml is not a TOML table")?;
+    let caches = caches_array(root)?;
+    if caches.iter().any(|e| cache_entry_matches(e, url)) {
+        return Ok(None);
+    }
+    let mut entry = toml::map::Map::new();
+    entry.insert("url".into(), toml::Value::String(url.to_string()));
+    caches.push(toml::Value::Table(entry));
+    Ok(Some(finalize(&doc)?))
+}
+
+/// Removes the `[[caches]]` entry for `url` from `existing`, preserving the rest.
+///
+/// The inverse of [`add_cache_to_toml`]. Idempotent: returns `Ok(None)` when no
+/// entry for `url` is present (nothing to propose). When removing the last entry
+/// the now-empty `caches` key is dropped so the file stays terse.
+///
+/// # Errors
+///
+/// Returns an error when the existing file is malformed or not a TOML table, or
+/// when the rebuilt document fails schema validation.
+pub fn remove_cache_from_toml(
+    existing: &str,
+    registry_name: &str,
+    url: &str,
+) -> Result<Option<String>> {
+    let mut doc = open_doc(existing, registry_name)?;
+    let root = doc
+        .as_table_mut()
+        .context("registry.toml is not a TOML table")?;
+    let caches = caches_array(root)?;
+    let before = caches.len();
+    caches.retain(|e| !cache_entry_matches(e, url));
+    if caches.len() == before {
+        return Ok(None);
+    }
+    if caches.is_empty() {
+        root.remove("caches");
+    }
+    Ok(Some(finalize(&doc)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_cache_appends_and_is_idempotent() {
+        let existing = "[registry]\nname = \"andyl\"\n";
+        let out = add_cache_to_toml(existing, "andyl", "https://c1")
+            .expect("adds")
+            .expect("changed");
+        let cfg: RegistryRootConfig = toml::from_str(&out).expect("valid");
+        assert_eq!(cfg.caches.len(), 1);
+        assert_eq!(cfg.caches[0].url, "https://c1");
+        assert_eq!(cfg.caches[0].priority, 100); // omitted → schema default
+        // Re-adding the same URL is a no-op (no change request).
+        assert!(add_cache_to_toml(&out, "andyl", "https://c1")
+            .expect("idempotent")
+            .is_none());
+    }
+
+    #[test]
+    fn add_cache_preserves_existing_caches_and_stack() {
+        let existing = "[registry]\nname = \"andyl\"\n\n\
+                        [[caches]]\nurl = \"https://ext\"\npriority = 50\n\n\
+                        [cache_stack]\ntry = [\"https://a\"]\n";
+        let out = add_cache_to_toml(existing, "andyl", "https://managed")
+            .expect("adds")
+            .expect("changed");
+        let cfg: RegistryRootConfig = toml::from_str(&out).expect("valid");
+        assert_eq!(cfg.caches.len(), 2);
+        assert!(cfg.caches.iter().any(|c| c.url == "https://ext" && c.priority == 50));
+        assert!(cfg.caches.iter().any(|c| c.url == "https://managed"));
+        assert!(cfg.cache_stack.is_some()); // advanced stack untouched
+    }
+
+    #[test]
+    fn add_cache_seeds_name_on_bare_file() {
+        // A registry with no committed config yet still yields a valid file.
+        let out = add_cache_to_toml("", "demo-reg", "https://c")
+            .expect("adds")
+            .expect("changed");
+        let cfg: RegistryRootConfig = toml::from_str(&out).expect("valid");
+        assert_eq!(cfg.registry.name, "demo-reg");
+        assert_eq!(cfg.caches.len(), 1);
+    }
+
+    #[test]
+    fn remove_cache_drops_entry_and_is_idempotent() {
+        let existing = "[registry]\nname = \"andyl\"\n\n\
+                        [[caches]]\nurl = \"https://keep\"\n\n\
+                        [[caches]]\nurl = \"https://drop\"\n";
+        let out = remove_cache_from_toml(existing, "andyl", "https://drop")
+            .expect("removes")
+            .expect("changed");
+        let cfg: RegistryRootConfig = toml::from_str(&out).expect("valid");
+        assert_eq!(cfg.caches.len(), 1);
+        assert_eq!(cfg.caches[0].url, "https://keep");
+        // Removing an absent URL is a no-op.
+        assert!(remove_cache_from_toml(&out, "andyl", "https://drop")
+            .expect("idempotent")
+            .is_none());
+    }
+
+    #[test]
+    fn remove_last_cache_drops_the_key() {
+        let existing = "[registry]\nname = \"andyl\"\n\n[[caches]]\nurl = \"https://only\"\n";
+        let out = remove_cache_from_toml(existing, "andyl", "https://only")
+            .expect("removes")
+            .expect("changed");
+        assert!(!out.contains("caches"));
+        let cfg: RegistryRootConfig = toml::from_str(&out).expect("valid");
+        assert!(cfg.caches.is_empty());
+    }
 
     #[test]
     fn empty_model_defaults_to_content_addressed() {

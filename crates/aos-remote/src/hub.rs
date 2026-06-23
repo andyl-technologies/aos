@@ -34,7 +34,8 @@ use serde::de::DeserializeOwned;
 use aos_proto_types::{
     AuditEntry, Binding, ChangeCacheStorageRequest, ChangeCacheStorageResponse,
     ChangeRegistryStorageRequest, ChangeRegistryStorageResponse, ChangeRequest, Changeset, Channel,
-    CreateBindingRequest,
+    CreateBindingRequest, LinkCacheRequest, LinkCacheResponse, UnlinkCacheRequest,
+    UnlinkCacheResponse,
     CreateBindingResponse, CreateOrgRequest, CreateOrgResponse, CreateProjectRequest,
     CreateProjectResponse, CreateRegistryRequest, CreateRegistryResponse, CreateWebhookRequest,
     CreateWebhookResponse,
@@ -573,6 +574,75 @@ impl RegistryHubClient {
             .await
             .with_context(|| format!("changing storage for cache '{cache_slug}'"))?;
         Ok((resp.objects, resp.bytes))
+    }
+
+    /// Links (or updates) a managed cache to a registry.
+    ///
+    /// `advertised` puts the cache in the registry's consumer-facing cache list
+    /// by write-through to its committed `registry.toml` `[[caches]]`;
+    /// `roots_packages` pins the registry's packages as GC roots in the cache.
+    /// Requires `registry.configure` on the registry. Returns the id of the
+    /// proposed advertise change request (empty when none was needed — promote
+    /// it with `apr change merge`). Calls
+    /// `aos.registry.v1.CacheService/LinkCache`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the link RPC fails (unknown
+    /// cache/registry, insufficient authority, or a cross-visibility rejection).
+    pub async fn link_cache(
+        &self,
+        cache_slug: &str,
+        registry_slug: &str,
+        advertised: bool,
+        roots_packages: bool,
+    ) -> Result<String> {
+        let resp: LinkCacheResponse = self
+            .call(
+                "aos.registry.v1.CacheService/LinkCache",
+                &LinkCacheRequest {
+                    cache_slug: cache_slug.into(),
+                    registry_slug: registry_slug.into(),
+                    roots_packages,
+                    advertised,
+                },
+            )
+            .await
+            .with_context(|| {
+                format!("linking cache '{cache_slug}' to registry '{registry_slug}'")
+            })?;
+        Ok(resp.change_id)
+    }
+
+    /// Removes a managed cache's link to a registry.
+    ///
+    /// De-advertises the cache from the registry's committed `[[caches]]` (if it
+    /// was advertised) via a change request. Requires `registry.configure` on the
+    /// registry. Returns `(removed, change_id)` — whether a link row was deleted
+    /// and the id of any proposed de-advertise change request. Calls
+    /// `aos.registry.v1.CacheService/UnlinkCache`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the unlink RPC fails.
+    pub async fn unlink_cache(
+        &self,
+        cache_slug: &str,
+        registry_slug: &str,
+    ) -> Result<(bool, String)> {
+        let resp: UnlinkCacheResponse = self
+            .call(
+                "aos.registry.v1.CacheService/UnlinkCache",
+                &UnlinkCacheRequest {
+                    cache_slug: cache_slug.into(),
+                    registry_slug: registry_slug.into(),
+                },
+            )
+            .await
+            .with_context(|| {
+                format!("unlinking cache '{cache_slug}' from registry '{registry_slug}'")
+            })?;
+        Ok((resp.removed, resp.change_id))
     }
 
     /// Creates an org-owned, storage-bound managed registry.

@@ -2248,6 +2248,76 @@ impl RpcService {
         Ok(pb::DeleteCacheResponse { deleted })
     }
 
+    /// The consumer-facing base URL a managed cache is served at
+    /// (`{external_url}/{slug}`) — the URL committed into a registry's
+    /// `[[caches]]` when the cache is advertised.
+    fn cache_advertise_url(&self, cache_slug: &str) -> String {
+        format!("{}/{}", self.external_url.trim_end_matches('/'), cache_slug)
+    }
+
+    /// Reconcile a registry's committed `[[caches]]` with a cache's advertise
+    /// state by proposing a `registry.toml` change request, returning the new
+    /// change id (empty when none was needed).
+    ///
+    /// `advertise = true` proposes adding the cache's served URL; `false`
+    /// proposes removing it. Shared by [`link_cache`](Self::link_cache) and
+    /// [`unlink_cache`](Self::unlink_cache) so the committed advertised set —
+    /// the only cache list a consumer resolves — tracks the link (RFC-0004,
+    /// the write-through model). Idempotent: an already-correct committed file
+    /// yields no change request (empty id).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when advertising is requested but the hub has no signing
+    /// key, or when the change request cannot be built or written.
+    async fn advertise_cache_change(
+        &self,
+        claims: &Claims,
+        registry: &RegistryRecord,
+        cache_slug: &str,
+        advertise: bool,
+    ) -> Result<String, RpcError> {
+        let Some(sealer) = self.sealer.as_ref() else {
+            // No hub signing key: advertising can't author a change request;
+            // de-advertising is best-effort and silently skipped.
+            if advertise {
+                return Err(RpcError::internal(anyhow::anyhow!(
+                    "hub has no signing key configured; cannot propose a registry.toml \
+                     change to advertise the cache"
+                )));
+            }
+            return Ok(String::new());
+        };
+        let fetch = self
+            .surface
+            .fetcher(registry)
+            .await
+            .map_err(RpcError::internal)?;
+        let writer = self
+            .surface_write
+            .writer(registry)
+            .await
+            .map_err(|err| RpcError::invalid(format!("{err:#}")))?;
+        let url = self.cache_advertise_url(cache_slug);
+        let label = format!("{}:{}", claims.owner_kind, claims.owner_id);
+        let proposed = crate::gitwrite::propose_cache_advertisement(
+            &self.db,
+            sealer.as_ref(),
+            fetch.as_ref(),
+            writer.as_ref(),
+            registry,
+            &url,
+            advertise,
+            &claims.owner_kind,
+            Some(claims.owner_id),
+            &label,
+            crate::clock::now_unix_secs(),
+        )
+        .await
+        .map_err(|err| RpcError::invalid(format!("{err:#}")))?;
+        Ok(proposed.map(|p| p.change_id.0).unwrap_or_default())
+    }
+
     /// `CacheService.LinkCache` — link (or update) a cache⇄registry association.
     ///
     /// # Errors
@@ -2261,7 +2331,13 @@ impl RpcService {
     ) -> Result<pb::LinkCacheResponse, RpcError> {
         let c = self.cache_or_not_found(&req.cache_slug).await?;
         self.require_cache_admin(auth, c.org_id).await?;
+        let claims = self.require_claims(auth)?;
         let r = self.registry_or_not_found(&req.registry_slug).await?;
+        // The advertise flag writes through to the registry's committed
+        // registry.toml, so it additionally requires registry.configure on the
+        // registry — matching the web console's link handler.
+        self.require_permission(&claims, Permission::RegistryConfigure, &Scope::parse(&r.slug))
+            .await?;
         // Cross-visibility safety (RFC-0004 "11-caches"), enforced through the
         // shared chokepoint so the RPC and the web console agree exactly.
         let advisory = assess_cache_link(
@@ -2282,7 +2358,12 @@ impl RpcService {
             .link_cache(c.id, r.id, req.roots_packages, req.advertised)
             .await
             .map_err(RpcError::internal)?;
-        Ok(pb::LinkCacheResponse {})
+        // Write-through: reconcile the committed [[caches]] with the advertise
+        // flag (add when advertised, remove otherwise) as a change request.
+        let change_id = self
+            .advertise_cache_change(&claims, &r, &c.slug, req.advertised)
+            .await?;
+        Ok(pb::LinkCacheResponse { change_id })
     }
 
     /// `CacheService.ChangeCacheStorage` — migrate a cache's surface to a
@@ -2335,13 +2416,22 @@ impl RpcService {
     ) -> Result<pb::UnlinkCacheResponse, RpcError> {
         let c = self.cache_or_not_found(&req.cache_slug).await?;
         self.require_cache_admin(auth, c.org_id).await?;
+        let claims = self.require_claims(auth)?;
         let r = self.registry_or_not_found(&req.registry_slug).await?;
+        // Unlinking de-advertises, which edits the registry's committed config,
+        // so it also requires registry.configure on the registry.
+        self.require_permission(&claims, Permission::RegistryConfigure, &Scope::parse(&r.slug))
+            .await?;
         let removed = self
             .db
             .unlink_cache(c.id, r.id)
             .await
             .map_err(RpcError::internal)?;
-        Ok(pb::UnlinkCacheResponse { removed })
+        // Remove any committed [[caches]] entry advertising this cache.
+        let change_id = self
+            .advertise_cache_change(&claims, &r, &c.slug, false)
+            .await?;
+        Ok(pb::UnlinkCacheResponse { removed, change_id })
     }
 
     /// `CacheService.ListCacheLinks` — a cache's registry links.
