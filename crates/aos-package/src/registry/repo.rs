@@ -528,11 +528,68 @@ pub(crate) fn commit_signature(
 ) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     let repo = open(repo_dir)?;
     let oid = resolve_oid(&repo, commit)?;
-    match repo.extract_signature(&oid, None) {
-        Ok((sig, signed)) => Ok(Some((sig.to_vec(), signed.to_vec()))),
-        Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("extracting signature of {commit}")),
+    // NOTE: git2's `extract_signature` returns NotFound for SHA-256 commits
+    // (libgit2's experimental SHA-256 support does not implement it), so the
+    // `gpgsig` header is parsed out of the raw commit object directly — the
+    // same approach `tag_signature` uses for annotated tags.
+    let odb = repo.odb().context("opening object database")?;
+    let raw = odb
+        .read(oid)
+        .with_context(|| format!("reading commit object {commit}"))?;
+    Ok(split_commit_signature(raw.data()))
+}
+
+/// Split a raw commit object into `(signature, signed_payload)`.
+///
+/// Mirrors how `git verify-commit` works: the signature is the value of the
+/// `gpgsig` header (continuation lines de-indented by one space, yielding the
+/// armored SSH signature), and the signed payload is the commit object with the
+/// entire `gpgsig` header removed. Returns `None` if the commit is unsigned.
+fn split_commit_signature(raw: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    // The header block ends at the first blank line; the message follows.
+    let sep = find_subslice(raw, b"\n\n")?;
+    let header = &raw[..sep];
+    let rest = &raw[sep..]; // "\n\n" + message, preserved byte-for-byte
+
+    let mut signed_header: Vec<u8> = Vec::new();
+    let mut signature: Vec<u8> = Vec::new();
+    let mut in_gpgsig = false;
+    let mut found = false;
+    let mut first_kept = true;
+
+    for line in header.split(|&b| b == b'\n') {
+        if in_gpgsig && line.first() == Some(&b' ') {
+            // Continuation line of the gpgsig header: de-indent one space.
+            signature.push(b'\n');
+            signature.extend_from_slice(&line[1..]);
+            continue;
+        }
+        in_gpgsig = false;
+        // SHA-256 repos name the header `gpgsig-sha256`; SHA-1 repos use
+        // `gpgsig`. The signed payload is the commit with the header removed
+        // either way.
+        if let Some(value) = line
+            .strip_prefix(b"gpgsig-sha256 ")
+            .or_else(|| line.strip_prefix(b"gpgsig "))
+        {
+            found = true;
+            in_gpgsig = true;
+            signature.extend_from_slice(value);
+            continue;
+        }
+        if !first_kept {
+            signed_header.push(b'\n');
+        }
+        signed_header.extend_from_slice(line);
+        first_kept = false;
     }
+
+    if !found {
+        return None;
+    }
+    let mut signed = signed_header;
+    signed.extend_from_slice(rest);
+    Some((signature, signed))
 }
 
 /// Extract the SSHSIG signature and signed payload of an annotated tag.

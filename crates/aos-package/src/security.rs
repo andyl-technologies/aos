@@ -1125,6 +1125,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn verify_commit_signature_accepts_any_key_in_set() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        // SHA-256 repo, matching the registry's object format.
+        git(&repo, &["init", "--object-format=sha256"]);
+        git(&repo, &["config", "user.name", "registry"]);
+        git(&repo, &["config", "user.email", "registry"]);
+
+        let (key_a, _path_a) = test_keypair(temp.path(), "registry", [1_u8; 32], "key_a");
+        let (key_b, path_b) = test_keypair(temp.path(), "registry", [2_u8; 32], "key_b");
+
+        fs::write(repo.join("file"), "content").unwrap();
+        git(&repo, &["add", "file"]);
+        // Commit signed by B with an SSH key (gpg.format=ssh), the same way the
+        // registry head commit is signed.
+        git(
+            &repo,
+            &[
+                "-c",
+                "gpg.format=ssh",
+                "-c",
+                &format!("user.signingkey={}", path_b.display()),
+                "-c",
+                "commit.gpgsign=true",
+                "commit",
+                "-m",
+                "signed commit",
+            ],
+        );
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        let head = String::from_utf8(out.stdout).unwrap().trim().to_string();
+
+        assert!(
+            verify_commit_signature(&repo, &head, &[key_a.clone(), key_b.clone()]).unwrap(),
+            "commit signed by B must verify when B is in the trusted set"
+        );
+        assert!(
+            !verify_commit_signature(&repo, &head, std::slice::from_ref(&key_a)).unwrap(),
+            "must not verify when the signing key is absent"
+        );
+    }
+
     // -- revoked-key exclusions ----------------------------------------------
 
     #[test]
