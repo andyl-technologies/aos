@@ -676,3 +676,97 @@ pub(crate) fn set_reference(repo_dir: &Path, refname: &str, oid_hex: &str) -> Re
 pub(crate) fn objects_dir(repo_dir: &Path) -> PathBuf {
     repo_dir.join("objects")
 }
+
+/// Index downloaded packfiles into the repository's object store.
+///
+/// Each entry of `packs` is the raw bytes of a `.pack` file. libgit2's pack
+/// indexer (equivalent to `git index-pack`) regenerates the `.idx` and
+/// verifies the pack, so objects become addressable by their true content
+/// hash — a tampered pack yields objects under unexpected ids that the graph
+/// walk in [`missing_objects_blocking`] simply will not find under the ids it
+/// expects. The `.idx` therefore never has to be downloaded or trusted.
+///
+/// # Errors
+///
+/// Returns an error if a pack cannot be written or fails indexing/verification.
+pub(crate) fn index_packs_blocking(repo_dir: &Path, packs: &[Vec<u8>]) -> Result<()> {
+    use std::io::Write as _;
+    let repo = open(repo_dir)?;
+    let odb = repo.odb().context("opening object database")?;
+    for pack in packs {
+        let mut writer = odb.packwriter().context("creating pack writer")?;
+        writer.write_all(pack).context("writing pack data")?;
+        writer.commit().context("indexing pack")?;
+    }
+    Ok(())
+}
+
+/// Walk the object graph reachable from `targets` over the *local* object
+/// store and return the hex OIDs that are referenced but absent.
+///
+/// Traversal uses libgit2 objects (commit -> tree + parents, tree -> entries,
+/// tag -> target), so every OID originates from git2 and is never parsed from
+/// a hex string. Objects already present — whether in a pack or loose — are
+/// traversed in place with no network access; the returned set is the frontier
+/// the caller must download (loose) before walking can continue past it.
+///
+/// # Errors
+///
+/// Returns an error if a target cannot be resolved (other than not-found) or an
+/// object read fails for a reason other than absence.
+pub(crate) fn missing_objects_blocking(repo_dir: &Path, targets: &[String]) -> Result<Vec<String>> {
+    use std::collections::HashSet;
+    let repo = open(repo_dir)?;
+    let mut missing: HashSet<String> = HashSet::new();
+    let mut visited: HashSet<git2::Oid> = HashSet::new();
+    let mut stack: Vec<git2::Oid> = Vec::new();
+
+    for hex in targets {
+        match repo.revparse_single(hex) {
+            Ok(object) => stack.push(object.id()),
+            Err(e) if e.code() == git2::ErrorCode::NotFound => {
+                missing.insert(hex.clone());
+            }
+            Err(e) => return Err(e).with_context(|| format!("resolving {hex}")),
+        }
+    }
+
+    while let Some(oid) = stack.pop() {
+        if !visited.insert(oid) {
+            continue;
+        }
+        let object = match repo.find_object(oid, None) {
+            Ok(object) => object,
+            Err(e) if e.code() == git2::ErrorCode::NotFound => {
+                missing.insert(oid.to_string());
+                continue;
+            }
+            Err(e) => return Err(e).with_context(|| format!("reading object {oid}")),
+        };
+        match object.kind() {
+            Some(git2::ObjectType::Commit) => {
+                if let Some(commit) = object.as_commit() {
+                    stack.push(commit.tree_id());
+                    for parent in commit.parent_ids() {
+                        stack.push(parent);
+                    }
+                }
+            }
+            Some(git2::ObjectType::Tree) => {
+                if let Some(tree) = object.as_tree() {
+                    for entry in tree.iter() {
+                        stack.push(entry.id());
+                    }
+                }
+            }
+            Some(git2::ObjectType::Tag) => {
+                if let Some(tag) = object.as_tag() {
+                    stack.push(tag.target_id());
+                }
+            }
+            // Blobs are leaves; anything else carries no references we follow.
+            _ => {}
+        }
+    }
+    Ok(missing.into_iter().collect())
+}
