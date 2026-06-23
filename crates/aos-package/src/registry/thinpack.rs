@@ -204,17 +204,21 @@ fn type_code(kind: git2::ObjectType) -> Result<u8> {
 }
 
 /// Encode one pack entry: the type+size header, an optional 32-byte ref-delta
-/// base OID, and the zlib-compressed body.
+/// base OID, and the deflated body.
+///
+/// The body is deflated at level 0 (a valid zlib stream of stored blocks,
+/// equivalent to `git pack-objects --compression=0`). The pack is not the final
+/// transfer artifact — it is wrapped with `zstd --long` ([`crate::registry::pack::zstd_compress`]),
+/// whose 128 MiB window compresses across objects far better than per-object
+/// zlib could, so we leave the bytes uncompressed here and let zstd do the work.
 fn encode_entry(obj_type: u8, body: &[u8], base: Option<git2::Oid>) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     write_obj_header(&mut out, obj_type, body.len());
     if let Some(base) = base {
         out.extend_from_slice(base.as_bytes());
     }
-    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-    encoder
-        .write_all(body)
-        .context("zlib-compressing pack entry")?;
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::none());
+    encoder.write_all(body).context("deflating pack entry")?;
     out.extend_from_slice(&encoder.finish().context("finishing zlib stream")?);
     Ok(out)
 }
@@ -460,5 +464,150 @@ mod tests {
         let mut out = Vec::new();
         write_obj_header(&mut out, OBJ_BLOB, 0x10);
         assert_eq!(out, vec![(OBJ_BLOB << 4) | 0x80, 0x01]);
+    }
+
+    /// Deterministic, registry-like file content; `version > 0` perturbs a few
+    /// lines to model an incremental edit.
+    fn gen_file(seed: usize, version: usize) -> Vec<u8> {
+        let mut s = String::new();
+        for line in 0..120 {
+            if version > 0 && line % 30 == 7 {
+                s.push_str(&format!(
+                    "changed[{seed}:{line}] v{version} xyzzy-{}\n",
+                    seed * 7 + line
+                ));
+            } else {
+                s.push_str(&format!(
+                    "name = \"pkg-{seed}\"\nline {line} = stable value {} foo bar baz\n",
+                    (seed * 131 + line * 17) % 1000
+                ));
+            }
+        }
+        s.into_bytes()
+    }
+
+    /// Compare our thin pack against `git pack-objects --thin` on a realistic
+    /// two-release fixture, both wrapped with the production zstd flags. Prints
+    /// raw and zstd sizes; run with:
+    ///   cargo test -p aos-package --lib thinpack::tests::bench_thin_pack -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_thin_pack_size_vs_git() {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().join("reg");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| -> String {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q", "--object-format=sha256"]);
+        git(&["config", "user.email", "a@example.com"]);
+        git(&["config", "user.name", "a"]);
+        git(&["config", "commit.gpgsign", "false"]);
+
+        let pkgs = repo.join("packages");
+        std::fs::create_dir_all(&pkgs).unwrap();
+        for i in 0..200 {
+            std::fs::write(pkgs.join(format!("pkg-{i:03}.toml")), gen_file(i, 0)).unwrap();
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "v1"]);
+        let v1 = git(&["rev-parse", "HEAD"]);
+
+        for i in (0..200).step_by(4) {
+            std::fs::write(pkgs.join(format!("pkg-{i:03}.toml")), gen_file(i, 1)).unwrap();
+        }
+        std::fs::rename(pkgs.join("pkg-001.toml"), pkgs.join("pkg-001-renamed.toml")).unwrap();
+        for i in 200..205 {
+            std::fs::write(pkgs.join(format!("pkg-{i:03}.toml")), gen_file(i, 0)).unwrap();
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "v2"]);
+        let v2 = git(&["rev-parse", "HEAD"]);
+
+        // Our pack.
+        let ours = tmp.path().join("ours.pack");
+        write_thin_pack(&repo, &v1, &v2, &ours).unwrap();
+
+        // git's pack (same tuning the producer used historically).
+        let mut child = Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "pack-objects",
+                "--thin",
+                "--stdout",
+                "--compression=0",
+                "--window=350",
+                "--depth=50",
+            ])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(format!("{v2}\n^{v1}\n").as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "git pack-objects: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let git_pack = tmp.path().join("git.pack");
+        std::fs::write(&git_pack, &out.stdout).unwrap();
+
+        let zst = |p: &std::path::Path| -> u64 {
+            let dst = format!("{}.zst", p.display());
+            let o = Command::new("zstd")
+                .args([
+                    "--ultra",
+                    "-22",
+                    "--long=27",
+                    "-q",
+                    "-f",
+                    "-o",
+                    &dst,
+                    p.to_str().unwrap(),
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                o.status.success(),
+                "zstd: {}",
+                String::from_utf8_lossy(&o.stderr)
+            );
+            std::fs::metadata(&dst).unwrap().len()
+        };
+
+        let (our_raw, git_raw) = (
+            std::fs::metadata(&ours).unwrap().len(),
+            std::fs::metadata(&git_pack).unwrap().len(),
+        );
+        let (our_z, git_z) = (zst(&ours), zst(&git_pack));
+        println!("[bench] raw  pack: ours={our_raw} git={git_raw}");
+        println!(
+            "[bench] zstd pack: ours={our_z} git={git_z}  (ours/git = {:.3}x)",
+            our_z as f64 / git_z as f64
+        );
     }
 }
