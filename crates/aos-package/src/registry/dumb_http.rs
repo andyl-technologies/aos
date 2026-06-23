@@ -36,6 +36,7 @@ use std::io::Read;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use futures_util::stream::{self, StreamExt};
 use sha2::{Digest, Sha256};
 
 use crate::download::join_cache_url;
@@ -45,6 +46,12 @@ use crate::registry::repo;
 /// malicious or broken origin advertising an unbounded graph. Real registries
 /// are far smaller; the visited set already prevents cycles.
 const MAX_OBJECTS: usize = 2_000_000;
+
+/// Maximum object downloads in flight at once. Dumb-HTTP is latency-bound (one
+/// GET per object), so the graph walk fetches each breadth-first level
+/// concurrently; this caps the fan-out to stay friendly to static origins
+/// (S3/garage/nginx) while still hiding round-trip latency.
+const MAX_CONCURRENCY: usize = 24;
 
 /// Fetch `refspecs` from a dumb-HTTP(S) registry at `base_url` into the bare
 /// repository at `repo_dir`.
@@ -70,33 +77,48 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
         resolve_refspec(spec, &advertised, head.as_deref(), &mut targets)?;
     }
 
-    // Walk and download the object graph reachable from all target OIDs.
+    // Walk and download the object graph reachable from all target OIDs,
+    // breadth-first. Each level's objects are fetched concurrently (bounded by
+    // MAX_CONCURRENCY) since dumb-HTTP is one round-trip per object; children
+    // are only known after a parent is parsed, so concurrency is per-level.
     let objects_dir = repo::objects_dir(repo_dir);
     let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<String> = targets.iter().map(|(oid, _)| oid.clone()).collect();
-    let mut fetched = 0usize;
-    while let Some(oid) = queue.pop_front() {
-        if !visited.insert(oid.clone()) {
-            continue;
+    let mut frontier: Vec<String> = Vec::new();
+    for (oid, _) in &targets {
+        if visited.insert(oid.clone()) {
+            frontier.push(oid.clone());
         }
-        if fetched >= MAX_OBJECTS {
+    }
+
+    while !frontier.is_empty() {
+        if visited.len() > MAX_OBJECTS {
             bail!("registry object graph exceeded {MAX_OBJECTS} objects; refusing to continue");
         }
-        let loose_path = loose_object_path(&objects_dir, &oid)?;
-        let inflated = if loose_path.exists() {
-            // Already present locally (prior sync); read it for ref discovery
-            // without re-downloading.
-            inflate_loose_file(&loose_path).await?
-        } else {
-            let compressed = fetch_object(&client, base_url, &oid).await?;
-            let inflated =
-                inflate(&compressed).with_context(|| format!("inflating object {oid}"))?;
-            verify_oid(&oid, &inflated)?;
-            write_loose_verbatim(&loose_path, &compressed).await?;
-            fetched += 1;
-            inflated
-        };
-        enqueue_referenced_oids(&inflated, &oid, &mut queue)?;
+        let client = &client;
+        let objects_dir = &objects_dir;
+        let fetched: Vec<(String, Vec<u8>)> = stream::iter(frontier.into_iter())
+            .map(|oid| async move {
+                let inflated = fetch_one(client, base_url, objects_dir, &oid).await?;
+                Ok::<_, anyhow::Error>((oid, inflated))
+            })
+            .buffer_unordered(MAX_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut next = Vec::new();
+        let mut children = VecDeque::new();
+        for (oid, inflated) in &fetched {
+            children.clear();
+            enqueue_referenced_oids(inflated, oid, &mut children)?;
+            for child in children.drain(..) {
+                if visited.insert(child.clone()) {
+                    next.push(child);
+                }
+            }
+        }
+        frontier = next;
     }
 
     // Point destination refs at the resolved OIDs.
@@ -119,6 +141,29 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
     }
 
     Ok(())
+}
+
+/// Fetch a single object for the graph walk.
+///
+/// Reads an existing local loose copy (a prior sync) without a round trip;
+/// otherwise downloads it, verifies its SHA-256 matches `oid`, and writes the
+/// compressed object loose. Returns the inflated `"<type> <size>\0<body>"`
+/// bytes for reference discovery.
+async fn fetch_one(
+    client: &reqwest::Client,
+    base_url: &str,
+    objects_dir: &Path,
+    oid: &str,
+) -> Result<Vec<u8>> {
+    let loose_path = loose_object_path(objects_dir, oid)?;
+    if loose_path.exists() {
+        return inflate_loose_file(&loose_path).await;
+    }
+    let compressed = fetch_object(client, base_url, oid).await?;
+    let inflated = inflate(&compressed).with_context(|| format!("inflating object {oid}"))?;
+    verify_oid(oid, &inflated)?;
+    write_loose_verbatim(&loose_path, &compressed).await?;
+    Ok(inflated)
 }
 
 /// Fetch and parse `info/refs` into a `refname -> oid` map.
@@ -453,5 +498,119 @@ mod tests {
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0], "11".repeat(32));
         assert_eq!(queue[1], "22".repeat(32));
+    }
+
+    /// End-to-end: serve a real SHA-256 repository as a static dumb-HTTP tree
+    /// and confirm the reader walks the object graph, lands every object, and
+    /// sets the destination ref — the production HTTPS transport path.
+    #[tokio::test]
+    async fn fetch_reads_static_sha256_repo_over_http() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+        use std::process::Command;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(work.join("sub")).unwrap();
+
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .args(args)
+                .current_dir(&work)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        // A commit whose tree has a nested subdirectory exercises recursive
+        // tree walking in the reader.
+        Command::new("git")
+            .args(["init", "--object-format=sha256", "-b", "main"])
+            .arg(&work)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .status()
+            .unwrap();
+        git(&["config", "user.email", "a@example.com"]);
+        git(&["config", "user.name", "probe"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(work.join("file.txt"), b"hello sha256").unwrap();
+        std::fs::write(work.join("sub/nested.txt"), b"nested").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "init"]);
+        git(&["update-server-info"]);
+
+        let head = {
+            let out = Command::new("git")
+                .args(["rev-parse", "main"])
+                .current_dir(&work)
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        assert_eq!(head.len(), 64, "expected sha256 head, got {head:?}");
+
+        // Minimal static file server over the bare `.git` directory.
+        let git_dir = work.join(".git");
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(l) => l,
+            Err(_) => return, // loopback bind unavailable; skip
+        };
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let root = git_dir.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 1024];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let path = req
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("/")
+                        .trim_start_matches('/');
+                    match std::fs::read(root.join(path)) {
+                        Ok(body) => {
+                            let header = format!(
+                                "HTTP/1.0 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            let _ = stream.write_all(header.as_bytes());
+                            let _ = stream.write_all(&body);
+                        }
+                        Err(_) => {
+                            let _ = stream.write_all(
+                                b"HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            );
+                        }
+                    }
+                });
+            }
+        });
+
+        let url = format!("http://{addr}/");
+        let client_dir = tmp.path().join("client.git");
+        repo::init_bare_sha256(&client_dir).await.unwrap();
+        fetch(
+            &client_dir,
+            &url,
+            &["+refs/heads/main:refs/remotes/origin/main".to_string()],
+        )
+        .await
+        .expect("dumb-http fetch should succeed");
+
+        // The ref was set and the whole graph landed: the commit reads back
+        // through git2, including the nested blob.
+        let resolved = repo::rev_parse(&client_dir, "refs/remotes/origin/main")
+            .await
+            .unwrap();
+        assert_eq!(resolved, head);
+        let nested = repo::read_blob_at(&client_dir, &head, "sub/nested.txt")
+            .await
+            .unwrap();
+        assert_eq!(nested.as_deref(), Some(&b"nested"[..]));
     }
 }

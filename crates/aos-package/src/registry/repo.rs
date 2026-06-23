@@ -43,6 +43,21 @@ fn open(repo_dir: &Path) -> Result<git2::Repository> {
         .with_context(|| format!("opening git repository at {}", repo_dir.display()))
 }
 
+/// Resolve a hex object id to a [`git2::Oid`] using the repository's hash
+/// algorithm.
+///
+/// [`git2::Oid::from_str`] assumes SHA-1 and rejects 64-character SHA-256 ids,
+/// so a SHA-256 id must be resolved through the repository. The object must
+/// already exist, which holds for every caller — fast-forward checks and
+/// signature reads operate on fetched commits, and refs are set immediately
+/// after their target object is written.
+fn resolve_oid(repo: &git2::Repository, hex: &str) -> Result<git2::Oid> {
+    let object = repo
+        .revparse_single(hex)
+        .with_context(|| format!("resolving object {hex}"))?;
+    Ok(object.id())
+}
+
 /// Run a blocking libgit2 closure on a `spawn_blocking` worker.
 ///
 /// The closure receives the path it was given so it can open its own
@@ -226,10 +241,8 @@ pub(crate) fn is_ancestor_blocking(
     descendant: &str,
 ) -> Result<bool> {
     let repo = open(repo_dir)?;
-    let ancestor_oid =
-        git2::Oid::from_str(ancestor).with_context(|| format!("parsing oid {ancestor}"))?;
-    let descendant_oid =
-        git2::Oid::from_str(descendant).with_context(|| format!("parsing oid {descendant}"))?;
+    let ancestor_oid = resolve_oid(&repo, ancestor)?;
+    let descendant_oid = resolve_oid(&repo, descendant)?;
     if ancestor_oid == descendant_oid {
         return Ok(true);
     }
@@ -514,8 +527,7 @@ pub(crate) fn commit_signature(
     commit: &str,
 ) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     let repo = open(repo_dir)?;
-    let oid =
-        git2::Oid::from_str(commit).with_context(|| format!("parsing commit oid {commit}"))?;
+    let oid = resolve_oid(&repo, commit)?;
     match repo.extract_signature(&oid, None) {
         Ok((sig, signed)) => Ok(Some((sig.to_vec(), signed.to_vec()))),
         Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
@@ -653,7 +665,7 @@ fn credentials(
 /// both transports land fetched refs in the same place.
 pub(crate) fn set_reference(repo_dir: &Path, refname: &str, oid_hex: &str) -> Result<()> {
     let repo = open(repo_dir)?;
-    let oid = git2::Oid::from_str(oid_hex).with_context(|| format!("parsing oid {oid_hex}"))?;
+    let oid = resolve_oid(&repo, oid_hex)?;
     repo.reference(refname, oid, true, "apm dumb-http fetch")
         .with_context(|| format!("writing ref {refname}"))?;
     Ok(())
