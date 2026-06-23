@@ -37,6 +37,9 @@ pub(crate) fn hermetic() -> std::process::Command {
 }
 
 /// Async variant of [`hermetic`].
+// Unused once the apm fetch + pack paths moved to libgit2; retained while the
+// apr write-side (registry_ops, lib) still shells out to git.
+#[allow(dead_code)]
 pub(crate) fn hermetic_async() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("git");
     cmd.envs(HERMETIC_ENV);
