@@ -490,7 +490,10 @@
       pname = name;
       inherit testScript rootfsDeps;
     };
-    kernelPath = builtins.toString kernel;
+    # Firecracker boots the uncompressed vmlinux ELF, which lives in the
+    # kernel's separate `vmlinux` output (pkgs/kernel/linux.nix) — not in
+    # `out`, whose /boot ships only the compressed vmlinuz.
+    kernelPath = builtins.toString kernel.vmlinux;
 
     headlessBuildDeps = [
       pkgs.coreutils
@@ -695,7 +698,11 @@
             {
               name = "vm";
               transport = "firecracker";
-              kernel = builtins.toString systemKernel;
+              # The driver feeds this to Firecracker as the boot kernel, which
+              # must be the uncompressed vmlinux ELF — sourced from the kernel's
+              # separate `vmlinux` output (the system's `out` /boot has only the
+              # compressed vmlinuz). Matches the system's own kernel build.
+              kernel = builtins.toString systemKernel.vmlinux;
               initrd = "${builtins.toString systemInitrd}/initrd.img";
               disk = "${builtins.toString systemDisk}/disk.img";
               metadata =
