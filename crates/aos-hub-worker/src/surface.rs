@@ -404,6 +404,45 @@ impl SurfaceFetch for S3SurfaceFetch {
         Ok(Some(bytes))
     }
 
+    async fn list(&self) -> Result<Vec<String>> {
+        use worker::Fetch;
+
+        let mut keys = Vec::new();
+        let mut continuation: Option<String> = None;
+        loop {
+            let now = aos_hub_core::clock::now_unix_secs();
+            let url = self.surface.list_url(continuation.as_deref(), now)?;
+            let mut response = Fetch::Url(
+                url.parse()
+                    .map_err(|err| anyhow::anyhow!("s3 parse list url: {err}"))?,
+            )
+            .send()
+            .await
+            .map_err(|err| anyhow::anyhow!("s3 list {}: {err}", self.surface.describe()))?;
+            let status = response.status_code();
+            if !(200..300).contains(&status) {
+                anyhow::bail!("s3 list {}: status {status}", self.surface.describe());
+            }
+            let body = response
+                .text()
+                .await
+                .map_err(|err| anyhow::anyhow!("s3 list body {}: {err}", self.surface.describe()))?;
+            let (page_keys, next) = aos_hub_core::s3surface::parse_list_objects_v2(&body);
+            for key in page_keys {
+                if let Some(rel) = self.surface.relative_from_key(&key) {
+                    if !rel.is_empty() {
+                        keys.push(rel);
+                    }
+                }
+            }
+            match next {
+                Some(token) => continuation = Some(token),
+                None => break,
+            }
+        }
+        Ok(keys)
+    }
+
     async fn fetch_stream(
         &self,
         path: &str,

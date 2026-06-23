@@ -141,7 +141,35 @@ fn uri_encode(input: &str, encode_slash: bool) -> String {
 /// injection into the signed canonical request, since both inputs are caller-
 /// supplied.
 pub fn presign_get_url(p: &PresignParams<'_>) -> Result<String> {
-    presign_url("GET", p)
+    presign_url("GET", p, &[])
+}
+
+/// Build a presigned S3 `ListObjectsV2` URL valid for
+/// [`PresignParams::expires_secs`].
+///
+/// A `GET` on the bucket (`p.path` = `/{bucket}`) carrying `list-type=2`, the
+/// in-bucket `prefix`, and an optional `continuation-token` — all folded into
+/// the signed canonical query alongside the `X-Amz-*` presign params, so the
+/// returned URL can be fetched directly to page through every key under
+/// `prefix`. This is the enumeration storage migration walks when a surface
+/// lives on an external S3/R2 binding.
+///
+/// # Errors
+///
+/// Same as [`presign_get_url`].
+pub fn presign_list_url(
+    p: &PresignParams<'_>,
+    prefix: &str,
+    continuation: Option<&str>,
+) -> Result<String> {
+    let mut extra = vec![
+        ("list-type", "2".to_string()),
+        ("prefix", prefix.to_string()),
+    ];
+    if let Some(token) = continuation {
+        extra.push(("continuation-token", token.to_string()));
+    }
+    presign_url("GET", p, &extra)
 }
 
 /// Build a presigned `PUT` URL valid for [`PresignParams::expires_secs`].
@@ -155,7 +183,7 @@ pub fn presign_get_url(p: &PresignParams<'_>) -> Result<String> {
 ///
 /// Same as [`presign_get_url`].
 pub fn presign_put_url(p: &PresignParams<'_>) -> Result<String> {
-    presign_url("PUT", p)
+    presign_url("PUT", p, &[])
 }
 
 /// Build a presigned `HEAD` URL valid for [`PresignParams::expires_secs`].
@@ -169,7 +197,7 @@ pub fn presign_put_url(p: &PresignParams<'_>) -> Result<String> {
 ///
 /// Same as [`presign_get_url`].
 pub fn presign_head_url(p: &PresignParams<'_>) -> Result<String> {
-    presign_url("HEAD", p)
+    presign_url("HEAD", p, &[])
 }
 
 /// Build a presigned `DELETE` URL valid for [`PresignParams::expires_secs`].
@@ -181,13 +209,13 @@ pub fn presign_head_url(p: &PresignParams<'_>) -> Result<String> {
 ///
 /// Same as [`presign_get_url`].
 pub fn presign_delete_url(p: &PresignParams<'_>) -> Result<String> {
-    presign_url("DELETE", p)
+    presign_url("DELETE", p, &[])
 }
 
 /// Build a presigned URL for `method` (`GET`/`PUT`/`HEAD`/`DELETE`). The shared
 /// signer behind [`presign_get_url`]/[`presign_put_url`]/[`presign_head_url`]/
 /// [`presign_delete_url`].
-fn presign_url(method: &str, p: &PresignParams<'_>) -> Result<String> {
+fn presign_url(method: &str, p: &PresignParams<'_>, extra: &[(&str, String)]) -> Result<String> {
     validate_amz_date(p.amz_date)?;
     validate_host(p.host)?;
     // `amz_date` is `YYYYMMDDTHHMMSSZ` (validated above); the credential-scope
@@ -209,9 +237,18 @@ fn presign_url(method: &str, p: &PresignParams<'_>) -> Result<String> {
         ("X-Amz-Expires", p.expires_secs.to_string()),
         ("X-Amz-SignedHeaders", "host".to_string()),
     ];
+    // The X-Amz-* presign params plus any operation params (e.g. ListObjectsV2's
+    // `list-type`/`prefix`/`continuation-token`) all belong in the canonical
+    // query, each key+value URI-encoded (values encode `/`) and sorted by
+    // encoded key.
     let mut encoded: Vec<(String, String)> = params
         .iter()
         .map(|(k, v)| (uri_encode(k, true), uri_encode(v, true)))
+        .chain(
+            extra
+                .iter()
+                .map(|(k, v)| (uri_encode(k, true), uri_encode(v, true))),
+        )
         .collect();
     encoded.sort();
     let canonical_query = encoded
@@ -395,6 +432,32 @@ mod tests {
         assert!(presign_get_url(&params("h.example", "2013052\u{e9}2013")).is_err());
         // The canonical good form is accepted.
         assert!(presign_get_url(&params("h.example", "20130524T000000Z")).is_ok());
+    }
+
+    #[test]
+    fn presign_list_signs_operation_query_params() {
+        let p = params("bucket.example", "20130524T000000Z");
+        let sig = |u: &str| {
+            u.split("X-Amz-Signature=")
+                .nth(1)
+                .unwrap_or_default()
+                .to_string()
+        };
+
+        let url = presign_list_url(&p, "demo/sub/", None).unwrap();
+        // The operation params are present, with `/` encoded in query values.
+        assert!(url.contains("list-type=2"), "{url}");
+        assert!(url.contains("prefix=demo%2Fsub%2F"), "{url}");
+        assert!(url.contains("&X-Amz-Signature="), "{url}");
+        // Deterministic for fixed inputs.
+        assert_eq!(url, presign_list_url(&p, "demo/sub/", None).unwrap());
+        // Because the operation params are part of the signed canonical query,
+        // the list signature differs from a plain GET of the same path.
+        assert_ne!(sig(&url), sig(&presign_get_url(&p).unwrap()));
+        // A continuation token is signed in too.
+        let next = presign_list_url(&p, "demo/sub/", Some("tok123")).unwrap();
+        assert!(next.contains("continuation-token=tok123"), "{next}");
+        assert_ne!(sig(&next), sig(&url));
     }
 
     #[test]
