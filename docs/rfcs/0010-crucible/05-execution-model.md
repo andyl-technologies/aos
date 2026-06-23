@@ -862,7 +862,7 @@ information that cannot be recomputed.
 - [x] **T-EXEC-4** Implement `reduce` as the pure reduction and the prefix-closure
   property; add a `gate:harness-lint` check that `reduce` reads no host
   nondeterminism. — satisfies [EXEC-11], [EXEC-12]; spec §4.
-- [ ] **T-EXEC-5** Prove resume+continue ≡ uninterrupted run by fingerprint over a
+- [x] **T-EXEC-5** Prove resume+continue ≡ uninterrupted run by fingerprint over a
   representative scenario (scheduler/RNG state lives in the configuration). —
   satisfies [EXEC-13]; spec §4.
 - [ ] **T-EXEC-6** Implement recursive `instantiate` with the three-branch
