@@ -61,7 +61,6 @@ use serde_json::Value;
 use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
-use crate::gitcmd;
 use crate::provenance::{
     TrustedProvenanceKey, builder_id as provenance_builder_id, digest_map as provenance_digest_map,
     sha256_hex_payload, sign_statement_dsse_jsonl,
@@ -238,21 +237,6 @@ fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
         bail!("git {} failed: {}", args.join(" "), output.stderr);
     }
     Ok(output.stdout)
-}
-
-/// Render the useful part of a failed Git invocation.
-fn git_failure_details(output: &std::process::Output) -> String {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = stdout.trim();
-    let stderr = stderr.trim();
-
-    match (stdout.is_empty(), stderr.is_empty()) {
-        (true, true) => output.status.to_string(),
-        (false, true) => stdout.to_string(),
-        (true, false) => stderr.to_string(),
-        (false, false) => format!("{stdout}\n{stderr}"),
-    }
 }
 
 /// Build a `nix`/`nix-store` command with the AOS Nix environment applied.
@@ -954,12 +938,21 @@ fn env_commit_identity() -> bool {
 /// Registry commits record who published, so a missing identity is a setup
 /// error, not something to paper over with a placeholder.
 fn host_identity_value(key: &str) -> Result<String> {
-    gitcmd::host_config_value(key).ok_or_else(|| {
+    host_global_config_value(key).ok_or_else(|| {
         anyhow::anyhow!(
             "registry commits record the maintainer's identity, but git {key} is not set.\n\
              Set it with `git config --global {key} <value>`."
         )
     })
+}
+
+/// Read `key` from the host's global git config (`~/.gitconfig`), returning
+/// `None` when the config or key is absent or empty.
+fn host_global_config_value(key: &str) -> Option<String> {
+    let path = git2::Config::find_global().ok()?;
+    let config = git2::Config::open(&path).ok()?;
+    let value = config.get_string(key).ok()?;
+    (!value.is_empty()).then_some(value)
 }
 
 /// Check that a commit identity is available, without touching any repo.
@@ -1021,30 +1014,81 @@ fn commit_staged_registry(dir: &Path, message: &str, signing_key: Option<&str>) 
     }
 
     match signing_key {
-        Some(key) => {
-            let signing_key_config = format!("user.signingkey={key}");
-            let mut command = gitcmd::hermetic();
-            command.arg("-c").arg("gpg.format=ssh");
-            gitcmd::add_ssh_program_config(&mut command);
-            command
-                .arg("-c")
-                .arg(signing_key_config)
-                .arg("commit")
-                .arg("-S")
-                .arg("-m")
-                .arg(message)
-                .current_dir(dir);
-            let output = command
-                .output()
-                .with_context(|| format!("signing registry commit in {}", dir.display()))?;
-            if !output.status.success() {
-                bail!("git commit -S failed: {}", git_failure_details(&output));
-            }
-        }
+        Some(key) => create_signed_commit(dir, message, key)?,
         None => {
             git(dir, &["commit", "-m", message])?;
         }
     }
+    Ok(())
+}
+
+/// Create an SSH-signed commit of the current index, attaching the armored
+/// signature in the `gpgsig-sha256` header git uses for SHA-256 repositories.
+///
+/// The signed payload is the commit object without the signature header, which
+/// is exactly what [`crate::security::verify_commit_signature`] reconstructs.
+fn create_signed_commit(dir: &Path, message: &str, signing_key: &str) -> Result<()> {
+    let repo = git2::Repository::open(dir)
+        .with_context(|| format!("opening git repository at {}", dir.display()))?;
+    let mut index = repo.index().context("opening index")?;
+    let tree_oid = index.write_tree().context("writing tree")?;
+    let tree = repo.find_tree(tree_oid).context("reading tree")?;
+    let sig = git2_identity(&repo)?;
+    let parents = match repo.head() {
+        Ok(head) => vec![head.peel_to_commit().context("reading HEAD commit")?],
+        Err(_) => Vec::new(),
+    };
+    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+
+    let buffer = repo
+        .commit_create_buffer(&sig, &sig, message, &tree, &parent_refs)
+        .context("building commit object")?;
+    let buffer_str = std::str::from_utf8(&buffer).context("commit object is not valid UTF-8")?;
+    let armored = crate::security::sign_payload_signature(
+        Path::new(signing_key),
+        "git",
+        buffer_str.as_bytes(),
+    )?;
+    let commit_oid = repo
+        .commit_signed(buffer_str, &armored, Some("gpgsig-sha256"))
+        .context("writing signed commit")?;
+
+    // commit_signed writes the object but does not move any ref.
+    update_head_target(&repo, commit_oid)?;
+    Ok(())
+}
+
+/// Resolve the commit/tagger identity the way git does: repository (and
+/// global) config first, then the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` environment
+/// variables that [`ensure_commit_identity`] leaves in place rather than
+/// copying into config.
+fn git2_identity(repo: &git2::Repository) -> Result<git2::Signature<'static>> {
+    if let Ok(sig) = repo.signature() {
+        return Ok(sig);
+    }
+    let name = std::env::var("GIT_AUTHOR_NAME")
+        .or_else(|_| std::env::var("GIT_COMMITTER_NAME"))
+        .map_err(|_| anyhow::anyhow!("no commit identity configured (user.name unset)"))?;
+    let email = std::env::var("GIT_AUTHOR_EMAIL")
+        .or_else(|_| std::env::var("GIT_COMMITTER_EMAIL"))
+        .map_err(|_| anyhow::anyhow!("no commit identity configured (user.email unset)"))?;
+    git2::Signature::now(&name, &email).context("building commit identity")
+}
+
+/// Point the current branch (or the unborn HEAD's target) at `oid`.
+fn update_head_target(repo: &git2::Repository, oid: git2::Oid) -> Result<()> {
+    let refname = match repo.head() {
+        Ok(head) => head.name().context("HEAD has no name")?.to_string(),
+        Err(_) => repo
+            .find_reference("HEAD")
+            .context("reading HEAD")?
+            .symbolic_target()
+            .context("reading HEAD symbolic target")?
+            .context("HEAD is not symbolic")?
+            .to_string(),
+    };
+    repo.reference(&refname, oid, true, "apr signed commit")
+        .with_context(|| format!("updating {refname}"))?;
     Ok(())
 }
 
@@ -1067,24 +1111,15 @@ fn commit_registry_paths(
         .map(|path| registry_relative_path(dir, path))
         .collect::<Result<Vec<_>>>()?;
 
-    let output = gitcmd::hermetic()
-        .arg("add")
-        .arg("-A")
-        .arg("--")
-        .args(&relative_paths)
-        .current_dir(dir)
-        .output()
-        .with_context(|| {
-            format!(
-                "running git add for {} constrained path(s) in {}",
-                relative_paths.len(),
-                dir.display()
-            )
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git add failed: {}", stderr.trim());
-    }
+    let mut args: Vec<&str> = vec!["add", "-A", "--"];
+    args.extend(relative_paths.iter().map(String::as_str));
+    git(dir, &args).with_context(|| {
+        format!(
+            "running git add for {} constrained path(s) in {}",
+            relative_paths.len(),
+            dir.display()
+        )
+    })?;
 
     commit_staged_registry(dir, message, signing_key)
 }
@@ -8863,28 +8898,13 @@ fn tag_message_without_signature(payload: &str) -> Option<String> {
 
 /// Write a tag object payload into the object database, returning its id.
 fn hash_tag_object(dir: &Path, payload: &[u8]) -> Result<String> {
-    use std::process::Stdio;
-    let mut child = gitcmd::hermetic()
-        .args(["hash-object", "-w", "-t", "tag", "--stdin"])
-        .current_dir(dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("spawning git hash-object")?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        std::io::Write::write_all(stdin, payload).context("writing tag payload to hash-object")?;
-    }
-    let output = child
-        .wait_with_output()
-        .context("running git hash-object")?;
-    if !output.status.success() {
-        bail!(
-            "git hash-object failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let repo = git2::Repository::open(dir)
+        .with_context(|| format!("opening git repository at {}", dir.display()))?;
+    let odb = repo.odb().context("opening object database")?;
+    let oid = odb
+        .write(git2::ObjectType::Tag, payload)
+        .context("writing tag object")?;
+    Ok(oid.to_string())
 }
 
 /// Load the committed `keys.toml` roster, defaulting to an empty roster
@@ -9134,34 +9154,14 @@ fn register_roster_key(
 }
 
 /// Derive the `registry:Ed25519:<base64>` trust line for the private key at
-/// `key_path` by shelling out to `ssh-keygen -y`.
+/// `key_path`.
 ///
-/// `ssh-keygen -y` reads a private key and prints its public half as
-/// `ssh-ed25519 <base64> [comment]`; the base64 field is exactly the SSH
-/// wire-format blob that the trust line carries.
+/// The base64 field is the SSH wire-format public key the trust line carries,
+/// read from the private key with the `ssh-key` crate (see
+/// [`crate::security::public_ed25519_blob`]).
 fn derive_trust_key(registry_name: &str, key_path: &str) -> Result<String> {
-    let output = gitcmd::ssh_keygen()
-        .arg("-y")
-        .arg("-f")
-        .arg(key_path)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .context("running `ssh-keygen -y` to derive the public key")?;
-    if !output.status.success() {
-        bail!(
-            "`ssh-keygen -y` failed for the provided key: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    let line = String::from_utf8_lossy(&output.stdout);
-    let mut fields = line.split_whitespace();
-    let algorithm = fields.next().unwrap_or_default();
-    if algorithm != "ssh-ed25519" {
-        bail!("unsupported signing key type '{algorithm}'; registry keys must be Ed25519");
-    }
-    let blob = fields
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("`ssh-keygen -y` produced no public key material"))?;
+    let blob = crate::security::public_ed25519_blob(Path::new(key_path))
+        .context("deriving the public key from the signing key")?;
     Ok(format!("{registry_name}:Ed25519:{blob}"))
 }
 
@@ -11429,7 +11429,12 @@ fn update_channel_frontier(dir: &Path, channel_name: &str, map: &PartitionMap) -
     Ok(())
 }
 
-/// Sign an annotated tag object with git's SSH signing support.
+/// Create an SSH-signed annotated tag object.
+///
+/// Builds the tag object directly and appends the armored SSH signature after
+/// the message — the same on-disk layout `git tag -s` produces and that
+/// [`crate::security::verify_tag_signature`] verifies (the signed payload is
+/// everything before the signature block).
 fn sign_tag(
     dir: &Path,
     tag_name: &str,
@@ -11441,38 +11446,59 @@ fn sign_tag(
     validate_git_ref_name(tag_name)?;
     let message = message.unwrap_or("AOS registry release");
     ensure_commit_identity(dir)?;
-    let signing_key_config = format!("user.signingkey={signing_key}");
-    let mut command = gitcmd::hermetic();
-    command.arg("-c").arg("gpg.format=ssh");
-    gitcmd::add_ssh_program_config(&mut command);
-    command
-        .arg("-c")
-        .arg(signing_key_config)
-        .arg("tag")
-        .arg("-s");
-    if force {
-        command.arg("-f");
-    }
-    command
-        .arg("-m")
-        .arg(message)
-        .arg("--")
-        .arg(tag_name)
-        .arg(target)
-        .current_dir(dir);
 
-    let output = command
-        .output()
-        .with_context(|| format!("signing tag '{tag_name}' in {}", dir.display()))?;
-    if !output.status.success() {
-        bail!(
-            "git tag -s failed for '{}': {}",
-            tag_name,
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
+    let repo = git2::Repository::open(dir)
+        .with_context(|| format!("opening git repository at {}", dir.display()))?;
+    let target_object = repo
+        .revparse_single(target)
+        .with_context(|| format!("resolving tag target {target}"))?;
+    let target_type = match target_object.kind() {
+        Some(git2::ObjectType::Commit) => "commit",
+        Some(git2::ObjectType::Tag) => "tag",
+        Some(git2::ObjectType::Tree) => "tree",
+        Some(git2::ObjectType::Blob) => "blob",
+        _ => bail!("cannot tag object {} of unknown type", target_object.id()),
+    };
+    let tagger = git2_identity(&repo)?;
 
+    // Build the unsigned tag payload, then sign exactly those bytes.
+    let mut payload = Vec::new();
+    payload.extend_from_slice(format!("object {}\n", target_object.id()).as_bytes());
+    payload.extend_from_slice(format!("type {target_type}\n").as_bytes());
+    payload.extend_from_slice(format!("tag {tag_name}\n").as_bytes());
+    payload.extend_from_slice(
+        format!(
+            "tagger {} <{}> {} {}\n",
+            tagger.name().unwrap_or(""),
+            tagger.email().unwrap_or(""),
+            tagger.when().seconds(),
+            format_git_tz(tagger.when()),
+        )
+        .as_bytes(),
+    );
+    payload.push(b'\n');
+    payload.extend_from_slice(message.as_bytes());
+    payload.push(b'\n');
+
+    let armored = crate::security::sign_payload_signature(Path::new(signing_key), "git", &payload)?;
+    payload.extend_from_slice(armored.as_bytes());
+
+    let odb = repo.odb().context("opening object database")?;
+    let oid = odb
+        .write(git2::ObjectType::Tag, &payload)
+        .context("writing tag object")?;
+    let refname = format!("refs/tags/{tag_name}");
+    repo.reference(&refname, oid, force, &format!("apr tag {tag_name}"))
+        .with_context(|| format!("creating tag ref '{tag_name}'"))?;
     Ok(())
+}
+
+/// Format a git timezone offset (`+HHMM`/`-HHMM`) from a [`git2::Time`].
+fn format_git_tz(when: git2::Time) -> String {
+    let offset = when.offset_minutes();
+    let sign = if offset < 0 { '-' } else { '+' };
+    let abs = offset.abs();
+    format!("{sign}{:02}{:02}", abs / 60, abs % 60)
 }
 
 // ---------------------------------------------------------------------------

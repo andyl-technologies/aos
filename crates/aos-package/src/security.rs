@@ -583,6 +583,29 @@ pub fn verify_tag_signature(repo_path: &Path, tag: &str, trusted_keys: &[String]
     verify_sshsig_any(&signature, &signed, "git", trusted_keys)
 }
 
+/// Derive the base64 SSH wire-format public key of an OpenSSH Ed25519 private
+/// key — the `<base64>` field of a `ssh-ed25519 <base64>` line, which is the
+/// material a `registry:Ed25519:<base64>` trust line carries.
+///
+/// # Errors
+///
+/// Returns an error when the key cannot be read, is not Ed25519, or cannot be
+/// encoded.
+pub fn public_ed25519_blob(key_path: &Path) -> Result<String> {
+    let key = PrivateKey::read_openssh_file(key_path)
+        .with_context(|| format!("reading signing key {}", key_path.display()))?;
+    let public = key.public_key();
+    if public.algorithm() != ssh_key::Algorithm::Ed25519 {
+        anyhow::bail!("unsupported signing key type; registry keys must be Ed25519");
+    }
+    let openssh = public.to_openssh().context("encoding public key")?;
+    openssh
+        .split_whitespace()
+        .nth(1)
+        .map(ToString::to_string)
+        .context("public key has no key material")
+}
+
 /// Sign an arbitrary payload with an OpenSSH Ed25519 private key.
 ///
 /// Produces an armored SSHSIG over `payload` in `namespace` — the same
