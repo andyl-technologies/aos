@@ -239,7 +239,10 @@ fn narinfo_store_hash(entry: &str) -> String {
 /// or `URL` field is absent (a malformed narinfo is not indexed, but its bytes
 /// still land on the surface — the surface is the source of truth, the index is
 /// rebuildable). Pure string parsing, so it runs on the wasm Worker too.
-fn parse_cache_narinfo(
+///
+/// Shared with [`crate::cache_scan`], which re-derives the whole index by
+/// parsing every narinfo it lists off the surface.
+pub(crate) fn parse_cache_narinfo(
     cache_id: i64,
     store_hash: &str,
     text: &str,
