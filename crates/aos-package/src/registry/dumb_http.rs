@@ -175,8 +175,10 @@ async fn walk_missing(repo_dir: &Path, targets: &[String]) -> Result<Vec<String>
         .context("object-walk task panicked")?
 }
 
-/// Maximum attempts for a single GET before giving up.
-const MAX_ATTEMPTS: usize = 4;
+/// Maximum attempts for a single GET before giving up. Exponential backoff
+/// (100ms, 200ms, ... up to ~3.1s total) absorbs transient network blips and a
+/// briefly-starved or slow origin.
+const MAX_ATTEMPTS: usize = 6;
 
 /// GET `url`, retrying transient failures with exponential backoff, and return
 /// the final `(status, body)`.
