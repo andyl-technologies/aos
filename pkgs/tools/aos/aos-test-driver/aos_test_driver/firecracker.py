@@ -109,12 +109,24 @@ class FirecrackerMachine(Machine):
 
         # Per-machine writable copy; reflinked on a CoW filesystem (free
         # until written), full copy otherwise. See clone_or_copy in fs.py.
-        reflinked = clone_or_copy(self.disk_src, self.disk_copy)
-        os.chmod(self.disk_copy, 0o644)
-        copy_method = "reflink" if reflinked else "copy"
-        if self.metadata_copy is not None and self.metadata_src is not None:
-            shutil.copyfile(self.metadata_src, self.metadata_copy)
-            os.chmod(self.metadata_copy, 0o644)
+        #
+        # Only (re)create the copy on the initial boot. A reboot must reuse
+        # the *same* per-VM disk so writes from the previous boot survive —
+        # re-cloning from the pristine `disk_src` here would reset the disk
+        # (including the /var partition) to its build-time baked state,
+        # silently discarding everything the guest persisted. This mirrors
+        # the QEMU driver, whose reboot() relaunches against the same disk
+        # without re-running the copy, and matches real-hardware reboot
+        # semantics. See _start(copy_disk=False) in reboot().
+        if copy_disk:
+            reflinked = clone_or_copy(self.disk_src, self.disk_copy)
+            os.chmod(self.disk_copy, 0o644)
+            copy_method = "reflink" if reflinked else "copy"
+            if self.metadata_copy is not None and self.metadata_src is not None:
+                shutil.copyfile(self.metadata_src, self.metadata_copy)
+                os.chmod(self.metadata_copy, 0o644)
+        else:
+            copy_method = "reused"
         for stale in (self.agent.socket_path, self.fc_stdin_fifo):
             try:
                 os.unlink(stale)
