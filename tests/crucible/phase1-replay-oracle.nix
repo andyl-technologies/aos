@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-HARN-12" "T-EXEC-4"],
+  taskIds ? ["T-DET-18" "T-DET-21" "T-HARN-12" "T-EXEC-4"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -10,6 +10,7 @@
     sourceRoot = "source/crates";
     hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
   };
+  guestNonModification = import ./phase1-guest-non-modification.nix {inherit pkgs lib;};
   model = builtins.readFile ../../crates/crucible/src/model.rs;
   modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
@@ -297,6 +298,10 @@
         needle = "\"T-DET-18\"";
       }
       {
+        label = "phase1 replay-oracle lists T-DET-21";
+        needle = "\"T-DET-21\"";
+      }
+      {
         label = "phase1 replay-oracle lists T-HARN-12";
         needle = "\"T-HARN-12\"";
       }
@@ -309,6 +314,10 @@
       {
         label = "T-DET-18 checklist complete";
         needle = "- [x] **T-DET-18**";
+      }
+      {
+        label = "T-DET-21 checklist complete";
+        needle = "- [x] **T-DET-21**";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
@@ -334,6 +343,7 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.grep
         pkgs.rust
         pkgs.sed
       ];
@@ -387,6 +397,35 @@ in
           script = ''
             set -eu
             mkdir -p "$out"
+
+            require_line() {
+              result="$1/result"
+              line="$2"
+              grep -Fxq "$line" "$result" || {
+                echo "dependency missing evidence: $line" >&2
+                cat "$result" >&2
+                exit 1
+              }
+            }
+
+            require_leaf() {
+              dependency="$1"
+              shift
+              require_line "$dependency" "PASS"
+              for line in "$@"; do
+                require_line "$dependency" "$line"
+              done
+            }
+
+            require_leaf ${guestNonModification} \
+              "gate=gate:replay-oracle" \
+              "required_gates=gate:any-guest,gate:replay-oracle" \
+              "tasks=T-DET-21" \
+              "guest_writes=copy-on-write-overlay" \
+              "guest_backing_state=byte-identical-genesis" \
+              "guest_on_disk_mutation_policy=forbidden-by-launch-profile" \
+              "guest_core_content=host-side-only"
+
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
@@ -395,6 +434,12 @@ in
             rust_test=crucible::gate_replay_oracle
             oracle=fat-materialized-equals-thin-from-ancestor
             corpus=fixed-checkpoints
+            guest_non_modification=launch-contract-gate
+            required_guest_non_modification_gates=gate:any-guest,gate:replay-oracle
+            guest_writes=copy-on-write-overlay
+            guest_backing_state=byte-identical-genesis
+            guest_on_disk_mutation_policy=forbidden-by-launch-profile
+            guest_core_content=host-side-only
             RESULT
           '';
         }

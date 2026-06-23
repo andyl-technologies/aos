@@ -151,6 +151,14 @@
       needle = "disk_image_mode: DiskImageMode::CopyOnWriteOverlay,";
     }
     {
+      label = "byte-identical genesis backing default";
+      needle = "guest_backing_state: GuestBackingStateMode::ByteIdenticalGenesis,";
+    }
+    {
+      label = "host-side guest core content default";
+      needle = "guest_core_content: GuestCoreContentMode::HostSideOnly,";
+    }
+    {
       label = "no host interactive input default";
       needle = "input_policy: InputPolicy::NoInteractiveInput,";
     }
@@ -245,6 +253,14 @@
     {
       label = "run seed scenario seed unification";
       needle = "RunSeedDiffersFromScenarioSeed";
+    }
+    {
+      label = "guest-injected core content rejection";
+      needle = "GuestCoreContentRequired";
+    }
+    {
+      label = "host-mutable genesis backing rejection";
+      needle = "GuestBackingStateNotByteIdentical";
     }
     {
       label = "scenario seed setter updates run seed";
@@ -371,6 +387,22 @@
       needle = "\"ram_reset=zeroed-fresh-anonymous-memory\".to_owned(),";
     }
     {
+      label = "CoW guest write policy in hash material";
+      needle = "format!(\"guest_write_policy={}\", self.disk_image_mode),";
+    }
+    {
+      label = "byte-identical genesis backing in hash material";
+      needle = "format!(\"guest_backing_state={}\", self.guest_backing_state),";
+    }
+    {
+      label = "guest disk non-mutation in hash material";
+      needle = "\"guest_on_disk_mutation_policy=forbidden-by-launch-profile\".to_owned(),";
+    }
+    {
+      label = "host-side guest content policy in hash material";
+      needle = "format!(\"guest_core_content={}\", self.guest_core_content),";
+    }
+    {
       label = "scenario seed in hash material";
       needle = "format!(\"scenario_seed={}\", self.scenario_seed),";
     }
@@ -424,6 +456,10 @@
     {
       label = "mutating and interactive state rejection test";
       needle = "launch_profile_rejects_mutating_or_interactive_state";
+    }
+    {
+      label = "guest non-modification test";
+      needle = "launch_profile_enforces_guest_non_modification";
     }
     {
       label = "hash material coverage test";
@@ -528,6 +564,30 @@
     {
       label = "run seed hash material assertion";
       needle = "qemu_run_seed=1097729";
+    }
+    {
+      label = "guest CoW write policy assertion";
+      needle = "guest_write_policy=copy-on-write-overlay";
+    }
+    {
+      label = "guest byte-identical genesis assertion";
+      needle = "guest_backing_state=byte-identical-genesis";
+    }
+    {
+      label = "guest disk non-mutation assertion";
+      needle = "guest_on_disk_mutation_policy=forbidden-by-launch-profile";
+    }
+    {
+      label = "host-side guest core content assertion";
+      needle = "guest_core_content=host-side-only";
+    }
+    {
+      label = "host-mutable genesis rejection assertion";
+      needle = "GuestBackingStateMode::HostMutableGenesis";
+    }
+    {
+      label = "guest-injected content rejection assertion";
+      needle = "GuestCoreContentMode::GuestInjectedContent";
     }
     {
       label = "scenario seed hash material assertion";
@@ -679,6 +739,10 @@ in
             realtime_deadline_in_precise_budget=false
             machine_reset=deterministic-zeroed-ram-fixed-devices
             ram_reset=zeroed-fresh-anonymous-memory
+            guest_write_policy=copy-on-write-overlay
+            guest_backing_state=byte-identical-genesis
+            guest_on_disk_mutation_policy=forbidden-by-launch-profile
+            guest_core_content=host-side-only
             input_policy=no-interactive-input
             RESULT
           '';

@@ -5,9 +5,9 @@
 
 use crucible::{ClockDriftRate, NodeClockSkew, ScenarioDef, SimOffset};
 use crucible_qemu::{
-    DeterministicLaunchProfile, DiskImageMode, IcountShiftSetting, InputPolicy,
-    LaunchProfileCandidate, LaunchProfileError, MachineResetMode, NodeClockSkewDeclaration,
-    NodeIcountShift,
+    DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
+    IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
+    NodeClockSkewDeclaration, NodeIcountShift,
 };
 
 fn default_profile() -> DeterministicLaunchProfile {
@@ -101,6 +101,69 @@ fn default_launch_profile_pins_contract_a_arguments() {
     );
     assert!(args.iter().any(|arg| arg == "-nodefaults"));
     assert!(args.iter().any(|arg| arg == "-no-user-config"));
+}
+
+#[test]
+fn launch_profile_enforces_guest_non_modification() {
+    let profile = default_profile();
+    let args = profile.canonical_qemu_args();
+    let material = profile.scenario_hash_material();
+
+    for expected in [
+        "disk_image_mode=copy-on-write-overlay",
+        "guest_write_policy=copy-on-write-overlay",
+        "guest_backing_state=byte-identical-genesis",
+        "guest_on_disk_mutation_policy=forbidden-by-launch-profile",
+        "guest_core_content=host-side-only",
+    ] {
+        assert!(material.contains(expected), "missing {expected}");
+    }
+
+    for forbidden_flag in [
+        "-drive",
+        "-blockdev",
+        "-cdrom",
+        "-hda",
+        "-hdb",
+        "-hdc",
+        "-hdd",
+    ] {
+        assert!(
+            !args.iter().any(|arg| arg == forbidden_flag),
+            "diskless Contract-A profile must not expose writable backing flag {forbidden_flag}"
+        );
+    }
+    for forbidden_fragment in ["virtio-blk", "ide-hd", "scsi-hd", "virtio-9p"] {
+        assert!(
+            !args.iter().any(|arg| arg.contains(forbidden_fragment)),
+            "diskless Contract-A profile must not expose writable device {forbidden_fragment}"
+        );
+    }
+
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_disk_image_mode(DiskImageMode::WritableBacking)
+            .try_into_deterministic(),
+        Err(LaunchProfileError::DiskImageMutatesBacking {
+            mode: DiskImageMode::WritableBacking,
+        })
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_guest_backing_state(GuestBackingStateMode::HostMutableGenesis)
+            .try_into_deterministic(),
+        Err(LaunchProfileError::GuestBackingStateNotByteIdentical {
+            mode: GuestBackingStateMode::HostMutableGenesis,
+        })
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_guest_core_content(GuestCoreContentMode::GuestInjectedContent)
+            .try_into_deterministic(),
+        Err(LaunchProfileError::GuestCoreContentRequired {
+            mode: GuestCoreContentMode::GuestInjectedContent,
+        })
+    );
 }
 
 #[test]
@@ -264,10 +327,26 @@ fn launch_profile_rejects_mutating_or_interactive_state() {
     );
     assert_eq!(
         LaunchProfileCandidate::default()
+            .with_guest_backing_state(GuestBackingStateMode::HostMutableGenesis)
+            .try_into_deterministic(),
+        Err(LaunchProfileError::GuestBackingStateNotByteIdentical {
+            mode: GuestBackingStateMode::HostMutableGenesis,
+        })
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
             .with_input_policy(InputPolicy::HostInteractive)
             .try_into_deterministic(),
         Err(LaunchProfileError::InteractiveInputEnabled {
             policy: InputPolicy::HostInteractive,
+        })
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_guest_core_content(GuestCoreContentMode::GuestInjectedContent)
+            .try_into_deterministic(),
+        Err(LaunchProfileError::GuestCoreContentRequired {
+            mode: GuestCoreContentMode::GuestInjectedContent,
         })
     );
 }
@@ -471,6 +550,10 @@ fn launch_hash_material_records_every_determinism_field() {
         "machine_reset=deterministic-zeroed-ram-fixed-devices",
         "ram_reset=zeroed-fresh-anonymous-memory",
         "disk_image_mode=copy-on-write-overlay",
+        "guest_write_policy=copy-on-write-overlay",
+        "guest_backing_state=byte-identical-genesis",
+        "guest_on_disk_mutation_policy=forbidden-by-launch-profile",
+        "guest_core_content=host-side-only",
         "input_policy=no-interactive-input",
         "scenario_seed=1097729",
         "qemu_run_seed=1097729",

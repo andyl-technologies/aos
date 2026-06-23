@@ -58,6 +58,10 @@ pub struct LaunchProfileCandidate {
     pub machine_reset: MachineResetMode,
     /// The backing-image write policy.
     pub disk_image_mode: DiskImageMode,
+    /// The genesis backing-state identity policy.
+    pub guest_backing_state: GuestBackingStateMode,
+    /// The policy for whether core Crucible operation requires guest-injected content.
+    pub guest_core_content: GuestCoreContentMode,
     /// The host interactive input policy.
     pub input_policy: InputPolicy,
 }
@@ -78,6 +82,8 @@ impl Default for LaunchProfileCandidate {
             run_seed: DEFAULT_RUN_SEED,
             machine_reset: MachineResetMode::Deterministic,
             disk_image_mode: DiskImageMode::CopyOnWriteOverlay,
+            guest_backing_state: GuestBackingStateMode::ByteIdenticalGenesis,
+            guest_core_content: GuestCoreContentMode::HostSideOnly,
             input_policy: InputPolicy::NoInteractiveInput,
         }
     }
@@ -177,6 +183,20 @@ impl LaunchProfileCandidate {
         self
     }
 
+    /// Returns a candidate with a different genesis backing-state policy.
+    #[must_use]
+    pub fn with_guest_backing_state(mut self, guest_backing_state: GuestBackingStateMode) -> Self {
+        self.guest_backing_state = guest_backing_state;
+        self
+    }
+
+    /// Returns a candidate with a different guest core-content policy.
+    #[must_use]
+    pub fn with_guest_core_content(mut self, guest_core_content: GuestCoreContentMode) -> Self {
+        self.guest_core_content = guest_core_content;
+        self
+    }
+
     /// Returns a candidate with a different input policy.
     #[must_use]
     pub fn with_input_policy(mut self, input_policy: InputPolicy) -> Self {
@@ -262,6 +282,16 @@ impl LaunchProfileCandidate {
                 mode: self.disk_image_mode,
             });
         }
+        if self.guest_backing_state != GuestBackingStateMode::ByteIdenticalGenesis {
+            return Err(LaunchProfileError::GuestBackingStateNotByteIdentical {
+                mode: self.guest_backing_state,
+            });
+        }
+        if self.guest_core_content != GuestCoreContentMode::HostSideOnly {
+            return Err(LaunchProfileError::GuestCoreContentRequired {
+                mode: self.guest_core_content,
+            });
+        }
         if self.input_policy != InputPolicy::NoInteractiveInput {
             return Err(LaunchProfileError::InteractiveInputEnabled {
                 policy: self.input_policy,
@@ -277,6 +307,9 @@ impl LaunchProfileCandidate {
             kernel_cmdline: self.kernel_cmdline,
             scenario_seed: self.scenario_seed,
             run_seed: self.run_seed,
+            disk_image_mode: self.disk_image_mode,
+            guest_backing_state: self.guest_backing_state,
+            guest_core_content: self.guest_core_content,
             guest_entropy_seed: GuestEntropySeed::from_scenario_seed(self.scenario_seed),
         })
     }
@@ -333,6 +366,9 @@ pub struct DeterministicLaunchProfile {
     kernel_cmdline: String,
     scenario_seed: u64,
     run_seed: u64,
+    disk_image_mode: DiskImageMode,
+    guest_backing_state: GuestBackingStateMode,
+    guest_core_content: GuestCoreContentMode,
     guest_entropy_seed: GuestEntropySeed,
 }
 
@@ -416,7 +452,11 @@ impl DeterministicLaunchProfile {
             "realtime_deadline_in_precise_budget=false".to_owned(),
             "machine_reset=deterministic-zeroed-ram-fixed-devices".to_owned(),
             "ram_reset=zeroed-fresh-anonymous-memory".to_owned(),
-            "disk_image_mode=copy-on-write-overlay".to_owned(),
+            format!("disk_image_mode={}", self.disk_image_mode),
+            format!("guest_write_policy={}", self.disk_image_mode),
+            format!("guest_backing_state={}", self.guest_backing_state),
+            "guest_on_disk_mutation_policy=forbidden-by-launch-profile".to_owned(),
+            format!("guest_core_content={}", self.guest_core_content),
             "input_policy=no-interactive-input".to_owned(),
             format!("scenario_seed={}", self.scenario_seed),
             format!("qemu_run_seed={}", self.run_seed),
@@ -676,6 +716,24 @@ pub enum DiskImageMode {
     WritableBacking,
 }
 
+/// The identity policy for guest backing state at genesis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuestBackingStateMode {
+    /// Each run starts from byte-identical read-only genesis backing state.
+    ByteIdenticalGenesis,
+    /// The genesis backing state may be host-provided or mutable across runs.
+    HostMutableGenesis,
+}
+
+/// The core-operation policy for Crucible content inside the guest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuestCoreContentMode {
+    /// Core operation uses host-side launch, plugin, patch, firmware, and cmdline inputs only.
+    HostSideOnly,
+    /// Core operation requires Crucible-provided files, agents, or payloads inside the guest.
+    GuestInjectedContent,
+}
+
 /// The host interactive input policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputPolicy {
@@ -699,6 +757,24 @@ impl fmt::Display for DiskImageMode {
         match self {
             Self::CopyOnWriteOverlay => f.write_str("copy-on-write-overlay"),
             Self::WritableBacking => f.write_str("writable-backing"),
+        }
+    }
+}
+
+impl fmt::Display for GuestBackingStateMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ByteIdenticalGenesis => f.write_str("byte-identical-genesis"),
+            Self::HostMutableGenesis => f.write_str("host-mutable-genesis"),
+        }
+    }
+}
+
+impl fmt::Display for GuestCoreContentMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HostSideOnly => f.write_str("host-side-only"),
+            Self::GuestInjectedContent => f.write_str("guest-injected-content"),
         }
     }
 }

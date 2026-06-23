@@ -2,7 +2,10 @@
 
 use thiserror::Error;
 
-use super::{DEFAULT_ACCEL, DiskImageMode, InputPolicy, MAX_ICOUNT_SHIFT, MachineResetMode};
+use super::{
+    DEFAULT_ACCEL, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, InputPolicy,
+    MAX_ICOUNT_SHIFT, MachineResetMode,
+};
 
 /// A deterministic launch-profile validation error.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -141,6 +144,18 @@ pub enum LaunchProfileError {
     DiskImageMutatesBacking {
         /// The rejected disk mode.
         mode: DiskImageMode,
+    },
+    /// Genesis backing state would not be byte-identical across runs.
+    #[error("guest backing state must be byte-identical genesis state, got `{mode}`")]
+    GuestBackingStateNotByteIdentical {
+        /// The rejected guest backing-state mode.
+        mode: GuestBackingStateMode,
+    },
+    /// Core operation would require Crucible content inside the guest.
+    #[error("core operation must remain host-side only, got `{mode}`")]
+    GuestCoreContentRequired {
+        /// The rejected guest core-content mode.
+        mode: GuestCoreContentMode,
     },
     /// Host interactive input was enabled.
     #[error("host interactive input must be disabled, got `{policy}`")]

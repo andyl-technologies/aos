@@ -69,6 +69,7 @@ in {
     fixedIcountShift = import ./phase1-fixed-icount-shift.nix {inherit pkgs lib;};
     gateCatalog = import ./phase1-gate-catalog.nix {inherit pkgs lib;};
     gateTargetMapping = import ./phase1-gate-target-mapping.nix {inherit pkgs lib;};
+    guestNonModification = import ./phase1-guest-non-modification.nix {inherit pkgs lib;};
     guestEntropyLaunch = import ./phase1-guest-entropy-launch.nix {inherit pkgs lib;};
     harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};
     icountStampedInjection = import ./phase1-icount-stamped-injection.nix {inherit pkgs lib;};
@@ -130,6 +131,7 @@ in {
         taskIds = [
           "T-PLAN-3"
           "T-DET-18"
+          "T-DET-21"
           "T-HARN-12"
           "T-EXEC-4"
         ];
