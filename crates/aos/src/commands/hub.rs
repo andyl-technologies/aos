@@ -14,7 +14,9 @@ use anyhow::Result;
 use aos_core::output::Printer;
 use aos_remote::RegistryHubClient;
 
-use crate::cli::{HubBindingCmd, HubCmd, HubOrgCmd, HubProjectCmd, HubRegistryCmd, HubWebhookCmd};
+use crate::cli::{
+    HubBindingCmd, HubCacheCmd, HubCmd, HubOrgCmd, HubProjectCmd, HubRegistryCmd, HubWebhookCmd,
+};
 
 /// Handles `aos hub login`: exchanges a provisioning secret for an access JWT.
 async fn login(printer: &Printer, hub: &str, provisioning_token: &str) -> Result<()> {
@@ -49,6 +51,7 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
             provisioning_token,
         } => login(printer, hub, provisioning_token).await,
         HubCmd::Registry { command } => registry(printer, command).await,
+        HubCmd::Cache { command } => cache(printer, command).await,
         HubCmd::Org { command } => org(printer, command).await,
         HubCmd::Project { command } => project(printer, command).await,
         HubCmd::Binding { command } => binding(printer, command).await,
@@ -545,6 +548,30 @@ async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Result<()> {
                 }
             }
         }
+        HubRegistryCmd::ChangeStorage {
+            hub,
+            token,
+            slug,
+            binding,
+        } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let target = binding.as_deref().unwrap_or_default();
+            let (objects, bytes) = client.change_registry_storage(slug, target).await?;
+            let to = if target.is_empty() {
+                "default storage".to_string()
+            } else {
+                format!("binding '{target}'")
+            };
+            if printer.json_if_active(&serde_json::json!({
+                "registry": slug, "moved_to": to, "objects": objects, "bytes": bytes,
+            })) {
+                return Ok(());
+            }
+            printer.info(&format!(
+                "migrated registry '{slug}' to {to}: copied {objects} objects ({bytes} bytes)"
+            ));
+            Ok(())
+        }
         HubRegistryCmd::Releases { hub, token, slug } => {
             let client = hub_client(hub, token.as_deref())?;
             let releases = client.list_releases(slug).await?;
@@ -854,6 +881,36 @@ async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Result<()> {
                     Ok(())
                 }
             }
+        }
+    }
+}
+
+/// Dispatch `aos hub cache` subcommands over the Connect API.
+async fn cache(printer: &Printer, command: &HubCacheCmd) -> Result<()> {
+    match command {
+        HubCacheCmd::ChangeStorage {
+            hub,
+            token,
+            slug,
+            binding,
+        } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let target = binding.as_deref().unwrap_or_default();
+            let (objects, bytes) = client.change_cache_storage(slug, target).await?;
+            let to = if target.is_empty() {
+                "default storage".to_string()
+            } else {
+                format!("binding '{target}'")
+            };
+            if printer.json_if_active(&serde_json::json!({
+                "cache": slug, "moved_to": to, "objects": objects, "bytes": bytes,
+            })) {
+                return Ok(());
+            }
+            printer.info(&format!(
+                "migrated cache '{slug}' to {to}: copied {objects} objects ({bytes} bytes)"
+            ));
+            Ok(())
         }
     }
 }
