@@ -3383,7 +3383,7 @@ fn clone_authoring_registry(
     tag: Option<&str>,
     commit: Option<&str>,
 ) -> Result<()> {
-    let repo = if url.starts_with("http://") || url.starts_with("https://") {
+    if url.starts_with("http://") || url.starts_with("https://") {
         // libgit2 cannot read the static dumb-HTTP object tree; init locally
         // and fetch through the pure-Rust reader.
         let repo = git2::Repository::init(clone_dir)
@@ -3392,6 +3392,9 @@ fn clone_authoring_registry(
         let refspecs = vec![
             "+refs/heads/*:refs/remotes/origin/*".to_string(),
             "+refs/tags/*:refs/tags/*".to_string(),
+            // Capture the origin's default branch so a bare clone can check it
+            // out, mirroring `RepoBuilder`/`git clone` on smart transports.
+            "+HEAD:refs/remotes/origin/HEAD".to_string(),
         ];
         let dir = clone_dir.to_path_buf();
         let fetch_url = url.to_string();
@@ -3400,20 +3403,51 @@ fn clone_authoring_registry(
                 .block_on(registry::repo::fetch(&dir, &fetch_url, &refspecs))
         })
         .context("fetching registry objects")?;
-        repo
-    } else {
-        let mut callbacks = git2::RemoteCallbacks::new();
-        callbacks.credentials(registry::repo::credentials);
-        let mut fetch_options = git2::FetchOptions::new();
-        fetch_options.remote_callbacks(callbacks);
-        let mut builder = git2::build::RepoBuilder::new();
-        builder.fetch_options(fetch_options);
-        builder
-            .clone(url, clone_dir)
-            .with_context(|| format!("cloning {url}"))?
-    };
 
+        // With no explicit ref, dumb-HTTP has no worktree checked out yet;
+        // resolve and check out the origin's default branch.
+        let default_branch;
+        let effective_branch = if branch.is_none() && tag.is_none() && commit.is_none() {
+            default_branch = default_remote_branch(&repo);
+            default_branch.as_deref()
+        } else {
+            branch
+        };
+        return checkout_authoring_ref(&repo, effective_branch, tag, commit);
+    }
+
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(registry::repo::credentials);
+    let mut fetch_options = git2::FetchOptions::new();
+    fetch_options.remote_callbacks(callbacks);
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.fetch_options(fetch_options);
+    // RepoBuilder checks out the remote HEAD; only an explicit ref needs more.
+    let repo = builder
+        .clone(url, clone_dir)
+        .with_context(|| format!("cloning {url}"))?;
     checkout_authoring_ref(&repo, branch, tag, commit)
+}
+
+/// Resolve the origin's default branch (the branch its `HEAD` points at) from
+/// the fetched `refs/remotes/origin/*`, by matching the captured
+/// `refs/remotes/origin/HEAD` object id. Returns `None` for an empty origin.
+fn default_remote_branch(repo: &git2::Repository) -> Option<String> {
+    let head_oid = repo.refname_to_id("refs/remotes/origin/HEAD").ok()?;
+    let references = repo.references_glob("refs/remotes/origin/*").ok()?;
+    for reference in references {
+        let Ok(reference) = reference else { continue };
+        let Ok(name) = reference.name() else { continue };
+        if name.ends_with("/HEAD") {
+            continue;
+        }
+        if reference.target() == Some(head_oid) {
+            return name
+                .strip_prefix("refs/remotes/origin/")
+                .map(ToString::to_string);
+        }
+    }
+    None
 }
 
 /// Check out the branch, tag, commit, or remote HEAD an authoring clone wants.
@@ -3447,9 +3481,8 @@ fn checkout_authoring_ref(
         repo.set_head_detached(target.id())
             .with_context(|| format!("detaching HEAD at '{spec}'"))?;
     }
-    // With no explicit ref the clone already has the remote HEAD checked out
-    // (RepoBuilder) or, for the dumb-HTTP path, the caller relies on a later
-    // checkout; nothing more to do here.
+    // No branch resolved (e.g. an empty origin): nothing to check out. For
+    // smart transports `RepoBuilder` has already checked out the remote HEAD.
     Ok(())
 }
 
