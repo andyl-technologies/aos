@@ -1184,6 +1184,10 @@ pub struct RegistryCacheRow {
     pub advertised: bool,
     /// The registry's live store paths pin GC roots in this cache.
     pub roots_packages: bool,
+    /// Whether this cache *may* be advertised on the registry — false when the
+    /// cache is less visible than the registry (its consumers couldn't read it),
+    /// in which case the advertise toggle is greyed out.
+    pub can_advertise: bool,
 }
 
 /// The org dashboard: projects, registries, members, bindings, audit link.
@@ -1991,7 +1995,7 @@ pub fn registry_settings_page(
     binding: Option<(&str, &str, &str)>,
     bindings: &[String],
     caches: &[RegistryCacheRow],
-    linkable_caches: &[String],
+    linkable_caches: &[(String, String)],
     can_delete: bool,
     result: Option<&str>,
     started: Instant,
@@ -2164,12 +2168,19 @@ pub fn registry_settings_page(
             };
             let adv = if c.advertised { " checked" } else { "" };
             let roots = if c.roots_packages { " checked" } else { "" };
+            // A cache less visible than the registry can't be advertised — grey
+            // out (disable) that toggle, with the reason on hover.
+            let adv_disabled = if c.can_advertise {
+                ""
+            } else {
+                " disabled title=\"a less-visible cache can't be advertised on this registry — its consumers couldn't read it\""
+            };
             let _ = write!(
                 body,
                 "<form class=\"linkrow\" method=\"post\" action=\"/{slug}/-/settings/cache-link\">{csrf}\
                  <input type=\"hidden\" name=\"cache\" value=\"{cache}\">\
                  <span class=\"linkrow-name\">{label}</span>\
-                 <input type=\"checkbox\" name=\"advertised\" value=\"1\"{adv}>\
+                 <input type=\"checkbox\" name=\"advertised\" value=\"1\"{adv}{adv_disabled}>\
                  <input type=\"checkbox\" name=\"roots_packages\" value=\"1\"{roots}>\
                  <span class=\"linkrow-actions\"><button>save</button>\
                  <button class=\"danger\" formaction=\"/{slug}/-/settings/cache-unlink\">unlink</button>\
@@ -2179,21 +2190,31 @@ pub fn registry_settings_page(
                 cache = escape(&c.cache_slug),
                 label = label,
                 adv = adv,
+                adv_disabled = adv_disabled,
                 roots = roots,
             );
         }
         body.push_str("</div>\n");
     }
-    // Link another of the org's caches to this registry.
+    // Link another of the org's caches to this registry. Each option carries its
+    // cache's visibility, and the form the registry's, so the JS greys out the
+    // advertise toggle when the chosen cache is less visible than the registry
+    // (it can't be advertised) — the same rule the rows and the server enforce.
     if !linkable_caches.is_empty() {
         let mut options = String::new();
-        for slug in linkable_caches {
-            let _ = write!(options, "<option value=\"{s}\">{s}</option>", s = escape(slug));
+        for (slug, vis) in linkable_caches {
+            let _ = write!(
+                options,
+                "<option value=\"{s}\" data-visibility=\"{v}\">{s} · {v}</option>",
+                s = escape(slug),
+                v = escape(vis),
+            );
         }
         let _ = write!(
             body,
             "<h3>Link a cache</h3>\n\
-             <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/cache-link\">{csrf}\
+             <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/cache-link\" \
+             data-cache-link data-registry-visibility=\"{regvis}\">{csrf}\
              <label>cache <select name=\"cache\">{options}</select></label>\n\
              <label><span class=\"lbl\">advertise to consumers{adv_help}</span> \
              <input type=\"checkbox\" name=\"advertised\" value=\"1\" checked></label>\n\
@@ -2201,6 +2222,7 @@ pub fn registry_settings_page(
              <input type=\"checkbox\" name=\"roots_packages\" value=\"1\" checked></label>\n\
              <button>link</button>\n</form>\n",
             slug = escape(slug),
+            regvis = escape(&registry.visibility),
             csrf = csrf_field(csrf),
             options = options,
             adv_help = help::marker("link.advertised"),

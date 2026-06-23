@@ -571,6 +571,13 @@ form.console input[type="checkbox"]:checked::after,
   left: calc(100% - 1.03rem);
   background: var(--paper);
 }
+/* A toggle that can't be enabled (e.g. advertising a less-visible cache) reads
+ * as greyed-out and not-allowed. */
+form.console input[type="checkbox"]:disabled,
+.linktable input[type="checkbox"]:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 /* Linked-cache table: an aligned grid where each row is a <form> flattened via
  * display:contents so its cells share the grid's columns. Header row + one form
