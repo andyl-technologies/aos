@@ -856,7 +856,7 @@ information that cannot be recomputed.
   (prefix/appended) with per-stream RNG draw recording; test that unrelated
   `World` edits don't perturb other streams' draws. — satisfies [EXEC-6],
   [EXEC-7], [EXEC-8], [EXEC-9]; spec §3.
-- [ ] **T-EXEC-3** Implement `step` as the pure temporal-graph edge constructor
+- [x] **T-EXEC-3** Implement `step` as the pure temporal-graph edge constructor
   and prove (test) it performs no I/O, boot, or materialization. — satisfies
   [EXEC-10]; spec §3.
 - [x] **T-EXEC-4** Implement `reduce` as the pure reduction and the prefix-closure
