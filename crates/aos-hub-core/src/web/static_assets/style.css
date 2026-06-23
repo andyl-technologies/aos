@@ -531,7 +531,8 @@ form.console label:has(> input[type="radio"]) {
  * when on, with a sliding thumb. Click/keyboard/focus/submit all stay native, so
  * it is a pure presentational upgrade over the box. Sits left-aligned in the
  * control column (justify-self start) so it lines up with the text inputs. */
-form.console input[type="checkbox"] {
+form.console input[type="checkbox"],
+.linktable input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;
   justify-self: start;
@@ -547,7 +548,8 @@ form.console input[type="checkbox"] {
   vertical-align: middle;
   transition: background-color 0.15s ease, border-color 0.15s ease;
 }
-form.console input[type="checkbox"]::after {
+form.console input[type="checkbox"]::after,
+.linktable input[type="checkbox"]::after {
   content: "";
   position: absolute;
   top: 50%;
@@ -559,13 +561,48 @@ form.console input[type="checkbox"]::after {
   transform: translateY(-50%);
   transition: left 0.15s ease, background-color 0.15s ease;
 }
-form.console input[type="checkbox"]:checked {
+form.console input[type="checkbox"]:checked,
+.linktable input[type="checkbox"]:checked {
   background: var(--ok);
   border-color: var(--ok);
 }
-form.console input[type="checkbox"]:checked::after {
+form.console input[type="checkbox"]:checked::after,
+.linktable input[type="checkbox"]:checked::after {
   left: calc(100% - 1.03rem);
   background: var(--paper);
+}
+
+/* Linked-cache table: an aligned grid where each row is a <form> flattened via
+ * display:contents so its cells share the grid's columns. Header row + one form
+ * per cache (name · advertised toggle · gc-roots toggle · actions). */
+.linktable {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  column-gap: 1.5rem;
+  row-gap: 0.55rem;
+  max-width: 42rem;
+  margin: 0.6rem 0 1rem;
+}
+.linktable form.linkrow {
+  display: contents;
+}
+.linktable-h {
+  color: var(--dim);
+  text-transform: uppercase;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 0.35rem;
+  white-space: nowrap;
+}
+.linkrow-name {
+  overflow-wrap: anywhere;
+}
+.linkrow-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
 }
 
 /* A standalone field caption (used where a tall control would baseline-align
