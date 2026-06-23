@@ -16,6 +16,8 @@
   aos-ebpf-net-policy,
   aos-ebpf-lsm-policy,
   checkpolicy,
+  cmake,
+  libssh2,
   policycoreutils,
   pkg-config,
   protobuf,
@@ -74,10 +76,12 @@ in
 
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
+      hash = "sha256-pZXIllWTVioqcgvftDIugl+TwXfTaUQcn1hBtVr6H74=";
     };
 
-    buildDeps = [perl pkg-config openssl protobuf];
+    # cmake + libssh2: git2's vendored libgit2 is compiled from source here
+    # (CMake build) with SSH smart-transport support against system libssh2.
+    buildDeps = [perl pkg-config openssl protobuf cmake libssh2];
     runtimeDeps = [openssl zlib aos-landlock aos-selinux-run aos-verity-root-guard aos-ebpf-net-policy aos-ebpf-lsm-policy checkpolicy policycoreutils semodule-utils tpm2-tools] ++ runtimeTools;
 
     preBuild = ''

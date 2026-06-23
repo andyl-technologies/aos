@@ -1,0 +1,583 @@
+//! git2-backed SHA-256 repository operations for the apm/apr registry.
+//!
+//! This module is the single seam between the registry code and libgit2. It
+//! replaces the historical shell-outs to the `git` CLI: local object and ref
+//! access, the `git://` and `ssh://` smart-transport fetch, tag resolution,
+//! fast-forward checks, and tree extraction all run through libgit2 (built
+//! with `-DEXPERIMENTAL_SHA256=ON`). The registry is SHA-256-only, so every
+//! repository this module opens or creates uses the SHA-256 object format.
+//!
+//! libgit2 speaks only the *smart* HTTP protocol, but AOS registries are
+//! served as a static *dumb*-HTTP(S) object tree; that transport lives in the
+//! sibling [`crate::registry::dumb_http`] module and is dispatched from
+//! [`fetch`] by URL scheme.
+//!
+//! # Blocking and async
+//!
+//! libgit2 is synchronous. Each public function here is `async` only as a
+//! convenience for the (async) registry call sites: the libgit2 work runs on a
+//! [`tokio::task::spawn_blocking`] worker so it never stalls the runtime. A
+//! fresh [`git2::Repository`] handle is opened per call — opening a bare repo
+//! is cheap and keeps the non-`Send` handle confined to one blocking closure.
+
+use std::collections::BTreeMap;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+
+use crate::registry::dumb_http;
+
+/// Open the SHA-256 repository at `repo_dir` on the current thread.
+///
+/// Registry repositories are bare, but [`git2::Repository::open`] also accepts
+/// a non-bare repository directory (as the registry's own tests create), so it
+/// is used in preference to the bare-only opener.
+///
+/// # Errors
+///
+/// Returns an error if no git repository exists at `repo_dir` or it cannot be
+/// opened.
+fn open(repo_dir: &Path) -> Result<git2::Repository> {
+    git2::Repository::open(repo_dir)
+        .with_context(|| format!("opening git repository at {}", repo_dir.display()))
+}
+
+/// Run a blocking libgit2 closure on a `spawn_blocking` worker.
+///
+/// The closure receives the path it was given so it can open its own
+/// repository handle; nothing `!Send` crosses the await point.
+async fn blocking<T, F>(repo_dir: &Path, f: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&Path) -> Result<T> + Send + 'static,
+{
+    let dir = repo_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || f(&dir))
+        .await
+        .context("git worker task panicked")?
+}
+
+/// `true` if a git repository already exists at `repo_dir`.
+pub(crate) fn exists(repo_dir: &Path) -> bool {
+    repo_dir.join("HEAD").exists()
+}
+
+/// Initialize a bare SHA-256 repository at `repo_dir` if one does not exist.
+///
+/// Mirrors the historical `git init --bare --object-format=sha256`. Existing
+/// repositories are left untouched.
+///
+/// # Errors
+///
+/// Returns an error if the directory cannot be created or libgit2 cannot
+/// initialize the repository.
+pub(crate) async fn init_bare_sha256(repo_dir: &Path) -> Result<()> {
+    if exists(repo_dir) {
+        return Ok(());
+    }
+    blocking(repo_dir, |dir| {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let mut opts = git2::RepositoryInitOptions::new();
+        opts.bare(true)
+            .mkpath(true)
+            .object_format(git2::ObjectFormat::Sha256);
+        git2::Repository::init_opts(dir, &opts).with_context(|| {
+            format!(
+                "git init --bare --object-format=sha256 at {}",
+                dir.display()
+            )
+        })?;
+        Ok(())
+    })
+    .await
+}
+
+/// Resolve a revspec to the hex OID of the commit it names (peeling tags).
+///
+/// Equivalent to `git rev-parse <spec>^{commit}`.
+///
+/// # Errors
+///
+/// Returns an error if the spec does not resolve or does not peel to a commit.
+pub(crate) async fn rev_parse_commit(repo_dir: &Path, spec: &str) -> Result<String> {
+    let spec = spec.to_string();
+    blocking(repo_dir, move |dir| {
+        let repo = open(dir)?;
+        let object = repo
+            .revparse_single(&spec)
+            .with_context(|| format!("resolving {spec}"))?;
+        let commit = object
+            .peel_to_commit()
+            .with_context(|| format!("{spec} does not name a commit"))?;
+        Ok(commit.id().to_string())
+    })
+    .await
+}
+
+/// Resolve a revspec to a raw hex OID without peeling.
+///
+/// Equivalent to `git rev-parse <spec>`.
+///
+/// # Errors
+///
+/// Returns an error if the spec does not resolve.
+pub(crate) async fn rev_parse(repo_dir: &Path, spec: &str) -> Result<String> {
+    let spec = spec.to_string();
+    blocking(repo_dir, move |dir| {
+        let repo = open(dir)?;
+        let object = repo
+            .revparse_single(&spec)
+            .with_context(|| format!("resolving {spec}"))?;
+        Ok(object.id().to_string())
+    })
+    .await
+}
+
+/// List all tag short-names in the repository (`git tag -l`).
+///
+/// # Errors
+///
+/// Returns an error if the tag references cannot be enumerated.
+pub(crate) async fn tag_names(repo_dir: &Path) -> Result<Vec<String>> {
+    blocking(repo_dir, |dir| {
+        let repo = open(dir)?;
+        let names = repo.tag_names(None).context("listing tags")?;
+        let mut out = Vec::new();
+        for name in names.iter() {
+            if let Ok(Some(name)) = name {
+                out.push(name.to_string());
+            }
+        }
+        Ok(out)
+    })
+    .await
+}
+
+/// Hash and write a tag object, returning its hex OID.
+///
+/// Equivalent to `git hash-object -w -t tag --stdin`. The object is written
+/// into the repository's object database so later resolution can reach it.
+///
+/// # Errors
+///
+/// Returns an error if the bytes cannot be written to the object database.
+pub(crate) async fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
+    let bytes = bytes.to_vec();
+    blocking(repo_dir, move |dir| {
+        let repo = open(dir)?;
+        let odb = repo.odb().context("opening object database")?;
+        let oid = odb
+            .write(git2::ObjectType::Tag, &bytes)
+            .context("writing tag object")?;
+        Ok(oid.to_string())
+    })
+    .await
+}
+
+/// `true` when `descendant` is a strict descendant of `ancestor`, or they are
+/// the same commit. Mirrors `git merge-base --is-ancestor <ancestor>
+/// <descendant>` (used for fast-forward enforcement).
+///
+/// # Errors
+///
+/// Returns an error if either OID is malformed or the graph walk fails.
+pub(crate) async fn is_ancestor(repo_dir: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    let ancestor = ancestor.to_string();
+    let descendant = descendant.to_string();
+    blocking(repo_dir, move |dir| {
+        is_ancestor_blocking(dir, &ancestor, &descendant)
+    })
+    .await
+}
+
+/// Synchronous form of [`is_ancestor`] for sync callers (downgrade detection).
+///
+/// # Errors
+///
+/// Returns an error if either OID is malformed or the graph walk fails.
+pub(crate) fn is_ancestor_blocking(
+    repo_dir: &Path,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool> {
+    let repo = open(repo_dir)?;
+    let ancestor_oid =
+        git2::Oid::from_str(ancestor).with_context(|| format!("parsing oid {ancestor}"))?;
+    let descendant_oid =
+        git2::Oid::from_str(descendant).with_context(|| format!("parsing oid {descendant}"))?;
+    if ancestor_oid == descendant_oid {
+        return Ok(true);
+    }
+    repo.graph_descendant_of(descendant_oid, ancestor_oid)
+        .with_context(|| format!("checking ancestry of {ancestor}..{descendant}"))
+}
+
+/// The object kind of `commit:tree_path`, or `None` if the path is absent.
+///
+/// # Errors
+///
+/// Returns an error if the commit cannot be resolved.
+pub(crate) async fn path_object_kind(
+    repo_dir: &Path,
+    commit: &str,
+    tree_path: &str,
+) -> Result<Option<git2::ObjectType>> {
+    let commit = commit.to_string();
+    let tree_path = tree_path.to_string();
+    blocking(repo_dir, move |dir| {
+        let repo = open(dir)?;
+        let tree = commit_tree(&repo, &commit)?;
+        match tree.get_path(Path::new(&tree_path)) {
+            Ok(entry) => Ok(entry.kind()),
+            Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("looking up {commit}:{tree_path}")),
+        }
+    })
+    .await
+}
+
+/// Read the bytes of the blob at `commit:tree_path`.
+///
+/// Returns `None` when the path is absent from the commit (the historical
+/// `git show` "missing path" case). Mirrors `git show <commit>:<path>`.
+///
+/// # Errors
+///
+/// Returns an error if the commit cannot be resolved, or the path names a
+/// non-blob object.
+pub(crate) async fn read_blob_at(
+    repo_dir: &Path,
+    commit: &str,
+    tree_path: &str,
+) -> Result<Option<Vec<u8>>> {
+    let commit = commit.to_string();
+    let tree_path = tree_path.to_string();
+    blocking(repo_dir, move |dir| {
+        let repo = open(dir)?;
+        let tree = commit_tree(&repo, &commit)?;
+        let entry = match tree.get_path(Path::new(&tree_path)) {
+            Ok(entry) => entry,
+            Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(e).with_context(|| format!("looking up {commit}:{tree_path}"));
+            }
+        };
+        if entry.kind() != Some(git2::ObjectType::Blob) {
+            bail!("{commit}:{tree_path} is not a file");
+        }
+        let object = entry
+            .to_object(&repo)
+            .with_context(|| format!("reading {commit}:{tree_path}"))?;
+        let blob = object
+            .as_blob()
+            .with_context(|| format!("{commit}:{tree_path} is not a blob"))?;
+        Ok(Some(blob.content().to_vec()))
+    })
+    .await
+}
+
+/// Extract the directory tree at `commit:tree_path` into `output_dir`.
+///
+/// Replaces `git archive <commit> <tree_path>/ | tar -x --strip-components=1`.
+/// `output_dir` is removed first so deletions in the registry propagate. When
+/// `tree_path` is absent, `create_empty_when_absent` selects between creating
+/// an empty `output_dir` (historical `packages/` behavior) and leaving none
+/// (required for `store/`, where presence is meaningful).
+///
+/// Regular files, executable files, and symlinks are reproduced with their git
+/// file modes; nested directories are created as needed.
+///
+/// # Errors
+///
+/// Returns an error if the commit cannot be resolved or the filesystem writes
+/// fail.
+pub(crate) async fn extract_tree_dir(
+    repo_dir: &Path,
+    commit: &str,
+    tree_path: &str,
+    output_dir: &Path,
+    create_empty_when_absent: bool,
+) -> Result<()> {
+    let commit = commit.to_string();
+    let tree_path = tree_path.to_string();
+    let output_dir = output_dir.to_path_buf();
+    blocking(repo_dir, move |dir| {
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir)
+                .with_context(|| format!("cleaning {}", output_dir.display()))?;
+        }
+        let repo = open(dir)?;
+        let tree = commit_tree(&repo, &commit)?;
+        let entry = match tree.get_path(Path::new(&tree_path)) {
+            Ok(entry) => entry,
+            Err(e) if e.code() == git2::ErrorCode::NotFound => {
+                if create_empty_when_absent {
+                    std::fs::create_dir_all(&output_dir)
+                        .with_context(|| format!("creating {}", output_dir.display()))?;
+                }
+                return Ok(());
+            }
+            Err(e) => return Err(e).with_context(|| format!("looking up {commit}:{tree_path}")),
+        };
+        let object = entry
+            .to_object(&repo)
+            .with_context(|| format!("reading {commit}:{tree_path}"))?;
+        let subtree = object
+            .as_tree()
+            .with_context(|| format!("{commit}:{tree_path} is not a directory"))?;
+        std::fs::create_dir_all(&output_dir)
+            .with_context(|| format!("creating {}", output_dir.display()))?;
+        write_tree_recursive(&repo, subtree, &output_dir)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Recursively materialize `tree` under `dest`, preserving git file modes.
+fn write_tree_recursive(repo: &git2::Repository, tree: &git2::Tree, dest: &Path) -> Result<()> {
+    for entry in tree.iter() {
+        let name = entry.name().context("non-UTF-8 tree entry name")?;
+        let path = dest.join(name);
+        match entry.kind() {
+            Some(git2::ObjectType::Tree) => {
+                std::fs::create_dir_all(&path)
+                    .with_context(|| format!("creating {}", path.display()))?;
+                let object = entry.to_object(repo)?;
+                let subtree = object
+                    .as_tree()
+                    .ok_or_else(|| anyhow::anyhow!("tree entry {name} is not a tree"))?;
+                write_tree_recursive(repo, subtree, &path)?;
+            }
+            Some(git2::ObjectType::Blob) => {
+                let object = entry.to_object(repo)?;
+                let blob = object
+                    .as_blob()
+                    .ok_or_else(|| anyhow::anyhow!("blob entry {name} is not a blob"))?;
+                let filemode = entry.filemode();
+                if filemode == 0o120000 {
+                    let target = std::str::from_utf8(blob.content())
+                        .with_context(|| format!("symlink target for {name} is not UTF-8"))?;
+                    std::os::unix::fs::symlink(target, &path)
+                        .with_context(|| format!("creating symlink {}", path.display()))?;
+                } else {
+                    let mode = if filemode == 0o100755 { 0o755 } else { 0o644 };
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .mode(mode)
+                        .open(&path)
+                        .with_context(|| format!("creating {}", path.display()))?;
+                    use std::io::Write;
+                    file.write_all(blob.content())
+                        .with_context(|| format!("writing {}", path.display()))?;
+                }
+            }
+            // git links (submodules) and other kinds do not occur in registry
+            // trees; skip them rather than fail.
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Map every semver-parseable tag's annotated tag-object OID to its version.
+///
+/// Lightweight tags (which have no tag object) are skipped.
+///
+/// # Errors
+///
+/// Returns an error if tags cannot be listed.
+pub(crate) async fn semver_tag_object_map(
+    repo_dir: &Path,
+) -> Result<BTreeMap<String, semver::Version>> {
+    blocking(repo_dir, |dir| {
+        let repo = open(dir)?;
+        let names = repo.tag_names(None).context("listing tags")?;
+        let mut map = BTreeMap::new();
+        for name in names.iter() {
+            let Ok(Some(name)) = name else {
+                continue;
+            };
+            let Ok(version) = semver::Version::parse(name) else {
+                continue;
+            };
+            let Ok(object) = repo.revparse_single(&format!("{name}^{{tag}}")) else {
+                continue;
+            };
+            map.insert(object.id().to_string(), version);
+        }
+        Ok(map)
+    })
+    .await
+}
+
+/// Extract the SSHSIG signature and signed payload of a commit.
+///
+/// Returns `(signature, signed_payload)` exactly as `git verify-commit`
+/// computes them: the signature is the armored SSH signature block from the
+/// commit's `gpgsig` header, and the payload is the commit object with that
+/// header removed. Returns `None` if the commit carries no signature.
+///
+/// This is synchronous: the registry signature-verification path is sync, and
+/// opening a bare repo plus reading one object is cheap.
+///
+/// # Errors
+///
+/// Returns an error if the commit OID cannot be resolved.
+pub(crate) fn commit_signature(
+    repo_dir: &Path,
+    commit: &str,
+) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+    let repo = open(repo_dir)?;
+    let oid =
+        git2::Oid::from_str(commit).with_context(|| format!("parsing commit oid {commit}"))?;
+    match repo.extract_signature(&oid, None) {
+        Ok((sig, signed)) => Ok(Some((sig.to_vec(), signed.to_vec()))),
+        Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("extracting signature of {commit}")),
+    }
+}
+
+/// Extract the SSHSIG signature and signed payload of an annotated tag.
+///
+/// Git appends the armored SSH signature to the tag object body; the signed
+/// payload is the tag object up to (and excluding) the signature block.
+/// Returns `None` if the tag is lightweight or unsigned.
+///
+/// # Errors
+///
+/// Returns an error if the tag does not resolve to a tag object.
+pub(crate) fn tag_signature(repo_dir: &Path, tag: &str) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+    let repo = open(repo_dir)?;
+    let object = repo
+        .revparse_single(&format!("{tag}^{{tag}}"))
+        .with_context(|| format!("resolving tag object {tag}"))?;
+    let odb = repo.odb().context("opening object database")?;
+    let raw = odb
+        .read(object.id())
+        .with_context(|| format!("reading tag object {tag}"))?;
+    Ok(split_tag_signature(raw.data()))
+}
+
+/// SSH signature armor markers used to split a signed tag object body.
+const SSH_SIG_BEGIN: &[u8] = b"-----BEGIN SSH SIGNATURE-----";
+const SSH_SIG_END: &[u8] = b"-----END SSH SIGNATURE-----";
+
+/// Split a raw tag object into `(signature, signed_payload)`.
+///
+/// Mirrors git's tag verification: the signed payload is everything before the
+/// armored signature block, and the signature is the block itself (through its
+/// trailing newline). Returns `None` if no signature block is present.
+fn split_tag_signature(raw: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let begin = find_subslice(raw, SSH_SIG_BEGIN)?;
+    let end_marker = find_subslice(&raw[begin..], SSH_SIG_END)? + begin;
+    let mut sig_end = end_marker + SSH_SIG_END.len();
+    if raw.get(sig_end) == Some(&b'\n') {
+        sig_end += 1;
+    }
+    let payload = raw[..begin].to_vec();
+    let signature = raw[begin..sig_end].to_vec();
+    Some((signature, payload))
+}
+
+/// Find the first occurrence of `needle` in `haystack`.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Resolve a commit revspec to its [`git2::Tree`].
+fn commit_tree<'a>(repo: &'a git2::Repository, commit: &str) -> Result<git2::Tree<'a>> {
+    let object = repo
+        .revparse_single(commit)
+        .with_context(|| format!("resolving {commit}"))?;
+    let commit = object
+        .peel_to_commit()
+        .with_context(|| format!("{commit} does not name a commit"))?;
+    commit.tree().context("reading commit tree")
+}
+
+// ---------------------------------------------------------------------------
+// Transport
+// ---------------------------------------------------------------------------
+
+/// Fetch `refspecs` from `url` into the repository at `repo_dir`.
+///
+/// Dispatches by URL scheme: `git://` and `ssh://` use libgit2's smart
+/// transport, while `http(s)://` registries (served as a static dumb-HTTP
+/// object tree, which libgit2 cannot read) use the pure-Rust loose-object
+/// walker in [`crate::registry::dumb_http`].
+///
+/// `url` must already be normalized (no `git+` prefix).
+///
+/// # Errors
+///
+/// Returns an error if the transport fails or a requested ref is unavailable.
+pub(crate) async fn fetch(repo_dir: &Path, url: &str, refspecs: &[String]) -> Result<()> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return dumb_http::fetch(repo_dir, url, refspecs).await;
+    }
+    let url = url.to_string();
+    let refspecs = refspecs.to_vec();
+    blocking(repo_dir, move |dir| {
+        let repo = open(dir)?;
+        let mut remote = repo
+            .remote_anonymous(&url)
+            .with_context(|| format!("creating remote for {url}"))?;
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(credentials);
+        let mut options = git2::FetchOptions::new();
+        options.remote_callbacks(callbacks);
+        options.download_tags(git2::AutotagOption::None);
+        let refs: Vec<&str> = refspecs.iter().map(String::as_str).collect();
+        remote
+            .fetch(&refs, Some(&mut options), None)
+            .with_context(|| format!("git fetch {url}"))?;
+        Ok(())
+    })
+    .await
+}
+
+/// libgit2 credential callback for `ssh://` transports.
+///
+/// Tries the ssh-agent for the requested username, falling back to the
+/// default key. `git://` and `http(s)://` never invoke this. Username/password
+/// (HTTP basic) and default-credential requests are declined.
+fn credentials(
+    _url: &str,
+    username: Option<&str>,
+    allowed: git2::CredentialType,
+) -> std::result::Result<git2::Cred, git2::Error> {
+    if allowed.contains(git2::CredentialType::SSH_KEY) {
+        let user = username.unwrap_or("git");
+        return git2::Cred::ssh_key_from_agent(user);
+    }
+    if allowed.contains(git2::CredentialType::USERNAME) {
+        return git2::Cred::username(username.unwrap_or("git"));
+    }
+    Err(git2::Error::from_str(
+        "no supported credential type available",
+    ))
+}
+
+/// Local refs the smart fetch writes; re-exported for the dumb-HTTP path so
+/// both transports land fetched refs in the same place.
+pub(crate) fn set_reference(repo_dir: &Path, refname: &str, oid_hex: &str) -> Result<()> {
+    let repo = open(repo_dir)?;
+    let oid = git2::Oid::from_str(oid_hex).with_context(|| format!("parsing oid {oid_hex}"))?;
+    repo.reference(refname, oid, true, "apm dumb-http fetch")
+        .with_context(|| format!("writing ref {refname}"))?;
+    Ok(())
+}
+
+/// The on-disk path holding the object database, for callers that write loose
+/// objects directly (the dumb-HTTP reader).
+pub(crate) fn objects_dir(repo_dir: &Path) -> PathBuf {
+    repo_dir.join("objects")
+}
