@@ -394,7 +394,55 @@ impl TreeWalk {
             ));
         }
         self.record_impure_input_result(ImpureInputFingerprint::read_file(&path, &contents));
-        self.alloc_static_string(id, span, &contents)
+        // C++ Nix `prim_readFile` returns the content with string-context for the
+        // store paths referenced *in that content* (a syntactic scan). Match it so
+        // e.g. `readFile "${cc}/nix-support/dynamic-linker"` carries the glibc
+        // reference, which derivations built from it then record as an input
+        // source. Without this the read string is context-free and such inputs
+        // are dropped, diverging from C++ Nix.
+        let context = self.read_file_content_context(id, span, &contents)?;
+        self.heap
+            .alloc_string(NixString::new(contents, context))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    /// Builds the string-context for a `builtins.readFile` result.
+    ///
+    /// Matches C++ Nix `prim_readFile`: the result string carries an
+    /// [`ContextKind::OpaquePath`] element for every distinct store path that
+    /// appears in the file content, located by a syntactic scan for
+    /// `<store_dir>/<hash>-<name>` references.
+    fn read_file_content_context(
+        &self,
+        id: IrId,
+        span: Span,
+        content: &[u8],
+    ) -> Result<StringContext, TreeWalkError> {
+        let store_dir = self.options.store_dir();
+        if store_dir.is_empty() {
+            return Ok(StringContext::new(Vec::new()));
+        }
+        let mut elements: Vec<ContextElement> = Vec::new();
+        let mut seen: BTreeSet<Vec<u8>> = BTreeSet::new();
+        let mut index = 0;
+        while index + store_dir.len() <= content.len() {
+            if content[index..].starts_with(store_dir)
+                && let Some(root) = store_path_root(&content[index..], store_dir)
+            {
+                let consumed = root.len();
+                let root = root.to_vec();
+                if seen.insert(root.clone()) {
+                    let element = ContextElement::opaque_path(root).map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+                    })?;
+                    elements.push(element);
+                }
+                index += consumed;
+                continue;
+            }
+            index += 1;
+        }
+        Ok(StringContext::new(elements))
     }
 
     pub(super) fn eval_read_file_type_primop(
