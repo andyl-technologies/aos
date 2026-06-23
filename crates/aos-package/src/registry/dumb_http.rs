@@ -178,29 +178,51 @@ async fn walk_missing(repo_dir: &Path, targets: &[String]) -> Result<Vec<String>
 /// Maximum attempts for a single GET before giving up.
 const MAX_ATTEMPTS: usize = 4;
 
-/// GET `url`, retrying transient failures (connection/timeout errors and 5xx
-/// responses) with exponential backoff. The final response is returned without
-/// `error_for_status`, so callers can still treat 404 as "absent".
+/// GET `url`, retrying transient failures with exponential backoff, and return
+/// the final `(status, body)`.
+///
+/// The request **and** the body read are retried together: a response that is
+/// truncated or interrupted mid-body under load (a common failure when many
+/// objects are fetched concurrently) is re-fetched rather than surfacing as a
+/// short read — which previously corrupted a downloaded pack and made indexing
+/// fail. `error_for_status` is not applied, so callers can treat 404 as
+/// "absent".
 ///
 /// # Errors
 ///
-/// Returns an error if every attempt fails to complete the request.
-async fn get_with_retry(client: &reqwest::Client, url: &str) -> Result<reqwest::Response> {
+/// Returns an error if every attempt fails to complete the request or read its
+/// body.
+async fn get_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<(reqwest::StatusCode, Vec<u8>)> {
     let mut attempt = 0;
     loop {
         attempt += 1;
-        match client.get(url).send().await {
-            Ok(response) if response.status().is_server_error() && attempt < MAX_ATTEMPTS => {}
-            Ok(response) => return Ok(response),
-            Err(err)
-                if attempt < MAX_ATTEMPTS
-                    && (err.is_timeout() || err.is_connect() || err.is_request()) => {}
+        let outcome = async {
+            let response = client.get(url).send().await?;
+            let status = response.status();
+            let body = response.bytes().await?;
+            Ok::<_, reqwest::Error>((status, body))
+        }
+        .await;
+        match outcome {
+            Ok((status, _)) if status.is_server_error() && attempt < MAX_ATTEMPTS => {}
+            Ok((status, body)) => return Ok((status, body.to_vec())),
+            Err(err) if attempt < MAX_ATTEMPTS && is_transient(&err) => {}
             Err(err) => return Err(err).with_context(|| format!("fetching {url}")),
         }
         // Backoff: 100ms, 200ms, 400ms, ...
         let backoff = std::time::Duration::from_millis(100 << (attempt - 1));
         tokio::time::sleep(backoff).await;
     }
+}
+
+/// `true` for reqwest errors worth retrying: connection, timeout, request-send,
+/// and incomplete-body/decode failures (the latter cover truncated responses
+/// under concurrent load).
+fn is_transient(err: &reqwest::Error) -> bool {
+    err.is_timeout() || err.is_connect() || err.is_request() || err.is_body() || err.is_decode()
 }
 
 /// Download one missing object and install it as a loose file.
@@ -227,16 +249,14 @@ async fn fetch_loose(
 /// origin serves no packs (loose-only), returning an empty list.
 async fn fetch_pack_list(client: &reqwest::Client, base_url: &str) -> Result<Vec<String>> {
     let url = join_cache_url(base_url, "objects/info/packs");
-    let response = get_with_retry(client, &url).await?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+    let (status, body) = get_with_retry(client, &url).await?;
+    if status == reqwest::StatusCode::NOT_FOUND {
         return Ok(Vec::new());
     }
-    let body = response
-        .error_for_status()
-        .with_context(|| format!("fetching {url}"))?
-        .text()
-        .await
-        .with_context(|| format!("reading {url}"))?;
+    if !status.is_success() {
+        bail!("fetching {url} failed with {status}");
+    }
+    let body = String::from_utf8_lossy(&body);
 
     let mut names = Vec::new();
     for line in body.lines() {
@@ -260,14 +280,11 @@ async fn fetch_pack_list(client: &reqwest::Client, base_url: &str) -> Result<Vec
 /// `.idx`, so a server-supplied index is never trusted.
 async fn fetch_pack(client: &reqwest::Client, base_url: &str, name: &str) -> Result<Vec<u8>> {
     let url = join_cache_url(base_url, &format!("objects/pack/{name}"));
-    let bytes = get_with_retry(client, &url)
-        .await?
-        .error_for_status()
-        .with_context(|| format!("fetching pack {name}"))?
-        .bytes()
-        .await
-        .with_context(|| format!("reading pack {name}"))?;
-    Ok(bytes.to_vec())
+    let (status, body) = get_with_retry(client, &url).await?;
+    if !status.is_success() {
+        bail!("fetching pack {name} failed with {status}");
+    }
+    Ok(body)
 }
 
 /// `true` for a `pack-<hex>.pack` name with no path-traversal characters.
@@ -289,13 +306,11 @@ async fn fetch_info_refs(
     base_url: &str,
 ) -> Result<HashMap<String, String>> {
     let url = join_cache_url(base_url, "info/refs");
-    let body = get_with_retry(client, &url)
-        .await?
-        .error_for_status()
-        .with_context(|| format!("fetching {url}"))?
-        .text()
-        .await
-        .with_context(|| format!("reading {url}"))?;
+    let (status, body) = get_with_retry(client, &url).await?;
+    if !status.is_success() {
+        bail!("fetching {url} failed with {status}");
+    }
+    let body = String::from_utf8_lossy(&body);
 
     let mut map = HashMap::new();
     for line in body.lines() {
@@ -323,14 +338,11 @@ async fn fetch_head_oid(
     advertised: &HashMap<String, String>,
 ) -> Result<Option<String>> {
     let url = join_cache_url(base_url, "HEAD");
-    let response = get_with_retry(client, &url).await?;
-    if !response.status().is_success() {
+    let (status, body) = get_with_retry(client, &url).await?;
+    if !status.is_success() {
         return Ok(None);
     }
-    let body = response
-        .text()
-        .await
-        .with_context(|| format!("reading {url}"))?;
+    let body = String::from_utf8_lossy(&body);
     let body = body.trim();
     if let Some(refname) = body.strip_prefix("ref: ") {
         return Ok(advertised.get(refname.trim()).cloned());
@@ -385,14 +397,11 @@ fn resolve_refspec(
 async fn fetch_object(client: &reqwest::Client, base_url: &str, oid: &str) -> Result<Vec<u8>> {
     let path = format!("objects/{}/{}", &oid[..2], &oid[2..]);
     let url = join_cache_url(base_url, &path);
-    let bytes = get_with_retry(client, &url)
-        .await?
-        .error_for_status()
-        .with_context(|| format!("fetching object {oid}"))?
-        .bytes()
-        .await
-        .with_context(|| format!("reading object {oid}"))?;
-    Ok(bytes.to_vec())
+    let (status, body) = get_with_retry(client, &url).await?;
+    if !status.is_success() {
+        bail!("fetching object {oid} failed with {status}");
+    }
+    Ok(body)
 }
 
 /// Inflate a zlib-compressed loose object into `"<type> <size>\0<body>"`.
