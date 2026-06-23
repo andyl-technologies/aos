@@ -470,7 +470,7 @@ async fn metrics_renders_counters() {
         .await
         .unwrap();
     let cache = db
-        .create_cache(Some(org), "acme-cache", "Acme", binding, "p", None, "public", 40, "zstd", true)
+        .create_cache(Some(org), "acme-cache", "Acme", Some(binding), "p", None, "public", 40, "zstd", true)
         .await
         .unwrap();
     db.upsert_cache_object(&aos_hub_core::db::CacheObject {

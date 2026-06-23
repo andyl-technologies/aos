@@ -364,7 +364,7 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
         Some(org.id),
         "acme-cache",
         "Acme Cache",
-        binding.id,
+        Some(binding.id),
         "cache",
         None,
         "public",
@@ -562,7 +562,7 @@ async fn link_cache_rejects_advertising_a_less_visible_cache() {
         Some(org),
         "priv-cache",
         "Priv",
-        binding,
+        Some(binding),
         "pc",
         None,
         "private",
@@ -635,7 +635,7 @@ async fn keyed_cache_signs_uploaded_narinfo() {
         Some(org),
         "signed-cache",
         "Signed",
-        binding,
+        Some(binding),
         "sc",
         Some(key_id),
         "public",
@@ -732,7 +732,7 @@ async fn private_binding_cache_serves_presigned_302() {
         Some(org),
         "ext-cache",
         "Ext",
-        binding,
+        Some(binding),
         "pfx",
         None,
         "public",
@@ -857,7 +857,7 @@ async fn private_binding_cache_streams_origin_when_frontend_opts_in() {
             Some(org),
             "ext-cache",
             "Ext",
-            binding,
+            Some(binding),
             "pfx",
             None,
             "public",
@@ -974,7 +974,7 @@ async fn mint_cache_upload_credentials_returns_presigned_put() {
     db.set_storage_binding_access(binding, "private", Some("https://bucket.s3.example.com"), Some(&sealed))
         .await
         .unwrap();
-    db.create_cache(Some(org), "ext-cache", "Ext", binding, "pfx", None, "public", 40, "zstd", true)
+    db.create_cache(Some(org), "ext-cache", "Ext", Some(binding), "pfx", None, "public", 40, "zstd", true)
         .await
         .unwrap();
     let alice = db.create_user("alice@acme.com", None).await.unwrap();
@@ -1021,7 +1021,7 @@ async fn cache_gc_keeps_rooted_and_reclaims_unrooted_end_to_end() {
         .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
         .await
         .unwrap();
-    db.create_cache(Some(org), "gc-cache", "GC", binding, "g", None, "public", 40, "zstd", true)
+    db.create_cache(Some(org), "gc-cache", "GC", Some(binding), "g", None, "public", 40, "zstd", true)
         .await
         .unwrap();
     let alice = db.create_user("alice@acme.com", None).await.unwrap();
