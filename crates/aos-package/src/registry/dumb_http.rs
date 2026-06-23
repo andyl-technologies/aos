@@ -87,59 +87,60 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
     }
 
     let target_oids: Vec<String> = targets.iter().map(|(oid, _)| oid.clone()).collect();
-
-    // Phase 1: download and index all advertised packs. This is the fast path —
-    // a handful of large requests instead of one round trip per loose object —
-    // and libgit2's pack indexer verifies each pack on commit. Most or all of
-    // the reachable graph typically lands here.
-    let pack_names = fetch_pack_list(&client, base_url).await?;
-    if !pack_names.is_empty() {
-        let client = &client;
-        let packs: Vec<Vec<u8>> = stream::iter(pack_names.into_iter())
-            .map(|name| async move { fetch_pack(client, base_url, &name).await })
-            .buffer_unordered(MAX_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>>>()?;
-        let repo_path = repo_dir.to_path_buf();
-        tokio::task::spawn_blocking(move || repo::index_packs_blocking(&repo_path, &packs))
-            .await
-            .context("pack-indexing task panicked")??;
-    }
-
-    // Phase 2: fetch any objects still missing as loose files (a registry's
-    // dumb-HTTP layout guarantees loose completeness, so anything not packed is
-    // available loose). Each round walks the local graph for the missing
-    // frontier (objects already in a pack or loose are traversed with no
-    // network), then downloads that frontier concurrently; reading a fetched
-    // object can reveal deeper references, so it iterates to a fixpoint.
     let objects_dir = repo::objects_dir(repo_dir);
-    let mut total_fetched = 0usize;
-    loop {
-        let repo_path = repo_dir.to_path_buf();
-        let targets = target_oids.clone();
-        let missing = tokio::task::spawn_blocking(move || {
-            repo::missing_objects_blocking(&repo_path, &targets)
-        })
-        .await
-        .context("object-walk task panicked")??;
-        if missing.is_empty() {
-            break;
-        }
-        total_fetched += missing.len();
-        if total_fetched > MAX_OBJECTS {
-            bail!("registry object graph exceeded {MAX_OBJECTS} objects; refusing to continue");
-        }
-        let client = &client;
-        let objects_dir = &objects_dir;
-        stream::iter(missing.into_iter())
-            .map(|oid| async move { fetch_loose(client, base_url, objects_dir, &oid).await })
-            .buffer_unordered(MAX_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await
+
+    // Walk the local graph first: a repeat sync with no upstream change finds
+    // nothing missing and downloads no objects at all — only the refs (below)
+    // may need re-pointing.
+    let mut missing = walk_missing(repo_dir, &target_oids).await?;
+
+    if !missing.is_empty() {
+        // Pack phase (fast path): download + index advertised packs we do not
+        // already have. A handful of large requests instead of one round trip
+        // per loose object; libgit2's indexer verifies each pack on commit.
+        let advertised = fetch_pack_list(&client, base_url).await?;
+        let pack_dir = objects_dir.join("pack");
+        let new_packs: Vec<String> = advertised
             .into_iter()
-            .collect::<Result<Vec<_>>>()?;
+            .filter(|name| !pack_dir.join(name).exists())
+            .collect();
+        if !new_packs.is_empty() {
+            let client = &client;
+            let packs: Vec<Vec<u8>> = stream::iter(new_packs.into_iter())
+                .map(|name| async move { fetch_pack(client, base_url, &name).await })
+                .buffer_unordered(MAX_CONCURRENCY)
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>>>()?;
+            let repo_path = repo_dir.to_path_buf();
+            tokio::task::spawn_blocking(move || repo::index_packs_blocking(&repo_path, &packs))
+                .await
+                .context("pack-indexing task panicked")??;
+            missing = walk_missing(repo_dir, &target_oids).await?;
+        }
+
+        // Loose fallback: fetch whatever the packs did not cover (a registry's
+        // dumb-HTTP layout guarantees loose completeness). Each round downloads
+        // the current missing frontier concurrently; reading a fetched object
+        // can reveal deeper references, so it iterates to a fixpoint.
+        let mut total_fetched = 0usize;
+        while !missing.is_empty() {
+            total_fetched += missing.len();
+            if total_fetched > MAX_OBJECTS {
+                bail!("registry object graph exceeded {MAX_OBJECTS} objects; refusing to continue");
+            }
+            let client = &client;
+            let objects_dir = &objects_dir;
+            stream::iter(missing.into_iter())
+                .map(|oid| async move { fetch_loose(client, base_url, objects_dir, &oid).await })
+                .buffer_unordered(MAX_CONCURRENCY)
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>>>()?;
+            missing = walk_missing(repo_dir, &target_oids).await?;
+        }
     }
 
     // Point destination refs at the resolved OIDs.
@@ -162,6 +163,44 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
     }
 
     Ok(())
+}
+
+/// Walk the local object graph and return the OIDs reachable from `targets`
+/// that are still absent. Runs the (blocking) libgit2 walk off-runtime.
+async fn walk_missing(repo_dir: &Path, targets: &[String]) -> Result<Vec<String>> {
+    let repo_path = repo_dir.to_path_buf();
+    let targets = targets.to_vec();
+    tokio::task::spawn_blocking(move || repo::missing_objects_blocking(&repo_path, &targets))
+        .await
+        .context("object-walk task panicked")?
+}
+
+/// Maximum attempts for a single GET before giving up.
+const MAX_ATTEMPTS: usize = 4;
+
+/// GET `url`, retrying transient failures (connection/timeout errors and 5xx
+/// responses) with exponential backoff. The final response is returned without
+/// `error_for_status`, so callers can still treat 404 as "absent".
+///
+/// # Errors
+///
+/// Returns an error if every attempt fails to complete the request.
+async fn get_with_retry(client: &reqwest::Client, url: &str) -> Result<reqwest::Response> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match client.get(url).send().await {
+            Ok(response) if response.status().is_server_error() && attempt < MAX_ATTEMPTS => {}
+            Ok(response) => return Ok(response),
+            Err(err)
+                if attempt < MAX_ATTEMPTS
+                    && (err.is_timeout() || err.is_connect() || err.is_request()) => {}
+            Err(err) => return Err(err).with_context(|| format!("fetching {url}")),
+        }
+        // Backoff: 100ms, 200ms, 400ms, ...
+        let backoff = std::time::Duration::from_millis(100 << (attempt - 1));
+        tokio::time::sleep(backoff).await;
+    }
 }
 
 /// Download one missing object and install it as a loose file.
@@ -188,11 +227,7 @@ async fn fetch_loose(
 /// origin serves no packs (loose-only), returning an empty list.
 async fn fetch_pack_list(client: &reqwest::Client, base_url: &str) -> Result<Vec<String>> {
     let url = join_cache_url(base_url, "objects/info/packs");
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("fetching {url}"))?;
+    let response = get_with_retry(client, &url).await?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(Vec::new());
     }
@@ -225,11 +260,8 @@ async fn fetch_pack_list(client: &reqwest::Client, base_url: &str) -> Result<Vec
 /// `.idx`, so a server-supplied index is never trusted.
 async fn fetch_pack(client: &reqwest::Client, base_url: &str, name: &str) -> Result<Vec<u8>> {
     let url = join_cache_url(base_url, &format!("objects/pack/{name}"));
-    let bytes = client
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("fetching pack {name}"))?
+    let bytes = get_with_retry(client, &url)
+        .await?
         .error_for_status()
         .with_context(|| format!("fetching pack {name}"))?
         .bytes()
@@ -257,11 +289,8 @@ async fn fetch_info_refs(
     base_url: &str,
 ) -> Result<HashMap<String, String>> {
     let url = join_cache_url(base_url, "info/refs");
-    let body = client
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("fetching {url}"))?
+    let body = get_with_retry(client, &url)
+        .await?
         .error_for_status()
         .with_context(|| format!("fetching {url}"))?
         .text()
@@ -294,11 +323,7 @@ async fn fetch_head_oid(
     advertised: &HashMap<String, String>,
 ) -> Result<Option<String>> {
     let url = join_cache_url(base_url, "HEAD");
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("fetching {url}"))?;
+    let response = get_with_retry(client, &url).await?;
     if !response.status().is_success() {
         return Ok(None);
     }
@@ -360,11 +385,8 @@ fn resolve_refspec(
 async fn fetch_object(client: &reqwest::Client, base_url: &str, oid: &str) -> Result<Vec<u8>> {
     let path = format!("objects/{}/{}", &oid[..2], &oid[2..]);
     let url = join_cache_url(base_url, &path);
-    let bytes = client
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("fetching object {oid}"))?
+    let bytes = get_with_retry(client, &url)
+        .await?
         .error_for_status()
         .with_context(|| format!("fetching object {oid}"))?
         .bytes()
@@ -486,14 +508,25 @@ mod tests {
         assert!(!is_safe_pack_name("notapack.pack"));
     }
 
-    /// Build a SHA-256 repo (optionally repacked), serve its `.git` as a static
-    /// dumb-HTTP tree, run the reader, and assert the graph + ref landed.
-    ///
-    /// Returns early (skips) when a loopback socket cannot be bound.
-    async fn build_serve_and_fetch(repack: bool) {
+    /// A static dumb-HTTP test origin over a real SHA-256 repository.
+    struct TestOrigin {
+        _tmp: tempfile::TempDir,
+        url: String,
+        head: String,
+        /// Count of GETs whose path is under `objects/` (object + pack
+        /// downloads), used to assert incremental syncs do no extra work.
+        object_requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    /// Build a SHA-256 repo (optionally repacked) with a nested subdirectory and
+    /// serve its bare `.git` as a static dumb-HTTP tree. Returns `None` when a
+    /// loopback socket cannot be bound (sandbox without local TCP).
+    fn serve_repo(repack: bool) -> Option<TestOrigin> {
         use std::io::{Read as _, Write as _};
         use std::net::TcpListener;
         use std::process::Command;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let tmp = tempfile::TempDir::new().unwrap();
         let work = tmp.path().join("work");
@@ -510,8 +543,6 @@ mod tests {
                 .success();
             assert!(ok, "git {args:?} failed");
         };
-        // A commit whose tree has a nested subdirectory exercises recursive
-        // tree walking in the reader.
         Command::new("git")
             .args(["init", "--object-format=sha256", "-b", "main"])
             .arg(&work)
@@ -543,17 +574,16 @@ mod tests {
         };
         assert_eq!(head.len(), 64, "expected sha256 head, got {head:?}");
 
-        // Minimal static file server over the bare `.git` directory.
         let git_dir = work.join(".git");
-        let listener = match TcpListener::bind("127.0.0.1:0") {
-            Ok(l) => l,
-            Err(_) => return, // loopback bind unavailable; skip
-        };
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
         let addr = listener.local_addr().unwrap();
+        let object_requests = Arc::new(AtomicUsize::new(0));
+        let counter = object_requests.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
                 let root = git_dir.clone();
+                let counter = counter.clone();
                 std::thread::spawn(move || {
                     let mut buf = [0u8; 1024];
                     let n = stream.read(&mut buf).unwrap_or(0);
@@ -563,6 +593,9 @@ mod tests {
                         .nth(1)
                         .unwrap_or("/")
                         .trim_start_matches('/');
+                    if path.starts_with("objects/") {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
                     match std::fs::read(root.join(path)) {
                         Ok(body) => {
                             let header = format!(
@@ -582,39 +615,87 @@ mod tests {
             }
         });
 
-        let url = format!("http://{addr}/");
-        let client_dir = tmp.path().join("client.git");
-        repo::init_bare_sha256(&client_dir).await.unwrap();
-        fetch(
-            &client_dir,
-            &url,
-            &["+refs/heads/main:refs/remotes/origin/main".to_string()],
-        )
-        .await
-        .expect("dumb-http fetch should succeed");
+        Some(TestOrigin {
+            _tmp: tmp,
+            url: format!("http://{addr}/"),
+            head,
+            object_requests,
+        })
+    }
 
-        // The ref was set and the whole graph landed: the commit reads back
-        // through git2, including the nested blob.
+    const MAIN_REFSPEC: &str = "+refs/heads/main:refs/remotes/origin/main";
+
+    /// Fetch `origin` into a fresh bare client and assert the whole graph landed
+    /// (the nested blob reads back) and the ref was set.
+    async fn fetch_and_assert(origin: &TestOrigin) -> std::path::PathBuf {
+        let client_dir = origin
+            ._tmp
+            .path()
+            .join(format!("client-{}.git", origin.head));
+        repo::init_bare_sha256(&client_dir).await.unwrap();
+        fetch(&client_dir, &origin.url, &[MAIN_REFSPEC.to_string()])
+            .await
+            .expect("dumb-http fetch should succeed");
         let resolved = repo::rev_parse(&client_dir, "refs/remotes/origin/main")
             .await
             .unwrap();
-        assert_eq!(resolved, head);
-        let nested = repo::read_blob_at(&client_dir, &head, "sub/nested.txt")
+        assert_eq!(resolved, origin.head);
+        let nested = repo::read_blob_at(&client_dir, &origin.head, "sub/nested.txt")
             .await
             .unwrap();
         assert_eq!(nested.as_deref(), Some(&b"nested"[..]));
+        client_dir
     }
 
     /// End-to-end over the loose-object path (no packs advertised).
     #[tokio::test]
     async fn fetch_reads_static_sha256_repo_loose() {
-        build_serve_and_fetch(false).await;
+        let Some(origin) = serve_repo(false) else {
+            return;
+        };
+        fetch_and_assert(&origin).await;
     }
 
     /// End-to-end over the pack path: a repacked repo serves `objects/info/packs`
     /// and the reader downloads + indexes the pack instead of walking loose.
     #[tokio::test]
     async fn fetch_reads_static_sha256_repo_packed() {
-        build_serve_and_fetch(true).await;
+        let Some(origin) = serve_repo(true) else {
+            return;
+        };
+        fetch_and_assert(&origin).await;
+    }
+
+    /// A second sync of an unchanged origin must download zero objects/packs —
+    /// the local graph already satisfies the targets.
+    #[tokio::test]
+    async fn fetch_is_incremental() {
+        use std::sync::atomic::Ordering;
+        let Some(origin) = serve_repo(true) else {
+            return;
+        };
+        let client_dir = origin._tmp.path().join("client.git");
+        repo::init_bare_sha256(&client_dir).await.unwrap();
+
+        fetch(&client_dir, &origin.url, &[MAIN_REFSPEC.to_string()])
+            .await
+            .unwrap();
+        let after_first = origin.object_requests.load(Ordering::Relaxed);
+        assert!(after_first > 0, "first sync should download objects/packs");
+
+        fetch(&client_dir, &origin.url, &[MAIN_REFSPEC.to_string()])
+            .await
+            .unwrap();
+        let after_second = origin.object_requests.load(Ordering::Relaxed);
+        assert_eq!(
+            after_second, after_first,
+            "an unchanged re-sync must not download any objects or packs"
+        );
+        assert_eq!(
+            repo::rev_parse(&client_dir, "refs/remotes/origin/main")
+                .await
+                .unwrap(),
+            origin.head,
+        );
     }
 }
