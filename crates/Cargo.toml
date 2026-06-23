@@ -91,6 +91,8 @@ ssh-key = { version = "0.6", default-features = false, features = ["std", "ed255
 tar = "0.4"
 # zlib (de)compression for loose git objects in the dumb-HTTP reader.
 flate2 = "1"
+# Data-parallelism for building thin-pack candidate strategies in parallel.
+rayon = "1"
 
 # Dev
 tempfile = "3"

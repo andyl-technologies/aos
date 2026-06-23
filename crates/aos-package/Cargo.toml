@@ -38,5 +38,6 @@ git2 = { workspace = true }
 ssh-key = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]

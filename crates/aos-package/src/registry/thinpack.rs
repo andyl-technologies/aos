@@ -8,12 +8,14 @@
 //! # What it produces
 //!
 //! A SHA-256 packfile containing exactly the objects reachable from `to` but
-//! not from `from`. Each new blob that has a same-path counterpart in `from` is
-//! stored as an `OBJ_REF_DELTA` against that counterpart (a 32-byte base OID +
-//! a zlib-compressed copy/insert delta); everything else is stored whole. The
-//! consumer completes the pack with libgit2's pack-writer (`git index-pack
-//! --fix-thin` semantics), which resolves the external bases from its own
-//! object store — verified to work for SHA-256.
+//! not from `from`. Several construction strategies are tried (store-whole,
+//! same-path delta, windowed delta) and the one with the smallest *zstd-wrapped*
+//! size — the artifact actually transferred — is kept, so the choice can never
+//! be worse than any single strategy. New blobs chosen for delta are stored as
+//! `OBJ_REF_DELTA` (a 32-byte base OID + a copy/insert delta). The consumer
+//! completes the pack with libgit2's pack-writer (`git index-pack --fix-thin`
+//! semantics), which resolves the external bases from its own object store —
+//! verified to work for SHA-256.
 //!
 //! # Pack wire format (SHA-256)
 //!
@@ -31,10 +33,24 @@ use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 /// Minimum match length (and base-index window) for the delta encoder.
 const MATCH_WINDOW: usize = 16;
+
+/// Candidate bases considered per blob by the windowed strategy (same-path,
+/// same-basename, and nearest-by-size neighbours).
+const BASE_WINDOW: usize = 16;
+
+/// zstd level used to *rank* candidate packs. Lower than the production level
+/// for speed; the ordering between candidates is stable across levels.
+const PROBE_LEVEL: i32 = 19;
+
+/// zstd long-distance window log used for both ranking and production
+/// ([`crate::registry::pack::ZSTD_LONG`]); the 128 MiB window is what lets zstd
+/// dedup across pack objects, so it must be on when ranking.
+const PROBE_WINDOW_LOG: u32 = 27;
 
 /// git object type codes used in pack object headers.
 const OBJ_COMMIT: u8 = 1;
@@ -43,12 +59,43 @@ const OBJ_BLOB: u8 = 3;
 const OBJ_TAG: u8 = 4;
 const OBJ_REF_DELTA: u8 = 7;
 
+/// A pack-construction strategy. Each produces a complete, valid thin pack;
+/// [`write_thin_pack`] builds one pack per strategy and keeps whichever has the
+/// smallest zstd-wrapped size, so adding a strategy can only help.
+#[derive(Clone, Copy, Debug)]
+enum Strategy {
+    /// Store every object whole and let the zstd-long wrapper dedup across
+    /// them — best when new blobs resemble each other more than `from`.
+    Whole,
+    /// Delta each blob against the same-path blob in `from` — best for
+    /// in-place edits, whose prior version (external to the pack) is the ideal
+    /// base and which zstd cannot otherwise reach.
+    SamePath,
+    /// Delta each blob against the best of a window of candidate bases in
+    /// `from` (same path, same basename, nearest size) — catches renames and
+    /// new-but-similar files.
+    Windowed,
+}
+
+/// Strategies tried for every release; the smallest zstd-wrapped result wins.
+const STRATEGIES: [Strategy; 3] = [Strategy::Whole, Strategy::SamePath, Strategy::Windowed];
+
+/// One object to pack, read into memory with its tip-tree path for base
+/// selection.
+struct Input {
+    kind: git2::ObjectType,
+    data: Vec<u8>,
+    path: Option<String>,
+}
+
 /// Write a thin pack of the objects in `to` but not in `from` to `out_path`.
 ///
-/// Equivalent to `git pack-objects --thin` over `to ^from`. New blobs are
-/// delta-encoded against the same-path blob in `from` when one exists; all
-/// other objects (commits, trees, tags, and blobs without a base) are stored
-/// whole.
+/// Equivalent to `git pack-objects --thin` over `to ^from`. Builds one
+/// candidate pack per [`Strategy`] and writes whichever has the smallest
+/// zstd-wrapped size — the artifact actually transferred — so the choice can
+/// never be worse than any single strategy. Objects are read single-threaded
+/// (libgit2's odb is not `Send`); the per-strategy delta search runs in
+/// parallel with rayon.
 ///
 /// # Errors
 ///
@@ -77,44 +124,134 @@ pub(crate) fn write_thin_pack(
 
     let from_objects = reachable_from(&repo, from)?;
     let to_objects = reachable_from(&repo, to)?;
-
-    // Same-path blob bases: a blob new in `to` is delta-encoded against the
-    // blob at the same path in `from`'s tip tree, which the consumer has.
-    let from_blob_by_path = tip_blob_paths(&repo, from)?;
-    let to_path_by_blob = invert_blob_paths(&repo, to)?;
-
+    let pool = build_base_pool(&repo, from)?;
+    let to_path_by_blob = blob_paths(&repo, to)?;
     let odb = repo.odb().context("opening object database")?;
-    let mut entries: Vec<Vec<u8>> = Vec::new();
 
+    // Read phase (single-thread): load each to-pack object, and gather every
+    // base any strategy might use (the windowed window is a superset).
+    let mut inputs: Vec<Input> = Vec::new();
+    let mut needed_bases: HashSet<git2::Oid> = HashSet::new();
     for oid in to_objects.difference(&from_objects) {
         let object = odb
             .read(*oid)
             .with_context(|| format!("reading object {oid}"))?;
         let kind = object.kind();
-        let data = object.data();
-
-        if kind == git2::ObjectType::Blob
-            && let Some(path) = to_path_by_blob.get(oid)
-            && let Some(base_oid) = from_blob_by_path.get(path)
-            && let Ok(base) = odb.read(*base_oid)
-        {
-            let delta = encode_delta(base.data(), data);
-            // Only worth a ref-delta if it actually beats storing the blob.
-            if delta.len() < data.len() {
-                entries.push(encode_entry(OBJ_REF_DELTA, &delta, Some(*base_oid))?);
-                continue;
+        let data = object.data().to_vec();
+        let path = if kind == git2::ObjectType::Blob {
+            to_path_by_blob.get(oid).cloned()
+        } else {
+            None
+        };
+        if let Some(path) = &path {
+            for base in pool.select(path, data.len()) {
+                needed_bases.insert(base);
             }
         }
-        entries.push(encode_entry(type_code(kind)?, data, None)?);
+        inputs.push(Input { kind, data, path });
+    }
+    let mut base_data: HashMap<git2::Oid, Vec<u8>> = HashMap::with_capacity(needed_bases.len());
+    for base in needed_bases {
+        if let Ok(object) = odb.read(base) {
+            base_data.insert(base, object.data().to_vec());
+        }
     }
 
-    let pack = assemble_pack(&entries);
+    // Build a candidate pack per strategy, then keep the one whose zstd-wrapped
+    // size is smallest (the production transport artifact).
+    let mut best: Option<Vec<u8>> = None;
+    let mut best_len = usize::MAX;
+    for strategy in STRATEGIES {
+        let pack = build_pack(&inputs, strategy, &pool, &base_data)?;
+        let zlen = zstd_probe_len(&pack)
+            .with_context(|| format!("ranking {strategy:?} pack candidate"))?;
+        if zlen < best_len {
+            best_len = zlen;
+            best = Some(pack);
+        }
+    }
+    let pack = best.context("no pack strategy produced output")?;
+
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
     std::fs::write(out_path, &pack).with_context(|| format!("writing {}", out_path.display()))?;
     Ok(())
+}
+
+/// Build one candidate pack under `strategy`, delta-searching objects in
+/// parallel.
+fn build_pack(
+    inputs: &[Input],
+    strategy: Strategy,
+    pool: &BasePool,
+    base_data: &HashMap<git2::Oid, Vec<u8>>,
+) -> Result<Vec<u8>> {
+    let entries = inputs
+        .par_iter()
+        .map(|input| encode_input(input, strategy, pool, base_data))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(assemble_pack(&entries))
+}
+
+/// Encode one object under `strategy`: pick the smallest delta over the
+/// strategy's candidate bases (when it beats storing the blob), else store the
+/// object whole.
+fn encode_input(
+    input: &Input,
+    strategy: Strategy,
+    pool: &BasePool,
+    base_data: &HashMap<git2::Oid, Vec<u8>>,
+) -> Result<Vec<u8>> {
+    if input.kind == git2::ObjectType::Blob
+        && let Some(path) = &input.path
+    {
+        let bases = match strategy {
+            Strategy::Whole => Vec::new(),
+            Strategy::SamePath => pool.by_path.get(path).copied().into_iter().collect(),
+            Strategy::Windowed => pool.select(path, input.data.len()),
+        };
+        let mut best: Option<(git2::Oid, Vec<u8>)> = None;
+        for (index, base_oid) in bases.iter().enumerate() {
+            let Some(base) = base_data.get(base_oid) else {
+                continue;
+            };
+            let delta = encode_delta(base, &input.data);
+            if best.as_ref().is_none_or(|(_, b)| delta.len() < b.len()) {
+                best = Some((*base_oid, delta));
+            }
+            // The same-path base (index 0) is usually optimal; stop early if it
+            // already halves the blob.
+            if index == 0
+                && let Some((_, b)) = &best
+                && b.len() * 2 < input.data.len()
+            {
+                break;
+            }
+        }
+        if let Some((base_oid, delta)) = best
+            && delta.len() < input.data.len()
+        {
+            return encode_entry(OBJ_REF_DELTA, &delta, Some(base_oid));
+        }
+    }
+    encode_entry(type_code(input.kind)?, &input.data, None)
+}
+
+/// Compress `data` with the production zstd parameters and return its size,
+/// for ranking candidate packs by their transport size.
+fn zstd_probe_len(data: &[u8]) -> Result<usize> {
+    let mut encoder =
+        zstd::stream::write::Encoder::new(Vec::new(), PROBE_LEVEL).context("zstd encoder")?;
+    encoder
+        .long_distance_matching(true)
+        .context("enabling zstd long-distance matching")?;
+    encoder
+        .window_log(PROBE_WINDOW_LOG)
+        .context("setting zstd window log")?;
+    encoder.write_all(data).context("zstd probe write")?;
+    Ok(encoder.finish().context("zstd probe finish")?.len())
 }
 
 /// Enumerate every object reachable from `commit`: the commit and its
@@ -161,18 +298,16 @@ fn collect_tree(
     Ok(())
 }
 
-/// Map each path in `commit`'s tip tree to its blob OID.
-fn tip_blob_paths(
-    repo: &git2::Repository,
-    commit: git2::Oid,
-) -> Result<HashMap<String, git2::Oid>> {
+/// Map each blob OID in `commit`'s tip tree to its path, for selecting a
+/// to-pack blob's path when choosing candidate bases.
+fn blob_paths(repo: &git2::Repository, commit: git2::Oid) -> Result<HashMap<git2::Oid, String>> {
     let mut map = HashMap::new();
     let tree = repo.find_commit(commit)?.tree()?;
     tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
         if entry.kind() == Some(git2::ObjectType::Blob)
             && let Ok(name) = entry.name()
         {
-            map.insert(format!("{root}{name}"), entry.id());
+            map.insert(entry.id(), format!("{root}{name}"));
         }
         git2::TreeWalkResult::Ok
     })
@@ -180,16 +315,88 @@ fn tip_blob_paths(
     Ok(map)
 }
 
-/// Map each blob OID in `commit`'s tip tree to its path (inverse of
-/// [`tip_blob_paths`], for base selection).
-fn invert_blob_paths(
-    repo: &git2::Repository,
-    commit: git2::Oid,
-) -> Result<HashMap<git2::Oid, String>> {
-    Ok(tip_blob_paths(repo, commit)?
-        .into_iter()
-        .map(|(path, oid)| (oid, path))
-        .collect())
+/// Candidate delta-base pool: the blobs in `from`'s tip tree, indexed by path,
+/// basename, and size, so [`BasePool::select`] can offer a bounded window of
+/// plausible bases per to-pack blob.
+struct BasePool {
+    by_path: HashMap<String, git2::Oid>,
+    by_basename: HashMap<String, Vec<usize>>,
+    /// `(oid, size)` for every candidate blob.
+    entries: Vec<(git2::Oid, usize)>,
+    /// Indices into `entries`, sorted ascending by size.
+    size_sorted: Vec<usize>,
+}
+
+impl BasePool {
+    /// Candidate bases for a blob at `path` of `size` bytes: the same-path blob
+    /// first (usually optimal), then same-basename and nearest-by-size
+    /// neighbours, deduplicated and capped.
+    fn select(&self, path: &str, size: usize) -> Vec<git2::Oid> {
+        let mut out: Vec<git2::Oid> = Vec::new();
+        let mut seen: HashSet<git2::Oid> = HashSet::new();
+        let push = |oid: git2::Oid, out: &mut Vec<git2::Oid>, seen: &mut HashSet<git2::Oid>| {
+            if seen.insert(oid) {
+                out.push(oid);
+            }
+        };
+
+        if let Some(&oid) = self.by_path.get(path) {
+            push(oid, &mut out, &mut seen);
+        }
+        if let Some(indices) = self.by_basename.get(basename(path)) {
+            for &i in indices.iter().take(BASE_WINDOW) {
+                push(self.entries[i].0, &mut out, &mut seen);
+            }
+        }
+        let pivot = self
+            .size_sorted
+            .partition_point(|&i| self.entries[i].1 < size);
+        let lo = pivot.saturating_sub(BASE_WINDOW);
+        let hi = (pivot + BASE_WINDOW).min(self.size_sorted.len());
+        for &i in &self.size_sorted[lo..hi] {
+            push(self.entries[i].0, &mut out, &mut seen);
+        }
+
+        out.truncate(BASE_WINDOW * 2);
+        out
+    }
+}
+
+/// Build the [`BasePool`] from `from`'s tip tree, reading only object headers
+/// (not bodies) for sizes.
+fn build_base_pool(repo: &git2::Repository, from: git2::Oid) -> Result<BasePool> {
+    let odb = repo.odb().context("opening object database")?;
+    let tree = repo.find_commit(from)?.tree()?;
+    let mut by_path = HashMap::new();
+    let mut by_basename: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut entries: Vec<(git2::Oid, usize)> = Vec::new();
+    tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
+        if entry.kind() == Some(git2::ObjectType::Blob)
+            && let Ok(name) = entry.name()
+        {
+            let oid = entry.id();
+            let size = odb.read_header(oid).map(|(size, _)| size).unwrap_or(0);
+            let index = entries.len();
+            entries.push((oid, size));
+            by_path.insert(format!("{root}{name}"), oid);
+            by_basename.entry(name.to_string()).or_default().push(index);
+        }
+        git2::TreeWalkResult::Ok
+    })
+    .context("walking base tree")?;
+    let mut size_sorted: Vec<usize> = (0..entries.len()).collect();
+    size_sorted.sort_by_key(|&i| entries[i].1);
+    Ok(BasePool {
+        by_path,
+        by_basename,
+        entries,
+        size_sorted,
+    })
+}
+
+/// The final path component of `path` (its basename).
+fn basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 /// Map a git2 object kind to its pack type code.
