@@ -326,7 +326,7 @@ async fn fetch_delta(
 /// Try to download and index the self-contained full pack for `version`.
 ///
 /// Reads the release's `objects/info/packs` listing, downloads the first
-/// pack (verifying or regenerating its `.idx`), and returns `Ok(None)` when
+/// pack and indexes it (regenerating its `.idx`), and returns `Ok(None)` when
 /// the release publishes no full pack.
 async fn fetch_full_pack(
     repo_dir: &Path,
@@ -352,17 +352,9 @@ async fn fetch_full_pack(
         .await
         .with_context(|| format!("writing {}", pack_path.display()))?;
 
-    let idx_name = pack_name.trim_end_matches(".pack").to_string() + ".idx";
-    let idx_relative = format!("releases/{release}/objects/pack/{idx_name}");
-    if let Some(idx_bytes) = get_optional(origin, &idx_relative).await? {
-        let idx_path = local_pack_path(repo_dir, &idx_name)?;
-        tokio::fs::write(&idx_path, idx_bytes)
-            .await
-            .with_context(|| format!("writing {}", idx_path.display()))?;
-        pack::verify_pack_index(repo_dir, &idx_path).await?;
-    } else {
-        pack::index_pack(repo_dir, &pack_path).await?;
-    }
+    // libgit2's pack writer regenerates and verifies the index, so the
+    // server-published `.idx` is neither downloaded nor trusted.
+    pack::index_pack(repo_dir, &pack_path).await?;
 
     Ok(Some(FetchStep::Full {
         version: version.clone(),
