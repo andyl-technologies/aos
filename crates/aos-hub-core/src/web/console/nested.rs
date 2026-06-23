@@ -85,6 +85,7 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
         // are POST-only mutations.
         "settings" => !is_post,
         "settings/visibility" | "settings/crawl" | "settings/delete" => is_post,
+        "settings/cache-link" | "settings/cache-unlink" => is_post,
         // The serving & mirror page is GET (view) + POST (mutate).
         "settings/serving" => true,
         "changes" => !is_post,
@@ -223,6 +224,19 @@ pub async fn dispatch_nested(
             };
             // `registry_delete` takes no `RequestStart`.
             handlers::registry_delete(deps, headers, uri, Path(slug), Form(form)).await
+        }
+        ("settings/cache-link", true) => {
+            let Ok(form) = serde_urlencoded::from_bytes(&body) else {
+                return Some(bad_request());
+            };
+            handlers::registry_cache_link(deps, headers, started, uri, Path(slug), Form(form)).await
+        }
+        ("settings/cache-unlink", true) => {
+            let Ok(form) = serde_urlencoded::from_bytes(&body) else {
+                return Some(bad_request());
+            };
+            handlers::registry_cache_unlink(deps, headers, started, uri, Path(slug), Form(form))
+                .await
         }
         // -- serving & mirror ------------------------------------------------
         ("settings/serving", false) => {

@@ -1964,6 +1964,7 @@ pub fn registry_settings_page(
     csrf: &str,
     binding: Option<(&str, &str, &str)>,
     caches: &[RegistryCacheRow],
+    linkable_caches: &[String],
     can_delete: bool,
     result: Option<&str>,
     started: Instant,
@@ -2074,38 +2075,74 @@ pub fn registry_settings_page(
     }
 
     // Binary caches serving this registry (the reverse of a cache's
-    // linked-registries list). Managed from each cache's page; shown here so the
-    // association is visible from the registry side too.
+    // linked-registries list) — managed here from the registry side, and
+    // equivalently from each cache's own page. Both routes share the same
+    // upsert, so editing a link's flags works from either.
     body.push_str("<h2>Binary caches</h2>\n");
     if caches.is_empty() {
         body.push_str(
-            "<p class=\"dim\">No binary caches serve this registry. Link one from a cache's \
-             page to advertise it to consumers and pin GC roots from this registry's packages.</p>\n",
+            "<p class=\"dim\">No binary caches serve this registry yet.</p>\n",
         );
-    } else {
-        let rows: Vec<Vec<String>> = caches
-            .iter()
-            .map(|c| {
-                let label = if org_slug.is_empty() {
-                    escape(&c.cache_slug)
-                } else {
-                    format!(
-                        "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
-                        org = escape(org_slug),
-                        slug = escape(&c.cache_slug),
-                    )
-                };
-                let mut flags = Vec::new();
-                if c.advertised {
-                    flags.push("<span class=\"chip\">advertised</span>");
-                }
-                if c.roots_packages {
-                    flags.push("<span class=\"chip\">gc roots</span>");
-                }
-                vec![label, flags.join(" ")]
-            })
-            .collect();
-        body.push_str(&table(&["cache", ""], &rows));
+    }
+    // Each linked cache is an editable row: toggle its flags and save (an upsert
+    // over the existing link), or unlink it.
+    for c in caches {
+        let label = if org_slug.is_empty() {
+            escape(&c.cache_slug)
+        } else {
+            format!(
+                "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
+                org = escape(org_slug),
+                slug = escape(&c.cache_slug),
+            )
+        };
+        let adv = if c.advertised { " checked" } else { "" };
+        let roots = if c.roots_packages { " checked" } else { "" };
+        let _ = write!(
+            body,
+            "<h3>{label}</h3>\n\
+             <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/cache-link\">{csrf}\
+             <input type=\"hidden\" name=\"cache\" value=\"{cache}\">\
+             <label><span class=\"lbl\">advertise to consumers{adv_help}</span> \
+             <input type=\"checkbox\" name=\"advertised\" value=\"1\"{adv}></label>\n\
+             <label><span class=\"lbl\">pin GC roots from its packages{roots_help}</span> \
+             <input type=\"checkbox\" name=\"roots_packages\" value=\"1\"{roots}></label>\n\
+             <button>save</button>\n</form>\n\
+             <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/cache-unlink\" \
+             style=\"display:inline\">{csrf}<input type=\"hidden\" name=\"cache\" value=\"{cache}\">\
+             <button class=\"danger\">unlink</button></form>\n",
+            label = label,
+            slug = escape(slug),
+            csrf = csrf_field(csrf),
+            cache = escape(&c.cache_slug),
+            adv_help = help::marker("link.advertised"),
+            roots_help = help::marker("link.roots_packages"),
+            adv = adv,
+            roots = roots,
+        );
+    }
+    // Link another of the org's caches to this registry.
+    if !linkable_caches.is_empty() {
+        let mut options = String::new();
+        for slug in linkable_caches {
+            let _ = write!(options, "<option value=\"{s}\">{s}</option>", s = escape(slug));
+        }
+        let _ = write!(
+            body,
+            "<h3>Link a cache</h3>\n\
+             <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/cache-link\">{csrf}\
+             <label>cache <select name=\"cache\">{options}</select></label>\n\
+             <label><span class=\"lbl\">advertise to consumers{adv_help}</span> \
+             <input type=\"checkbox\" name=\"advertised\" value=\"1\" checked></label>\n\
+             <label><span class=\"lbl\">pin GC roots from its packages{roots_help}</span> \
+             <input type=\"checkbox\" name=\"roots_packages\" value=\"1\" checked></label>\n\
+             <button>link</button>\n</form>\n",
+            slug = escape(slug),
+            csrf = csrf_field(csrf),
+            options = options,
+            adv_help = help::marker("link.advertised"),
+            roots_help = help::marker("link.roots_packages"),
+        );
     }
 
     // Trust anchors (read-only — editing is the signed keys.toml flow).

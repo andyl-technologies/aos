@@ -3492,7 +3492,9 @@ async fn registry_settings_view(
             None => String::new(),
         };
         let mut caches = Vec::new();
+        let mut linked_ids = std::collections::HashSet::new();
         for link in deps.db.cache_links_for_registry(registry.id).await? {
+            linked_ids.insert(link.cache_id);
             if let Some(cache) = deps.db.cache_by_id(link.cache_id).await? {
                 if cache.deleted_at.is_none() {
                     caches.push(console::RegistryCacheRow {
@@ -3501,6 +3503,14 @@ async fn registry_settings_view(
                         roots_packages: link.roots_packages,
                     });
                 }
+            }
+        }
+        // Caches in this registry's org that aren't linked yet — the options for
+        // the "link a cache" control on the settings page.
+        let mut linkable_caches = Vec::new();
+        for c in deps.db.list_caches().await? {
+            if c.org_id == registry.org_id && c.deleted_at.is_none() && !linked_ids.contains(&c.id) {
+                linkable_caches.push(c.slug);
             }
         }
         let can_delete = session.allows(&deps.db, Permission::IamAdmin, &scope).await;
@@ -3514,6 +3524,7 @@ async fn registry_settings_view(
             &session.csrf(),
             binding_ref,
             &caches,
+            &linkable_caches,
             can_delete,
             result,
             started,
@@ -3522,6 +3533,135 @@ async fn registry_settings_view(
     .await;
     match result_outcome {
         Ok(html) => Html(html).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /{slug}/-/settings/cache-link` form: the cache and the link flags.
+#[derive(serde::Deserialize)]
+pub(crate) struct RegistryCacheLinkForm {
+    #[serde(default)]
+    csrf: String,
+    cache: String,
+    #[serde(default)]
+    advertised: Option<String>,
+    #[serde(default)]
+    roots_packages: Option<String>,
+}
+
+/// `POST /{slug}/-/settings/cache-link` — link a cache to this registry, or
+/// update an existing link's flags, from the registry side.
+///
+/// `link_cache` is an upsert, so this both creates a new link and edits an
+/// existing one's `advertised`/`roots_packages` flags. The cross-visibility
+/// policy is enforced through the shared [`assess_cache_link`] chokepoint, the
+/// same as the cache-side route and the RPC.
+pub(crate) async fn registry_cache_link(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<RegistryCacheLinkForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&registry.slug);
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let advertised = form.advertised.is_some();
+    let roots_packages = form.roots_packages.is_some();
+    let result = async {
+        let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? else {
+            return Ok(Some("unknown cache".to_string()));
+        };
+        if cache.org_id != registry.org_id {
+            return Ok(Some("cache is not in this organization".to_string()));
+        }
+        let advisory = crate::service::assess_cache_link(
+            &cache.slug,
+            &cache.visibility,
+            &registry.slug,
+            &registry.visibility,
+            advertised,
+            roots_packages,
+        );
+        if let Some(reject) = advisory.reject {
+            return Ok(Some(reject));
+        }
+        deps.db
+            .link_cache(cache.id, registry.id, roots_packages, advertised)
+            .await?;
+        Ok::<_, anyhow::Error>(None)
+    }
+    .await;
+    match result {
+        Ok(None) => registry_settings_view(&deps, &session, &registry, None, started).await,
+        Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /{slug}/-/settings/cache-unlink` form: the cache to unlink.
+#[derive(serde::Deserialize)]
+pub(crate) struct RegistryCacheUnlinkForm {
+    #[serde(default)]
+    csrf: String,
+    cache: String,
+}
+
+/// `POST /{slug}/-/settings/cache-unlink` — remove a cache⇄registry link from
+/// the registry side.
+pub(crate) async fn registry_cache_unlink(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<RegistryCacheUnlinkForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&registry.slug);
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let result = async {
+        if let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? {
+            deps.db.unlink_cache(cache.id, registry.id).await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    match result {
+        Ok(()) => registry_settings_view(&deps, &session, &registry, None, started).await,
         Err(err) => internal(err),
     }
 }
