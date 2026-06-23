@@ -664,7 +664,7 @@ instruction-primary.
   event to the scheduler horizon; ban the overshoot-and-correct fallback and fail
   loudly if the capability is unavailable. — satisfies [TIME-24], [TIME-25],
   [TIME-26]; spec §9.8.
-- [ ] **T-TIME-7** Implement time advancement via the max-advance ceiling: convert
+- [x] **T-TIME-7** Implement time advancement via the max-advance ceiling: convert
   horizon → ceiling icount ([TIME-4]), publish ceiling and reached-icount in the
   shmem region, coordinate the idle/advance handoff with a futex, and forbid any
   node self-extending past the published ceiling. — satisfies [TIME-27],
