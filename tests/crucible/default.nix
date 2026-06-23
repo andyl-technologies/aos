@@ -89,6 +89,7 @@ in {
     testingStandards = import ./phase1-testing-standards.nix {inherit pkgs lib;};
     timeClockSkew = import ./phase1-time-clock-skew.nix {inherit pkgs lib;};
     timeNoRealtimeWarp = import ./phase1-time-no-realtime-warp.nix {inherit pkgs lib;};
+    timeAdvanceCeiling = import ./phase1-time-advance-ceiling.nix {inherit pkgs lib;};
     timeSharedTimeline = import ./phase1-time-shared-timeline.nix {inherit pkgs lib;};
     timeVocabulary = import ./phase1-time-vocabulary.nix {inherit pkgs lib;};
     gates = {
