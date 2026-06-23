@@ -21,6 +21,11 @@ service RegistryService {
   // path: requires registry.configure at the registry scope; applied as an
   // audited change-set.
   rpc SetCrawlPolicy(SetCrawlPolicyRequest) returns (SetCrawlPolicyResponse);
+  // Migrate a registry's surface to a different storage backend: copy every
+  // object to the target binding (or the default store), then re-point and
+  // re-index. Requires registry.configure at the registry scope.
+  rpc ChangeRegistryStorage(ChangeRegistryStorageRequest)
+      returns (ChangeRegistryStorageResponse);
 }
 
 // Orgs, membership, and invitations (RFC-0004 "Tenancy and IAM").
@@ -453,6 +458,19 @@ message SetCrawlPolicyResponse {
   // The applied crawl policy (echoed back).
   string policy = 1;
 }
+message ChangeRegistryStorageRequest {
+  // Canonical registry path or flat slug.
+  string slug = 1;
+  // Target storage binding name within the org; empty = the deployment default
+  // store.
+  string binding_name = 2;
+}
+message ChangeRegistryStorageResponse {
+  // Objects copied to the new backend.
+  uint64 objects = 1;
+  // Bytes copied.
+  uint64 bytes = 2;
+}
 
 // -- Audit log (phase 3a) --------------------------------------------------
 
@@ -738,6 +756,11 @@ service CacheService {
   rpc ListCacheGcRuns(ListCacheGcRunsRequest) returns (ListCacheGcRunsResponse);
   rpc RunCacheGc(RunCacheGcRequest) returns (RunCacheGcResponse);
   rpc CacheClosure(CacheClosureRequest) returns (CacheClosureResponse);
+  // Migrate a cache's surface to a different storage backend: copy every object
+  // to the target binding (or the default store), re-point, and reconcile the
+  // index. Requires cache-admin authority.
+  rpc ChangeCacheStorage(ChangeCacheStorageRequest)
+      returns (ChangeCacheStorageResponse);
   // Mint a short-lived presigned PUT URL for uploading one object directly to a
   // cache's private external origin (the `mint` purpose). Requires cache-write
   // authority; only valid for a presign-configured (private external) binding.
@@ -1031,6 +1054,20 @@ message CacheClosureResponse {
   repeated CacheClosureNode nodes = 1;
   // Total on-disk size of the present closure (sum of file_size).
   int64 total_size = 2;
+}
+
+message ChangeCacheStorageRequest {
+  // The cache slug to migrate.
+  string cache_slug = 1;
+  // Target storage binding name within the org; empty = the deployment default
+  // store.
+  string binding_name = 2;
+}
+message ChangeCacheStorageResponse {
+  // Objects copied to the new backend.
+  uint64 objects = 1;
+  // Bytes copied.
+  uint64 bytes = 2;
 }
 
 message MintCacheUploadCredentialsRequest {

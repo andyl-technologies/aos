@@ -909,6 +909,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     r = rpc_route!(r, "/aos.registry.v1.RegistryService/ListReleases", list_releases);
     r = rpc_route!(r, "/aos.registry.v1.RegistryService/CreateRegistry", create_registry);
     r = rpc_route!(r, "/aos.registry.v1.RegistryService/SetCrawlPolicy", set_crawl_policy);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.RegistryService/ChangeRegistryStorage",
+        change_registry_storage
+    );
     // OrgService
     r = rpc_route!(r, "/aos.registry.v1.OrgService/CreateOrg", create_org);
     r = rpc_route!(r, "/aos.registry.v1.OrgService/GetOrg", get_org);
@@ -960,6 +965,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     r = rpc_route!(r, "/aos.registry.v1.CacheService/ListCacheGcRuns", list_cache_gc_runs);
     r = rpc_route!(r, "/aos.registry.v1.CacheService/RunCacheGc", run_cache_gc);
     r = rpc_route!(r, "/aos.registry.v1.CacheService/CacheClosure", cache_closure);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.CacheService/ChangeCacheStorage",
+        change_cache_storage
+    );
     r = rpc_route!(
         r,
         "/aos.registry.v1.CacheService/MintCacheUploadCredentials",

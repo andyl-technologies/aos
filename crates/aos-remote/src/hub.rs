@@ -32,7 +32,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use aos_proto_types::{
-    AuditEntry, Binding, ChangeRequest, Changeset, Channel, CreateBindingRequest,
+    AuditEntry, Binding, ChangeCacheStorageRequest, ChangeCacheStorageResponse,
+    ChangeRegistryStorageRequest, ChangeRegistryStorageResponse, ChangeRequest, Changeset, Channel,
+    CreateBindingRequest,
     CreateBindingResponse, CreateOrgRequest, CreateOrgResponse, CreateProjectRequest,
     CreateProjectResponse, CreateRegistryRequest, CreateRegistryResponse, CreateWebhookRequest,
     CreateWebhookResponse,
@@ -516,6 +518,61 @@ impl RegistryHubClient {
             .with_context(|| format!("creating binding '{name}' in org '{org_slug}'"))?;
         resp.binding
             .context("hub returned no binding for the create request")
+    }
+
+    /// Migrates a registry's surface to a different storage backend.
+    ///
+    /// An empty `binding_name` targets the deployment default store. Returns the
+    /// `(objects, bytes)` copied. Calls
+    /// `aos.registry.v1.RegistryService/ChangeRegistryStorage`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the migration RPC fails
+    /// (unknown registry/binding, a no-op move, or a copy failure).
+    pub async fn change_registry_storage(
+        &self,
+        slug: &str,
+        binding_name: &str,
+    ) -> Result<(u64, u64)> {
+        let resp: ChangeRegistryStorageResponse = self
+            .call(
+                "aos.registry.v1.RegistryService/ChangeRegistryStorage",
+                &ChangeRegistryStorageRequest {
+                    slug: slug.into(),
+                    binding_name: binding_name.into(),
+                },
+            )
+            .await
+            .with_context(|| format!("changing storage for registry '{slug}'"))?;
+        Ok((resp.objects, resp.bytes))
+    }
+
+    /// Migrates a cache's surface to a different storage backend.
+    ///
+    /// An empty `binding_name` targets the deployment default store. Returns the
+    /// `(objects, bytes)` copied. Calls
+    /// `aos.registry.v1.CacheService/ChangeCacheStorage`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the migration RPC fails.
+    pub async fn change_cache_storage(
+        &self,
+        cache_slug: &str,
+        binding_name: &str,
+    ) -> Result<(u64, u64)> {
+        let resp: ChangeCacheStorageResponse = self
+            .call(
+                "aos.registry.v1.CacheService/ChangeCacheStorage",
+                &ChangeCacheStorageRequest {
+                    cache_slug: cache_slug.into(),
+                    binding_name: binding_name.into(),
+                },
+            )
+            .await
+            .with_context(|| format!("changing storage for cache '{cache_slug}'"))?;
+        Ok((resp.objects, resp.bytes))
     }
 
     /// Creates an org-owned, storage-bound managed registry.

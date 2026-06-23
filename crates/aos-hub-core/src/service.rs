@@ -1794,6 +1794,80 @@ impl RpcService {
         })
     }
 
+    /// `RegistryService.ChangeRegistryStorage` — migrate a registry's surface to
+    /// a different storage backend.
+    ///
+    /// Resolves the target binding (empty name = the deployment default), then
+    /// runs the shared [`migrate_registry_storage`](crate::migrate::migrate_registry_storage)
+    /// — the exact copy-then-repoint-then-reindex the web console invokes, so the
+    /// machine and human paths cannot drift.
+    ///
+    /// # Errors
+    ///
+    /// Auth errors; [`RpcError::NotFound`] for an unknown registry;
+    /// [`RpcError::InvalidArgument`] for an unknown binding, an org-less
+    /// registry, a no-op move, or a surface that cannot be enumerated.
+    pub async fn change_registry_storage(
+        &self,
+        auth: Option<&str>,
+        req: pb::ChangeRegistryStorageRequest,
+    ) -> Result<pb::ChangeRegistryStorageResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let registry = self.registry_or_not_found(&req.slug).await?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&registry.slug),
+        )
+        .await?;
+        let new_binding_id = self
+            .resolve_storage_binding(registry.org_id, &req.binding_name)
+            .await?;
+        let stats = crate::migrate::migrate_registry_storage(
+            &self.db,
+            self.surface.as_ref(),
+            self.surface_write.as_ref(),
+            self.reindexer.as_ref(),
+            &registry,
+            new_binding_id,
+        )
+        .await
+        .map_err(|err| RpcError::invalid(format!("{err:#}")))?;
+        Ok(pb::ChangeRegistryStorageResponse {
+            objects: stats.objects as u64,
+            bytes: stats.bytes,
+        })
+    }
+
+    /// Resolve a storage-binding name to its id within `org_id`.
+    ///
+    /// An empty name resolves to `None` (the deployment default store).
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::InvalidArgument`] when a non-empty name names no binding in
+    /// the org, or when the resource has no org; [`RpcError::Internal`] on a DB
+    /// failure.
+    async fn resolve_storage_binding(
+        &self,
+        org_id: Option<i64>,
+        name: &str,
+    ) -> Result<Option<i64>, RpcError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(None);
+        }
+        let org_id =
+            org_id.ok_or_else(|| RpcError::invalid("resource has no organization".to_string()))?;
+        let binding = self
+            .db
+            .storage_binding_by_name(org_id, name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::invalid(format!("unknown storage binding '{name}'")))?;
+        Ok(Some(binding.id))
+    }
+
     // -- CacheService (RFC-0004 "11-caches") ---------------------------------
 
     /// Resolve a managed cache by slug or map a miss to `NotFound`.
@@ -2209,6 +2283,43 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?;
         Ok(pb::LinkCacheResponse {})
+    }
+
+    /// `CacheService.ChangeCacheStorage` — migrate a cache's surface to a
+    /// different storage backend.
+    ///
+    /// Resolves the target binding (empty name = the deployment default), then
+    /// runs the shared [`migrate_cache_storage`](crate::migrate::migrate_cache_storage)
+    /// — the same copy-then-repoint-then-reconcile the web console invokes.
+    ///
+    /// # Errors
+    ///
+    /// Auth errors; [`RpcError::NotFound`] for an unknown cache;
+    /// [`RpcError::InvalidArgument`] for an unknown binding, a no-op move, or a
+    /// surface that cannot be enumerated.
+    pub async fn change_cache_storage(
+        &self,
+        auth: Option<&str>,
+        req: pb::ChangeCacheStorageRequest,
+    ) -> Result<pb::ChangeCacheStorageResponse, RpcError> {
+        let cache = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_admin(auth, cache.org_id).await?;
+        let new_binding_id = self
+            .resolve_storage_binding(cache.org_id, &req.binding_name)
+            .await?;
+        let stats = crate::migrate::migrate_cache_storage(
+            &self.db,
+            self.surface.as_ref(),
+            self.surface_write.as_ref(),
+            &cache,
+            new_binding_id,
+        )
+        .await
+        .map_err(|err| RpcError::invalid(format!("{err:#}")))?;
+        Ok(pb::ChangeCacheStorageResponse {
+            objects: stats.objects as u64,
+            bytes: stats.bytes,
+        })
     }
 
     /// `CacheService.UnlinkCache` — remove a cache⇄registry association.

@@ -30,6 +30,11 @@ pub enum HubCmd {
         #[command(subcommand)]
         command: HubRegistryCmd,
     },
+    /// Manage binary caches
+    Cache {
+        #[command(subcommand)]
+        command: HubCacheCmd,
+    },
     /// Manage organizations (the tenant boundary)
     Org {
         #[command(subcommand)]
@@ -264,6 +269,25 @@ pub enum HubWebhookCmd {
     },
 }
 
+/// `aos hub cache` — binary-cache management over the Connect API.
+#[derive(Subcommand)]
+pub enum HubCacheCmd {
+    /// Migrate a cache's surface to a different storage backend
+    ChangeStorage {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT (needs cache-admin authority)
+        #[arg(long)]
+        token: Option<String>,
+        /// Cache slug
+        slug: String,
+        /// Target storage binding name; omit for the deployment default store
+        #[arg(long)]
+        binding: Option<String>,
+    },
+}
+
 #[derive(Subcommand)]
 pub enum HubRegistryCmd {
     /// List registries (public ones when unauthenticated)
@@ -285,6 +309,20 @@ pub enum HubRegistryCmd {
         token: Option<String>,
         /// Registry slug (e.g. `acme/infra/prod/cdn`)
         slug: String,
+    },
+    /// Migrate a registry's surface to a different storage backend
+    ChangeStorage {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT (needs registry.configure on the registry scope)
+        #[arg(long)]
+        token: Option<String>,
+        /// Registry slug (e.g. `acme/infra/prod/cdn`)
+        slug: String,
+        /// Target storage binding name; omit for the deployment default store
+        #[arg(long)]
+        binding: Option<String>,
     },
     /// List a registry's verified releases (newest first)
     Releases {
