@@ -66,6 +66,31 @@ mod tests {
     }
 
     #[test]
+    fn step_is_pure_temporal_graph_edge_constructor() {
+        for seed in 0..64 {
+            let parent = Configuration {
+                def: generated_scenario(seed),
+                schedule: generated_schedule(seed, 4),
+            };
+            let original_parent = parent.clone();
+            let decision = generated_decision(seed, 64);
+
+            let child = step(&parent, decision.clone());
+
+            assert_eq!(parent, original_parent);
+            assert_eq!(child.def, parent.def);
+            assert_ne!(child, parent);
+            assert_eq!(child.schedule.len(), parent.schedule.len() + 1);
+            assert_eq!(
+                child.schedule.prefix(parent.schedule.len()),
+                Ok(parent.schedule.clone())
+            );
+            assert_eq!(child.schedule.decisions().last(), Some(&decision));
+            assert_eq!(child.id(), child.content_hash());
+        }
+    }
+
+    #[test]
     fn schedule_prefix_bounds_are_checked() {
         let schedule = Schedule::empty().appended(Decision::RngDraw(RngDecision {
             stream: RngStreamId {
