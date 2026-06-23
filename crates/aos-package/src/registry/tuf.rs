@@ -25,7 +25,6 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::gitcmd;
 use crate::security::{sign_payload_signature, verify_payload_signature};
 use crate::types::RegistryState;
 
@@ -799,30 +798,15 @@ fn validate_role(role: &str, spec: &TufRoleSpec, keys: &BTreeMap<String, TufKey>
 }
 
 fn collect_commit_catalog(repo_dir: &Path, commit: &str) -> Result<BTreeMap<String, TufFileMeta>> {
-    let output = gitcmd::hermetic()
-        .args(["ls-tree", "-r", "-z", "--name-only", commit])
-        .current_dir(repo_dir)
-        .output()
+    let paths = crate::registry::repo::list_tree_paths_blocking(repo_dir, commit)
         .with_context(|| format!("listing tree for {commit}"))?;
-    if !output.status.success() {
-        bail!(
-            "git ls-tree failed for {commit}: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
 
     let mut catalog = BTreeMap::new();
-    for raw in output.stdout.split(|byte| *byte == 0) {
-        if raw.is_empty() {
-            continue;
-        }
-        let path = String::from_utf8(raw.to_vec())
-            .with_context(|| format!("tree path in {commit} is not UTF-8"))?;
+    for path in paths {
         if path.starts_with("tuf/") {
             continue;
         }
-        let bytes = git_raw(repo_dir, &["show", &format!("{commit}:{path}")])
-            .with_context(|| format!("reading {commit}:{path}"))?;
+        let bytes = read_commit_blob(repo_dir, commit, &path)?;
         catalog.insert(path, file_meta(&bytes));
     }
     Ok(catalog)
@@ -903,20 +887,16 @@ fn load_commit_metadata(repo_dir: &Path, commit: &str) -> Result<Option<CommitMe
         bail!("registry commit {commit} has partial TUF metadata under {TUF_DIR}/");
     }
     Ok(Some(CommitMetadataFiles {
-        root: git_raw(repo_dir, &["show", &format!("{commit}:{ROOT_JSON}")])?,
-        targets: git_raw(repo_dir, &["show", &format!("{commit}:{TARGETS_JSON}")])?,
-        snapshot: git_raw(repo_dir, &["show", &format!("{commit}:{SNAPSHOT_JSON}")])?,
-        timestamp: git_raw(repo_dir, &["show", &format!("{commit}:{TIMESTAMP_JSON}")])?,
+        root: read_commit_blob(repo_dir, commit, ROOT_JSON)?,
+        targets: read_commit_blob(repo_dir, commit, TARGETS_JSON)?,
+        snapshot: read_commit_blob(repo_dir, commit, SNAPSHOT_JSON)?,
+        timestamp: read_commit_blob(repo_dir, commit, TIMESTAMP_JSON)?,
     }))
 }
 
 fn commit_path_exists(repo_dir: &Path, commit: &str, path: &str) -> Result<bool> {
-    let output = gitcmd::hermetic()
-        .args(["cat-file", "-e", &format!("{commit}:{path}")])
-        .current_dir(repo_dir)
-        .output()
-        .with_context(|| format!("checking {commit}:{path}"))?;
-    Ok(output.status.success())
+    crate::registry::repo::tree_path_exists_blocking(repo_dir, commit, path)
+        .with_context(|| format!("checking {commit}:{path}"))
 }
 
 fn read_worktree_envelope<T: DeserializeOwned>(path: &Path) -> Result<Option<Envelope<T>>> {
@@ -952,20 +932,16 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<bool> {
     Ok(true)
 }
 
-fn git_raw(repo_dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = gitcmd::hermetic()
-        .args(args)
-        .current_dir(repo_dir)
-        .output()
-        .with_context(|| format!("running git {} in {}", args.join(" "), repo_dir.display()))?;
-    if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(output.stdout)
+/// Read the blob at `commit:path` from the registry repository via libgit2.
+///
+/// # Errors
+///
+/// Returns an error if the commit cannot be resolved or the path is absent or
+/// not a blob.
+fn read_commit_blob(repo_dir: &Path, commit: &str, path: &str) -> Result<Vec<u8>> {
+    crate::registry::repo::read_blob_at_blocking(repo_dir, commit, path)
+        .with_context(|| format!("reading {commit}:{path}"))?
+        .ok_or_else(|| anyhow::anyhow!("{commit}:{path} is missing"))
 }
 
 fn ensure_schema(actual: &str, expected: &str, path: &str) -> Result<()> {
