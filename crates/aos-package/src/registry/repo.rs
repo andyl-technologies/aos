@@ -315,6 +315,51 @@ pub(crate) fn read_blob_at_blocking(
     Ok(Some(blob.content().to_vec()))
 }
 
+/// `true` when `commit:tree_path` resolves to an object (`git cat-file -e`).
+///
+/// Synchronous, for TUF metadata presence checks.
+///
+/// # Errors
+///
+/// Returns an error if the commit cannot be resolved.
+pub(crate) fn tree_path_exists_blocking(
+    repo_dir: &Path,
+    commit: &str,
+    tree_path: &str,
+) -> Result<bool> {
+    let repo = open(repo_dir)?;
+    let tree = commit_tree(&repo, commit)?;
+    match tree.get_path(Path::new(tree_path)) {
+        Ok(_) => Ok(true),
+        Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("looking up {commit}:{tree_path}")),
+    }
+}
+
+/// List every blob path in `commit`'s tree, recursively.
+///
+/// Equivalent to `git ls-tree -r --name-only <commit>`. Paths use `/`
+/// separators relative to the tree root.
+///
+/// # Errors
+///
+/// Returns an error if the commit cannot be resolved or the walk fails.
+pub(crate) fn list_tree_paths_blocking(repo_dir: &Path, commit: &str) -> Result<Vec<String>> {
+    let repo = open(repo_dir)?;
+    let tree = commit_tree(&repo, commit)?;
+    let mut paths = Vec::new();
+    tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
+        if entry.kind() == Some(git2::ObjectType::Blob) {
+            if let Ok(name) = entry.name() {
+                paths.push(format!("{root}{name}"));
+            }
+        }
+        git2::TreeWalkResult::Ok
+    })
+    .with_context(|| format!("walking tree of {commit}"))?;
+    Ok(paths)
+}
+
 /// Extract the directory tree at `commit:tree_path` into `output_dir`.
 ///
 /// Replaces `git archive <commit> <tree_path>/ | tar -x --strip-components=1`.
