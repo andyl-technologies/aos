@@ -286,6 +286,39 @@ pub enum HubCacheCmd {
         #[arg(long)]
         binding: Option<String>,
     },
+    /// Link (or update) a managed cache to a registry
+    Link {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT (needs registry.configure on the registry)
+        #[arg(long)]
+        token: Option<String>,
+        /// Cache slug
+        cache: String,
+        /// Registry slug (e.g. `acme/infra/prod/cdn`)
+        registry: String,
+        /// Advertise the cache to the registry's consumers (write-through to its
+        /// committed registry.toml [[caches]] as a change request)
+        #[arg(long)]
+        advertise: bool,
+        /// Pin the registry's packages as GC roots in this cache
+        #[arg(long)]
+        roots_packages: bool,
+    },
+    /// Remove a managed cache's link to a registry (and de-advertise it)
+    Unlink {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT (needs registry.configure on the registry)
+        #[arg(long)]
+        token: Option<String>,
+        /// Cache slug
+        cache: String,
+        /// Registry slug
+        registry: String,
+    },
 }
 
 #[derive(Subcommand)]

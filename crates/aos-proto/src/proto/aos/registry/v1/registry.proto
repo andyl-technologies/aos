@@ -926,7 +926,13 @@ message LinkCacheRequest {
   bool advertised = 4;
 }
 
-message LinkCacheResponse {}
+message LinkCacheResponse {
+  // The id of the change request proposed to advertise this cache in the
+  // registry's committed registry.toml [[caches]], or empty when none was
+  // needed (advertised was false, or the cache was already advertised). The
+  // change is a draft a maintainer promotes with `apr change merge`.
+  string change_id = 1;
+}
 
 message UnlinkCacheRequest {
   string cache_slug = 1;
@@ -935,6 +941,11 @@ message UnlinkCacheRequest {
 
 message UnlinkCacheResponse {
   bool removed = 1;
+  // The id of the change request proposed to de-advertise this cache from the
+  // registry's committed registry.toml [[caches]], or empty when none was
+  // needed (the cache was not advertised there). Promote with `apr change
+  // merge`.
+  string change_id = 2;
 }
 
 message ListCacheLinksRequest {

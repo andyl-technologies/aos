@@ -912,5 +912,60 @@ async fn cache(printer: &Printer, command: &HubCacheCmd) -> Result<()> {
             ));
             Ok(())
         }
+        HubCacheCmd::Link {
+            hub,
+            token,
+            cache,
+            registry,
+            advertise,
+            roots_packages,
+        } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let change_id = client
+                .link_cache(cache, registry, *advertise, *roots_packages)
+                .await?;
+            if printer.json_if_active(&serde_json::json!({
+                "cache": cache, "registry": registry, "advertised": advertise,
+                "roots_packages": roots_packages, "change_id": change_id,
+            })) {
+                return Ok(());
+            }
+            printer.info(&format!("linked cache '{cache}' to registry '{registry}'"));
+            if !change_id.is_empty() {
+                let url = format!("{}/{}", hub.trim_end_matches('/'), registry);
+                printer.info(&format!(
+                    "advertise change request {change_id} created — promote it with: \
+                     apr change merge --registry {url} {change_id}"
+                ));
+            }
+            Ok(())
+        }
+        HubCacheCmd::Unlink {
+            hub,
+            token,
+            cache,
+            registry,
+        } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let (removed, change_id) = client.unlink_cache(cache, registry).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "cache": cache, "registry": registry, "removed": removed, "change_id": change_id,
+            })) {
+                return Ok(());
+            }
+            printer.info(&if removed {
+                format!("unlinked cache '{cache}' from registry '{registry}'")
+            } else {
+                format!("cache '{cache}' was not linked to registry '{registry}'")
+            });
+            if !change_id.is_empty() {
+                let url = format!("{}/{}", hub.trim_end_matches('/'), registry);
+                printer.info(&format!(
+                    "de-advertise change request {change_id} created — promote it with: \
+                     apr change merge --registry {url} {change_id}"
+                ));
+            }
+            Ok(())
+        }
     }
 }

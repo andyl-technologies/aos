@@ -2056,6 +2056,11 @@ pub(crate) async fn cache_link(
                 form.advertised.is_some(),
             )
             .await?;
+        // Write-through: reconcile the registry's committed [[caches]] with the
+        // advertise flag (same change-request flow as the registry-side route).
+        // The change lands on the registry's /-/changes for promotion.
+        propose_cache_advertise(&deps, &session, &registry, &cache.slug, form.advertised.is_some())
+            .await?;
         Ok::<_, anyhow::Error>(None)
     }
     .await;
@@ -2153,6 +2158,8 @@ pub(crate) async fn cache_unlink(
     let result = async {
         if let Some(registry) = deps.db.registry_by_slug(form.registry.trim()).await? {
             deps.db.unlink_cache(cache.id, registry.id).await?;
+            // Remove any committed [[caches]] entry advertising this cache.
+            propose_cache_advertise(&deps, &session, &registry, &cache.slug, false).await?;
         }
         Ok::<_, anyhow::Error>(())
     }
@@ -3658,13 +3665,73 @@ pub(crate) struct RegistryCacheLinkForm {
     roots_packages: Option<String>,
 }
 
+/// Propose (or skip) a `registry.toml` `[[caches]]` change request reflecting a
+/// cache's advertise state, returning the change request when one was created.
+///
+/// The committed `[[caches]]` list is the only cache list a consumer resolves,
+/// so advertising a managed cache write-throughs to it (RFC-0004): `advertise`
+/// adds the cache's served URL, otherwise it is removed. Shared by the
+/// registry-side and cache-side link/unlink handlers. Returns `Ok(None)` when
+/// the committed file already matches (idempotent — no redundant change).
+///
+/// # Errors
+///
+/// Returns an error when the read/write surface cannot be resolved, the
+/// registry has no indexed config to advertise into, or writing the change
+/// request fails.
+async fn propose_cache_advertise(
+    deps: &ConsoleDeps,
+    session: &Session,
+    registry: &RegistryRecord,
+    cache_slug: &str,
+    advertise: bool,
+) -> anyhow::Result<Option<crate::gitwrite::ProposedChange>> {
+    let fetch = deps.surface.fetcher(registry).await?;
+    let writer = deps.surface_write.writer(registry).await?;
+    let url = format!("{}/{}", deps.external_url.trim_end_matches('/'), cache_slug);
+    crate::gitwrite::propose_cache_advertisement(
+        &deps.db,
+        deps.sealer.as_ref(),
+        fetch.as_ref(),
+        writer.as_ref(),
+        registry,
+        &url,
+        advertise,
+        "user",
+        Some(session.auth.user_id),
+        &session.email,
+        crate::clock::now_unix_secs(),
+    )
+    .await
+}
+
+/// Build the settings-page notice for a just-proposed advertise change request,
+/// echoing the `apr change merge` command to promote it (`None` when no change
+/// was needed).
+fn cache_advertise_notice(
+    deps: &ConsoleDeps,
+    registry: &RegistryRecord,
+    proposed: Option<&crate::gitwrite::ProposedChange>,
+) -> Option<String> {
+    proposed.map(|p| {
+        let merge_url = format!("{}/{}", deps.external_url.trim_end_matches('/'), registry.slug);
+        let cmd = crate::git::merge_command(&merge_url, &p.change_id);
+        format!(
+            "Cache-advertise change request {} created — promote it with: {cmd}",
+            p.change_id
+        )
+    })
+}
+
 /// `POST /{slug}/-/settings/cache-link` — link a cache to this registry, or
 /// update an existing link's flags, from the registry side.
 ///
 /// `link_cache` is an upsert, so this both creates a new link and edits an
 /// existing one's `advertised`/`roots_packages` flags. The cross-visibility
 /// policy is enforced through the shared [`assess_cache_link`] chokepoint, the
-/// same as the cache-side route and the RPC.
+/// same as the cache-side route and the RPC. Advertising additionally proposes
+/// a `registry.toml` `[[caches]]` change request via [`propose_cache_advertise`]
+/// so the cache reaches consumers.
 pub(crate) async fn registry_cache_link(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -3694,12 +3761,12 @@ pub(crate) async fn registry_cache_link(
     }
     let advertised = form.advertised.is_some();
     let roots_packages = form.roots_packages.is_some();
-    let result = async {
+    let outcome = async {
         let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? else {
-            return Ok(Some("unknown cache".to_string()));
+            return Ok(Err("unknown cache".to_string()));
         };
         if cache.org_id != registry.org_id {
-            return Ok(Some("cache is not in this organization".to_string()));
+            return Ok(Err("cache is not in this organization".to_string()));
         }
         let advisory = crate::service::assess_cache_link(
             &cache.slug,
@@ -3710,17 +3777,23 @@ pub(crate) async fn registry_cache_link(
             roots_packages,
         );
         if let Some(reject) = advisory.reject {
-            return Ok(Some(reject));
+            return Ok(Err(reject));
         }
         deps.db
             .link_cache(cache.id, registry.id, roots_packages, advertised)
             .await?;
-        Ok::<_, anyhow::Error>(None)
+        // Write-through: reconcile the committed [[caches]] with the advertise
+        // flag (add when advertised, remove otherwise) as a change request.
+        let proposed = propose_cache_advertise(&deps, &session, &registry, &cache.slug, advertised).await?;
+        Ok::<Result<Option<crate::gitwrite::ProposedChange>, String>, anyhow::Error>(Ok(proposed))
     }
     .await;
-    match result {
-        Ok(None) => registry_settings_view(&deps, &session, &registry, None, started).await,
-        Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
+    match outcome {
+        Ok(Ok(proposed)) => {
+            let notice = cache_advertise_notice(&deps, &registry, proposed.as_ref());
+            registry_settings_view(&deps, &session, &registry, notice.as_deref(), started).await
+        }
+        Ok(Err(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(err) => internal(err),
     }
 }
@@ -3762,15 +3835,21 @@ pub(crate) async fn registry_cache_unlink(
     {
         return *deny;
     }
-    let result = async {
+    let outcome = async {
+        let mut proposed = None;
         if let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? {
             deps.db.unlink_cache(cache.id, registry.id).await?;
+            // Remove any committed [[caches]] entry advertising this cache.
+            proposed = propose_cache_advertise(&deps, &session, &registry, &cache.slug, false).await?;
         }
-        Ok::<_, anyhow::Error>(())
+        Ok::<Option<crate::gitwrite::ProposedChange>, anyhow::Error>(proposed)
     }
     .await;
-    match result {
-        Ok(()) => registry_settings_view(&deps, &session, &registry, None, started).await,
+    match outcome {
+        Ok(proposed) => {
+            let notice = cache_advertise_notice(&deps, &registry, proposed.as_ref());
+            registry_settings_view(&deps, &session, &registry, notice.as_deref(), started).await
+        }
         Err(err) => internal(err),
     }
 }
