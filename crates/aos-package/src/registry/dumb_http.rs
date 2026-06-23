@@ -10,26 +10,35 @@
 //! # Wire format
 //!
 //! ```text
-//! GET <base>/info/refs   ->  "<oid>\t<refname>\n" lines (peeled "^{}" lines
-//!                            for annotated tags are ignored; the tag object is
-//!                            walked instead)
-//! GET <base>/HEAD        ->  "ref: refs/heads/<branch>\n"  (or a bare oid)
-//! GET <base>/objects/<oid[0:2]>/<oid[2:]>
-//!                        ->  a zlib-compressed loose object:
-//!                            inflate -> "<type> <size>\0<body>"
+//! GET <base>/info/refs        ->  "<oid>\t<refname>\n" lines (peeled "^{}"
+//!                                 lines for annotated tags are ignored)
+//! GET <base>/HEAD             ->  "ref: refs/heads/<branch>\n"  (or a bare oid)
+//! GET <base>/objects/info/packs -> "P pack-<hash>.pack\n" lines
+//! GET <base>/objects/pack/pack-<hash>.pack -> raw packfile
+//! GET <base>/objects/<oid[0:2]>/<oid[2:]>  -> a zlib-compressed loose object:
+//!                                 inflate -> "<type> <size>\0<body>"
 //! ```
 //!
 //! # Algorithm
 //!
-//! For each requested refspec the source ref is resolved to an OID via
-//! `info/refs`/`HEAD`, then the object graph is walked breadth-first
-//! (commit -> tree + parents, tree -> entries, tag -> target). Each object is
-//! downloaded, its integrity is verified by recomputing its SHA-256 git OID
-//! from the inflated bytes, and the compressed object is written verbatim to
-//! the local `objects/<2>/<62>` path. Finally the destination refs are pointed
-//! at the resolved OIDs. Object *content* integrity is enforced here by hash;
-//! *commit* trust (signatures, fast-forward) is enforced by the caller after
-//! the fetch, exactly as for the smart transports.
+//! Refs are resolved to OIDs via `info/refs`/`HEAD`. Then, in two phases:
+//!
+//! 1. **Packs (fast path).** Every pack listed in `objects/info/packs` is
+//!    downloaded concurrently and indexed with libgit2's pack writer
+//!    (equivalent to `git index-pack`, which regenerates and verifies the
+//!    `.idx`). A registry's whole reachable graph is usually one or a few
+//!    packs, so this replaces thousands of per-object round trips.
+//! 2. **Loose (completeness fallback).** The graph reachable from the targets
+//!    is walked through the local object store (see
+//!    `repo::missing_objects_blocking`); whatever the packs did not cover is
+//!    fetched as loose objects (verified against their SHA-256) and the walk
+//!    repeats to a fixpoint. A registry's dumb-HTTP layout guarantees loose
+//!    completeness, so this always terminates with the full graph local.
+//!
+//! Finally the destination refs are set. Object *content* integrity is enforced
+//! here (loose objects by hash, packed objects by the indexer's content
+//! addressing); *commit* trust (signatures, fast-forward) is enforced by the
+//! caller after the fetch, exactly as for the smart transports.
 
 use std::collections::HashMap;
 use std::io::Read;
