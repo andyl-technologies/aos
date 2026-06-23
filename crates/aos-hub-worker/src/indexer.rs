@@ -97,6 +97,61 @@ pub async fn index_all(
     Ok(())
 }
 
+/// Re-scan every managed cache, reconciling its D1 index against its surface.
+///
+/// The Cron counterpart to the registry indexer, for caches: each cache's
+/// `cache_objects` index is a derived view of its surface (the source of
+/// truth), so this walks each cache's surface through the [`R2SurfaceProvider`]
+/// and runs the shared [`rescan_cache`](aos_hub_core::cache_scan::rescan_cache)
+/// to add narinfos that drifted in via a direct presigned upload (which bypasses
+/// the facade write-through) and prune rows whose narinfo is gone. Steady state
+/// is one `list` per cache and no object reads. Each cache is independent — one
+/// failure is logged, never aborting the pass.
+///
+/// `sealer` resolves a cache's external S3/R2 storage binding credentials when
+/// its surface lives off the hub R2 bucket.
+///
+/// # Errors
+///
+/// Returns an error only if the cache list cannot be read from D1.
+pub async fn rescan_all(
+    backend: D1Backend,
+    bucket: Bucket,
+    sealer: Arc<dyn SecretSealer>,
+) -> Result<()> {
+    let db = Arc::new(Database::attach(Box::new(backend)));
+    let provider = R2SurfaceProvider::new(bucket, Arc::clone(&db), sealer);
+
+    let caches = db.list_caches().await.context("listing caches")?;
+    for cache in caches {
+        if cache.deleted_at.is_some() {
+            continue;
+        }
+        let fetch = match provider.cache_fetcher(&cache).await {
+            Ok(fetch) => fetch,
+            Err(err) => {
+                worker::console_log!("rescan {}: resolving surface failed: {err:#}", cache.slug);
+                continue;
+            }
+        };
+        match aos_hub_core::cache_scan::rescan_cache(&db, fetch.as_ref(), &cache).await {
+            Ok(stats) => {
+                if stats.added > 0 || stats.removed > 0 {
+                    worker::console_log!(
+                        "rescan {}: +{} added -{} pruned ={} unchanged",
+                        cache.slug,
+                        stats.added,
+                        stats.removed,
+                        stats.unchanged
+                    );
+                }
+            }
+            Err(err) => worker::console_log!("rescan {} failed: {err:#}", cache.slug),
+        }
+    }
+    Ok(())
+}
+
 /// Garbage-collect every GC-policied managed cache from D1+R2 via the shared
 /// sweep.
 ///

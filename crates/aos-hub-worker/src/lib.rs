@@ -436,6 +436,24 @@ mod entry {
             worker::console_error!("scheduled index failed: {err:#}");
         }
 
+        // Then a cache re-scan over fresh handles: reconcile each cache's D1
+        // index against its surface (the source of truth), healing drift from
+        // direct presigned uploads that bypassed the facade write-through. Cheap
+        // in steady state (one `list` per cache, no object reads).
+        if let (Ok(rs_db), Ok(rs_bucket)) = (
+            env.d1(crate::handlers::bindings::D1),
+            env.bucket(crate::handlers::bindings::R2),
+        ) {
+            let rs_backend = crate::d1backend::D1Backend::new(rs_db);
+            if let Err(err) =
+                crate::indexer::rescan_all(rs_backend, rs_bucket, Arc::clone(&sealer)).await
+            {
+                worker::console_error!("scheduled cache rescan failed: {err:#}");
+            }
+        } else {
+            worker::console_error!("scheduled rescan: D1/R2 binding missing");
+        }
+
         // Then a cache-GC pass over the same D1+R2, the Cron counterpart to the
         // native `aos-hub cache gc`. Fresh binding handles (the D1/Bucket handles
         // above were moved into the indexer); `Date::now()` is the Cron tick time
