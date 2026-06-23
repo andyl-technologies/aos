@@ -29,12 +29,13 @@ pub use backend::{
 };
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use model::{
-    AppRandomDecision, Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, Decision,
-    DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, GenesisCheckpoint,
-    Icount, IrqVector, NodeCounter, NodeId, OverrideDecision, PreemptionDecision, PreemptionKind,
-    RngDecision, RngStreamId, RuntimeState, ScenarioDef, Schedule, ScheduleError, SchedulingPoint,
-    Shift, SimDuration, SimInstant, SimOffset, State, TemporalGraph, TimeConversionError, VcpuId,
-    VirtualInstant, VirtualTime, World, bake, instantiate, reduce, step,
+    AppRandomDecision, Checkpoint, CheckpointKind, ChoiceTag, ClockDriftRate, Configuration,
+    ContentHash, Decision, DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId,
+    GenesisCheckpoint, Icount, IrqVector, NodeClockSkew, NodeCounter, NodeId, OverrideDecision,
+    PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, RuntimeState, ScenarioDef,
+    Schedule, ScheduleError, SchedulingPoint, Shift, SimDuration, SimInstant, SimOffset, State,
+    TemporalGraph, TimeConversionError, VcpuId, VirtualInstant, VirtualTime, World, bake,
+    instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, IoCompletion, NodeTimelineProjection, QuantumLoop,
@@ -186,6 +187,132 @@ mod tests {
                 icount: Icount { retired: 2 },
                 shift: valid,
             })
+        );
+    }
+
+    #[test]
+    fn clock_skew_applies_fixed_point_drift_to_guest_reads_only() {
+        let scheduler_time = VirtualInstant { nanos: 100 };
+        let skew = NodeClockSkew {
+            offset: SimOffset { nanos: -10 },
+            drift_rate: drift_rate(3, 2),
+        };
+
+        assert_eq!(
+            skew.guest_visible_time(scheduler_time),
+            Ok(VirtualInstant { nanos: 140 })
+        );
+        assert_eq!(scheduler_time, VirtualInstant { nanos: 100 });
+        assert_eq!(
+            NodeClockSkew::PERFECT.guest_visible_time(scheduler_time),
+            Ok(scheduler_time)
+        );
+    }
+
+    #[test]
+    fn clock_skew_uses_floor_rounding_without_floating_point() {
+        let skew = NodeClockSkew {
+            offset: SimOffset { nanos: 0 },
+            drift_rate: drift_rate(3, 2),
+        };
+
+        assert_eq!(
+            skew.guest_visible_time(VirtualInstant { nanos: 5 }),
+            Ok(VirtualInstant { nanos: 7 })
+        );
+        assert_eq!(
+            NodeClockSkew {
+                offset: SimOffset { nanos: -20 },
+                drift_rate: drift_rate(1, 3),
+            }
+            .guest_visible_time(VirtualInstant { nanos: 9 }),
+            Ok(VirtualInstant::EPOCH)
+        );
+    }
+
+    #[test]
+    fn clock_skew_rejects_invalid_drift_rate_and_overflow() {
+        let invalid = ClockDriftRate {
+            numerator: 1,
+            denominator: 0,
+        };
+        let overflowing = ClockDriftRate {
+            numerator: u64::MAX,
+            denominator: 1,
+        };
+
+        assert_eq!(
+            ClockDriftRate::new(1, 0),
+            Err(TimeConversionError::InvalidDriftRate {
+                drift_rate: invalid,
+            })
+        );
+        assert_eq!(
+            invalid.apply_floor(VirtualInstant { nanos: 1 }),
+            Err(TimeConversionError::InvalidDriftRate {
+                drift_rate: invalid,
+            })
+        );
+        assert_eq!(
+            overflowing.apply_floor(VirtualInstant { nanos: 2 }),
+            Err(TimeConversionError::GuestVisibleTimeOverflow {
+                virtual_time: VirtualInstant { nanos: 2 },
+                drift_rate: overflowing,
+            })
+        );
+        assert_eq!(
+            NodeClockSkew {
+                offset: SimOffset { nanos: 1 },
+                drift_rate: ClockDriftRate::ONE,
+            }
+            .guest_visible_time(VirtualInstant { nanos: u64::MAX }),
+            Err(TimeConversionError::GuestVisibleTimeOffsetOverflow {
+                virtual_time: VirtualInstant { nanos: u64::MAX },
+                offset: SimOffset { nanos: 1 },
+            })
+        );
+        assert_eq!(
+            NodeClockSkew {
+                offset: SimOffset { nanos: 1 },
+                drift_rate: invalid,
+            }
+            .scenario_hash_material(),
+            Err(TimeConversionError::InvalidDriftRate {
+                drift_rate: invalid,
+            })
+        );
+    }
+
+    #[test]
+    fn clock_skew_hash_material_omits_perfect_clock_and_records_overrides() {
+        let base = "scenario=clock-skew\nnode=a";
+        let perfect_material = material_with_skew(base, NodeClockSkew::default());
+        let explicit_perfect_material = material_with_skew(base, NodeClockSkew::PERFECT);
+        let equivalent_perfect_material = material_with_skew(
+            base,
+            NodeClockSkew {
+                offset: SimOffset { nanos: 0 },
+                drift_rate: drift_rate(2, 2),
+            },
+        );
+        let skewed = NodeClockSkew {
+            offset: SimOffset { nanos: 50 },
+            drift_rate: drift_rate(1001, 1000),
+        };
+        let skewed_material = material_with_skew(base, skewed);
+
+        assert_eq!(NodeClockSkew::PERFECT.scenario_hash_material(), Ok(None));
+        assert_eq!(perfect_material, base);
+        assert_eq!(explicit_perfect_material, base);
+        assert_eq!(equivalent_perfect_material, base);
+        assert!(skewed_material.contains("clock_skew_offset_ns=50"));
+        assert!(skewed_material.contains("clock_drift_rate=1001/1000"));
+        assert!(skewed_material.contains("clock_drift_rounding=floor"));
+        assert!(skewed_material.contains("clock_skew_applies_to=guest-visible-only"));
+        assert!(skewed_material.contains("clock_skew_scheduling_axis=unskewed-icount-derived"));
+        assert_ne!(
+            ScenarioDef::from_canonical_material("crucible.test.clock-skew", &perfect_material).id,
+            ScenarioDef::from_canonical_material("crucible.test.clock-skew", &skewed_material).id,
         );
     }
 
@@ -500,6 +627,21 @@ mod tests {
             schedule = schedule.appended(generated_decision(seed, index));
         }
         schedule
+    }
+
+    fn drift_rate(numerator: u64, denominator: u64) -> ClockDriftRate {
+        match ClockDriftRate::new(numerator, denominator) {
+            Ok(rate) => rate,
+            Err(error) => panic!("test drift rate should be valid: {error}"),
+        }
+    }
+
+    fn material_with_skew(base: &str, skew: NodeClockSkew) -> String {
+        match skew.scenario_hash_material() {
+            Ok(Some(skew_material)) => format!("{base}\n{skew_material}"),
+            Ok(None) => base.to_owned(),
+            Err(error) => panic!("test clock skew material should be valid: {error}"),
+        }
     }
 
     fn swap_first_two_decisions(schedule: &Schedule) -> Schedule {

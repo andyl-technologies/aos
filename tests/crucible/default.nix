@@ -86,6 +86,7 @@ in {
     singleSchedulerBoundary = import ./phase1-single-scheduler-boundary.nix {inherit pkgs lib;};
     standaloneDependencies = import ./phase1-standalone-dependencies.nix {inherit pkgs lib;};
     testingStandards = import ./phase1-testing-standards.nix {inherit pkgs lib;};
+    timeClockSkew = import ./phase1-time-clock-skew.nix {inherit pkgs lib;};
     timeSharedTimeline = import ./phase1-time-shared-timeline.nix {inherit pkgs lib;};
     timeVocabulary = import ./phase1-time-vocabulary.nix {inherit pkgs lib;};
     gates = {

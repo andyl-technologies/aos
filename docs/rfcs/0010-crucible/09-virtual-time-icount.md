@@ -649,7 +649,7 @@ instruction-primary.
   virtual timeline projection, with the `(virtual_time, node_id, sequence)` total
   order consumed by the scheduler; cover VM nodes and I/O sub-nodes uniformly. —
   satisfies [TIME-1], [TIME-2], [TIME-13], [TIME-15]; spec §9.1, §9.2, §9.5.
-- [ ] **T-TIME-4** Implement deterministic clock skew (signed `SimOffset` +
+- [x] **T-TIME-4** Implement deterministic clock skew (signed `SimOffset` +
   fixed-point `drift_rate`) applied to guest-visible reads only, never to the
   scheduling axis; default perfect clock byte-identical to no-skew; fixed-point
   arithmetic with documented rounding, no `f64` on the path. — satisfies
