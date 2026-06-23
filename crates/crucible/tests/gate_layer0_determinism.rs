@@ -140,12 +140,12 @@ fn event_key(
     producer: &SchedulerNodeId,
     sequence: u64,
 ) -> ScheduledEventKey {
-    ScheduledEventKey {
-        virtual_time: VirtualTime {
+    ScheduledEventKey::from_parts(
+        VirtualTime {
             ticks: virtual_time,
         },
-        consumer: consumer.clone(),
-        producer: producer.clone(),
+        consumer.clone(),
+        producer.clone(),
         sequence,
-    }
+    )
 }

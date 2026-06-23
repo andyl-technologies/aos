@@ -67,14 +67,14 @@ fn event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey {
-            virtual_time: VirtualTime {
+        key: ScheduledEventKey::from_parts(
+            VirtualTime {
                 ticks: virtual_time,
             },
-            consumer: consumer.clone(),
-            producer: producer.clone(),
+            consumer.clone(),
+            producer.clone(),
             sequence,
-        },
+        ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),
             payload: payload.to_vec(),

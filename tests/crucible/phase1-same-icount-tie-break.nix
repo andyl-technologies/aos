@@ -51,11 +51,11 @@
       }
       {
         label = "delivery virtual time field";
-        needle = "pub virtual_time: VirtualTime";
+        needle = "pub timeline: SharedTimelineKey";
       }
       {
         label = "consumer node tie-break field";
-        needle = "pub consumer: SchedulerNodeId";
+        needle = "pub node: SchedulerNodeId";
       }
       {
         label = "producer node tie-break field";
@@ -64,6 +64,26 @@
       {
         label = "producer-local sequence field";
         needle = "pub sequence: u64";
+      }
+      {
+        label = "scheduled-event order implementation";
+        needle = "impl Ord for ScheduledEventKey";
+      }
+      {
+        label = "scheduled-event order starts with timeline virtual time";
+        needle = "self.timeline\n            .virtual_time";
+      }
+      {
+        label = "scheduled-event order uses consumer node";
+        needle = "self.timeline.node";
+      }
+      {
+        label = "scheduled-event order preserves producer tie-break";
+        needle = "self.producer.cmp(&other.producer)";
+      }
+      {
+        label = "scheduled-event order resolves by sequence last";
+        needle = "self.timeline.sequence";
       }
       {
         label = "canonical event ordering helper";

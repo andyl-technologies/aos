@@ -245,6 +245,42 @@ impl Icount {
     }
 }
 
+/// A monotone per-node counter projected onto the shared virtual timeline.
+///
+/// VM nodes construct this from retired guest instructions; deterministic I/O
+/// sub-nodes construct it from their model-owned completion counter. Both use
+/// the same `counter << shift` projection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeCounter {
+    /// The node-local counter value.
+    pub ticks: u64,
+}
+
+impl NodeCounter {
+    /// Converts a VM retired-instruction count into a scheduler node counter.
+    #[must_use]
+    pub fn from_icount(icount: Icount) -> Self {
+        Self {
+            ticks: icount.retired,
+        }
+    }
+
+    /// Converts this node-local counter into a shared virtual-time point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeConversionError::InvalidShift`] when `shift` cannot name a
+    /// `u64` power-of-two scale, or [`TimeConversionError::VirtualTimeOverflow`]
+    /// when `ticks << shift` cannot be represented as `u64` virtual
+    /// nanoseconds.
+    pub fn to_virtual(self, shift: Shift) -> Result<VirtualInstant, TimeConversionError> {
+        Icount {
+            retired: self.ticks,
+        }
+        .to_virtual(shift)
+    }
+}
+
 /// The fixed `-icount shift=N` scale.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Shift {

@@ -31,15 +31,16 @@ pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use model::{
     AppRandomDecision, Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, Decision,
     DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, GenesisCheckpoint,
-    Icount, IrqVector, NodeId, OverrideDecision, PreemptionDecision, PreemptionKind, RngDecision,
-    RngStreamId, RuntimeState, ScenarioDef, Schedule, ScheduleError, SchedulingPoint, Shift,
-    SimDuration, SimInstant, SimOffset, State, TemporalGraph, TimeConversionError, VcpuId,
+    Icount, IrqVector, NodeCounter, NodeId, OverrideDecision, PreemptionDecision, PreemptionKind,
+    RngDecision, RngStreamId, RuntimeState, ScenarioDef, Schedule, ScheduleError, SchedulingPoint,
+    Shift, SimDuration, SimInstant, SimOffset, State, TemporalGraph, TimeConversionError, VcpuId,
     VirtualInstant, VirtualTime, World, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
-    ControlOperation, ControlOperationKind, IoCompletion, QuantumLoop, QuantumOutcome,
-    QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
-    SchedulerNodeId, SchedulingNodeKind, ordered_scheduled_events,
+    ControlOperation, ControlOperationKind, IoCompletion, NodeTimelineProjection, QuantumLoop,
+    QuantumOutcome, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    SchedulerError, SchedulerNodeId, SchedulingNodeKind, SharedTimeline, SharedTimelineKey,
+    ordered_scheduled_events, ordered_timeline_keys,
 };
 #[cfg(feature = "test-double")]
 pub use sim_backend::{SimBackend, SimBackendState};
