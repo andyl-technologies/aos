@@ -72,7 +72,31 @@ in {
           mkdir -p "$NIX_CONF_DIR"
           printf 'experimental-features = nix-command\\nsandbox = false\\n' > "$NIX_CONF_DIR/nix.conf"
 
-          ${pkgs.aos}/bin/apr create desired-reg
+          # Publishing an RFC-0001 exposed package writes signed DSSE
+          # provenance keyed to a keys.toml roster id, so the registry must be
+          # created with a trust roster and `--expose-manifest` must publish
+          # under `--key-id`. Generate the maintainer key, seed the roster with
+          # it under id `release`, then record its private half in the
+          # publisher's registries.d config so `--key-id release` resolves.
+          ${pkgs.aos}/bin/apr keys generate release --registry desired-reg \
+            > /tmp/desired-keygen.out 2>&1
+          cat /tmp/desired-keygen.out
+          PUBKEY=$(awk '/Public key:/ {print $NF; exit}' /tmp/desired-keygen.out)
+          KEY=$HOME/.config/apm/keys/desired-reg-release.key
+          ${pkgs.aos}/bin/apr create desired-reg \
+            --trust-key "$PUBKEY" \
+            --trust-key-id release \
+            --key "$KEY"
+          mkdir -p "$HOME/.config/apm/registries.d"
+          cat > "$HOME/.config/apm/registries.d/desired-reg.toml" <<EOF
+          [registry]
+          name = "desired-reg"
+          url = "file://$HOME/.local/share/apm/registries/desired-reg"
+
+          [registry.signing_keys]
+          release = "$KEY"
+          EOF
+
           ${pkgs.aos}/bin/apr publish '${pkgs.desired-config-test}' \
             --name desired-config-test \
             --version 1.0.0 \
@@ -81,12 +105,20 @@ in {
             --maintainer test \
             --expose-manifest '${pkgs.desired-config-test.expose}/manifest.json' \
             --registry desired-reg \
+            --key-id release \
             --no-commit
 
+          # Install-side provenance verification reads the provenance artifact,
+          # keys.toml roster, and transparency log from the system registry
+          # CACHE root (`/var/lib/apm/remote/<reg>`), which `read_registry_cache_artifact`
+          # requires to be a real directory (it rejects a symlinked registry
+          # root). Copy the published working tree — which `--no-commit` leaves
+          # complete with the provenance/transparency artifacts — into both the
+          # cache root and the registries store.
           rm -rf /var/lib/apm/registries/desired-reg /var/lib/apm/remote/desired-reg
           mkdir -p /var/lib/apm/registries /var/lib/apm/remote /etc/apm/registries.d
           cp -a "$HOME/.local/share/apm/registries/desired-reg" /var/lib/apm/registries/desired-reg
-          ln -sfn /var/lib/apm/registries/desired-reg /var/lib/apm/remote/desired-reg
+          cp -a "$HOME/.local/share/apm/registries/desired-reg" /var/lib/apm/remote/desired-reg
           cat > /etc/apm/registries.d/desired-reg.toml <<'EOF'
           [registry]
           name = "desired-reg"
