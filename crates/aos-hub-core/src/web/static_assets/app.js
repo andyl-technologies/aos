@@ -430,6 +430,31 @@
     sync();
   }
 
+  // Link-a-cache form: grey out the "advertise" toggle when the chosen cache is
+  // less visible than the registry — its consumers couldn't read it, so it can't
+  // be advertised (only GC-rooted). Mirrors the server's link policy so the user
+  // never submits a combination that would be rejected. No-JS fallback: the
+  // server still validates.
+  function initCacheLinkForm(form) {
+    var select = form.querySelector("select[name=cache]");
+    var advertise = form.querySelector("input[name=advertised]");
+    if (!select || !advertise) return;
+    var rank = { public: 2, internal: 1, private: 0 };
+    var regRank = rank[form.getAttribute("data-registry-visibility")] || 0;
+    function sync() {
+      var opt = select.options[select.selectedIndex];
+      var cacheRank = rank[opt && opt.getAttribute("data-visibility")] || 0;
+      var allowed = cacheRank >= regRank;
+      advertise.disabled = !allowed;
+      if (!allowed) advertise.checked = false;
+      advertise.title = allowed
+        ? ""
+        : "a less-visible cache can't be advertised on this registry — its consumers couldn't read it";
+    }
+    select.addEventListener("change", sync);
+    sync();
+  }
+
   // Attached help (web/help.rs): turn a `?` marker's hidden segmented card into
   // a positioned popover. Hover + focus open it; click pins it; Esc / click-away
   // close. Position is fixed coords measured from the marker, flipped/clamped to
@@ -506,5 +531,6 @@
   document.querySelectorAll(".code-editor").forEach(initCodeEditor);
   document.querySelectorAll("[data-filter-widget]").forEach(initFilterBox);
   document.querySelectorAll("form[data-binding-kind]").forEach(initBindingForm);
+  document.querySelectorAll("form[data-cache-link]").forEach(initCacheLinkForm);
   initHelp();
 })();

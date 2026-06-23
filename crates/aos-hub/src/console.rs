@@ -262,19 +262,31 @@ async fn registry_settings_view(
             linked_ids.insert(link.cache_id);
             if let Some(cache) = state.db.cache_by_id(link.cache_id).await? {
                 if cache.deleted_at.is_none() {
+                    let can_advertise = aos_hub_core::service::assess_cache_link(
+                        &cache.slug,
+                        &cache.visibility,
+                        &registry.slug,
+                        &registry.visibility,
+                        true,
+                        false,
+                    )
+                    .reject
+                    .is_none();
                     caches.push(console::RegistryCacheRow {
                         cache_slug: cache.slug,
                         advertised: link.advertised,
                         roots_packages: link.roots_packages,
+                        can_advertise,
                     });
                 }
             }
         }
-        // Org caches not yet linked — options for the "link a cache" control.
+        // Org caches not yet linked — options for the "link a cache" control,
+        // each with its visibility.
         let mut linkable_caches = Vec::new();
         for c in state.db.list_caches().await? {
             if c.org_id == registry.org_id && c.deleted_at.is_none() && !linked_ids.contains(&c.id) {
-                linkable_caches.push(c.slug);
+                linkable_caches.push((c.slug, c.visibility));
             }
         }
         // The org's storage bindings — targets for the "change storage" control.

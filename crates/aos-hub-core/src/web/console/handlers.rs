@@ -3578,20 +3578,34 @@ async fn registry_settings_view(
             linked_ids.insert(link.cache_id);
             if let Some(cache) = deps.db.cache_by_id(link.cache_id).await? {
                 if cache.deleted_at.is_none() {
+                    // A cache less visible than the registry can't be advertised
+                    // (the shared link policy), so its toggle is greyed out.
+                    let can_advertise = crate::service::assess_cache_link(
+                        &cache.slug,
+                        &cache.visibility,
+                        &registry.slug,
+                        &registry.visibility,
+                        true,
+                        false,
+                    )
+                    .reject
+                    .is_none();
                     caches.push(console::RegistryCacheRow {
                         cache_slug: cache.slug,
                         advertised: link.advertised,
                         roots_packages: link.roots_packages,
+                        can_advertise,
                     });
                 }
             }
         }
         // Caches in this registry's org that aren't linked yet — the options for
-        // the "link a cache" control on the settings page.
+        // the "link a cache" control on the settings page, each with its
+        // visibility so the form can grey out advertise for a less-visible one.
         let mut linkable_caches = Vec::new();
         for c in deps.db.list_caches().await? {
             if c.org_id == registry.org_id && c.deleted_at.is_none() && !linked_ids.contains(&c.id) {
-                linkable_caches.push(c.slug);
+                linkable_caches.push((c.slug, c.visibility));
             }
         }
         // The org's storage bindings — targets for the "change storage" control.
