@@ -19,8 +19,13 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+pub mod deadline;
 pub mod time_control;
 
+pub use deadline::{
+    ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,
+    ExactDeadlineReport, QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
+};
 pub use time_control::{
     CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, PluginRegistrationStep,
     TimeControlRegistrationError, TimeControlRegistrationPlan,

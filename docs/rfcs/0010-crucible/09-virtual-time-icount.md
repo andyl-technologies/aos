@@ -659,7 +659,7 @@ instruction-primary.
   control; compute the icount budget from the virtual clock only (no realtime
   deadline); acquire time control before the first visible instruction. —
   satisfies [TIME-20], [TIME-21], [TIME-22], [TIME-23]; spec §9.7.
-- [ ] **T-TIME-6** Implement exact next-deadline introspection (plugin reads the
+- [x] **T-TIME-6** Implement exact next-deadline introspection (plugin reads the
   next `QEMU_CLOCK_VIRTUAL` timer deadline) and feed it as the node's exact local
   event to the scheduler horizon; ban the overshoot-and-correct fallback and fail
   loudly if the capability is unavailable. — satisfies [TIME-24], [TIME-25],

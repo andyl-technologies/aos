@@ -332,6 +332,87 @@ pub struct IoCompletion {
     pub payload: Vec<u8>,
 }
 
+/// A node-local exact event supplied by the backend while the node is idle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExactLocalEvent {
+    /// The node has no armed guest timer.
+    NoArmedTimer,
+    /// The node has an armed guest timer at an exact virtual-time point.
+    TimerDeadline {
+        /// The exact virtual-time deadline from the backend's virtual clock.
+        virtual_time: SimInstant,
+    },
+}
+
+/// Converts an exact virtual timer deadline report into a scheduler local event.
+///
+/// `Some(deadline_ns)` is an absolute virtual-clock timestamp from the backend's
+/// exact deadline capability. `None` means the backend reported no armed
+/// virtual-clock timer.
+#[must_use]
+pub fn exact_local_event_from_timer_deadline_ns(deadline_ns: Option<u64>) -> ExactLocalEvent {
+    match deadline_ns {
+        Some(nanos) => ExactLocalEvent::TimerDeadline {
+            virtual_time: SimInstant { nanos },
+        },
+        None => ExactLocalEvent::NoArmedTimer,
+    }
+}
+
+/// The source that selected a scheduler horizon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SchedulerHorizonSource {
+    /// The conservative network lookahead selected the horizon.
+    NetworkLookahead,
+    /// An exact local guest timer selected the horizon.
+    ExactLocalTimer,
+}
+
+/// A scheduler horizon and its matching icount ceiling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerHorizon {
+    /// The selected virtual-time horizon.
+    pub virtual_time: SimInstant,
+    /// The icount ceiling computed with the fixed-shift `ceil` conversion.
+    pub ceiling: Icount,
+    /// The input that selected the horizon.
+    pub source: SchedulerHorizonSource,
+}
+
+/// Computes the scheduler horizon from network lookahead and the exact local event.
+///
+/// The exact local timer deadline is consumed as a local horizon candidate. A
+/// node with no armed timer uses the conservative network horizon. The selected
+/// virtual-time horizon is converted to the node's target icount with
+/// `SimInstant::to_icount_ceil`.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::TimeConversion`] when the selected horizon cannot
+/// be converted under `shift`.
+pub fn horizon_from_exact_local_event(
+    network_horizon: SimInstant,
+    exact_local_event: ExactLocalEvent,
+    shift: Shift,
+) -> Result<SchedulerHorizon, SchedulerError> {
+    let (virtual_time, source) = match exact_local_event {
+        ExactLocalEvent::NoArmedTimer => {
+            (network_horizon, SchedulerHorizonSource::NetworkLookahead)
+        }
+        ExactLocalEvent::TimerDeadline { virtual_time } if virtual_time <= network_horizon => {
+            (virtual_time, SchedulerHorizonSource::ExactLocalTimer)
+        }
+        ExactLocalEvent::TimerDeadline { .. } => {
+            (network_horizon, SchedulerHorizonSource::NetworkLookahead)
+        }
+    };
+    Ok(SchedulerHorizon {
+        virtual_time,
+        ceiling: virtual_time.to_icount_ceil(shift)?,
+        source,
+    })
+}
+
 /// An error produced by the scheduler boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SchedulerError {
@@ -347,6 +428,8 @@ pub enum SchedulerError {
         /// Deterministic diagnostic text.
         message: String,
     },
+    /// Virtual-time conversion failed while computing a scheduler horizon.
+    TimeConversion(TimeConversionError),
 }
 
 impl fmt::Display for SchedulerError {
@@ -357,6 +440,9 @@ impl fmt::Display for SchedulerError {
             }
             Self::Backend(error) => write!(f, "backend failed under scheduler control: {error}"),
             Self::BoundaryViolation { message } => f.write_str(message),
+            Self::TimeConversion(error) => {
+                write!(f, "scheduler virtual-time conversion failed: {error}")
+            }
         }
     }
 }
@@ -366,6 +452,12 @@ impl Error for SchedulerError {}
 impl From<BackendError> for SchedulerError {
     fn from(error: BackendError) -> Self {
         Self::Backend(error)
+    }
+}
+
+impl From<TimeConversionError> for SchedulerError {
+    fn from(error: TimeConversionError) -> Self {
+        Self::TimeConversion(error)
     }
 }
 
@@ -615,6 +707,78 @@ mod tests {
     }
 
     #[test]
+    fn exact_local_deadline_selects_scheduler_horizon_and_ceiling() {
+        let horizon = horizon_from_exact_local_event(
+            SimInstant { nanos: 100 },
+            ExactLocalEvent::TimerDeadline {
+                virtual_time: SimInstant { nanos: 41 },
+            },
+            shift(3),
+        );
+
+        assert_eq!(
+            horizon,
+            Ok(SchedulerHorizon {
+                virtual_time: SimInstant { nanos: 41 },
+                ceiling: Icount { retired: 6 },
+                source: SchedulerHorizonSource::ExactLocalTimer,
+            })
+        );
+    }
+
+    #[test]
+    fn no_armed_timer_uses_network_horizon() {
+        let horizon = horizon_from_exact_local_event(
+            SimInstant { nanos: 64 },
+            ExactLocalEvent::NoArmedTimer,
+            shift(3),
+        );
+
+        assert_eq!(
+            horizon,
+            Ok(SchedulerHorizon {
+                virtual_time: SimInstant { nanos: 64 },
+                ceiling: Icount { retired: 8 },
+                source: SchedulerHorizonSource::NetworkLookahead,
+            })
+        );
+    }
+
+    #[test]
+    fn later_exact_deadline_does_not_extend_network_horizon() {
+        let horizon = horizon_from_exact_local_event(
+            SimInstant { nanos: 50 },
+            ExactLocalEvent::TimerDeadline {
+                virtual_time: SimInstant { nanos: 90 },
+            },
+            shift(2),
+        );
+
+        assert_eq!(
+            horizon,
+            Ok(SchedulerHorizon {
+                virtual_time: SimInstant { nanos: 50 },
+                ceiling: Icount { retired: 13 },
+                source: SchedulerHorizonSource::NetworkLookahead,
+            })
+        );
+    }
+
+    #[test]
+    fn exact_deadline_report_maps_to_scheduler_local_event() {
+        assert_eq!(
+            exact_local_event_from_timer_deadline_ns(Some(124_456)),
+            ExactLocalEvent::TimerDeadline {
+                virtual_time: SimInstant { nanos: 124_456 },
+            }
+        );
+        assert_eq!(
+            exact_local_event_from_timer_deadline_ns(None),
+            ExactLocalEvent::NoArmedTimer
+        );
+    }
+
+    #[test]
     fn scheduler_errors_render_all_variants_deterministically() {
         let backend = SchedulerError::from(BackendError::Rejected {
             message: String::from("backend refused"),
@@ -623,6 +787,9 @@ mod tests {
             message: String::from("bypassed scheduler boundary"),
         };
         let not_implemented = SchedulerError::NotImplemented { operation: "pick" };
+        let conversion = SchedulerError::from(TimeConversionError::InvalidShift {
+            shift: Shift { bits: 64 },
+        });
 
         assert_eq!(
             not_implemented.to_string(),
@@ -633,6 +800,10 @@ mod tests {
             "backend failed under scheduler control: backend refused"
         );
         assert_eq!(boundary.to_string(), "bypassed scheduler boundary");
+        assert_eq!(
+            conversion.to_string(),
+            "scheduler virtual-time conversion failed: icount shift 64 cannot be represented as u64"
+        );
     }
 
     fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {
@@ -645,13 +816,16 @@ mod tests {
     }
 
     fn shared_timeline(bits: u8) -> SharedTimeline {
-        let shift = match Shift::new(bits) {
-            Ok(shift) => shift,
-            Err(error) => panic!("test shift should be valid: {error}"),
-        };
-        match SharedTimeline::new(shift) {
+        match SharedTimeline::new(shift(bits)) {
             Ok(timeline) => timeline,
             Err(error) => panic!("test timeline should be valid: {error}"),
+        }
+    }
+
+    fn shift(bits: u8) -> Shift {
+        match Shift::new(bits) {
+            Ok(shift) => shift,
+            Err(error) => panic!("test shift should be valid: {error}"),
         }
     }
 
