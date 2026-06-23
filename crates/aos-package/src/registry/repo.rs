@@ -701,7 +701,7 @@ pub(crate) async fn fetch(repo_dir: &Path, url: &str, refspecs: &[String]) -> Re
 /// Tries the ssh-agent for the requested username, falling back to the
 /// default key. `git://` and `http(s)://` never invoke this. Username/password
 /// (HTTP basic) and default-credential requests are declined.
-fn credentials(
+pub(crate) fn credentials(
     _url: &str,
     username: Option<&str>,
     allowed: git2::CredentialType,

@@ -110,14 +110,15 @@ pub fn write_release_objects(repo: &Path, version: &semver::Version, revspec: &s
 
 /// Ensure every reachable object has a loose copy in the root `/objects/` store.
 ///
-/// Full packs found under the root repo and per-release pack dirs are unpacked
-/// into the root object store, then every object reachable from refs is checked
-/// for a loose `objects/xx/rest` file.
+/// Enumerates every object reachable from the repository's refs (including
+/// objects that live only in per-release pack alternates) and writes any that
+/// are not already loose into `objects/xx/rest`, so dumb-HTTP clients can fetch
+/// the full graph.
 ///
 /// # Errors
 ///
-/// Returns an error if pack unpacking fails or any reachable object remains
-/// missing as a loose object.
+/// Returns an error if a reachable object cannot be read or a loose object
+/// cannot be written.
 pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
     assert_sha256(repo)?;
     let git_dir = repo_git_dir(repo)?;
