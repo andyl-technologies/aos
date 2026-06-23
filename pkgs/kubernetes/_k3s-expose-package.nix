@@ -74,7 +74,7 @@ in
   in
     mkDerivation {
       inherit pname;
-      version = "0";
+      inherit (k3s) version;
       src = null;
       runtimeDeps = common.runtimePath;
 
