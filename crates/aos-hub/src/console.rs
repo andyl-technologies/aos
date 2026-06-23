@@ -257,7 +257,9 @@ async fn registry_settings_view(
             None => String::new(),
         };
         let mut caches = Vec::new();
+        let mut linked_ids = std::collections::HashSet::new();
         for link in state.db.cache_links_for_registry(registry.id).await? {
+            linked_ids.insert(link.cache_id);
             if let Some(cache) = state.db.cache_by_id(link.cache_id).await? {
                 if cache.deleted_at.is_none() {
                     caches.push(console::RegistryCacheRow {
@@ -266,6 +268,13 @@ async fn registry_settings_view(
                         roots_packages: link.roots_packages,
                     });
                 }
+            }
+        }
+        // Org caches not yet linked — options for the "link a cache" control.
+        let mut linkable_caches = Vec::new();
+        for c in state.db.list_caches().await? {
+            if c.org_id == registry.org_id && c.deleted_at.is_none() && !linked_ids.contains(&c.id) {
+                linkable_caches.push(c.slug);
             }
         }
         // Deletion is owner-only (the iam.admin verb).
@@ -282,6 +291,7 @@ async fn registry_settings_view(
             &session.csrf(),
             binding_ref,
             &caches,
+            &linkable_caches,
             can_delete,
             result,
             Instant::now(),

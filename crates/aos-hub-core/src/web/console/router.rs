@@ -413,6 +413,18 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             }),
         )
         .route(
+            "/{slug}/-/settings/cache-link",
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::registry_cache_link(from_state(s), h, r, u, p, f))
+            }),
+        )
+        .route(
+            "/{slug}/-/settings/cache-unlink",
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::registry_cache_unlink(from_state(s), h, r, u, p, f))
+            }),
+        )
+        .route(
             "/{slug}/-/settings/delete",
             post(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
                 send_bridge(handlers::registry_delete(from_state(s), h, u, p, f))
