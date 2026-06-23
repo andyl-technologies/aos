@@ -173,9 +173,18 @@ pub struct DeployConfig {
     pub email_from: Option<String>,
     /// Custom domains to bind the Worker to (e.g. `aos.example.com`), each
     /// emitted as its own `custom_domain` route so Cloudflare sends that hostname
-    /// to this Worker. Empty serves on `*.workers.dev` only. Every domain's zone
-    /// must be on the same Cloudflare account. Bind the hub's own domain plus any
-    /// per-registry/per-cache frontend domains it dispatches by `Host`.
+    /// to this Worker. This list is the Worker's **complete** managed custom-domain
+    /// set: `wrangler deploy` reconciles the live routes to exactly these, so a
+    /// partial list would drop the omitted ones — list every domain the Worker
+    /// should serve. Every domain's zone must be on the same Cloudflare account.
+    /// Bind the hub's own domain plus any per-registry/per-cache frontend domains
+    /// it dispatches by `Host`.
+    ///
+    /// **Empty preserves, it does not unbind.** When empty, the generated config
+    /// emits no `[[routes]]` block at all, and per Cloudflare's contract a deploy
+    /// with no route keys leaves the Worker's existing custom domains untouched
+    /// (route management is then out-of-band) — it does *not* revert the Worker to
+    /// `*.workers.dev`-only. A routine code redeploy therefore needs no domains.
     pub custom_domains: Vec<String>,
     /// Whether to emit an `[assets]` directory binding so Cloudflare serves the
     /// staged `/_assets/*` files from its CDN edge (bypassing the Worker). Set
@@ -236,9 +245,11 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
     };
     // Each custom-domain route binds the Worker to one hostname (e.g.
     // aos.example.com); `wrangler deploy` provisions the domain (DNS record +
-    // cert) when the zone is on the account. With none, the Worker serves on
-    // *.workers.dev only. Multiple routes let one Worker serve the hub's own
-    // domain plus per-registry/per-cache frontend domains it dispatches by Host.
+    // cert) when the zone is on the account. Multiple routes let one Worker serve
+    // the hub's own domain plus per-registry/per-cache frontend domains it
+    // dispatches by Host. With none, NO routes block is emitted — which (per
+    // Cloudflare's contract) leaves any already-bound custom domains untouched
+    // rather than unbinding them, so a code-only redeploy is non-destructive.
     let routes: String = cfg
         .custom_domains
         .iter()

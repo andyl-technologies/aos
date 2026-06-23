@@ -157,7 +157,7 @@ async fn exercise(db: &Database) {
             Some(org),
             "acme-cache",
             "Acme Cache",
-            binding,
+            Some(binding),
             "cache",
             None,
             "public",

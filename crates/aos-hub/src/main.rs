@@ -286,15 +286,22 @@ struct WorkerArgs {
     kv_title: Option<String>,
     /// Bind the Worker to a custom domain (e.g. `aos.example.com`): `wrangler
     /// deploy` provisions its DNS record + edge cert, and its zone must be on the
-    /// same Cloudflare account. Omit to serve only on the free
-    /// `<name>.<subdomain>.workers.dev` URL.
+    /// same Cloudflare account. Repeatable — pass `--domain` once per hostname to
+    /// bind several (the hub's own domain plus per-registry/per-cache frontends).
+    ///
+    /// The domains you pass are the Worker's complete managed custom-domain set:
+    /// list every domain the Worker should serve. Omitting `--domain` entirely
+    /// emits no route configuration, which leaves any already-bound custom
+    /// domains untouched (it does NOT revert the Worker to `*.workers.dev`-only) —
+    /// so a routine code redeploy needs no `--domain`. The free
+    /// `<name>.<subdomain>.workers.dev` URL is always served regardless.
     ///
     /// The hub takes its canonical public URL (the `{url}/{slug}` push URL, the
     /// OIDC redirect_uri base, the WebAuthn relying-party ID, browse links) from
     /// whatever domain a request arrives on, so you do not configure it
     /// separately — set this and you're done.
-    #[arg(long)]
-    domain: Option<String>,
+    #[arg(long = "domain")]
+    domains: Vec<String>,
     /// Bootstrap root admin email (paired with --root-password); install only.
     #[arg(long)]
     root_email: Option<String>,
@@ -354,11 +361,6 @@ impl WorkerArgs {
         self.kv_title
             .clone()
             .unwrap_or_else(|| format!("{}-sessions", self.name))
-    }
-
-    /// The custom domains to bind (zero or one), derived from `--domain`.
-    fn domains(&self) -> Vec<String> {
-        self.domain.clone().into_iter().collect()
     }
 }
 
@@ -2306,11 +2308,13 @@ async fn run_worker_command(root: &Option<PathBuf>, command: WorkerCommand) -> R
                 let (email, id) = ensure_root(&db, email, &plaintext).await?;
                 println!("root admin '{email}' ready (user id {id})");
             }
-            match &args.domain {
-                Some(domain) => println!("install complete: bound to {domain}"),
-                None => println!(
-                    "install complete: serving on the Worker's *.workers.dev URL"
-                ),
+            if args.domains.is_empty() {
+                println!(
+                    "install complete: serving on the Worker's *.workers.dev URL \
+                     (any existing custom domains left untouched)"
+                );
+            } else {
+                println!("install complete: bound to {}", args.domains.join(", "));
             }
         }
     }
@@ -2333,7 +2337,7 @@ async fn provision_worker(
         &args.kv_title(),
         "",
         args.email_relay_url.as_deref(),
-        &args.domains(),
+        &args.domains,
     )
     .await?;
     // Apply the observability flags onto the provisioned config (provision()
@@ -2371,9 +2375,13 @@ async fn deploy_worker(
             println!("  HUB_SEAL_KEY={seal}");
         }
     }
-    match &args.domain {
-        Some(domain) => println!("deployed: bound to {domain}"),
-        None => println!("deployed: serving on the Worker's *.workers.dev URL"),
+    if args.domains.is_empty() {
+        println!(
+            "deployed: serving on the Worker's *.workers.dev URL \
+             (any existing custom domains left untouched)"
+        );
+    } else {
+        println!("deployed: bound to {}", args.domains.join(", "));
     }
     Ok(())
 }
