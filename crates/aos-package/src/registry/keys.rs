@@ -122,20 +122,12 @@ pub fn load_keys_toml(root: &Path) -> Result<Option<KeysToml>> {
 /// Returns an error if the git invocation fails for any reason other than
 /// the file being absent, or if the roster fails validation.
 pub fn load_keys_toml_at_commit(repo_dir: &Path, commit: &str) -> Result<Option<KeysToml>> {
-    let spec = format!("{commit}:keys.toml");
-    let output = crate::gitcmd::hermetic()
-        .args(["show", &spec])
-        .current_dir(repo_dir)
-        .output()
-        .with_context(|| format!("running git show {spec}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("does not exist") || stderr.contains("exists on disk, but not in") {
-            return Ok(None);
-        }
-        bail!("git show {spec} failed: {}", stderr.trim());
-    }
-    let content = String::from_utf8_lossy(&output.stdout);
+    let Some(bytes) = crate::registry::repo::read_blob_at_blocking(repo_dir, commit, "keys.toml")
+        .with_context(|| format!("reading {commit}:keys.toml"))?
+    else {
+        return Ok(None);
+    };
+    let content = String::from_utf8_lossy(&bytes);
     let roster: KeysToml =
         toml::from_str(&content).with_context(|| format!("parsing keys.toml at {commit}"))?;
     validate_roster(&roster)?;
