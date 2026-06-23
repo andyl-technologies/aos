@@ -572,7 +572,7 @@ async fn settings_page_renders_links_and_visibility_edit_audits() {
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = csrf_for(&cookie);
 
-    // The settings landing page renders the management link hub and delete form.
+    // The settings landing page renders the management sidebar nav and delete form.
     let resp = send(
         &app,
         "GET",
@@ -582,7 +582,7 @@ async fn settings_page_renders_links_and_visibility_edit_audits() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    assert!(resp.body.contains("Manage this registry"), "{}", resp.body);
+    assert!(resp.body.contains("settings-nav"), "settings sidebar: {}", resp.body);
     assert!(
         resp.body.contains("/acme/infra/prod/cdn/-/settings/tokens"),
         "tokens link: {}",

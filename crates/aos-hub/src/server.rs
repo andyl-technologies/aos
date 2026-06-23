@@ -416,6 +416,15 @@ pub async fn router(state: Arc<AppState>) -> Router {
                 .with_sealer(Arc::clone(&state.sealer)),
         ),
         reindexer: Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
+        // The native hub's default store is its DB-recorded storage root; surface
+        // it so instance settings shows where unbound surfaces live (falls back
+        // to "configured at deploy time" when unset).
+        default_storage_location: state
+            .db
+            .default_storage_root()
+            .await
+            .ok()
+            .flatten(),
     };
     let console_router = aos_hub_core::web::console::console_router(console_deps);
     // Kept for the outermost client-IP injection layer below, which runs after
