@@ -696,6 +696,33 @@ form.console input[type="checkbox"]:disabled,
 .code-highlight .t-b { color: var(--link); }                     /* boolean */
 .code-highlight .t-a { color: var(--ink); }                      /* array/inline table */
 
+/* The repeatable [[caches]] editor in the structured config form. Each row is a
+ * URL + priority + remove button; the block is indented to the control column
+ * (like the submit button) so it lines up under the other fields. app.js clones
+ * the trailing row to add more; with no JS the rendered rows stay editable. */
+.cache-rows {
+  margin-left: calc(var(--form-label-col) + var(--form-col-gap));
+  max-width: 42rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.cache-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+.cache-row input[name="cache_url"] { flex: 1 1 auto; min-width: 0; }
+.cache-row input.cache-prio { flex: 0 0 6rem; width: 6rem; }
+.cache-row .row-del {
+  flex: 0 0 auto;
+  line-height: 1;
+  padding: 0.25rem 0.6rem;
+}
+.row-add {
+  margin: 0.5rem 0 0 calc(var(--form-label-col) + var(--form-col-gap));
+}
+
 p.notice {
   border-left: 3px solid var(--ok);
   padding: 0.4rem 0.8rem;

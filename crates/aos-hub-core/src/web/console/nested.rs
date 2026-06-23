@@ -282,10 +282,10 @@ pub async fn dispatch_nested(
             handlers::config_edit(deps, headers, started, uri, Path(slug)).await
         }
         ("settings/config", true) => {
-            let Ok(form) = serde_urlencoded::from_bytes(&body) else {
-                return Some(bad_request());
-            };
-            handlers::config_submit(deps, headers, started, uri, Path(slug), Form(form)).await
+            // The config form posts repeated cache rows, which serde_urlencoded
+            // can't collect into a Vec; hand the raw body to the shared decoder.
+            let body = String::from_utf8_lossy(&body).into_owned();
+            handlers::config_submit(deps, headers, started, uri, Path(slug), body).await
         }
         ("changes", false) => handlers::changes(deps, headers, started, uri, Path(slug)).await,
         // -- hosted keys & publishes -----------------------------------------

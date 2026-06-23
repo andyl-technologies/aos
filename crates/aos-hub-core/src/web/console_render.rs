@@ -3508,6 +3508,147 @@ pub fn config_edit_page(
     )
 }
 
+/// Renders one editable `[[caches]]` row (URL + priority + remove button).
+///
+/// `app.js` clones the trailing row to add more and wires the remove button;
+/// with no JS the server-rendered rows (existing entries plus one blank) are
+/// still fully editable.
+fn cache_row_html(url: &str, priority: u32) -> String {
+    format!(
+        "<div class=\"cache-row\">\
+         <input type=\"text\" name=\"cache_url\" value=\"{url}\" \
+         placeholder=\"https://cache.example.org\" aria-label=\"cache URL\">\
+         <input type=\"number\" name=\"cache_priority\" value=\"{priority}\" min=\"0\" \
+         class=\"cache-prio\" aria-label=\"priority\">\
+         <button type=\"button\" class=\"row-del\" aria-label=\"remove cache\">&times;</button>\
+         </div>",
+        url = escape(url),
+    )
+}
+
+/// The auto-generated structured config-edit page (`/{slug}/-/settings/config`).
+///
+/// Replaces the raw-TOML textarea with one control per
+/// [`RegistryRootConfig`](aos_registry_surface::manifest::RegistryRootConfig)
+/// field: name, description, readme, the content-addressed toggle, and the
+/// repeatable `[[caches]]` list. On submit the handler rebuilds the committed
+/// `registry.toml` and proposes it as the same git-backed change request the
+/// raw editor used, so `result` (the new change id and merge command) and the
+/// `registry.configure` `can_edit` gate behave identically. `model` carries the
+/// current field values (and, on a rejected submission, a preserved-input
+/// [`ConfigFormModel::error`](crate::web::config_form::ConfigFormModel::error)).
+///
+/// A file the form cannot represent is never shown here — the handler falls
+/// back to [`config_edit_page`] for that case.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn registry_config_form_page(
+    email: &str,
+    registry: &RegistryRecord,
+    csrf: &str,
+    model: &crate::web::config_form::ConfigFormModel,
+    can_edit: bool,
+    result: Option<(&str, &str)>,
+    started: Instant,
+) -> String {
+    let slug = &registry.slug;
+    let mut body = format!("<h1>Edit config: {}</h1>\n", escape(slug));
+    body.push_str(
+        "<p class=\"dim\">Web edits to committed config are <strong>change \
+         requests</strong>. The hub commits the edit, draft-signed by a key \
+         that is not in the roster, to <code>refs/hub/changes/&lt;id&gt;</code>. \
+         A maintainer reviews and promotes it locally with \
+         <code>apr change merge</code>; roster keys never leave their machine.</p>\n",
+    );
+
+    if let Some((change_id, merge_command)) = result {
+        let _ = write!(
+            body,
+            "<p class=\"good\">Change request <code>{}</code> created. Promote it with:</p>\n\
+             <pre>{}</pre>\n\
+             <p><a href=\"/{}/-/changes\">view change requests</a></p>\n",
+            escape(change_id),
+            escape(merge_command),
+            escape(slug),
+        );
+    }
+
+    if !can_edit {
+        body.push_str(
+            "<p class=\"dim\">You need <code>registry.configure</code> to propose a change.</p>\n",
+        );
+        let crumbs = registry_crumbs(slug);
+        return page_with_session(
+            &format!("edit config · {slug}"),
+            &crumbs,
+            &body,
+            &StateLine::timed(started),
+            &indicator(email),
+        );
+    }
+
+    if let Some(err) = &model.error {
+        let _ = write!(body, "<p class=\"bad\">{}</p>\n", escape(err));
+    }
+
+    // Existing cache rows, then one trailing blank row so a no-JS user can add
+    // one and `app.js` has a row to clone.
+    let mut cache_rows = String::new();
+    for cache in &model.caches {
+        cache_rows.push_str(&cache_row_html(&cache.url, cache.priority));
+    }
+    cache_rows.push_str(&cache_row_html("", 100));
+
+    let cache_stack_note = if model.has_cache_stack {
+        "<p class=\"dim\">This registry also defines an advanced \
+         <code>[cache_stack]</code>; it is preserved unchanged here. Edit the \
+         stack expression via raw TOML with <code>apr</code>.</p>\n"
+    } else {
+        ""
+    };
+
+    let _ = write!(
+        body,
+        "<form class=\"console\" data-config-form method=\"post\" \
+         action=\"/{slug}/-/settings/config\">\n{csrf}\
+         <label>name <input type=\"text\" name=\"name\" value=\"{name}\" required></label>\n\
+         <label><span class=\"lbl\">description</span> \
+         <input type=\"text\" name=\"description\" value=\"{description}\"> \
+         <span class=\"dim\">optional</span></label>\n\
+         <label><span class=\"lbl\">readme{readme_help}</span> \
+         <textarea name=\"readme\" rows=\"6\" cols=\"80\">{readme}</textarea> \
+         <span class=\"dim\">optional</span></label>\n\
+         <label><span class=\"lbl\">content-addressed{ca_help}</span> \
+         <input type=\"checkbox\" name=\"content_addressed\" value=\"1\"{ca}></label>\n\
+         <span class=\"field-label\">binary caches{caches_help}</span>\n\
+         <div class=\"cache-rows\" data-cache-rows>\n{cache_rows}</div>\n\
+         <button type=\"button\" class=\"row-add\" data-add-cache>+ add cache</button>\n\
+         {cache_stack_note}\
+         <button>submit change request</button>\n</form>\n\
+         <p class=\"dim\">Submitting rebuilds <code>registry.toml</code> from these \
+         fields; comments in the committed file are not preserved.</p>\n",
+        csrf = csrf_field(csrf),
+        name = escape(&model.name),
+        description = escape(&model.description),
+        readme = escape(&model.readme),
+        readme_help = help::marker("registry.readme"),
+        ca_help = help::marker("registry.content_addressed"),
+        ca = if model.content_addressed { " checked" } else { "" },
+        caches_help = help::marker("registry.caches"),
+        cache_rows = cache_rows,
+        cache_stack_note = cache_stack_note,
+    );
+
+    let crumbs = registry_crumbs(slug);
+    page_with_session(
+        &format!("edit config · {slug}"),
+        &crumbs,
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
 /// The change-requests list page for a registry (RFC-0004 "Configuration
 /// management" git-backed path).
 ///
