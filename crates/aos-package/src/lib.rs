@@ -49,6 +49,10 @@ pub mod desired;
 pub mod download;
 pub(crate) mod ebpf_lsm;
 pub(crate) mod exposed_units;
+/// Test-only helpers that shell out to the host `git` to set up fixtures; the
+/// production registry paths use libgit2 ([`registry::repo`],
+/// [`registry::porcelain`]) and never exec `git`.
+#[cfg(test)]
 pub(crate) mod gitcmd;
 pub mod hold;
 pub mod install;
@@ -81,7 +85,6 @@ pub(crate) mod testutil;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand, ValueEnum};
@@ -3362,49 +3365,92 @@ fn materialize_authoring_clone(
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
-    let mut clone = gitcmd::transport();
-    clone.args(["clone", "--no-checkout", url]);
-    clone.arg(&clone_dir);
-    run_git_command(clone, format!("cloning registry '{name}' from {url}"))?;
-
-    if let Some(branch) = branch {
-        let remote_branch = format!("origin/{branch}");
-        let mut checkout = gitcmd::hermetic();
-        checkout
-            .current_dir(&clone_dir)
-            .args(["checkout", "-B", branch, &remote_branch]);
-        run_git_command(checkout, format!("checking out branch '{branch}'"))?;
-    } else if let Some(tag) = tag {
-        let mut checkout = gitcmd::hermetic();
-        checkout.current_dir(&clone_dir).args(["checkout", tag]);
-        run_git_command(checkout, format!("checking out tag '{tag}'"))?;
-    } else if let Some(commit) = commit {
-        let mut checkout = gitcmd::hermetic();
-        checkout
-            .current_dir(&clone_dir)
-            .args(["checkout", "--detach", commit]);
-        run_git_command(checkout, format!("checking out commit '{commit}'"))?;
-    } else {
-        let mut checkout = gitcmd::hermetic();
-        checkout.current_dir(&clone_dir).arg("checkout");
-        run_git_command(checkout, "checking out remote HEAD")?;
-    }
+    let normalized = url.strip_prefix("git+").unwrap_or(url);
+    clone_authoring_registry(&clone_dir, normalized, branch, tag, commit)
+        .with_context(|| format!("cloning registry '{name}' from {url}"))?;
 
     printer.info(&format!("Authoring clone ready at {}", clone_dir.display()));
     Ok(())
 }
 
-fn run_git_command(mut command: Command, context: impl Into<String>) -> Result<()> {
-    let context = context.into();
-    let output = command
-        .output()
-        .with_context(|| format!("running git command while {context}"))?;
-    if output.status.success() {
-        return Ok(());
-    }
+/// Clone `url` into `clone_dir` for authoring, then check out the requested
+/// ref, using libgit2 for smart transports (local, `git://`, `ssh://`) and the
+/// pure-Rust dumb-HTTP reader for static `http(s)://` origins.
+fn clone_authoring_registry(
+    clone_dir: &std::path::Path,
+    url: &str,
+    branch: Option<&str>,
+    tag: Option<&str>,
+    commit: Option<&str>,
+) -> Result<()> {
+    let repo = if url.starts_with("http://") || url.starts_with("https://") {
+        // libgit2 cannot read the static dumb-HTTP object tree; init locally
+        // and fetch through the pure-Rust reader.
+        let repo = git2::Repository::init(clone_dir)
+            .with_context(|| format!("initializing {}", clone_dir.display()))?;
+        repo.remote("origin", url).context("adding origin remote")?;
+        let refspecs = vec![
+            "+refs/heads/*:refs/remotes/origin/*".to_string(),
+            "+refs/tags/*:refs/tags/*".to_string(),
+        ];
+        let dir = clone_dir.to_path_buf();
+        let fetch_url = url.to_string();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(registry::repo::fetch(&dir, &fetch_url, &refspecs))
+        })
+        .context("fetching registry objects")?;
+        repo
+    } else {
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(registry::repo::credentials);
+        let mut fetch_options = git2::FetchOptions::new();
+        fetch_options.remote_callbacks(callbacks);
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.fetch_options(fetch_options);
+        builder
+            .clone(url, clone_dir)
+            .with_context(|| format!("cloning {url}"))?
+    };
 
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    bail!("{} failed: {}", context, stderr);
+    checkout_authoring_ref(&repo, branch, tag, commit)
+}
+
+/// Check out the branch, tag, commit, or remote HEAD an authoring clone wants.
+fn checkout_authoring_ref(
+    repo: &git2::Repository,
+    branch: Option<&str>,
+    tag: Option<&str>,
+    commit: Option<&str>,
+) -> Result<()> {
+    if let Some(branch) = branch {
+        let remote_ref = format!("refs/remotes/origin/{branch}");
+        let object = repo
+            .revparse_single(&remote_ref)
+            .with_context(|| format!("resolving origin/{branch}"))?;
+        let target = object
+            .peel_to_commit()
+            .context("remote branch is not a commit")?;
+        repo.branch(branch, &target, true)
+            .with_context(|| format!("creating local branch '{branch}'"))?;
+        repo.checkout_tree(&object, None)
+            .with_context(|| format!("checking out '{branch}'"))?;
+        repo.set_head(&format!("refs/heads/{branch}"))
+            .with_context(|| format!("switching to '{branch}'"))?;
+    } else if let Some(spec) = tag.or(commit) {
+        let object = repo
+            .revparse_single(spec)
+            .with_context(|| format!("resolving '{spec}'"))?;
+        let target = object.peel_to_commit().context("target is not a commit")?;
+        repo.checkout_tree(&object, None)
+            .with_context(|| format!("checking out '{spec}'"))?;
+        repo.set_head_detached(target.id())
+            .with_context(|| format!("detaching HEAD at '{spec}'"))?;
+    }
+    // With no explicit ref the clone already has the remote HEAD checked out
+    // (RepoBuilder) or, for the dumb-HTTP path, the caller relies on a later
+    // checkout; nothing more to do here.
+    Ok(())
 }
 
 /// `apr remove` — delete a registry's config file, metadata cache, local

@@ -13,6 +13,12 @@
 //! transport — push, pull, fetch — keeps the host environment
 //! ([`transport`]): credential helpers, proxies, and `url.<base>.insteadOf`
 //! rewrites are host concerns apm must honor.
+//!
+//! This module is **test-only** (gated by `#[cfg(test)]`): production registry operations
+//! moved to libgit2 ([`crate::registry::repo`], [`crate::registry::porcelain`])
+//! and never exec `git`. It survives to build hermetic git fixtures in tests,
+//! so not every builder here is exercised.
+#![allow(dead_code)]
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
