@@ -89,6 +89,7 @@ in {
     testingStandards = import ./phase1-testing-standards.nix {inherit pkgs lib;};
     timeClockSkew = import ./phase1-time-clock-skew.nix {inherit pkgs lib;};
     timeContractADeterminism = import ./phase1-time-contract-a-determinism.nix {inherit pkgs lib;};
+    timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix {inherit pkgs lib;};
     timeNoRealtimeWarp = import ./phase1-time-no-realtime-warp.nix {inherit pkgs lib;};
     timeAdvanceCeiling = import ./phase1-time-advance-ceiling.nix {inherit pkgs lib;};
     timeSharedTimeline = import ./phase1-time-shared-timeline.nix {inherit pkgs lib;};
@@ -115,6 +116,7 @@ in {
           "T-DET-9"
           "T-DET-10"
           "T-TIME-8"
+          "T-TIME-9"
         ];
       };
       contentAddress = import ./phase1-content-address.nix {
@@ -135,7 +137,7 @@ in {
       singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase1.gates.singleVmFingerprint";
-        taskIds = ["T-PLAN-3" "T-HARN-7" "T-DET-8" "T-DET-9" "T-TIME-8"];
+        taskIds = ["T-PLAN-3" "T-HARN-7" "T-DET-8" "T-DET-9" "T-TIME-8" "T-TIME-9"];
       };
       divergenceBisect = import ./phase1-divergence-bisect.nix {
         inherit pkgs lib;

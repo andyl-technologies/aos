@@ -351,6 +351,112 @@ fn contract_a_driver_models_fixed_rr_vcpu_cursor_without_live_peers() {
 }
 
 #[test]
+fn contract_a_multi_vcpu_uses_single_aggregate_time_axis() {
+    let config = match ContractAConfig::new_with_icount_shift(
+        image_digest(),
+        "console=ttyS0",
+        11,
+        3,
+        2,
+        1,
+    ) {
+        Ok(config) => config,
+        Err(error) => panic!("test Contract A config should be valid: {error}"),
+    };
+
+    let run = run_hashing(&config, &[], 7);
+    let cursors = run
+        .instruction_stream
+        .iter()
+        .map(|sample| sample.vcpu_id)
+        .collect::<Vec<_>>();
+
+    assert_eq!(cursors, vec![0, 0, 1, 1, 2, 2, 0]);
+    assert_eq!(
+        run.time_trajectory,
+        vec![
+            TimeTrajectorySample {
+                aggregate_icount: 1,
+                virtual_time_ns: 2,
+            },
+            TimeTrajectorySample {
+                aggregate_icount: 2,
+                virtual_time_ns: 4,
+            },
+            TimeTrajectorySample {
+                aggregate_icount: 3,
+                virtual_time_ns: 6,
+            },
+            TimeTrajectorySample {
+                aggregate_icount: 4,
+                virtual_time_ns: 8,
+            },
+            TimeTrajectorySample {
+                aggregate_icount: 5,
+                virtual_time_ns: 10,
+            },
+            TimeTrajectorySample {
+                aggregate_icount: 6,
+                virtual_time_ns: 12,
+            },
+            TimeTrajectorySample {
+                aggregate_icount: 7,
+                virtual_time_ns: 14,
+            },
+        ]
+    );
+    assert_eq!(run.time_fingerprint.final_icount, 7);
+    assert_eq!(run.time_fingerprint.final_virtual_time_ns, 14);
+}
+
+#[test]
+fn contract_a_rr_switch_quantum_is_content_addressed_node_icount_units() {
+    let quantum_two = match ContractAConfig::new_with_icount_shift(
+        image_digest(),
+        "console=ttyS0",
+        11,
+        3,
+        2,
+        2,
+    ) {
+        Ok(config) => config,
+        Err(error) => panic!("test Contract A config should be valid: {error}"),
+    };
+    let quantum_three = match ContractAConfig::new_with_icount_shift(
+        image_digest(),
+        "console=ttyS0",
+        11,
+        3,
+        3,
+        2,
+    ) {
+        Ok(config) => config,
+        Err(error) => panic!("test Contract A config should be valid: {error}"),
+    };
+
+    let run_quantum_two = run_hashing(&quantum_two, &[], 7);
+    let run_quantum_three = run_hashing(&quantum_three, &[], 7);
+    let cursors_two = run_quantum_two
+        .instruction_stream
+        .iter()
+        .map(|sample| sample.vcpu_id)
+        .collect::<Vec<_>>();
+    let cursors_three = run_quantum_three
+        .instruction_stream
+        .iter()
+        .map(|sample| sample.vcpu_id)
+        .collect::<Vec<_>>();
+
+    assert_eq!(cursors_two, vec![0, 0, 1, 1, 2, 2, 0]);
+    assert_eq!(cursors_three, vec![0, 0, 0, 1, 1, 1, 2]);
+    assert_eq!(
+        run_quantum_two.time_trajectory,
+        run_quantum_three.time_trajectory
+    );
+    assert_ne!(run_quantum_two.fingerprint, run_quantum_three.fingerprint);
+}
+
+#[test]
 fn contract_a_driver_rejects_non_monotonic_recorded_inputs() {
     let mut vm = HashingContractAVm::default();
     let error = match ContractADriver::run(
