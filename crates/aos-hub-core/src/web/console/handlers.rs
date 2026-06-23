@@ -1765,10 +1765,12 @@ async fn render_cache_detail(
                 });
             }
         }
-        let linkable: Vec<String> = org_registries
+        // Linkable registries with visibility, so the form can grey out advertise
+        // for one more visible than this cache.
+        let linkable: Vec<(String, String)> = org_registries
             .iter()
             .filter(|r| !linked.contains(&r.id))
-            .map(|r| r.slug.clone())
+            .map(|r| (r.slug.clone(), r.visibility.clone()))
             .collect();
         Ok::<_, anyhow::Error>(console::cache_page(
             &session.email,
