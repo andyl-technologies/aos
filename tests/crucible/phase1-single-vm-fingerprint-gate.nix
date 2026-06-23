@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.singleVmFingerprint",
-  taskIds ? ["T-DET-9"],
+  taskIds ? ["T-HARN-6" "T-DET-9"],
 }: let
   s1Fingerprint = import ./phase0-s1.nix {
     inherit pkgs lib;
@@ -15,11 +15,13 @@
   qemuGateTypes = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/types.rs;
   qemuGateHook = qemuGateRoot + qemuGateCompare + qemuGateRun + qemuGateTypes;
   qemuGateTest = builtins.readFile ../../crates/crucible-qemu/tests/gate_single_vm_fingerprint.rs;
+  qemuTracePlugin = builtins.readFile ../../pkgs/emulation/crucible-qemu-trace-plugin.c;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
+  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -167,6 +169,60 @@
         needle = "#[ignore";
       }
     ]
+    ++ failuresFor "pkgs/emulation/crucible-qemu-trace-plugin.c" qemuTracePlugin [
+      {
+        label = "icount retired counter";
+        needle = "static uint64_t retired;";
+      }
+      {
+        label = "icount cadence sample trigger";
+        needle = "if (retired >= next_sample)";
+      }
+      {
+        label = "cadence advances by instruction period";
+        needle = "next_sample += cadence;";
+      }
+      {
+        label = "stop-at horizon icount trigger";
+        needle = "if (stop_at != 0 && retired >= stop_at";
+      }
+      {
+        label = "architectural register hash summary";
+        needle = "struct register_hash_summary";
+      }
+      {
+        label = "vCPU register reader";
+        needle = "qemu_plugin_crucible_read_vcpu_register";
+      }
+      {
+        label = "guest RAM hash";
+        needle = "qemu_plugin_crucible_ram_hash(&ram_bytes)";
+      }
+      {
+        label = "register hash folded into rolling fingerprint";
+        needle = "extended_hash = fnv1a_u64(extended_hash, register_hashes.aggregate);";
+      }
+      {
+        label = "RAM hash folded into rolling fingerprint";
+        needle = "extended_hash = fnv1a_u64(extended_hash, ram_hash);";
+      }
+      {
+        label = "per-vCPU register hashes in samples";
+        needle = "register_hashes";
+      }
+      {
+        label = "RAM hash in samples";
+        needle = "ram_hash";
+      }
+      {
+        label = "memory event callback";
+        needle = "qemu_plugin_register_vcpu_mem_cb";
+      }
+      {
+        label = "read-only instruction callback";
+        needle = "QEMU_PLUGIN_CB_NO_REGS";
+      }
+    ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "QEMU gate target";
@@ -203,6 +259,10 @@
         needle = "attrPath = \"checks.crucible.phase1.gates.singleVmFingerprint\"";
       }
       {
+        label = "phase1 gate lists T-HARN-6";
+        needle = "\"T-HARN-6\"";
+      }
+      {
         label = "phase1 gate lists T-DET-9";
         needle = "\"T-DET-9\"";
       }
@@ -211,6 +271,12 @@
       {
         label = "T-DET-9 checklist complete";
         needle = "- [x] **T-DET-9**";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
+      {
+        label = "T-HARN-6 checklist complete";
+        needle = "- [x] **T-HARN-6**";
       }
     ];
 in
@@ -244,6 +310,14 @@ in
                 exit 1
               }
             }
+            require_regex() {
+              regex="$1"
+              grep -E "$regex" "$s1_result" >/dev/null || {
+                echo "missing S1 evidence matching regex: $regex" >&2
+                cat "$s1_result" >&2
+                exit 1
+              }
+            }
 
             require_fixed "PASS"
             require_fixed "spike=single-vm-fingerprint"
@@ -259,6 +333,14 @@ in
             require_fixed "mismatch_localization=component"
             require_fixed "first_differing_line=none"
             require_fixed "first_differing_component=none"
+            require_fixed "register_read_failures=0"
+            require_fixed "register_count_assertion=nonempty_single_vcpu"
+            require_fixed "device_event_capture=true"
+            require_regex "^horizon_register_hash=[0-9a-f]{16}$"
+            require_regex "^horizon_ram_hash=[0-9a-f]{16}$"
+            require_regex "^horizon_ram_bytes=[1-9][0-9]*$"
+            require_regex "^horizon_memory_events=[1-9][0-9]*$"
+            require_regex "^horizon_io_events=[1-9][0-9]*$"
 
             cp "$s1_result" "$out/s1-result"
             cat > "$out/result" <<'RESULT'
@@ -273,6 +355,15 @@ in
             host_adversary=jitter-load
             samples=32
             horizon_icount=3200000000
+            execution_fingerprint=icount-registers-ram
+            sampling_axis=icount
+            sampling_period_instructions=100000000
+            observation_mode=plugin-read-only
+            register_fingerprint=architectural-register-file
+            memory_fingerprint=guest-ram-hash
+            rolling_fingerprint=extended-hash-over-samples
+            register_read_failures=0
+            ram_bytes=nonzero
             mismatch_policy=first-mismatch-is-failure
             mismatch_output=streams-and-icount-window
             RESULT

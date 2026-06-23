@@ -868,7 +868,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [x] **T-HARN-5** Implement the L0 determinism suite and `gate:layer0-determinism`
   (twice-reduce digest compare + scheduler-ordering and decision-RNG-stability
   property tests). — satisfies [HARN-3], [HARN-31]; spec §2, §4.5.
-- [ ] **T-HARN-6** Implement the execution fingerprint (icount + register +
+- [x] **T-HARN-6** Implement the execution fingerprint (icount + register +
   memory-region rolling hash) with icount-driven, observation-only sampling via
   plugin/QMP. — satisfies [HARN-4], [HARN-7]; spec §4.
 - [ ] **T-HARN-7** Implement `gate:single-vm-fingerprint` (Contract A: boot one
