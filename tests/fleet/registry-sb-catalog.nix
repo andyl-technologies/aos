@@ -47,11 +47,11 @@
   sbTop = systems.server-secureboot.config.system.build.toplevel;
   sbUki = systems.server-secureboot.config.system.build.uki;
 
-  # The server profile keeps the registry fixtures out of the production
-  # image (bundle = mkDefault false); re-bundle them for the registry
-  # machine so the fleet seed can activate them (modules/profiles/server.nix).
+  # server-test bundles the guest agent and the CLI tools the producer needs
+  # (it hand-seeds + pushes the registry with git) that image slimming dropped
+  # from the server profile. The registry additionally re-bundles its fixtures.
   serverWithRegistry = mkSystem [
-    ../../systems/server.nix
+    ../../systems/server-test.nix
     {
       aos.packages =
         lib.genAttrs

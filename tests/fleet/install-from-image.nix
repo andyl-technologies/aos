@@ -45,18 +45,19 @@
   # Re-bundle per machine: the registry serves the fixtures, and the
   # image-boot target needs the agent payload in its raw image so the
   # harness can deliver it via ignition (lib/testing/fleet.nix).
+  # server-test bundles the guest agent and the registry-workflow CLI tools
+  # (git for the registry seed, curl/git for the target's clone + cache probe)
+  # that image slimming dropped from the server profile. The registry machine
+  # additionally re-bundles its fixtures; the image-boot target is plain
+  # server-test (systems.server-test).
   serverWithRegistry = mkSystem [
-    ../../systems/server.nix
+    ../../systems/server-test.nix
     {
       aos.packages =
         lib.genAttrs
         ["aos-registry-server" "test-static-cache-server"]
         (_: {bundle = true;});
     }
-  ];
-  serverWithAgent = mkSystem [
-    ../../systems/server.nix
-    {aos.packages.aos-test-agent.bundle = true;}
   ];
 
   # Partition sizes (MiB). The docs' production layout is 16 GiB per
@@ -93,7 +94,7 @@ in {
     };
 
     target = {
-      system = serverWithAgent;
+      system = systems.server-test;
       bootMode = "image";
       imageDiskMiB = diskSizeMiB;
       packages = ["aos-test-agent"];
