@@ -10,6 +10,7 @@ mod validation;
 
 use std::fmt;
 
+use crucible::NodeClockSkew;
 use entropy::{GUEST_ENTROPY_FW_CFG_NAME, GUEST_ENTROPY_RNG_ID, GUEST_ENTROPY_SEED_FILE_NAME};
 pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
 pub use validation::LaunchProfileError;
@@ -301,6 +302,26 @@ impl NodeIcountShift {
     }
 }
 
+/// A node-local guest-visible clock-skew declaration from scenario launch content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeClockSkewDeclaration {
+    /// The stable scenario node identifier.
+    pub node_id: String,
+    /// The node's guest-visible clock-skew transform.
+    pub skew: NodeClockSkew,
+}
+
+impl NodeClockSkewDeclaration {
+    /// Builds a node-local guest-visible clock-skew declaration.
+    #[must_use]
+    pub fn new(node_id: impl Into<String>, skew: NodeClockSkew) -> Self {
+        Self {
+            node_id: node_id.into(),
+            skew,
+        }
+    }
+}
+
 /// A validated QEMU launch profile for Contract-A hermeticity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeterministicLaunchProfile {
@@ -433,6 +454,34 @@ impl DeterministicLaunchProfile {
         Ok(material)
     }
 
+    /// Returns canonical scenario hash material after validating node timing declarations.
+    ///
+    /// Node declarations are sorted by node identifier before they enter the
+    /// material so callers do not have to preserve a host-dependent iteration
+    /// order. Perfect clock-skew declarations are omitted, making explicit
+    /// perfect clocks byte-identical to no skew declarations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LaunchProfileError`] when a node identifier is not stable text,
+    /// a node timing declaration is duplicated, a node shift is unsupported or
+    /// mismatches the profile, or a node clock-skew declaration uses an invalid
+    /// drift rate.
+    pub fn scenario_hash_material_for_node_timing(
+        &self,
+        node_shifts: &[NodeIcountShift],
+        node_clock_skews: &[NodeClockSkewDeclaration],
+    ) -> Result<String, LaunchProfileError> {
+        let node_shift_lines = canonical_node_icount_shift_lines(self.icount_shift, node_shifts)?;
+        let node_skew_lines = canonical_node_clock_skew_lines(node_clock_skews)?;
+        let mut material = self.scenario_hash_material();
+        for line in node_shift_lines.into_iter().chain(node_skew_lines) {
+            material.push('\n');
+            material.push_str(&line);
+        }
+        Ok(material)
+    }
+
     /// Returns the scenario seed used for guest entropy derivation.
     #[must_use]
     pub fn scenario_seed(&self) -> u64 {
@@ -533,6 +582,56 @@ fn canonical_node_icount_shift_lines(
         .into_iter()
         .map(|(node_id, shift)| format!("node_icount_shift[{node_id}]={shift}"))
         .collect())
+}
+
+fn canonical_node_clock_skew_lines(
+    node_clock_skews: &[NodeClockSkewDeclaration],
+) -> Result<Vec<String>, LaunchProfileError> {
+    let mut ordered = Vec::with_capacity(node_clock_skews.len());
+    for node_clock_skew in node_clock_skews {
+        validate_fixed_text("node_id", &node_clock_skew.node_id)?;
+        if node_clock_skew.skew.drift_rate.denominator == 0 {
+            return Err(LaunchProfileError::InvalidNodeClockDriftRate {
+                node_id: node_clock_skew.node_id.clone(),
+                numerator: node_clock_skew.skew.drift_rate.numerator,
+                denominator: node_clock_skew.skew.drift_rate.denominator,
+            });
+        }
+        ordered.push((node_clock_skew.node_id.clone(), node_clock_skew.skew));
+    }
+
+    ordered.sort_by(|left, right| left.0.cmp(&right.0));
+    for adjacent in ordered.windows(2) {
+        if adjacent[0].0 == adjacent[1].0 {
+            return Err(LaunchProfileError::DuplicateNodeClockSkew {
+                node_id: adjacent[0].0.clone(),
+            });
+        }
+    }
+
+    let mut lines = Vec::new();
+    for (node_id, skew) in ordered {
+        if skew.is_perfect() {
+            continue;
+        }
+        lines.push(format!(
+            "node_clock_skew_offset_ns[{node_id}]={}",
+            skew.offset.nanos
+        ));
+        lines.push(format!(
+            "node_clock_drift_rate[{node_id}]={}/{}",
+            skew.drift_rate.numerator, skew.drift_rate.denominator
+        ));
+        lines.push(format!("node_clock_drift_rounding[{node_id}]=floor"));
+        lines.push(format!(
+            "node_clock_skew_applies_to[{node_id}]=guest-visible-only"
+        ));
+        lines.push(format!(
+            "node_clock_skew_scheduling_axis[{node_id}]=unskewed-icount-derived"
+        ));
+    }
+
+    Ok(lines)
 }
 
 fn validate_icount_shift(shift: u8) -> Result<u8, LaunchProfileError> {

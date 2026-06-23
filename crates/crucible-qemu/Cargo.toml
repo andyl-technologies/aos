@@ -8,7 +8,5 @@ publish = false
 workspace = true
 
 [dependencies]
-thiserror = { workspace = true }
-
-[dev-dependencies]
 crucible = { path = "../crucible" }
+thiserror = { workspace = true }
