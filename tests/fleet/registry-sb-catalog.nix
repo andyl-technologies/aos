@@ -40,11 +40,25 @@
 #             enough for the NAR cache + imported store paths.
 {
   lib,
+  mkSystem,
   pkgs,
   systems,
 }: let
   sbTop = systems.server-secureboot.config.system.build.toplevel;
   sbUki = systems.server-secureboot.config.system.build.uki;
+
+  # server-test bundles the guest agent and the CLI tools the producer needs
+  # (it hand-seeds + pushes the registry with git) that image slimming dropped
+  # from the server profile. The registry additionally re-bundles its fixtures.
+  serverWithRegistry = mkSystem [
+    ../../systems/server-test.nix
+    {
+      aos.packages =
+        lib.genAttrs
+        ["aos-registry-server" "test-static-cache-server"]
+        (_: {bundle = true;});
+    }
+  ];
 in {
   name = "registry-sb-catalog";
   # Two boots + registry/static-cache package activation + full-closure
@@ -55,7 +69,7 @@ in {
 
   machines = {
     registry = {
-      system = systems.server;
+      system = serverWithRegistry;
       packages = ["aos-registry-server" "test-static-cache-server"];
       # The producer owns the signed toplevel AND the standalone UKI it
       # publishes as an image; both must resolve in the registry's store.
@@ -68,7 +82,9 @@ in {
     };
 
     target = {
-      system = systems.server;
+      # server-test for the CLI tools the upgrade/verification steps run
+      # in-guest (image slimming dropped them from the plain server PATH).
+      system = systems.server-test;
       # The download lands twice on /var: the NAR cache under
       # /var/lib/apm/cache and the imported store paths (the /nix overlay
       # upper lives on the var partition) — the full sysroot closure.
@@ -106,7 +122,12 @@ in {
           "readlink /var/lib/profiles/system/current"
       ).strip()
       assert gen_before == "gen-1", f"expected gen-1, got {gen_before!r}"
-      target.fail("${pkgs.nix}/bin/nix-store --check-validity '${sbTop}'")
+      # The miss is intentional; keep nix-store's expected error off the
+      # serial console so unexpected warnings remain visible.
+      target.fail(
+          "${pkgs.nix}/bin/nix-store --check-validity '${sbTop}' "
+          "> /tmp/sbtop-validity-precheck.out 2>&1"
+      )
 
       # ════ 1. PUBLISH the signed sysroot + UKI; derive SB facts ════════
       # `apr publish` shells out to sbverify (signer cert), objcopy (.sbat /
@@ -122,7 +143,7 @@ in {
           export NIX_CONF_DIR=/tmp/nix-conf
           export PATH="${pkgs.sbsigntools}/bin:${pkgs.binutils}/bin:${pkgs.systemd}/lib/systemd:$PATH"
           mkdir -p "$NIX_CONF_DIR"
-          printf 'experimental-features = nix-command\\nsandbox = false\\n' \\
+          printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
 
           ${pkgs.nix}/bin/nix-store --check-validity '${sbTop}'
@@ -146,6 +167,7 @@ in {
             --maintainer test \\
             --sysroot \\
             --image '${sbUki}' --image-format uki \\
+            --no-ca \\
             --registry sysreg \\
             --no-commit > /tmp/publish.json
           ${pkgs.aos}/bin/apr verify --registry sysreg

@@ -8,7 +8,7 @@
 ##! up the right platform at each stage.
 ##!
 ##! Detection order:
-##!   1. `/dev/disk/by-label/aos-metadata` — operator override (ISO9660
+##!   1. filesystem label `aos-metadata` — operator override (ISO9660
 ##!      mounted at /run/aos-metadata, `file` platform + config path)
 ##!   2. DMI vendor/product/asset-tag → platform enum
 ##!   3. Fallback: "metal"
@@ -48,9 +48,10 @@ mkDerivation {
         # 1. Operator-placed ISO9660 override. Mount the filesystem at
         #    /run/aos-metadata so ignition's `file` platform reader can
         #    slurp config.json via IGNITION_CONFIG_FILE.
-        if [ -e /dev/disk/by-label/aos-metadata ]; then
+        metadata_dev=$(${util-linux}/sbin/blkid -L aos-metadata 2>/dev/null || true)
+        if [ -n "$metadata_dev" ]; then
             ${coreutils}/bin/mkdir -p /run/aos-metadata
-            ${util-linux}/bin/mount -o ro /dev/disk/by-label/aos-metadata /run/aos-metadata
+            ${util-linux}/bin/mount -o ro "$metadata_dev" /run/aos-metadata
             ${coreutils}/bin/cat >/run/ignition/platform.env <<EOF
         PLATFORM_ID=file
         IGNITION_CONFIG_FILE=/run/aos-metadata/config.json

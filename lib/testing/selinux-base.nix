@@ -66,6 +66,10 @@
           pkgs.aos-selinux-run
           pkgs.checkpolicy
           pkgs.semodule-utils
+          # `semodule` (the policy loader) lives in policycoreutils; image
+          # slimming dropped it from the server PATH (semodule-utils only
+          # provides semodule_package/_link/_expand).
+          pkgs.policycoreutils
         ];
 
         aos.packages.selinux-generated-expose = {

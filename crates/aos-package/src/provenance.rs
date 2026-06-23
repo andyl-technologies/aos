@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use aos_core::nar::cache::normalize_sha256_nix32;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -369,11 +370,15 @@ pub(crate) fn verify_transparency_log_inclusion(
         &entry.body.store_path,
         &meta.store_path,
     )?;
-    ensure_eq(
-        "transparency nar_hash",
-        &entry.body.nar_hash,
-        &meta.nar_hash,
-    )?;
+    // The transparency entry preserves the NAR hash's original spelling; the
+    // loaded meta uses the canonical `sha256:<nix32>` form. Compare by value.
+    if normalize_sha256_nix32(&entry.body.nar_hash) != normalize_sha256_nix32(&meta.nar_hash) {
+        bail!(
+            "transparency nar_hash mismatch: expected '{}', got '{}'",
+            meta.nar_hash,
+            entry.body.nar_hash
+        );
+    }
     if entry.body.nar_size != meta.nar_size {
         bail!(
             "transparency nar_size mismatch: expected {}, got {}",
@@ -765,11 +770,18 @@ fn ensure_source_matches_transparency_entry(
                 &source.store_path,
                 &meta.source_drv,
             )?;
-            ensure_eq(
-                "transparency source_nar_hash",
-                &source.nar_hash,
-                &meta.source_nar_hash,
-            )
+            // Compare the source NAR hash by value: the entry keeps its
+            // original spelling while the loaded meta is canonicalized.
+            if normalize_sha256_nix32(&source.nar_hash)
+                != normalize_sha256_nix32(&meta.source_nar_hash)
+            {
+                bail!(
+                    "transparency source_nar_hash mismatch: expected '{}', got '{}'",
+                    meta.source_nar_hash,
+                    source.nar_hash
+                );
+            }
+            Ok(())
         }
         None if meta.source_drv.is_empty() && meta.source_nar_hash.is_empty() => Ok(()),
         None => bail!(
@@ -808,7 +820,11 @@ fn ensure_digest_matches(
     let actual = digest
         .get("nix:narHash")
         .with_context(|| format!("{kind} digest missing nix:narHash entry"))?;
-    if actual == expected {
+    // The statement records the NAR hash in its original spelling (typically
+    // the SRI `sha256-<base64>` that `nix path-info` emits), while the loaded
+    // registry meta normalizes it to the codebase's canonical `sha256:<nix32>`
+    // form. Compare by value so the two encodings of the same digest agree.
+    if normalize_sha256_nix32(actual) == normalize_sha256_nix32(expected) {
         return Ok(());
     }
     bail!("{kind} nix:narHash digest mismatch: expected '{expected}', got '{actual}'");
@@ -1078,6 +1094,33 @@ mod tests {
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         assert!(map.get("nix:narHash").is_none());
+    }
+
+    #[test]
+    fn ensure_digest_matches_accepts_equivalent_nar_hash_encodings() {
+        // The provenance statement keeps the NAR hash in its `nix path-info`
+        // SRI spelling, while the loaded registry meta normalizes it to the
+        // canonical `sha256:<nix32>` form. Both encode the same digest and must
+        // compare equal.
+        let sri = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let nix32 = normalize_sha256_nix32(sri);
+        assert_ne!(sri, nix32, "the two spellings must differ for the test to bite");
+
+        let digest = match digest_map(sri) {
+            serde_json::Value::Object(map) => map
+                .into_iter()
+                .map(|(key, value)| {
+                    (
+                        key,
+                        value.as_str().expect("digest values are strings").to_string(),
+                    )
+                })
+                .collect::<BTreeMap<String, String>>(),
+            other => panic!("digest_map must return an object, got {other:?}"),
+        };
+
+        ensure_digest_matches("package NAR", &digest, &nix32)
+            .expect("base32 meta hash must match an SRI statement digest");
     }
 
     #[test]

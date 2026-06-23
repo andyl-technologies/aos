@@ -68,6 +68,7 @@ in
     ];
 
     checks = {
+      testing,
       self,
       pkgs,
     }: {

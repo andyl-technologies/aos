@@ -52,8 +52,24 @@
     checks = evaluated.config.system.build.checks;
   };
 
+  # Both machines use ignition /var provisioning, so neither bakes a /var
+  # agent seed — the harness delivers aos-test-agent via its package fragment,
+  # and they hand-seed the registry (git) and probe HTTP/firewall (curl/nft).
+  # server-test provides the bundled agent + those CLI tools (the production
+  # server keeps both out of the slim image). The registry additionally
+  # re-bundles its fixtures.
+  registrySystem = fleetSystem (mkSystem [
+    ../../systems/server-test.nix
+    {
+      aos.packages =
+        lib.genAttrs
+        ["aos-registry-server" "test-static-cache-server"]
+        (_: {bundle = true;});
+    }
+  ]);
+
   targetSystem = fleetSystem (mkSystem [
-    ../../systems/server.nix
+    ../../systems/server-test.nix
     (import ../../systems/_upgrade-http-fixture.nix {
       inherit lib pkgs;
       generation = 1;
@@ -70,7 +86,7 @@ in {
 
   machines = {
     registry = {
-      system = systems.server;
+      system = registrySystem;
       packages = ["aos-registry-server" "test-static-cache-server"];
       extraClosures = [server2Top];
       # `apr cache generate` rewrites the FULL ~1.5 GiB system closure into
@@ -130,7 +146,12 @@ in {
       # The Nix DB must be seeded before a check-validity failure is
       # meaningful (an absent DB also fails the check).
       target.wait_until_succeeds("systemctl is-active aos-nix-db.service", timeout=120)
-      target.fail("${pkgs.nix}/bin/nix-store --check-validity '${server2Top}'")
+      # The miss is intentional; keep nix-store's expected error off the
+      # serial console so unexpected warnings remain visible.
+      target.fail(
+          "${pkgs.nix}/bin/nix-store --check-validity '${server2Top}' "
+          "> /tmp/server2-validity-precheck.out 2>&1"
+      )
 
       # gen-2-only surfaces absent; gen-1 baselines (same as
       # apm-system-upgrade.nix).
@@ -176,7 +197,7 @@ in {
           export NIX_REMOTE=""
           export NIX_CONF_DIR=/tmp/nix-conf
           mkdir -p "$NIX_CONF_DIR"
-          printf 'experimental-features = nix-command\\nsandbox = false\\n' \\
+          printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
 
           ${pkgs.nix}/bin/nix-store --check-validity '${server2Top}'
@@ -196,6 +217,7 @@ in {
             --license MIT \\
             --maintainer test \\
             --sysroot \\
+            --no-ca \\
             --registry sysreg \\
             --no-commit
           ${pkgs.aos}/bin/apr verify --registry sysreg

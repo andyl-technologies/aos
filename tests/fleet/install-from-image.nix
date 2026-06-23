@@ -34,10 +34,31 @@
 #             config over fw_cfg with the FULL profile (storage.disks).
 {
   lib,
+  mkSystem,
   pkgs,
   systems,
 }: let
   server2Top = systems.server-2.config.system.build.toplevel;
+
+  # The server profile keeps the test fixtures and guest agent out of the
+  # production image (bundle = mkDefault false; modules/profiles/server.nix).
+  # Re-bundle per machine: the registry serves the fixtures, and the
+  # image-boot target needs the agent payload in its raw image so the
+  # harness can deliver it via ignition (lib/testing/fleet.nix).
+  # server-test bundles the guest agent and the registry-workflow CLI tools
+  # (git for the registry seed, curl/git for the target's clone + cache probe)
+  # that image slimming dropped from the server profile. The registry machine
+  # additionally re-bundles its fixtures; the image-boot target is plain
+  # server-test (systems.server-test).
+  serverWithRegistry = mkSystem [
+    ../../systems/server-test.nix
+    {
+      aos.packages =
+        lib.genAttrs
+        ["aos-registry-server" "test-static-cache-server"]
+        (_: {bundle = true;});
+    }
+  ];
 
   # Partition sizes (MiB). The docs' production layout is 16 GiB per
   # root; CI uses a smaller A/B layout — same shape, same labels.
@@ -54,7 +75,7 @@ in {
 
   machines = {
     registry = {
-      system = systems.server;
+      system = serverWithRegistry;
       packages = ["aos-registry-server" "test-static-cache-server"];
       extraClosures = [server2Top pkgs.bc];
       # Static cache of the full closure lands under /var/lib/sysreg-cache, and
@@ -62,10 +83,18 @@ in {
       # overlay upper on /var. Keep this aligned with apm-registry-upgrade's
       # producer headroom as the server closure grows.
       varSizeMiB = 4096;
+      # `apr cache generate` zstd-compresses the full server-2 + bc closure
+      # (~1.5 GiB) while the image-boot target hammers the same host with UEFI
+      # partitioning/mkfs. At the 2 GiB default the producer's working set
+      # (closure + OS) thrashes page cache and the publish overruns the 1200 s
+      # agent deadline; 6 GiB keeps the closure resident. This is the one
+      # machine in the fleet that genuinely needs more than the default — every
+      # other VM runs at 2 GiB (see lib/testing/fleet-spec.nix `memoryMiB`).
+      memoryMiB = 6144;
     };
 
     target = {
-      system = systems.server;
+      system = systems.server-test;
       bootMode = "image";
       imageDiskMiB = diskSizeMiB;
       packages = ["aos-test-agent"];

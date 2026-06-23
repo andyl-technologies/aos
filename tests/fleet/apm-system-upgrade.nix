@@ -60,8 +60,11 @@
     checks = evaluated.config.system.build.checks;
   };
 
+  # server-test restores `nft` (and the other fleet CLI tools) on PATH; the
+  # test inspects the live firewall ruleset with `nft list set`, which image
+  # slimming dropped from the server profile.
   server1 = fleetSystem (mkSystem [
-    ../../systems/server.nix
+    ../../systems/server-test.nix
     (import ../../systems/_upgrade-http-fixture.nix {
       inherit lib pkgs;
       generation = 1;

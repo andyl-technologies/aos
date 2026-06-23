@@ -172,13 +172,15 @@ in {
         {
           name = "ruleset-loaded";
           description = "nftables ruleset is loaded";
+          # `nft` by absolute store path: image slimming keeps nftables off the
+          # system PATH (it is in the closure via this module's own units), so
+          # the bare command is not available in-guest.
           script = ''
-            vm.succeed("nft list ruleset")
+            vm.succeed("${pkgs.nftables}/sbin/nft list ruleset")
           '';
         }
       ];
     };
-
 
     # /etc/nftables.conf — complete nftables ruleset.
     environment.etc."nftables.conf" = {
