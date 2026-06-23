@@ -23,9 +23,10 @@ mod launch;
 mod single_vm_fingerprint;
 
 pub use launch::{
-    DeterministicLaunchProfile, DiskImageMode, GuestEntropySeed, GuestEntropySeedFile,
-    IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
-    NodeClockSkewDeclaration, NodeIcountShift,
+    DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
+    GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
+    LaunchProfileCandidate, LaunchProfileError, MachineResetMode, NodeClockSkewDeclaration,
+    NodeIcountShift,
 };
 pub use single_vm_fingerprint::{
     SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintEventBoundary,

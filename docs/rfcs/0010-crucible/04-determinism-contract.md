@@ -719,7 +719,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   Schedule mismatch, localize to the first differing decision and the first
   differing instruction; never tolerate or retry. — satisfies [DET-30],
   [DET-39], routes [INV-10]; spec §4.8, §4.11.
-- [ ] **T-DET-21** Enforce guest non-modification: CoW-only guest writes,
+- [x] **T-DET-21** Enforce guest non-modification: CoW-only guest writes,
   byte-identical genesis backing state across runs, no Crucible content placed
   inside the guest for core operation. — satisfies [DET-15], [DET-16], [INV-5];
   spec §4.5.
