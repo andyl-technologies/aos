@@ -52,24 +52,24 @@
     checks = evaluated.config.system.build.checks;
   };
 
-  # The server profile keeps the test fixtures and guest agent out of the
-  # production image (bundle = mkDefault false). Both machines use ignition
-  # /var provisioning, so neither bakes a /var agent seed — the harness
-  # delivers aos-test-agent via its package fragment, which needs the payload
-  # bundled (modules/profiles/server.nix, lib/testing/fleet.nix).
+  # Both machines use ignition /var provisioning, so neither bakes a /var
+  # agent seed — the harness delivers aos-test-agent via its package fragment,
+  # and they hand-seed the registry (git) and probe HTTP/firewall (curl/nft).
+  # server-test provides the bundled agent + those CLI tools (the production
+  # server keeps both out of the slim image). The registry additionally
+  # re-bundles its fixtures.
   registrySystem = fleetSystem (mkSystem [
-    ../../systems/server.nix
+    ../../systems/server-test.nix
     {
       aos.packages =
         lib.genAttrs
-        ["aos-registry-server" "test-static-cache-server" "aos-test-agent"]
+        ["aos-registry-server" "test-static-cache-server"]
         (_: {bundle = true;});
     }
   ]);
 
   targetSystem = fleetSystem (mkSystem [
-    ../../systems/server.nix
-    {aos.packages.aos-test-agent.bundle = true;}
+    ../../systems/server-test.nix
     (import ../../systems/_upgrade-http-fixture.nix {
       inherit lib pkgs;
       generation = 1;

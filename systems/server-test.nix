@@ -1,0 +1,39 @@
+##! systems/server-test.nix — Server image with fleet-test affordances.
+##!
+##! systems/server.nix is the production image and is deliberately slim: the
+##! guest test agent is not baked in, and the diagnostic / registry-workflow
+##! CLI tools are kept off the system PATH (the image-slimming work — see
+##! modules/profiles/server.nix and modules/base/build.nix). Fleet tests boot
+##! THIS variant instead of re-adding those affordances in every suite:
+##!
+##!   - bundles the `aos-test-agent` package, so the fleet harness can drive
+##!     non-baked (image/ignition) machines, whose agent arrives via the
+##!     package's ignition fragment rather than a baked /var seed
+##!     (lib/testing/fleet.nix);
+##!   - puts the CLI tools fleet test scripts invoke by bare name back on
+##!     PATH — git/sqlite/socat to hand-seed a registry, curl/jq to probe
+##!     HTTP and parse JSON, nft to inspect the firewall ruleset.
+##!
+##! Suites layer their per-test fixture packages (aos-registry-server,
+##! test-http-server, …) on top via `mkSystem [ ./server-test.nix { … } ]`.
+##! Production images never import this, so they stay slim.
+##!
+##! Auto-registers as systems.server-test.
+{pkgs, ...}: {
+  imports = [./server.nix];
+
+  # Guest agent for image/ignition machines (baked machines get it from the
+  # /var seed instead). See lib/testing/fleet.nix `mkMachinesWithIndex`.
+  aos.packages.aos-test-agent.bundle = true;
+
+  # CLI tools fleet scripts run in-guest by bare name; image slimming dropped
+  # these from the server profile's PATH.
+  environment.systemPackages = [
+    pkgs.curl
+    pkgs.git
+    pkgs.jq
+    pkgs.nftables
+    pkgs.socat
+    pkgs.sqlite
+  ];
+}

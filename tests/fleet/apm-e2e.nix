@@ -32,11 +32,13 @@
 }: let
   tomlFmt = lib.formats.toml {inherit lib pkgs;};
 
-  # The server profile keeps aos-registry-server out of the production image
-  # (bundle = mkDefault false); re-bundle it for the registry machine so the
-  # fleet seed can activate it at runtime (modules/profiles/server.nix).
+  # server-test bundles the guest agent and the CLI tools fleet scripts need
+  # (git/sqlite/socat to hand-seed the registry, curl/jq to probe it) — image
+  # slimming keeps those out of the production server. The registry machine
+  # additionally re-bundles aos-registry-server; the client just needs the
+  # tools (systems.server-test).
   serverWithRegistry = mkSystem [
-    ../../systems/server.nix
+    ../../systems/server-test.nix
     {aos.packages.aos-registry-server.bundle = true;}
   ];
 
@@ -118,7 +120,7 @@ in {
   machines = {
     # Lexicographic order → client=192.168.50.10, server=192.168.50.11.
     client = {
-      system = systems.server;
+      system = systems.server-test;
       # No registry package. `apm` ships via modules/base/apm.nix.
     };
 

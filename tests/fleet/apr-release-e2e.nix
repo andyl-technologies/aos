@@ -27,11 +27,13 @@
   pkgs,
   systems,
 }: let
-  # The server profile keeps the registry fixtures out of the production
-  # image (bundle = mkDefault false); re-bundle them for the registry
-  # machine so the fleet seed can activate them (modules/profiles/server.nix).
+  # server-test bundles the guest agent and the CLI tools fleet scripts need
+  # (the producer hand-seeds + signs the registry with git/sqlite; the client
+  # polls the static cache with curl) — image slimming keeps those out of the
+  # production server. The registry additionally re-bundles its fixtures; the
+  # consumer client just needs the tools (systems.server-test).
   serverWithRegistry = mkSystem [
-    ../../systems/server.nix
+    ../../systems/server-test.nix
     {
       aos.packages =
         lib.genAttrs
@@ -61,7 +63,7 @@ in {
   machines = {
     # Lexicographic order → client=192.168.50.10, registry=192.168.50.11.
     client = {
-      system = systems.server;
+      system = systems.server-test;
       # No test package. `apm` ships via modules/base/apm.nix.
     };
 
