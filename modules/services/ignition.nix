@@ -450,9 +450,9 @@ in {
       #                                              entries (metacopy)
       #   upperdir = /run/etc/upper-<gen>/dir      — runtime writes (tmpfs-backed)
       #
-      # The active toplevel is read at runtime by
-      # `readlink /sysroot/var/lib/profiles/system/current/toplevel`;
-      # baking `${config.system.build.toplevel}` here would create an
+      # The booted toplevel is resolved by aos-seed-profiles.service from
+      # the UKI's `aos.toplevel=` kernel parameter. Baking
+      # `${config.system.build.toplevel}` here would create an
       # initrd→toplevel→initrd cycle (the toplevel ships the initrd).
       "etc-overlay-setup" = {
         description = "Set Up /etc Overlay Filesystem";
@@ -490,12 +490,10 @@ in {
           set -euo pipefail
           . /run/aos-profile-gen.env
 
-          # Resolve the active toplevel at runtime; do NOT bake
-          # ${"\${config.system.build.toplevel}"} into this script
-          # (initrd→toplevel→initrd cycle). nix-overlay-setup mounts
-          # /sysroot/nix as the merged overlay, so /sysroot$toplevel
+          # Use the toplevel selected by the booted UKI. nix-overlay-setup
+          # mounts /sysroot/nix as the merged overlay, so /sysroot$toplevel
           # resolves through that.
-          toplevel=$(readlink /sysroot/var/lib/profiles/system/current/toplevel)
+          toplevel="$AOS_BOOTED_TOPLEVEL"
           gen=$AOS_PROFILE_GEN
           # Per-gen mountpoints live under the initrd's own /run/etc
           # (the tmpfs that run-etc-setup.service mounted before
@@ -642,14 +640,18 @@ in {
           set -euo pipefail
           profile_dir=/sysroot/var/lib/profiles/system
 
-          # The seed pointer is a symlink the rootfs builder writes at
-          # /aos-toplevel -> /nix/store/<hash>-toplevel. readlink
-          # returns the literal target (a /nix/store/... path); we
-          # access toplevel-resident files by prefixing /sysroot
-          # because the real root is still under /sysroot in the
-          # initrd. /sysroot/nix is the merged overlay (set up by
-          # nix-overlay-setup.service, which we ordered After).
+          # The seed pointers are symlinks the rootfs builder writes at
+          # /aos-toplevel and /aos-uki. readlink returns the literal
+          # targets (a /nix/store/... path); we access toplevel-resident
+          # files by prefixing /sysroot because the real root is still
+          # under /sysroot in the initrd. /sysroot/nix is the merged
+          # overlay (set up by nix-overlay-setup.service, which we
+          # ordered After).
           toplevel=$(readlink /sysroot/aos-toplevel)
+          uki=""
+          if [ -e /sysroot/aos-uki ]; then
+            uki=$(readlink /sysroot/aos-uki 2>/dev/null || true)
+          fi
 
           read_meta() {
             tr -d '\n' < "/sysroot$toplevel/meta/$1" 2>/dev/null \
@@ -659,6 +661,9 @@ in {
           if [ ! -e "$profile_dir/state.json" ]; then
             mkdir -p "$profile_dir/gen-1"
             ln -sfn "$toplevel" "$profile_dir/gen-1/toplevel"
+            if [ -n "$uki" ]; then
+              ln -sfn "$uki" "$profile_dir/gen-1/uki"
+            fi
             ln -sfn gen-1 "$profile_dir/current"
             # kernel_path must be the `kernel` symlink's TARGET — the
             # same form apm's resolve_kernel_path stores for installed
@@ -678,6 +683,7 @@ in {
               --arg pn  "$(read_meta package-name)" \
               --arg ver "$(read_meta version)" \
               --arg top "$toplevel" \
+              --arg uki "$uki" \
               --arg kern "$kern" \
               --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '{
@@ -691,13 +697,38 @@ in {
                    registry: "seed",
                    created_at: $now,
                    kernel_path: $kern
-                 }]
+                 } + (if $uki == "" then {} else {uki_store_path: $uki} end)]
                }' > "$profile_dir/state.json"
           fi
 
           link=$(readlink "$profile_dir/current")
           GEN=''${link#gen-}
-          printf 'AOS_PROFILE_GEN=%s\n' "$GEN" > /run/aos-profile-gen.env
+
+          booted_toplevel=""
+          for tok in $(cat /proc/cmdline); do
+            case "$tok" in
+              aos.toplevel=*) booted_toplevel="''${tok#aos.toplevel=}" ;;
+            esac
+          done
+
+          if [ -z "$booted_toplevel" ]; then
+            booted_toplevel=$(readlink "$profile_dir/current/toplevel")
+            booted_gen="$GEN"
+          else
+            booted_gen=$(${pkgs.jq}/bin/jq -r --arg tl "$booted_toplevel" \
+              'first(.generations[] | select(.toplevel == $tl) | .number) // ""' \
+              "$profile_dir/state.json")
+          fi
+
+          if [ -z "$booted_gen" ]; then
+            booted_gen="x$(basename "$booted_toplevel" | cut -c1-12)"
+          fi
+
+          {
+            printf 'AOS_PROFILE_GEN=%s\n' "$booted_gen"
+            printf 'AOS_BOOTED_TOPLEVEL=%s\n' "$booted_toplevel"
+          } > /run/aos-profile-gen.env
+          printf '%s' "$booted_gen" > /run/aos-booted-gen
         '';
       };
 

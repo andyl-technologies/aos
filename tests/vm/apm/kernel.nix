@@ -77,9 +77,6 @@
             ''} $out/activate
             chmod +x $out/activate
 
-            # Boot loader entry directory (for update_boot_loader)
-            mkdir -p $out/boot/loader/entries
-
             ${
               if drainScript != null
               then ''
@@ -336,12 +333,6 @@ in {
       # Default mode (no --kexec, --reboot, or --live flags)
       OUTPUT=$(${apm}/bin/apm install server --system --yes 2>&1) || true
       echo "Output: $OUTPUT"
-
-      # Verify the boot loader entry was updated (if kernel changed)
-      if [ -f /boot/loader/entries/aos.conf ]; then
-        echo "==> Boot loader entry updated:"
-        cat /boot/loader/entries/aos.conf
-      fi
 
       # Verify advisory message about reboot
       if echo "$OUTPUT" | grep -qi "reboot"; then

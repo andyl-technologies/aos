@@ -2095,11 +2095,38 @@ pub struct ApmSettings {
     /// PCR policy public key used for signed-PCR credential encryption.
     #[serde(default)]
     pub credential_pcr_public_key: Option<String>,
+    /// Boot-menu reconciliation settings.
+    #[serde(default, skip_deserializing)]
+    pub boot: BootSettings,
 }
 
 /// Serde default for [`ApmSettings::parallel_downloads`].
 fn default_parallel() -> u32 {
     4
+}
+
+/// Boot-menu settings from `apm.conf`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BootSettings {
+    /// Maximum number of recent generations to keep bootable on the ESP.
+    ///
+    /// Older generations remain installed but lose their boot-menu entry until
+    /// re-selected by rollback.
+    #[serde(default = "default_configuration_limit")]
+    pub configuration_limit: u32,
+}
+
+/// Serde default for [`BootSettings::configuration_limit`].
+fn default_configuration_limit() -> u32 {
+    3
+}
+
+impl Default for BootSettings {
+    fn default() -> Self {
+        Self {
+            configuration_limit: default_configuration_limit(),
+        }
+    }
 }
 
 impl Default for ApmSettings {
@@ -2110,6 +2137,7 @@ impl Default for ApmSettings {
             auto_autoremove: false,
             auto_gc: false,
             credential_pcr_public_key: None,
+            boot: BootSettings::default(),
         }
     }
 }
@@ -2385,6 +2413,9 @@ pub struct ApmConfFile {
     /// The `[settings]` table; every field is optional.
     #[serde(default)]
     pub settings: ApmSettings,
+    /// The top-level `[boot]` table; merged into [`ApmSettings::boot`].
+    #[serde(default)]
+    pub boot: Option<BootSettings>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2443,6 +2474,12 @@ pub struct SystemGeneration {
     /// upgrades and rollbacks (`None` when the toplevel ships no kernel).
     #[serde(default)]
     pub kernel_path: Option<String>,
+    /// Store path of the published `format = "uki"` image for this generation.
+    ///
+    /// `None` means the sysroot shipped no UKI image, so the generation can be
+    /// active but cannot be placed in the sd-boot menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uki_store_path: Option<String>,
 }
 
 /// Persistent state for system generations.
@@ -3003,6 +3040,7 @@ mod tests {
         assert_eq!(s.parallel_downloads, 4);
         assert!(!s.auto_autoremove);
         assert!(!s.auto_gc);
+        assert_eq!(s.boot.configuration_limit, 3);
     }
 
     #[test]
@@ -3014,16 +3052,24 @@ parallel_downloads = 8
 auto_autoremove = true
 auto_gc = false
 credential_pcr_public_key = "/etc/aos/pcr-sign.pem"
+
+[boot]
+configuration_limit = 5
 "#;
         let conf: ApmConfFile = toml::from_str(toml_str).unwrap();
-        assert!(conf.settings.assume_yes);
-        assert_eq!(conf.settings.parallel_downloads, 8);
-        assert!(conf.settings.auto_autoremove);
-        assert!(!conf.settings.auto_gc);
+        let mut settings = conf.settings;
+        if let Some(boot) = conf.boot {
+            settings.boot = boot;
+        }
+        assert!(settings.assume_yes);
+        assert_eq!(settings.parallel_downloads, 8);
+        assert!(settings.auto_autoremove);
+        assert!(!settings.auto_gc);
         assert_eq!(
-            conf.settings.credential_pcr_public_key.as_deref(),
+            settings.credential_pcr_public_key.as_deref(),
             Some("/etc/aos/pcr-sign.pem")
         );
+        assert_eq!(settings.boot.configuration_limit, 5);
     }
 
     #[test]
@@ -3046,6 +3092,7 @@ max_age_days = 7
         let conf: ApmConfFile = toml::from_str(toml_str).unwrap();
         assert!(!conf.settings.assume_yes);
         assert_eq!(conf.settings.parallel_downloads, 4);
+        assert_eq!(conf.settings.boot.configuration_limit, 3);
     }
 
     #[test]

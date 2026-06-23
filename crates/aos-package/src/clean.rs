@@ -18,6 +18,8 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::profile::Profile;
+use crate::esp;
+use crate::sysroot;
 use crate::types::ProfileScope;
 use aos_core::nix::aos_nix_env;
 use aos_core::output::{OutputMode, Printer};
@@ -48,6 +50,14 @@ pub async fn run(
 ) -> Result<()> {
     let json_mode = printer.mode() == OutputMode::Json;
     if generations {
+        if config.scope == ProfileScope::System && keep < config.settings.boot.configuration_limit {
+            printer.warning(&format!(
+                "apm clean --generations --keep={keep} is lower than \
+                 boot.configuration_limit={}; older installed generations may \
+                 lose their boot-menu entries.",
+                config.settings.boot.configuration_limit
+            ));
+        }
         let profile = Profile::open_readonly(config.scope);
         let all_generations = profile.list_generations()?;
         let current_generation = profile.current_generation()?.map(|g| g.number);
@@ -125,6 +135,7 @@ pub async fn run(
                     "could not reclaim runtime /etc upper(s): {error:#}"
                 ));
             }
+            reconcile_system_boot_menu_after_clean(config, printer);
 
             if json_mode {
                 printer.json(&clean_generations_json(
@@ -159,6 +170,32 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+fn reconcile_system_boot_menu_after_clean(config: &ApmConfig, printer: &Printer) {
+    if config.scope != ProfileScope::System {
+        return;
+    }
+    let profile_path = ProfileScope::System.profile_path();
+    let state = match sysroot::load_generation_state_pub(&profile_path) {
+        Ok(state) => state,
+        Err(error) => {
+            printer.warning(&format!(
+                "could not load system generation state: {error:#}"
+            ));
+            return;
+        }
+    };
+    let booted = esp::booted_generation();
+    let retained = esp::retained_generations(
+        &state,
+        config.settings.boot.configuration_limit,
+        booted,
+        &profile_path,
+    );
+    if let Err(error) = esp::reconcile(&retained, state.current, booted, printer) {
+        printer.warning(&format!("boot menu prune failed: {error:#}"));
+    }
 }
 
 /// Run `apm gc`.

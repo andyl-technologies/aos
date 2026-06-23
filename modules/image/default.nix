@@ -2,7 +2,8 @@
 ##!
 ##! Provides aos.image options and wires system.build.image.{format} to
 ##! image builder derivations. The raw GPT image is the base format;
-##! all others are converted from it via qemu-img.
+##! all others are converted from it via qemu-img. The UKI is owned by
+##! modules/base/build.nix; images consume that canonical artifact.
 ##!
 ##! Supported formats:
 ##!   raw   — raw GPT disk image (base, bootable via dd or losetup)
@@ -74,16 +75,6 @@ in {
     };
   };
 
-  options.system.build.uki = lib.mkOption {
-    type = lib.types.package;
-    description = ''
-      The assembled Unified Kernel Image (`.efi`) written to the image's
-      ESP. Secure Boot signed when `aos.boot.secureBoot.enable` is set.
-      Exposed so it can be published (`apr publish --image`) and have its
-      Secure Boot facts cataloged (RFC-0006 phase 4).
-    '';
-  };
-
   config = lib.mkIf cfg.enable {
     system.build.image = {
       raw = rawImage;
@@ -91,6 +82,5 @@ in {
       vmdk = convertImage "vmdk" "vmdk";
       vhd = convertImage "vhd" "vpc";
     };
-    system.build.uki = rawImage.uki;
   };
 }

@@ -6,7 +6,7 @@
 ##!   Partition 1 (ESP)    — vfat, sized to its contents x2 (A/B headroom)
 ##!                          EFI/BOOT/BOOTX64.EFI              (UEFI fallback)
 ##!                          EFI/systemd/systemd-bootx64.efi   (sd-boot canonical)
-##!                          EFI/Linux/aos-<version>.efi       (UKI)
+##!                          EFI/Linux/aos-<toplevel-hash>.efi (UKI)
 ##!                          loader/loader.conf                (sd-boot config)
 ##!   Partition 2 (root-a) — rootFsType (erofs/ext4), sized to the rootfs image
 ##!
@@ -15,10 +15,9 @@
 ##!
 ##! Build strategy (no losetup/mount — fully sandbox-compatible):
 ##!   1. lib/build/rootfs.nix builds root.img (erofs or ext4, root-owned)
-##!   2. aos-uki assembles vmlinuz + initrd + cmdline + os-release into a UKI
-##!   3. Populate ESP tree (sd-boot + UKI + loader.conf)
-##!   4. mkfs.vfat + mcopy → creates FAT32 ESP image
-##!   5. sfdisk + dd → assembles partitions into final GPT image
+##!   2. Populate ESP tree (sd-boot + UKI + loader.conf)
+##!   3. mkfs.vfat + mcopy → creates FAT32 ESP image
+##!   4. sfdisk + dd → assembles partitions into final GPT image
 ##!
 ##! Arguments:
 ##!   pkgs   — AOS package set
@@ -33,8 +32,18 @@
   system,
   name,
 }: let
-  # Kernel command line parameters from the evaluated config.
-  kernelParams = lib.concatStringsSep " " system.config.aos.boot.kernelParams;
+  toplevel = system.config.system.build.toplevel;
+  toplevelStorePath = toString toplevel;
+  toplevelStoreHash = builtins.substring 0 32 (baseNameOf toplevelStorePath);
+  # The ESP UKI entry name is derived from the toplevel store hash. apm uses
+  # the same convention when reconciling retained generations at runtime.
+  ukiFilename = "aos-${toplevelStoreHash}.efi";
+  ukiOutputFilename = "aos-${system.config.aos.system.name}-${version}.efi";
+  # Kernel command line baked into system.build.uki.
+  kernelParams = lib.concatStringsSep " " (
+    system.config.aos.boot.kernelParams
+    ++ ["aos.toplevel=${toplevel}"]
+  );
 
   version = system.config.aos.system.version;
 
@@ -61,43 +70,12 @@
     fsType = rootFsType;
     shrinkToFit = true;
     headroomMiB = 64;
+    extraClosures = [system.config.system.build.uki];
   };
 
-  # Secure Boot signing (RFC-0006). When enabled, the UKI and sd-boot
-  # are Authenticode-signed with the deployment db key; otherwise the
-  # image is the byte-reproducible unsigned artifact.
+  # Secure Boot signing. system.build.uki is already signed by aos-uki when
+  # enabled; the image builder signs only sd-boot itself.
   sb = system.config.aos.boot.secureBoot;
-
-  uki = pkgs.aos-uki {
-    inherit name version;
-    kernel = system.config.system.build.kernel;
-    initrd = system.config.system.build.initrd;
-    cmdline = kernelParams;
-    # The toplevel now ships a top-level `os-release` symlink (named-
-    # output layout from spec v12 §1); the previous `etc/os-release`
-    # path is gone along with the rest of `${toplevel}/etc/`.
-    osRelease = "${system.config.system.build.toplevel}/os-release";
-    secureBootKey =
-      if sb.enable
-      then sb.dbKey
-      else null;
-    secureBootCert =
-      if sb.enable
-      then sb.dbCert
-      else null;
-    # PCR-policy signing (RFC-0006 phase 3): when measured boot is on, the
-    # UKI carries a signed PCR policy so TPM-sealed /var unseals across OTA.
-    pcrPrivateKey =
-      if sb.measuredBoot.enable
-      then sb.measuredBoot.pcrPrivateKey
-      else null;
-    pcrPublicKey =
-      if sb.measuredBoot.enable
-      then sb.measuredBoot.pcrPublicKey
-      else null;
-  };
-
-  ukiFilename = "aos-${name}-${version}.efi";
 
   imageDrv = pkgs.mkDerivation {
     name = "aos-image-${name}";
@@ -115,7 +93,7 @@
 
     ROOT_IMG = "${rootfs}/root.img";
     ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
-    UKI_PATH = "${uki}/${ukiFilename}";
+    UKI_PATH = "${system.config.system.build.uki}/${ukiOutputFilename}";
     SDBOOT_DIR = "${pkgs.systemd}/lib/systemd/boot/efi";
 
     # Secure Boot signing inputs (empty unless enabled). The UKI is
@@ -172,11 +150,11 @@
           # UKI auto-discovered by sd-boot from /EFI/Linux/.
           cp "$UKI_PATH" esp/EFI/Linux/${ukiFilename}
 
-          # sd-boot configuration. The `default aos-*.efi` glob makes
-          # sd-boot pick the lexically-highest match — sysupdate-friendly
-          # when the A/B flow ships newer UKIs alongside older ones.
+          # sd-boot configuration. The default points at the image's
+          # initial toplevel-hash UKI; apm rewrites this on generation
+          # changes after first boot.
           cat > esp/loader/loader.conf <<LOADER
-          default aos-*.efi
+          default ${ukiFilename}
           timeout 3
           console-mode max
           editor no
@@ -272,8 +250,4 @@
     ];
   };
 in
-  # Expose the assembled UKI (the exact `.efi` written to the ESP) as a
-  # passthru attribute so callers can publish or measure it directly
-  # (RFC-0006 phase 4: `apr publish --image <uki>` derives Secure Boot
-  # facts from this signed binary).
-  imageDrv // {inherit uki;}
+  imageDrv

@@ -81,7 +81,7 @@ impl ApmConfig {
         })
     }
 
-    /// Load and deep-merge `apm.conf` `[settings]` across all layers.
+    /// Load and deep-merge `apm.conf` `[settings]` and `[boot]` across all layers.
     ///
     /// Each layer's `apm.conf` is parsed as a [`toml::Value`] and merged into
     /// the accumulator in precedence order, so a higher layer overrides
@@ -118,7 +118,11 @@ impl ApmConfig {
                 let conf: ApmConfFile = value
                     .try_into()
                     .context("deserializing merged apm.conf settings")?;
-                conf.settings
+                let mut settings = conf.settings;
+                if let Some(boot) = conf.boot {
+                    settings.boot = boot;
+                }
+                settings
             }
             None => ApmSettings::default(),
         };
@@ -523,6 +527,7 @@ parallel_downloads = 16
         let settings = ApmConfig::load_settings(&layers(&[&tmp])).unwrap();
         assert!(settings.assume_yes);
         assert_eq!(settings.parallel_downloads, 16);
+        assert_eq!(settings.boot.configuration_limit, 3);
     }
 
     #[test]
@@ -538,6 +543,9 @@ parallel_downloads = 16
 [settings]
 assume_yes = true
 parallel_downloads = 2
+
+[boot]
+configuration_limit = 4
 "#,
         );
         write_file(
@@ -552,6 +560,22 @@ parallel_downloads = 8
         let settings = ApmConfig::load_settings(&layers(&[&seed, &writable])).unwrap();
         assert_eq!(settings.parallel_downloads, 8); // overridden
         assert!(settings.assume_yes); // inherited from the seed
+        assert_eq!(settings.boot.configuration_limit, 4); // inherited from the seed
+    }
+
+    #[test]
+    fn load_settings_reads_top_level_boot_section() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "apm.conf",
+            r#"
+[boot]
+configuration_limit = 7
+"#,
+        );
+        let settings = ApmConfig::load_settings(&layers(&[&tmp])).unwrap();
+        assert_eq!(settings.boot.configuration_limit, 7);
     }
 
     #[test]
@@ -560,6 +584,7 @@ parallel_downloads = 8
         let settings = ApmConfig::load_settings(&layers(&[&tmp])).unwrap();
         assert!(!settings.assume_yes);
         assert_eq!(settings.parallel_downloads, 4);
+        assert_eq!(settings.boot.configuration_limit, 3);
     }
 
     #[test]

@@ -4,6 +4,7 @@
 ##!   - environment.systemPackages  — runtime packages accumulated by all modules
 ##!   - environment.etc             — files to install in /etc
 ##!   - system.build.toplevel       — the top-level system derivation
+##!   - system.build.uki            — the signed Unified Kernel Image
 ##!   - system.build.kernel         — the kernel derivation
 ##!   - system.build.initrd         — the initrd derivation
 ##!
@@ -265,6 +266,18 @@ in {
         description = "The initrd derivation providing initrd.img.";
       };
 
+      ## The system's Unified Kernel Image.
+      uki = lib.mkOption {
+        type = lib.types.package;
+        description = ''
+          The canonical Unified Kernel Image for this system. It embeds the
+          kernel, initrd, os-release, and kernel command line, including the
+          `aos.toplevel=` selector used by the initrd to activate the booted
+          generation. Secure Boot and measured-boot signatures are applied
+          here when configured.
+        '';
+      };
+
       ## Colon-joined PATH derived from `environment.systemPackages`.
       systemPath = lib.mkOption {
         type = lib.types.str;
@@ -493,6 +506,38 @@ in {
     '';
 
     system.build.kernel = pkgs.linux;
+
+    system.build.uki = let
+      sb = config.aos.boot.secureBoot;
+    in
+      pkgs.aos-uki {
+        name = config.aos.system.name;
+        version = config.aos.system.version;
+        kernel = config.system.build.kernel;
+        initrd = config.system.build.initrd;
+        cmdline = lib.concatStringsSep " " (
+          config.aos.boot.kernelParams
+          ++ ["aos.toplevel=${config.system.build.toplevel}"]
+        );
+        osRelease = "${config.system.build.toplevel}/os-release";
+        secureBootKey =
+          if sb.enable
+          then sb.dbKey
+          else null;
+        secureBootCert =
+          if sb.enable
+          then sb.dbCert
+          else null;
+        pcrPrivateKey =
+          if sb.measuredBoot.enable
+          then sb.measuredBoot.pcrPrivateKey
+          else null;
+        pcrPublicKey =
+          if sb.measuredBoot.enable
+          then sb.measuredBoot.pcrPublicKey
+          else null;
+      };
+
     system.build.systemPath =
       makeBinPath config.environment.systemPackages
       + ":"

@@ -37,12 +37,11 @@
 //! # Kernel upgrade modes
 //!
 //! When the new generation ships a different kernel, [`KernelUpgradeMode`]
-//! selects what happens after activation: `Advisory` (default) updates the
-//! boot loader and advises a reboot, `Kexec` hot-loads the new kernel,
-//! `Reboot` queues a full reboot via systemd, and `Live` applies userspace
-//! only, deferring the kernel to the next reboot. `--drain` runs the
-//! toplevel's drain script (or isolates `drain.target`) before a disruptive
-//! switch.
+//! selects what happens after activation: `Advisory` (default) advises a
+//! reboot, `Kexec` hot-loads the new kernel, `Reboot` queues a full reboot via
+//! systemd, and `Live` applies userspace only, deferring the kernel to the next
+//! reboot. `--drain` runs the toplevel's drain script (or isolates
+//! `drain.target`) before a disruptive switch.
 
 use std::collections::HashSet;
 use std::fs::OpenOptions;
@@ -62,12 +61,15 @@ use crate::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     fetch_narinfos, resolve_mirror_chain, split_mirror_chain,
 };
+use crate::esp;
 use crate::policy::admit_package_roots;
 use crate::registry::sb_certs::{self, SbCertsToml};
 use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::{filter_missing, import_nar};
-use crate::types::{PackageMeta, ProfileScope, SystemGeneration, SystemGenerationState};
+use crate::types::{
+    PackageMeta, ProfileScope, SysrootImageEntry, SystemGeneration, SystemGenerationState,
+};
 use crate::unit_diff::{self, UnitDiff};
 use crate::verify::{verify_download_hash, verify_downloads, verify_nar_hash};
 
@@ -95,8 +97,6 @@ pub enum KernelUpgradeMode {
 
 /// File name of the generation-state JSON inside the system profile dir.
 const SYSTEM_STATE_FILE: &str = "state.json";
-/// systemd-boot loader entry rewritten when the kernel changes.
-const BOOT_LOADER_ENTRY: &str = "/boot/loader/entries/aos.conf";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -172,6 +172,7 @@ pub async fn install_system(
             pkg_name
         );
     }
+    let uki_store_path = first_uki_image(toplevel_meta).map(|image| image.store_path.clone());
 
     // Handle image download mode.
     if let Some(fmt) = image_format {
@@ -288,6 +289,8 @@ pub async fn install_system(
         printer.info("All paths already in store.");
     }
 
+    download_sysroot_uki_images(config, toplevel_meta, &closure.registry_name, printer).await?;
+
     // Secure Boot validation (RFC-0006 phase 4): the closure is now
     // downloaded, NAR/hash-verified, and imported. Before we create a new
     // generation or touch the boot path, validate the image's recorded
@@ -312,6 +315,10 @@ pub async fn install_system(
     let gen_num = state.next;
     state.next += 1;
 
+    if uki_store_path.is_none() {
+        warn_missing_uki_image(printer, pkg_name, &toplevel_meta.version, gen_num);
+    }
+
     let now_iso = chrono_iso8601_now();
     let kernel_path = resolve_kernel_path(&toplevel_meta.store_path);
 
@@ -323,15 +330,22 @@ pub async fn install_system(
         registry: closure.registry_name.clone(),
         created_at: now_iso,
         kernel_path: kernel_path.clone(),
+        uki_store_path: uki_store_path.clone(),
     };
 
-    // Create generation directory with a symlink to the toplevel.
+    // Create generation directory with symlinks that act as GC roots.
     let gen_dir = profile_path.join(format!("gen-{gen_num}"));
     std::fs::create_dir_all(&gen_dir)?;
     let toplevel_link = gen_dir.join("toplevel");
     #[cfg(unix)]
     std::os::unix::fs::symlink(&toplevel_meta.store_path, &toplevel_link)
         .with_context(|| format!("creating toplevel symlink in gen-{gen_num}"))?;
+    if let Some(uki_store_path) = &uki_store_path {
+        let uki_link = gen_dir.join("uki");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(uki_store_path, &uki_link)
+            .with_context(|| format!("creating UKI symlink in gen-{gen_num}"))?;
+    }
 
     state.generations.push(new_gen);
     save_generation_state(&profile_path, &state)?;
@@ -376,6 +390,8 @@ pub async fn install_system(
         }
     }
     commit_current_generation(&profile_path, &mut state, gen_num)?;
+
+    reconcile_boot_menu(config, &state, &profile_path, "boot menu update", printer);
 
     // Handle kernel upgrade according to the chosen mode. Both sides are
     // canonicalized so a seeded generation's `<toplevel>/kernel` symlink
@@ -522,7 +538,7 @@ pub async fn upgrade_system(
 /// script fails (including the degraded exit-6 case, where the rollback is
 /// live but some units failed).
 pub async fn rollback_system(
-    _config: &ApmConfig,
+    config: &ApmConfig,
     generation: Option<u32>,
     list: bool,
     dry_run: bool,
@@ -624,6 +640,7 @@ pub async fn rollback_system(
         }
     }
     commit_current_generation(&profile_path, &mut state, target.number)?;
+    reconcile_boot_menu(config, &state, &profile_path, "boot menu rollback", printer);
 
     // Handle kernel upgrade according to the chosen mode (canonicalized
     // for the same reason as the upgrade path: the seeded generation
@@ -913,6 +930,124 @@ async fn download_image(
     Ok(())
 }
 
+fn first_uki_image(meta: &PackageMeta) -> Option<&SysrootImageEntry> {
+    meta.images.iter().find(|image| image.format == "uki")
+}
+
+async fn download_sysroot_uki_images(
+    config: &ApmConfig,
+    meta: &PackageMeta,
+    registry_name: &str,
+    printer: &Printer,
+) -> Result<()> {
+    let uki_images: Vec<&SysrootImageEntry> = meta
+        .images
+        .iter()
+        .filter(|image| image.format == "uki")
+        .collect();
+    if uki_images.is_empty() {
+        return Ok(());
+    }
+
+    let store_paths: Vec<String> = uki_images
+        .iter()
+        .map(|image| image.store_path.clone())
+        .collect();
+    let missing = filter_missing(&store_paths).await?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let missing_set: HashSet<&str> = missing.iter().map(|path| path.as_str()).collect();
+    let mirror_url = resolve_registry_mirror(config, registry_name);
+    let requests: Vec<DownloadRequest> = uki_images
+        .iter()
+        .filter(|image| missing_set.contains(image.store_path.as_str()))
+        .map(|image| DownloadRequest {
+            store_path: image.store_path.clone(),
+            mirror_url: mirror_url.clone(),
+        })
+        .collect();
+
+    printer.info(&format!(
+        "Downloading {} published UKI image(s)...",
+        requests.len()
+    ));
+    let engine = std::sync::Arc::new(default_engine());
+    let resolved = fetch_narinfo_closure(
+        std::sync::Arc::clone(&engine),
+        &requests,
+        config.settings.parallel_downloads,
+        printer,
+    )
+    .await?;
+    let nar_cache = config.nar_cache_path();
+    let results = download_nars(
+        &resolved,
+        &nar_cache,
+        config.settings.parallel_downloads,
+        printer,
+    )
+    .await?;
+
+    let expected_by_path: std::collections::HashMap<&str, &str> = uki_images
+        .iter()
+        .map(|image| (image.store_path.as_str(), image.nar_hash.as_str()))
+        .collect();
+    for result in &results {
+        verify_download_hash(&result.local_path, &result.download_hash)?;
+        let expected_nar_hash = expected_by_path
+            .get(result.store_path.as_str())
+            .copied()
+            .unwrap_or(result.nar_hash.as_str());
+        verify_nar_hash(&result.local_path, expected_nar_hash)
+            .with_context(|| format!("verifying NAR for {}", result.store_path))?;
+        import_nar(
+            &result.local_path,
+            &result.store_path,
+            &result.references,
+            result.deriver.as_deref(),
+        )
+        .await
+        .with_context(|| format!("importing {}", result.store_path))?;
+    }
+
+    Ok(())
+}
+
+fn resolve_registry_mirror(config: &ApmConfig, registry_name: &str) -> String {
+    if let Some((registry, _)) = config
+        .registries
+        .iter()
+        .find(|(registry, _)| registry.name == registry_name)
+    {
+        return resolve_mirror(&config.scope.registries_path(), registry);
+    }
+    format!("https://registry.aos.dev/{registry_name}")
+}
+
+fn warn_missing_uki_image(printer: &Printer, package: &str, version: &str, generation: u32) {
+    let message = format!(
+        "this sysroot ships no UKI image; generation {generation} will not \
+         appear in the boot menu. It is active now, but the next cold reboot \
+         will boot the previous generation instead. Publish the sysroot with \
+         `apr publish --image <uki> --image-format uki` to enable a \
+         per-generation boot entry."
+    );
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "system_install",
+            "package": package,
+            "version": version,
+            "generation": generation,
+            "uki_image": false,
+            "warning": message,
+        }));
+    } else {
+        printer.warning(&message);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Generation state management
 // ---------------------------------------------------------------------------
@@ -974,6 +1109,26 @@ fn commit_current_generation(
     std::os::unix::fs::symlink(format!("gen-{generation}"), &tmp_link)?;
     std::fs::rename(&tmp_link, &current_link)?;
     Ok(())
+}
+
+/// Reconcile the ESP boot menu, warning instead of failing the sysroot change.
+fn reconcile_boot_menu(
+    config: &ApmConfig,
+    state: &SystemGenerationState,
+    profile_path: &Path,
+    action: &str,
+    printer: &Printer,
+) {
+    let booted = esp::booted_generation();
+    let retained = esp::retained_generations(
+        state,
+        config.settings.boot.configuration_limit,
+        booted,
+        profile_path,
+    );
+    if let Err(error) = esp::reconcile(&retained, state.current, booted, printer) {
+        printer.warning(&format!("{action} failed: {error:#}"));
+    }
 }
 
 /// Get the current sysroot's store path, if any.
@@ -1565,42 +1720,6 @@ fn resolve_kernel_path(toplevel: &str) -> Option<String> {
     }
 }
 
-/// Update the boot loader entry with a new kernel path.
-fn update_boot_loader(kernel_path: &str, toplevel: &str) -> Result<()> {
-    let initrd_path = PathBuf::from(toplevel).join("initrd");
-    let initrd = if initrd_path.exists() {
-        match std::fs::read_link(&initrd_path) {
-            Ok(target) => format!("{}/initrd", target.display()),
-            Err(_) => format!("{toplevel}/initrd/initrd"),
-        }
-    } else {
-        String::new()
-    };
-
-    let entry = format!(
-        "title   AOS\n\
-         linux   {kernel_path}/bzImage\n\
-         {}\
-         options root=/dev/sda2 console=ttyS0\n",
-        if initrd.is_empty() {
-            String::new()
-        } else {
-            format!("initrd  {initrd}\n")
-        },
-    );
-
-    // Only write if the boot loader directory exists.
-    let parent = Path::new(BOOT_LOADER_ENTRY)
-        .parent()
-        .context("BOOT_LOADER_ENTRY has no parent directory")?;
-    if parent.exists() {
-        std::fs::write(BOOT_LOADER_ENTRY, &entry)
-            .with_context(|| format!("updating {BOOT_LOADER_ENTRY}"))?;
-    }
-
-    Ok(())
-}
-
 /// Extract a human-readable kernel version from a store path.
 ///
 /// Expects paths like `/nix/store/abc123-linux-6.12.1` and returns `6.12.1`.
@@ -1645,19 +1764,13 @@ async fn handle_kernel_upgrade(
         _ => false,
     };
 
-    // Always update boot loader if kernel changed.
-    if kernel_changed {
-        let new_k = new_kernel.as_deref().unwrap_or("");
-        update_boot_loader(new_k, new_toplevel)?;
-    }
-
     match mode {
         KernelUpgradeMode::Advisory => {
             if kernel_changed {
                 let old_ver = extract_kernel_version(old_kernel);
                 let new_ver = extract_kernel_version(new_kernel);
                 printer.warning(&format!("Kernel updated: {} -> {}", old_ver, new_ver,));
-                printer.plain("  Boot loader updated. Reboot required for kernel changes.");
+                printer.plain("  Reboot required for kernel changes.");
                 printer.plain("  Use: apm upgrade --system --kexec  (fast, ~3s)");
                 printer.plain("  Or:  apm upgrade --system --reboot (full reboot)");
             }
@@ -1897,6 +2010,10 @@ fn validate_sysroot_secure_boot_in(
         return Ok(());
     }
 
+    for img in &signed_images {
+        require_signed_uki_present(img)?;
+    }
+
     let Some(catalog) = sb_certs::load_sb_certs_toml(catalog_dir).with_context(|| {
         format!(
             "loading Secure Boot catalog for registry '{registry_name}' from {}",
@@ -1960,20 +2077,32 @@ fn validate_image_secure_boot(
         );
     }
 
-    // 3. Defense in depth: re-verify the downloaded UKI against the db cert.
+    // 3. The signed image's UKI bytes must be locally present. Defense in
+    // depth: re-verify that UKI against the db cert when one is provisioned.
+    let uki = require_signed_uki_present(img)?;
     if let Some(db_cert) = db_cert {
-        if let Some(uki) = find_uki_in_image(&img.store_path) {
-            reverify_uki(&uki, db_cert).with_context(|| {
-                format!(
-                    "re-verifying downloaded UKI for image '{}' against the \
-                     catalog db cert",
-                    img.format
-                )
-            })?;
-        }
+        reverify_uki(&uki, db_cert).with_context(|| {
+            format!(
+                "re-verifying downloaded UKI for image '{}' against the \
+                 catalog db cert",
+                img.format
+            )
+        })?;
     }
 
     Ok(())
+}
+
+fn require_signed_uki_present(img: &SysrootImageEntry) -> Result<PathBuf> {
+    find_uki_in_image(&img.store_path).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Secure Boot validation failed for image '{}': the signed UKI \
+             binary is not present at {}; refusing the upgrade before \
+             activation.",
+            img.format,
+            img.store_path,
+        )
+    })
 }
 
 /// Locate a provisioned db certificate PEM for `registry`, if present.
@@ -1992,7 +2121,7 @@ fn sb_db_cert_pem(config: &ApmConfig, registry: &str) -> Option<PathBuf> {
 }
 
 /// Find a UKI (`.efi` PE file) inside an imported image store path.
-fn find_uki_in_image(store_path: &str) -> Option<PathBuf> {
+pub(crate) fn find_uki_in_image(store_path: &str) -> Option<PathBuf> {
     fn walk(dir: &Path) -> Option<PathBuf> {
         let entries = std::fs::read_dir(dir).ok()?;
         for entry in entries.flatten() {
@@ -2216,6 +2345,7 @@ mod tests {
     use super::*;
     use crate::registry::sb_certs::{RevokedSbCert, SbCert, write_sb_certs_toml};
     use crate::types::{SbatEntry, SysrootImageEntry};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     const SIGNER_ACTIVE: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
@@ -2234,7 +2364,7 @@ mod tests {
     fn signed_image(signer: &str, sbat: &[(&str, u32)]) -> SysrootImageEntry {
         SysrootImageEntry {
             format: "raw".into(),
-            store_path: "/nix/store/deadbeef-aos-image".into(),
+            store_path: fake_uki_image_store_path(),
             nar_hash: "sha256:abc".into(),
             nar_size: 4096,
             sb_signer_cert_sha256: Some(signer.into()),
@@ -2245,6 +2375,16 @@ mod tests {
             root_hash: None,
             root_hash_sig: None,
         }
+    }
+
+    fn fake_uki_image_store_path() -> String {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("aos-sysroot-sb-test-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("image.efi"), b"fake uki").unwrap();
+        dir.to_string_lossy().to_string()
     }
 
     fn active_catalog() -> SbCertsToml {
@@ -2398,6 +2538,7 @@ mod tests {
                     registry: "aos-core".into(),
                     created_at: "2026-03-01T00:00:00Z".into(),
                     kernel_path: Some("/nix/store/kern1-linux-6.12".into()),
+                    uki_store_path: None,
                 },
                 SystemGeneration {
                     number: 2,
@@ -2407,6 +2548,7 @@ mod tests {
                     registry: "aos-core".into(),
                     created_at: "2026-04-01T00:00:00Z".into(),
                     kernel_path: Some("/nix/store/kern2-linux-6.13".into()),
+                    uki_store_path: Some("/nix/store/uki2".into()),
                 },
             ],
         };
@@ -2442,6 +2584,7 @@ mod tests {
                 registry: "core".into(),
                 created_at: "2026-01-01T00:00:00Z".into(),
                 kernel_path: None,
+                uki_store_path: None,
             }],
         };
         save_generation_state(tmp.path(), &state).unwrap();

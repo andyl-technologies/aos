@@ -37,7 +37,8 @@
 ##!                          Useful for test images that get written to
 ##!                          during VM execution.
 ##!   extraClosures        — derivations whose full closures land in
-##!                          /nix/store. toplevel + kernel are always added.
+##!                          /nix/store. toplevel + kernel + UKI are always
+##!                          added.
 ##!   symlinkFarmPkgs      — derivations whose bin/sbin/libexec entries get
 ##!                          symlinked into /usr/bin, /usr/sbin, /usr/libexec.
 ##!                          Later entries never overwrite earlier ones.
@@ -66,13 +67,15 @@
 }: let
   toplevel = system.config.system.build.toplevel;
   kernel = system.config.system.build.kernel;
+  uki = system.config.system.build.uki;
 
   # Full set of closures to merge. toplevel carries stage-2 systemd's
-  # closure; kernel carries /lib/modules targets. Callers add more when
+  # closure; kernel carries /lib/modules targets; UKI lets the first
+  # generation be restored to the ESP after pruning. Callers add more when
   # the running rootfs references store paths the closure reachability
   # scanner wouldn't otherwise catch (e.g. the VM agent shell script
   # referencing `/nix/store/...-socat-*` verbatim).
-  allClosures = [toplevel kernel] ++ extraClosures;
+  allClosures = lib.unique ([toplevel kernel uki] ++ extraClosures);
 
   regInfo = import ./closure-info.nix {inherit pkgs lib;} {
     rootPaths = allClosures;
@@ -129,6 +132,7 @@ in
 
     TOPLEVEL = toString toplevel;
     KERNEL = toString kernel;
+    UKI = toString uki;
     REGINFO = toString regInfo;
     SYSTEMD_PRESETS = toString system.config.system.build.systemdSystemPresets;
     SYSTEMD = toString pkgs.systemd;
@@ -238,7 +242,7 @@ in
           # ── 7. /run/current-system → toplevel ───────────────────────────
           ln -sfn "$TOPLEVEL" rootfs/run/current-system
 
-          # ── 8. /aos-toplevel seed pointer ──────────────────────────────
+          # ── 8. /aos-toplevel + /aos-uki seed pointers ──────────────────
           # First-boot bootstrap: aos-seed-profiles.service reads this
           # symlink to populate /var/lib/profiles/system/gen-1/toplevel
           # without referencing config.system.build.toplevel directly
@@ -247,6 +251,7 @@ in
           # so adding the symlink doesn't introduce a new derivation
           # edge. See spec v12 §6.1.
           ln -sfn "$TOPLEVEL" rootfs/aos-toplevel
+          ln -sfn "$UKI" rootfs/aos-uki
 
           # ── 9. /aos-registration Nix DB seed ───────────────────────────
           # Stage-2 loads this plain text `nix-store --load-db` stream to

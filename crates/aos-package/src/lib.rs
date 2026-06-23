@@ -48,6 +48,7 @@ pub mod deps;
 pub mod desired;
 pub mod download;
 pub(crate) mod ebpf_lsm;
+pub mod esp;
 pub(crate) mod exposed_units;
 /// Test-only helpers that shell out to the host `git` to set up fixtures; the
 /// production registry paths use libgit2 ([`registry::repo`],
