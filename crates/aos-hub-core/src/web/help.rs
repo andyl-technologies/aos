@@ -152,6 +152,34 @@ pub fn card(key: &str) -> Option<HelpCard> {
                 ("Off", "unsigned content is indexed and served unverified — only for a fully-trusted internal source."),
             ],
         ),
+        "registry.readme" => c(
+            "Readme",
+            "registry",
+            "A longer preamble shown above the registry's home page.",
+            &[
+                ("Markdown-ish", "a paragraph or three of plain text; blank lines separate paragraphs."),
+                ("Optional", "leave empty for just the one-line description."),
+            ],
+        ),
+        "registry.content_addressed" => c(
+            "Content-addressed",
+            "registry",
+            "Whether the registry records content addresses in its realisation graph.",
+            &[
+                ("On", "the producer records the store/ realisation graph (RFC-0005), so the registry serves both input-addressed and content-addressed consumers. The default."),
+                ("Off", "a pure input-addressed registry; set this only when the producer never records content addresses."),
+            ],
+        ),
+        "registry.caches" => c(
+            "Binary caches",
+            "registry",
+            "Substituters every consumer of this registry should use, highest priority first.",
+            &[
+                ("URL", "the base URL of a binary cache the registry advertises to its consumers."),
+                ("Priority", "higher numbers are tried first; the default is 100."),
+                ("Advanced", "a registry may instead define a nestable [cache_stack]; that is preserved here and edited via raw TOML."),
+            ],
+        ),
         "registry.trust_anchors" => c(
             "Trust anchors",
             "registry",

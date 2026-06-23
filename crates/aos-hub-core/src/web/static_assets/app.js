@@ -463,6 +463,43 @@
     sync();
   }
 
+  // The repeatable [[caches]] editor in the structured config form. Clones the
+  // last row to add another, and removes a row on its × button. No-JS fallback:
+  // the server renders the existing rows plus one blank, all editable.
+  function initCacheRows(form) {
+    var container = form.querySelector("[data-cache-rows]");
+    var addBtn = form.querySelector("[data-add-cache]");
+    if (!container) return;
+    function bindDel(row) {
+      var del = row.querySelector(".row-del");
+      if (!del) return;
+      del.addEventListener("click", function () {
+        // Never remove the final row — keep one for adding/cloning.
+        if (container.querySelectorAll(".cache-row").length > 1) {
+          row.parentNode.removeChild(row);
+        } else {
+          row.querySelectorAll("input").forEach(function (i) {
+            i.value = i.classList.contains("cache-prio") ? "100" : "";
+          });
+        }
+      });
+    }
+    container.querySelectorAll(".cache-row").forEach(bindDel);
+    if (addBtn) {
+      addBtn.addEventListener("click", function () {
+        var rows = container.querySelectorAll(".cache-row");
+        var clone = rows[rows.length - 1].cloneNode(true);
+        clone.querySelectorAll("input").forEach(function (i) {
+          i.value = i.classList.contains("cache-prio") ? "100" : "";
+        });
+        bindDel(clone);
+        container.appendChild(clone);
+        var url = clone.querySelector("input[name=cache_url]");
+        if (url) url.focus();
+      });
+    }
+  }
+
   // Attached help (web/help.rs): turn a `?` marker's hidden segmented card into
   // a positioned popover. Hover + focus open it; click pins it; Esc / click-away
   // close. Position is fixed coords measured from the marker, flipped/clamped to
@@ -540,5 +577,6 @@
   document.querySelectorAll("[data-filter-widget]").forEach(initFilterBox);
   document.querySelectorAll("form[data-binding-kind]").forEach(initBindingForm);
   document.querySelectorAll("form[data-cache-link]").forEach(initCacheLinkForm);
+  document.querySelectorAll("form[data-config-form]").forEach(initCacheRows);
   initHelp();
 })();

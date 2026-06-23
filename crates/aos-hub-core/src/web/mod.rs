@@ -46,6 +46,7 @@
 pub mod assets;
 pub mod browse;
 pub mod browse_pages;
+pub mod config_form;
 pub mod console;
 pub mod console_render;
 pub mod csrf;

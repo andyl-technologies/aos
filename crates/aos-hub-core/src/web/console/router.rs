@@ -510,8 +510,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
                 send_bridge(handlers::config_edit(from_state(s), h, r, u, p))
             })
-            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
-                send_bridge(handlers::config_submit(from_state(s), h, r, u, p, f))
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, b: String| {
+                send_bridge(handlers::config_submit(from_state(s), h, r, u, p, b))
             }),
         )
         .route(

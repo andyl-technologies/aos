@@ -5813,16 +5813,32 @@ async fn config_edit_view(
         Ok(toml) => toml,
         Err(err) => return internal(err),
     };
-    Html(console::config_edit_page(
-        &session.email,
-        registry,
-        &session.csrf(),
-        &current,
-        can_edit,
-        result,
-        started,
-    ))
-    .into_response()
+    // Auto-generate the structured form from the parsed config for editors.
+    // A file the form can't represent (malformed, or carrying fields outside
+    // the schema) and the read-only view both fall back to the raw-TOML page,
+    // which shows the committed file verbatim so nothing is hidden or dropped.
+    match crate::web::config_form::parse_model(&current) {
+        Some(model) if can_edit => Html(console::registry_config_form_page(
+            &session.email,
+            registry,
+            &session.csrf(),
+            &model,
+            can_edit,
+            result,
+            started,
+        ))
+        .into_response(),
+        _ => Html(console::config_edit_page(
+            &session.email,
+            registry,
+            &session.csrf(),
+            &current,
+            can_edit,
+            result,
+            started,
+        ))
+        .into_response(),
+    }
 }
 
 /// Load a registry's current committed `registry.toml`, or an empty string
@@ -5855,27 +5871,23 @@ async fn current_registry_toml(
         .unwrap_or_default())
 }
 
-/// The config-edit submission form body.
-#[derive(serde::Deserialize)]
-pub(crate) struct ConfigForm {
-    #[serde(default)]
-    csrf: String,
-    contents: String,
-}
-
-/// `POST /{slug}/-/settings/config` — submit a git-backed config change request.
+/// `POST /{slug}/-/settings/config` — submit a structured config change request.
 ///
-/// CSRF-checked, `registry.configure`-gated: writes the draft-signed change
-/// request to `refs/hub/changes/<id>` via
-/// [`crate::gitwrite::propose_config_change`] and re-renders the page with the
-/// new change id and the `apr change merge` command to run.
+/// The body is the auto-generated config form (not raw TOML): it is decoded
+/// ([`crate::web::config_form::parse_submission`]), CSRF-checked, and
+/// `registry.configure`-gated, then merged back into the committed
+/// `registry.toml` ([`crate::web::config_form::build_toml`]) and proposed as a
+/// draft change request to `refs/hub/changes/<id>` via
+/// [`crate::gitwrite::propose_config_change`]. A validation error re-renders
+/// the form with the message and the user's preserved input; a successful
+/// proposal re-renders with the new change id and `apr change merge` command.
 pub(crate) async fn config_submit(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
-    Form(form): Form<ConfigForm>,
+    body: String,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
@@ -5887,27 +5899,9 @@ pub(crate) async fn config_submit(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    config_submit_action(&deps, &session, &registry, &form.csrf, &form.contents, started).await
-}
 
-/// Process a config-change submission for a resolved registry.
-///
-/// CSRF-checked then `registry.configure`-gated; proposes the change request
-/// and re-renders the config-edit page with the new change id and merge
-/// command, or a `400` on a proposal error. Reads the base commit through the
-/// [`SurfaceProvider`](crate::fetch::SurfaceProvider) read port and writes the
-/// draft through the
-/// [`SurfaceWriteProvider`](crate::surface_write::SurfaceWriteProvider) write
-/// port.
-async fn config_submit_action(
-    deps: &ConsoleDeps,
-    session: &Session,
-    registry: &RegistryRecord,
-    csrf: &str,
-    contents: &str,
-    started: Instant,
-) -> Response {
-    if let Err(resp) = check_csrf(session, csrf) {
+    let sub = crate::web::config_form::parse_submission(&body);
+    if let Err(resp) = check_csrf(&session, &sub.csrf) {
         return *resp;
     }
     let scope = Scope::parse(&registry.slug);
@@ -5917,6 +5911,53 @@ async fn config_submit_action(
     {
         return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
     }
+
+    let existing = match current_registry_toml(&deps, &registry).await {
+        Ok(toml) => toml,
+        Err(err) => return internal(err),
+    };
+    match crate::web::config_form::build_toml(&existing, &sub) {
+        Ok(contents) => {
+            propose_registry_config(&deps, &session, &registry, &contents, started).await
+        }
+        Err(err) => {
+            // Re-render the form with the error and the user's preserved input;
+            // recover whether an advanced [cache_stack] exists from the file.
+            let mut model =
+                crate::web::config_form::model_from_submission(&sub, format!("{err:#}"));
+            model.has_cache_stack = crate::web::config_form::parse_model(&existing)
+                .map(|m| m.has_cache_stack)
+                .unwrap_or(false);
+            Html(console::registry_config_form_page(
+                &session.email,
+                &registry,
+                &session.csrf(),
+                &model,
+                true,
+                None,
+                started,
+            ))
+            .into_response()
+        }
+    }
+}
+
+/// Propose a rebuilt `registry.toml` as a git-backed change request, then
+/// re-render the config page with the new change id and merge command.
+///
+/// CSRF and `registry.configure` are assumed already checked by the caller.
+/// Reads the base commit through the
+/// [`SurfaceProvider`](crate::fetch::SurfaceProvider) read port and writes the
+/// draft through the
+/// [`SurfaceWriteProvider`](crate::surface_write::SurfaceWriteProvider) write
+/// port; a proposal error renders as a `400`.
+async fn propose_registry_config(
+    deps: &ConsoleDeps,
+    session: &Session,
+    registry: &RegistryRecord,
+    contents: &str,
+    started: Instant,
+) -> Response {
     let fetch = match deps.surface.fetcher(registry).await {
         Ok(fetch) => fetch,
         Err(err) => return internal(err),
