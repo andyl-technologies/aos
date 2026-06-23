@@ -1595,6 +1595,7 @@ pub fn cache_page(
     csrf: &str,
     cache: &Cache,
     binding_name: &str,
+    bindings: &[String],
     usage: &CacheUsage,
     links: &[CacheLinkRow],
     linkable: &[String],
@@ -1641,6 +1642,31 @@ pub fn cache_page(
                 format!(" · prefix <code>{}</code>", escape(&cache.prefix))
             },
         );
+        // Change storage: copy every object to a new backend, then re-point.
+        let on_default = cache.storage_binding_id.is_none();
+        let mut options = String::new();
+        if !on_default {
+            options.push_str("<option value=\"\">default storage</option>");
+        }
+        for b in bindings {
+            if b != binding_name {
+                let _ = write!(options, "<option value=\"{b}\">{b}</option>", b = escape(b));
+            }
+        }
+        if !options.is_empty() {
+            let _ = write!(
+                body,
+                "<h3>Change storage{help}</h3>\n\
+                 <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/storage\">{csrf}\
+                 <label>move to <select name=\"binding\">{options}</select></label>\n\
+                 <button>move storage</button>\n</form>\n",
+                help = help::marker("storage.change"),
+                org = escape(org_slug),
+                slug = escape(&cache.slug),
+                csrf = csrf_field(csrf),
+                options = options,
+            );
+        }
     }
 
     if can_admin {
@@ -1963,6 +1989,7 @@ pub fn registry_settings_page(
     org_slug: &str,
     csrf: &str,
     binding: Option<(&str, &str, &str)>,
+    bindings: &[String],
     caches: &[RegistryCacheRow],
     linkable_caches: &[String],
     can_delete: bool,
@@ -2070,6 +2097,35 @@ pub fn registry_settings_page(
                 body,
                 "<p><span class=\"chip\">default storage</span> · prefix <code>{}</code></p>",
                 escape(prefix),
+            );
+        }
+    }
+    // Change storage — only for a managed registry (a source-mirror has no
+    // writable surface here). Lists every target other than the current one
+    // (default storage, plus each org binding); moving copies every object to
+    // the new backend, then re-points.
+    if registry.source_url.is_empty() {
+        let current = binding.map(|(name, _, _)| name);
+        let mut options = String::new();
+        if current.is_some() {
+            options.push_str("<option value=\"\">default storage</option>");
+        }
+        for b in bindings {
+            if Some(b.as_str()) != current {
+                let _ = write!(options, "<option value=\"{b}\">{b}</option>", b = escape(b));
+            }
+        }
+        if !options.is_empty() {
+            let _ = write!(
+                body,
+                "<h3>Change storage{help}</h3>\n\
+                 <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/storage\">{csrf}\
+                 <label>move to <select name=\"binding\">{options}</select></label>\n\
+                 <button>move storage</button>\n</form>\n",
+                help = help::marker("storage.change"),
+                slug = escape(slug),
+                csrf = csrf_field(csrf),
+                options = options,
             );
         }
     }
@@ -3544,6 +3600,7 @@ mod cache_render_tests {
             "csrf-tok",
             &cache(),
             "primary",
+            &["cold".to_string()],
             &usage(),
             &[],
             &["cdn".to_string()],
@@ -3572,6 +3629,7 @@ mod cache_render_tests {
             "csrf-tok",
             &cache(),
             "primary",
+            &["cold".to_string()],
             &usage(),
             &[],
             &["cdn".to_string()],
@@ -3594,6 +3652,7 @@ mod cache_render_tests {
             "csrf-tok",
             &cache(),
             "primary",
+            &["cold".to_string()],
             &usage(),
             &[],
             &[],

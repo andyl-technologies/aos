@@ -6387,13 +6387,40 @@ impl Database {
     pub async fn set_registry_storage(
         &self,
         registry_id: i64,
-        binding_id: i64,
+        binding_id: Option<i64>,
         prefix: &str,
     ) -> Result<()> {
         self.backend
             .execute(
                 "UPDATE registries SET storage_binding_id = ?2, prefix = ?3 WHERE id = ?1",
                 &vals![registry_id, binding_id, prefix],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Bind a cache to a storage binding (or `None` for default storage) and
+    /// sub-prefix.
+    ///
+    /// The cache analog of [`Database::set_registry_storage`]. After this,
+    /// [`Database::cache_surface_root`] resolves the cache's surface to the new
+    /// `{binding.root}/{prefix}` (or the deployment default at `{prefix}`).
+    /// This re-points the columns only; moving the surface bytes between stores
+    /// is the migration layer's job ([`crate::migrate`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn set_cache_storage(
+        &self,
+        cache_id: i64,
+        binding_id: Option<i64>,
+        prefix: &str,
+    ) -> Result<()> {
+        self.backend
+            .execute(
+                "UPDATE caches SET storage_binding_id = ?2, prefix = ?3 WHERE id = ?1",
+                &vals![cache_id, binding_id, prefix],
             )
             .await?;
         Ok(())
@@ -12798,7 +12825,7 @@ mod tests {
         assert_eq!(db.registry_surface_root(http).await.unwrap(), None);
 
         // Binding wins even when a source_url is also present.
-        db.set_registry_storage(file, binding, "moved")
+        db.set_registry_storage(file, Some(binding), "moved")
             .await
             .unwrap();
         assert_eq!(

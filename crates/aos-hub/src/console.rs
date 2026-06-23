@@ -277,6 +277,17 @@ async fn registry_settings_view(
                 linkable_caches.push(c.slug);
             }
         }
+        // The org's storage bindings — targets for the "change storage" control.
+        let binding_names: Vec<String> = match registry.org_id {
+            Some(org_id) => state
+                .db
+                .list_storage_bindings(org_id)
+                .await?
+                .into_iter()
+                .map(|b| b.name)
+                .collect(),
+            None => Vec::new(),
+        };
         // Deletion is owner-only (the iam.admin verb).
         let can_delete = session
             .allows(&state.db, Permission::IamAdmin, &scope)
@@ -290,6 +301,7 @@ async fn registry_settings_view(
             &org_slug,
             &session.csrf(),
             binding_ref,
+            &binding_names,
             &caches,
             &linkable_caches,
             can_delete,

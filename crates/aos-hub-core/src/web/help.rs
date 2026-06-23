@@ -132,6 +132,16 @@ pub fn card(key: &str) -> Option<HelpCard> {
                 ("public", "no credentials; the store is world-readable and the hub only reads it. Read-only mirror use."),
             ],
         ),
+        "storage.change" => c(
+            "Change storage",
+            "storage",
+            "Move this surface's objects to a different backend, then re-point it.",
+            &[
+                ("Copies first", "every object is copied to the new store before the pointer flips, so the content is never stranded; an empty surface just re-points."),
+                ("Old copy stays", "the source objects are left in place (not deleted), so a failed move is harmless and the surface keeps serving from its original store until the copy finishes."),
+                ("Index reconciles", "the registry re-indexes (or a cache re-scans) from the new surface afterward, so search/browse stay correct."),
+            ],
+        ),
         // -- registries ------------------------------------------------------
         "registry.require_signatures" => c(
             "Require signatures",
