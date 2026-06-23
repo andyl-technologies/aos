@@ -5,7 +5,8 @@
 use crucible_sim::contract_a::{
     ContractAConfig, ContractAConfigError, ContractADriver, ContractAError,
     ContractAExecutionError, ContractARun, ContractAVm, HashingContractAVm,
-    MAX_CONTRACT_A_RETIRED_INSTRUCTIONS, RecordedInput, RetireRequest,
+    MAX_CONTRACT_A_ICOUNT_SHIFT, MAX_CONTRACT_A_RETIRED_INSTRUCTIONS, RecordedInput, RetireRequest,
+    TimeTrajectorySample,
 };
 use crucible_sim::{StableDigest, StableHasher};
 
@@ -40,6 +41,35 @@ fn run_hashing(
     match ContractADriver::run(&mut vm, config, inputs, retired_instruction_count) {
         Ok(run) => run,
         Err(error) => panic!("test Contract A run should be valid: {error}"),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AdversarialHostProfile {
+    FastHostManyCores,
+    LoadedHostSingleCore,
+    ReorderedHostScheduling,
+}
+
+impl AdversarialHostProfile {
+    fn apply_host_noise(self, sink: &mut StableHasher) {
+        match self {
+            Self::FastHostManyCores => {
+                sink.write_tag("fast-host-many-cores");
+                sink.write_u64(64);
+            }
+            Self::LoadedHostSingleCore => {
+                sink.write_tag("loaded-host-single-core");
+                sink.write_u64(1);
+                sink.write_u64(10_000);
+            }
+            Self::ReorderedHostScheduling => {
+                sink.write_tag("reordered-host-scheduling");
+                for token in [3_u64, 1, 4, 1, 5, 9] {
+                    sink.write_u64(token);
+                }
+            }
+        }
     }
 }
 
@@ -116,6 +146,97 @@ fn contract_a_driver_feeds_recorded_inputs_into_vm_boundary() {
     assert_eq!(run.instruction_stream[0].visible_input_count, 1);
     assert_eq!(run.instruction_stream[1].visible_input_count, 0);
     assert_eq!(run.instruction_stream[2].visible_input_count, 1);
+}
+
+#[test]
+fn contract_a_time_trajectory_is_pure_icount_shift_function() {
+    let config =
+        match ContractAConfig::new_with_icount_shift(image_digest(), "console=ttyS0", 7, 1, 4, 3) {
+            Ok(config) => config,
+            Err(error) => panic!("test Contract A config should be valid: {error}"),
+        };
+    let inputs = vec![
+        RecordedInput::new(0, b"boot".to_vec()),
+        RecordedInput::new(2, b"net".to_vec()),
+    ];
+
+    let run = run_hashing(&config, &inputs, 5);
+
+    assert_eq!(
+        run.time_trajectory,
+        vec![
+            TimeTrajectorySample {
+                aggregate_icount: 1,
+                virtual_time_ns: 8,
+            },
+            TimeTrajectorySample {
+                aggregate_icount: 2,
+                virtual_time_ns: 16,
+            },
+            TimeTrajectorySample {
+                aggregate_icount: 3,
+                virtual_time_ns: 24,
+            },
+            TimeTrajectorySample {
+                aggregate_icount: 4,
+                virtual_time_ns: 32,
+            },
+            TimeTrajectorySample {
+                aggregate_icount: 5,
+                virtual_time_ns: 40,
+            },
+        ]
+    );
+    assert_eq!(run.time_fingerprint.icount_shift, 3);
+    assert_eq!(run.time_fingerprint.final_icount, 5);
+    assert_eq!(run.time_fingerprint.final_virtual_time_ns, 40);
+}
+
+#[test]
+fn contract_a_time_fingerprint_matches_across_adversarial_host_conditions() {
+    let config =
+        match ContractAConfig::new_with_icount_shift(image_digest(), "console=ttyS0", 7, 2, 3, 2) {
+            Ok(config) => config,
+            Err(error) => panic!("test Contract A config should be valid: {error}"),
+        };
+    let inputs = vec![
+        RecordedInput::new(0, b"boot".to_vec()),
+        RecordedInput::new(4, b"network".to_vec()),
+        RecordedInput::new(7, b"timer".to_vec()),
+    ];
+    let baseline = run_hashing(&config, &inputs, 9);
+
+    for profile in [
+        AdversarialHostProfile::FastHostManyCores,
+        AdversarialHostProfile::LoadedHostSingleCore,
+        AdversarialHostProfile::ReorderedHostScheduling,
+    ] {
+        let mut ignored_host_noise = StableHasher::new();
+        profile.apply_host_noise(&mut ignored_host_noise);
+        let candidate = run_hashing(&config, &inputs, 9);
+
+        assert_eq!(baseline.time_trajectory, candidate.time_trajectory);
+        assert_eq!(baseline.time_fingerprint, candidate.time_fingerprint);
+        assert_eq!(baseline.fingerprint, candidate.fingerprint);
+    }
+}
+
+#[test]
+fn contract_a_time_fingerprint_ignores_payload_when_icount_horizon_is_fixed() {
+    let config =
+        match ContractAConfig::new_with_icount_shift(image_digest(), "console=ttyS0", 7, 1, 4, 1) {
+            Ok(config) => config,
+            Err(error) => panic!("test Contract A config should be valid: {error}"),
+        };
+    let input_a = vec![RecordedInput::new(2, b"payload-a".to_vec())];
+    let input_b = vec![RecordedInput::new(2, b"payload-b".to_vec())];
+
+    let run_a = run_hashing(&config, &input_a, 6);
+    let run_b = run_hashing(&config, &input_b, 6);
+
+    assert_eq!(run_a.time_trajectory, run_b.time_trajectory);
+    assert_eq!(run_a.time_fingerprint, run_b.time_fingerprint);
+    assert_ne!(run_a.fingerprint, run_b.fingerprint);
 }
 
 #[test]
@@ -288,6 +409,20 @@ fn contract_a_config_and_driver_reject_zero_or_unbounded_parameters() {
         ContractAConfig::new(image_digest(), "", 0, 1, 0),
         Err(ContractAConfigError::ZeroRrSwitchQuantum)
     );
+    assert_eq!(
+        ContractAConfig::new_with_icount_shift(
+            image_digest(),
+            "",
+            0,
+            1,
+            1,
+            MAX_CONTRACT_A_ICOUNT_SHIFT + 1,
+        ),
+        Err(ContractAConfigError::IcountShiftTooLarge {
+            shift: MAX_CONTRACT_A_ICOUNT_SHIFT + 1,
+            max: MAX_CONTRACT_A_ICOUNT_SHIFT,
+        })
+    );
 
     let mut vm = HashingContractAVm::default();
     assert_eq!(
@@ -301,5 +436,34 @@ fn contract_a_config_and_driver_reject_zero_or_unbounded_parameters() {
             count: MAX_CONTRACT_A_RETIRED_INSTRUCTIONS + 1,
             max: MAX_CONTRACT_A_RETIRED_INSTRUCTIONS,
         })
+    );
+}
+
+#[test]
+fn contract_a_driver_rejects_unrepresentable_virtual_time() {
+    let config = match ContractAConfig::new_with_icount_shift(
+        image_digest(),
+        "console=ttyS0",
+        7,
+        1,
+        1,
+        MAX_CONTRACT_A_ICOUNT_SHIFT,
+    ) {
+        Ok(config) => config,
+        Err(error) => panic!("test Contract A config should be valid: {error}"),
+    };
+    let mut vm = HashingContractAVm::default();
+
+    let error = match ContractADriver::run(&mut vm, &config, &[], 2) {
+        Ok(_) => panic!("overflowing virtual time should fail"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error,
+        ContractAError::VirtualTimeOverflow {
+            aggregate_icount: 2,
+            icount_shift: MAX_CONTRACT_A_ICOUNT_SHIFT,
+        }
     );
 }

@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use crucible_sim::contract_a::{
-    ContractAConfig, ContractADriver, HashingContractAVm, RecordedInput,
+    ContractAConfig, ContractADriver, HashingContractAVm, RecordedInput, TimeTrajectorySample,
 };
 use crucible_sim::{DecisionRng, StableDigest, StableHasher, stable_name_hash};
 
@@ -23,6 +23,16 @@ fn gate_layer0_determinism_reduces_fixed_contract_a_twice() {
     assert_eq!(first.fingerprint, fingerprint);
     assert_eq!(first.instruction_stream.len(), 12);
     assert_eq!(first.architectural_state_trajectory.len(), 12);
+    assert_eq!(first.time_trajectory.len(), 12);
+    assert_eq!(
+        first.time_trajectory.last(),
+        Some(&TimeTrajectorySample {
+            aggregate_icount: 12,
+            virtual_time_ns: 12,
+        })
+    );
+    assert_eq!(first.time_fingerprint.final_icount, 12);
+    assert_eq!(first.time_fingerprint.final_virtual_time_ns, 12);
     assert_eq!(
         first
             .instruction_stream

@@ -669,7 +669,7 @@ instruction-primary.
   shmem region, coordinate the idle/advance handoff with a futex, and forbid any
   node self-extending past the published ceiling. — satisfies [TIME-27],
   [TIME-28], [TIME-29], [TIME-30]; spec §9.9.
-- [ ] **T-TIME-8** Verify determinism of time in isolation under Contract A: a
+- [x] **T-TIME-8** Verify determinism of time in isolation under Contract A: a
   single node fed a recorded icount-stamped input list produces a bit-identical
   `(icount, virtual_time)` trajectory and matching time-derived fingerprint
   fields under adversarial host conditions; lint-ban all host-time reads on the
