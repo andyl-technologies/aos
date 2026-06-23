@@ -18,3 +18,10 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
+
+pub mod time_control;
+
+pub use time_control::{
+    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, PluginRegistrationStep,
+    TimeControlRegistrationError, TimeControlRegistrationPlan,
+};

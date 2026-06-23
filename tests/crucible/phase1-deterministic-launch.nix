@@ -339,6 +339,34 @@
       needle = "\"virtual_time_ns=icount<<shift\".to_owned(),";
     }
     {
+      label = "guest-visible time source policy in hash material";
+      needle = "\"guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time\".to_owned(),";
+    }
+    {
+      label = "fixed guest time epoch in hash material";
+      needle = "\"guest_time_epoch=fixed-rtc-epoch\".to_owned(),";
+    }
+    {
+      label = "time-control owner in hash material";
+      needle = "\"time_control_owner=crucible-qemu-plugin\".to_owned(),";
+    }
+    {
+      label = "time-control acquisition order in hash material";
+      needle = "\"time_control_acquire=registration-before-first-visible-instruction\".to_owned(),";
+    }
+    {
+      label = "idle warp suppression in hash material";
+      needle = "\"idle_warp_under_time_control=suppressed\".to_owned(),";
+    }
+    {
+      label = "virtual-only icount budget in hash material";
+      needle = "\"icount_budget_deadline_source=QEMU_CLOCK_VIRTUAL\".to_owned(),";
+    }
+    {
+      label = "realtime deadline ban in hash material";
+      needle = "\"realtime_deadline_in_precise_budget=false\".to_owned(),";
+    }
+    {
       label = "RAM reset in hash material";
       needle = "\"ram_reset=zeroed-fresh-anonymous-memory\".to_owned(),";
     }
@@ -642,6 +670,13 @@ in
             guest_entropy_host_sources=disabled
             virtual_time_ns=icount<<shift
             tsc_source=icount
+            guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time
+            guest_time_epoch=fixed-rtc-epoch
+            time_control_owner=crucible-qemu-plugin
+            time_control_acquire=registration-before-first-visible-instruction
+            idle_warp_under_time_control=suppressed
+            icount_budget_deadline_source=QEMU_CLOCK_VIRTUAL
+            realtime_deadline_in_precise_budget=false
             machine_reset=deterministic-zeroed-ram-fixed-devices
             ram_reset=zeroed-fresh-anonymous-memory
             input_policy=no-interactive-input

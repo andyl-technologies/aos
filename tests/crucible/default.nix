@@ -87,6 +87,7 @@ in {
     standaloneDependencies = import ./phase1-standalone-dependencies.nix {inherit pkgs lib;};
     testingStandards = import ./phase1-testing-standards.nix {inherit pkgs lib;};
     timeClockSkew = import ./phase1-time-clock-skew.nix {inherit pkgs lib;};
+    timeNoRealtimeWarp = import ./phase1-time-no-realtime-warp.nix {inherit pkgs lib;};
     timeSharedTimeline = import ./phase1-time-shared-timeline.nix {inherit pkgs lib;};
     timeVocabulary = import ./phase1-time-vocabulary.nix {inherit pkgs lib;};
     gates = {
