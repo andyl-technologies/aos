@@ -267,6 +267,108 @@ impl S3Surface {
             }
         }
     }
+
+    /// Split `key_prefix` (`bucket[/sub]/RP`) into `(bucket, in-bucket prefix)`.
+    ///
+    /// The bucket is the canonical-URI path for a bucket-level S3 op; the
+    /// in-bucket prefix is what `ListObjectsV2`'s `prefix` is relative to.
+    fn bucket_split(&self) -> (&str, &str) {
+        match self.key_prefix.split_once('/') {
+            Some((bucket, rest)) => (bucket, rest),
+            None => (self.key_prefix.as_str(), ""),
+        }
+    }
+
+    /// Build a presigned `ListObjectsV2` URL scoped to this surface's prefix.
+    ///
+    /// A `GET` on `/{bucket}` with `prefix` = this surface's in-bucket prefix,
+    /// optionally continuing from `continuation`. The walk that storage
+    /// migration / re-scan run when a surface lives on an external binding pages
+    /// through these. Credential-less (public) bindings cannot be listed.
+    ///
+    /// # Errors
+    ///
+    /// [`bail`]s for a public binding (no anonymous list); otherwise propagates
+    /// a signing error.
+    pub fn list_url(&self, continuation: Option<&str>, now: i64) -> Result<String> {
+        let Some(creds) = &self.creds else {
+            bail!("cannot list a public (credential-less) storage binding");
+        };
+        let (bucket, in_bucket) = self.bucket_split();
+        let list_prefix = if in_bucket.is_empty() {
+            String::new()
+        } else {
+            format!("{in_bucket}/")
+        };
+        let bucket_path = format!("/{bucket}");
+        let params = crate::sigv4::PresignParams {
+            access_key: &creds.access_key,
+            secret_key: &creds.secret_key,
+            region: &creds.region,
+            service: "s3",
+            scheme: &self.scheme,
+            host: &self.host,
+            path: &bucket_path,
+            expires_secs: PRESIGN_TTL_SECS,
+            amz_date: &crate::sigv4::amz_date_from_unix(now),
+        };
+        crate::sigv4::presign_list_url(&params, &list_prefix, continuation)
+    }
+
+    /// Recover the surface-relative path from a `ListObjectsV2` `<Key>`.
+    ///
+    /// `<Key>` values are bucket-relative (`{in-bucket prefix}/{path}`); this
+    /// strips the in-bucket prefix to the logical path the surface ports speak,
+    /// or `None` when the key is not under this surface's prefix.
+    #[must_use]
+    pub fn relative_from_key(&self, key: &str) -> Option<String> {
+        let (_, in_bucket) = self.bucket_split();
+        crate::keymap::relative_key(in_bucket, key)
+    }
+}
+
+/// Parse an S3 `ListObjectsV2` XML response into `(keys, next_continuation)`.
+///
+/// Extracts every `<Key>` (XML-unescaped) and, when `<IsTruncated>true`, the
+/// `<NextContinuationToken>` to page from. Deliberately minimal — the response
+/// shape is fixed and small — so it needs no XML dependency on the wasm Worker.
+#[must_use]
+pub fn parse_list_objects_v2(xml: &str) -> (Vec<String>, Option<String>) {
+    let mut keys = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<Key>") {
+        let after = &rest[start + "<Key>".len()..];
+        let Some(end) = after.find("</Key>") else {
+            break;
+        };
+        keys.push(xml_unescape(&after[..end]));
+        rest = &after[end + "</Key>".len()..];
+    }
+    let truncated = extract_tag(xml, "IsTruncated").as_deref() == Some("true");
+    let next = if truncated {
+        extract_tag(xml, "NextContinuationToken").map(|s| xml_unescape(&s))
+    } else {
+        None
+    };
+    (keys, next)
+}
+
+/// First `<tag>…</tag>` body in `xml`, or `None`.
+fn extract_tag(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)? + start;
+    Some(xml[start..end].to_string())
+}
+
+/// Unescape the five predefined XML entities (sufficient for object keys).
+fn xml_unescape(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
 }
 
 #[cfg(test)]
@@ -290,6 +392,46 @@ mod tests {
 
     fn sealer() -> AesGcmSealer {
         AesGcmSealer::new(&[7u8; 32]).unwrap()
+    }
+
+    #[test]
+    fn parse_list_objects_v2_extracts_keys_and_token() {
+        let xml = "<?xml version=\"1.0\"?><ListBucketResult>\
+            <Contents><Key>reg/HEAD</Key><Size>20</Size></Contents>\
+            <Contents><Key>reg/objects/ab&amp;cd</Key></Contents>\
+            <IsTruncated>true</IsTruncated>\
+            <NextContinuationToken>tok/123</NextContinuationToken>\
+            </ListBucketResult>";
+        let (keys, next) = parse_list_objects_v2(xml);
+        assert_eq!(keys, vec!["reg/HEAD".to_string(), "reg/objects/ab&cd".to_string()]);
+        assert_eq!(next.as_deref(), Some("tok/123"));
+
+        // Not truncated: no continuation, even if a token tag is present.
+        let done = "<ListBucketResult><Contents><Key>reg/x</Key></Contents>\
+            <IsTruncated>false</IsTruncated></ListBucketResult>";
+        let (keys, next) = parse_list_objects_v2(done);
+        assert_eq!(keys, vec!["reg/x".to_string()]);
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn relative_from_key_strips_in_bucket_prefix() {
+        let s = sealer();
+        let sealed = s.seal("AKID:sec:auto").unwrap();
+        // root "my-bucket", reg "andyl/demo" -> key_prefix "my-bucket/andyl/demo".
+        let b = binding("s3", "private", Some(&sealed), Some("https://s3.example.com"));
+        let surface = S3Surface::from_binding(&b, "andyl/demo", &s).unwrap().unwrap();
+        assert_eq!(surface.relative_from_key("andyl/demo/HEAD").as_deref(), Some("HEAD"));
+        assert_eq!(
+            surface.relative_from_key("andyl/demo/objects/ab/cd").as_deref(),
+            Some("objects/ab/cd")
+        );
+        assert_eq!(surface.relative_from_key("other/x"), None);
+        // And a presigned list URL carries the in-bucket prefix + signature.
+        let url = surface.list_url(None, 1_700_000_000).unwrap();
+        assert!(url.contains("/my-bucket?") || url.contains("/my-bucket&"), "{url}");
+        assert!(url.contains("prefix=andyl%2Fdemo%2F"), "{url}");
+        assert!(url.contains("list-type=2") && url.contains("X-Amz-Signature="), "{url}");
     }
 
     #[test]
