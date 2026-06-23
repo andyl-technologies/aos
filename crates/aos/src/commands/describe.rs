@@ -61,4 +61,3 @@ pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
 
     Ok(())
 }
-
