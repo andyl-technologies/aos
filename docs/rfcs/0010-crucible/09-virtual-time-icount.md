@@ -654,7 +654,7 @@ instruction-primary.
   scheduling axis; default perfect clock byte-identical to no-skew; fixed-point
   arithmetic with documented rounding, no `f64` on the path. — satisfies
   [TIME-16], [TIME-17], [TIME-18], [TIME-19]; spec §9.6.
-- [ ] **T-TIME-5** Make guest-visible time sources resolve to icount-derived
+- [x] **T-TIME-5** Make guest-visible time sources resolve to icount-derived
   virtual time from a fixed epoch; suppress idle warp when the plugin holds time
   control; compute the icount budget from the virtual clock only (no realtime
   deadline); acquire time control before the first visible instruction. —
