@@ -436,20 +436,28 @@
   // never submits a combination that would be rejected. No-JS fallback: the
   // server still validates.
   function initCacheLinkForm(form) {
-    var select = form.querySelector("select[name=cache]");
+    // Works from either side. Registry settings ("Link a cache"): the registry
+    // is fixed (data-registry-visibility), options are caches. Cache page ("Link
+    // a registry"): the cache is fixed (data-cache-visibility), options are
+    // registries. Either way advertise is allowed iff cacheRank >= registryRank.
+    var select = form.querySelector("select[name=cache], select[name=registry]");
     var advertise = form.querySelector("input[name=advertised]");
     if (!select || !advertise) return;
     var rank = { public: 2, internal: 1, private: 0 };
-    var regRank = rank[form.getAttribute("data-registry-visibility")] || 0;
+    var fixedReg = form.getAttribute("data-registry-visibility");
+    var fixedCache = form.getAttribute("data-cache-visibility");
     function sync() {
       var opt = select.options[select.selectedIndex];
-      var cacheRank = rank[opt && opt.getAttribute("data-visibility")] || 0;
-      var allowed = cacheRank >= regRank;
+      var optRank = rank[opt && opt.getAttribute("data-visibility")] || 0;
+      var allowed =
+        fixedReg != null
+          ? optRank >= (rank[fixedReg] || 0) // option is the cache
+          : (rank[fixedCache] || 0) >= optRank; // option is the registry
       advertise.disabled = !allowed;
       if (!allowed) advertise.checked = false;
       advertise.title = allowed
         ? ""
-        : "a less-visible cache can't be advertised on this registry — its consumers couldn't read it";
+        : "a less-visible cache can't be advertised on a more-visible registry — its consumers couldn't read it";
     }
     select.addEventListener("change", sync);
     sync();

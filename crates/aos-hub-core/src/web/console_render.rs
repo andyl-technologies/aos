@@ -1602,7 +1602,7 @@ pub fn cache_page(
     bindings: &[String],
     usage: &CacheUsage,
     links: &[CacheLinkRow],
-    linkable: &[String],
+    linkable: &[(String, String)],
     can_admin: bool,
     notice: Option<&str>,
     started: Instant,
@@ -1750,18 +1750,24 @@ pub fn cache_page(
         body.push_str(&table(&["registry", "", ""], &rows));
     }
     if can_admin && !linkable.is_empty() {
+        // Each registry option carries its visibility, and the form this cache's,
+        // so the JS greys out advertise when the chosen registry is more visible
+        // than the cache (its consumers couldn't read the cache) — the same rule
+        // the server enforces.
         let mut reg_options = String::new();
-        for slug in linkable {
+        for (slug, vis) in linkable {
             let _ = write!(
                 reg_options,
-                "<option value=\"{s}\">{s}</option>",
+                "<option value=\"{s}\" data-visibility=\"{v}\">{s} · {v}</option>",
                 s = escape(slug),
+                v = escape(vis),
             );
         }
         let _ = write!(
             body,
             "<h3>Link a registry</h3>\n\
-             <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/link\">{csrf}\
+             <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/link\" \
+             data-cache-link data-cache-visibility=\"{cachevis}\">{csrf}\
              <label>registry <select name=\"registry\">{regs}</select></label>\n\
              <label><span class=\"lbl\">advertise to consumers{adv_help}</span> \
              <input type=\"checkbox\" name=\"advertised\" value=\"1\" checked></label>\n\
@@ -1770,6 +1776,7 @@ pub fn cache_page(
              <button>link</button>\n</form>\n",
             org = escape(org_slug),
             slug = escape(&cache.slug),
+            cachevis = escape(&cache.visibility),
             csrf = csrf_field(csrf),
             regs = reg_options,
             adv_help = help::marker("link.advertised"),
@@ -3632,7 +3639,7 @@ mod cache_render_tests {
             &["cold".to_string()],
             &usage(),
             &[],
-            &["cdn".to_string()],
+            &[("cdn".to_string(), "public".to_string())],
             true,
             None,
             Instant::now(),
@@ -3661,7 +3668,7 @@ mod cache_render_tests {
             &["cold".to_string()],
             &usage(),
             &[],
-            &["cdn".to_string()],
+            &[("cdn".to_string(), "public".to_string())],
             false,
             None,
             Instant::now(),
