@@ -60,6 +60,7 @@ in
           patch -p1 < ${./qemu-patches/0002-crucible-icount-no-realtime.patch}
           patch -p1 < ${./qemu-patches/0003-crucible-no-warp-with-plugin.patch}
           patch -p1 < ${./qemu-patches/0004-crucible-deterministic-qemu-entropy.patch}
+          patch -p1 < ${./qemu-patches/0005-crucible-clock-deadline.patch}
           # Patch Python shebangs for Nix sandbox
           find . -type f -name '*.py' | while read f; do
             if head -1 "$f" | grep -q '^#!'; then

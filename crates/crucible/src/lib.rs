@@ -38,9 +38,11 @@ pub use model::{
     instantiate, reduce, step,
 };
 pub use scheduler::{
-    ControlOperation, ControlOperationKind, IoCompletion, NodeTimelineProjection, QuantumLoop,
-    QuantumOutcome, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
-    SchedulerError, SchedulerNodeId, SchedulingNodeKind, SharedTimeline, SharedTimelineKey,
+    ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
+    QuantumLoop, QuantumOutcome, QuantumRequest, ScheduledEvent, ScheduledEventKey,
+    ScheduledEventPayload, SchedulerError, SchedulerHorizon, SchedulerHorizonSource,
+    SchedulerNodeId, SchedulingNodeKind, SharedTimeline, SharedTimelineKey,
+    exact_local_event_from_timer_deadline_ns, horizon_from_exact_local_event,
     ordered_scheduled_events, ordered_timeline_keys,
 };
 #[cfg(feature = "test-double")]

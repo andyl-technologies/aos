@@ -58,6 +58,7 @@ in {
     determinismCoreCoverage = import ./phase1-determinism-core-coverage.nix {inherit pkgs lib;};
     deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
     determinismReview = import ./phase1-determinism-review.nix {inherit pkgs lib;};
+    clockDeadline = import ./phase1-clock-deadline.nix {inherit pkgs lib;};
     documentationHygiene = import ./phase1-documentation-hygiene.nix {inherit pkgs lib;};
     engineeringHygiene = import ./phase1-engineering-hygiene.nix {inherit pkgs lib;};
     executionDecisionTaxonomy = import ./phase1-execution-decision-taxonomy.nix {inherit pkgs lib;};
