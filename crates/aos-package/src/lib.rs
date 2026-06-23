@@ -3453,6 +3453,38 @@ fn checkout_authoring_ref(
     Ok(())
 }
 
+/// Version-control summary of the git repository at or above `dir`: the short
+/// `HEAD` commit, the branch name, and whether the working tree has
+/// uncommitted tracked changes.
+///
+/// Reads through libgit2, so it works without the `git` CLI on `PATH`. Every
+/// field degrades to `None`/`false` when it cannot be determined; this drives
+/// the best-effort `aos describe` output.
+pub fn local_git_info(dir: &Path) -> (Option<String>, Option<String>, bool) {
+    let Ok(repo) = git2::Repository::discover(dir) else {
+        return (None, None, false);
+    };
+    let head = repo.head().ok();
+    let branch = head
+        .as_ref()
+        .and_then(|h| h.shorthand().ok())
+        .map(ToString::to_string);
+    let commit = head
+        .as_ref()
+        .and_then(|h| h.peel_to_commit().ok())
+        .and_then(|c| {
+            let short = c.as_object().short_id().ok()?;
+            short.as_str().ok().map(ToString::to_string)
+        });
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(false);
+    let dirty = repo
+        .statuses(Some(&mut opts))
+        .map(|statuses| !statuses.is_empty())
+        .unwrap_or(false);
+    (commit, branch, dirty)
+}
+
 /// `apr remove` — delete a registry's config file, metadata cache, local
 /// clone (unless `--keep-local`), and pinned trusted keys.
 ///
