@@ -1722,6 +1722,14 @@ async fn render_cache_detail(
                 .unwrap_or_default(),
             None => "default".to_string(),
         };
+        // The org's storage bindings — targets for the "change storage" control.
+        let binding_names: Vec<String> = deps
+            .db
+            .list_storage_bindings(org.id)
+            .await?
+            .into_iter()
+            .map(|b| b.name)
+            .collect();
         let org_registries: Vec<RegistryRecord> = deps
             .db
             .list_registries()
@@ -1768,6 +1776,7 @@ async fn render_cache_detail(
             &session.csrf(),
             cache,
             &binding,
+            &binding_names,
             &usage,
             &link_rows,
             &linkable,
@@ -2050,6 +2059,67 @@ pub(crate) async fn cache_link(
     .await;
     match result {
         Ok(None) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response(),
+        Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /-/org/{org}/caches/{slug}/storage` form: the target binding.
+#[derive(serde::Deserialize)]
+pub(crate) struct CacheStorageForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    binding: String,
+}
+
+/// `POST /-/org/{org}/caches/{slug}/storage` — migrate a cache's surface to a
+/// different storage backend (copy every object, re-point, reconcile the index).
+pub(crate) async fn cache_change_storage(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<CacheStorageForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let (org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    let result = async {
+        let new_binding_id = match resolve_target_binding(&deps, Some(org.id), &form.binding).await? {
+            Ok(id) => id,
+            Err(msg) => return Ok(Some(msg)),
+        };
+        match crate::migrate::migrate_cache_storage(
+            &deps.db,
+            deps.surface.as_ref(),
+            deps.surface_write.as_ref(),
+            &cache,
+            new_binding_id,
+        )
+        .await
+        {
+            Ok(_) => Ok(None),
+            Err(err) => Ok(Some(format!("{err:#}"))),
+        }
+    }
+    .await;
+    match result {
+        Ok(None) => {
+            Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response()
+        }
         Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(err) => internal(err),
     }
@@ -2830,14 +2900,25 @@ pub(crate) async fn org_delete_binding(
         else {
             return Ok(Some(Err("no such binding")));
         };
-        let in_use = deps
+        let used_by_registry = deps
             .db
             .list_registries()
             .await?
             .into_iter()
             .any(|r| r.storage_binding_id == Some(binding.id));
-        if in_use {
+        if used_by_registry {
             return Ok(Some(Err("binding still in use by a registry")));
+        }
+        // Caches reference bindings too — deleting one a cache depends on would
+        // orphan that cache's storage, so guard it the same way.
+        let used_by_cache = deps
+            .db
+            .list_caches()
+            .await?
+            .into_iter()
+            .any(|c| c.deleted_at.is_none() && c.storage_binding_id == Some(binding.id));
+        if used_by_cache {
+            return Ok(Some(Err("binding still in use by a cache")));
         }
         deps.db.delete_storage_binding(org.id, binding.id).await?;
         deps.db
@@ -3513,6 +3594,17 @@ async fn registry_settings_view(
                 linkable_caches.push(c.slug);
             }
         }
+        // The org's storage bindings — targets for the "change storage" control.
+        let binding_names: Vec<String> = match registry.org_id {
+            Some(org_id) => deps
+                .db
+                .list_storage_bindings(org_id)
+                .await?
+                .into_iter()
+                .map(|b| b.name)
+                .collect(),
+            None => Vec::new(),
+        };
         let can_delete = session.allows(&deps.db, Permission::IamAdmin, &scope).await;
         let binding_ref = binding
             .as_ref()
@@ -3523,6 +3615,7 @@ async fn registry_settings_view(
             &org_slug,
             &session.csrf(),
             binding_ref,
+            &binding_names,
             &caches,
             &linkable_caches,
             can_delete,
@@ -3663,6 +3756,106 @@ pub(crate) async fn registry_cache_unlink(
     match result {
         Ok(()) => registry_settings_view(&deps, &session, &registry, None, started).await,
         Err(err) => internal(err),
+    }
+}
+
+/// `POST /{slug}/-/settings/storage` form: the target binding (empty = default).
+#[derive(serde::Deserialize)]
+pub(crate) struct ChangeStorageForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    binding: String,
+}
+
+/// `POST /{slug}/-/settings/storage` — migrate a registry's surface to a
+/// different storage backend.
+///
+/// Resolves the target binding (an empty value = the deployment default), then
+/// copies every object to it and re-points the registry via
+/// [`migrate_registry_storage`](crate::migrate::migrate_registry_storage). A
+/// no-op move or a backend that can't enumerate surfaces back as a `400` with
+/// the reason.
+pub(crate) async fn registry_change_storage(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<ChangeStorageForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&registry.slug);
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let result = async {
+        let new_binding_id = match resolve_target_binding(&deps, registry.org_id, &form.binding).await? {
+            Ok(id) => id,
+            Err(msg) => return Ok(Some(msg)),
+        };
+        match crate::migrate::migrate_registry_storage(
+            &deps.db,
+            deps.surface.as_ref(),
+            deps.surface_write.as_ref(),
+            deps.reindexer.as_ref(),
+            &registry,
+            new_binding_id,
+        )
+        .await
+        {
+            Ok(_) => Ok(None),
+            Err(err) => Ok(Some(format!("{err:#}"))),
+        }
+    }
+    .await;
+    match result {
+        Ok(None) => registry_settings_view(&deps, &session, &registry, None, started).await,
+        Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// Resolve a storage-change form's `binding` value to a target binding id.
+///
+/// An empty value means the deployment default (`Ok(Ok(None))`). A named
+/// binding is looked up in the org; an unknown name or an org-less registry
+/// returns a user-facing message (`Ok(Err(msg))`).
+async fn resolve_target_binding(
+    deps: &ConsoleDeps,
+    org_id: Option<i64>,
+    binding: &str,
+) -> anyhow::Result<Result<Option<i64>, String>> {
+    let name = binding.trim();
+    if name.is_empty() {
+        return Ok(Ok(None));
+    }
+    let Some(org_id) = org_id else {
+        return Ok(Err("registry has no organization".to_string()));
+    };
+    let found = deps
+        .db
+        .list_storage_bindings(org_id)
+        .await?
+        .into_iter()
+        .find(|b| b.name == name);
+    match found {
+        Some(b) => Ok(Ok(Some(b.id))),
+        None => Ok(Err("unknown storage binding".to_string())),
     }
 }
 

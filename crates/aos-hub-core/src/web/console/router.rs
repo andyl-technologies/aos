@@ -329,6 +329,12 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             }),
         )
         .route(
+            "/-/org/{org}/caches/{slug}/storage",
+            post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::cache_change_storage(from_state(s), h, p, f))
+            }),
+        )
+        .route(
             "/-/org/{org}/caches/{slug}/gc",
             post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, f: axum::extract::Form<_>| {
                 send_bridge(handlers::cache_gc(from_state(s), h, r, p, f))
@@ -410,6 +416,12 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             "/{slug}/-/settings/crawl",
             post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
                 send_bridge(handlers::registry_crawl_policy(from_state(s), h, r, u, p, f))
+            }),
+        )
+        .route(
+            "/{slug}/-/settings/storage",
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::registry_change_storage(from_state(s), h, r, u, p, f))
             }),
         )
         .route(
