@@ -715,7 +715,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   preserves icount, bias, TCG/device/timer and time-control state so a restored
   fat checkpoint passes the replay oracle. — satisfies [DET-32], [DET-18] (E20);
   spec §4.9.
-- [ ] **T-DET-20** Implement `gate:divergence-bisect`: on any fingerprint or
+- [x] **T-DET-20** Implement `gate:divergence-bisect`: on any fingerprint or
   Schedule mismatch, localize to the first differing decision and the first
   differing instruction; never tolerate or retry. — satisfies [DET-30],
   [DET-39], routes [INV-10]; spec §4.8, §4.11.

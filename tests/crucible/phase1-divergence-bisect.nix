@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.divergenceBisect",
-  taskIds ? ["T-HARN-9" "T-HARN-10"],
+  taskIds ? ["T-HARN-9" "T-HARN-10" "T-DET-20"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -19,6 +19,7 @@
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -172,6 +173,14 @@
         needle = "gate_divergence_bisect_compares_decisions_by_canonical_bytes";
       }
       {
+        label = "exact first differing decision index";
+        needle = "assert_eq!(decision.index, 2);";
+      }
+      {
+        label = "exact first differing instruction icount";
+        needle = "assert_eq!(report.first_different_icount, SEEDED_DIVERGENCE_ICOUNT);";
+      }
+      {
         label = "malformed state dump rejection";
         needle = "gate_divergence_bisect_rejects_malformed_state_dumps";
       }
@@ -239,6 +248,10 @@
         label = "phase1 divergence-bisect lists T-HARN-10";
         needle = "\"T-HARN-10\"";
       }
+      {
+        label = "phase1 divergence-bisect lists T-DET-20";
+        needle = "\"T-DET-20\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
@@ -248,6 +261,20 @@
       {
         label = "T-HARN-10 checklist complete";
         needle = "- [x] **T-HARN-10**";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
+      {
+        label = "T-DET-20 checklist complete";
+        needle = "- [x] **T-DET-20**";
+      }
+      {
+        label = "DET-39 requires first differing decision";
+        needle = "first differing decision";
+      }
+      {
+        label = "DET-39 forbids repair and retry";
+        needle = "be smoothed over, tolerated, or retried";
       }
     ];
 in
@@ -320,6 +347,9 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             rust_test=crucible-harness::gate_divergence_bisect
             localization=coarse-fingerprint-plus-exact-icount-bisection
+            first_different_decision=canonical-schedule-bytes
+            first_different_instruction=exact-icount
+            no_repair_or_retry=true
             corpus=seeded-known-divergence
             RESULT
           '';
