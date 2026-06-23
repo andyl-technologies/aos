@@ -124,14 +124,38 @@ pub(crate) async fn rev_parse_commit(repo_dir: &Path, spec: &str) -> Result<Stri
 /// Returns an error if the spec does not resolve.
 pub(crate) async fn rev_parse(repo_dir: &Path, spec: &str) -> Result<String> {
     let spec = spec.to_string();
-    blocking(repo_dir, move |dir| {
-        let repo = open(dir)?;
-        let object = repo
-            .revparse_single(&spec)
-            .with_context(|| format!("resolving {spec}"))?;
-        Ok(object.id().to_string())
-    })
-    .await
+    blocking(repo_dir, move |dir| rev_parse_blocking(dir, &spec)).await
+}
+
+/// Synchronous form of [`rev_parse`] for sync callers (tag-chain verification).
+///
+/// # Errors
+///
+/// Returns an error if the spec does not resolve.
+pub(crate) fn rev_parse_blocking(repo_dir: &Path, spec: &str) -> Result<String> {
+    let repo = open(repo_dir)?;
+    let object = repo
+        .revparse_single(spec)
+        .with_context(|| format!("resolving {spec}"))?;
+    Ok(object.id().to_string())
+}
+
+/// Read the raw body of the object named by `spec` (no `<type> <size>\0`
+/// header). For a tag spec this is exactly `git cat-file -p <tag>` output.
+///
+/// # Errors
+///
+/// Returns an error if the spec does not resolve or the object cannot be read.
+pub(crate) fn object_body_blocking(repo_dir: &Path, spec: &str) -> Result<Vec<u8>> {
+    let repo = open(repo_dir)?;
+    let object = repo
+        .revparse_single(spec)
+        .with_context(|| format!("resolving {spec}"))?;
+    let odb = repo.odb().context("opening object database")?;
+    let raw = odb
+        .read(object.id())
+        .with_context(|| format!("reading object {spec}"))?;
+    Ok(raw.data().to_vec())
 }
 
 /// List all tag short-names in the repository (`git tag -l`).
@@ -254,27 +278,41 @@ pub(crate) async fn read_blob_at(
     let commit = commit.to_string();
     let tree_path = tree_path.to_string();
     blocking(repo_dir, move |dir| {
-        let repo = open(dir)?;
-        let tree = commit_tree(&repo, &commit)?;
-        let entry = match tree.get_path(Path::new(&tree_path)) {
-            Ok(entry) => entry,
-            Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
-            Err(e) => {
-                return Err(e).with_context(|| format!("looking up {commit}:{tree_path}"));
-            }
-        };
-        if entry.kind() != Some(git2::ObjectType::Blob) {
-            bail!("{commit}:{tree_path} is not a file");
-        }
-        let object = entry
-            .to_object(&repo)
-            .with_context(|| format!("reading {commit}:{tree_path}"))?;
-        let blob = object
-            .as_blob()
-            .with_context(|| format!("{commit}:{tree_path} is not a blob"))?;
-        Ok(Some(blob.content().to_vec()))
+        read_blob_at_blocking(dir, &commit, &tree_path)
     })
     .await
+}
+
+/// Synchronous form of [`read_blob_at`] for sync callers (trust-roster load).
+///
+/// # Errors
+///
+/// Returns an error if the commit cannot be resolved, or the path names a
+/// non-blob object.
+pub(crate) fn read_blob_at_blocking(
+    repo_dir: &Path,
+    commit: &str,
+    tree_path: &str,
+) -> Result<Option<Vec<u8>>> {
+    let repo = open(repo_dir)?;
+    let tree = commit_tree(&repo, commit)?;
+    let entry = match tree.get_path(Path::new(tree_path)) {
+        Ok(entry) => entry,
+        Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(e).with_context(|| format!("looking up {commit}:{tree_path}"));
+        }
+    };
+    if entry.kind() != Some(git2::ObjectType::Blob) {
+        bail!("{commit}:{tree_path} is not a file");
+    }
+    let object = entry
+        .to_object(&repo)
+        .with_context(|| format!("reading {commit}:{tree_path}"))?;
+    let blob = object
+        .as_blob()
+        .with_context(|| format!("{commit}:{tree_path} is not a blob"))?;
+    Ok(Some(blob.content().to_vec()))
 }
 
 /// Extract the directory tree at `commit:tree_path` into `output_dir`.

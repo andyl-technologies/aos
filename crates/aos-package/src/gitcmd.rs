@@ -65,6 +65,9 @@ pub(crate) fn transport() -> std::process::Command {
 }
 
 /// Async variant of [`transport`].
+// Retained while the apr write-side still shells out to git; the apm fetch
+// path now uses libgit2 (`registry::repo`), leaving this temporarily unused.
+#[allow(dead_code)]
 pub(crate) fn transport_async() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("git");
     if let Some(path) = transport_env_path() {

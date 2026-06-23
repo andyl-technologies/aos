@@ -24,7 +24,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::download::join_cache_url;
-use crate::gitcmd;
 use crate::registry::pack;
 use aos_core::output::Printer;
 
@@ -378,19 +377,12 @@ async fn git_fetch_release(
     target: &semver::Version,
 ) -> Result<FetchStep> {
     let refspec = release_refspec(target);
-    let output = gitcmd::transport_async()
-        .arg("-C")
-        .arg(repo_dir)
-        .args(["fetch", "--force", origin, &refspec])
-        .output()
+    // Leading `+` forces the ref update (the historical `git fetch --force`);
+    // the stored FetchStep keeps the logical, unforced refspec.
+    let forced = format!("+{refspec}");
+    crate::registry::repo::fetch(repo_dir, origin, std::slice::from_ref(&forced))
         .await
-        .with_context(|| format!("running git fetch {refspec}"))?;
-    if !output.status.success() {
-        bail!(
-            "git fetch fallback failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
+        .with_context(|| format!("git fetch {refspec}"))?;
     Ok(FetchStep::GitFetchFallback { refspec })
 }
 
