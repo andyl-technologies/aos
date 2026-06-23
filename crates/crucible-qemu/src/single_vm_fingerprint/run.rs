@@ -2,9 +2,10 @@
 
 use super::compare::compare_single_vm_fingerprint_streams;
 use super::types::{
-    SingleVmFingerprintGateError, SingleVmFingerprintGateReport, SingleVmFingerprintRunOrdinal,
-    SingleVmFingerprintRunRequest, SingleVmFingerprintRunner, SingleVmFingerprintScenario,
-    SingleVmFingerprintStream, validate_digest_len, validate_final_icount, validate_samples,
+    SingleVmFingerprintBisectionRequest, SingleVmFingerprintGateError,
+    SingleVmFingerprintGateReport, SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest,
+    SingleVmFingerprintRunner, SingleVmFingerprintScenario, SingleVmFingerprintStream,
+    validate_digest_len, validate_final_icount, validate_samples,
 };
 
 /// Runs `gate:single-vm-fingerprint` for one fixed scenario.
@@ -23,16 +24,36 @@ where
     let first_stream = run_one(runner, scenario, SingleVmFingerprintRunOrdinal::First)?;
     let second_stream = run_one(runner, scenario, SingleVmFingerprintRunOrdinal::Second)?;
 
-    compare_single_vm_fingerprint_streams(
+    match compare_single_vm_fingerprint_streams(
         &first_stream,
         &second_stream,
         scenario.run_horizon_icount,
-    )
-    .map_err(|mismatch| SingleVmFingerprintGateError::Mismatch {
-        mismatch,
-        first_stream: Box::new(first_stream.clone()),
-        second_stream: Box::new(second_stream.clone()),
-    })?;
+    ) {
+        Ok(()) => {}
+        Err(mismatch) => {
+            let request = SingleVmFingerprintBisectionRequest::new(
+                scenario.clone(),
+                mismatch.clone(),
+                first_stream.clone(),
+                second_stream.clone(),
+            );
+            let bisection = runner
+                .bisect_single_vm_fingerprint_mismatch(&request)
+                .map_err(|source| SingleVmFingerprintGateError::BisectionFailed {
+                    mismatch: Box::new(mismatch.clone()),
+                    first_stream: Box::new(first_stream.clone()),
+                    second_stream: Box::new(second_stream.clone()),
+                    source,
+                })?;
+            validate_bisection_report_for_mismatch(&bisection, &mismatch)?;
+            return Err(SingleVmFingerprintGateError::Mismatch {
+                mismatch: Box::new(mismatch),
+                first_stream: Box::new(first_stream),
+                second_stream: Box::new(second_stream),
+                bisection: Box::new(bisection),
+            });
+        }
+    }
 
     Ok(SingleVmFingerprintGateReport {
         scenario_id: scenario.id.clone(),
@@ -57,6 +78,31 @@ where
         .map_err(|source| SingleVmFingerprintGateError::RunFailed { ordinal, source })?;
     validate_stream_for_run(scenario, &stream, ordinal)?;
     Ok(stream)
+}
+
+fn validate_bisection_report_for_mismatch(
+    bisection: &super::types::SingleVmFingerprintBisectionReport,
+    mismatch: &super::compare::SingleVmFingerprintMismatch,
+) -> Result<(), SingleVmFingerprintGateError> {
+    if bisection.sample_index() != mismatch.sample_index {
+        return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+            reason: "bisection sample index must match the first stream mismatch",
+        });
+    }
+    if bisection.previous_matching_icount() != mismatch.previous_matching_icount {
+        return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+            reason: "bisection previous matching icount must match the stream mismatch",
+        });
+    }
+    if let Some(first_different_icount) = mismatch.first_different_icount
+        && bisection.first_different_sample_icount() != first_different_icount
+    {
+        return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+            reason: "bisection sample icount must match the first differing stream icount",
+        });
+    }
+
+    Ok(())
 }
 
 fn validate_stream_for_run(

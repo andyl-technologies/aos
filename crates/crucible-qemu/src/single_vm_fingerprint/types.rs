@@ -209,6 +209,162 @@ impl SingleVmFingerprintRunRequest {
     }
 }
 
+/// A request to refine a mismatching pair of fingerprint streams.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SingleVmFingerprintBisectionRequest {
+    scenario: SingleVmFingerprintScenario,
+    mismatch: SingleVmFingerprintMismatch,
+    first_stream: SingleVmFingerprintStream,
+    second_stream: SingleVmFingerprintStream,
+}
+
+impl SingleVmFingerprintBisectionRequest {
+    /// Builds a mismatch bisection request.
+    #[must_use]
+    pub fn new(
+        scenario: SingleVmFingerprintScenario,
+        mismatch: SingleVmFingerprintMismatch,
+        first_stream: SingleVmFingerprintStream,
+        second_stream: SingleVmFingerprintStream,
+    ) -> Self {
+        Self {
+            scenario,
+            mismatch,
+            first_stream,
+            second_stream,
+        }
+    }
+
+    /// Returns the fixed scenario whose runs diverged.
+    #[must_use]
+    pub fn scenario(&self) -> &SingleVmFingerprintScenario {
+        &self.scenario
+    }
+
+    /// Returns the first localized stream mismatch.
+    #[must_use]
+    pub fn mismatch(&self) -> &SingleVmFingerprintMismatch {
+        &self.mismatch
+    }
+
+    /// Returns the first run stream to include in diagnostics.
+    #[must_use]
+    pub fn first_stream(&self) -> &SingleVmFingerprintStream {
+        &self.first_stream
+    }
+
+    /// Returns the second run stream to include in diagnostics.
+    #[must_use]
+    pub fn second_stream(&self) -> &SingleVmFingerprintStream {
+        &self.second_stream
+    }
+}
+
+/// The refined bisection result attached to a single-VM fingerprint mismatch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SingleVmFingerprintBisectionReport {
+    sample_index: usize,
+    previous_matching_icount: Option<u64>,
+    first_different_sample_icount: u64,
+    last_matching_icount: u64,
+    first_different_icount: u64,
+    state_dump_artifact: String,
+}
+
+impl SingleVmFingerprintBisectionReport {
+    /// Builds a validated bisection report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError::InvalidBisectionReport`] when
+    /// the report has an impossible icount window or omits the state-dump
+    /// artifact that carries both sides of the divergence.
+    pub fn new(
+        sample_index: usize,
+        previous_matching_icount: Option<u64>,
+        first_different_sample_icount: u64,
+        last_matching_icount: u64,
+        first_different_icount: u64,
+        state_dump_artifact: impl Into<String>,
+    ) -> Result<Self, SingleVmFingerprintGateError> {
+        if first_different_icount > first_different_sample_icount {
+            return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "exact first differing icount must be within the coarse sample window",
+            });
+        }
+        if first_different_icount == 0 {
+            if last_matching_icount != 0 {
+                return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+                    reason: "zero-icount divergence cannot have a positive last matching icount",
+                });
+            }
+        } else if last_matching_icount >= first_different_icount {
+            return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "last matching icount must be before the first differing icount",
+            });
+        }
+        if previous_matching_icount.is_some_and(|previous| {
+            previous > last_matching_icount || previous >= first_different_sample_icount
+        }) {
+            return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "previous matching icount is outside the bisection window",
+            });
+        }
+
+        let state_dump_artifact = state_dump_artifact.into();
+        if state_dump_artifact.is_empty() {
+            return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "state dump artifact must be non-empty",
+            });
+        }
+
+        Ok(Self {
+            sample_index,
+            previous_matching_icount,
+            first_different_sample_icount,
+            last_matching_icount,
+            first_different_icount,
+            state_dump_artifact,
+        })
+    }
+
+    /// Returns the index of the first differing fingerprint sample.
+    #[must_use]
+    pub fn sample_index(&self) -> usize {
+        self.sample_index
+    }
+
+    /// Returns the last icount known to match before bisection.
+    #[must_use]
+    pub fn previous_matching_icount(&self) -> Option<u64> {
+        self.previous_matching_icount
+    }
+
+    /// Returns the first differing sample icount before fine bisection.
+    #[must_use]
+    pub fn first_different_sample_icount(&self) -> u64 {
+        self.first_different_sample_icount
+    }
+
+    /// Returns the last exact icount where the two runs still matched.
+    #[must_use]
+    pub fn last_matching_icount(&self) -> u64 {
+        self.last_matching_icount
+    }
+
+    /// Returns the exact first icount where the two runs differed.
+    #[must_use]
+    pub fn first_different_icount(&self) -> u64 {
+        self.first_different_icount
+    }
+
+    /// Returns the artifact path or id containing both-sides state dumps.
+    #[must_use]
+    pub fn state_dump_artifact(&self) -> &str {
+        &self.state_dump_artifact
+    }
+}
+
 /// One canonical fingerprint sample from a single-VM run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SingleVmFingerprintSample {
@@ -280,6 +436,18 @@ pub trait SingleVmFingerprintRunner {
         &mut self,
         request: &SingleVmFingerprintRunRequest,
     ) -> Result<SingleVmFingerprintStream, SingleVmFingerprintRunError>;
+
+    /// Refines a stream mismatch to an exact divergence report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintBisectionError`] when the backend cannot
+    /// resume/probe the two runs or cannot emit the required both-sides state
+    /// dump for the first differing icount.
+    fn bisect_single_vm_fingerprint_mismatch(
+        &mut self,
+        request: &SingleVmFingerprintBisectionRequest,
+    ) -> Result<SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionError>;
 }
 
 /// A backend execution failure before stream comparison.
@@ -291,6 +459,29 @@ pub struct SingleVmFingerprintRunError {
 
 impl SingleVmFingerprintRunError {
     /// Builds a backend execution failure.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// Returns the backend-provided message.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+/// A backend failure while refining a mismatch with bisection.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+#[error("single-VM fingerprint bisection failed: {message}")]
+pub struct SingleVmFingerprintBisectionError {
+    message: String,
+}
+
+impl SingleVmFingerprintBisectionError {
+    /// Builds a backend bisection failure.
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
         Self {
@@ -359,21 +550,41 @@ pub enum SingleVmFingerprintGateError {
         /// Human-readable validation failure.
         reason: &'static str,
     },
+    /// A backend returned a malformed mismatch bisection report.
+    #[error("invalid single-VM fingerprint bisection report: {reason}")]
+    InvalidBisectionReport {
+        /// Human-readable validation failure.
+        reason: &'static str,
+    },
     /// A stream is not internally canonical.
     #[error("invalid single-VM fingerprint stream: {reason}")]
     InvalidStream {
         /// Human-readable validation failure.
         reason: &'static str,
     },
-    /// The two canonical streams differed.
-    #[error("single-VM fingerprint streams differ: {mismatch}")]
-    Mismatch {
+    /// A backend could not refine a stream mismatch by bisection.
+    #[error("single-VM fingerprint mismatch bisection failed: {source}")]
+    BisectionFailed {
         /// The first deterministic mismatch.
-        mismatch: SingleVmFingerprintMismatch,
+        mismatch: Box<SingleVmFingerprintMismatch>,
         /// First run stream to include in diagnostics.
         first_stream: Box<SingleVmFingerprintStream>,
         /// Second run stream to include in diagnostics.
         second_stream: Box<SingleVmFingerprintStream>,
+        /// Backend bisection failure.
+        source: SingleVmFingerprintBisectionError,
+    },
+    /// The two canonical streams differed.
+    #[error("single-VM fingerprint streams differ: {mismatch}; bisection report attached")]
+    Mismatch {
+        /// The first deterministic mismatch.
+        mismatch: Box<SingleVmFingerprintMismatch>,
+        /// First run stream to include in diagnostics.
+        first_stream: Box<SingleVmFingerprintStream>,
+        /// Second run stream to include in diagnostics.
+        second_stream: Box<SingleVmFingerprintStream>,
+        /// Exact bisection result for the mismatch.
+        bisection: Box<SingleVmFingerprintBisectionReport>,
     },
 }
 

@@ -5,11 +5,13 @@
 use std::collections::VecDeque;
 
 use crucible_qemu::{
-    SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintGateError,
-    SingleVmFingerprintMismatchKind, SingleVmFingerprintRunError, SingleVmFingerprintRunOrdinal,
-    SingleVmFingerprintRunRequest, SingleVmFingerprintRunner, SingleVmFingerprintSample,
-    SingleVmFingerprintScenario, SingleVmFingerprintStream, SingleVmFingerprintTrigger,
-    SingleVmHostProfile, compare_single_vm_fingerprint_streams, run_single_vm_fingerprint_gate,
+    SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintBisectionError,
+    SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionRequest,
+    SingleVmFingerprintGateError, SingleVmFingerprintMismatchKind, SingleVmFingerprintRunError,
+    SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest, SingleVmFingerprintRunner,
+    SingleVmFingerprintSample, SingleVmFingerprintScenario, SingleVmFingerprintStream,
+    SingleVmFingerprintTrigger, SingleVmHostProfile, compare_single_vm_fingerprint_streams,
+    run_single_vm_fingerprint_gate,
 };
 
 #[test]
@@ -52,7 +54,10 @@ fn gate_single_vm_fingerprint_reports_first_sample_window() {
     let scenario = scenario();
     let first = stream(&[1, 2, 3], 9);
     let second = stream(&[1, 7, 3], 9);
-    let mut runner = FakeRunner::new(vec![Ok(first.clone()), Ok(second.clone())]);
+    let mut runner = FakeRunner::with_bisections(
+        vec![Ok(first.clone()), Ok(second.clone())],
+        vec![Ok(bisection_report(1, Some(4096), 8192, 6144, 6145))],
+    );
 
     let error = match run_single_vm_fingerprint_gate(&mut runner, &scenario) {
         Ok(_) => panic!("different streams should fail"),
@@ -63,6 +68,7 @@ fn gate_single_vm_fingerprint_reports_first_sample_window() {
         mismatch,
         first_stream,
         second_stream,
+        bisection,
     } = error
     else {
         panic!("sample divergence should report a mismatch");
@@ -77,6 +83,22 @@ fn gate_single_vm_fingerprint_reports_first_sample_window() {
     assert_eq!(mismatch.first_different_icount, Some(8192));
     assert_eq!(*first_stream, first);
     assert_eq!(*second_stream, second);
+    assert_eq!(bisection.sample_index(), 1);
+    assert_eq!(bisection.first_different_sample_icount(), 8192);
+    assert_eq!(bisection.last_matching_icount(), 6144);
+    assert_eq!(bisection.first_different_icount(), 6145);
+    assert_eq!(
+        bisection.state_dump_artifact(),
+        "artifact://single-vm-bisect"
+    );
+    assert_eq!(runner.bisection_requests.len(), 1);
+    assert_eq!(
+        runner.bisection_requests[0].scenario().id(),
+        "contract-a-single-vm"
+    );
+    assert_eq!(runner.bisection_requests[0].mismatch().sample_index, 1);
+    assert_eq!(runner.bisection_requests[0].first_stream(), &first);
+    assert_eq!(runner.bisection_requests[0].second_stream(), &second);
 }
 
 #[test]
@@ -239,19 +261,91 @@ fn gate_single_vm_fingerprint_surfaces_backend_failure_without_extra_runs() {
         }
     ));
     assert_eq!(runner.requests.len(), 2);
+    assert!(runner.bisection_requests.is_empty());
+}
+
+#[test]
+fn gate_single_vm_fingerprint_requires_bisection_on_mismatch() {
+    let scenario = scenario();
+    let first = stream(&[1, 2, 3], 9);
+    let second = stream(&[1, 7, 3], 9);
+    let mut runner = FakeRunner::with_bisections(
+        vec![Ok(first.clone()), Ok(second.clone())],
+        vec![Err(SingleVmFingerprintBisectionError::new(
+            "planned bisection failure",
+        ))],
+    );
+
+    let error = match run_single_vm_fingerprint_gate(&mut runner, &scenario) {
+        Ok(_) => panic!("missing bisection should fail the gate"),
+        Err(error) => error,
+    };
+
+    let SingleVmFingerprintGateError::BisectionFailed {
+        mismatch,
+        first_stream,
+        second_stream,
+        source,
+    } = error
+    else {
+        panic!("bisection failure should be reported distinctly");
+    };
+
+    assert_eq!(mismatch.sample_index, 1);
+    assert_eq!(source.message(), "planned bisection failure");
+    assert_eq!(*first_stream, first);
+    assert_eq!(*second_stream, second);
+    assert_eq!(runner.bisection_requests.len(), 1);
+}
+
+#[test]
+fn gate_single_vm_fingerprint_rejects_misaligned_bisection_report() {
+    let scenario = scenario();
+    let first = stream(&[1, 2, 3], 9);
+    let second = stream(&[1, 7, 3], 9);
+    let mut runner = FakeRunner::with_bisections(
+        vec![Ok(first), Ok(second)],
+        vec![Ok(bisection_report(2, Some(4096), 8192, 6144, 6145))],
+    );
+
+    let error = match run_single_vm_fingerprint_gate(&mut runner, &scenario) {
+        Ok(_) => panic!("misaligned bisection report should fail the gate"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error,
+        SingleVmFingerprintGateError::InvalidBisectionReport {
+            reason: "bisection sample index must match the first stream mismatch",
+        }
+    );
 }
 
 #[derive(Debug)]
 struct FakeRunner {
     streams: VecDeque<Result<SingleVmFingerprintStream, SingleVmFingerprintRunError>>,
+    bisections:
+        VecDeque<Result<SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionError>>,
     requests: Vec<SingleVmFingerprintRunRequest>,
+    bisection_requests: Vec<SingleVmFingerprintBisectionRequest>,
 }
 
 impl FakeRunner {
     fn new(streams: Vec<Result<SingleVmFingerprintStream, SingleVmFingerprintRunError>>) -> Self {
+        Self::with_bisections(streams, Vec::new())
+    }
+
+    fn with_bisections(
+        streams: Vec<Result<SingleVmFingerprintStream, SingleVmFingerprintRunError>>,
+        bisections: Vec<
+            Result<SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionError>,
+        >,
+    ) -> Self {
         Self {
             streams: streams.into(),
+            bisections: bisections.into(),
             requests: Vec::new(),
+            bisection_requests: Vec::new(),
         }
     }
 }
@@ -265,6 +359,19 @@ impl SingleVmFingerprintRunner for FakeRunner {
         match self.streams.pop_front() {
             Some(result) => result,
             None => Err(SingleVmFingerprintRunError::new("missing planned stream")),
+        }
+    }
+
+    fn bisect_single_vm_fingerprint_mismatch(
+        &mut self,
+        request: &SingleVmFingerprintBisectionRequest,
+    ) -> Result<SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionError> {
+        self.bisection_requests.push(request.clone());
+        match self.bisections.pop_front() {
+            Some(result) => result,
+            None => Err(SingleVmFingerprintBisectionError::new(
+                "missing planned bisection",
+            )),
         }
     }
 }
@@ -300,6 +407,26 @@ fn sample(seq: u64, icount: u64, rolling_byte: u8) -> SingleVmFingerprintSample 
         icount,
         trigger: SingleVmFingerprintTrigger::Periodic,
         rolling_fingerprint: digest(rolling_byte),
+    }
+}
+
+fn bisection_report(
+    sample_index: usize,
+    previous_matching_icount: Option<u64>,
+    first_different_sample_icount: u64,
+    last_matching_icount: u64,
+    first_different_icount: u64,
+) -> SingleVmFingerprintBisectionReport {
+    match SingleVmFingerprintBisectionReport::new(
+        sample_index,
+        previous_matching_icount,
+        first_different_sample_icount,
+        last_matching_icount,
+        first_different_icount,
+        "artifact://single-vm-bisect",
+    ) {
+        Ok(report) => report,
+        Err(error) => panic!("test bisection report should be valid: {error}"),
     }
 }
 

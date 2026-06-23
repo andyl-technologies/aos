@@ -179,13 +179,10 @@ in {
         taskIds = ["T-PLAN-3" "T-HARN-20"];
         reason = "QEMU patch micro-test gate is intentionally pending";
       };
-      singleVmFingerprint = redGate {
+      singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
-        gateName = "gate:single-vm-fingerprint";
-        owner = "crucible-qemu";
-        phase = "phase2";
         taskIds = ["T-PLAN-3" "T-HARN-7"];
-        reason = "single-VM fingerprint gate is intentionally pending";
       };
       anyGuest = redGate {
         attrPath = "checks.crucible.phase2.gates.anyGuest";
