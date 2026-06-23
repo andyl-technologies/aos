@@ -36,8 +36,12 @@ use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
-/// Minimum match length (and base-index window) for the delta encoder.
+/// Minimum match length for the hash-chain fallback delta encoder.
 const MATCH_WINDOW: usize = 16;
+
+/// Largest base for which a suffix array is built; larger bases fall back to the
+/// hash matcher (bounding O(n log n) index construction memory/time).
+const SUFFIX_ARRAY_MAX_BASE: usize = 16 << 20;
 
 /// Candidate bases considered per blob by the windowed strategy (same-path,
 /// same-basename, and nearest-by-size neighbours).
@@ -125,7 +129,7 @@ pub(crate) fn write_thin_pack(
     let from_objects = reachable_from(&repo, from)?;
     let to_objects = reachable_from(&repo, to)?;
     let pool = build_base_pool(&repo, from)?;
-    let to_path_by_blob = blob_paths(&repo, to)?;
+    let to_path_by_object = object_paths(&repo, to)?;
     let odb = repo.odb().context("opening object database")?;
 
     // Read phase (single-thread): load each to-pack object, and gather every
@@ -138,8 +142,8 @@ pub(crate) fn write_thin_pack(
             .with_context(|| format!("reading object {oid}"))?;
         let kind = object.kind();
         let data = object.data().to_vec();
-        let path = if kind == git2::ObjectType::Blob {
-            to_path_by_blob.get(oid).cloned()
+        let path = if matches!(kind, git2::ObjectType::Blob | git2::ObjectType::Tree) {
+            to_path_by_object.get(oid).cloned()
         } else {
             None
         };
@@ -157,12 +161,21 @@ pub(crate) fn write_thin_pack(
         }
     }
 
+    // Precompute a suffix array per base (in parallel, once) so the delta
+    // search finds optimal longest matches without rebuilding the index per
+    // blob. Oversized bases are skipped (they fall back to the hash matcher).
+    let base_index: HashMap<git2::Oid, Vec<u32>> = base_data
+        .par_iter()
+        .filter(|(_, data)| !data.is_empty() && data.len() <= SUFFIX_ARRAY_MAX_BASE)
+        .map(|(oid, data)| (*oid, build_suffix_array(data)))
+        .collect();
+
     // Build a candidate pack per strategy, then keep the one whose zstd-wrapped
     // size is smallest (the production transport artifact).
     let mut best: Option<Vec<u8>> = None;
     let mut best_len = usize::MAX;
     for strategy in STRATEGIES {
-        let pack = build_pack(&inputs, strategy, &pool, &base_data)?;
+        let pack = build_pack(&inputs, strategy, &pool, &base_data, &base_index)?;
         let zlen = zstd_probe_len(&pack)
             .with_context(|| format!("ranking {strategy:?} pack candidate"))?;
         if zlen < best_len {
@@ -187,10 +200,11 @@ fn build_pack(
     strategy: Strategy,
     pool: &BasePool,
     base_data: &HashMap<git2::Oid, Vec<u8>>,
+    base_index: &HashMap<git2::Oid, Vec<u32>>,
 ) -> Result<Vec<u8>> {
     let entries = inputs
         .par_iter()
-        .map(|input| encode_input(input, strategy, pool, base_data))
+        .map(|input| encode_input(input, strategy, pool, base_data, base_index))
         .collect::<Result<Vec<_>>>()?;
     Ok(assemble_pack(&entries))
 }
@@ -203,8 +217,9 @@ fn encode_input(
     strategy: Strategy,
     pool: &BasePool,
     base_data: &HashMap<git2::Oid, Vec<u8>>,
+    base_index: &HashMap<git2::Oid, Vec<u32>>,
 ) -> Result<Vec<u8>> {
-    if input.kind == git2::ObjectType::Blob
+    if matches!(input.kind, git2::ObjectType::Blob | git2::ObjectType::Tree)
         && let Some(path) = &input.path
     {
         let bases = match strategy {
@@ -217,7 +232,11 @@ fn encode_input(
             let Some(base) = base_data.get(base_oid) else {
                 continue;
             };
-            let delta = encode_delta(base, &input.data);
+            let delta = encode_delta(
+                base,
+                &input.data,
+                base_index.get(base_oid).map(Vec::as_slice),
+            );
             if best.as_ref().is_none_or(|(_, b)| delta.len() < b.len()) {
                 best = Some((*base_oid, delta));
             }
@@ -300,12 +319,19 @@ fn collect_tree(
 
 /// Map each blob OID in `commit`'s tip tree to its path, for selecting a
 /// to-pack blob's path when choosing candidate bases.
-fn blob_paths(repo: &git2::Repository, commit: git2::Oid) -> Result<HashMap<git2::Oid, String>> {
+/// Map each blob and tree (sub)object in `commit`'s tip tree to its path (the
+/// root tree maps to the empty path), for choosing same-path delta bases. Trees
+/// are included because directory listings change incrementally between releases
+/// and delta well against the previous release's same-path tree.
+fn object_paths(repo: &git2::Repository, commit: git2::Oid) -> Result<HashMap<git2::Oid, String>> {
     let mut map = HashMap::new();
     let tree = repo.find_commit(commit)?.tree()?;
+    map.insert(tree.id(), String::new());
     tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
-        if entry.kind() == Some(git2::ObjectType::Blob)
-            && let Ok(name) = entry.name()
+        if matches!(
+            entry.kind(),
+            Some(git2::ObjectType::Blob | git2::ObjectType::Tree)
+        ) && let Ok(name) = entry.name()
         {
             map.insert(entry.id(), format!("{root}{name}"));
         }
@@ -367,23 +393,33 @@ impl BasePool {
 fn build_base_pool(repo: &git2::Repository, from: git2::Oid) -> Result<BasePool> {
     let odb = repo.odb().context("opening object database")?;
     let tree = repo.find_commit(from)?.tree()?;
-    let mut by_path = HashMap::new();
-    let mut by_basename: HashMap<String, Vec<usize>> = HashMap::new();
-    let mut entries: Vec<(git2::Oid, usize)> = Vec::new();
+    // (path, oid) for the root tree plus every blob and subtree.
+    let mut objects: Vec<(String, git2::Oid)> = vec![(String::new(), tree.id())];
     tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
-        if entry.kind() == Some(git2::ObjectType::Blob)
-            && let Ok(name) = entry.name()
+        if matches!(
+            entry.kind(),
+            Some(git2::ObjectType::Blob | git2::ObjectType::Tree)
+        ) && let Ok(name) = entry.name()
         {
-            let oid = entry.id();
-            let size = odb.read_header(oid).map(|(size, _)| size).unwrap_or(0);
-            let index = entries.len();
-            entries.push((oid, size));
-            by_path.insert(format!("{root}{name}"), oid);
-            by_basename.entry(name.to_string()).or_default().push(index);
+            objects.push((format!("{root}{name}"), entry.id()));
         }
         git2::TreeWalkResult::Ok
     })
     .context("walking base tree")?;
+
+    let mut by_path = HashMap::new();
+    let mut by_basename: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut entries: Vec<(git2::Oid, usize)> = Vec::new();
+    for (path, oid) in objects {
+        let size = odb.read_header(oid).map(|(size, _)| size).unwrap_or(0);
+        let index = entries.len();
+        entries.push((oid, size));
+        by_basename
+            .entry(basename(&path).to_string())
+            .or_default()
+            .push(index);
+        by_path.insert(path, oid);
+    }
     let mut size_sorted: Vec<usize> = (0..entries.len()).collect();
     size_sorted.sort_by_key(|&i| entries[i].1);
     Ok(BasePool {
@@ -463,20 +499,50 @@ fn write_obj_header(out: &mut Vec<u8>, obj_type: u8, size: usize) {
 /// Encode a git binary delta that reconstructs `target` from `base`.
 ///
 /// Output: base size varint, target size varint, then copy (from base) and
-/// insert (literal) instructions.
-fn encode_delta(base: &[u8], target: &[u8]) -> Vec<u8> {
+/// insert (literal) instructions. When `sa` is the base's suffix array the
+/// encoder finds the optimal longest match at every position (smallest deltas);
+/// otherwise (oversized base) it falls back to a 16-byte hash-index matcher.
+fn encode_delta(base: &[u8], target: &[u8], sa: Option<&[u32]>) -> Vec<u8> {
     let mut out = Vec::new();
     write_size_varint(&mut out, base.len());
     write_size_varint(&mut out, target.len());
+    match sa {
+        Some(sa) => emit_with_suffix_array(&mut out, base, target, sa),
+        None => emit_with_hash(&mut out, base, target),
+    }
+    out
+}
 
-    // Index the base by its MATCH_WINDOW-byte windows.
+/// Emit copy/insert instructions using the base's suffix array for an optimal
+/// longest match at each target position.
+fn emit_with_suffix_array(out: &mut Vec<u8>, base: &[u8], target: &[u8], sa: &[u32]) {
+    let mut pending: Vec<u8> = Vec::new();
+    let mut j = 0;
+    while j < target.len() {
+        let (off, len) = suffix_longest_match(sa, base, &target[j..]);
+        // Take the copy only when it encodes smaller than the literals it
+        // replaces (short matches with a wide offset are not worth it).
+        if len >= 4 && copy_encoded_len(off, len) < len {
+            flush_inserts(out, &mut pending);
+            emit_copy(out, off, len);
+            j += len;
+        } else {
+            pending.push(target[j]);
+            j += 1;
+        }
+    }
+    flush_inserts(out, &mut pending);
+}
+
+/// Emit copy/insert instructions using a 16-byte hash index of the base (the
+/// fallback when no suffix array was built).
+fn emit_with_hash(out: &mut Vec<u8>, base: &[u8], target: &[u8]) {
     let mut index: HashMap<&[u8], Vec<usize>> = HashMap::new();
     if base.len() >= MATCH_WINDOW {
         for i in 0..=base.len() - MATCH_WINDOW {
             index.entry(&base[i..i + MATCH_WINDOW]).or_default().push(i);
         }
     }
-
     let mut pending: Vec<u8> = Vec::new();
     let mut j = 0;
     while j < target.len() {
@@ -486,9 +552,6 @@ fn encode_delta(base: &[u8], target: &[u8]) -> Vec<u8> {
             && let Some(offsets) = index.get(&target[j..j + MATCH_WINDOW])
         {
             for &off in offsets {
-                // Verify the window (guard against hash-map equality on a
-                // colliding slice is unnecessary — keys are the bytes), then
-                // extend the match as far as possible.
                 let mut len = MATCH_WINDOW;
                 while off + len < base.len()
                     && j + len < target.len()
@@ -503,16 +566,97 @@ fn encode_delta(base: &[u8], target: &[u8]) -> Vec<u8> {
             }
         }
         if best_len >= MATCH_WINDOW {
-            flush_inserts(&mut out, &mut pending);
-            emit_copy(&mut out, best_off, best_len);
+            flush_inserts(out, &mut pending);
+            emit_copy(out, best_off, best_len);
             j += best_len;
         } else {
             pending.push(target[j]);
             j += 1;
         }
     }
-    flush_inserts(&mut out, &mut pending);
-    out
+    flush_inserts(out, &mut pending);
+}
+
+/// Build the suffix array of `base` (rank-doubling, O(n log^2 n)).
+fn build_suffix_array(base: &[u8]) -> Vec<u32> {
+    let n = base.len();
+    let mut sa: Vec<u32> = (0..n as u32).collect();
+    if n <= 1 {
+        return sa;
+    }
+    let mut rank: Vec<i32> = base.iter().map(|&b| b as i32).collect();
+    let mut next = vec![0i32; n];
+    let mut k = 1usize;
+    loop {
+        let key = |i: usize| -> (i32, i32) { (rank[i], if i + k < n { rank[i + k] } else { -1 }) };
+        sa.sort_unstable_by(|&a, &b| key(a as usize).cmp(&key(b as usize)));
+        next[sa[0] as usize] = 0;
+        for w in 1..n {
+            let prev = sa[w - 1] as usize;
+            let cur = sa[w] as usize;
+            next[cur] = next[prev] + i32::from(key(prev) != key(cur));
+        }
+        rank.copy_from_slice(&next);
+        if rank[sa[n - 1] as usize] as usize == n - 1 {
+            break;
+        }
+        k <<= 1;
+    }
+    sa
+}
+
+/// Longest substring of `base` that is a prefix of `target`, returned as
+/// `(offset, len)`. The maximal match is at one of the two suffix-array
+/// neighbours of `target`'s insertion point.
+fn suffix_longest_match(sa: &[u32], base: &[u8], target: &[u8]) -> (usize, usize) {
+    let mut lo = 0usize;
+    let mut hi = sa.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if base[sa[mid] as usize..] < *target {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    let mut best = (0usize, 0usize);
+    for cand in [lo.wrapping_sub(1), lo] {
+        if cand < sa.len() {
+            let off = sa[cand] as usize;
+            let len = common_prefix_len(&base[off..], target);
+            if len > best.1 {
+                best = (off, len);
+            }
+        }
+    }
+    best
+}
+
+/// Length of the common prefix of `a` and `b`.
+fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
+    let max = a.len().min(b.len());
+    let mut i = 0;
+    while i < max && a[i] == b[i] {
+        i += 1;
+    }
+    i
+}
+
+/// Encoded byte length of a copy instruction for `(offset, len)` (opcode plus
+/// the nonzero offset and size bytes), used to reject copies smaller wins.
+fn copy_encoded_len(offset: usize, len: usize) -> usize {
+    let mut bytes = 1; // opcode
+    let mut o = offset as u32;
+    while o > 0 {
+        bytes += 1;
+        o >>= 8;
+    }
+    let mut s = (len as u32) & 0x00ff_ffff;
+    while s > 0 {
+        bytes += 1;
+        s >>= 8;
+    }
+    bytes
 }
 
 /// Write a base-128 varint (LSB first) for a delta size header.
@@ -625,12 +769,18 @@ mod tests {
     }
 
     fn roundtrip(base: &[u8], target: &[u8]) {
-        let delta = encode_delta(base, target);
-        assert_eq!(
-            apply_delta(base, &delta),
-            target,
-            "delta round-trip mismatch"
-        );
+        // Exercise both the hash fallback and the suffix-array encoder.
+        let sa = build_suffix_array(base);
+        for delta in [
+            encode_delta(base, target, None),
+            encode_delta(base, target, Some(&sa)),
+        ] {
+            assert_eq!(
+                apply_delta(base, &delta),
+                target,
+                "delta round-trip mismatch"
+            );
+        }
     }
 
     #[test]
@@ -675,18 +825,31 @@ mod tests {
 
     /// Deterministic, registry-like file content; `version > 0` perturbs a few
     /// lines to model an incremental edit.
+    /// A deterministic per-`(seed, line)` value, so unchanged lines stay
+    /// byte-identical across versions while distinct files have distinct
+    /// content.
+    fn line_val(seed: usize, line: usize) -> u64 {
+        let mut h = (seed as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (line as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+        h ^= h >> 29;
+        h
+    }
+
     fn gen_file(seed: usize, version: usize) -> Vec<u8> {
         let mut s = String::new();
         for line in 0..120 {
             if version > 0 && line % 30 == 7 {
                 s.push_str(&format!(
-                    "changed[{seed}:{line}] v{version} xyzzy-{}\n",
-                    seed * 7 + line
+                    "edited line {line} v{version}: {:016x}\n",
+                    line_val(seed, line)
                 ));
             } else {
                 s.push_str(&format!(
-                    "name = \"pkg-{seed}\"\nline {line} = stable value {} foo bar baz\n",
-                    (seed * 131 + line * 17) % 1000
+                    "field_{line} = \"{:016x}-{:016x}\"\n",
+                    line_val(seed, line),
+                    line_val(seed, line + 1000)
                 ));
             }
         }
