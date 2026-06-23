@@ -125,6 +125,38 @@ pub fn r2_key(prefix: &str, path: &str) -> String {
     }
 }
 
+/// Recover the surface-relative path from a full object key under `prefix`.
+///
+/// The inverse of [`r2_key`]: a surface walk (storage migration, cache re-scan)
+/// lists *full* object keys, but the [`SurfaceFetch`](crate::fetch::SurfaceFetch)
+/// /[`SurfaceWrite`](crate::surface_write::SurfaceWrite) ports speak logical,
+/// surface-relative paths — so the listed key must be re-homed to a relative
+/// path before it is fetched from the old store and written under the new
+/// store's prefix. Requires `prefix` to end at a `/` boundary, so a sibling key
+/// that merely *shares a string prefix* (`demo` vs `democracy/…`) yields `None`
+/// rather than being mis-attributed.
+///
+/// # Examples
+///
+/// ```
+/// use aos_hub_core::keymap::relative_key;
+/// assert_eq!(relative_key("demo", "demo/channels/stable/00").as_deref(), Some("channels/stable/00"));
+/// assert_eq!(relative_key("", "nix-cache-info").as_deref(), Some("nix-cache-info"));
+/// assert_eq!(relative_key("demo", "democracy/x"), None);
+/// ```
+#[must_use]
+pub fn relative_key(prefix: &str, key: &str) -> Option<String> {
+    let prefix = prefix.trim_matches('/');
+    let key = key.trim_start_matches('/');
+    if prefix.is_empty() {
+        return Some(key.to_string());
+    }
+    if key == prefix {
+        return Some(String::new());
+    }
+    key.strip_prefix(&format!("{prefix}/")).map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +195,23 @@ mod tests {
         assert!(!is_machine_path("-/packages"));
         assert!(!is_machine_path("random"));
         assert!(!is_machine_path("objectstore"), "prefixes must not bleed");
+    }
+
+    #[test]
+    fn relative_key_inverts_r2_key() {
+        for (prefix, path) in [
+            ("demo", "channels/stable/00"),
+            ("demo", "HEAD"),
+            ("", "nix-cache-info"),
+            ("infra/prod/cdn", "nar/x.nar.zst"),
+            ("demo", ""),
+        ] {
+            let key = r2_key(prefix, path);
+            assert_eq!(relative_key(prefix, &key).as_deref(), Some(path), "{prefix}|{path}");
+        }
+        // A sibling key that merely shares a string prefix is not under it.
+        assert_eq!(relative_key("demo", "democracy/x"), None);
+        assert_eq!(relative_key("demo", "other/x"), None);
     }
 
     #[test]

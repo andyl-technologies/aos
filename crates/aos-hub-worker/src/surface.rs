@@ -208,6 +208,42 @@ impl SurfaceFetch for R2SurfaceFetch {
         Ok(Some(bytes))
     }
 
+    async fn list(&self) -> Result<Vec<String>> {
+        // List every key under the registry/cache's R2 prefix, paging through the
+        // cursor, and re-home each to a surface-relative path so the migration
+        // copy and the cache re-scan speak the same logical paths the rest of the
+        // ports do.
+        let listing_prefix = keymap::r2_key(&self.prefix, "");
+        let mut keys = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut list = self.bucket.list().prefix(listing_prefix.clone());
+            if let Some(c) = &cursor {
+                list = list.cursor(c.clone());
+            }
+            let page = list
+                .execute()
+                .await
+                .map_err(|err| anyhow::anyhow!("R2 list {listing_prefix}: {err}"))?;
+            for object in page.objects() {
+                if let Some(rel) = keymap::relative_key(&self.prefix, &object.key()) {
+                    if !rel.is_empty() {
+                        keys.push(rel);
+                    }
+                }
+            }
+            if page.truncated() {
+                cursor = page.cursor();
+                if cursor.is_none() {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(keys)
+    }
+
     async fn fetch_stream(
         &self,
         path: &str,

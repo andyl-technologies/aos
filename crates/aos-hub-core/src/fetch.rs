@@ -6,9 +6,11 @@
 //! Worker. The shared service (the facade and the `GitService` methods) reads it
 //! through two ports so the read logic is written once:
 //!
-//! - [`SurfaceFetch`] — read one surface path. This is the RFC's "Blobs" port,
-//!   read side: the facade streams objects through it and the git log/diff walk
-//!   commits through it. (Write/list — for mirror sync — are deferred.)
+//! - [`SurfaceFetch`] — read one surface path (the RFC's "Blobs" port, read
+//!   side: the facade streams objects through it and the git log/diff walk
+//!   commits through it), and [`list`](SurfaceFetch::list) the whole surface —
+//!   the enumeration storage migration and the cache re-scan walk, treating the
+//!   store as the source of truth.
 //! - [`SurfaceProvider`] — resolve the [`SurfaceFetch`] for a given registry.
 //!   The native hub picks a filesystem or HTTP fetcher per the registry's
 //!   storage binding; the Worker returns an R2-backed fetcher scoped to the
@@ -119,6 +121,31 @@ pub trait SurfaceFetch: BackendBounds {
     /// Returns an error for IO/transport failures other than absence.
     async fn size(&self, path: &str) -> Result<Option<u64>> {
         Ok(self.fetch(path).await?.map(|bytes| bytes.len() as u64))
+    }
+
+    /// Enumerate every surface-relative object path under this reader's scope.
+    ///
+    /// Returns the logical paths [`fetch`](Self::fetch) accepts (e.g.
+    /// `objects/ab/cd…`, `nar/…`, `<hash>.narinfo`, `nix-cache-info`), walking
+    /// the whole surface. The store (the bucket, the source of truth) is
+    /// authoritative; this is how the hub re-derives what it holds when it
+    /// cannot enumerate from D1 alone:
+    ///
+    /// - **Storage migration** copies every listed object to the new backend.
+    /// - **Cache re-scan** rebuilds the `cache_objects` D1 index from the
+    ///   narinfos it lists, reconciling drift after a direct (`apr`-presigned)
+    ///   upload that bypassed the facade write-through.
+    ///
+    /// Order is unspecified. The default errors, so a reader whose store cannot
+    /// enumerate (a test double, an HTTP-only origin with no index) need not
+    /// implement it — callers that require listing surface a clear error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store cannot enumerate, or on IO/transport
+    /// failure.
+    async fn list(&self) -> Result<Vec<String>> {
+        anyhow::bail!("this surface ({}) does not support listing", self.describe())
     }
 
     /// A human-readable description of the source (for health/audit text).

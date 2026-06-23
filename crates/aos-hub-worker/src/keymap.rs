@@ -8,6 +8,6 @@
 //! is now a thin re-export to keep the worker's `crate::keymap::…` paths stable.
 
 pub use aos_hub_core::keymap::{
-    cache_control, content_type, is_machine_path, r2_key, IMMUTABLE_CACHE_CONTROL,
+    cache_control, content_type, is_machine_path, r2_key, relative_key, IMMUTABLE_CACHE_CONTROL,
     MUTABLE_CACHE_CONTROL,
 };
