@@ -32,8 +32,9 @@ pub use model::{
     AppRandomDecision, Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, Decision,
     DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, GenesisCheckpoint,
     Icount, IrqVector, NodeId, OverrideDecision, PreemptionDecision, PreemptionKind, RngDecision,
-    RngStreamId, RuntimeState, ScenarioDef, Schedule, ScheduleError, SchedulingPoint, State,
-    TemporalGraph, VcpuId, VirtualTime, World, bake, instantiate, reduce, step,
+    RngStreamId, RuntimeState, ScenarioDef, Schedule, ScheduleError, SchedulingPoint, Shift,
+    SimDuration, SimInstant, SimOffset, State, TemporalGraph, TimeConversionError, VcpuId,
+    VirtualInstant, VirtualTime, World, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, IoCompletion, QuantumLoop, QuantumOutcome,
@@ -116,6 +117,74 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "schedule prefix length 2 exceeds available length 1"
+        );
+    }
+
+    #[test]
+    fn time_vocabulary_converts_icount_and_virtual_instants_exactly() {
+        let shift = match Shift::new(4) {
+            Ok(shift) => shift,
+            Err(error) => panic!("valid shift should construct: {error}"),
+        };
+        let icount = Icount { retired: 17 };
+        let instant = match icount.to_virtual(shift) {
+            Ok(instant) => instant,
+            Err(error) => panic!("valid icount conversion should succeed: {error}"),
+        };
+        let unaligned = VirtualInstant { nanos: 275 };
+
+        assert_eq!(instant, VirtualInstant { nanos: 272 });
+        assert_eq!(instant.to_icount_floor(shift), Ok(icount));
+        assert_eq!(instant.to_icount_ceil(shift), Ok(icount));
+        assert_eq!(unaligned.to_icount_floor(shift), Ok(Icount { retired: 17 }));
+        assert_eq!(unaligned.to_icount_ceil(shift), Ok(Icount { retired: 18 }));
+        let alias: SimInstant = instant;
+        assert_eq!(alias, instant);
+    }
+
+    #[test]
+    fn time_vocabulary_keeps_duration_and_offset_distinct() {
+        let earlier = VirtualInstant { nanos: 40 };
+        let later = VirtualInstant { nanos: 100 };
+        let duration = SimDuration { nanos: 25 };
+
+        assert_eq!(later.duration_since(earlier), SimDuration { nanos: 60 });
+        assert_eq!(earlier.duration_since(later), SimDuration { nanos: 0 });
+        assert_eq!(earlier + duration, VirtualInstant { nanos: 65 });
+        assert_eq!(
+            duration + SimDuration { nanos: 5 },
+            SimDuration { nanos: 30 }
+        );
+        assert_eq!(duration * 3, SimDuration { nanos: 75 });
+        assert_eq!(
+            VirtualInstant { nanos: 10 }.with_skew(SimOffset { nanos: -15 }),
+            VirtualInstant::EPOCH
+        );
+        assert_eq!(
+            VirtualInstant { nanos: 10 }.with_skew(SimOffset { nanos: 15 }),
+            VirtualInstant { nanos: 25 }
+        );
+    }
+
+    #[test]
+    fn time_vocabulary_rejects_invalid_shift_and_virtual_time_overflow() {
+        let invalid = Shift { bits: 64 };
+        let valid = Shift { bits: 63 };
+
+        assert_eq!(
+            Shift::new(64),
+            Err(TimeConversionError::InvalidShift { shift: invalid })
+        );
+        assert_eq!(
+            Icount { retired: 1 }.to_virtual(invalid),
+            Err(TimeConversionError::InvalidShift { shift: invalid })
+        );
+        assert_eq!(
+            Icount { retired: 2 }.to_virtual(valid),
+            Err(TimeConversionError::VirtualTimeOverflow {
+                icount: Icount { retired: 2 },
+                shift: valid,
+            })
         );
     }
 

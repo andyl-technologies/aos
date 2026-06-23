@@ -635,7 +635,7 @@ instruction-primary.
 > They populate Phase 1 (the determinism / harness / transport / API
 > foundation), alongside the determinism-contract tasks of 04.
 
-- [ ] **T-TIME-1** Define the host time vocabulary — `Icount`, `Shift`,
+- [x] **T-TIME-1** Define the host time vocabulary — `Icount`, `Shift`,
   `VirtualInstant`/`SimInstant`, `SimDuration` (unsigned), `SimOffset` (signed) —
   with exact integer `to_virtual`/`to_icount_floor`/`to_icount_ceil` conversions,
   no `point + point`, no negative `SimDuration`, derived `Ord`/`Eq`/`Hash` on
