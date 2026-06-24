@@ -368,6 +368,14 @@ impl BrowseQuery {
     }
 }
 
+/// Maximum number of registries whose visibility + index status the instance
+/// home resolves concurrently.
+///
+/// Bounds the in-flight D1 fan-out so a large instance issues a steady wave of
+/// statements rather than one giant burst, while still collapsing the page's
+/// per-registry N+1 from a serial chain into a handful of round-trip waves.
+const HOME_RESOLVE_FANOUT: usize = 16;
+
 /// The hub home page: every registry visible to the caller, with `?q=` search.
 ///
 /// Anonymous and expensive (it scans and visibility-filters every registry), so
@@ -381,14 +389,26 @@ pub async fn home(svc: &RpcService, headers: &HeaderMap, query: &BrowseQuery) ->
     let session = session_indicator(svc, headers).await;
     let mut rows: Vec<(RegistryRecord, Option<IndexStatus>)> = Vec::new();
     if let Ok(registries) = svc.db.list_registries().await {
-        for registry in registries {
-            // Non-disclosure: only list registries this caller could open.
-            if !can_read_registry(svc, &registry, headers).await {
-                continue;
-            }
-            let status = svc.db.index_status(registry.id).await.ok().flatten();
-            rows.push((registry, status));
-        }
+        use futures_util::stream::StreamExt as _;
+        // Resolve each registry's visibility and index status concurrently
+        // rather than as a serial per-registry chain of D1 round-trips — the
+        // classic N+1 that made the instance home scale its latency with the
+        // registry count. `buffered` caps the in-flight fan-out (so a large
+        // instance does not issue hundreds of simultaneous D1 statements) and
+        // preserves the listing order the page paginates on.
+        let resolved: Vec<Option<(RegistryRecord, Option<IndexStatus>)>> =
+            futures_util::stream::iter(registries.into_iter().map(|registry| async move {
+                // Non-disclosure: only list registries this caller could open.
+                if !can_read_registry(svc, &registry, headers).await {
+                    return None;
+                }
+                let status = svc.db.index_status(registry.id).await.ok().flatten();
+                Some((registry, status))
+            }))
+            .buffered(HOME_RESOLVE_FANOUT)
+            .collect()
+            .await;
+        rows.extend(resolved.into_iter().flatten());
     }
     Rendered::Html(pages::instance_home(
         &rows,
@@ -424,18 +444,36 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let channels = svc.db.list_channels(registry.id).await.unwrap_or_default();
-    let packages = svc.db.list_packages(registry.id).await.unwrap_or_default();
-    let caches = svc.db.list_advertised_caches(registry.id).await.unwrap_or_default();
-    let roster = svc.db.list_roster(registry.id).await.unwrap_or_default();
-    let validations = svc
-        .db
-        .latest_validation_runs(registry.id)
-        .await
-        .unwrap_or_default();
+    // These reads are mutually independent — five keyed only on `registry.id`,
+    // plus the session/manage indicators keyed on the request headers — so
+    // dispatch them as one concurrent wave rather than a serial chain of D1
+    // round-trips. On the Worker each underlying D1 promise is created on first
+    // poll and resolves alongside the others, collapsing seven sequential
+    // round-trips into one (the dominant cost of this page); on the native
+    // sqlx pool they run across pooled connections.
+    let (
+        (channels, packages, caches, roster, validations),
+        (session, can_manage),
+    ) = futures_util::future::join(
+        futures_util::future::join5(
+            svc.db.list_channels(registry.id),
+            svc.db.list_packages(registry.id),
+            svc.db.list_advertised_caches(registry.id),
+            svc.db.list_roster(registry.id),
+            svc.db.latest_validation_runs(registry.id),
+        ),
+        futures_util::future::join(
+            session_indicator(svc, headers),
+            manage_link(svc, &registry, headers),
+        ),
+    )
+    .await;
+    let channels = channels.unwrap_or_default();
+    let packages = packages.unwrap_or_default();
+    let caches = caches.unwrap_or_default();
+    let roster = roster.unwrap_or_default();
+    let validations = validations.unwrap_or_default();
     let external = format!("{}/{slug}", svc.external_url.trim_end_matches('/'));
-    let session = session_indicator(svc, headers).await;
-    let can_manage = manage_link(svc, &registry, headers).await;
     Rendered::Html(pages::registry_home(
         &registry,
         status.as_ref(),

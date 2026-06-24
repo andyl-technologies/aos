@@ -586,6 +586,27 @@ impl ResolvedFrontend {
     }
 }
 
+/// The hub's own host, parsed from [`RpcService::external_url`] and normalized
+/// the same way [`request_host`] normalizes the request `Host` (lowercased, no
+/// `:port`, no trailing dot), or `None` when `external_url` carries no host.
+///
+/// Used by [`rewrite_for_frontend`] to recognize traffic on the instance's own
+/// domain — which is never a proxied frontend — and skip the per-request
+/// `frontends_by_domain` lookup for it.
+fn instance_host(svc: &RpcService) -> Option<String> {
+    let host = svc
+        .external_url
+        .parse::<Uri>()
+        .ok()
+        .and_then(|uri| uri.host().map(str::to_string))?;
+    let host = host.trim().trim_end_matches('.');
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
 /// The request `Host`, lowercased and without any `:port`, for frontend
 /// matching.
 ///
@@ -725,6 +746,15 @@ pub async fn rewrite_for_frontend(
     let Some(host) = request_host(request.headers(), request.uri()) else {
         return Ok(request);
     };
+    // The instance's own host is never a per-registry/per-cache frontend domain,
+    // so skip the `frontends_by_domain` D1 round-trip for it — the common case
+    // for browse/RPC traffic on the hub's own domain. Only genuinely foreign
+    // hosts (proxied frontend CNAMEs) hit the lookup. A no-custom-domain deploy
+    // serves on its `*.workers.dev` host with `external_url` set to match, so
+    // this still short-circuits there.
+    if instance_host(svc).as_deref() == Some(host.as_str()) {
+        return Ok(request);
+    }
     let path = request.uri().path().to_string();
     let Some(route) = resolve_frontend_route(svc, &host, &path).await else {
         return Ok(request);

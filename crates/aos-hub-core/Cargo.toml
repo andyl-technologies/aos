@@ -30,6 +30,11 @@ jwt-rustcrypto = "0.2"
 password-hash = { version = "0.5", features = ["getrandom"] }
 async-trait = { workspace = true }
 ed25519-dalek = { workspace = true }
+# Concurrent read fan-out in the browse render paths (`web::browse`): a registry
+# page's independent per-`registry.id` D1 reads are dispatched together with
+# `future::join*` instead of serially, so the Worker pays one D1 round-trip wave
+# rather than one per query. Pure and wasm-clean (the Worker already links it).
+futures-util = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 rand = { workspace = true }

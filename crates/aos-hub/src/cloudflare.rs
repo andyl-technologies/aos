@@ -33,6 +33,9 @@
 //! [vars]
 //! HUB_EXTERNAL_URL = "https://reg.example.com"
 //!
+//! [placement]
+//! mode = "smart"
+//!
 //! [[d1_databases]]
 //! binding = "REGISTRY_DB"
 //! database_name = "aos-hub"
@@ -304,6 +307,9 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          {assets}\
          {routes}\
          {send_email}\
+         [placement]\n\
+         mode = \"smart\"\n\
+         \n\
          [[d1_databases]]\n\
          binding = \"{d1b}\"\n\
          database_name = {d1name}\n\
@@ -1448,6 +1454,9 @@ mod tests {
         assert_eq!(parsed["routes"][0]["custom_domain"].as_bool(), Some(true));
         assert_eq!(parsed["d1_databases"][0]["binding"].as_str(), Some(D1_BINDING));
         assert_eq!(parsed["d1_databases"][0]["database_id"].as_str(), Some("d1-uuid"));
+        // Smart placement co-locates the isolate with the D1 primary, so the
+        // browse path's sequential D1 round-trips do not each pay edge↔primary RTT.
+        assert_eq!(parsed["placement"]["mode"].as_str(), Some("smart"));
         assert_eq!(parsed["kv_namespaces"][0]["id"].as_str(), Some("kv-id"));
         assert_eq!(parsed["triggers"]["crons"][0].as_str(), Some(INDEXER_CRON));
         // No build command — we deploy the prebuilt dist.

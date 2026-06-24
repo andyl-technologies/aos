@@ -39,6 +39,8 @@
 //! correct under the Worker's single-threaded-per-isolate execution, and
 //! adequate for the burst budgets the service enforces.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use async_trait::async_trait;
 
 use aos_hub_core::backend::Backend;
@@ -53,6 +55,21 @@ use crate::d1backend::D1Backend;
 /// expressed against.
 const WINDOW_SECS: i64 = 60;
 
+/// Whether *this isolate* has already ensured the `rate_limits` table exists.
+///
+/// The table is owned by the schema (`aos-hub init`), but a deployment whose D1
+/// was migrated before that landed still relies on the lazy `CREATE TABLE IF
+/// NOT EXISTS` to self-heal. Issuing it on **every** request cost one D1
+/// round-trip per request — including read-only browse pages that never meter.
+/// Guarding it with an isolate-lifetime flag means at most the *first* request a
+/// fresh isolate serves pays the DDL; every warm request after it skips it.
+///
+/// A Worker isolate is single-threaded, so [`Ordering::Relaxed`] is sufficient:
+/// there is no cross-thread publication to order, only reuse of the flag across
+/// the isolate's successive (non-overlapping) request turns. A benign race on a
+/// cold isolate would at worst re-run an idempotent `CREATE TABLE IF NOT EXISTS`.
+static TABLE_ENSURED: AtomicBool = AtomicBool::new(false);
+
 /// A D1-backed fixed-window [`RateLimiter`].
 ///
 /// Built once per request from the bound D1 database; the lazily-created
@@ -65,22 +82,32 @@ pub struct D1RateLimiter {
 impl D1RateLimiter {
     /// Build a limiter over a D1 backend, creating the counter table if absent.
     ///
+    /// The `CREATE TABLE IF NOT EXISTS` runs at most once per isolate, gated by
+    /// [`TABLE_ENSURED`]: the first request a fresh isolate serves ensures the
+    /// table, and every warm request after it builds the limiter with no DDL
+    /// round-trip. The schema migration (`aos-hub init`) owns the table on
+    /// current deployments; this lazy create only self-heals a D1 migrated
+    /// before that migration shipped.
+    ///
     /// # Errors
     ///
     /// Returns an error if the `CREATE TABLE IF NOT EXISTS` fails (a D1 access
     /// error); a table that already exists is not an error.
     pub async fn create(backend: D1Backend) -> anyhow::Result<D1RateLimiter> {
-        backend
-            .execute(
-                "CREATE TABLE IF NOT EXISTS rate_limits (\
-                   class TEXT NOT NULL, \
-                   key TEXT NOT NULL, \
-                   window INTEGER NOT NULL, \
-                   count INTEGER NOT NULL, \
-                   PRIMARY KEY (class, key, window))",
-                &[],
-            )
-            .await?;
+        if !TABLE_ENSURED.load(Ordering::Relaxed) {
+            backend
+                .execute(
+                    "CREATE TABLE IF NOT EXISTS rate_limits (\
+                       class TEXT NOT NULL, \
+                       key TEXT NOT NULL, \
+                       window INTEGER NOT NULL, \
+                       count INTEGER NOT NULL, \
+                       PRIMARY KEY (class, key, window))",
+                    &[],
+                )
+                .await?;
+            TABLE_ENSURED.store(true, Ordering::Relaxed);
+        }
         Ok(D1RateLimiter { backend })
     }
 
