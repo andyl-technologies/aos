@@ -87,7 +87,7 @@
       package = "crucible-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:abi-conformance";
@@ -374,7 +374,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=15
+            placeholder_targets=14
             RESULT
           '';
         }
