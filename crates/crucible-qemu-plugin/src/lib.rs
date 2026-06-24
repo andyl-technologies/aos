@@ -11,9 +11,9 @@
 //! `args` owns fail-closed `-plugin` argument parsing; `deadline` owns exact
 //! virtual-clock deadline introspection; `registration` owns the fail-stop
 //! registration sequencer; `setup` owns descriptor mapping and setup
-//! acknowledgement; `time_control` owns the time-control ordering contract.
-//! Future modules will add entry points, device callbacks, and QEMU-facing
-//! helpers.
+//! acknowledgement; `time_control` owns clock ownership, authorized virtual-time
+//! advancement, and the time-control ordering contract. Future modules will add
+//! entry points, device callbacks, and QEMU-facing helpers.
 //!
 //! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
 //! pointers and delegate to safe Rust shims for time-control, callback
@@ -48,6 +48,10 @@ pub use setup::{
     send_ready_setup_ack,
 };
 pub use time_control::{
-    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, PluginRegistrationStep,
+    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, MAX_PLUGIN_ICOUNT_SHIFT, PluginClockAdvance,
+    PluginClockAdvanceSource, PluginClockError, PluginRegistrationStep, PluginTimeControlOwnership,
+    PluginVirtualClock, QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL,
+    QEMU_PLUGIN_HAS_TIME_CONTROL_SYMBOL, QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL,
+    QEMU_PLUGIN_UPDATE_NS_SYMBOL, SchedulerAuthorizedIdleJump, SchedulerCeiling,
     TimeControlRegistrationError, TimeControlRegistrationPlan,
 };

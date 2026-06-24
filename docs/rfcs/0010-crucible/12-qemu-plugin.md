@@ -912,7 +912,7 @@ component that makes that purity true *inside* the QEMU process.
   acquire time control before the first instruction → map+validate shmem → arm
   wake fd → register callbacks → `SetupAck` → wait boot barrier — failing
   loudly at each step. — satisfies [PLUG-7], [PLUG-8]; spec §12.2.2.
-- [ ] **T-PLUG-4** Implement clock ownership and the no-host-time invariant: the
+- [x] **T-PLUG-4** Implement clock ownership and the no-host-time invariant: the
   plugin advances virtual time only by guest instructions up to the ceiling and by
   authorized idle jumps; ban host wall-clock/monotonic reads on the time path. —
   satisfies [PLUG-1], [PLUG-9], [PLUG-44]; spec §12.3.1, §12.10.1.

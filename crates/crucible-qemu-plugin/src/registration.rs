@@ -20,7 +20,7 @@ use crate::{
 /// The recorder accepts only the canonical [`PluginRegistrationStep`] order. A
 /// failed current step records a diagnostic and permanently blocks every later
 /// step, matching the fail-loud registration contract from RFC-0010.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct PluginRegistrationSequence {
     completed_steps: Vec<PluginRegistrationStep>,
     failure: Option<PluginRegistrationFailure>,
@@ -135,7 +135,7 @@ impl PluginRegistrationSequence {
     ///
     /// Returns [`PluginRegistrationSequenceError`] when registration failed or
     /// when at least one required step has not yet completed.
-    pub fn finish(&self) -> Result<PluginRegistrationReady, PluginRegistrationSequenceError> {
+    pub fn finish(self) -> Result<PluginRegistrationReady, PluginRegistrationSequenceError> {
         if let Some(failure) = &self.failure {
             return Err(PluginRegistrationSequenceError::StepFailed {
                 failure: failure.clone(),
@@ -236,7 +236,7 @@ impl PluginRegistrationFailure {
 }
 
 /// Proof that registration reached the first-instruction gate in order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PluginRegistrationReady {
     _private: (),
 }
@@ -309,6 +309,22 @@ mod tests {
             sequence.finish(),
             Ok(PluginRegistrationReady { .. })
         ));
+    }
+
+    #[test]
+    fn registration_ready_token_consumes_sequence() {
+        let mut sequence = PluginRegistrationSequence::new();
+        for step in PluginRegistrationSequence::fixed_order() {
+            if let Err(error) = sequence.record_step(*step) {
+                panic!("canonical step {step:?} should record: {error}");
+            }
+        }
+
+        let ready = match sequence.finish() {
+            Ok(ready) => ready,
+            Err(error) => panic!("completed registration should finish: {error}"),
+        };
+        let _ownership = crate::PluginTimeControlOwnership::acquired_after_registration(ready);
     }
 
     #[test]
