@@ -72,8 +72,532 @@ pub const MAX_FRAME_DATA: usize = 4608;
 /// The default power-of-two capacity, in frame entries, for one SPSC ring.
 pub const DEFAULT_QUEUE_CAPACITY: u32 = 64;
 
-const FRAME_ENTRY_DATA_OFFSET: usize = 24;
+/// Eight-byte ASCII magic identifying a Crucible shared-memory region.
+pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
+/// Current shared-memory ABI version.
+pub const ABI_VERSION: u32 = 1;
+/// Compile-time physical slot capacity of one shared-memory region.
+pub const MAX_NODES: usize = 32;
+/// Number of physical slots reserved for executor endpoints.
+pub const RESERVED_SLOTS: usize = 3;
+/// Maximum number of logical VM nodes that fit in one region allocation.
+pub const MAX_VM_NODES: usize = MAX_NODES - RESERVED_SLOTS;
+/// Physical slot used by the deterministic network router executor.
+pub const SLOT_NET_ROUTER: usize = MAX_NODES - 1;
+/// Physical slot used by the block I/O executor.
+pub const SLOT_BLK_IO: usize = MAX_NODES - 2;
+/// Physical slot used by the 9p filesystem I/O executor.
+pub const SLOT_9P_IO: usize = MAX_NODES - 3;
+/// The pinned target triple for the ABI layout table.
+pub const LAYOUT_TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
+/// Whether this crate was compiled for the pinned ABI layout target.
+pub const LAYOUT_TARGET_SUPPORTED: bool = cfg!(all(
+    target_arch = "x86_64",
+    target_abi = "",
+    target_endian = "little",
+    target_env = "gnu",
+    target_os = "linux",
+    target_pointer_width = "64"
+));
+
 const _: () = assert!(MAX_FRAME_DATA <= u16::MAX as usize);
+
+/// A shared-memory region header describing the ABI identity and geometry.
+#[repr(C, align(128))]
+pub struct RegionHeader {
+    magic: AtomicU64,
+    abi_version: AtomicU32,
+    node_count: AtomicU32,
+    queue_capacity: AtomicU32,
+    ring_count: AtomicU32,
+    ring_hdr_off: AtomicU64,
+    ring_data_off: AtomicU64,
+    entry_stride: AtomicU64,
+    region_size: AtomicU64,
+    icount_shift: AtomicU32,
+    pause_requested: AtomicU8,
+    shutdown_requested: AtomicU8,
+    _reserved: [u8; 194],
+}
+
+/// Byte offset of [`RegionHeader`]'s magic field.
+pub const REGION_HEADER_MAGIC_OFFSET: usize = core::mem::offset_of!(RegionHeader, magic);
+/// Byte offset of [`RegionHeader`]'s ABI version field.
+pub const REGION_HEADER_ABI_VERSION_OFFSET: usize =
+    core::mem::offset_of!(RegionHeader, abi_version);
+/// Byte offset of [`RegionHeader`]'s physical node-count field.
+pub const REGION_HEADER_NODE_COUNT_OFFSET: usize = core::mem::offset_of!(RegionHeader, node_count);
+/// Byte offset of [`RegionHeader`]'s per-ring queue-capacity field.
+pub const REGION_HEADER_QUEUE_CAPACITY_OFFSET: usize =
+    core::mem::offset_of!(RegionHeader, queue_capacity);
+/// Byte offset of [`RegionHeader`]'s directed-ring-count field.
+pub const REGION_HEADER_RING_COUNT_OFFSET: usize = core::mem::offset_of!(RegionHeader, ring_count);
+/// Byte offset of [`RegionHeader`]'s ring-header sub-region offset field.
+pub const REGION_HEADER_RING_HDR_OFF_OFFSET: usize =
+    core::mem::offset_of!(RegionHeader, ring_hdr_off);
+/// Byte offset of [`RegionHeader`]'s frame-entry storage offset field.
+pub const REGION_HEADER_RING_DATA_OFF_OFFSET: usize =
+    core::mem::offset_of!(RegionHeader, ring_data_off);
+/// Byte offset of [`RegionHeader`]'s frame-entry stride field.
+pub const REGION_HEADER_ENTRY_STRIDE_OFFSET: usize =
+    core::mem::offset_of!(RegionHeader, entry_stride);
+/// Byte offset of [`RegionHeader`]'s total region-size field.
+pub const REGION_HEADER_REGION_SIZE_OFFSET: usize =
+    core::mem::offset_of!(RegionHeader, region_size);
+/// Byte offset of [`RegionHeader`]'s fixed icount-shift field.
+pub const REGION_HEADER_ICOUNT_SHIFT_OFFSET: usize =
+    core::mem::offset_of!(RegionHeader, icount_shift);
+/// Byte offset of [`RegionHeader`]'s coordinated-pause flag.
+pub const REGION_HEADER_PAUSE_REQUESTED_OFFSET: usize =
+    core::mem::offset_of!(RegionHeader, pause_requested);
+/// Byte offset of [`RegionHeader`]'s shutdown flag.
+pub const REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET: usize =
+    core::mem::offset_of!(RegionHeader, shutdown_requested);
+/// Byte offset of [`RegionHeader`]'s reserved forward-compatibility bytes.
+pub const REGION_HEADER_RESERVED_OFFSET: usize = core::mem::offset_of!(RegionHeader, _reserved);
+/// Wire size of one [`RegionHeader`].
+pub const REGION_HEADER_SIZE: usize = core::mem::size_of::<RegionHeader>();
+/// Wire alignment of one [`RegionHeader`].
+pub const REGION_HEADER_ALIGN: usize = core::mem::align_of::<RegionHeader>();
+
+const _: () = assert!(REGION_HEADER_MAGIC_OFFSET == 0);
+const _: () = assert!(REGION_HEADER_ABI_VERSION_OFFSET == 8);
+const _: () = assert!(REGION_HEADER_NODE_COUNT_OFFSET == 12);
+const _: () = assert!(REGION_HEADER_QUEUE_CAPACITY_OFFSET == 16);
+const _: () = assert!(REGION_HEADER_RING_COUNT_OFFSET == 20);
+const _: () = assert!(REGION_HEADER_RING_HDR_OFF_OFFSET == 24);
+const _: () = assert!(REGION_HEADER_RING_DATA_OFF_OFFSET == 32);
+const _: () = assert!(REGION_HEADER_ENTRY_STRIDE_OFFSET == 40);
+const _: () = assert!(REGION_HEADER_REGION_SIZE_OFFSET == 48);
+const _: () = assert!(REGION_HEADER_ICOUNT_SHIFT_OFFSET == 56);
+const _: () = assert!(REGION_HEADER_PAUSE_REQUESTED_OFFSET == 60);
+const _: () = assert!(REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET == 61);
+const _: () = assert!(REGION_HEADER_RESERVED_OFFSET == 62);
+const _: () = assert!(REGION_HEADER_SIZE == 256);
+const _: () = assert!(REGION_HEADER_ALIGN == 128);
+
+impl RegionHeader {
+    /// Builds a zero-reserved region header from a computed layout.
+    #[must_use]
+    pub fn new(layout: RegionLayout) -> Self {
+        Self {
+            magic: AtomicU64::new(REGION_MAGIC),
+            abi_version: AtomicU32::new(ABI_VERSION),
+            node_count: AtomicU32::new(layout.node_count),
+            queue_capacity: AtomicU32::new(layout.queue_capacity),
+            ring_count: AtomicU32::new(layout.ring_count),
+            ring_hdr_off: AtomicU64::new(layout.ring_hdr_off),
+            ring_data_off: AtomicU64::new(layout.ring_data_off),
+            entry_stride: AtomicU64::new(layout.entry_stride),
+            region_size: AtomicU64::new(layout.region_size),
+            icount_shift: AtomicU32::new(layout.icount_shift),
+            pause_requested: AtomicU8::new(0),
+            shutdown_requested: AtomicU8::new(0),
+            _reserved: [0; 194],
+        }
+    }
+
+    /// Returns an acquire snapshot of every public header field.
+    #[must_use]
+    pub fn snapshot(&self) -> RegionHeaderSnapshot {
+        RegionHeaderSnapshot {
+            magic: self.magic.load(Ordering::Acquire),
+            abi_version: self.abi_version.load(Ordering::Acquire),
+            node_count: self.node_count.load(Ordering::Acquire),
+            queue_capacity: self.queue_capacity.load(Ordering::Acquire),
+            ring_count: self.ring_count.load(Ordering::Acquire),
+            ring_hdr_off: self.ring_hdr_off.load(Ordering::Acquire),
+            ring_data_off: self.ring_data_off.load(Ordering::Acquire),
+            entry_stride: self.entry_stride.load(Ordering::Acquire),
+            region_size: self.region_size.load(Ordering::Acquire),
+            icount_shift: self.icount_shift.load(Ordering::Acquire),
+            pause_requested: self.pause_requested.load(Ordering::Acquire),
+            shutdown_requested: self.shutdown_requested.load(Ordering::Acquire),
+        }
+    }
+
+    /// Returns `true` when all forward-compatible reserved header bytes are zero.
+    #[must_use]
+    pub fn reserved_bytes_are_zero(&self) -> bool {
+        self._reserved.iter().all(|byte| *byte == 0)
+    }
+}
+
+/// An acquire snapshot of the shared-memory region header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegionHeaderSnapshot {
+    /// The region magic.
+    pub magic: u64,
+    /// The ABI version.
+    pub abi_version: u32,
+    /// The physical node slot count recorded in the header.
+    pub node_count: u32,
+    /// The per-ring queue capacity in frame entries.
+    pub queue_capacity: u32,
+    /// The number of directed rings allocated in the region.
+    pub ring_count: u32,
+    /// The byte offset from region base to the first ring header.
+    pub ring_hdr_off: u64,
+    /// The byte offset from region base to the first frame-entry slot.
+    pub ring_data_off: u64,
+    /// The byte stride between frame-entry slots.
+    pub entry_stride: u64,
+    /// The total mapped region size in bytes.
+    pub region_size: u64,
+    /// The fixed icount shift used to derive virtual nanoseconds.
+    pub icount_shift: u32,
+    /// Nonzero when the scheduler requested a coordinated pause.
+    pub pause_requested: u8,
+    /// Nonzero when the scheduler requested shutdown.
+    pub shutdown_requested: u8,
+}
+
+/// A requested shared-memory region shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegionConfig {
+    /// Number of logical VM nodes to allocate into physical VM slots.
+    pub vm_node_count: u32,
+    /// Capacity of every directed SPSC ring in frame entries.
+    pub queue_capacity: u32,
+    /// Fixed icount shift used to derive virtual nanoseconds.
+    pub icount_shift: u32,
+}
+
+impl RegionConfig {
+    /// Builds a region configuration.
+    #[must_use]
+    pub const fn new(vm_node_count: u32, queue_capacity: u32, icount_shift: u32) -> Self {
+        Self {
+            vm_node_count,
+            queue_capacity,
+            icount_shift,
+        }
+    }
+}
+
+/// Computed offsets and counts for a shared-memory region allocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegionLayout {
+    /// Number of logical VM nodes represented in physical VM slots.
+    pub vm_node_count: u32,
+    /// Number of physical node slots present in the fixed slot array.
+    pub node_count: u32,
+    /// Capacity of every directed SPSC ring in frame entries.
+    pub queue_capacity: u32,
+    /// Number of directed rings allocated for VM-to-executor traffic.
+    pub ring_count: u32,
+    /// Byte offset from region base to the fixed node slot array.
+    pub node_slots_off: u64,
+    /// Byte offset from region base to the first ring header.
+    pub ring_hdr_off: u64,
+    /// Byte offset from region base to the first frame-entry slot.
+    pub ring_data_off: u64,
+    /// Byte stride between frame-entry slots.
+    pub entry_stride: u64,
+    /// Total mapped region size in bytes.
+    pub region_size: u64,
+    /// Fixed icount shift used to derive virtual nanoseconds.
+    pub icount_shift: u32,
+}
+
+impl RegionLayout {
+    /// Computes the region geometry for `config`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionLayoutError`] when the VM count, queue capacity, icount
+    /// shift, or computed byte geometry is outside the ABI-supported range.
+    pub fn for_config(config: RegionConfig) -> Result<Self, RegionLayoutError> {
+        if config.vm_node_count > MAX_VM_NODES as u32 {
+            return Err(RegionLayoutError::TooManyVmNodes {
+                requested: config.vm_node_count,
+                max: MAX_VM_NODES as u32,
+            });
+        }
+        if config.queue_capacity == 0 || !config.queue_capacity.is_power_of_two() {
+            return Err(RegionLayoutError::InvalidQueueCapacity {
+                capacity: config.queue_capacity,
+            });
+        }
+        if config.icount_shift >= 64 {
+            return Err(RegionLayoutError::InvalidIcountShift {
+                shift_bits: config.icount_shift,
+            });
+        }
+
+        let ring_count = config
+            .vm_node_count
+            .checked_mul(RESERVED_SLOTS as u32)
+            .and_then(|count| count.checked_mul(2))
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let node_slots_off = usize_to_u64(REGION_HEADER_SIZE)?;
+        let ring_hdr_off = usize_to_u64(REGION_HEADER_SIZE)?
+            .checked_add(usize_to_u64(MAX_NODES)? * usize_to_u64(NODE_SLOT_SIZE)?)
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let ring_data_off = ring_hdr_off
+            .checked_add(u64::from(ring_count) * usize_to_u64(RING_HEADER_SIZE)?)
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let entry_stride = usize_to_u64(FRAME_ENTRY_SIZE)?;
+        let entry_count = u64::from(ring_count)
+            .checked_mul(u64::from(config.queue_capacity))
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let region_size = ring_data_off
+            .checked_add(
+                entry_count
+                    .checked_mul(entry_stride)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+
+        Ok(Self {
+            vm_node_count: config.vm_node_count,
+            node_count: MAX_NODES as u32,
+            queue_capacity: config.queue_capacity,
+            ring_count,
+            node_slots_off,
+            ring_hdr_off,
+            ring_data_off,
+            entry_stride,
+            region_size,
+            icount_shift: config.icount_shift,
+        })
+    }
+
+    /// Returns the number of frame-entry slots in the backing storage.
+    #[must_use]
+    pub fn frame_entry_count(&self) -> u64 {
+        u64::from(self.ring_count) * u64::from(self.queue_capacity)
+    }
+}
+
+/// A directed SPSC ring allocation between two physical slots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirectedRing {
+    /// Ring index in the header and backing-storage arrays.
+    pub index: u32,
+    /// Physical producer slot.
+    pub src_slot: u32,
+    /// Physical consumer slot.
+    pub dst_slot: u32,
+}
+
+/// A reserved executor endpoint in the physical slot array.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReservedExecutorSlot {
+    /// Deterministic network router endpoint.
+    NetRouter,
+    /// Block-device I/O endpoint.
+    BlockIo,
+    /// 9p filesystem I/O endpoint.
+    NineP,
+}
+
+impl ReservedExecutorSlot {
+    /// Returns every reserved executor endpoint in deterministic ring order.
+    #[must_use]
+    pub const fn all() -> [Self; RESERVED_SLOTS] {
+        [Self::NetRouter, Self::BlockIo, Self::NineP]
+    }
+
+    /// Returns the physical slot occupied by this executor.
+    #[must_use]
+    pub const fn slot(self) -> usize {
+        match self {
+            Self::NetRouter => SLOT_NET_ROUTER,
+            Self::BlockIo => SLOT_BLK_IO,
+            Self::NineP => SLOT_9P_IO,
+        }
+    }
+
+    /// Returns the [`NodeSlot`] kind value used for this executor.
+    #[must_use]
+    pub const fn kind(self) -> u8 {
+        match self {
+            Self::NetRouter => KIND_NET,
+            Self::BlockIo => KIND_BLK,
+            Self::NineP => KIND_9P,
+        }
+    }
+}
+
+/// An owned, typed shared-memory region allocation for layout tests and builders.
+pub struct RegionAllocation {
+    header: RegionHeader,
+    slots: Vec<NodeSlot>,
+    ring_headers: Vec<RingHeader>,
+    frame_entries: Vec<FrameEntry>,
+    rings: Vec<DirectedRing>,
+    layout: RegionLayout,
+}
+
+impl RegionAllocation {
+    /// Allocates and initializes a typed shared-memory region model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionLayoutError`] if the compiled target is not the pinned
+    /// ABI layout target, the requested layout is invalid, or a computed count
+    /// cannot fit in memory indexes on this host.
+    pub fn new(config: RegionConfig) -> Result<Self, RegionLayoutError> {
+        validate_layout_target()?;
+        let layout = RegionLayout::for_config(config)?;
+        let header = RegionHeader::new(layout);
+        let slots = (0..MAX_NODES)
+            .map(|slot| node_slot_for_physical_index(layout.vm_node_count, slot))
+            .collect::<Vec<_>>();
+        let ring_headers = (0..layout.ring_count)
+            .map(|_| RingHeader::new())
+            .collect::<Vec<_>>();
+        let entry_count = usize::try_from(layout.frame_entry_count())
+            .map_err(|_| RegionLayoutError::GeometryOverflow)?;
+        let frame_entries = (0..entry_count)
+            .map(|_| FrameEntry::default())
+            .collect::<Vec<_>>();
+        let rings = directed_rings(layout.vm_node_count)?;
+
+        Ok(Self {
+            header,
+            slots,
+            ring_headers,
+            frame_entries,
+            rings,
+            layout,
+        })
+    }
+
+    /// Returns the initialized region header.
+    #[must_use]
+    pub fn header(&self) -> &RegionHeader {
+        &self.header
+    }
+
+    /// Returns the fixed physical node slot array.
+    #[must_use]
+    pub fn slots(&self) -> &[NodeSlot] {
+        &self.slots
+    }
+
+    /// Returns the directed ring headers.
+    #[must_use]
+    pub fn ring_headers(&self) -> &[RingHeader] {
+        &self.ring_headers
+    }
+
+    /// Returns the frame-entry backing storage.
+    #[must_use]
+    pub fn frame_entries(&self) -> &[FrameEntry] {
+        &self.frame_entries
+    }
+
+    /// Returns the deterministic directed-ring map.
+    #[must_use]
+    pub fn rings(&self) -> &[DirectedRing] {
+        &self.rings
+    }
+
+    /// Returns the computed region layout.
+    #[must_use]
+    pub fn layout(&self) -> RegionLayout {
+        self.layout
+    }
+}
+
+/// Validates that the current compilation target matches the pinned ABI target.
+///
+/// # Errors
+///
+/// Returns [`RegionLayoutError::UnsupportedTarget`] when compiled for anything
+/// other than `x86_64-unknown-linux-gnu`.
+pub fn validate_layout_target() -> Result<(), RegionLayoutError> {
+    if LAYOUT_TARGET_SUPPORTED {
+        Ok(())
+    } else {
+        Err(RegionLayoutError::UnsupportedTarget {
+            expected: LAYOUT_TARGET_TRIPLE,
+            actual: compiled_layout_target(),
+        })
+    }
+}
+
+fn compiled_layout_target() -> &'static str {
+    if LAYOUT_TARGET_SUPPORTED {
+        LAYOUT_TARGET_TRIPLE
+    } else if cfg!(all(
+        target_arch = "x86_64",
+        target_abi = "x32",
+        target_endian = "little",
+        target_env = "gnu",
+        target_os = "linux",
+        target_pointer_width = "32"
+    )) {
+        "x86_64-unknown-linux-gnux32"
+    } else if cfg!(all(
+        target_arch = "x86_64",
+        target_endian = "little",
+        target_env = "musl",
+        target_os = "linux"
+    )) {
+        "x86_64-unknown-linux-musl"
+    } else if cfg!(all(
+        target_arch = "x86_64",
+        target_endian = "little",
+        target_os = "linux"
+    )) {
+        "x86_64-unknown-linux-non-gnu"
+    } else if cfg!(target_os = "macos")
+        && cfg!(target_arch = "aarch64")
+        && cfg!(target_endian = "little")
+    {
+        "aarch64-apple-darwin"
+    } else if cfg!(target_endian = "big") {
+        "unsupported-big-endian"
+    } else {
+        "unsupported-target"
+    }
+}
+
+fn directed_rings(vm_node_count: u32) -> Result<Vec<DirectedRing>, RegionLayoutError> {
+    let mut rings = Vec::new();
+    for vm_slot in 0..vm_node_count {
+        for executor in ReservedExecutorSlot::all() {
+            let executor_slot =
+                u32::try_from(executor.slot()).map_err(|_| RegionLayoutError::GeometryOverflow)?;
+            let outbound_index =
+                u32::try_from(rings.len()).map_err(|_| RegionLayoutError::GeometryOverflow)?;
+            rings.push(DirectedRing {
+                index: outbound_index,
+                src_slot: vm_slot,
+                dst_slot: executor_slot,
+            });
+            let inbound_index =
+                u32::try_from(rings.len()).map_err(|_| RegionLayoutError::GeometryOverflow)?;
+            rings.push(DirectedRing {
+                index: inbound_index,
+                src_slot: executor_slot,
+                dst_slot: vm_slot,
+            });
+        }
+    }
+    Ok(rings)
+}
+
+fn node_slot_for_physical_index(vm_node_count: u32, slot: usize) -> NodeSlot {
+    if slot < vm_node_count as usize {
+        NodeSlot::new_with_status(KIND_VM, STATUS_IDLE)
+    } else if slot == SLOT_NET_ROUTER {
+        NodeSlot::new_with_status(KIND_NET, STATUS_IDLE)
+    } else if slot == SLOT_BLK_IO {
+        NodeSlot::new_with_status(KIND_BLK, STATUS_IDLE)
+    } else if slot == SLOT_9P_IO {
+        NodeSlot::new_with_status(KIND_9P, STATUS_IDLE)
+    } else {
+        NodeSlot::new_with_status(KIND_VM, STATUS_DONE)
+    }
+}
+
+fn usize_to_u64(value: usize) -> Result<u64, RegionLayoutError> {
+    u64::try_from(value).map_err(|_| RegionLayoutError::GeometryOverflow)
+}
 
 /// A Lamport SPSC ring header shared by exactly one producer and one consumer.
 #[repr(C, align(128))]
@@ -86,15 +610,21 @@ pub struct RingHeader {
 
 /// Byte offset of [`RingHeader`]'s consumer-owned read index.
 pub const RING_HEADER_READ_IDX_OFFSET: usize = core::mem::offset_of!(RingHeader, read_idx);
+/// Byte offset of [`RingHeader`]'s consumer cache-line padding.
+pub const RING_HEADER_PAD_READ_OFFSET: usize = core::mem::offset_of!(RingHeader, _pad_read);
 /// Byte offset of [`RingHeader`]'s producer-owned write index.
 pub const RING_HEADER_WRITE_IDX_OFFSET: usize = core::mem::offset_of!(RingHeader, write_idx);
+/// Byte offset of [`RingHeader`]'s producer cache-line padding.
+pub const RING_HEADER_PAD_WRITE_OFFSET: usize = core::mem::offset_of!(RingHeader, _pad_write);
 /// Wire size of one [`RingHeader`].
 pub const RING_HEADER_SIZE: usize = core::mem::size_of::<RingHeader>();
 /// Wire alignment of one [`RingHeader`].
 pub const RING_HEADER_ALIGN: usize = core::mem::align_of::<RingHeader>();
 
 const _: () = assert!(RING_HEADER_READ_IDX_OFFSET == 0);
+const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 8);
 const _: () = assert!(RING_HEADER_WRITE_IDX_OFFSET == 64);
+const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 72);
 const _: () = assert!(RING_HEADER_SIZE == 128);
 const _: () = assert!(RING_HEADER_ALIGN == 128);
 
@@ -249,6 +779,13 @@ impl RingHeader {
     pub fn write_index(&self) -> u64 {
         self.write_idx.load(Ordering::Acquire)
     }
+
+    /// Returns `true` when the cache-line padding bytes are zero.
+    #[must_use]
+    pub fn padding_bytes_are_zero(&self) -> bool {
+        self._pad_read.iter().all(|byte| *byte == 0)
+            && self._pad_write.iter().all(|byte| *byte == 0)
+    }
 }
 
 impl Default for RingHeader {
@@ -281,14 +818,32 @@ pub struct FrameEntry {
     pub data: [u8; MAX_FRAME_DATA],
 }
 
-const _: () = assert!(core::mem::offset_of!(FrameEntry, delivery_icount) == 0);
-const _: () = assert!(core::mem::offset_of!(FrameEntry, src_node) == 8);
-const _: () = assert!(core::mem::offset_of!(FrameEntry, seq) == 12);
-const _: () = assert!(core::mem::offset_of!(FrameEntry, len) == 16);
-const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == FRAME_ENTRY_DATA_OFFSET);
-const _: () =
-    assert!(core::mem::size_of::<FrameEntry>() == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
-const _: () = assert!(core::mem::align_of::<FrameEntry>() == 8);
+/// Byte offset of [`FrameEntry`]'s delivery-icount field.
+pub const FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(FrameEntry, delivery_icount);
+/// Byte offset of [`FrameEntry`]'s source-node field.
+pub const FRAME_ENTRY_SRC_NODE_OFFSET: usize = core::mem::offset_of!(FrameEntry, src_node);
+/// Byte offset of [`FrameEntry`]'s producer-sequence field.
+pub const FRAME_ENTRY_SEQ_OFFSET: usize = core::mem::offset_of!(FrameEntry, seq);
+/// Byte offset of [`FrameEntry`]'s payload-length field.
+pub const FRAME_ENTRY_LEN_OFFSET: usize = core::mem::offset_of!(FrameEntry, len);
+/// Byte offset of [`FrameEntry`]'s reserved padding bytes.
+pub const FRAME_ENTRY_PAD_OFFSET: usize = core::mem::offset_of!(FrameEntry, _pad);
+/// Byte offset of [`FrameEntry`]'s payload data.
+pub const FRAME_ENTRY_DATA_OFFSET: usize = core::mem::offset_of!(FrameEntry, data);
+/// Wire size of one [`FrameEntry`].
+pub const FRAME_ENTRY_SIZE: usize = core::mem::size_of::<FrameEntry>();
+/// Wire alignment of one [`FrameEntry`].
+pub const FRAME_ENTRY_ALIGN: usize = core::mem::align_of::<FrameEntry>();
+
+const _: () = assert!(FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET == 0);
+const _: () = assert!(FRAME_ENTRY_SRC_NODE_OFFSET == 8);
+const _: () = assert!(FRAME_ENTRY_SEQ_OFFSET == 12);
+const _: () = assert!(FRAME_ENTRY_LEN_OFFSET == 16);
+const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 18);
+const _: () = assert!(FRAME_ENTRY_DATA_OFFSET == 24);
+const _: () = assert!(FRAME_ENTRY_SIZE == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
+const _: () = assert!(FRAME_ENTRY_ALIGN == 8);
 
 /// Node status: actively retiring instructions or processing an I/O burst.
 pub const STATUS_RUNNING: u8 = 0;
@@ -344,8 +899,12 @@ pub const NODE_SLOT_KIND_OFFSET: usize = core::mem::offset_of!(NodeSlot, kind);
 /// Byte offset of [`NodeSlot`]'s device-I/O-active field.
 pub const NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, device_io_active);
+/// Byte offset of [`NodeSlot`]'s single-byte alignment padding.
+pub const NODE_SLOT_PAD0_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad0);
 /// Byte offset of [`NodeSlot`]'s publish-generation field.
 pub const NODE_SLOT_PUBLISH_GEN_OFFSET: usize = core::mem::offset_of!(NodeSlot, publish_gen);
+/// Byte offset of [`NodeSlot`]'s reserved forward-compatibility bytes.
+pub const NODE_SLOT_RESERVED_OFFSET: usize = core::mem::offset_of!(NodeSlot, _reserved);
 /// Wire size of one [`NodeSlot`].
 pub const NODE_SLOT_SIZE: usize = core::mem::size_of::<NodeSlot>();
 /// Wire alignment of one [`NodeSlot`].
@@ -359,7 +918,9 @@ const _: () = assert!(NODE_SLOT_WAKE_SIGNAL_OFFSET == 32);
 const _: () = assert!(NODE_SLOT_STATUS_OFFSET == 36);
 const _: () = assert!(NODE_SLOT_KIND_OFFSET == 37);
 const _: () = assert!(NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET == 38);
+const _: () = assert!(NODE_SLOT_PAD0_OFFSET == 39);
 const _: () = assert!(NODE_SLOT_PUBLISH_GEN_OFFSET == 40);
+const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 44);
 const _: () = assert!(NODE_SLOT_SIZE == 128);
 const _: () = assert!(NODE_SLOT_ALIGN == 128);
 
@@ -367,13 +928,17 @@ impl NodeSlot {
     /// Builds a zeroed node slot with `max_advance_icount` held at the boot barrier.
     #[must_use]
     pub const fn new(kind: u8) -> Self {
+        Self::new_with_status(kind, STATUS_IDLE)
+    }
+
+    const fn new_with_status(kind: u8, status: u8) -> Self {
         Self {
             current_icount: AtomicU64::new(0),
             current_ns: AtomicU64::new(0),
             max_advance_icount: AtomicU64::new(0),
             idle_wake_icount: AtomicU64::new(0),
             wake_signal: AtomicU32::new(0),
-            status: AtomicU8::new(STATUS_IDLE),
+            status: AtomicU8::new(status),
             kind: AtomicU8::new(kind),
             device_io_active: AtomicU8::new(0),
             _pad0: 0,
@@ -593,6 +1158,12 @@ impl NodeSlot {
                 return snapshot;
             }
         }
+    }
+
+    /// Returns `true` when all forward-compatible reserved slot bytes are zero.
+    #[must_use]
+    pub fn reserved_bytes_are_zero(&self) -> bool {
+        self._pad0 == 0 && self._reserved.iter().all(|byte| *byte == 0)
     }
 
     fn publish_state(
@@ -908,6 +1479,25 @@ impl FrameEntry {
             Ok(&self.data[..len])
         }
     }
+
+    /// Returns `true` when the frame-entry padding bytes are zero.
+    #[must_use]
+    pub fn padding_bytes_are_zero(&self) -> bool {
+        self._pad.iter().all(|byte| *byte == 0)
+    }
+}
+
+impl Default for FrameEntry {
+    fn default() -> Self {
+        Self {
+            delivery_icount: 0,
+            src_node: 0,
+            seq: 0,
+            len: 0,
+            _pad: [0; 6],
+            data: [0; MAX_FRAME_DATA],
+        }
+    }
 }
 
 /// The deterministic order key for frames visible to one consumer.
@@ -1028,6 +1618,42 @@ pub enum FrameEntryError {
         /// The configured frame payload capacity.
         capacity: usize,
     },
+}
+
+/// An error produced while validating or allocating a shared-memory region.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum RegionLayoutError {
+    /// The crate was compiled for a target outside the pinned ABI layout target.
+    #[error("shared-memory layout target {actual} is unsupported; expected {expected}")]
+    UnsupportedTarget {
+        /// The target triple required by the ABI.
+        expected: &'static str,
+        /// The target class observed at compile time.
+        actual: &'static str,
+    },
+    /// The requested logical VM count cannot fit beside reserved executor slots.
+    #[error("requested {requested} VM nodes exceeds maximum {max}")]
+    TooManyVmNodes {
+        /// The requested logical VM node count.
+        requested: u32,
+        /// The maximum logical VM node count.
+        max: u32,
+    },
+    /// The per-ring queue capacity was zero or not a power of two.
+    #[error("queue capacity {capacity} is not a nonzero power of two")]
+    InvalidQueueCapacity {
+        /// The rejected per-ring capacity.
+        capacity: u32,
+    },
+    /// The fixed icount shift cannot be represented in `u64` conversions.
+    #[error("icount shift {shift_bits} cannot be represented as u64")]
+    InvalidIcountShift {
+        /// The rejected shift value.
+        shift_bits: u32,
+    },
+    /// The computed region byte geometry overflowed an integer.
+    #[error("computed shared-memory region geometry overflowed")]
+    GeometryOverflow,
 }
 
 /// An error produced by SPSC ring operations.
