@@ -8,14 +8,17 @@
 //! parse -> handshake -> time control -> setup -> callbacks -> ready ack -> boot barrier -> guest code
 //! ```
 
+use std::io::{Read, Write};
+
 use thiserror::Error;
 
 use crate::{
     CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, CoverageCallback, CoverageCapabilities,
     CoverageError, CoverageRegistrationPlan, ExactDeadlineError, ExactDeadlineReader, PluginArgs,
-    PluginArgsParseError, PluginCoverage, PluginRegistrationStep, QemuAdvanceVirtualTimeDirectFn,
-    QemuClockDeadlineFn, SynchronousIdleAdvance, SynchronousIdleAdvanceError,
-    TimeControlRegistrationPlan,
+    PluginArgsParseError, PluginControlHandshake, PluginCoverage, PluginHandshakeError,
+    PluginRegistrationStep, QemuAdvanceVirtualTimeDirectFn, QemuClockDeadlineFn,
+    SynchronousIdleAdvance, SynchronousIdleAdvanceError, TimeControlRegistrationPlan,
+    perform_plugin_handshake,
 };
 
 /// QEMU capabilities captured at callback registration.
@@ -117,6 +120,33 @@ impl PluginRegistrationSequence {
         }
     }
 
+    /// Performs and records the control-socket `Hello`/`HelloAck` handshake.
+    ///
+    /// The registration sequence must already have parsed arguments, and no
+    /// control-socket bytes are written unless [`PluginRegistrationStep::ControlHandshake`]
+    /// is the next expected step.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginRegistrationSequenceError`] when the sequence is not at
+    /// the handshake step, when the protocol handshake fails, when versions do
+    /// not match, when the assigned slot is outside `node_count`, or when the
+    /// handshake slot disagrees with the launch argument.
+    pub fn perform_control_handshake<S>(
+        &mut self,
+        stream: &mut S,
+        args: &PluginArgs,
+    ) -> Result<PluginControlHandshake, PluginRegistrationSequenceError>
+    where
+        S: Read + Write,
+    {
+        self.ensure_next_step(PluginRegistrationStep::ControlHandshake)?;
+        let handshake = perform_plugin_handshake(stream, args)
+            .map_err(|source| self.fail_control_handshake(source))?;
+        self.record_step_unchecked(PluginRegistrationStep::ControlHandshake)?;
+        Ok(handshake)
+    }
+
     /// Records successful completion of one registration step.
     ///
     /// # Errors
@@ -142,6 +172,15 @@ impl PluginRegistrationSequence {
         &mut self,
         step: PluginRegistrationStep,
     ) -> Result<(), PluginRegistrationSequenceError> {
+        self.ensure_next_step(step)?;
+        self.completed_steps.push(step);
+        Ok(())
+    }
+
+    fn ensure_next_step(
+        &mut self,
+        step: PluginRegistrationStep,
+    ) -> Result<(), PluginRegistrationSequenceError> {
         if let Some(failure) = &self.failure {
             return Err(PluginRegistrationSequenceError::AfterFailure {
                 failed_step: failure.step,
@@ -157,7 +196,6 @@ impl PluginRegistrationSequence {
             return Err(self.poison_out_of_order(expected_step, step));
         }
 
-        self.completed_steps.push(step);
         Ok(())
     }
 
@@ -320,6 +358,16 @@ impl PluginRegistrationSequence {
         )
     }
 
+    fn fail_control_handshake(
+        &mut self,
+        source: PluginHandshakeError,
+    ) -> PluginRegistrationSequenceError {
+        self.fail_step(
+            PluginRegistrationStep::ControlHandshake,
+            format!("control handshake failed: {source}"),
+        )
+    }
+
     fn fail_synchronous_idle_advance_capability(
         &mut self,
         source: SynchronousIdleAdvanceError,
@@ -429,6 +477,11 @@ pub enum PluginRegistrationSequenceError {
 mod tests {
     use super::*;
 
+    use std::io::{Cursor, Read, Write};
+
+    use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
+    use crucible_shmem::ABI_VERSION;
+
     #[test]
     fn registration_order_accepts_fixed_happy_path() {
         let mut sequence = PluginRegistrationSequence::new();
@@ -494,6 +547,79 @@ mod tests {
             Err(PluginRegistrationSequenceError::AfterFailure {
                 failed_step: PluginRegistrationStep::ParseArguments,
                 blocked_step: PluginRegistrationStep::ControlHandshake,
+            })
+        );
+    }
+
+    #[test]
+    fn registration_order_performs_control_handshake_after_parse() {
+        let mut sequence = PluginRegistrationSequence::new();
+        let args = sequence
+            .parse_arguments("simfd=3,slot=1")
+            .unwrap_or_else(|error| panic!("valid arguments should parse: {error}"));
+        let mut io = handshake_io(1, 4);
+
+        let handshake = sequence
+            .perform_control_handshake(&mut io, &args)
+            .unwrap_or_else(|error| panic!("handshake should succeed: {error}"));
+
+        assert_eq!(handshake.proto_version(), CONTROL_PROTOCOL_VERSION);
+        assert_eq!(handshake.abi_version(), ABI_VERSION);
+        assert_eq!(handshake.slot_index(), 1);
+        assert_eq!(handshake.launch_slot(), 1);
+        assert_eq!(handshake.node_count(), 4);
+        assert!(!io.written().is_empty());
+        assert_eq!(io.flush_count(), 1);
+        assert_eq!(
+            sequence.completed_steps(),
+            &[
+                PluginRegistrationStep::ParseArguments,
+                PluginRegistrationStep::ControlHandshake,
+            ]
+        );
+    }
+
+    #[test]
+    fn registration_order_rejects_control_handshake_before_parse_without_io() {
+        let mut sequence = PluginRegistrationSequence::new();
+        let args = registration_args("simfd=3,slot=0");
+        let mut io = handshake_io(0, 1);
+
+        assert_eq!(
+            sequence.perform_control_handshake(&mut io, &args),
+            Err(PluginRegistrationSequenceError::OutOfOrderStep {
+                expected: PluginRegistrationStep::ParseArguments,
+                actual: PluginRegistrationStep::ControlHandshake,
+            })
+        );
+        assert!(io.written().is_empty());
+        assert_eq!(io.flush_count(), 0);
+    }
+
+    #[test]
+    fn registration_order_fails_loud_when_handshake_slot_disagrees_with_launch_args() {
+        let mut sequence = PluginRegistrationSequence::new();
+        let args = sequence
+            .parse_arguments("simfd=3,slot=0")
+            .unwrap_or_else(|error| panic!("valid arguments should parse: {error}"));
+        let mut io = handshake_io(1, 2);
+
+        let error = sequence
+            .perform_control_handshake(&mut io, &args)
+            .err()
+            .unwrap_or_else(|| panic!("slot mismatch should fail"));
+        let PluginRegistrationSequenceError::StepFailed { failure } = error else {
+            panic!("expected step failure, got {error:?}");
+        };
+
+        assert_eq!(failure.step(), PluginRegistrationStep::ControlHandshake);
+        assert!(failure.diagnostic().contains("launch slot 0"));
+        assert!(failure.diagnostic().contains("handshake slot 1"));
+        assert_eq!(
+            sequence.record_step(PluginRegistrationStep::RequestTimeControl),
+            Err(PluginRegistrationSequenceError::AfterFailure {
+                failed_step: PluginRegistrationStep::ControlHandshake,
+                blocked_step: PluginRegistrationStep::RequestTimeControl,
             })
         );
     }
@@ -848,5 +974,56 @@ mod tests {
 
     fn registration_args(raw: &str) -> PluginArgs {
         PluginArgs::parse(raw).unwrap_or_else(|error| panic!("test args should parse: {error}"))
+    }
+
+    fn handshake_io(slot_index: u32, node_count: u32) -> ScriptedIo {
+        ScriptedIo::from_input(control_encode_host_msg(&HostMsg::HelloAck {
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: ABI_VERSION,
+            slot_index,
+            node_count,
+        }))
+    }
+
+    struct ScriptedIo {
+        input: Cursor<Vec<u8>>,
+        output: Vec<u8>,
+        flush_count: usize,
+    }
+
+    impl ScriptedIo {
+        fn from_input(input: Vec<u8>) -> Self {
+            Self {
+                input: Cursor::new(input),
+                output: Vec::new(),
+                flush_count: 0,
+            }
+        }
+
+        fn written(&self) -> Vec<u8> {
+            self.output.clone()
+        }
+
+        const fn flush_count(&self) -> usize {
+            self.flush_count
+        }
+    }
+
+    impl Read for ScriptedIo {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.input.read(buffer)
+        }
+    }
+
+    impl Write for ScriptedIo {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.output.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flush_count += 1;
+            Ok(())
+        }
     }
 }

@@ -9,6 +9,8 @@
 //!
 //! Module map: `abi` owns the raw QEMU plugin `cdylib` entry point and inert
 //! callback scaffold; `args` owns fail-closed `-plugin` argument parsing;
+//! `handshake` owns plugin-side control-protocol version negotiation and slot
+//! cross-checking;
 //! `deadline` owns exact virtual-clock deadline introspection; `device_io` owns
 //! the virtual-time hold for in-flight device I/O; `idle_loop` owns the idle
 //! callback hot-loop state machine; `inbound` owns inbound frame polling and
@@ -40,6 +42,7 @@ pub mod block_io;
 pub mod coverage;
 pub mod deadline;
 pub mod device_io;
+pub mod handshake;
 pub mod idle_loop;
 pub mod inbound;
 pub mod network_rx;
@@ -87,6 +90,10 @@ pub use deadline::{
 pub use device_io::{
     DeviceIoBurstState, DeviceIoFreezeError, DeviceIoRequestOutcome, DeviceIoRequestRelease,
     DeviceIoRequestToken, PluginDeviceIoFreeze,
+};
+pub use handshake::{
+    PluginControlHandshake, PluginHandshakeError, perform_plugin_handshake,
+    plugin_handshake_config, validate_plugin_handshake,
 };
 pub use idle_loop::{
     IdleHotLoopError, IdleHotLoopResult, IdleParkRequest, IdleWaitOutcome, IdleWakeCause,

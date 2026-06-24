@@ -965,7 +965,7 @@ component that makes that purity true *inside* the QEMU process.
   opt-in TCG-exec basic-block map with zero cost when off and no effect on `S`/`T`
   or fingerprints; emit coverage as observational output. — satisfies [PLUG-35],
   [PLUG-36], [PLUG-37]; spec §12.8.
-- [ ] **T-PLUG-16** Implement the handshake and slot cross-check
+- [x] **T-PLUG-16** Implement the handshake and slot cross-check
   (`Hello`/`HelloAck`, exact ABI match, `slot_index < node_count`, launch-arg
   agreement). — satisfies [PLUG-38], [PLUG-39]; spec §12.9.1.
 - [ ] **T-PLUG-17** Implement setup completion: receive the two `SCM_RIGHTS` fds,
