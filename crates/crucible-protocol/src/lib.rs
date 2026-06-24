@@ -218,6 +218,10 @@ pub enum HostMsg {
 /// Number of file descriptors attached to a `Setup` frame.
 #[cfg(unix)]
 pub const SETUP_DESCRIPTOR_COUNT: usize = 2;
+/// `SetupAck.status` value meaning the plugin is ready to run via shared memory.
+pub const SETUP_ACK_STATUS_READY: u8 = 0;
+/// Generic `SetupAck.status` value for setup failures without a narrower code.
+pub const SETUP_ACK_STATUS_SETUP_FAILED: u8 = 1;
 
 /// Borrowed descriptors attached to an outbound `Setup` frame.
 #[cfg(unix)]
@@ -247,6 +251,26 @@ pub struct ReceivedSetup {
     pub region_len: u64,
     /// Fixed-order descriptors attached to the setup frame.
     pub descriptors: ReceivedSetupDescriptors,
+}
+
+/// Host-side proof that a node's setup completed before scheduling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SchedulableNodeSetup {
+    status: u8,
+}
+
+impl SchedulableNodeSetup {
+    /// Returns the accepted `SetupAck.status` byte.
+    #[must_use]
+    pub const fn setup_ack_status(self) -> u8 {
+        self.status
+    }
+
+    /// Returns whether this setup acknowledgement permits scheduling.
+    #[must_use]
+    pub const fn can_schedule(self) -> bool {
+        true
+    }
 }
 
 /// Host-side inputs used to accept the initial `Hello` handshake.
@@ -461,6 +485,35 @@ pub enum HandshakeError {
         slot_index: u32,
         /// Node count carried in `HelloAck`.
         node_count: u32,
+    },
+}
+
+/// Typed errors returned by setup-completion acknowledgement handling.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum SetupCompletionError {
+    /// A control-frame read or write failed.
+    #[error("setup completion I/O failed")]
+    Io {
+        /// Underlying frame I/O error.
+        source: FrameIoError,
+    },
+    /// A setup-completion frame failed byte-level decoding.
+    #[error("setup completion frame decode failed")]
+    Decode {
+        /// Underlying frame decode error.
+        source: FrameDecodeError,
+    },
+    /// The decoded frame was not a plugin `SetupAck` message.
+    #[error("unexpected setup completion message: {message:?}")]
+    UnexpectedPluginMessage {
+        /// Decoded plugin-to-host message.
+        message: PluginMsg,
+    },
+    /// The plugin reported a setup failure and must not be scheduled.
+    #[error("setup acknowledgement status {status} is non-zero")]
+    NonZeroSetupAck {
+        /// Nonzero `SetupAck.status` byte.
+        status: u8,
     },
 }
 
@@ -844,6 +897,66 @@ pub fn plugin_validate_handshake_ack(
         slot_index,
         node_count,
     })
+}
+
+/// Sends a plugin setup-completion acknowledgement.
+///
+/// Callers send `status == 0` only after mapping exactly `Setup.region_len`,
+/// validating the shared-memory ABI marker, and arming the wake fd.
+///
+/// # Errors
+///
+/// Returns [`SetupCompletionError::Io`] when writing or flushing the control
+/// frame fails.
+pub fn plugin_send_setup_ack<W>(writer: &mut W, status: u8) -> Result<(), SetupCompletionError>
+where
+    W: Write,
+{
+    let ack = control_encode_plugin_msg(&PluginMsg::SetupAck { status });
+    write_control_frame(writer, &ack).map_err(|source| SetupCompletionError::Io { source })
+}
+
+/// Reads and validates the host-side setup acknowledgement before scheduling.
+///
+/// A successful return is the host's permission token for including the node in
+/// a quantum. Any nonzero `SetupAck.status` is a setup failure.
+///
+/// # Errors
+///
+/// Returns [`SetupCompletionError`] when the frame cannot be read or decoded,
+/// when the plugin sends a different message, or when `SetupAck.status` is
+/// nonzero.
+pub fn host_accept_setup_ack<R>(
+    reader: &mut R,
+) -> Result<SchedulableNodeSetup, SetupCompletionError>
+where
+    R: Read,
+{
+    let frame = read_control_frame(reader).map_err(|source| SetupCompletionError::Io { source })?;
+    let message = control_decode_plugin_msg(&frame)
+        .map_err(|source| SetupCompletionError::Decode { source })?;
+    host_validate_setup_ack(message)
+}
+
+/// Validates a decoded plugin `SetupAck` without performing I/O.
+///
+/// # Errors
+///
+/// Returns [`SetupCompletionError::UnexpectedPluginMessage`] when `message` is
+/// not `SetupAck`, or [`SetupCompletionError::NonZeroSetupAck`] when the status
+/// byte is not zero.
+pub fn host_validate_setup_ack(
+    message: PluginMsg,
+) -> Result<SchedulableNodeSetup, SetupCompletionError> {
+    let PluginMsg::SetupAck { status } = message else {
+        return Err(SetupCompletionError::UnexpectedPluginMessage { message });
+    };
+
+    if status != SETUP_ACK_STATUS_READY {
+        return Err(SetupCompletionError::NonZeroSetupAck { status });
+    }
+
+    Ok(SchedulableNodeSetup { status })
 }
 
 /// Sends a `Setup` frame and its fixed-order descriptors over a Unix socket.

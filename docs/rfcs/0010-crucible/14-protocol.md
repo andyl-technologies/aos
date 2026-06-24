@@ -452,7 +452,7 @@ The control channel is determinism-neutral by construction.
   shmem ABI version, and replies `HelloAck(proto, abi, slot_index, node_count)`;
   plugin bounds-checks `slot_index < node_count`. — satisfies [PROTO-3],
   [PROTO-10], [PROTO-11], [PROTO-15], [PROTO-16], [PROTO-17]; spec §3.5, §3.6, §4.
-- [ ] **T-PROTO-5** Implement the setup completion: plugin `mmap`s `region_len`,
+- [x] **T-PROTO-5** Implement the setup completion: plugin `mmap`s `region_len`,
   validates the shmem ABI marker ([`13-shmem-abi.md`](13-shmem-abi.md)), arms the
   wake fd, and replies `SetupAck(status)`; host refuses to schedule a node whose
   `SetupAck` is non-zero. — satisfies [PROTO-12], [PROTO-13], [PROTO-19]; spec
