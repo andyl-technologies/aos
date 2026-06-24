@@ -77,6 +77,7 @@ pub(crate) fn dispatch(dir: &Path, args: &[&str]) -> Result<Output> {
         }
         ["rev-parse", rest @ ..] => rev_parse(dir, rest),
         ["rev-list", rest @ ..] => rev_list(dir, rest),
+        ["for-each-ref", rest @ ..] => for_each_ref(dir, rest),
         ["cat-file", "-e", spec] => Ok(match resolve_blob_bytes(&open(dir)?, spec)? {
             Some(_) => Output::ok_str(""),
             None => Output::fail(format!("{spec} does not exist")),
@@ -282,6 +283,71 @@ fn rev_list_unpushed_count(repo: &Repository) -> Result<Output> {
     }
     let count = walk.filter_map(std::result::Result::ok).count();
     Ok(Output::ok_str(count.to_string()))
+}
+
+/// `git for-each-ref --format=<fmt> <pattern>...`.
+///
+/// Implements the single format the registry tooling needs —
+/// `%(refname)%00%(refname:short)%00%(objectname)%00` — expanded over the
+/// given `refs/...` prefix patterns. Output matches git: one expanded line per
+/// matching ref, sorted ascending by full refname, each terminated by a
+/// newline. `%00` expands to a NUL byte and `%(objectname)` to the ref's
+/// resolved object id (symbolic refs are followed to their target).
+///
+/// # Errors
+///
+/// Returns an error for a format string other than the one above; no other
+/// `for-each-ref` shape is invoked by `apr`.
+fn for_each_ref(dir: &Path, rest: &[&str]) -> Result<Output> {
+    const FORMAT: &str = "%(refname)%00%(refname:short)%00%(objectname)%00";
+    let format = rest
+        .iter()
+        .copied()
+        .find_map(|arg| arg.strip_prefix("--format="));
+    if format != Some(FORMAT) {
+        bail!(
+            "unsupported git for-each-ref format: {}",
+            format.unwrap_or("<none>")
+        );
+    }
+    let patterns: Vec<&str> = rest
+        .iter()
+        .copied()
+        .filter(|arg| !arg.starts_with('-'))
+        .collect();
+    let repo = open(dir)?;
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for reference in repo.references().context("listing references")? {
+        let reference = reference?;
+        let Ok(name) = reference.name() else {
+            continue;
+        };
+        let under_pattern = patterns
+            .iter()
+            .any(|prefix| name == *prefix || name.starts_with(&format!("{prefix}/")));
+        if !under_pattern {
+            continue;
+        }
+        let Some(oid) = reference
+            .target()
+            .or_else(|| reference.resolve().ok().and_then(|r| r.target()))
+        else {
+            continue; // unresolvable symbolic ref
+        };
+        // git shortens `refs/remotes/<remote>/HEAD` to just `<remote>`;
+        // git2's `shorthand` keeps the trailing `/HEAD`, so special-case it.
+        let short = name
+            .strip_prefix("refs/remotes/")
+            .and_then(|rest| rest.strip_suffix("/HEAD"))
+            .unwrap_or_else(|| reference.shorthand().unwrap_or(name));
+        rows.push((name.to_string(), format!("{name}\0{short}\0{oid}\0")));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut out = String::new();
+    for (_, line) in rows {
+        let _ = writeln!(out, "{line}");
+    }
+    Ok(Output::ok_str(out))
 }
 
 /// `git cat-file -p <spec>` / `git show <spec>` for blobs and tag/commit objects.
@@ -1031,4 +1097,103 @@ fn pull(dir: &Path, _rest: &[&str]) -> Result<Output> {
     repo.checkout_tree(&merged_obj, None)
         .context("checking out merge")?;
     Ok(Output::ok_str("Merge made by the 'recursive' strategy.\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// A repo with a `stable` branch plus an `origin/stable` remote-tracking
+    /// ref and a symbolic `origin/HEAD`, returning the dir and the commit hex.
+    fn repo_with_remote() -> (TempDir, String) {
+        let tmp = TempDir::new().expect("tempdir");
+        let repo = git2::Repository::init(tmp.path()).expect("init");
+        let sig = git2::Signature::now("Test", "test@test").expect("signature");
+        let tree_oid = repo
+            .treebuilder(None)
+            .expect("treebuilder")
+            .write()
+            .expect("write tree");
+        let tree = repo.find_tree(tree_oid).expect("tree");
+        let commit = repo
+            .commit(Some("refs/heads/stable"), &sig, &sig, "init", &tree, &[])
+            .expect("commit");
+        repo.set_head("refs/heads/stable").expect("set head");
+        repo.reference("refs/remotes/origin/stable", commit, true, "")
+            .expect("remote-tracking ref");
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/stable",
+            true,
+            "",
+        )
+        .expect("symbolic remote HEAD");
+        (tmp, commit.to_string())
+    }
+
+    /// `for-each-ref` reproduces git's output: one expanded line per ref under
+    /// the requested prefixes, sorted by full refname, with `%00` as NUL and
+    /// `origin/HEAD` shortened to `origin` — the path `apr --json` publish
+    /// drives through `git_branch_entries` when a remote is configured
+    /// (regression for the libgit2 port, which omitted the subcommand and
+    /// failed publish with `unsupported git invocation`).
+    #[test]
+    fn for_each_ref_matches_git_format() {
+        let (tmp, oid) = repo_with_remote();
+        let out = dispatch(
+            tmp.path(),
+            &[
+                "for-each-ref",
+                "--format=%(refname)%00%(refname:short)%00%(objectname)%00",
+                "refs/heads",
+                "refs/remotes",
+            ],
+        )
+        .expect("dispatch");
+        assert!(out.success);
+        let text = String::from_utf8(out.stdout).expect("utf8 output");
+        let expected = format!(
+            "refs/heads/stable\0stable\0{oid}\0\n\
+             refs/remotes/origin/HEAD\0origin\0{oid}\0\n\
+             refs/remotes/origin/stable\0origin/stable\0{oid}\0\n"
+        );
+        assert_eq!(text, expected);
+    }
+
+    /// A prefix that matches nothing yields empty output and still succeeds.
+    #[test]
+    fn for_each_ref_empty_when_no_match() {
+        let (tmp, _) = repo_with_remote();
+        let out = dispatch(
+            tmp.path(),
+            &[
+                "for-each-ref",
+                "--format=%(refname)%00%(refname:short)%00%(objectname)%00",
+                "refs/tags",
+            ],
+        )
+        .expect("dispatch");
+        assert!(out.success);
+        assert!(out.stdout.is_empty());
+    }
+
+    /// Only the one format `apr` uses is supported; any other shape is a
+    /// programming error and surfaces as `Err`, not a silent empty result.
+    #[test]
+    fn for_each_ref_rejects_unknown_format() {
+        let (tmp, _) = repo_with_remote();
+        // `Output` is not `Debug`, so match instead of `expect_err`.
+        let message = match dispatch(
+            tmp.path(),
+            &["for-each-ref", "--format=%(refname)", "refs/heads"],
+        ) {
+            Ok(_) => panic!("unknown format must error"),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            message.contains("unsupported git for-each-ref format"),
+            "unexpected error: {message}"
+        );
+    }
 }
