@@ -20,6 +20,7 @@
 //!   timestamping), and [`state`] (persisted sync state).
 
 pub mod channel;
+pub mod dumb_http;
 pub mod fetch;
 pub mod git;
 pub mod keys;
@@ -28,10 +29,13 @@ pub mod nixcache;
 pub mod objectstore;
 pub mod pack;
 pub mod parse;
+pub(crate) mod porcelain;
+pub(crate) mod repo;
 pub mod sb_certs;
 pub mod state;
 pub mod static_upload;
 pub mod store;
+pub(crate) mod thinpack;
 pub mod tuf;
 pub mod verify;
 

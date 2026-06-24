@@ -77,6 +77,22 @@ clap_complete = "4"
 # Package manager
 toml = "0.8"
 semver = "1"
+# Git access for the apm/apr registry. libgit2 (vendored, built with
+# -DEXPERIMENTAL_SHA256=ON via unstable-sha256) drives local object/ref
+# operations and the git://+ssh:// smart transports; the registry's static
+# dumb-HTTP(S) layout is read by our own loose-object walker since libgit2
+# speaks only smart HTTP. unstable-sha256 is an ABI-breaking feature, enabled
+# here because the registry is SHA-256-only.
+git2 = { version = "0.21", default-features = false, features = ["https", "ssh", "vendored-libgit2", "unstable-sha256"] }
+# SSHSIG signing/verification (`gpg.format=ssh`) in pure Rust, replacing
+# shell-outs to `git verify-commit`/`verify-tag` and `ssh-keygen -Y`.
+ssh-key = { version = "0.6", default-features = false, features = ["std", "ed25519"] }
+# Tar archive writing for the `git archive`-equivalent tree extraction.
+tar = "0.4"
+# zlib (de)compression for loose git objects in the dumb-HTTP reader.
+flate2 = "1"
+# Data-parallelism for building thin-pack candidate strategies in parallel.
+rayon = "1"
 
 # Dev
 tempfile = "3"

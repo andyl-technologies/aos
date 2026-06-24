@@ -5,7 +5,6 @@
   fetchCargoDeps,
   bash,
   git-minimal,
-  gnupg,
   nix,
   openssh,
   perl,
@@ -16,12 +15,13 @@
   aos-ebpf-net-policy,
   aos-ebpf-lsm-policy,
   checkpolicy,
+  cmake,
+  libssh2,
   policycoreutils,
   pkg-config,
   protobuf,
   semodule-utils,
   systemd,
-  tar,
   tpm2-tools,
   which,
   zlib,
@@ -34,17 +34,14 @@
   # environment. The caller's original PATH is stashed in AOS_HOST_PATH first:
   # user-supplied commands (e.g. `apr keys register --key-command`, which
   # typically invokes a host secret manager) run with that PATH restored, while
-  # every internal shell-out keeps the hermetic one. Tools:
-  #   git-minimal   registry, pack, and object-store operations (interpreter-
-  #                 free git; apm/apr use only C builtins, no Perl/gitweb)
-  #   gnupg         gpg: git shells out to it to create and verify OpenPGP
-  #                 signatures on commits and tags; with the hermetic PATH set
-  #                 here it must be present for those git operations to work
+  # every internal shell-out keeps the hermetic one. Registry, pack, object-store,
+  # and SSH-signing operations no longer shell out to git/gpg/ssh-keygen — they
+  # run in-process via libgit2 and the ssh-key crate (see the `registry::repo`,
+  # `registry::porcelain`, and `security` modules) — so git-minimal, gnupg, and
+  # openssh are gone from the runtime closure. Tools:
   #   nix           nix / nix-store: cache and store operations
-  #   openssh       ssh-keygen, for `git -c gpg.format=ssh tag -s` release signing
   #   systemd       systemctl, for runtime package preset/attach reconciliation
   #   zstd          pack-delta compression and store decompression
-  #   tar           extracting tree subpaths from `git archive` output
   #   which         check_command_exists() preflight in the drain/sysroot path
   #   bash          wrapper interpreter; avoids relying on /bin/sh on the host
   #   systemd       systemctl: the post-activation reconcile's failed-unit
@@ -55,7 +52,7 @@
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash git-minimal gnupg nix openssh systemd zstd tar which];
+  runtimeTools = [bash nix systemd zstd which];
   runtimeBinPath = lib.makeBinPath runtimeTools;
   src = builtins.path {
     path = ../../../crates;
@@ -74,10 +71,18 @@ in
 
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
+      hash = "sha256-JVJ/6rZ0LSX3RhkClRhl5whnw+C+gDt19bia4p1Yl6I=";
     };
 
-    buildDeps = [perl pkg-config openssl protobuf];
+    # cmake + libssh2: git2's vendored libgit2 is compiled from source here
+    # (CMake build) with SSH smart-transport support against system libssh2.
+    #
+    # git-minimal + openssh are *build-only* (the `doCheck` workspace tests use
+    # the host `git`/`ssh-keygen` to build repository fixtures via the test-only
+    # `gitcmd`/`testutil` helpers). They are deliberately NOT in `runtimeDeps`,
+    # so scrubPhase nukes their references and they never enter the runtime
+    # closure — production code uses libgit2 + ssh-key, never these binaries.
+    buildDeps = [perl pkg-config openssl protobuf cmake libssh2 git-minimal openssh];
     runtimeDeps = [openssl zlib aos-landlock aos-selinux-run aos-verity-root-guard aos-ebpf-net-policy aos-ebpf-lsm-policy checkpolicy policycoreutils semodule-utils tpm2-tools] ++ runtimeTools;
 
     preBuild = ''
