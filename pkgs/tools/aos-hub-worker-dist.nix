@@ -23,8 +23,9 @@
 ##!    --release` with the workspace deps vendored offline by `fetchCargoDeps`.
 ##!    The `wasm32` std + `rust-lld` linker ship in `pkgs.rust` already.
 ##! 2. `wasm-bindgen --target bundler` (`pkgs.wasm-bindgen-cli`, version-locked
-##!    to the crate's `wasm-bindgen` 0.2.122) generates `index_bg.js` +
-##!    `index_bg.wasm`.
+##!    to the crate's `wasm-bindgen` 0.2.125) generates `index_bg.js` +
+##!    `index_bg.wasm` (and, for `worker` 0.8, a `snippets/` dir holding the
+##!    crate's inline-JS panic-recovery state).
 ##! 3. The exact `worker-build` post-processing: rewrite the bindgen glue to
 ##!    import the WASM via a `glue.js` instantiation shim, drop in
 ##!    `worker-build`'s `shim.js` event-handler glue, and bundle the lot into a
@@ -175,6 +176,12 @@ in
           mkdir -p build/worker
           mv build/index_bg.js   build/worker/index_bg.js
           mv build/index_bg.wasm build/worker/index.wasm
+          # worker 0.8's glue imports an inline-JS snippet (the panic-recovery
+          # `state`) via a relative `./snippets/...` path, so the directory must
+          # travel alongside index_bg.js for esbuild to resolve the import.
+          if [ -d build/snippets ]; then
+            cp -r build/snippets build/worker/snippets
+          fi
 
           # glue.js — instantiates the wasm and re-exports its exports
           # (worker-build src/js/glue.js, verbatim).
@@ -236,10 +243,13 @@ in
           export default Entrypoint;
           SHIM
 
-          # Rewrite the bindgen glue's __wbg_set_wasm wasm import so the wasm is
-          # supplied by glue.js (worker-build's use_glue_import). The A/B
-          # literals are the worker-build WASM_IMPORT / WASM_IMPORT_REPLACEMENT
-          # constants encoded as JS strings, so the replacement is byte-exact.
+          # Rewrite the bindgen glue's wasm provision so the wasm is supplied by
+          # glue.js (worker-build's use_glue_import). Crucially, `wasm` stays a
+          # mutable `let` initialized from glue.js — `worker` 0.8's glue also
+          # ships a `__wbg_reset_state` panic-recovery path that *reassigns*
+          # `wasm` (`wasm = wasmInstance.exports`), so importing it as a `const`
+          # binding makes esbuild reject the bundle ("Cannot assign to import").
+          # `__wbg_set_wasm` is retained for the same reason.
           REWRITE_JS="$TMPDIR/glue-rewrite.mjs"
           {
           printf '%s\n' "import { readFileSync, writeFileSync } from 'node:fs';"
@@ -247,16 +257,14 @@ in
           printf '%s\n' "let s = readFileSync(p, 'utf8');"
           # Match the bindgen `let wasm;` + `__wbg_set_wasm` setter regardless of
           # the exact whitespace/blank-line shape the bindgen version emits, and
-          # replace it with worker-build's glue.js instantiation import. This is
-          # the semantic equivalent of worker-build's WASM_IMPORT ->
-          # WASM_IMPORT_REPLACEMENT rewrite, but resilient to bindgen drift.
+          # replace it with a glue.js import that keeps `wasm` reassignable.
           printf '%s\n' "const re = /let wasm;\\s*export function __wbg_set_wasm\\(val\\)\\s*\\{\\s*wasm = val;\\s*\\}/;"
           printf '%s\n' "if (!re.test(s)) {"
           printf '%s\n' "  console.error('worker-dist: bindgen glue preamble mismatch; head was:');"
           printf '%s\n' "  console.error(s.slice(0, 400));"
           printf '%s\n' "  process.exit(1);"
           printf '%s\n' "}"
-          printf '%s\n' "const B = \"\\nimport wasm from './glue.js';\\n\\nexport function getMemory() {\\n    return wasm.memory;\\n}\\n\";"
+          printf '%s\n' "const B = \"\\nimport __wbg_glue from './glue.js';\\nlet wasm = __wbg_glue;\\nexport function __wbg_set_wasm(val) { wasm = val; }\\n\\nexport function getMemory() {\\n    return wasm.memory;\\n}\\n\";"
           printf '%s\n' "writeFileSync(p, s.replace(re, B));"
           } > "$REWRITE_JS"
           node "$REWRITE_JS" build/worker/index_bg.js
