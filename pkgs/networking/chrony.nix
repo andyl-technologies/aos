@@ -3,9 +3,8 @@
   mkDerivation,
   fetchurl,
   gnumake,
-  openssl,
   libcap,
-  libseccomp,
+  nettle,
   pkg-config,
 }: let
   version = "4.8";
@@ -26,9 +25,8 @@ in
       pkg-config
     ];
     runtimeDeps = [
-      openssl
       libcap
-      libseccomp
+      nettle
     ];
     propagatedDeps = [];
 
@@ -76,7 +74,7 @@ in
     checks = {
       testing,
       self,
-      pkgs,
+      ...
     }: {
       version = testing.mkToolCheck {
         pname = "tool-chrony";
