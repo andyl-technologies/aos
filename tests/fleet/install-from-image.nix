@@ -5,13 +5,15 @@
 #
 #   1. INSTALL  — boot the stock raw image under OVMF (UEFI → sd-boot →
 #                 UKI → initrd → ignition). The fw_cfg-delivered config
-#                 partitions the disk: grow root-a, create root-b, swap
-#                 and var (the A/B layout from docs/boot/qemu-uefi.md,
-#                 sized down for CI), format the filesystems.
-#   2. BOOT     — first boot reaches multi-user.target; the layout and
-#                 the aos-growfs filesystem growth are asserted. This is
-#                 the first CI exercise of the sd-boot/UKI path, the
-#                 qemu/fw_cfg ignition platform, and the disks stage.
+#                 partitions the disk: small A/B root slots (the root is a
+#                 read-only erofs base), swap, and var taking the rest (the
+#                 A/B layout from docs/boot/qemu-uefi.md, sized down for CI),
+#                 format the filesystems.
+#   2. BOOT     — first boot reaches multi-user.target; the layout is
+#                 asserted: the root is mounted read-only erofs (immutable,
+#                 not grown) and /var filled the disk. This is the first CI
+#                 exercise of the sd-boot/UKI path, the qemu/fw_cfg ignition
+#                 platform, and the disks stage.
 #   3. UPDATE   — `apm registry add` + `apm update` against a registry
 #                 peer over the fleet L2.
 #   4. INSTALL  — `apm install bc` downloads a package off the wire
@@ -60,9 +62,12 @@
     }
   ];
 
-  # Partition sizes (MiB). The docs' production layout is 16 GiB per
-  # root; CI uses a smaller A/B layout — same shape, same labels.
-  rootSizeMiB = 6144;
+  # Partition sizes (MiB). The root is a read-only erofs image (~200 MiB),
+  # so the A/B root slots only need headroom for the base image — not the
+  # whole disk. The freed space goes to /var, which holds the writable Nix
+  # store overlay and all mutable state. CI uses a smaller A/B layout —
+  # same shape, same labels.
+  rootSizeMiB = 1024;
   swapSizeMiB = 1024;
   diskSizeMiB = 16384;
 in {
@@ -178,24 +183,41 @@ in {
           f"root-a is {sectors} sectors, expected {expected}"
       )
 
-      # aos-growfs grew the root ext4 into the resized partition: the
-      # filesystem must report close to the partition size, far above
-      # the image's sized-to-fit original.
+      # The root is a read-only erofs image — the immutable base. It is NOT
+      # grown (aos-growfs is a no-op for non-ext4 roots); all mutable state
+      # lives on /var. Confirm it is mounted read-only erofs and stayed at
+      # the image's small sized-to-fit size, far below its 1 GiB partition.
+      import re
+
+      mounts = target.succeed("cat /proc/mounts")
+      assert re.search(r"^\S+ / erofs ro\b", mounts, re.M), (
+          f"root not mounted as read-only erofs:\n{mounts}"
+      )
       blocks, bsize = map(int, target.succeed(
           "stat -f -c '%b %S' /"
       ).split())
       fs_bytes = blocks * bsize
-      assert fs_bytes > ${toString (rootSizeMiB * 9 / 10)} * 1024 * 1024, (
-          f"root fs is {fs_bytes} bytes; aos-growfs did not grow it"
+      assert fs_bytes < ${toString rootSizeMiB} * 1024 * 1024, (
+          f"erofs root is {fs_bytes} bytes; expected the small immutable base"
       )
 
       # /var is the ignition-created partition, mounted by partlabel.
       var_dev = target.succeed(
           "readlink -f /dev/disk/by-partlabel/var"
       ).strip()
-      mounts = target.succeed("cat /proc/mounts")
       assert f"{var_dev} /var " in mounts, (
           f"/var not mounted from {var_dev}:\n{mounts}"
+      )
+
+      # /var took the rest of the disk: with a small immutable erofs root,
+      # the writable Nix store overlay + state get the freed space. The disk
+      # is ${toString diskSizeMiB} MiB; /var must be the bulk of it.
+      vblocks, vbsize = map(int, target.succeed(
+          "stat -f -c '%b %S' /var"
+      ).split())
+      var_bytes = vblocks * vbsize
+      assert var_bytes > 10 * 1024 * 1024 * 1024, (
+          f"/var is {var_bytes} bytes; expected it to fill the disk"
       )
 
       # First boot seeded the system profile at gen-1.
