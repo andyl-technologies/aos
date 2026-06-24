@@ -29,6 +29,7 @@ impl TreeWalk {
             fs::create_dir(target)
                 .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
             let mut copied_child = false;
+            let mut had_entry = false;
             for entry in fs::read_dir(source)
                 .map_err(|source| Self::fetch_git_error(id, span, url, source))?
             {
@@ -36,6 +37,7 @@ impl TreeWalk {
                 if entry.file_name().as_bytes() == b".git" {
                     continue;
                 }
+                had_entry = true;
                 let child_relative = if relative.as_os_str().is_empty() {
                     PathBuf::from(entry.file_name())
                 } else {
@@ -55,7 +57,13 @@ impl TreeWalk {
                     copied_child = true;
                 }
             }
-            if copied_child || is_root {
+            // Keep a directory that copied a child, is the worktree root, or was
+            // genuinely empty in the source. An uninitialized submodule appears as
+            // an empty directory and C++ Nix retains it in the NAR (changing the
+            // store hash), so dropping it diverges — e.g. firecracker's micro-http
+            // fetchGit keeps an empty `rust-vmm-ci` submodule directory. Only
+            // remove a directory whose entries all dropped out via export-ignore.
+            if copied_child || is_root || !had_entry {
                 fs::set_permissions(target, metadata.permissions())
                     .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
                 return Ok(true);
@@ -117,6 +125,7 @@ impl TreeWalk {
             fs::create_dir(target)
                 .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
             let mut copied_child = false;
+            let mut had_entry = false;
             for entry in fs::read_dir(source)
                 .map_err(|source| Self::fetch_git_error(id, span, url, source))?
             {
@@ -124,6 +133,7 @@ impl TreeWalk {
                 if entry.file_name().as_bytes() == b".git" {
                     continue;
                 }
+                had_entry = true;
                 let child_relative = if relative.as_os_str().is_empty() {
                     PathBuf::from(entry.file_name())
                 } else {
@@ -144,7 +154,10 @@ impl TreeWalk {
                     copied_child = true;
                 }
             }
-            if copied_child || is_root {
+            // A genuinely-empty source directory (e.g. an uninitialized submodule)
+            // is retained by C++ Nix; only a directory emptied by exclusion is
+            // dropped. See `copy_fetch_git_worktree`.
+            if copied_child || is_root || !had_entry {
                 fs::set_permissions(target, metadata.permissions())
                     .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
                 return Ok(true);
