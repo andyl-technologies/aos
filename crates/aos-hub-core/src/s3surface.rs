@@ -379,13 +379,14 @@ mod tests {
     fn binding(kind: &str, access: &str, cred: Option<&str>, endpoint: Option<&str>) -> StorageBindingRecord {
         StorageBindingRecord {
             id: 1,
-            org_id: 1,
+            org_id: Some(1),
             name: "store".into(),
             kind: kind.into(),
             root: "my-bucket".into(),
             access: access.into(),
             public_base_url: endpoint.map(str::to_string),
             credential_ref: cred.map(str::to_string),
+            is_instance_default: false,
             created_at: 0,
         }
     }

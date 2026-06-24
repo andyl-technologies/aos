@@ -2589,15 +2589,22 @@ impl RpcService {
         if let Some(f) = pick_direct_cache_frontend(&own) {
             return Ok(frontend_base_url(&f.domain, &f.base_path, ""));
         }
-        if let Some(binding_id) = cache.storage_binding_id {
-            let public = matches!(
-                self.db.storage_binding(binding_id).await.map_err(RpcError::internal)?,
-                Some(b) if b.access == "public"
-            );
-            if public {
+        // Inherit from the cache's storage binding — its own, or the singleton
+        // instance-default binding when the cache is binding-less (default
+        // storage) — over a `public` binding only.
+        let binding = match cache.storage_binding_id {
+            Some(id) => self.db.storage_binding(id).await.map_err(RpcError::internal)?,
+            None => self
+                .db
+                .instance_default_binding()
+                .await
+                .map_err(RpcError::internal)?,
+        };
+        if let Some(binding) = binding {
+            if binding.access == "public" {
                 let inherited = self
                     .db
-                    .list_storage_frontends(binding_id)
+                    .list_storage_frontends(binding.id)
                     .await
                     .map_err(RpcError::internal)?;
                 if let Some(f) = pick_direct_cache_frontend(&inherited) {
