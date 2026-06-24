@@ -100,10 +100,6 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "native evaluator stack-safety gap in derivation equality",
     },
     LangCaseExclusion {
-        name: "eval-okay-redefine-builtin",
-        reason: "tryEval search-path error handling gap",
-    },
-    LangCaseExclusion {
         name: "eval-okay-search-path",
         reason: "implicit C++ Nix corepkgs search path is not modeled",
     },
@@ -112,8 +108,8 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "symlink directory resolution gap",
     },
 ];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 203;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 6;
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 204;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 5;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",
@@ -1370,6 +1366,19 @@ fn eval_raw_fixture(source_name: &[u8], source: &[u8]) -> Vec<u8> {
         source.to_vec(),
     )
     .expect("source evaluates")
+}
+
+#[test]
+fn eval_okay_redefine_builtin_try_eval_catches_search_path_miss() {
+    let source = br#"let
+  throw = abort "Error!";
+in (builtins.tryEval <foobaz>).success
+"#;
+
+    assert_eq!(
+        eval_raw_fixture(b"/pwd/lang/eval-okay-redefine-builtin.nix", source),
+        b"false"
+    );
 }
 
 #[test]

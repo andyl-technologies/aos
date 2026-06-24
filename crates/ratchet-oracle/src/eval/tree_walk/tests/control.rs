@@ -353,6 +353,32 @@ fn try_eval_catches_throw_and_assertion_failures() {
 }
 
 #[test]
+fn try_eval_catches_missing_search_path() {
+    assert_eq!(
+        eval(r#"let throw = builtins.abort "Error!"; in (builtins.tryEval <foobaz>).success"#)
+            .as_bool(),
+        Ok(false)
+    );
+    assert_eq!(
+        eval(r#"let throw = builtins.abort "Error!"; in (builtins.tryEval <foobaz>).value"#)
+            .as_bool(),
+        Ok(false)
+    );
+}
+
+#[test]
+fn try_eval_does_not_catch_unsupported_ambient_search_path() {
+    let mut options = TreeWalkOptions::default();
+    options.set_reject_ambient_search_path(true);
+    let error = eval_whnf_owned_with_options(&lower("builtins.tryEval <foobaz>"), options)
+        .expect_err("tryEval should not catch disabled ambient search-path access");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::UnsupportedAmbientSearchPath { .. }
+    ));
+}
+
+#[test]
 fn try_eval_is_shallow() {
     assert_eq!(
         eval("(builtins.tryEval { x = builtins.throw \"boom\"; }).success").as_bool(),

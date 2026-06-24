@@ -473,7 +473,9 @@ impl TreeWalk {
         error: TreeWalkError,
     ) -> Result<Value, TreeWalkError> {
         match error.kind() {
-            TreeWalkErrorKind::Thrown { .. } | TreeWalkErrorKind::AssertionFailed { .. } => {
+            TreeWalkErrorKind::Thrown { .. }
+            | TreeWalkErrorKind::AssertionFailed { .. }
+            | TreeWalkErrorKind::SearchPathNotFound { .. } => {
                 self.alloc_try_eval_result(id, span, false, Value::bool(false))
             }
             _ => Err(error),
