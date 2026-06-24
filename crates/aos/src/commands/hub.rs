@@ -15,7 +15,8 @@ use aos_core::output::Printer;
 use aos_remote::RegistryHubClient;
 
 use crate::cli::{
-    HubBindingCmd, HubCacheCmd, HubCmd, HubOrgCmd, HubProjectCmd, HubRegistryCmd, HubWebhookCmd,
+    HubBindingCmd, HubCacheCmd, HubCmd, HubInstanceCmd, HubOrgCmd, HubProjectCmd, HubRegistryCmd,
+    HubWebhookCmd,
 };
 
 /// Handles `aos hub login`: exchanges a provisioning secret for an access JWT.
@@ -56,6 +57,7 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
         HubCmd::Project { command } => project(printer, command).await,
         HubCmd::Binding { command } => binding(printer, command).await,
         HubCmd::Webhook { command } => webhook(printer, command).await,
+        HubCmd::Instance { command } => instance(printer, command).await,
         HubCmd::RevertChangeset {
             hub,
             token,
@@ -471,6 +473,77 @@ async fn changesets(printer: &Printer, hub: &str, token: Option<&str>, scope: &s
         ));
     }
     Ok(())
+}
+
+/// Handles `aos hub instance …` (get/set deployment-wide instance settings).
+async fn instance(printer: &Printer, command: &HubInstanceCmd) -> Result<()> {
+    match command {
+        HubInstanceCmd::Get { hub, token } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let settings = client.get_instance_settings().await?;
+            render_instance_settings(printer, &settings);
+            Ok(())
+        }
+        HubInstanceCmd::Set {
+            hub,
+            token,
+            assignments,
+        } => {
+            // Parse `key=value` pairs. A bare `key=` (empty value) clears the key
+            // to its default; the server validates keys and values.
+            let mut values = std::collections::HashMap::new();
+            for raw in assignments {
+                let (key, value) = raw.split_once('=').ok_or_else(|| {
+                    anyhow::anyhow!("invalid assignment '{raw}': expected key=value")
+                })?;
+                values.insert(key.trim().to_string(), value.to_string());
+            }
+            let client = hub_client(hub, token.as_deref())?;
+            let settings = client.update_instance_settings(values, Vec::new()).await?;
+            render_instance_settings(printer, &settings);
+            Ok(())
+        }
+    }
+}
+
+/// Renders an [`InstanceSettings`] bundle as JSON (when `--json`) or a plain
+/// key/value listing.
+fn render_instance_settings(printer: &Printer, s: &aos_remote::InstanceSettings) {
+    if printer.json_if_active(&serde_json::json!({
+        "site_title": s.site_title,
+        "tagline": s.tagline,
+        "announcement": s.announcement,
+        "tos_url": s.tos_url,
+        "privacy_url": s.privacy_url,
+        "support_url": s.support_url,
+        "signup_policy": s.signup_policy,
+        "signup_domains": s.signup_domains,
+        "password_login": s.password_login,
+        "session_lifetime_secs": s.session_lifetime_secs,
+        "default_crawl_policy": s.default_crawl_policy,
+        "max_upload_bytes": s.max_upload_bytes,
+    })) {
+        return;
+    }
+    printer.header("instance settings");
+    printer.plain(&format!("  site_title            {}", s.site_title));
+    printer.plain(&format!("  tagline               {}", s.tagline));
+    printer.plain(&format!("  announcement          {}", s.announcement));
+    printer.plain(&format!("  tos_url               {}", s.tos_url));
+    printer.plain(&format!("  privacy_url           {}", s.privacy_url));
+    printer.plain(&format!("  support_url           {}", s.support_url));
+    printer.plain(&format!("  signup_policy         {}", s.signup_policy));
+    printer.plain(&format!(
+        "  signup_domains        {}",
+        s.signup_domains.join(", ")
+    ));
+    printer.plain(&format!("  password_login        {}", s.password_login));
+    printer.plain(&format!(
+        "  session_lifetime_secs {}",
+        s.session_lifetime_secs
+    ));
+    printer.plain(&format!("  default_crawl_policy  {}", s.default_crawl_policy));
+    printer.plain(&format!("  max_upload_bytes      {}", s.max_upload_bytes));
 }
 
 /// Builds a hub client: token-authenticated when a JWT is supplied, else

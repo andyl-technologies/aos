@@ -55,6 +55,11 @@ pub enum HubCmd {
         #[command(subcommand)]
         command: HubWebhookCmd,
     },
+    /// View and edit deployment-wide instance settings (needs instance admin)
+    Instance {
+        #[command(subcommand)]
+        command: HubInstanceCmd,
+    },
     /// Draft and apply a forward revert of a change-set (needs registry.configure)
     RevertChangeset {
         /// Hub base URL (http:// or https://)
@@ -102,6 +107,36 @@ pub enum HubCmd {
         /// Scope path to filter on; omit for the instance-wide root scope
         #[arg(long, default_value = "")]
         scope: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubInstanceCmd {
+    /// Show the deployment-wide instance settings (needs instance admin)
+    Get {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT (instance settings require iam.admin at the root)
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Set or clear instance settings keys (needs instance admin)
+    ///
+    /// Pass one or more `key=value` pairs; an empty value (`key=`) clears the
+    /// key to its default. Keys: site_title, tagline, announcement, tos_url,
+    /// privacy_url, support_url, signup_policy, signup_domains, password_login,
+    /// session_lifetime_secs, default_crawl_policy, max_upload_bytes.
+    Set {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT (instance settings require iam.admin at the root)
+        #[arg(long)]
+        token: Option<String>,
+        /// One or more `key=value` assignments (empty value clears the key)
+        #[arg(value_name = "KEY=VALUE", required = true)]
+        assignments: Vec<String>,
     },
 }
 
