@@ -138,6 +138,14 @@ mod entry {
     //! `aos.registry.v1.*` RPC surface, the machine-path facade, and the no-JS
     //! browse UI + JSON read API ([`aos_hub_core::web`]), all single-sourced
     //! with the native hub.
+    //!
+    //! Two layers sit in front of the router for read performance: an **edge
+    //! cache read-through** (`caches.default`) serves a previously-stored public
+    //! facade object — NAR/narinfo — straight from the colo with no D1, R2, or
+    //! dispatch; and a per-request **D1 read-replication session** routes the
+    //! reads that do reach the router to the nearest replica, threading a
+    //! consistency bookmark through a cookie. Both are bypassed/excluded for
+    //! authenticated, non-cacheable, and write requests.
 
     use std::rc::Rc;
     use std::sync::Arc;
