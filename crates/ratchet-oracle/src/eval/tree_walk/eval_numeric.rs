@@ -490,7 +490,20 @@ impl TreeWalk {
         node: &IrNode,
         left: Value,
         right: Value,
+        context: EqualityContext,
+    ) -> Result<bool, TreeWalkError> {
+        let mut equality_guard = EqualityPairGuard::default();
+        self.values_equal_with_guard(id, node, left, right, context, &mut equality_guard)
+    }
+
+    pub(super) fn values_equal_with_guard(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
         _context: EqualityContext,
+        equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
         match (left.tag(), right.tag()) {
             (ValueTag::Int, ValueTag::Int) => {
@@ -509,8 +522,12 @@ impl TreeWalk {
             (ValueTag::Null, ValueTag::Null) => Ok(true),
             (ValueTag::String, ValueTag::String) => self.strings_equal(id, node, left, right),
             (ValueTag::Path, ValueTag::Path) => self.paths_equal(id, node, left, right),
-            (ValueTag::List, ValueTag::List) => self.lists_equal(id, node, left, right),
-            (ValueTag::Attrs, ValueTag::Attrs) => self.attrsets_equal(id, node, left, right),
+            (ValueTag::List, ValueTag::List) => {
+                self.lists_equal_with_guard(id, node, left, right, equality_guard)
+            }
+            (ValueTag::Attrs, ValueTag::Attrs) => {
+                self.attrsets_equal_with_guard(id, node, left, right, equality_guard)
+            }
             (ValueTag::Lambda | ValueTag::Primop, ValueTag::Lambda | ValueTag::Primop) => Ok(false),
             (left_tag, right_tag) if left_tag == right_tag => Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedEqualityType {
@@ -534,6 +551,32 @@ impl TreeWalk {
         right_id: IrId,
         right_span: Span,
         right: Value,
+    ) -> Result<bool, TreeWalkError> {
+        let mut equality_guard = EqualityPairGuard::default();
+        self.values_equal_nested_lazy_with_guard(
+            id,
+            node,
+            left_id,
+            left_span,
+            left,
+            right_id,
+            right_span,
+            right,
+            &mut equality_guard,
+        )
+    }
+
+    pub(super) fn values_equal_nested_lazy_with_guard(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left_id: IrId,
+        left_span: Span,
+        left: Value,
+        right_id: IrId,
+        right_span: Span,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
         let left_identity = self.nested_identity_value(id, node.span, left)?;
         let right_identity = self.nested_identity_value(id, node.span, right)?;
@@ -560,7 +603,14 @@ impl TreeWalk {
         {
             return Ok(true);
         }
-        self.values_equal(id, node, left, right, EqualityContext::Nested)
+        self.values_equal_with_guard(
+            id,
+            node,
+            left,
+            right,
+            EqualityContext::Nested,
+            equality_guard,
+        )
     }
 
     pub(super) fn nested_identity_value(
@@ -637,12 +687,29 @@ impl TreeWalk {
         Ok(left.bytes() == right.bytes())
     }
 
-    pub(super) fn lists_equal(
+    pub(super) fn lists_equal_with_guard(
         &mut self,
         id: IrId,
         node: &IrNode,
         left: Value,
         right: Value,
+        equality_guard: &mut EqualityPairGuard,
+    ) -> Result<bool, TreeWalkError> {
+        if !equality_guard.enter(left, right) {
+            return Ok(true);
+        }
+        let result = self.list_entries_equal_with_guard(id, node, left, right, equality_guard);
+        equality_guard.exit(left, right);
+        result
+    }
+
+    pub(super) fn list_entries_equal_with_guard(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
         let left_elements = {
             let list = self.heap.get_list(left).map_err(|source| {
@@ -661,22 +728,53 @@ impl TreeWalk {
         }
 
         for (left, right) in left_elements.into_iter().zip(right_elements) {
-            if !self
-                .values_equal_nested_lazy(id, node, id, node.span, left, id, node.span, right)?
-            {
+            if !self.values_equal_nested_lazy_with_guard(
+                id,
+                node,
+                id,
+                node.span,
+                left,
+                id,
+                node.span,
+                right,
+                equality_guard,
+            )? {
                 return Ok(false);
             }
         }
         Ok(true)
     }
 
-    pub(super) fn attrsets_equal(
+    pub(super) fn attrsets_equal_with_guard(
         &mut self,
         id: IrId,
         node: &IrNode,
         left: Value,
         right: Value,
+        equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
+        if !equality_guard.enter(left, right) {
+            return Ok(true);
+        }
+        let result = self.attrset_entries_equal_with_guard(id, node, left, right, equality_guard);
+        equality_guard.exit(left, right);
+        result
+    }
+
+    pub(super) fn attrset_entries_equal_with_guard(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
+    ) -> Result<bool, TreeWalkError> {
+        if let Some(equal) =
+            self.derivation_attrsets_equal(id, node, left, right, equality_guard)?
+        {
+            return Ok(equal);
+        }
+
         let left_entries = {
             let attrs = self.heap.get_attrs(left).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
@@ -699,7 +797,7 @@ impl TreeWalk {
             }
         }
         for (left, right) in left_entries.into_iter().zip(right_entries) {
-            if !self.values_equal_nested_lazy(
+            if !self.values_equal_nested_lazy_with_guard(
                 id,
                 node,
                 id,
@@ -708,11 +806,64 @@ impl TreeWalk {
                 id,
                 node.span,
                 right.value,
+                equality_guard,
             )? {
                 return Ok(false);
             }
         }
         Ok(true)
+    }
+
+    pub(super) fn derivation_attrsets_equal(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
+    ) -> Result<Option<bool>, TreeWalkError> {
+        let Some(left_out_path) = self.derivation_out_path_for_equality(id, node, left)? else {
+            return Ok(None);
+        };
+        let Some(right_out_path) = self.derivation_out_path_for_equality(id, node, right)? else {
+            return Ok(None);
+        };
+
+        self.values_equal_nested_lazy_with_guard(
+            id,
+            node,
+            id,
+            node.span,
+            left_out_path,
+            id,
+            node.span,
+            right_out_path,
+            equality_guard,
+        )
+        .map(Some)
+    }
+
+    pub(super) fn derivation_out_path_for_equality(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        value: Value,
+    ) -> Result<Option<Value>, TreeWalkError> {
+        let Some(type_value) = self.attr_value_by_name(id, value, TYPE_ATTR, node.span)? else {
+            return Ok(None);
+        };
+        let type_value = self.force_value(id, node.span, type_value)?;
+        if type_value.tag() != ValueTag::String {
+            return Ok(None);
+        }
+        let string = self.heap.get_string(type_value).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+        })?;
+        if string.bytes() != b"derivation" {
+            return Ok(None);
+        }
+
+        self.attr_value_by_name(id, value, OUT_PATH_ATTR, node.span)
     }
 
     pub(super) fn eval_numeric_negation(

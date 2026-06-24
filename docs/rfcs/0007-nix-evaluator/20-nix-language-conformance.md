@@ -548,9 +548,11 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
       lists/attrsets can compare equal by identity. Reproduce this exact
       asymmetry bug-for-bug; do not "fix" it. **Verify the precise
       pointer-equality short-circuit points against pinned Nix.**
-- [x] **Derivations / sets with `outPath`** — compared structurally as sets
-      (not by out-path identity) unless Nix special-cases; **verify** against
-      pinned Nix.
+- [x] **Derivations / sets with `outPath`** — plain sets that merely contain
+      `outPath` compare structurally, while `type = "derivation"` wrappers use
+      the forced `outPath` value for equality and ignore wrapper-only attrs.
+      This is pinned by `eval-okay-eq-derivations` and local malformed-wrapper
+      regression tests.
 - [x] **Float precision corner** — "floating-point precision is limited"; equal
       floats that differ in low bits compare unequal. Reproduce IEEE semantics.
 - [x] **NaN** — if a NaN is reachable (e.g. via builtins producing it), `NaN ==

@@ -96,16 +96,12 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "native evaluator stack-safety gap for infinite lambda recursion",
     },
     LangCaseExclusion {
-        name: "eval-okay-eq-derivations",
-        reason: "native evaluator stack-safety gap in derivation equality",
-    },
-    LangCaseExclusion {
         name: "eval-okay-search-path",
         reason: "implicit C++ Nix corepkgs search path is not modeled",
     },
 ];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 205;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 4;
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 206;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 3;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",
@@ -1406,6 +1402,26 @@ fn eval_okay_attrs6_applies_overrides_before_dynamic_attrs() {
     assert_eq!(
         output,
         br#"{ __overrides = { bar = "qux"; }; bar = "qux"; foo = "bar"; }"#
+    );
+}
+
+#[test]
+fn eval_okay_eq_derivations_matches_upstream_fixture() {
+    let source = br#"let
+
+  drvA1 = derivation { name = "a"; builder = "/foo"; system = "i686-linux"; };
+  drvA2 = derivation { name = "a"; builder = "/foo"; system = "i686-linux"; };
+  drvA3 = derivation { name = "a"; builder = "/foo"; system = "i686-linux"; } // { dummy = 1; };
+
+  drvC1 = derivation { name = "c"; builder = "/foo"; system = "i686-linux"; };
+  drvC2 = derivation { name = "c"; builder = "/bar"; system = "i686-linux"; };
+
+in [ (drvA1 == drvA1) (drvA1 == drvA2) (drvA1 == drvA3) (drvC1 == drvC2) ]
+"#;
+
+    assert_eq!(
+        eval_raw_fixture(b"/pwd/lang/eval-okay-eq-derivations.nix", source),
+        b"[ true true true false ]"
     );
 }
 

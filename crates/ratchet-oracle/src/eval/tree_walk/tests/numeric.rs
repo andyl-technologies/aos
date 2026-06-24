@@ -483,6 +483,35 @@ fn list_equality_is_structural_and_short_circuits() {
 }
 
 #[test]
+fn structural_equality_handles_recursive_containers() {
+    assert_eq!(eval("let xs = [ xs ]; in xs == xs").as_bool(), Ok(true));
+    assert_eq!(
+        eval("let left = [ right 1 ]; right = [ left 1 ]; in left == right").as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        eval("let left = [ right 1 ]; right = [ left 2 ]; in left == right").as_bool(),
+        Ok(false)
+    );
+    assert_eq!(
+        eval("let s = rec { a = s; }; in s == s").as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        eval("let left = rec { a = left; value = 1; }; right = rec { a = right; value = 1; }; in left == right").as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        eval("let left = { a = [ left ]; value = 1; }; right = { a = [ right ]; value = 1; }; in left == right").as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        eval("let left = rec { a = left; value = 1; }; right = rec { a = right; value = 2; }; in left == right").as_bool(),
+        Ok(false)
+    );
+}
+
+#[test]
 fn attrset_equality_is_structural_and_short_circuits() {
     assert_eq!(
         eval("{ b = 2; a = 1; } == { a = 1; b = 2; }").as_bool(),
@@ -513,6 +542,58 @@ fn attrset_equality_is_structural_and_short_circuits() {
         eval("let s = { a = 1 / 0; }; in [ s ] == [ s ]").as_bool(),
         Ok(true)
     );
+}
+
+#[test]
+fn derivation_attrset_equality_uses_out_path_identity() {
+    assert_eq!(
+        eval(r#"let d = { type = "derivation"; outPath = "/a"; drvPath = "/a.drv"; }; in d == (d // { dummy = 1; })"#).as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        eval(
+            r#"{ type = "derivation"; outPath = "/a"; drvPath = "/first.drv"; } == { type = "derivation"; outPath = "/a"; drvPath = "/second.drv"; dummy = 1; }"#
+        )
+        .as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        eval(
+            r#"{ type = "derivation"; outPath = "/a"; drvPath = "/a.drv"; } == { type = "derivation"; outPath = "/b"; drvPath = "/a.drv"; }"#
+        )
+        .as_bool(),
+        Ok(false)
+    );
+    assert_eq!(
+        eval(r#"{ outPath = "/a"; a = 1; } == { outPath = "/a"; a = 2; }"#).as_bool(),
+        Ok(false)
+    );
+    assert_eq!(
+        eval(r#"{ type = 1; outPath = "/a"; a = 1; } == { type = 1; outPath = "/a"; a = 2; }"#)
+            .as_bool(),
+        Ok(false)
+    );
+    assert_eq!(
+        eval(r#"{ type = "derivation"; drvPath = "/a.drv"; } == { type = "derivation"; drvPath = "/a.drv"; dummy = 1; }"#).as_bool(),
+        Ok(false)
+    );
+    assert_eq!(
+        eval(r#"{ type = "derivation"; outPath = 1; } == { type = "derivation"; outPath = 1; dummy = 1; }"#).as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        eval(r#"{ a = 1; } == { type = throw "type"; outPath = "/a"; }"#).as_bool(),
+        Ok(false)
+    );
+
+    let error = eval_whnf(&lower(
+        r#"{ type = throw "type"; outPath = "/a"; } == { a = 1; }"#,
+    ))
+    .expect_err("left derivation type probe forces the type attr");
+    let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+        panic!("expected thrown derivation type probe error");
+    };
+    assert_eq!(message, b"type");
 }
 
 #[test]
