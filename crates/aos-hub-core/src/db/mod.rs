@@ -1303,6 +1303,54 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (class, key, window)
     );
     ",
+    // v29: storage-binding frontends (RFC-0004 §12 "storage-binding frontends").
+    // A frontend may now front a *storage binding* (a bucket's public CDN
+    // origin) instead of a single registry/cache, so every registry/cache
+    // stored in that binding inherits a direct-from-bucket frontend with its
+    // object paths derived from its own `prefix`. `registry_id` was one of two
+    // nullable targets under a 2-way XOR CHECK; SQLite cannot relax a CHECK in
+    // place, so this is the documented table rebuild (cf. v24): a third nullable
+    // target `storage_binding_id` and a portable "exactly one target" CHECK
+    // (CASE-summed so it holds on sqlite/postgres/mysql alike). All existing
+    // rows are registry/cache frontends → `storage_binding_id` NULL. Row ids are
+    // preserved. As in v24 the drop cascades `frontend_probes` (rebuildable
+    // observations the probe job re-populates), so no system-of-record is lost.
+    "
+    CREATE TABLE frontends_new (
+        id               INTEGER PRIMARY KEY,
+        registry_id      INTEGER REFERENCES registries(id) ON DELETE CASCADE,
+        cache_id         INTEGER REFERENCES caches(id) ON DELETE CASCADE,
+        storage_binding_id INTEGER REFERENCES storage_bindings(id) ON DELETE CASCADE,
+        domain           TEXT NOT NULL,
+        base_path        TEXT NOT NULL DEFAULT '',
+        mode             TEXT NOT NULL,
+        serves_git       INTEGER NOT NULL DEFAULT 1,
+        serves_cache     INTEGER NOT NULL DEFAULT 1,
+        serves_web       INTEGER NOT NULL DEFAULT 1,
+        consumer_priority INTEGER NOT NULL DEFAULT 100,
+        advertised       INTEGER NOT NULL DEFAULT 1,
+        proxy_config     TEXT,
+        is_primary       INTEGER NOT NULL DEFAULT 0,
+        created_at       INTEGER NOT NULL,
+        CHECK ((CASE WHEN registry_id IS NULL THEN 0 ELSE 1 END)
+             + (CASE WHEN cache_id IS NULL THEN 0 ELSE 1 END)
+             + (CASE WHEN storage_binding_id IS NULL THEN 0 ELSE 1 END) = 1),
+        UNIQUE (domain, base_path)
+    );
+    INSERT INTO frontends_new
+        (id, registry_id, cache_id, storage_binding_id, domain, base_path, mode,
+         serves_git, serves_cache, serves_web, consumer_priority, advertised,
+         proxy_config, is_primary, created_at)
+        SELECT id, registry_id, cache_id, NULL, domain, base_path, mode,
+               serves_git, serves_cache, serves_web, consumer_priority, advertised,
+               proxy_config, is_primary, created_at
+        FROM frontends;
+    DROP TABLE frontends;
+    ALTER TABLE frontends_new RENAME TO frontends;
+    CREATE INDEX frontends_registry_idx ON frontends (registry_id);
+    CREATE INDEX frontends_cache_idx ON frontends (cache_id);
+    CREATE INDEX frontends_storage_idx ON frontends (storage_binding_id);
+    ",
 ];
 
 /// Returns every migration's individual SQL statements, in order.
@@ -2126,9 +2174,13 @@ pub struct FrontendRecord {
     /// The registry this frontend serves, or `None` for a cache frontend.
     /// Exactly one of `registry_id`/`cache_id` is set.
     pub registry_id: Option<i64>,
-    /// The managed cache this frontend serves, or `None` for a registry
-    /// frontend. Exactly one of `registry_id`/`cache_id` is set.
+    /// The managed cache this frontend serves, or `None` otherwise.
     pub cache_id: Option<i64>,
+    /// The storage binding this frontend serves (a bucket's public origin),
+    /// inherited by every registry/cache stored in that binding (RFC-0004 §12),
+    /// or `None` for a per-consumer frontend. Exactly one of
+    /// `registry_id`/`cache_id`/`storage_binding_id` is set.
+    pub storage_binding_id: Option<i64>,
     /// The domain the frontend is reachable at (e.g. `cdn.acme.com`).
     pub domain: String,
     /// A path prefix under the domain the registry surface lives at (`""` for
@@ -3642,7 +3694,7 @@ impl Database {
         let rows = self
             .backend
             .query(
-                "SELECT id, registry_id, cache_id, domain, base_path, mode, serves_git,
+                "SELECT id, registry_id, cache_id, storage_binding_id, domain, base_path, mode, serves_git,
                     serves_cache, serves_web, consumer_priority, advertised,
                     proxy_config, is_primary, created_at
              FROM frontends WHERE registry_id = ?1
@@ -3723,6 +3775,98 @@ impl Database {
             .await
     }
 
+    /// Create a frontend that fronts a *storage binding* — a bucket's public
+    /// CDN origin — inherited by every registry/cache stored in that binding
+    /// (RFC-0004 §12 "storage-binding frontends").
+    ///
+    /// The new row carries `storage_binding_id` with `registry_id`/`cache_id`
+    /// `NULL` (the table `CHECK` enforces exactly one target). A **Direct**
+    /// frontend is rejected over a `private` binding: a private bucket must be
+    /// served proxied/presigned, never handed out as a public origin URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unrecognized `mode`, a Direct frontend over a
+    /// private binding, an unknown binding, a `(domain, base_path)` collision,
+    /// an unsafe `domain`, or on database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_storage_frontend(
+        &self,
+        storage_binding_id: i64,
+        domain: &str,
+        base_path: &str,
+        mode: &str,
+        serves_git: bool,
+        serves_cache: bool,
+        serves_web: bool,
+        consumer_priority: i64,
+        advertised: bool,
+    ) -> Result<i64> {
+        if !matches!(mode, "direct" | "proxied") {
+            bail!("unsupported frontend mode '{mode}' (expected direct or proxied)");
+        }
+        let binding = self
+            .storage_binding(storage_binding_id)
+            .await?
+            .with_context(|| format!("storage binding {storage_binding_id} not found"))?;
+        if mode == "direct" && binding.access == "private" {
+            bail!(
+                "cannot create a Direct frontend over private storage binding '{}': \
+                 private bindings must be served proxied or presigned",
+                binding.name
+            );
+        }
+        // Hostnames are case-insensitive: store lowercase so the dispatcher's
+        // (lowercased) request `Host` matches and the UNIQUE constraint holds.
+        let domain = domain.to_ascii_lowercase();
+        crate::url_guard::is_safe_remote_url(&frontend_probe_url(&domain))
+            .with_context(|| format!("rejecting frontend domain '{domain}'"))?;
+        self.backend
+            .execute_insert(
+                "INSERT INTO frontends
+                 (storage_binding_id, domain, base_path, mode, serves_git, serves_cache,
+                  serves_web, consumer_priority, advertised, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                &vals![
+                    storage_binding_id,
+                    domain,
+                    base_path,
+                    mode,
+                    serves_git,
+                    serves_cache,
+                    serves_web,
+                    consumer_priority,
+                    advertised,
+                    unix_now(),
+                ],
+            )
+            .await
+    }
+
+    /// List a storage binding's frontends, ordered by descending consumer
+    /// priority then domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_storage_frontends(
+        &self,
+        storage_binding_id: i64,
+    ) -> Result<Vec<FrontendRecord>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT id, registry_id, cache_id, storage_binding_id, domain, base_path, mode, serves_git,
+                    serves_cache, serves_web, consumer_priority, advertised,
+                    proxy_config, is_primary, created_at
+             FROM frontends WHERE storage_binding_id = ?1
+             ORDER BY consumer_priority DESC, domain",
+                &vals![storage_binding_id],
+            )
+            .await?;
+        rows.iter().map(row_to_frontend).collect()
+    }
+
     /// Set a frontend's proxy tuning and primary flag. Returns `false` when no
     /// frontend has `id`.
     ///
@@ -3763,7 +3907,7 @@ impl Database {
         let rows = self
             .backend
             .query(
-                "SELECT id, registry_id, cache_id, domain, base_path, mode, serves_git,
+                "SELECT id, registry_id, cache_id, storage_binding_id, domain, base_path, mode, serves_git,
                     serves_cache, serves_web, consumer_priority, advertised,
                     proxy_config, is_primary, created_at
              FROM frontends WHERE cache_id = ?1
@@ -3788,7 +3932,7 @@ impl Database {
         let rows = self
             .backend
             .query(
-                "SELECT id, registry_id, cache_id, domain, base_path, mode, serves_git,
+                "SELECT id, registry_id, cache_id, storage_binding_id, domain, base_path, mode, serves_git,
                     serves_cache, serves_web, consumer_priority, advertised,
                     proxy_config, is_primary, created_at
              FROM frontends WHERE domain = ?1
@@ -10543,26 +10687,28 @@ fn frontend_probe_url(domain: &str) -> String {
 /// Map a `frontends` row into a [`FrontendRecord`] (columns in the order
 /// [`Database::list_frontends`] selects).
 fn row_to_frontend(row: &Row) -> Result<FrontendRecord> {
+    // Column order matches the shared `FRONTEND_COLUMNS` SELECT list.
     // A malformed/partial proxy_config never fails the row: an unparseable blob
     // falls back to conservative defaults (Some(default)), and NULL ⇒ None.
-    let proxy_config: Option<String> = row.get(11)?;
+    let proxy_config: Option<String> = row.get(12)?;
     let proxy_config = proxy_config
         .map(|json| serde_json::from_str::<ProxyConfig>(&json).unwrap_or_default());
     Ok(FrontendRecord {
         id: row.get(0)?,
         registry_id: row.get(1)?,
         cache_id: row.get(2)?,
-        domain: row.get(3)?,
-        base_path: row.get(4)?,
-        mode: row.get(5)?,
-        serves_git: row.get(6)?,
-        serves_cache: row.get(7)?,
-        serves_web: row.get(8)?,
-        consumer_priority: row.get(9)?,
-        advertised: row.get(10)?,
+        storage_binding_id: row.get(3)?,
+        domain: row.get(4)?,
+        base_path: row.get(5)?,
+        mode: row.get(6)?,
+        serves_git: row.get(7)?,
+        serves_cache: row.get(8)?,
+        serves_web: row.get(9)?,
+        consumer_priority: row.get(10)?,
+        advertised: row.get(11)?,
         proxy_config,
-        is_primary: row.get(12)?,
-        created_at: row.get(13)?,
+        is_primary: row.get(13)?,
+        created_at: row.get(14)?,
     })
 }
 
