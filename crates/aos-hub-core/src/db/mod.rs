@@ -12722,6 +12722,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn storage_frontends_reject_direct_over_private_binding() {
+        // RFC-0004 §12 security boundary: a private binding can never carry a
+        // Direct frontend, so its objects are never handed out as a public URL.
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("acme", "Acme").await.unwrap();
+        let id = db
+            .create_storage_binding(org, "bucket", "r2", "acme-bucket")
+            .await
+            .unwrap();
+        assert!(db.set_binding_public(id, "private", None).await.unwrap());
+
+        // Direct over a private binding is rejected; proxied is allowed.
+        assert!(db
+            .create_storage_frontend(id, "cdn.acme.com", "", "direct", true, true, true, 100, true)
+            .await
+            .is_err());
+        assert!(db
+            .create_storage_frontend(id, "proxy.acme.com", "", "proxied", true, true, true, 100, true)
+            .await
+            .is_ok());
+
+        // Publish the binding: a Direct frontend is now allowed.
+        assert!(db
+            .set_binding_public(id, "public", Some("https://cdn.acme.com"))
+            .await
+            .unwrap());
+        assert!(db
+            .create_storage_frontend(id, "cdn.acme.com", "", "direct", true, true, true, 100, true)
+            .await
+            .is_ok());
+
+        let list = db.list_storage_frontends(id).await.unwrap();
+        assert_eq!(list.len(), 2, "the proxied and the direct frontend");
+        assert!(list.iter().all(|f| f.storage_binding_id == Some(id)
+            && f.registry_id.is_none()
+            && f.cache_id.is_none()));
+
+        // The seeded instance-default binding exists, is org-less, and ships
+        // private — never Direct-eligible until an operator publishes it.
+        let def = db.instance_default_binding().await.unwrap().unwrap();
+        assert!(def.is_instance_default);
+        assert_eq!(def.org_id, None);
+        assert_eq!(def.access, "private");
+    }
+
+    #[tokio::test]
     async fn managed_registry_without_binding_auto_derives_prefix_from_slug() {
         let db = Database::open_in_memory().await.unwrap();
         let org = db.create_org("acme", "Acme").await.unwrap();
