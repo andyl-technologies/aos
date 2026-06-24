@@ -904,7 +904,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [ ] **T-HARN-17** Freeze the boundary-ABI golden vectors (shmem layout,
   protocol frames, RPC messages) and implement `gate:abi-conformance` with version
   checks and the bump-on-change rule. — satisfies [HARN-32], [G-8]; spec §8.1.
-- [ ] **T-HARN-18** Implement the SPSC queue concurrency model-checker + property
+- [x] **T-HARN-18** Implement the SPSC queue concurrency model-checker + property
   tests (no loss/dup, FIFO, full/empty, wraparound). — satisfies [HARN-33];
   spec §8.2.
 - [ ] **T-HARN-19** Implement the protocol-codec and 9p/blk wire fuzzers with the

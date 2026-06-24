@@ -155,6 +155,7 @@ in {
     };
   };
   phase2 = {
+    spscConcurrency = import ./phase2-spsc-concurrency.nix {inherit pkgs lib;};
     gates = {
       abiConformance = redGate {
         attrPath = "checks.crucible.phase2.gates.abiConformance";

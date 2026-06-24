@@ -888,7 +888,7 @@ by when the producer's store landed in shared memory.
   computed sub-region offsets, icount shift), slot init (ceiling 0, status, kind),
   and ring/entry storage allocation. — satisfies [SHM-7], [SHM-8], [SHM-11];
   spec §13.3.1, §13.3.2.
-- [ ] **T-SHM-6** Implement the Lamport SPSC `enqueue`/`dequeue`/
+- [x] **T-SHM-6** Implement the Lamport SPSC `enqueue`/`dequeue`/
   `peek_delivery_icount` with the §13.6 acquire/release ordering. — satisfies
   [SHM-19], [SHM-20], [SHM-21]; spec §13.6.
 - [ ] **T-SHM-7** Implement `snapshot`/`restore` under quiescence with a

@@ -8,8 +8,9 @@
 //! implementations map shared memory and expose layout-checked accessors.
 //!
 //! Module map: the crate root owns the initial frame-entry layout, the
-//! delivery-icount contract, and the per-node advance-ceiling slot. Future
-//! modules will split region headers, status words, and SPSC frame queues.
+//! delivery-icount contract, the Lamport SPSC frame queue, and the per-node
+//! advance-ceiling slot. Future modules will split region headers and status
+//! words.
 //!
 //! Unsafe boundary discipline: mmap, pointer, and atomic details stay private;
 //! public callers use safe typed region accessors and safe SPSC push/pop
@@ -43,6 +44,16 @@
 //! 40      4     publish_gen
 //! 44      84    reserved
 //! ```
+//!
+//! SPSC ring header wire layout:
+//!
+//! ```text
+//! offset  size  field
+//! 0       8     read_idx
+//! 8       56    read-cacheline padding
+//! 64      8     write_idx
+//! 72      56    write-cacheline padding
+//! ```
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
@@ -58,8 +69,200 @@ use thiserror::Error;
 /// response plus protocol headroom, and still fits in [`FrameEntry::len`].
 pub const MAX_FRAME_DATA: usize = 4608;
 
+/// The default power-of-two capacity, in frame entries, for one SPSC ring.
+pub const DEFAULT_QUEUE_CAPACITY: u32 = 64;
+
 const FRAME_ENTRY_DATA_OFFSET: usize = 24;
 const _: () = assert!(MAX_FRAME_DATA <= u16::MAX as usize);
+
+/// A Lamport SPSC ring header shared by exactly one producer and one consumer.
+#[repr(C, align(128))]
+pub struct RingHeader {
+    read_idx: AtomicU64,
+    _pad_read: [u8; 56],
+    write_idx: AtomicU64,
+    _pad_write: [u8; 56],
+}
+
+/// Byte offset of [`RingHeader`]'s consumer-owned read index.
+pub const RING_HEADER_READ_IDX_OFFSET: usize = core::mem::offset_of!(RingHeader, read_idx);
+/// Byte offset of [`RingHeader`]'s producer-owned write index.
+pub const RING_HEADER_WRITE_IDX_OFFSET: usize = core::mem::offset_of!(RingHeader, write_idx);
+/// Wire size of one [`RingHeader`].
+pub const RING_HEADER_SIZE: usize = core::mem::size_of::<RingHeader>();
+/// Wire alignment of one [`RingHeader`].
+pub const RING_HEADER_ALIGN: usize = core::mem::align_of::<RingHeader>();
+
+const _: () = assert!(RING_HEADER_READ_IDX_OFFSET == 0);
+const _: () = assert!(RING_HEADER_WRITE_IDX_OFFSET == 64);
+const _: () = assert!(RING_HEADER_SIZE == 128);
+const _: () = assert!(RING_HEADER_ALIGN == 128);
+
+impl RingHeader {
+    /// Builds an empty SPSC ring header.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            read_idx: AtomicU64::new(0),
+            _pad_read: [0; 56],
+            write_idx: AtomicU64::new(0),
+            _pad_write: [0; 56],
+        }
+    }
+
+    /// Enqueues one frame into producer-owned storage.
+    ///
+    /// The producer writes the frame bytes before publishing the new
+    /// `write_idx` with release ordering. The consumer acquire-loads
+    /// `write_idx` before reading the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError::InvalidCapacity`] when `entries` is empty or not
+    /// power-of-two sized, [`SpscRingError::CorruptIndices`] when the header
+    /// contains an impossible live count, or [`SpscRingError::QueueFull`] when
+    /// the ring is full.
+    pub fn enqueue(
+        &self,
+        entries: &mut [FrameEntry],
+        frame: &FrameEntry,
+    ) -> Result<(), SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let tail = self.write_idx.load(Ordering::Relaxed);
+        let head = self.read_idx.load(Ordering::Acquire);
+        let live = live_count(head, tail, capacity)?;
+        if live == capacity {
+            return Err(SpscRingError::QueueFull { capacity });
+        }
+
+        let slot = (tail & (capacity - 1)) as usize;
+        entries[slot] = frame.clone();
+        self.write_idx
+            .store(tail.wrapping_add(1), Ordering::Release);
+        Ok(())
+    }
+
+    /// Returns the next frame's delivery icount without consuming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when `entries` has invalid capacity or the ring
+    /// indices describe more live entries than the capacity can hold.
+    pub fn peek_delivery_icount(
+        &self,
+        entries: &[FrameEntry],
+    ) -> Result<Option<u64>, SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Relaxed);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        if live_count(head, tail, capacity)? == 0 {
+            return Ok(None);
+        }
+
+        let slot = (head & (capacity - 1)) as usize;
+        Ok(Some(entries[slot].delivery_icount))
+    }
+
+    /// Dequeues one frame from consumer-owned storage.
+    ///
+    /// The consumer acquire-loads `write_idx`, copies the entry, then frees the
+    /// slot by release-storing the incremented `read_idx` for the producer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when `entries` has invalid capacity or the ring
+    /// indices describe more live entries than the capacity can hold.
+    pub fn dequeue(&self, entries: &[FrameEntry]) -> Result<Option<FrameEntry>, SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Relaxed);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        if live_count(head, tail, capacity)? == 0 {
+            return Ok(None);
+        }
+
+        let slot = (head & (capacity - 1)) as usize;
+        let frame = entries[slot].clone();
+        self.read_idx.store(head.wrapping_add(1), Ordering::Release);
+        Ok(Some(frame))
+    }
+
+    /// Captures the live ring entries in FIFO order under quiescence.
+    ///
+    /// This method is not concurrency-safe; callers must ensure the producer and
+    /// consumer are paused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when `entries` has invalid capacity or the ring
+    /// indices describe more live entries than the capacity can hold.
+    pub fn snapshot(&self, entries: &[FrameEntry]) -> Result<SpscRingSnapshot, SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Acquire);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        let live = live_count(head, tail, capacity)?;
+        let mut frames = Vec::with_capacity(live as usize);
+        for offset in 0..live {
+            let slot = ((head.wrapping_add(offset)) & (capacity - 1)) as usize;
+            frames.push(entries[slot].clone());
+        }
+
+        Ok(SpscRingSnapshot { frames })
+    }
+
+    /// Restores a quiesced ring from a FIFO snapshot and normalizes indices.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError::InvalidCapacity`] when `entries` is empty or not
+    /// power-of-two sized, or [`SpscRingError::SnapshotTooLarge`] when the
+    /// snapshot does not fit in the ring.
+    pub fn restore(
+        &self,
+        entries: &mut [FrameEntry],
+        snapshot: &SpscRingSnapshot,
+    ) -> Result<(), SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        if snapshot.frames.len() as u64 > capacity {
+            return Err(SpscRingError::SnapshotTooLarge {
+                len: snapshot.frames.len(),
+                capacity,
+            });
+        }
+
+        for (slot, frame) in snapshot.frames.iter().enumerate() {
+            entries[slot] = frame.clone();
+        }
+        self.read_idx.store(0, Ordering::Release);
+        self.write_idx
+            .store(snapshot.frames.len() as u64, Ordering::Release);
+        Ok(())
+    }
+
+    /// Returns the current consumer-owned read index.
+    #[must_use]
+    pub fn read_index(&self) -> u64 {
+        self.read_idx.load(Ordering::Acquire)
+    }
+
+    /// Returns the current producer-owned write index.
+    #[must_use]
+    pub fn write_index(&self) -> u64 {
+        self.write_idx.load(Ordering::Acquire)
+    }
+}
+
+impl Default for RingHeader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A quiescent FIFO snapshot of an SPSC ring.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpscRingSnapshot {
+    /// Live frames in `read_idx..write_idx` FIFO order.
+    pub frames: Vec<FrameEntry>,
+}
 
 /// A shared-memory frame whose delivery time is carried in band.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -810,6 +1013,43 @@ pub enum FrameEntryError {
     },
 }
 
+/// An error produced by SPSC ring operations.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum SpscRingError {
+    /// The backing entry slice is empty or not power-of-two sized.
+    #[error("SPSC ring capacity {capacity} is not a nonzero power of two")]
+    InvalidCapacity {
+        /// The invalid backing entry count.
+        capacity: usize,
+    },
+    /// The ring cannot accept another frame.
+    #[error("SPSC ring is full at capacity {capacity}")]
+    QueueFull {
+        /// The ring capacity in frame entries.
+        capacity: u64,
+    },
+    /// The live entry count exceeds the configured capacity.
+    #[error(
+        "SPSC ring indices are corrupt: read_idx={read_idx} write_idx={write_idx} capacity={capacity}"
+    )]
+    CorruptIndices {
+        /// The consumer-owned read index.
+        read_idx: u64,
+        /// The producer-owned write index.
+        write_idx: u64,
+        /// The ring capacity in frame entries.
+        capacity: u64,
+    },
+    /// A quiescent snapshot cannot fit in the target ring.
+    #[error("SPSC snapshot length {len} exceeds ring capacity {capacity}")]
+    SnapshotTooLarge {
+        /// The number of frames in the snapshot.
+        len: usize,
+        /// The ring capacity in frame entries.
+        capacity: u64,
+    },
+}
+
 /// A lookahead-gate validation error.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LookaheadGateError {
@@ -841,6 +1081,34 @@ pub enum LookaheadGateError {
         /// The late frame's deterministic delivery key.
         frame: FrameDeliveryKey,
     },
+}
+
+fn validated_capacity(entries: &[FrameEntry]) -> Result<u64, SpscRingError> {
+    if entries.is_empty() || !entries.len().is_power_of_two() {
+        return Err(SpscRingError::InvalidCapacity {
+            capacity: entries.len(),
+        });
+    }
+    Ok(entries.len() as u64)
+}
+
+fn live_count(read_idx: u64, write_idx: u64, capacity: u64) -> Result<u64, SpscRingError> {
+    let live = write_idx
+        .checked_sub(read_idx)
+        .ok_or(SpscRingError::CorruptIndices {
+            read_idx,
+            write_idx,
+            capacity,
+        })?;
+    if live > capacity {
+        Err(SpscRingError::CorruptIndices {
+            read_idx,
+            write_idx,
+            capacity,
+        })
+    } else {
+        Ok(live)
+    }
 }
 
 /// An error produced by the per-node advance-ceiling slot.
