@@ -45,9 +45,18 @@
   # Fixed 32-char store hash → predictable store path and narinfo basename.
   pkg = {
     name = "relpkg";
-    version = "1.0.0";
+    # The package version is encoded in the store-path basename and is what
+    # `apr release` records for the package. It is deliberately different from
+    # the registry release tags below: the `<SEMVER>` positional names the
+    # registry release, never the package version (which apr re-extracts from
+    # the store path, exactly as a plain `apr publish` would).
+    version = "1.2.3";
     storeHash = "cccccccccccccccccccccccccccccccc";
   };
+  # Registry release tags, distinct from `pkg.version`, so the test exercises
+  # that the positional `<SEMVER>` sets only the registry tag.
+  releaseTag = "1.0.0";
+  secondReleaseTag = "2.0.0";
   # The aos-registry-server package exports AOS_ROOT here, so the fabricated path
   # lives at $AOS_ROOT/store/<hash>-name-version and apr reads it via the same
   # AOS_ROOT-aware nix environment.
@@ -174,7 +183,7 @@ in {
           # apr writes its progress/success lines to stderr (stdout stays
           # reserved for machine data) and the driver's succeed() returns
           # stdout, so fold stderr into stdout (2>&1) for the asserts below.
-          ${pkgs.aos}/bin/apr release ${pkg.version} \\
+          ${pkgs.aos}/bin/apr release ${releaseTag} \\
             --registry relreg \\
             --store-path ${storePath} \\
             --name ${pkg.name} \\
@@ -193,7 +202,17 @@ in {
       print("=== apr release output ===\n" + release)
       assert "Updated registry.toml [[caches]]" in release, release
       assert "Generated static cache: 1 narinfos, 1 NARs" in release, release
-      assert "Released relreg ${pkg.version}" in release, release
+      assert "Released relreg ${releaseTag}" in release, release
+
+      # Decoupling: the registry release is tagged ${releaseTag}, but the
+      # package version apr recorded is the store-path version (${pkg.version}),
+      # NOT the release tag. The old behavior forced the <SEMVER> positional
+      # onto the package, which would have recorded ${releaseTag} here.
+      relpkg_toml = registry.succeed(
+          "cat /tmp/.local/share/apm/registries/relreg/packages/r/relpkg.toml"
+      )
+      assert 'version = "${pkg.version}"' in relpkg_toml, relpkg_toml
+      assert 'version = "${releaseTag}"' not in relpkg_toml, relpkg_toml
 
       # The static cache landed at the served directory.
       registry.succeed("test -d /var/lib/sysreg-cache/nar")
@@ -228,7 +247,12 @@ in {
       journal = registry.succeed("journalctl -u test-static-cache-server --no-pager")
       assert "GET /sysreg-cache/nar/" in journal, journal
 
-      # ── 4. Skip path: re-releasing the same closure regenerates nothing ──
+      # ── 4. Skip path: a second registry release over the same closure ──
+      # No --store-path, no new package: this just cuts registry release
+      # ${secondReleaseTag} over the closure already published as
+      # ${pkg.name} ${pkg.version}. The registry tag advances independently of
+      # any package version, and because the closure's root narinfo is already
+      # on the destination the whole static cache is skipped (§7.4 early-out).
       second = registry.succeed(textwrap.dedent("""
           set -euo pipefail
           exec 2>&1
@@ -237,20 +261,14 @@ in {
           export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
           export NIX_CONF_DIR=/tmp/nix-conf
           KEY=$HOME/.config/apm/keys/relreg-release.key
-          # Re-point a second version at the same store path, then release it:
-          # the root narinfo is already on the destination, so the whole
-          # closure is skipped (§7.4 early-out).
-          ${pkgs.aos}/bin/apr release 2.0.0 \\
+          ${pkgs.aos}/bin/apr release ${secondReleaseTag} \\
             --registry relreg \\
-            --store-path ${storePath} \\
-            --name ${pkg.name} \\
-            --license MIT \\
-            --maintainer test \\
             --key "$KEY" \\
             --cache-url http://registry:8000/sysreg-cache \\
             --upload-url file:///var/lib/sysreg-cache 2>&1
       """), timeout=300)
       print("=== second apr release output ===\n" + second)
+      assert "Released relreg ${secondReleaseTag}" in second, second
       assert "Generated static cache: 0 narinfos, 0 NARs" in second, second
       assert "remote-skipped" in second, second
     '';
