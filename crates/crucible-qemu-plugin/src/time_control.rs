@@ -996,12 +996,16 @@ mod tests {
 
     fn registration_ready() -> crate::PluginRegistrationReady {
         let mut sequence = crate::PluginRegistrationSequence::new();
+        let args = crate::PluginArgs::parse("simfd=3,slot=0")
+            .unwrap_or_else(|error| panic!("test args should parse: {error}"));
         for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
             let result = if step == PluginRegistrationStep::RegisterCallbacks {
                 sequence
                     .register_callbacks_with_exact_deadline(
+                        &args,
                         Some(time_control_test_deadline),
                         Some(time_control_test_direct_advance),
+                        crate::CoverageCapabilities::none(),
                     )
                     .map(|_capabilities| ())
             } else {

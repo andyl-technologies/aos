@@ -21,8 +21,10 @@
 //! block submit/poll request routing through the reserved block executor;
 //! `ninep_io` owns raw 9p submit/poll/burst routing through the reserved 9p
 //! executor; `whitebox_doorbell` owns optional white-box trap planning, guest
-//! memory reads, marker stamping, and host-to-guest input delivery gates. Future
-//! modules will add live device callback behavior and QEMU-facing helpers.
+//! memory reads, marker stamping, and host-to-guest input delivery gates;
+//! `coverage` owns optional TCG-exec coverage planning and observational
+//! basic-block map updates. Future modules will add live device callback behavior
+//! and QEMU-facing helpers.
 //!
 //! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
 //! pointers and delegate to safe Rust shims for time-control, callback
@@ -35,6 +37,7 @@
 pub mod abi;
 pub mod args;
 pub mod block_io;
+pub mod coverage;
 pub mod deadline;
 pub mod device_io;
 pub mod idle_loop;
@@ -69,6 +72,12 @@ pub use block_io::{
     BlockOperation, BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestToken, BlockResponse,
     BlockResponseStatus, BlockSubmit, BlockWireError, PluginBlockIo, handle_block_poll_callback,
     handle_block_submit_callback,
+};
+pub use coverage::{
+    CoverageBlockEvent, CoverageCallback, CoverageCapabilities, CoverageError, CoverageMap,
+    CoverageObservation, CoverageRegistrationPlan, CoverageSink, CoverageSinkError,
+    DEFAULT_COVERAGE_MAP_ENTRIES, PluginCoverage, QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL,
+    fold_basic_block_pc, handle_coverage_exec_callback,
 };
 pub use deadline::{
     ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,

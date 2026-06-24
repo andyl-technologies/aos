@@ -961,7 +961,7 @@ component that makes that purity true *inside* the QEMU process.
   marker with the exact icount; ensure off-mode installs nothing and black-box is
   fully functional; route white-box inputs through the injection contract. —
   satisfies [PLUG-32], [PLUG-33], [PLUG-34]; spec §12.7.
-- [ ] **T-PLUG-15** Implement the optional coverage hook: a registration-time
+- [x] **T-PLUG-15** Implement the optional coverage hook: a registration-time
   opt-in TCG-exec basic-block map with zero cost when off and no effect on `S`/`T`
   or fingerprints; emit coverage as observational output. — satisfies [PLUG-35],
   [PLUG-36], [PLUG-37]; spec §12.8.

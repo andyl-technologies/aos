@@ -808,8 +808,8 @@ mod tests {
     };
 
     use crate::{
-        CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, NetworkRxQueueError, PluginDeviceIoFreeze,
-        PluginRegistrationSequence, PluginTimeControlOwnership,
+        CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, CoverageCapabilities, NetworkRxQueueError,
+        PluginArgs, PluginDeviceIoFreeze, PluginRegistrationSequence, PluginTimeControlOwnership,
     };
 
     thread_local! {
@@ -1613,12 +1613,16 @@ mod tests {
 
     fn registration_ready() -> crate::PluginRegistrationReady {
         let mut sequence = PluginRegistrationSequence::new();
+        let args = PluginArgs::parse("simfd=3,slot=0")
+            .unwrap_or_else(|error| panic!("test args should parse: {error}"));
         for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
             let result = if step == crate::PluginRegistrationStep::RegisterCallbacks {
                 sequence
                     .register_callbacks_with_exact_deadline(
+                        &args,
                         Some(idle_loop_test_deadline),
                         Some(idle_loop_test_direct_advance),
+                        CoverageCapabilities::none(),
                     )
                     .map(|_capabilities| ())
             } else {
