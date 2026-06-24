@@ -160,8 +160,6 @@ const CONFORMANCE_CORPUS_BUILDER: &str =
     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-nix-conformance-builder";
 const LANG_CASE_EXCLUSION_NAMES: &[&str] = &[
     "eval-okay-eq-derivations",
-    "eval-okay-inherit-from",
-    "eval-okay-print",
     "eval-okay-redefine-builtin",
     "eval-okay-search-path",
     "eval-okay-symlink-resolution",

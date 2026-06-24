@@ -15,6 +15,7 @@ impl TreeWalk {
     ) -> Result<(), TreeWalkError> {
         let mut active = Vec::new();
         let mut expanded_active_lists = Vec::new();
+        let mut active_list_expansion_depth = 0usize;
         self.write_raw_value_inner(
             id,
             span,
@@ -25,6 +26,7 @@ impl TreeWalk {
             visited,
             &mut active,
             &mut expanded_active_lists,
+            &mut active_list_expansion_depth,
         )
     }
 
@@ -39,6 +41,7 @@ impl TreeWalk {
         seen: &mut Vec<(ValueTag, u64)>,
         active: &mut Vec<(ValueTag, u64)>,
         expanded_active_lists: &mut Vec<u64>,
+        active_list_expansion_depth: &mut usize,
     ) -> Result<(), TreeWalkError> {
         let value = self.force_value(value_id, value_span, value)?;
         let tag = value.tag();
@@ -47,7 +50,8 @@ impl TreeWalk {
             if seen.contains(&key) {
                 return match tag {
                     ValueTag::List
-                        if Self::raw_first_active_value_is(active, key)
+                        if Self::raw_active_value_contains(active, key)
+                            && *active_list_expansion_depth == 0
                             && !expanded_active_lists.contains(&value.payload_bits())
                             && self
                                 .raw_repeated_list_can_expand(value_id, value_span, value)? =>
@@ -60,6 +64,7 @@ impl TreeWalk {
                             )
                         })?;
                         expanded_active_lists.push(value.payload_bits());
+                        *active_list_expansion_depth += 1;
                         let result = self.write_raw_list(
                             id,
                             span,
@@ -70,7 +75,9 @@ impl TreeWalk {
                             seen,
                             active,
                             expanded_active_lists,
+                            active_list_expansion_depth,
                         );
+                        *active_list_expansion_depth -= 1;
                         result
                     }
                     _ => Self::extend_bytes_for_node(id, span, out, "«repeated»".as_bytes()),
@@ -120,6 +127,7 @@ impl TreeWalk {
                 seen,
                 active,
                 expanded_active_lists,
+                active_list_expansion_depth,
             ),
             ValueTag::Attrs => self.write_raw_attrs(
                 id,
@@ -131,6 +139,7 @@ impl TreeWalk {
                 seen,
                 active,
                 expanded_active_lists,
+                active_list_expansion_depth,
             ),
             ValueTag::Lambda => Self::extend_bytes_for_node(id, span, out, b"<LAMBDA>"),
             ValueTag::Primop => self.write_raw_primop(id, span, value_id, value_span, value, out),
@@ -149,6 +158,9 @@ impl TreeWalk {
 
         if entered {
             active.pop();
+            if tag != ValueTag::Attrs {
+                seen.pop();
+            }
         }
         result
     }
@@ -157,8 +169,8 @@ impl TreeWalk {
         matches!(tag, ValueTag::List | ValueTag::Attrs)
     }
 
-    fn raw_first_active_value_is(active: &[(ValueTag, u64)], key: (ValueTag, u64)) -> bool {
-        active.first().copied() == Some(key)
+    fn raw_active_value_contains(active: &[(ValueTag, u64)], key: (ValueTag, u64)) -> bool {
+        active.contains(&key)
     }
 
     fn raw_repeated_list_can_expand(
@@ -236,6 +248,7 @@ impl TreeWalk {
         seen: &mut Vec<(ValueTag, u64)>,
         active: &mut Vec<(ValueTag, u64)>,
         expanded_active_lists: &mut Vec<u64>,
+        active_list_expansion_depth: &mut usize,
     ) -> Result<(), TreeWalkError> {
         let elements = {
             let list = self.heap.get_list(value).map_err(|source| {
@@ -269,6 +282,7 @@ impl TreeWalk {
                 seen,
                 active,
                 expanded_active_lists,
+                active_list_expansion_depth,
             )?;
         }
         Self::extend_bytes_for_node(id, span, out, b" ]")
@@ -285,6 +299,7 @@ impl TreeWalk {
         seen: &mut Vec<(ValueTag, u64)>,
         active: &mut Vec<(ValueTag, u64)>,
         expanded_active_lists: &mut Vec<u64>,
+        active_list_expansion_depth: &mut usize,
     ) -> Result<(), TreeWalkError> {
         let entries = {
             let attrs = self.heap.get_attrs(value).map_err(|source| {
@@ -342,6 +357,7 @@ impl TreeWalk {
                 seen,
                 active,
                 expanded_active_lists,
+                active_list_expansion_depth,
             )?;
             Self::extend_bytes_for_node(id, span, out, b"; ")?;
         }

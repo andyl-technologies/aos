@@ -100,14 +100,6 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "native evaluator stack-safety gap in derivation equality",
     },
     LangCaseExclusion {
-        name: "eval-okay-inherit-from",
-        reason: "recursive marker rendering shape gap",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-print",
-        reason: "recursive marker rendering shape gap",
-    },
-    LangCaseExclusion {
         name: "eval-okay-redefine-builtin",
         reason: "tryEval search-path error handling gap",
     },
@@ -120,8 +112,8 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "symlink directory resolution gap",
     },
 ];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 201;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 8;
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 203;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 6;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",
@@ -1444,6 +1436,45 @@ in
     assert_eq!(
         eval_raw_fixture(b"/pwd/lang/eval-okay-inherit-attr-pos.nix", source),
         br#"[ { column = 17; file = "/pwd/lang/eval-okay-inherit-attr-pos.nix"; line = 4; } { column = 19; file = "/pwd/lang/eval-okay-inherit-attr-pos.nix"; line = 4; } { column = 21; file = "/pwd/lang/eval-okay-inherit-attr-pos.nix"; line = 5; } { column = 23; file = "/pwd/lang/eval-okay-inherit-attr-pos.nix"; line = 5; } ]"#
+    );
+}
+
+#[test]
+fn eval_okay_inherit_from_renders_recursive_markers() {
+    let source = br#"let
+  inherit (builtins.trace "used" { a = 1; b = 2; }) a b;
+  x.c = 3;
+  y.d = 4;
+
+  merged = {
+    inner = {
+      inherit (y) d;
+    };
+
+    inner = {
+      inherit (x) c;
+    };
+  };
+in
+  [ a b rec { x.c = []; inherit (x) c; inherit (y) d; __overrides.y.d = []; } merged ]
+"#;
+
+    assert_eq!(
+        eval_raw_fixture(b"/pwd/lang/eval-okay-inherit-from.nix", source),
+        r#"[ 1 2 { __overrides = { y = { d = [ ]; }; }; c = [ ]; d = 4; x = { c = [ ]; }; y = «repeated»; } { inner = { c = 3; d = 4; }; } ]"#
+            .as_bytes()
+    );
+}
+
+#[test]
+fn eval_okay_print_renders_primops_lambdas_and_recursive_lists() {
+    let source =
+        br#"with builtins; trace [(1+1)] [ null toString (deepSeq "x") (a: a) (let x=[x]; in x) ]
+"#;
+
+    assert_eq!(
+        eval_raw_fixture(b"/pwd/lang/eval-okay-print.nix", source),
+        "[ null <PRIMOP> <PRIMOP-APP> <LAMBDA> [ [ «repeated» ] ] ]".as_bytes()
     );
 }
 

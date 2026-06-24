@@ -121,6 +121,9 @@ impl IrLowerer {
         let NodeData::WithVar { symbol, chain } = node.data else {
             return Err(self.invalid_shape(node, "with-var payload"));
         };
+        if self.with_chain_statically_selects_builtins(chain, symbol, node.span)? {
+            return self.push(IrKind::BuiltinAttr, node.span, IrData::Symbol(symbol));
+        }
         let Some(op) = (self.options.dynamic_scope_var_op())() else {
             return Err(IrError::new(
                 IrErrorKind::UnsupportedDialectOp {
@@ -136,6 +139,42 @@ impl IrLowerer {
             (self.options.dialect_op_effect_of())(op),
             IrData::DialectScopeVar { op, symbol, chain },
         )
+    }
+
+    fn with_chain_statically_selects_builtins(
+        &self,
+        chain: u32,
+        symbol: Symbol,
+        span: Span,
+    ) -> Result<bool, IrError> {
+        if self.options.dynamic_builtin_scope() {
+            return Ok(false);
+        }
+        if !self
+            .resolved
+            .symbols
+            .resolve(symbol)
+            .is_some_and(is_known_builtin_attr)
+        {
+            return Ok(false);
+        }
+        let resolver_chain = self
+            .resolved
+            .scopes
+            .with_chains()
+            .get(chain as usize)
+            .ok_or_else(|| IrError::new(IrErrorKind::InvalidWithChain { chain }, span))?;
+        let Some(scope) = resolver_chain.scopes.first() else {
+            return Ok(false);
+        };
+        let scope_node = self.node(*scope)?;
+        if scope_node.kind != NodeKind::GlobalVar {
+            return Ok(false);
+        }
+        let NodeData::Symbol(scope_symbol) = scope_node.data else {
+            return Err(self.invalid_shape(scope_node, "global symbol payload"));
+        };
+        Ok(self.resolved.symbols.resolve(scope_symbol) == Some(b"builtins"))
     }
 
     pub(super) fn lower_with_chain(&mut self, chain: u32, span: Span) -> Result<u32, IrError> {

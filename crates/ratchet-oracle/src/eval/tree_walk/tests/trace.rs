@@ -421,6 +421,45 @@ fn trace_primop_renders_recursive_cached_thunks_shallowly() {
 }
 
 #[test]
+fn raw_renderer_repeats_shared_lists_but_marks_shared_attrs() {
+    let shared = lower("let empty = []; in [ empty empty ]");
+    assert_eq!(
+        eval_raw_bytes(&shared).expect("shared values render"),
+        b"[ [ ] [ ] ]"
+    );
+
+    let shared_attrs = lower("let empty = {}; in [ empty empty ]");
+    assert_eq!(
+        eval_raw_bytes(&shared_attrs).expect("shared attrsets render"),
+        "[ { } «repeated» ]".as_bytes()
+    );
+
+    let recursive = lower("let xs = [ xs ]; in xs");
+    assert_eq!(
+        eval_raw_bytes(&recursive).expect("recursive value renders"),
+        "[ [ «repeated» ] ]".as_bytes()
+    );
+
+    let nested_recursive = lower("let xs = [ [ xs ] ]; in xs");
+    assert_eq!(
+        eval_raw_bytes(&nested_recursive).expect("nested recursive value renders"),
+        "[ [ [ «repeated» ] ] ]".as_bytes()
+    );
+
+    let sibling_recursive = lower("let xs = [ xs ]; ys = [ ys ]; in [ xs ys ]");
+    assert_eq!(
+        eval_raw_bytes(&sibling_recursive).expect("sibling recursive values render"),
+        "[ [ [ «repeated» ] ] [ [ «repeated» ] ] ]".as_bytes()
+    );
+
+    let same_sibling_recursive = lower("let xs = [ xs xs ]; in xs");
+    assert_eq!(
+        eval_raw_bytes(&same_sibling_recursive).expect("same recursive sibling values render"),
+        "[ [ «repeated» «repeated» ] «repeated» ]".as_bytes()
+    );
+}
+
+#[test]
 fn trace_primop_renders_whnf_values() {
     for (source, expected) in [
         (r#"builtins.trace "a\n\"b" 1"#, b"a\n\"b".as_slice()),

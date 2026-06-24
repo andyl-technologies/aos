@@ -200,6 +200,54 @@ fn default_core_lowering_rejects_dynamic_scope_variables() {
 }
 
 #[test]
+fn default_core_lowering_specializes_with_builtins_scope_variables() {
+    let ir = lowered("with builtins; trace");
+    let IrData::Pair { second, .. } = root_node(&ir).data else {
+        panic!("with payload expected");
+    };
+    let node = node(&ir, second);
+    assert_eq!(node.kind, IrKind::BuiltinAttr);
+    let IrData::Symbol(symbol) = node.data else {
+        panic!("builtin attr payload expected");
+    };
+    assert_eq!(ir.symbols.resolve(symbol), Some(b"trace".as_slice()));
+
+    let resolved = resolve(parse_str("with { trace = 1; }; trace").expect("source parses"))
+        .expect("source resolves");
+    assert!(matches!(
+        lower(resolved).map(|_| ()),
+        Err(error)
+            if error.kind()
+                == &IrErrorKind::UnsupportedDialectOp {
+                    operation: "dynamic scope variable"
+                }
+    ));
+
+    let resolved =
+        resolve(parse_str("with builtins; with { trace = 1; }; trace").expect("source parses"))
+            .expect("source resolves");
+    assert!(matches!(
+        lower(resolved).map(|_| ()),
+        Err(error)
+            if error.kind()
+                == &IrErrorKind::UnsupportedDialectOp {
+                    operation: "dynamic scope variable"
+                }
+    ));
+
+    let resolved = resolve(parse_str("with builtins; trace").expect("source parses"))
+        .expect("source resolves");
+    assert!(matches!(
+        lower_with_options(resolved, IrLowerOptions::with_dynamic_builtin_scope()).map(|_| ()),
+        Err(error)
+            if error.kind()
+                == &IrErrorKind::UnsupportedDialectOp {
+                    operation: "dynamic scope variable"
+                }
+    ));
+}
+
+#[test]
 fn with_var_chains_point_to_lowered_scopes_inner_first() {
     let ir = lowered_nix("with { outer = 1; }; with { inner = 2; }; missing");
     let IrData::Pair {
