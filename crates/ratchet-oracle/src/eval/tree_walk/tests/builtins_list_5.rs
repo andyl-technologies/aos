@@ -338,7 +338,7 @@ fn malformed_operator_payloads_are_reported() {
         let root = IrId::new(0);
         let span = Span::new(20 + index as u32, 21 + index as u32);
         let arena = IrArena::from_raw_parts(
-            vec![IrNode::new(kind, span, EffectClass::Pure, IrData::None)],
+            vec![IrNode::new(kind, span, EffectClass::pure(), IrData::None)],
             Vec::new(),
         );
         let ir = empty_ir(root, arena);
@@ -367,7 +367,7 @@ fn malformed_attr_access_payloads_are_reported() {
         let root = IrId::new(0);
         let span = Span::new(30 + index as u32, 31 + index as u32);
         let arena = IrArena::from_raw_parts(
-            vec![IrNode::new(kind, span, EffectClass::Pure, IrData::None)],
+            vec![IrNode::new(kind, span, EffectClass::pure(), IrData::None)],
             Vec::new(),
         );
         let ir = empty_ir(root, arena);
@@ -442,7 +442,7 @@ fn malformed_assert_payloads_are_reported() {
         vec![IrNode::new(
             IrKind::Assert,
             span,
-            EffectClass::Pure,
+            EffectClass::pure(),
             IrData::None,
         )],
         Vec::new(),

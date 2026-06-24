@@ -5,8 +5,8 @@
 //! particular source language's semantics. A *dialect* is the seam through
 //! which a language teaches the engine those semantics.
 //!
-//! Today a [`Dialect`] supplies exactly one thing — the effect classification
-//! for core IR node kinds — but it is the registration-time interface a
+//! Today a [`Dialect`] supplies effect classification for core IR node kinds and
+//! direct builtins, but it is the registration-time interface a
 //! language plugs into, and the intended growth surface for everything a
 //! language must contribute at lowering time:
 //!
@@ -20,7 +20,7 @@
 
 #![forbid(unsafe_code)]
 
-use ratchet_core::{EffectClass, IrKind};
+use ratchet_core::{EffectClass, IrKind, builtins::BuiltinEffect};
 
 /// A language dialect that supplies the engine with language-specific semantics.
 ///
@@ -37,4 +37,13 @@ pub trait Dialect {
     /// with its [`EffectClass`], which downstream speculation and caching passes
     /// use to decide what may be reordered or memoized.
     fn effect_of(&self, kind: IrKind) -> EffectClass;
+
+    /// Returns the dialect's effect classification for a direct-lowered builtin.
+    ///
+    /// The `name` argument is the source-language builtin name when the lowering
+    /// context can resolve it. The `effect` argument carries coarse metadata from
+    /// the builtin declaration table; dialects may refine that into distinct
+    /// members such as import, file IO, environment access, and derivation
+    /// construction.
+    fn builtin_effect_of(&self, name: Option<&[u8]>, effect: BuiltinEffect) -> EffectClass;
 }

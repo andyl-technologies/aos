@@ -595,7 +595,9 @@ impl TreeWalk {
         &self,
         derivation: &nix_compat::derivation::Derivation,
         floating_ca_output: FloatingCaOutput,
-        input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>>,
+        input_hashes: Option<
+            &BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
+        >,
     ) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"Derive(");
@@ -643,7 +645,9 @@ impl TreeWalk {
         &self,
         derivation: &nix_compat::derivation::Derivation,
         impure_output: FloatingCaOutput,
-        input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>>,
+        input_hashes: Option<
+            &BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
+        >,
     ) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"Derive(");

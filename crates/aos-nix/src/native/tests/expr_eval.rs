@@ -368,13 +368,13 @@ fn native_json_preflight_ignores_malformed_empty_builtins_attr_paths() {
                 IrNode::new(
                     IrKind::GlobalVar,
                     Span::new(0, 8),
-                    EffectClass::Pure,
+                    EffectClass::pure(),
                     IrData::Symbol(builtins),
                 ),
                 IrNode::new(
                     IrKind::Select,
                     Span::new(0, 8),
-                    EffectClass::Pure,
+                    EffectClass::pure(),
                     IrData::Select {
                         site: IrInlineCacheSiteId::new(0),
                         receiver: IrId::new(0),

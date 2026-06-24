@@ -34,7 +34,7 @@ use crate::compile::{
     IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain, ResolvedAst,
     ScopeError, ScopeTables, Upvalue, WithChain, resolve,
 };
-use crate::runtime::builtins::{BuiltinDirect, BuiltinEffect, direct_builtin};
+use crate::runtime::builtins::{BuiltinDirect, direct_builtin};
 use crate::syntax::{
     AstArena, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind, ParseError, Span, Symbol,
     SymbolTable, UnaryOpKind, parse_bytes,

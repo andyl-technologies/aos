@@ -36,14 +36,22 @@ pub fn lower_with_options(resolved: ResolvedAst, options: IrLowerOptions) -> Res
     IrLowerer::new(resolved, options).lower()
 }
 
-/// The language-agnostic default effect classifier.
+/// The language-agnostic default node effect classifier.
 ///
 /// The engine has no built-in knowledge of which node kinds are effectful;
-/// absent a dialect-supplied classifier, every node is [`EffectClass::Pure`].
+/// absent a dialect-supplied classifier, every node carries a pure effect stamp.
 /// A language dialect overrides this via [`IrLowerOptions::with_effect_of`] (see
 /// the `Dialect` trait in `ratchet-dialect`).
 pub fn all_pure(_kind: IrKind) -> EffectClass {
-    EffectClass::Pure
+    EffectClass::pure()
+}
+
+/// The language-agnostic default direct-builtin effect classifier.
+///
+/// Direct builtin metadata is dialect vocabulary. Without a dialect-supplied
+/// classifier, the engine treats those nodes as pure too.
+pub fn all_pure_builtin(_name: Option<&[u8]>, _effect: BuiltinEffect) -> EffectClass {
+    EffectClass::pure()
 }
 
 /// Configuration for IR lowering.
@@ -55,6 +63,11 @@ pub struct IrLowerOptions {
     /// Defaults to [`all_pure`]; a language dialect installs its own
     /// classifier so that, e.g., derivation construction is effectful.
     effect_of: fn(IrKind) -> EffectClass,
+    /// The classifier mapping dialect builtin metadata to effect stamps.
+    ///
+    /// Defaults to [`all_pure_builtin`]; a language dialect installs its own
+    /// classifier so impure builtins are not hardcoded in the engine.
+    builtin_effect_of: fn(Option<&[u8]>, BuiltinEffect) -> EffectClass,
 }
 
 impl PartialEq for IrLowerOptions {
@@ -67,6 +80,7 @@ impl PartialEq for IrLowerOptions {
     fn eq(&self, other: &Self) -> bool {
         self.dynamic_builtin_scope == other.dynamic_builtin_scope
             && std::ptr::fn_addr_eq(self.effect_of, other.effect_of)
+            && std::ptr::fn_addr_eq(self.builtin_effect_of, other.builtin_effect_of)
     }
 }
 
@@ -85,6 +99,7 @@ impl IrLowerOptions {
         Self {
             dynamic_builtin_scope: false,
             effect_of: all_pure,
+            builtin_effect_of: all_pure_builtin,
         }
     }
 
@@ -93,6 +108,7 @@ impl IrLowerOptions {
         Self {
             dynamic_builtin_scope: true,
             effect_of: all_pure,
+            builtin_effect_of: all_pure_builtin,
         }
     }
 
@@ -107,6 +123,21 @@ impl IrLowerOptions {
         self
     }
 
+    /// Returns a copy of these options with the given direct-builtin effect
+    /// classifier installed.
+    ///
+    /// The classifier receives the interned builtin name, when it can be resolved,
+    /// plus the builtin metadata's coarse effect marker. Dialects use the name to
+    /// refine effect members (for example `import` vs. `readFile`) without making
+    /// the engine own a closed Nix effect enum.
+    pub const fn with_builtin_effect_of(
+        mut self,
+        builtin_effect_of: fn(Option<&[u8]>, BuiltinEffect) -> EffectClass,
+    ) -> Self {
+        self.builtin_effect_of = builtin_effect_of;
+        self
+    }
+
     /// Returns whether builtin references must remain dynamic runtime lookups.
     pub const fn dynamic_builtin_scope(&self) -> bool {
         self.dynamic_builtin_scope
@@ -115,6 +146,11 @@ impl IrLowerOptions {
     /// Returns the effect classifier installed in these options.
     pub const fn effect_of(&self) -> fn(IrKind) -> EffectClass {
         self.effect_of
+    }
+
+    /// Returns the direct-builtin effect classifier installed in these options.
+    pub const fn builtin_effect_of(&self) -> fn(Option<&[u8]>, BuiltinEffect) -> EffectClass {
+        self.builtin_effect_of
     }
 }
 
@@ -509,28 +545,61 @@ pub enum IrData {
     },
 }
 
-/// Whether evaluating an IR node can perform externally observable work.
+/// A compact effect stamp carried by an IR node.
 ///
-/// [`EffectClass`] is the engine's concrete effect lattice. It is the type a
-/// language dialect classifies its IR node kinds into (see the `Dialect` trait
-/// in `ratchet-dialect`), the value carried by every [`IrNode::effect`], and a
-/// serialized parity surface in the parse cache codec — its variants and their
-/// numeric encoding are a stable contract and must not change.
+/// The engine stores a fixed-size stamp in [`IrNode`] and serializes the stamp in
+/// the parse cache, but it does not own the lattice's member set. Dialects assign
+/// stable keys and speculation behavior via [`EffectClass::new`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum EffectClass {
-    /// The node is pure and may be speculated by later passes.
-    Pure,
-    /// The node is effectful and is a speculation barrier.
-    Effectful,
+pub struct EffectClass {
+    speculable: bool,
+    key: u8,
+}
+
+impl EffectClass {
+    /// Creates an effect stamp with a dialect-owned cache key.
+    ///
+    /// The `effect_key` is serialized in parse-cache IR artifacts. Dialects must
+    /// keep assigned keys stable for as long as those artifacts remain readable.
+    pub const fn new(effect_key: u8, speculable: bool) -> Self {
+        Self {
+            speculable,
+            key: effect_key,
+        }
+    }
+
+    /// Creates the language-agnostic pure effect stamp.
+    ///
+    /// Key `0` is reserved for pure, speculable nodes so old parse-cache artifacts
+    /// and dialect-specific effect maps agree on the common bottom member.
+    pub const fn pure() -> Self {
+        Self::new(0, true)
+    }
+
+    /// Decodes an effect stamp from a parse-cache key.
+    ///
+    /// Key `0` is pure and speculable; every other key is conservatively decoded
+    /// as non-speculable until the dialect-specific classifier revalidates it.
+    pub const fn from_cache_key(effect_key: u8) -> Self {
+        Self::new(effect_key, effect_key == 0)
+    }
+
+    /// Returns whether this effect stamp permits speculative evaluation.
+    pub const fn is_speculable(self) -> bool {
+        self.speculable
+    }
+
+    /// Returns the stable dialect-owned cache key for this effect stamp.
+    pub const fn effect_key(self) -> u8 {
+        self.key
+    }
 }
 
 /// An effect lattice consumed by the engine's speculation and caching passes.
 ///
-/// The engine is generic over the concrete effect type it carries: it only
-/// needs to know whether a node may be speculated and a stable key for cache
-/// encoding. [`EffectClass`] is the built-in implementation, but a dialect or
-/// later analysis layer can substitute a richer lattice without touching the
-/// force path.
+/// The engine only needs to know whether a node may be speculated and a stable
+/// key for cache encoding. Dialects can assign a richer member set without
+/// changing the fixed force-path storage in [`IrNode`].
 pub trait Effect {
     /// Returns whether a node carrying this effect may be speculated by later
     /// passes (i.e. it performs no externally observable work).
@@ -542,14 +611,11 @@ pub trait Effect {
 
 impl Effect for EffectClass {
     fn is_speculable(&self) -> bool {
-        matches!(self, EffectClass::Pure)
+        (*self).is_speculable()
     }
 
     fn effect_key(&self) -> u8 {
-        match self {
-            EffectClass::Pure => 0,
-            EffectClass::Effectful => 1,
-        }
+        (*self).effect_key()
     }
 }
 

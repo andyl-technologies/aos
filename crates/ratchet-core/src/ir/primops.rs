@@ -32,7 +32,7 @@ impl IrLowerer {
         let Some(BuiltinDirect::StrictUnary { effect }) = self.direct_builtin(symbol) else {
             return Ok(None);
         };
-        Ok(Some((symbol, Self::effect_class(effect))))
+        Ok(Some((symbol, self.effect_class(symbol, effect))))
     }
 
     pub(super) fn lazy_unary_primop_ref(
@@ -48,7 +48,7 @@ impl IrLowerer {
         let Some(BuiltinDirect::LazyUnary { effect }) = self.direct_builtin(symbol) else {
             return Ok(None);
         };
-        Ok(Some((symbol, Self::effect_class(effect))))
+        Ok(Some((symbol, self.effect_class(symbol, effect))))
     }
 
     pub(super) fn strict_binary_primop_ref(
@@ -76,7 +76,11 @@ impl IrLowerer {
             Some(BuiltinDirect::StrictBinary { effect } | BuiltinDirect::Sort { effect }) => effect,
             _ => return Ok(None),
         };
-        Ok(Some((symbol, Self::effect_class(effect), first_argument)))
+        Ok(Some((
+            symbol,
+            self.effect_class(symbol, effect),
+            first_argument,
+        )))
     }
 
     pub(super) fn strict_lazy_binary_primop_ref(
@@ -103,7 +107,11 @@ impl IrLowerer {
         let Some(BuiltinDirect::StrictLazyBinary { effect }) = self.direct_builtin(symbol) else {
             return Ok(None);
         };
-        Ok(Some((symbol, Self::effect_class(effect), first_argument)))
+        Ok(Some((
+            symbol,
+            self.effect_class(symbol, effect),
+            first_argument,
+        )))
     }
 
     pub(super) fn lazy_strict_binary_primop_ref(
@@ -130,7 +138,11 @@ impl IrLowerer {
         let Some(BuiltinDirect::LazyStrictBinary { effect }) = self.direct_builtin(symbol) else {
             return Ok(None);
         };
-        Ok(Some((symbol, Self::effect_class(effect), first_argument)))
+        Ok(Some((
+            symbol,
+            self.effect_class(symbol, effect),
+            first_argument,
+        )))
     }
 
     pub(super) fn strict_ternary_primop_ref(
@@ -170,7 +182,7 @@ impl IrLowerer {
         };
         Ok(Some((
             symbol,
-            Self::effect_class(effect),
+            self.effect_class(symbol, effect),
             first_argument,
             second_argument,
         )))
@@ -244,10 +256,8 @@ impl IrLowerer {
             .and_then(direct_builtin)
     }
 
-    pub(super) fn effect_class(effect: BuiltinEffect) -> EffectClass {
-        match effect {
-            BuiltinEffect::Pure => EffectClass::Pure,
-            BuiltinEffect::Effectful => EffectClass::Effectful,
-        }
+    pub(super) fn effect_class(&self, symbol: Symbol, effect: BuiltinEffect) -> EffectClass {
+        let name = self.resolved.symbols.resolve(symbol);
+        (self.options.builtin_effect_of())(name, effect)
     }
 }

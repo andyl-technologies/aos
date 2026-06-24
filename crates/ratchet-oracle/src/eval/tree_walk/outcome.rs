@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::cache::ImpureInputTraceSource;
+use crate::compile::EffectClass;
 
 /// A tree-walk evaluation result with its owning evaluator heap.
 #[derive(Debug)]
@@ -315,6 +316,11 @@ impl<'a> IfdRealization<'a> {
     /// Returns the filesystem-reading builtin that triggered the demand.
     pub const fn op(&self) -> &'static str {
         self.op
+    }
+
+    /// Returns the dialect effect member for this realization boundary.
+    pub const fn effect(&self) -> EffectClass {
+        aos_nix_dialect::NIX_EFFECT_IFD
     }
 }
 

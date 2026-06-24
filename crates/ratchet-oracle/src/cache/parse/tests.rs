@@ -682,7 +682,7 @@ fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
             vec![IrNode::new(
                 IrKind::Null,
                 Span::new(0, 4),
-                EffectClass::Pure,
+                EffectClass::pure(),
                 IrData::Bool(true),
             )],
             Vec::new(),
@@ -705,7 +705,7 @@ fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
             vec![IrNode::new(
                 IrKind::DerivationStrict,
                 Span::new(0, 16),
-                EffectClass::Pure,
+                EffectClass::pure(),
                 IrData::Node(IrId::new(0)),
             )],
             Vec::new(),
@@ -731,13 +731,13 @@ fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
                 IrNode::new(
                     IrKind::Bool,
                     Span::new(16, 20),
-                    EffectClass::Pure,
+                    EffectClass::pure(),
                     IrData::Bool(true),
                 ),
                 IrNode::new(
                     IrKind::PrimOp,
                     Span::new(0, 20),
-                    EffectClass::Effectful,
+                    EffectClass::new(1, false),
                     IrData::PrimOp {
                         symbol: type_of,
                         args: IrChildSlice::new(0, 1),
@@ -768,13 +768,13 @@ fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
                 IrNode::new(
                     IrKind::Bool,
                     Span::new(20, 24),
-                    EffectClass::Pure,
+                    EffectClass::pure(),
                     IrData::Bool(false),
                 ),
                 IrNode::new(
                     IrKind::PrimOp,
                     Span::new(0, 24),
-                    EffectClass::Effectful,
+                    EffectClass::new(1, false),
                     IrData::PrimOp {
                         symbol: derivation_strict,
                         args: IrChildSlice::new(0, 1),
@@ -804,13 +804,13 @@ fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
                 IrNode::new(
                     IrKind::Bool,
                     Span::new(20, 24),
-                    EffectClass::Pure,
+                    EffectClass::pure(),
                     IrData::Bool(false),
                 ),
                 IrNode::new(
                     IrKind::PrimOp,
                     Span::new(0, 24),
-                    EffectClass::Pure,
+                    EffectClass::pure(),
                     IrData::PrimOp {
                         symbol: future,
                         args: IrChildSlice::new(0, 1),
@@ -847,7 +847,7 @@ fn lowered_ir_rejects_inconsistent_attrset_shapes() {
             vec![IrNode::new(
                 IrKind::AttrSet,
                 Span::new(0, 9),
-                EffectClass::Pure,
+                EffectClass::pure(),
                 IrData::AttrSet {
                     shape: IrShapeId::new(0),
                     bindings: IrBindingSlice::new(0, 1),
@@ -876,7 +876,7 @@ fn lowered_ir_rejects_inconsistent_attrset_shapes() {
             vec![IrNode::new(
                 IrKind::AttrSet,
                 Span::new(0, 9),
-                EffectClass::Pure,
+                EffectClass::pure(),
                 IrData::AttrSet {
                     shape: IrShapeId::new(0),
                     bindings: IrBindingSlice::new(0, 1),

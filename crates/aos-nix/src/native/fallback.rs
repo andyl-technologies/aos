@@ -16,7 +16,7 @@ pub(super) fn ensure_native_json_subset(
     options: &TreeWalkOptions,
 ) -> Result<(), NativeEvalError> {
     for (index, node) in ir.arena.nodes().iter().enumerate() {
-        if node.effect == EffectClass::Effectful {
+        if !node.effect.is_speculable() {
             if let IrKind::PrimOp = node.kind
                 && let IrData::PrimOp { symbol, .. } = node.data
                 && let Some(name) = ir.symbols.resolve(symbol)

@@ -300,7 +300,7 @@ fn generated_builtin_dispatch_reaches_generic_executor_with_selected_declaration
     let span = Span::new(11, 17);
     let symbol = Symbol::new(3);
     let call = BuiltinCall::new(id, span, symbol);
-    let node = IrNode::new(IrKind::Null, span, EffectClass::Pure, IrData::None);
+    let node = IrNode::new(IrKind::Null, span, EffectClass::pure(), IrData::None);
 
     assert_eq!(
         length.select(&mut executor, id, span, symbol),

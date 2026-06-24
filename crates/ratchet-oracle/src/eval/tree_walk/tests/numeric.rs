@@ -152,7 +152,7 @@ fn malformed_if_payloads_are_reported() {
         vec![IrNode::new(
             IrKind::If,
             span,
-            EffectClass::Pure,
+            EffectClass::pure(),
             IrData::None,
         )],
         Vec::new(),

@@ -22,10 +22,10 @@ fn lowers_effectful_unary_primops_directly() {
             b"derivation".as_slice(),
         ),
     ] {
-        let ir = lowered(source);
+        let ir = lowered_nix(source);
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::PrimOp);
-        assert_eq!(root.effect, EffectClass::Effectful);
+        assert_eq!(root.effect, TEST_NIX_EFFECTFUL);
         let IrData::PrimOp { symbol, args } = root.data else {
             panic!("primop payload expected");
         };
@@ -34,6 +34,15 @@ fn lowers_effectful_unary_primops_directly() {
         assert_eq!(args.len(), 1);
         assert_ne!(node(&ir, args[0]).kind, IrKind::ThunkAlloc);
     }
+}
+
+#[test]
+fn default_core_lowering_does_not_own_nix_builtin_effects() {
+    let ir = lowered("builtins.readFile ./foo.txt");
+    let root = root_node(&ir);
+    assert_eq!(root.kind, IrKind::PrimOp);
+    assert_eq!(root.effect, EffectClass::pure());
+    assert!(root.effect.is_speculable());
 }
 
 #[test]
@@ -127,10 +136,10 @@ fn lowers_pure_strict_unary_primops_directly() {
             b"unsafeDiscardStringContext".as_slice(),
         ),
     ] {
-        let ir = lowered(source);
+        let ir = lowered_nix(source);
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::PrimOp);
-        assert_eq!(root.effect, EffectClass::Pure);
+        assert_eq!(root.effect, EffectClass::pure());
         let IrData::PrimOp { symbol, args } = root.data else {
             panic!("primop payload expected");
         };
@@ -146,7 +155,7 @@ fn lowers_pure_lazy_unary_primops_directly() {
     let ir = lowered("builtins.break (let x = [ 1 2 ]; in x)");
     let root = root_node(&ir);
     assert_eq!(root.kind, IrKind::PrimOp);
-    assert_eq!(root.effect, EffectClass::Pure);
+    assert_eq!(root.effect, EffectClass::pure());
     let IrData::PrimOp { symbol, args } = root.data else {
         panic!("primop payload expected");
     };
@@ -235,10 +244,10 @@ fn lowers_pure_strict_binary_primops_directly() {
         ),
         ("builtins.groupBy (x: \"k\") [ 1 ]", b"groupBy".as_slice()),
     ] {
-        let ir = lowered(source);
+        let ir = lowered_nix(source);
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::PrimOp);
-        assert_eq!(root.effect, EffectClass::Pure);
+        assert_eq!(root.effect, EffectClass::pure());
         let IrData::PrimOp { symbol, args } = root.data else {
             panic!("primop payload expected");
         };
@@ -263,10 +272,10 @@ fn lowers_effectful_strict_binary_primops_directly() {
             b"filterSource".as_slice(),
         ),
     ] {
-        let ir = lowered(source);
+        let ir = lowered_nix(source);
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::PrimOp);
-        assert_eq!(root.effect, EffectClass::Effectful);
+        assert_eq!(root.effect, TEST_NIX_EFFECTFUL);
         let IrData::PrimOp { symbol, args } = root.data else {
             panic!("primop payload expected");
         };
@@ -283,10 +292,10 @@ fn lowers_effectful_strict_binary_primops_directly() {
 fn lowers_pure_strict_lazy_binary_primops_directly() {
     for name in ["deepSeq", "seq"] {
         let source = format!("builtins.{name} (let x = 1; in x) (let y = 2; in y)");
-        let ir = lowered(&source);
+        let ir = lowered_nix(&source);
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::PrimOp);
-        assert_eq!(root.effect, EffectClass::Pure);
+        assert_eq!(root.effect, EffectClass::pure());
         let IrData::PrimOp { symbol, args } = root.data else {
             panic!("primop payload expected");
         };
@@ -302,10 +311,10 @@ fn lowers_pure_strict_lazy_binary_primops_directly() {
 fn lowers_effectful_strict_lazy_binary_primops_directly() {
     for name in ["trace", "traceVerbose", "warn"] {
         let source = format!("builtins.{name} (let x = 1; in x) (let y = 2; in y)");
-        let ir = lowered(&source);
+        let ir = lowered_nix(&source);
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::PrimOp);
-        assert_eq!(root.effect, EffectClass::Effectful);
+        assert_eq!(root.effect, TEST_NIX_EFFECTFUL);
         let IrData::PrimOp { symbol, args } = root.data else {
             panic!("primop payload expected");
         };
@@ -397,7 +406,7 @@ fn lowers_pure_strict_ternary_primops_directly() {
         let ir = lowered(source);
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::PrimOp);
-        assert_eq!(root.effect, EffectClass::Pure);
+        assert_eq!(root.effect, EffectClass::pure());
         let IrData::PrimOp { symbol, args } = root.data else {
             panic!("primop payload expected");
         };
@@ -513,7 +522,7 @@ fn lowers_add_error_context_directly_with_lazy_context_message() {
     let ir = lowered("builtins.addErrorContext (let x = 1; in x) (let y = 2; in y)");
     let root = root_node(&ir);
     assert_eq!(root.kind, IrKind::PrimOp);
-    assert_eq!(root.effect, EffectClass::Pure);
+    assert_eq!(root.effect, EffectClass::pure());
     let IrData::PrimOp { symbol, args } = root.data else {
         panic!("primop payload expected");
     };

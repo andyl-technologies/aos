@@ -250,7 +250,7 @@ fn lowers_direct_derivation_strict_to_effectful_boundary() {
         let ir = lowered_nix(source);
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::DerivationStrict);
-        assert_eq!(root.effect, EffectClass::Effectful);
+        assert_eq!(root.effect, TEST_NIX_EFFECTFUL);
         let IrData::Node(argument) = root.data else {
             panic!("derivationStrict payload expected");
         };
@@ -291,7 +291,7 @@ fn with_shadowed_derivation_strict_lowers_to_effectful_boundary() {
         panic!("with payload expected");
     };
     assert_eq!(node(&ir, body).kind, IrKind::DerivationStrict);
-    assert_eq!(node(&ir, body).effect, EffectClass::Effectful);
+    assert_eq!(node(&ir, body).effect, TEST_NIX_EFFECTFUL);
     let IrData::Node(argument) = node(&ir, body).data else {
         panic!("derivationStrict payload expected");
     };
@@ -314,7 +314,7 @@ fn static_builtin_selects_lower_to_builtin_attr_nodes() {
     let ir = lowered("builtins.length");
     let root = root_node(&ir);
     assert_eq!(root.kind, IrKind::BuiltinAttr);
-    assert_eq!(root.effect, EffectClass::Pure);
+    assert_eq!(root.effect, EffectClass::pure());
     let IrData::Symbol(symbol) = root.data else {
         panic!("builtin attr payload expected");
     };

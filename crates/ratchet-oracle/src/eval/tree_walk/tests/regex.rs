@@ -548,6 +548,7 @@ fn filesystem_builtins_realize_ifd_context_before_reading_paths() {
                 request.path().to_vec(),
                 request.op(),
                 request.context_kind(),
+                request.effect(),
             ));
         fs::create_dir_all(&output_path_for_realizer)
             .map_err(|source| IfdRealizationError::new(source.to_string()))?;
@@ -587,23 +588,28 @@ fn filesystem_builtins_realize_ifd_context_before_reading_paths() {
     assert_eq!(value.as_bool().expect("result is bool"), true);
 
     let requests = requests.lock().expect("request log lock");
-    assert!(requests.iter().any(|(_, op, _)| *op == "readFile"));
-    assert!(requests.iter().any(|(_, op, _)| *op == "readDir"));
-    assert!(requests.iter().any(|(_, op, _)| *op == "pathExists"));
-    assert!(requests.iter().any(|(_, op, _)| *op == "readFileType"));
-    assert!(requests.iter().any(|(_, op, _)| *op == "path"));
-    assert!(requests.iter().any(|(_, op, _)| *op == "import"));
+    assert!(requests.iter().any(|(_, op, _, _)| *op == "readFile"));
+    assert!(requests.iter().any(|(_, op, _, _)| *op == "readDir"));
+    assert!(requests.iter().any(|(_, op, _, _)| *op == "pathExists"));
+    assert!(requests.iter().any(|(_, op, _, _)| *op == "readFileType"));
+    assert!(requests.iter().any(|(_, op, _, _)| *op == "path"));
+    assert!(requests.iter().any(|(_, op, _, _)| *op == "import"));
     assert_eq!(
         requests
             .iter()
-            .filter(|(_, op, _)| *op == "readFile")
+            .filter(|(_, op, _, _)| *op == "readFile")
             .count(),
         2
     );
     assert!(
         requests
             .iter()
-            .all(|(_, _, kind)| *kind == ContextKind::SingleOutput)
+            .all(|(_, _, kind, _)| *kind == ContextKind::SingleOutput)
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|(_, _, _, effect)| *effect == aos_nix_dialect::NIX_EFFECT_IFD)
     );
 
     fs::remove_dir_all(root).expect("temp directory removes");

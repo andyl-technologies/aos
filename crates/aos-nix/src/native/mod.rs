@@ -18,9 +18,9 @@ use anyhow::Result;
 #[cfg(test)]
 use crate::cache::EvalCache;
 use crate::cache::{EvalCacheRuntime, ParseCache, ParseCacheError};
-use crate::compile::{
-    EffectClass, Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, resolve,
-};
+#[cfg(test)]
+use crate::compile::EffectClass;
+use crate::compile::{Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, resolve};
 use crate::drv_materialize::materialize_drv;
 use crate::error::NativeEvalError;
 use crate::eval::tree_walk::{canonicalize_policy_path, normalize_absolute_path_bytes};

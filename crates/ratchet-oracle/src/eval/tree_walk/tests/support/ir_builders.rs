@@ -42,7 +42,7 @@ pub(crate) fn empty_ir(root: IrId, arena: IrArena) -> Ir {
 }
 
 pub(crate) fn pure_node(kind: IrKind, span: Span, data: IrData) -> IrNode {
-    IrNode::new(kind, span, EffectClass::Pure, data)
+    IrNode::new(kind, span, EffectClass::pure(), data)
 }
 
 pub(crate) fn manual_ir(root: IrId, nodes: Vec<IrNode>) -> Ir {

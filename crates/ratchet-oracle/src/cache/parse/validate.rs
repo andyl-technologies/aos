@@ -262,8 +262,8 @@ fn validate_ir_node_effect(ir: &Ir, node: IrNode) -> Result<(), String> {
                 .ok_or_else(|| format!("unknown IR primop symbol {symbol:?}"))?,
             _ => node.effect,
         },
-        IrKind::DerivationStrict => EffectClass::Effectful,
-        _ => EffectClass::Pure,
+        IrKind::DerivationStrict => aos_nix_dialect::nix_effect_of(node.kind),
+        _ => aos_nix_dialect::nix_effect_of(node.kind),
     };
     if node.effect == expected {
         Ok(())
@@ -284,10 +284,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
         | BuiltinDirect::Sort { effect }
         | BuiltinDirect::StrictTernary { effect } => effect,
     };
-    Some(match effect {
-        BuiltinEffect::Pure => EffectClass::Pure,
-        BuiltinEffect::Effectful => EffectClass::Effectful,
-    })
+    Some(aos_nix_dialect::nix_builtin_effect_of(name, effect))
 }
 
 fn validate_ir_data(ir: &Ir, data: IrData) -> Result<(), String> {

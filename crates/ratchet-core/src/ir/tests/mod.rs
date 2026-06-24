@@ -4,8 +4,11 @@
 //! [`lowering_tests`] and [`primop_tests`] submodules.
 
 use super::*;
+use crate::builtins::BuiltinEffect;
 use crate::syntax::{AstArena, parse_str};
 use crate::{ScopeTables, resolve};
+
+const TEST_NIX_EFFECTFUL: EffectClass = EffectClass::new(1, false);
 
 pub(super) fn lowered(source: &str) -> Ir {
     lower(resolve(parse_str(source).expect("source parses")).expect("source resolves"))
@@ -17,18 +20,27 @@ pub(super) fn lowered(source: &str) -> Ir {
 /// without depending on a dialect crate.
 fn nix_effect_of(kind: IrKind) -> EffectClass {
     match kind {
-        IrKind::DerivationStrict => EffectClass::Effectful,
-        _ => EffectClass::Pure,
+        IrKind::DerivationStrict => TEST_NIX_EFFECTFUL,
+        _ => EffectClass::pure(),
+    }
+}
+
+fn nix_builtin_effect_of(_name: Option<&[u8]>, effect: BuiltinEffect) -> EffectClass {
+    match effect {
+        BuiltinEffect::Pure => EffectClass::pure(),
+        BuiltinEffect::Effectful => TEST_NIX_EFFECTFUL,
     }
 }
 
 /// Lowers `source` with the Nix-style effect classifier installed, so
-/// derivation nodes carry [`EffectClass::Effectful`].
+/// derivation and effectful builtin nodes carry [`TEST_NIX_EFFECTFUL`].
 pub(super) fn lowered_nix(source: &str) -> Ir {
     let resolved = resolve(parse_str(source).expect("source parses")).expect("source resolves");
     lower_with_options(
         resolved,
-        IrLowerOptions::new().with_effect_of(nix_effect_of),
+        IrLowerOptions::new()
+            .with_effect_of(nix_effect_of)
+            .with_builtin_effect_of(nix_builtin_effect_of),
     )
     .expect("IR lowers")
 }

@@ -319,7 +319,7 @@ P1 fold these in as they go, rewriting already-done modules to fit.
   [25](25-intermediate-representation.md) §4.7); the dialect owns it rather than
   Core. The resolver's "unresolved name" path becomes a dialect hook (Nix emits
   `WithVar`; other dialects error).
-- [ ] **`EffectClass` → open trait (`S-23`).** Replace the closed
+- [x] **`EffectClass` → open trait (`S-23`).** Replace the closed
   `enum EffectClass { Pure, Effectful }` with a `ratchet-core` trait
   (`is_speculable` + `effect_key`); the Nix dialect supplies the members
   (`import`/IFD/`readFile`/`derivationStrict`). Delete the hardcoded
@@ -390,7 +390,7 @@ migration is Phase 1b ([17](17-roadmap-and-risks.md) §6, [22](22-implementation
   Core — `S-22`.
 - [ ] `ratchet-dialect` registration-time trait, monomorphized, no force-path
   `dyn` (§5) — `S-22`.
-- [ ] Open effect lattice (`is_speculable` + `effect_key`) replacing the closed
+- [x] Open effect lattice (`is_speculable` + `effect_key`) replacing the closed
   enum (§5, §8) — `S-23`.
 
 ### Phase 1b migration (§10)
@@ -398,7 +398,7 @@ migration is Phase 1b ([17](17-roadmap-and-risks.md) §6, [22](22-implementation
 - [ ] Crate split with `ratchet` naming; engine crates reserved per phase.
 - [ ] Core/dialect IR split via the `PrimOp` escape hatch; resolver unresolved-name
   dialect hook.
-- [ ] `EffectClass` → open trait; remove the hardcoded `DerivationStrict` effect.
+- [x] `EffectClass` → open trait; remove the hardcoded `DerivationStrict` effect.
 - [ ] String-context extracted from `ratchet-value` into `aos-nix-dialect`.
 - [ ] Behaviorally inert: `.drv` harness byte-green at exit, on the pre-split
   fixtures.

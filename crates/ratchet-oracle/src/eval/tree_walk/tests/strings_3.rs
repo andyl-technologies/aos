@@ -523,7 +523,7 @@ fn malformed_literal_payloads_are_reported() {
         let root = IrId::new(0);
         let span = Span::new(index as u32, index as u32 + 1);
         let arena = IrArena::from_raw_parts(
-            vec![IrNode::new(kind, span, EffectClass::Pure, data)],
+            vec![IrNode::new(kind, span, EffectClass::pure(), data)],
             Vec::new(),
         );
         let ir = empty_ir(root, arena);

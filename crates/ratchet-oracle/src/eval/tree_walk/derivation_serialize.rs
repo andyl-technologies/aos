@@ -150,7 +150,9 @@ impl TreeWalk {
         &self,
         out: &mut Vec<u8>,
         derivation: &nix_compat::derivation::Derivation,
-        input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>>,
+        input_hashes: Option<
+            &BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
+        >,
     ) {
         match input_hashes {
             Some(input_hashes) => {

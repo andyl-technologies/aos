@@ -649,18 +649,11 @@ pub(super) fn decode_ir_kind(tag: u8) -> Result<IrKind, String> {
 }
 
 pub(super) fn effect_class_tag(effect: EffectClass) -> u8 {
-    match effect {
-        EffectClass::Pure => 0,
-        EffectClass::Effectful => 1,
-    }
+    effect.effect_key()
 }
 
 pub(super) fn decode_effect_class(tag: u8) -> Result<EffectClass, String> {
-    match tag {
-        0 => Ok(EffectClass::Pure),
-        1 => Ok(EffectClass::Effectful),
-        tag => Err(format!("invalid IR effect tag {tag}")),
-    }
+    Ok(EffectClass::from_cache_key(tag))
 }
 
 pub(super) fn node_kind_tag(kind: NodeKind) -> u8 {
