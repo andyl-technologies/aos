@@ -2586,12 +2586,18 @@ impl RpcService {
             .list_cache_frontends(cache.id)
             .await
             .map_err(RpcError::internal)?;
+        let advertise = self
+            .db
+            .cache_advertises_storage_frontend(cache.id)
+            .await
+            .map_err(RpcError::internal)?;
         match self
             .direct_consumer_url(
                 &own,
                 cache.storage_binding_id,
                 &cache.prefix,
                 FrontendSurface::Cache,
+                advertise,
             )
             .await?
         {
@@ -2622,12 +2628,18 @@ impl RpcService {
             .list_frontends(registry.id)
             .await
             .map_err(RpcError::internal)?;
+        let advertise = self
+            .db
+            .registry_advertises_storage_frontend(registry.id)
+            .await
+            .map_err(RpcError::internal)?;
         match self
             .direct_consumer_url(
                 &own,
                 registry.storage_binding_id,
                 &registry.prefix,
                 FrontendSurface::Git,
+                advertise,
             )
             .await?
         {
@@ -2648,8 +2660,10 @@ impl RpcService {
     ///
     /// An inherited frontend is honored only over a `public` binding (the create
     /// gate already forbids a Direct frontend over a private one; this re-checks
-    /// defensively). Returns `None` when no direct frontend serves `surface`, so
-    /// the caller falls back to its hub-served URL.
+    /// defensively) and only when `advertise_inherited` is set — the consumer's
+    /// per-binding opt-out (RFC-0004 §12). A consumer's *own* frontends are
+    /// always honored regardless. Returns `None` when no direct frontend serves
+    /// `surface`, so the caller falls back to its hub-served URL.
     ///
     /// # Errors
     ///
@@ -2660,9 +2674,13 @@ impl RpcService {
         storage_binding_id: Option<i64>,
         prefix: &str,
         surface: FrontendSurface,
+        advertise_inherited: bool,
     ) -> Result<Option<String>, RpcError> {
         if let Some(f) = pick_direct_frontend(own_frontends, surface) {
             return Ok(Some(frontend_base_url(&f.domain, &f.base_path, "")));
+        }
+        if !advertise_inherited {
+            return Ok(None);
         }
         let binding = match storage_binding_id {
             Some(id) => self.db.storage_binding(id).await.map_err(RpcError::internal)?,

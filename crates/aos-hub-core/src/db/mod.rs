@@ -1393,6 +1393,17 @@ pub const MIGRATIONS: &[&str] = &[
         (org_id, name, kind, root, access, public_base_url, is_instance_default, created_at)
         VALUES (NULL, 'default', 'r2', '', 'private', NULL, 1, 0);
     ",
+    // v31: per-consumer advertise toggle for an inherited storage frontend
+    // (RFC-0004 §12). A registry/cache stored in a binding inherits that
+    // binding's frontends by default; this flag lets a specific consumer opt out
+    // of advertising the *inherited* one (its own per-consumer frontends are
+    // unaffected) — e.g. to keep a particular registry hub-proxied even though
+    // its bucket is public. Additive columns default to advertise (today's
+    // behavior), so this is backwards-neutral.
+    "
+    ALTER TABLE registries ADD COLUMN advertise_storage_frontend INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE caches ADD COLUMN advertise_storage_frontend INTEGER NOT NULL DEFAULT 1;
+    ",
 ];
 
 /// Returns every migration's individual SQL statements, in order.
@@ -6620,6 +6631,81 @@ impl Database {
             )
             .await?;
         Ok(n > 0)
+    }
+
+    /// Whether `id` in `table` advertises its inherited storage-binding frontend
+    /// (RFC-0004 §12), defaulting to `true` when the row or column is absent.
+    ///
+    /// `table` is always a fixed internal literal (`"registries"` / `"caches"`),
+    /// never caller input, so the interpolation introduces no injection.
+    async fn advertises_storage_frontend(&self, table: &str, id: i64) -> Result<bool> {
+        let sql = format!("SELECT advertise_storage_frontend FROM {table} WHERE id = ?1");
+        let v: Option<i64> = self
+            .backend
+            .query_opt(&sql, &vals![id])
+            .await?
+            .map(|r| r.get(0))
+            .transpose()?;
+        Ok(v.map(|n| n != 0).unwrap_or(true))
+    }
+
+    /// Set whether `id` in `table` advertises its inherited storage frontend.
+    /// Returns `false` when no row has `id`.
+    async fn set_advertises_storage_frontend(
+        &self,
+        table: &str,
+        id: i64,
+        advertise: bool,
+    ) -> Result<bool> {
+        let sql = format!("UPDATE {table} SET advertise_storage_frontend = ?2 WHERE id = ?1");
+        let n = self.backend.execute(&sql, &vals![id, advertise]).await?;
+        Ok(n > 0)
+    }
+
+    /// Whether a registry advertises its inherited storage-binding frontend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn registry_advertises_storage_frontend(&self, id: i64) -> Result<bool> {
+        self.advertises_storage_frontend("registries", id).await
+    }
+
+    /// Whether a managed cache advertises its inherited storage-binding frontend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cache_advertises_storage_frontend(&self, id: i64) -> Result<bool> {
+        self.advertises_storage_frontend("caches", id).await
+    }
+
+    /// Set whether a registry advertises its inherited storage frontend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn set_registry_advertise_storage_frontend(
+        &self,
+        id: i64,
+        advertise: bool,
+    ) -> Result<bool> {
+        self.set_advertises_storage_frontend("registries", id, advertise)
+            .await
+    }
+
+    /// Set whether a managed cache advertises its inherited storage frontend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn set_cache_advertise_storage_frontend(
+        &self,
+        id: i64,
+        advertise: bool,
+    ) -> Result<bool> {
+        self.set_advertises_storage_frontend("caches", id, advertise)
+            .await
     }
 
     /// Look up a storage binding by `(org_id, name)`.
@@ -12765,6 +12851,36 @@ mod tests {
         assert!(def.is_instance_default);
         assert_eq!(def.org_id, None);
         assert_eq!(def.access, "private");
+    }
+
+    #[tokio::test]
+    async fn advertise_storage_frontend_toggle_defaults_on_and_updates() {
+        // RFC-0004 §12: a consumer advertises its inherited storage frontend by
+        // default and can opt out per-consumer.
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("acme", "Acme").await.unwrap();
+        let reg = db
+            .create_managed_registry(org, "team", "cdn", "public", None, "", &[], false)
+            .await
+            .unwrap();
+        assert!(db.registry_advertises_storage_frontend(reg).await.unwrap());
+        assert!(db
+            .set_registry_advertise_storage_frontend(reg, false)
+            .await
+            .unwrap());
+        assert!(!db.registry_advertises_storage_frontend(reg).await.unwrap());
+        // Re-enabling restores the default behavior.
+        assert!(db
+            .set_registry_advertise_storage_frontend(reg, true)
+            .await
+            .unwrap());
+        assert!(db.registry_advertises_storage_frontend(reg).await.unwrap());
+        // A missing id is a no-op update (and reads as the default).
+        assert!(!db
+            .set_cache_advertise_storage_frontend(9999, false)
+            .await
+            .unwrap());
+        assert!(db.cache_advertises_storage_frontend(9999).await.unwrap());
     }
 
     #[tokio::test]
