@@ -2,7 +2,7 @@
 
 use clap::ValueEnum;
 
-use aos_core::nix::diff::DiffMode;
+use aos_nix_harness::diff::DiffMode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum NixDiffMode {

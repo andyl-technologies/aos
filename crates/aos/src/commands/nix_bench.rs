@@ -14,12 +14,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use aos_core::error::AosError;
-use aos_core::nix::diff::{DiffMode, DrvDiffReport, diff_closure};
 use aos_core::nix::{
     NixCli, NixEval, NixEvalConfig, NixEvalMode, NixRunner,
     select_native_diff_candidate_with_config,
 };
 use aos_core::output::{OutputMode, Printer};
+use aos_nix_harness::diff::{DiffMode, DrvDiffReport, diff_closure};
 
 use corpus::{BenchmarkSpec, benchmark_specs};
 

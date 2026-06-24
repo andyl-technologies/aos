@@ -3,10 +3,10 @@
 //! This crate owns the strongly-connected oracle cluster carved out of the
 //! `aos-nix` monolith in RFC-0007 §1.1 Phase 1b: the safe tree-walk evaluator
 //! ([`eval`]), the runtime builtin execution layer ([`runtime`]), the
-//! incremental frontend cache ([`cache`]), byte-oriented Nix strings with their
-//! string contexts ([`string`]), and derivation materialization
-//! ([`drv_materialize`]). These modules mutually depend and form the safe
-//! reference implementation that faster execution tiers validate against.
+//! incremental frontend cache ([`cache`]), and byte-oriented Nix strings with
+//! their string contexts ([`string`]). These modules mutually depend and form
+//! the safe reference implementation that faster execution tiers validate
+//! against. Nix store-format helpers live in `aos-nix-compat`.
 //!
 //! The crate sits above the value and frontend crates (`ratchet-value`,
 //! `ratchet-core`, `aos-nix-syntax`) and below the `aos-nix` umbrella, which
@@ -21,7 +21,6 @@ pub use ratchet_core as compile;
 pub use ratchet_value::{attrs, heap, list, value};
 
 pub mod cache;
-pub mod drv_materialize;
 pub mod eval;
 pub mod runtime;
 pub mod string;

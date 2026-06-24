@@ -29,6 +29,8 @@
 //! - [`list`] owns the Phase-1 immutable list-spine representation.
 //! - [`string`] owns byte-oriented Nix strings and string contexts.
 //! - [`runtime`] owns shared runtime metadata such as builtin declarations.
+//! - [`drv_materialize`] re-exports Nix store-format materialization from
+//!   `aos-nix-compat`.
 //!
 //! The Phase-1 value ABI is intentionally host-portable only across the
 //! RFC-supported matrix: 64-bit x86-64 or AArch64 hosts on Linux or Darwin.
@@ -49,11 +51,11 @@ compile_error!("aos-nix supports only x86-64 and AArch64 host architectures");
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("aos-nix supports only Linux and Darwin host operating systems");
 
+pub use aos_nix_compat::drv_materialize;
 pub use ratchet_core as compile;
 pub use ratchet_oracle::cache;
 pub use ratchet_value::attrs;
 pub mod diagnostic;
-pub use ratchet_oracle::drv_materialize;
 pub mod error;
 pub use ratchet_oracle::eval;
 pub use ratchet_value::heap;

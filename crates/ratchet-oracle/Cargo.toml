@@ -8,6 +8,7 @@ default = []
 
 [dependencies]
 anyhow = { workspace = true }
+aos-nix-compat = { workspace = true }
 aos-nix-syntax = { workspace = true }
 ratchet-core = { workspace = true }
 aos-nix-dialect = { workspace = true }

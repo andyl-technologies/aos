@@ -23,7 +23,7 @@ use anyhow::{Context, Result};
 
 use super::env::aos_nix_command;
 use super::eval::{DrvClosure, NixEval, NixEvalConfig};
-use crate::nix::drv::parse_drv_input_drvs_from_bytes;
+use aos_nix_compat::drv::parse_drv_input_drvs_from_bytes;
 
 /// Metadata for a store path, from nix-store queries or Nix DB.
 #[derive(Debug, Clone)]

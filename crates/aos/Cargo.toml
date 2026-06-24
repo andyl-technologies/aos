@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 aos-core = { workspace = true }
+aos-nix-harness = { workspace = true }
 aos-server = { workspace = true }
 aos-cache = { workspace = true }
 aos-remote = { workspace = true }

@@ -9,6 +9,7 @@ native-eval = ["dep:aos-nix"]
 
 [dependencies]
 anyhow = { workspace = true }
+aos-nix-compat = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,7 +27,6 @@ alejandra = { workspace = true }
 tokio = { workspace = true }
 atty = { workspace = true }
 tracing = { workspace = true }
-nix-compat = { workspace = true }
 tempfile = { workspace = true }
 aos-nix = { workspace = true, optional = true }
 

@@ -5,11 +5,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use aos_core::nix::diff::{DiffMode, DrvDiff, diff_closure};
 use aos_core::nix::{
     DrvClosure, NixCli, NixEval, NixEvalConfig, NixEvalMode, aos_nix_command,
     select_native_diff_candidate_with_config,
 };
+use aos_nix_harness::diff::{DiffMode, DrvDiff, diff_closure};
 
 #[test]
 fn native_diff_candidate_matches_cli_drv_closure_in_all_modes() -> Result<()> {

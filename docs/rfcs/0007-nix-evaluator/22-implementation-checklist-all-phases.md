@@ -126,7 +126,7 @@ the [per-doc checklist index](#per-doc-checklist-index) below.
 | Phase | Goal | Rollout gate unlocked | Status |
 |-------|------|-----------------------|--------|
 | **P1** | Frontend + scope + tree-walk oracle + `.drv` harness; **full language + builtins parity achieved, IA *and* CA derivations** (C-11); thunk state atomic from day 1 (C-12) | Phase A (default Off, harness in CI); Phase B (Shadow) once enough of the closure is byte-green | ☐ |
-| **P1b** | Re-layer the monolith into `ratchet` engine + Nix dialect (S-22); open effect lattice (S-23); behaviorally inert, harness byte-green | (no new rollout gate; parity held) | ☐ |
+| **P1b** | Re-layer the monolith into `ratchet` engine + Nix dialect (S-22); open effect lattice (S-23); behaviorally inert, harness byte-green | (no new rollout gate; parity held) | ☑ |
 | **P1.5** | **Baseline characterization** (measure-first, *not* a kill gate): record where eval time goes; P2–P8 are built regardless | — (informs ordering/parallelism; does **not** decide whether P2–P8 happen) | ☐ |
 | **P2** | Incremental early-cutoff cache + hash-consing (rank 1) | Phase B (Shadow) hardened; Phase C (On for `eval_expr`) becomes reachable | ☐ |
 | **P3** | Bump-arena heap + precise generational GC (rank 2) | (parity held; trust schedule continues) | ☐ |
@@ -331,13 +331,14 @@ untouched and stays byte-green.
 
 **Decisions closed/measured.**
 
-- [ ] Closes: `S-22` (Core + dialect / `ratchet` topology, Nix-only delivery),
+- [x] Closes: `S-22` (Core + dialect / `ratchet` topology, Nix-only delivery),
       `S-23` (open, dialect-supplied effect lattice).
 
-**EXIT CRITERIA (falsifiable).** The `.drv`-diff harness is byte-green on the
-**same fixtures as before the split** (behaviorally inert); the crate boundaries
-match [28](28-generalization-and-language-dialects.md) §3 /
-[27](27-engineering-standards.md) §1.1; complete before Phase 2 begins.
+**EXIT CRITERIA (falsifiable) — MET (2026-06-24).** The `.drv`-diff harness is
+byte-green on the **same fixtures as before the split** (behaviorally inert);
+the crate boundaries match [28](28-generalization-and-language-dialects.md) §3 /
+[27](27-engineering-standards.md) §1.1; complete before Phase 2 begins. Evidence:
+`cargo test --manifest-path crates/Cargo.toml -p aos-nix-harness --features native-eval`.
 
 **Rollout gate unlocked.** None (no new rollout gate; parity held — the trust
 schedule continues unchanged).

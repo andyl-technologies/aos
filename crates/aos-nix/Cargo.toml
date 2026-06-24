@@ -8,6 +8,7 @@ default = []
 
 [dependencies]
 anyhow = { workspace = true }
+aos-nix-compat = { workspace = true }
 aos-nix-syntax = { workspace = true }
 ratchet-core = { workspace = true }
 aos-nix-dialect = { workspace = true }
@@ -20,7 +21,6 @@ flate2 = { workspace = true }
 git2 = { workspace = true }
 md-5 = { workspace = true }
 miette = { workspace = true }
-nix-compat = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
 serde_json = { workspace = true }
@@ -36,5 +36,6 @@ xz2 = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
+nix-compat = { workspace = true }
 proptest = { workspace = true }
 ratchet-core = { workspace = true, features = ["test-util"] }

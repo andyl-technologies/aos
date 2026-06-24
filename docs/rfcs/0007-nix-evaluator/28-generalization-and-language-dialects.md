@@ -111,7 +111,9 @@ NIX = the first dialect  (a per-language band; repeats per future language)
    aos-nix-dialect    SAFE     derivationStrict, `with` lowering, the builtin
                                table, string-context semantics, Nix effects,
                                Nix-specific rewrite rules (list fusion)
-   aos-nix-compat     SAFE     ATerm / .drv / store-path hashing (nix-compat glue)
+   aos-nix-compat     SAFE     ATerm / .drv parsing/materialization;
+                               store-path hashing adapter extraction remains
+                               staged behind pure APIs
    aos-nix-harness    SAFE     the differential .drv-diff harness vs C++ Nix
    aos-nix            UMBRELLA  the AOS-facing Evaluator: wires the Nix dialect
                                onto ratchet; NixNative shims over this
@@ -304,13 +306,16 @@ P1 fold these in as they go, rewriting already-done modules to fit.
 
 ### Phase 1b checklist
 
-- [ ] **Crate split with `ratchet` naming.** Break the `aos-nix` monolith into
+- [x] **Crate split with `ratchet` naming.** Break the `aos-nix` monolith into
   `ratchet-core` (from `compile/ir.rs` + `compile/scope.rs`), `ratchet-oracle`
   (from `eval/`), `ratchet-value` (from `value.rs`/`list.rs`/`attrs.rs`/`heap/`),
   `ratchet-dialect` (new), and the Nix band (`aos-nix` umbrella, `aos-nix-syntax`
   from `syntax/`, `aos-nix-dialect` new, `aos-nix-compat` from the store glue,
   `aos-nix-harness`). Reserve but do not create `ratchet-gc` (P3),
   `ratchet-cache` (P2), `ratchet-jit` (P6), `ratchet-parallel` (P3.5).
+  Implemented as workspace crates: `aos-nix-compat` owns `.drv` ATerm parsing and
+  materialization helpers, `aos-nix-harness` owns reusable `.drv` diff logic, and
+  `aos` keeps CLI rendering/orchestration.
 - [x] **Core/dialect IR split.** Generic `IrKind` stays in `ratchet-core`;
   `DerivationStrict` and `WithVar` are dialect-owned ops registered through the
   same indexed escape-hatch *mechanism* as `PrimOp(symbol, args)` — not collapsed
@@ -324,15 +329,15 @@ P1 fold these in as they go, rewriting already-done modules to fit.
   (`is_speculable` + `effect_key`); the Nix dialect supplies the members
   (`import`/IFD/`readFile`/`derivationStrict`). Delete the hardcoded
   `effect_for(DerivationStrict) => Effectful`.
-- [ ] **String-context extraction.** `ratchet-value` keeps the generic tagged
+- [x] **String-context extraction.** `ratchet-value` keeps the generic tagged
   value + hash-consing; the context bitset + union-on-concat semantics move to
   `aos-nix-dialect`, with the engine's cons-key hashing taking a dialect-supplied
   discriminator so identical-bytes / different-context strings still do not
   collapse.
-- [ ] **`ratchet-dialect` trait definition.** The registration-time interface of
+- [x] **`ratchet-dialect` trait definition.** The registration-time interface of
   §5 (extra ops, effect members, primop table, rewrite rules, lowering hooks);
   monomorphized, never `dyn` on the force path.
-- [ ] **Habit guard (carries through the rest of P1).** No new Nix-specific
+- [x] **Habit guard (carries through the rest of P1).** No new Nix-specific
   `IrKind` variants — every new builtin routes through `PrimOp`; keep
   string-context confined to the dialect.
 
@@ -384,7 +389,7 @@ migration is Phase 1b ([17](17-roadmap-and-risks.md) §6, [22](22-implementation
 
 ### Architecture (this doc)
 
-- [ ] `ratchet-*` naming and the three-band topology adopted (§3) — `S-22`.
+- [x] `ratchet-*` naming and the three-band topology adopted (§3) — `S-22`.
 - [x] Core/dialect boundary drawn at the IR (§4): `DerivationStrict`, `with`,
   string-context, builtins, effect members are the Nix dialect; everything else is
   Core — `S-22`.
@@ -395,10 +400,10 @@ migration is Phase 1b ([17](17-roadmap-and-risks.md) §6, [22](22-implementation
 
 ### Phase 1b migration (§10)
 
-- [ ] Crate split with `ratchet` naming; engine crates reserved per phase.
+- [x] Crate split with `ratchet` naming; engine crates reserved per phase.
 - [x] Core/dialect IR split via the `PrimOp` escape hatch; resolver unresolved-name
   dialect hook.
 - [x] `EffectClass` → open trait; remove the hardcoded `DerivationStrict` effect.
-- [ ] String-context extracted from `ratchet-value` into `aos-nix-dialect`.
-- [ ] Behaviorally inert: `.drv` harness byte-green at exit, on the pre-split
-  fixtures.
+- [x] String-context extracted from `ratchet-value` into `aos-nix-dialect`.
+- [x] Behaviorally inert: `.drv` harness byte-green at exit, on the pre-split
+  fixtures. Evidence: `cargo test --manifest-path crates/Cargo.toml -p aos-nix-harness --features native-eval`.

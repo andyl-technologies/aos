@@ -44,6 +44,7 @@ use clap::Parser;
 use aos_core::error::AosError;
 use aos_core::nix::{NixEvalConfig, NixEvalMode, NixRunner};
 use aos_core::output::Printer;
+use aos_nix_harness::diff::DiffMode;
 use cli::{Cli, Commands};
 
 /// Process entry point: installs the panic hook, applies the multicall
@@ -339,7 +340,7 @@ fn run_nix_diff_pair_threaded(
     candidate_drv: PathBuf,
     oracle_bundle: Option<PathBuf>,
     candidate_bundle: Option<PathBuf>,
-    mode: aos_core::nix::diff::DiffMode,
+    mode: DiffMode,
 ) -> Result<()> {
     const NIX_DIFF_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -372,7 +373,7 @@ fn run_nix_diff_threaded(
     attr: Option<String>,
     all: bool,
     systems: bool,
-    mode: aos_core::nix::diff::DiffMode,
+    mode: DiffMode,
     oracle_stats: bool,
 ) -> Result<()> {
     const NIX_DIFF_STACK_SIZE: usize = 32 * 1024 * 1024;

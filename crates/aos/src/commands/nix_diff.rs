@@ -10,15 +10,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 
 use aos_core::error::AosError;
-use aos_core::nix::diff::{
-    DiffMode, DiffSide, DrvDiff, DrvDiffPair, DrvDiffReport, diff_closure,
-    diff_drv_pair_with_bundles,
-};
 use aos_core::nix::{
     NixCli, NixEval, NixEvalConfig, NixEvalMode, NixInstantiateStats, NixRunner,
     select_native_diff_candidate_with_config,
 };
 use aos_core::output::{OutputMode, Printer};
+use aos_nix_harness::diff::{
+    DiffMode, DiffSide, DrvDiff, DrvDiffPair, DrvDiffReport, diff_closure,
+    diff_drv_pair_with_bundles,
+};
 
 const EXPLICIT_TOOLCHAIN_CORPUS_ATTRS: &[&str] = &[
     "stdenv.stdenv",
@@ -2259,7 +2259,7 @@ mod tests {
             root_divergences: vec![pair.clone()],
             contaminated_divergences: Vec::new(),
             file_backed_pairs: Vec::new(),
-            node_artifacts: vec![aos_core::nix::diff::DrvDiffNodeArtifact {
+            node_artifacts: vec![aos_nix_harness::diff::DrvDiffNodeArtifact {
                 pair,
                 oracle_bundle: Some(oracle_bundle.clone()),
                 candidate_bundle: Some(candidate_bundle.clone()),

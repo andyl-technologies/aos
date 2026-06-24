@@ -24,6 +24,13 @@ impl DrvMaterializationError {
 }
 
 /// Writes `bytes` to `path` without leaving partial final-path contents behind.
+///
+/// # Errors
+///
+/// Returns [`DrvMaterializationError`] when the destination path has no parent
+/// or file name, the parent directory cannot be created, existing file contents
+/// conflict with `bytes`, or temporary-file creation, sync, hard-link, or cleanup
+/// fails.
 pub fn materialize_drv(path: &Path, bytes: &[u8]) -> Result<(), DrvMaterializationError> {
     let parent = path.parent().ok_or_else(|| {
         DrvMaterializationError::new(format!(

@@ -5,6 +5,8 @@ members = [
     "aos-core",
     "aos-nix",
     "aos-nix-syntax",
+    "aos-nix-compat",
+    "aos-nix-harness",
     "ratchet-core",
     "ratchet-dialect",
     "aos-nix-dialect",
@@ -117,6 +119,8 @@ rcgen = "0.14"
 aos-core = { path = "aos-core" }
 aos-nix = { path = "aos-nix" }
 aos-nix-syntax = { path = "aos-nix-syntax" }
+aos-nix-compat = { path = "aos-nix-compat" }
+aos-nix-harness = { path = "aos-nix-harness" }
 ratchet-core = { path = "ratchet-core" }
 ratchet-dialect = { path = "ratchet-dialect" }
 aos-nix-dialect = { path = "aos-nix-dialect" }

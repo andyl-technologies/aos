@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 aos-core = { workspace = true }
+aos-nix-compat = { workspace = true }
 aos-net = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
