@@ -3,11 +3,13 @@
 //! These tests lock the public Contract-A launch API to the deterministic
 //! launch surface required by RFC-0010 T-DET-1.
 
-use crucible::{ClockDriftRate, NodeClockSkew, ScenarioDef, SimOffset};
+use crucible::{ClockDriftRate, ContentHash, NodeClockSkew, ScenarioDef, SimOffset};
 use crucible_qemu::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
     IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
-    NodeClockSkewDeclaration, NodeIcountShift, QemuPreSpawnLaunchValidationError,
+    NodeClockSkewDeclaration, NodeIcountShift, QemuLaunchArtifact, QemuLaunchCommand,
+    QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
+    QemuLaunchPluginSwitch, QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig,
     validate_pre_spawn_qemu_launch_args,
 };
 
@@ -16,6 +18,45 @@ fn default_profile() -> DeterministicLaunchProfile {
         Ok(profile) => profile,
         Err(error) => panic!("default deterministic launch profile failed: {error}"),
     }
+}
+
+fn default_plugin_config() -> QemuLaunchPluginConfig {
+    QemuLaunchPluginConfig::new(
+        "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
+        0,
+    )
+}
+
+fn default_vm_config() -> QemuVmLaunchConfig {
+    QemuVmLaunchConfig::new(
+        "vm-a",
+        artifact(
+            "kernel",
+            "/nix/store/33333333333333333333333333333333-crucible-kernel/bzImage",
+        ),
+        artifact(
+            "root-image",
+            "/nix/store/44444444444444444444444444444444-crucible-root/root.qcow2",
+        ),
+    )
+}
+
+fn default_qemu_binary() -> &'static str {
+    "/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-x86_64"
+}
+
+fn artifact(domain: &str, path: &str) -> QemuLaunchArtifact {
+    QemuLaunchArtifact::new(ContentHash::from_canonical_material(domain, path), path)
+}
+
+fn default_launch_command() -> QemuLaunchCommand {
+    default_profile()
+        .qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config(),
+        )
+        .unwrap_or_else(|error| panic!("default QEMU launch command failed: {error}"))
 }
 
 fn deterministic(candidate: LaunchProfileCandidate) -> DeterministicLaunchProfile {
@@ -865,6 +906,301 @@ fn launch_hash_material_records_every_determinism_field() {
     assert_ne!(material, cmdline);
     assert_ne!(material, scenario_seed);
     assert_ne!(material, run_seed);
+}
+
+#[test]
+fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
+    let command = default_launch_command();
+    let args = command.args();
+
+    assert_eq!(command.executable(), default_qemu_binary());
+    assert!(args.windows(2).any(|window| {
+        window
+            == [
+                "-kernel",
+                "/nix/store/33333333333333333333333333333333-crucible-kernel/bzImage",
+            ]
+    }));
+    assert!(args.windows(2).any(|window| {
+        window
+            == [
+                "-drive",
+                "id=crucible-root0,file=crucible-root-overlay.qcow2,backing.file=/nix/store/44444444444444444444444444444444-crucible-root/root.qcow2,backing.format=qcow2,if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
+            ]
+    }));
+    assert!(args.windows(2).any(|window| {
+        window
+            == [
+                "-device",
+                "virtio-blk-pci,drive=crucible-root0,id=crucible-root-device0,bootindex=0",
+            ]
+    }));
+    assert!(args.windows(2).any(|window| {
+        window
+            == [
+                "-plugin",
+                "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off",
+            ]
+    }));
+    assert!(
+        validate_pre_spawn_qemu_launch_args(args).is_ok(),
+        "full launch command must remain accepted by the pre-spawn determinism validator"
+    );
+
+    let material = command.command_line_hash_material();
+    for expected in [
+        "crucible.qemu-launch-command.v1",
+        "command_line_in_hash=executable-and-argv",
+        "executable=/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-x86_64",
+        "argv[0]=-nodefaults",
+        "argv[14]=-accel",
+        "argv[15]=tcg,thread=single",
+        "argv[34]=-kernel",
+        "argv[35]=/nix/store/33333333333333333333333333333333-crucible-kernel/bzImage",
+        "argv[40]=-plugin",
+        "argv[41]=/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off",
+    ] {
+        assert!(material.contains(expected), "missing {expected}");
+    }
+
+    let vm_config = default_vm_config().with_initrd(artifact(
+        "initrd",
+        "/nix/store/55555555555555555555555555555555-crucible-initrd/initrd",
+    ));
+    let plugin_config =
+        QemuLaunchPluginConfig::new(
+            "/nix/store/66666666666666666666666666666666-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
+            2,
+        )
+        .with_whitebox(QemuLaunchPluginSwitch::On)
+        .with_coverage(QemuLaunchPluginSwitch::On);
+    assert_eq!(
+        plugin_config.plugin_args_raw(),
+        "simfd=3,slot=2,shmemfd=4,wakefd=5,whitebox=on,coverage=on"
+    );
+    let command = default_profile()
+        .qemu_launch_command(vm_config, default_qemu_binary(), plugin_config)
+        .unwrap_or_else(|error| panic!("complete plugin launch command should build: {error}"));
+    assert!(command.args().windows(2).any(|window| {
+        window == [
+            "-plugin",
+            "/nix/store/66666666666666666666666666666666-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=2,shmemfd=4,wakefd=5,whitebox=on,coverage=on",
+        ]
+    }));
+    assert!(command.args().windows(2).any(|window| {
+        window
+            == [
+                "-initrd",
+                "/nix/store/55555555555555555555555555555555-crucible-initrd/initrd",
+            ]
+    }));
+    let vm_material = command.vm_launch_hash_material();
+    for expected in [
+        "crucible.qemu-vm-launch.v1",
+        "node_id=vm-a",
+        "kernel_hash=",
+        "root_image_hash=",
+        "root_disk_policy=copy-on-write-overlay",
+        "root_overlay_file=crucible-root-overlay.qcow2",
+        "root_device_model=virtio-blk-pci",
+        "initrd_hash=",
+    ] {
+        assert!(vm_material.contains(expected), "missing {expected}");
+    }
+}
+
+#[test]
+fn launch_command_hash_material_feeds_scenario_identity() {
+    let profile = default_profile();
+    let command = profile
+        .qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config(),
+        )
+        .unwrap_or_else(|error| panic!("default launch command should build: {error}"));
+    let repeated = profile
+        .qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config(),
+        )
+        .unwrap_or_else(|error| panic!("repeated launch command should build: {error}"));
+    let changed_slot = profile
+        .qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            QemuLaunchPluginConfig::new(
+                "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
+                1,
+            ),
+        )
+        .unwrap_or_else(|error| panic!("changed-slot launch command should build: {error}"));
+    let changed_kernel = profile
+        .qemu_launch_command(
+            QemuVmLaunchConfig::new(
+                "vm-a",
+                artifact(
+                    "kernel-alt",
+                    "/nix/store/77777777777777777777777777777777-crucible-kernel/bzImage",
+                ),
+                artifact(
+                    "root-image",
+                    "/nix/store/44444444444444444444444444444444-crucible-root/root.qcow2",
+                ),
+            ),
+            default_qemu_binary(),
+            default_plugin_config(),
+        )
+        .unwrap_or_else(|error| panic!("changed-kernel launch command should build: {error}"));
+    let changed_qemu = profile
+        .qemu_launch_command(
+            default_vm_config(),
+            "/nix/store/88888888888888888888888888888888-aos-qemu/bin/qemu-system-x86_64",
+            default_plugin_config(),
+        )
+        .unwrap_or_else(|error| panic!("changed-qemu launch command should build: {error}"));
+    let changed_path = profile
+        .qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            QemuLaunchPluginConfig::new(
+                "/nix/store/99999999999999999999999999999999-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
+                0,
+            ),
+        )
+        .unwrap_or_else(|error| panic!("changed-path launch command should build: {error}"));
+
+    let material = profile.scenario_hash_material_for_launch_command(&command);
+    let repeated_material = profile.scenario_hash_material_for_launch_command(&repeated);
+    let changed_slot_material = profile.scenario_hash_material_for_launch_command(&changed_slot);
+    let changed_kernel_material =
+        profile.scenario_hash_material_for_launch_command(&changed_kernel);
+    let changed_qemu_material = profile.scenario_hash_material_for_launch_command(&changed_qemu);
+    let changed_path_material = profile.scenario_hash_material_for_launch_command(&changed_path);
+
+    let scenario =
+        ScenarioDef::from_canonical_material("crucible.scenario.v1.qemu-launch", &material);
+    let repeated_scenario = ScenarioDef::from_canonical_material(
+        "crucible.scenario.v1.qemu-launch",
+        &repeated_material,
+    );
+    let changed_slot_scenario = ScenarioDef::from_canonical_material(
+        "crucible.scenario.v1.qemu-launch",
+        &changed_slot_material,
+    );
+    let changed_kernel_scenario = ScenarioDef::from_canonical_material(
+        "crucible.scenario.v1.qemu-launch",
+        &changed_kernel_material,
+    );
+    let changed_qemu_scenario = ScenarioDef::from_canonical_material(
+        "crucible.scenario.v1.qemu-launch",
+        &changed_qemu_material,
+    );
+    let changed_path_scenario = ScenarioDef::from_canonical_material(
+        "crucible.scenario.v1.qemu-launch",
+        &changed_path_material,
+    );
+
+    assert_eq!(scenario, repeated_scenario);
+    assert_ne!(scenario.id, changed_slot_scenario.id);
+    assert_ne!(scenario.id, changed_kernel_scenario.id);
+    assert_ne!(scenario.id, changed_qemu_scenario.id);
+    assert_ne!(scenario.id, changed_path_scenario.id);
+}
+
+#[test]
+fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
+    let profile = default_profile();
+
+    assert_eq!(
+        QemuLaunchCommandBuilder::new(
+            profile.clone(),
+            default_vm_config(),
+            "",
+            default_plugin_config(),
+        )
+        .build(),
+        Err(QemuLaunchCommandError::InvalidLaunchText {
+            field: "qemu_executable",
+        })
+    );
+    assert_eq!(
+        profile.qemu_launch_command(
+            default_vm_config(),
+            "qemu-system-x86_64",
+            default_plugin_config()
+        ),
+        Err(QemuLaunchCommandError::InvalidStorePath {
+            field: "qemu_executable",
+            path: String::from("qemu-system-x86_64"),
+        })
+    );
+    assert_eq!(
+        profile.qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            QemuLaunchPluginConfig::new("/nix/store/bad,plugin/lib/libcrucible_qemu_plugin.so", 0,),
+        ),
+        Err(QemuLaunchCommandError::PluginPathContainsComma)
+    );
+    assert_eq!(
+        profile.qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            QemuLaunchPluginConfig::new("plugin.so", 0),
+        ),
+        Err(QemuLaunchCommandError::InvalidStorePath {
+            field: "plugin_path",
+            path: String::from("plugin.so"),
+        })
+    );
+    assert_eq!(
+        profile.qemu_launch_command(
+            QemuVmLaunchConfig::new(
+                "vm-a",
+                artifact("kernel", "relative-kernel"),
+                artifact(
+                    "root-image",
+                    "/nix/store/44444444444444444444444444444444-crucible-root/root.qcow2",
+                ),
+            ),
+            default_qemu_binary(),
+            default_plugin_config(),
+        ),
+        Err(QemuLaunchCommandError::InvalidStorePath {
+            field: "kernel_path",
+            path: String::from("relative-kernel"),
+        })
+    );
+    assert_eq!(
+        profile.qemu_launch_command(
+            QemuVmLaunchConfig::new(
+                "vm-a",
+                artifact("kernel", "/nix/store/../tmp/kernel"),
+                artifact(
+                    "root-image",
+                    "/nix/store/44444444444444444444444444444444-crucible-root/root.qcow2",
+                ),
+            ),
+            default_qemu_binary(),
+            default_plugin_config(),
+        ),
+        Err(QemuLaunchCommandError::InvalidStorePath {
+            field: "kernel_path",
+            path: String::from("/nix/store/../tmp/kernel"),
+        })
+    );
+    assert_eq!(
+        profile.qemu_launch_command(
+            default_vm_config().with_root_overlay_file_name("../root.qcow2"),
+            default_qemu_binary(),
+            default_plugin_config(),
+        ),
+        Err(QemuLaunchCommandError::InvalidOverlayFileName {
+            file_name: String::from("../root.qcow2"),
+        })
+    );
 }
 
 fn qemu_args<const N: usize>(parts: [&str; N]) -> Vec<String> {

@@ -48,7 +48,9 @@ pub use launch::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
     GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
     LaunchProfileCandidate, LaunchProfileError, MachineResetMode, NodeClockSkewDeclaration,
-    NodeIcountShift, QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError,
+    NodeIcountShift, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
+    QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig,
     validate_pre_spawn_qemu_launch_args,
 };
 pub use qmp::{

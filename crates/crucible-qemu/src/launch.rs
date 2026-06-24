@@ -10,9 +10,10 @@ mod validation;
 
 use std::fmt;
 
-use crucible::NodeClockSkew;
+use crucible::{ContentHash, NodeClockSkew};
 use entropy::{GUEST_ENTROPY_FW_CFG_NAME, GUEST_ENTROPY_RNG_ID, GUEST_ENTROPY_SEED_FILE_NAME};
 pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
+use thiserror::Error;
 pub use validation::{
     LaunchProfileError, QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError,
     validate_pre_spawn_qemu_launch_args,
@@ -31,6 +32,18 @@ const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet nokas
 const DEFAULT_SCENARIO_SEED: u64 = 0x0010_c001;
 const DEFAULT_RUN_SEED: u64 = 0x0010_c001;
 const DEFAULT_RR_SWITCH_QUANTUM: u64 = 4096;
+const PLUGIN_ARG_SIMFD: &str = "simfd";
+const PLUGIN_ARG_SLOT: &str = "slot";
+const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
+const PLUGIN_ARG_WAKEFD: &str = "wakefd";
+const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
+const PLUGIN_ARG_COVERAGE: &str = "coverage";
+const FIXED_PLUGIN_SIM_FD: i32 = 3;
+const FIXED_PLUGIN_SHMEM_FD: i32 = 4;
+const FIXED_PLUGIN_WAKE_FD: i32 = 5;
+const DEFAULT_ROOT_OVERLAY_FILE_NAME: &str = "crucible-root-overlay.qcow2";
+const ROOT_DRIVE_ID: &str = "crucible-root0";
+const ROOT_DEVICE_ID: &str = "crucible-root-device0";
 const MAX_ICOUNT_SHIFT: u8 = 62;
 
 /// A candidate QEMU launch profile before determinism validation.
@@ -373,6 +386,432 @@ impl NodeClockSkewDeclaration {
     }
 }
 
+/// A validated QEMU launch command prepared for process spawning.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLaunchCommand {
+    executable: String,
+    args: Vec<String>,
+    vm_hash_material: String,
+}
+
+impl QemuLaunchCommand {
+    /// Returns the executable name or path that will be invoked.
+    #[must_use]
+    pub fn executable(&self) -> &str {
+        &self.executable
+    }
+
+    /// Returns the argv tail passed after the executable.
+    #[must_use]
+    pub fn args(&self) -> &[String] {
+        &self.args
+    }
+
+    /// Returns the world-derived VM launch material paired with this command.
+    #[must_use]
+    pub fn vm_launch_hash_material(&self) -> &str {
+        &self.vm_hash_material
+    }
+
+    /// Returns canonical material for hashing the complete QEMU command line.
+    #[must_use]
+    pub fn command_line_hash_material(&self) -> String {
+        let mut lines = Vec::with_capacity(self.args.len() + 3);
+        lines.push("crucible.qemu-launch-command.v1".to_owned());
+        lines.push("command_line_in_hash=executable-and-argv".to_owned());
+        lines.push(format!("executable={}", self.executable));
+        for (index, argument) in self.args.iter().enumerate() {
+            lines.push(format!("argv[{index}]={argument}"));
+        }
+        lines.join("\n")
+    }
+}
+
+/// Builds the concrete QEMU launch command from a deterministic profile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLaunchCommandBuilder {
+    profile: DeterministicLaunchProfile,
+    vm: QemuVmLaunchConfig,
+    executable: String,
+    plugin: QemuLaunchPluginConfig,
+}
+
+impl QemuLaunchCommandBuilder {
+    /// Builds a command builder for the supplied profile, VM, tools, and plugin config.
+    #[must_use]
+    pub fn new(
+        profile: DeterministicLaunchProfile,
+        vm: QemuVmLaunchConfig,
+        executable: impl Into<String>,
+        plugin: QemuLaunchPluginConfig,
+    ) -> Self {
+        Self {
+            profile,
+            vm,
+            executable: executable.into(),
+            plugin,
+        }
+    }
+
+    /// Builds and validates the concrete QEMU command.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLaunchCommandError`] when the executable or plugin launch
+    /// fields are not stable command-line text, an immutable input is not an
+    /// AOS store path, or the resulting argv fails the pre-spawn determinism
+    /// validator.
+    pub fn build(self) -> Result<QemuLaunchCommand, QemuLaunchCommandError> {
+        validate_store_path("qemu_executable", &self.executable)?;
+        self.vm.validate()?;
+        self.plugin.validate()?;
+
+        let vm_hash_material = self.vm.launch_hash_material();
+        let mut args = self.profile.canonical_qemu_args();
+        args.extend(self.vm.qemu_args());
+        args.extend(["-plugin".to_owned(), self.plugin.qemu_plugin_argument()]);
+        validate_pre_spawn_qemu_launch_args(&args)
+            .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
+
+        Ok(QemuLaunchCommand {
+            executable: self.executable,
+            args,
+            vm_hash_material,
+        })
+    }
+}
+
+/// An immutable launch artifact resolved from a content-addressed world entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLaunchArtifact {
+    content_hash: ContentHash,
+    path: String,
+}
+
+impl QemuLaunchArtifact {
+    /// Builds an immutable launch artifact from its content hash and AOS store path.
+    #[must_use]
+    pub fn new(content_hash: ContentHash, path: impl Into<String>) -> Self {
+        Self {
+            content_hash,
+            path: path.into(),
+        }
+    }
+
+    /// Returns the artifact's content hash.
+    #[must_use]
+    pub const fn content_hash(&self) -> ContentHash {
+        self.content_hash
+    }
+
+    /// Returns the materialized AOS store path passed to QEMU.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn validate(&self, field: &'static str) -> Result<(), QemuLaunchCommandError> {
+        validate_store_path(field, &self.path)
+    }
+}
+
+/// VM launch inputs derived from one static `World` VM node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuVmLaunchConfig {
+    node_id: String,
+    kernel: QemuLaunchArtifact,
+    root_image: QemuLaunchArtifact,
+    initrd: Option<QemuLaunchArtifact>,
+    root_overlay_file_name: String,
+}
+
+impl QemuVmLaunchConfig {
+    /// Builds a VM launch config from content-addressed kernel and root-image inputs.
+    #[must_use]
+    pub fn new(
+        node_id: impl Into<String>,
+        kernel: QemuLaunchArtifact,
+        root_image: QemuLaunchArtifact,
+    ) -> Self {
+        Self {
+            node_id: node_id.into(),
+            kernel,
+            root_image,
+            initrd: None,
+            root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
+        }
+    }
+
+    /// Returns a config with a content-addressed initrd.
+    #[must_use]
+    pub fn with_initrd(mut self, initrd: QemuLaunchArtifact) -> Self {
+        self.initrd = Some(initrd);
+        self
+    }
+
+    /// Returns a config with a different stable root overlay file name.
+    #[must_use]
+    pub fn with_root_overlay_file_name(mut self, file_name: impl Into<String>) -> Self {
+        self.root_overlay_file_name = file_name.into();
+        self
+    }
+
+    /// Returns the static scenario node identifier.
+    #[must_use]
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    /// Returns the content-addressed kernel artifact.
+    #[must_use]
+    pub const fn kernel(&self) -> &QemuLaunchArtifact {
+        &self.kernel
+    }
+
+    /// Returns the content-addressed root-image artifact.
+    #[must_use]
+    pub const fn root_image(&self) -> &QemuLaunchArtifact {
+        &self.root_image
+    }
+
+    /// Returns the optional content-addressed initrd artifact.
+    #[must_use]
+    pub const fn initrd(&self) -> Option<&QemuLaunchArtifact> {
+        self.initrd.as_ref()
+    }
+
+    /// Returns canonical world-derived launch material for scenario identity.
+    #[must_use]
+    pub fn launch_hash_material(&self) -> String {
+        let mut lines = vec![
+            "crucible.qemu-vm-launch.v1".to_owned(),
+            format!("node_id={}", self.node_id),
+            format!("kernel_hash={}", content_hash_hex(self.kernel.content_hash)),
+            format!("kernel_path={}", self.kernel.path),
+            format!(
+                "root_image_hash={}",
+                content_hash_hex(self.root_image.content_hash)
+            ),
+            format!("root_image_path={}", self.root_image.path),
+            "root_disk_policy=copy-on-write-overlay".to_owned(),
+            format!("root_overlay_file={}", self.root_overlay_file_name),
+            format!("root_drive_id={ROOT_DRIVE_ID}"),
+            format!("root_device_id={ROOT_DEVICE_ID}"),
+            "root_device_model=virtio-blk-pci".to_owned(),
+        ];
+        if let Some(initrd) = &self.initrd {
+            lines.push(format!(
+                "initrd_hash={}",
+                content_hash_hex(initrd.content_hash)
+            ));
+            lines.push(format!("initrd_path={}", initrd.path));
+        } else {
+            lines.push("initrd=none".to_owned());
+        }
+        lines.join("\n")
+    }
+
+    fn qemu_args(&self) -> Vec<String> {
+        let mut args = vec![
+            "-kernel".to_owned(),
+            self.kernel.path.clone(),
+            "-drive".to_owned(),
+            format!(
+                "id={ROOT_DRIVE_ID},file={},backing.file={},backing.format=qcow2,if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
+                self.root_overlay_file_name, self.root_image.path
+            ),
+            "-device".to_owned(),
+            format!("virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID},bootindex=0"),
+        ];
+        if let Some(initrd) = &self.initrd {
+            args.extend(["-initrd".to_owned(), initrd.path.clone()]);
+        }
+        args
+    }
+
+    fn validate(&self) -> Result<(), QemuLaunchCommandError> {
+        validate_launch_text("node_id", &self.node_id)?;
+        self.kernel.validate("kernel_path")?;
+        self.root_image.validate("root_image_path")?;
+        if let Some(initrd) = &self.initrd {
+            initrd.validate("initrd_path")?;
+        }
+        validate_overlay_file_name(&self.root_overlay_file_name)
+    }
+}
+
+/// Plugin descriptors inherited at fixed child fd numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuLaunchInheritedFds {
+    /// Pre-inherited shared-memory descriptor.
+    pub shmem_fd: i32,
+    /// Pre-inherited wake descriptor.
+    pub wake_fd: i32,
+}
+
+impl QemuLaunchInheritedFds {
+    /// Builds the inherited descriptor pair.
+    #[must_use]
+    pub const fn new(shmem_fd: i32, wake_fd: i32) -> Self {
+        Self { shmem_fd, wake_fd }
+    }
+}
+
+/// A boolean feature switch in the QEMU plugin launch argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QemuLaunchPluginSwitch {
+    /// The feature is disabled.
+    Off,
+    /// The feature is enabled.
+    On,
+}
+
+impl fmt::Display for QemuLaunchPluginSwitch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Off => f.write_str("off"),
+            Self::On => f.write_str("on"),
+        }
+    }
+}
+
+/// A description of the `-plugin` command-line argument.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLaunchPluginConfig {
+    plugin_path: String,
+    slot: u32,
+    whitebox: QemuLaunchPluginSwitch,
+    coverage: QemuLaunchPluginSwitch,
+}
+
+impl QemuLaunchPluginConfig {
+    /// Builds the required plugin launch config.
+    #[must_use]
+    pub fn new(plugin_path: impl Into<String>, slot: u32) -> Self {
+        Self {
+            plugin_path: plugin_path.into(),
+            slot,
+            whitebox: QemuLaunchPluginSwitch::Off,
+            coverage: QemuLaunchPluginSwitch::Off,
+        }
+    }
+
+    /// Returns a config with the white-box hook switch set.
+    #[must_use]
+    pub fn with_whitebox(mut self, whitebox: QemuLaunchPluginSwitch) -> Self {
+        self.whitebox = whitebox;
+        self
+    }
+
+    /// Returns a config with the coverage hook switch set.
+    #[must_use]
+    pub fn with_coverage(mut self, coverage: QemuLaunchPluginSwitch) -> Self {
+        self.coverage = coverage;
+        self
+    }
+
+    /// Returns the plugin shared-object path.
+    #[must_use]
+    pub fn plugin_path(&self) -> &str {
+        &self.plugin_path
+    }
+
+    /// Returns the host-to-plugin control socket descriptor.
+    #[must_use]
+    pub const fn sim_fd(&self) -> i32 {
+        FIXED_PLUGIN_SIM_FD
+    }
+
+    /// Returns the node slot passed to the plugin.
+    #[must_use]
+    pub const fn slot(&self) -> u32 {
+        self.slot
+    }
+
+    /// Returns the fixed inherited setup descriptors.
+    #[must_use]
+    pub const fn inherited_fds(&self) -> QemuLaunchInheritedFds {
+        QemuLaunchInheritedFds {
+            shmem_fd: FIXED_PLUGIN_SHMEM_FD,
+            wake_fd: FIXED_PLUGIN_WAKE_FD,
+        }
+    }
+
+    /// Returns the raw plugin argument string passed after the plugin path.
+    #[must_use]
+    pub fn plugin_args_raw(&self) -> String {
+        [
+            format!("{PLUGIN_ARG_SIMFD}={FIXED_PLUGIN_SIM_FD}"),
+            format!("{PLUGIN_ARG_SLOT}={}", self.slot),
+            format!("{PLUGIN_ARG_SHMEMFD}={FIXED_PLUGIN_SHMEM_FD}"),
+            format!("{PLUGIN_ARG_WAKEFD}={FIXED_PLUGIN_WAKE_FD}"),
+            format!("{PLUGIN_ARG_WHITEBOX}={}", self.whitebox),
+            format!("{PLUGIN_ARG_COVERAGE}={}", self.coverage),
+        ]
+        .join(",")
+    }
+
+    /// Returns the complete QEMU `-plugin` option value.
+    #[must_use]
+    pub fn qemu_plugin_argument(&self) -> String {
+        format!("{},{}", self.plugin_path, self.plugin_args_raw())
+    }
+
+    fn validate(&self) -> Result<(), QemuLaunchCommandError> {
+        validate_launch_text("plugin_path", &self.plugin_path)?;
+        if self.plugin_path.contains(',') {
+            return Err(QemuLaunchCommandError::PluginPathContainsComma);
+        }
+        validate_store_path("plugin_path", &self.plugin_path)?;
+        validate_fd(PLUGIN_ARG_SIMFD, FIXED_PLUGIN_SIM_FD)?;
+        validate_fd(PLUGIN_ARG_SHMEMFD, FIXED_PLUGIN_SHMEM_FD)?;
+        validate_fd(PLUGIN_ARG_WAKEFD, FIXED_PLUGIN_WAKE_FD)?;
+        Ok(())
+    }
+}
+
+/// An error returned while building a QEMU launch command.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum QemuLaunchCommandError {
+    /// A command-line field was empty or could not be represented stably.
+    #[error("{field} must be fixed non-empty text without newlines or NUL bytes")]
+    InvalidLaunchText {
+        /// Invalid command-line field.
+        field: &'static str,
+    },
+    /// An immutable launch input was not resolved to an AOS store path.
+    #[error("{field} must be an AOS store path, got `{path}`")]
+    InvalidStorePath {
+        /// Invalid immutable input field.
+        field: &'static str,
+        /// Invalid path.
+        path: String,
+    },
+    /// The CoW overlay file name was not a stable relative file name.
+    #[error("root overlay file name must be stable relative text, got `{file_name}`")]
+    InvalidOverlayFileName {
+        /// Invalid overlay file name.
+        file_name: String,
+    },
+    /// A plugin path contained a comma, which would be ambiguous in QEMU's plugin option.
+    #[error("plugin path must not contain a comma")]
+    PluginPathContainsComma,
+    /// A plugin descriptor was negative.
+    #[error("plugin argument `{field}` has invalid descriptor {fd}")]
+    InvalidFileDescriptor {
+        /// Invalid descriptor field.
+        field: &'static str,
+        /// Invalid descriptor value.
+        fd: i32,
+    },
+    /// The resulting argv failed the pre-spawn QEMU launch validator.
+    #[error("QEMU launch command failed pre-spawn validation: {source}")]
+    PreSpawnValidation {
+        /// Validator error.
+        source: QemuPreSpawnLaunchValidationError,
+    },
+}
+
 /// A validated QEMU launch profile for Contract-A hermeticity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeterministicLaunchProfile {
@@ -451,6 +890,21 @@ impl DeterministicLaunchProfile {
         ]
     }
 
+    /// Builds a concrete QEMU launch command with the supplied plugin config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLaunchCommandError`] when command construction or final
+    /// pre-spawn validation fails.
+    pub fn qemu_launch_command(
+        &self,
+        vm: QemuVmLaunchConfig,
+        executable: impl Into<String>,
+        plugin: QemuLaunchPluginConfig,
+    ) -> Result<QemuLaunchCommand, QemuLaunchCommandError> {
+        QemuLaunchCommandBuilder::new(self.clone(), vm, executable, plugin).build()
+    }
+
     /// Returns canonical material that must be included in the scenario hash.
     #[must_use]
     pub fn scenario_hash_material(&self) -> String {
@@ -499,6 +953,17 @@ impl DeterministicLaunchProfile {
             format!("kernel_cmdline={}", self.kernel_cmdline),
         ]
         .join("\n")
+    }
+
+    /// Returns scenario material that includes the complete QEMU command line.
+    #[must_use]
+    pub fn scenario_hash_material_for_launch_command(&self, command: &QemuLaunchCommand) -> String {
+        let mut material = self.scenario_hash_material();
+        material.push('\n');
+        material.push_str(command.vm_launch_hash_material());
+        material.push('\n');
+        material.push_str(&command.command_line_hash_material());
+        material
     }
 
     /// Returns canonical scenario hash material after validating node shifts.
@@ -625,6 +1090,69 @@ fn validate_node_icount_shifts(
 ) -> Result<(), LaunchProfileError> {
     canonical_node_icount_shift_lines(scenario_shift, node_shifts)?;
     Ok(())
+}
+
+fn validate_launch_text(field: &'static str, value: &str) -> Result<(), QemuLaunchCommandError> {
+    if value.is_empty() || value.contains('\n') || value.contains('\0') {
+        Err(QemuLaunchCommandError::InvalidLaunchText { field })
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_store_path(field: &'static str, path: &str) -> Result<(), QemuLaunchCommandError> {
+    validate_launch_text(field, path)?;
+    if path.starts_with("/nix/store/")
+        && !path.contains("/../")
+        && !path.ends_with("/..")
+        && !path.contains("/./")
+        && !path.ends_with("/.")
+        && !path.contains('\\')
+        && !path.contains(',')
+    {
+        Ok(())
+    } else {
+        Err(QemuLaunchCommandError::InvalidStorePath {
+            field,
+            path: path.to_owned(),
+        })
+    }
+}
+
+fn validate_overlay_file_name(file_name: &str) -> Result<(), QemuLaunchCommandError> {
+    validate_launch_text("root_overlay_file_name", file_name)?;
+    if file_name.contains('/') || file_name.contains('\\') || file_name.contains(',') {
+        Err(QemuLaunchCommandError::InvalidOverlayFileName {
+            file_name: file_name.to_owned(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_fd(field: &'static str, fd: i32) -> Result<(), QemuLaunchCommandError> {
+    if fd < 0 {
+        Err(QemuLaunchCommandError::InvalidFileDescriptor { field, fd })
+    } else {
+        Ok(())
+    }
+}
+
+fn content_hash_hex(hash: ContentHash) -> String {
+    let mut hex = String::with_capacity(hash.bytes.len() * 2);
+    for byte in hash.bytes {
+        hex.push(nibble_to_hex(byte >> 4));
+        hex.push(nibble_to_hex(byte & 0x0f));
+    }
+    hex
+}
+
+fn nibble_to_hex(nibble: u8) -> char {
+    match nibble {
+        0..=9 => (b'0' + nibble) as char,
+        10..=15 => (b'a' + (nibble - 10)) as char,
+        _ => unreachable!("nibble is masked to four bits"),
+    }
 }
 
 fn canonical_node_icount_shift_lines(
