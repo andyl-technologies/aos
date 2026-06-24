@@ -134,10 +134,22 @@ impl RoundRobinRunState {
         self.config.vcpu_count()
     }
 
+    /// Returns the fixed node-icount quantum for this RUN cursor.
+    #[must_use]
+    pub const fn rr_switch_quantum(self) -> u64 {
+        self.config.rr_switch_quantum()
+    }
+
     /// Returns the node-icount ticks left before the next switch.
     #[must_use]
     pub const fn remaining_in_quantum(self) -> u64 {
         self.remaining_in_quantum
+    }
+
+    /// Returns the retired node-icount position inside the current quantum.
+    #[must_use]
+    pub const fn cursor_position(self) -> u64 {
+        self.config.rr_switch_quantum - self.remaining_in_quantum
     }
 
     /// Accounts retired node-icount ticks for the current vCPU.

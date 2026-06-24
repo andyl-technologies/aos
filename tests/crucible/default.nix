@@ -191,6 +191,7 @@ in {
     qemuPluginQemuInert = import ./phase2-plugin-qemu-inert.nix {inherit pkgs lib;};
     qemuPluginRoundRobin = import ./phase2-plugin-round-robin.nix {inherit pkgs lib;};
     qemuPluginPreemption = import ./phase2-plugin-preemption.nix {inherit pkgs lib;};
+    qemuPluginVcpuIntrospection = import ./phase2-plugin-vcpu-introspection.nix {inherit pkgs lib;};
     qemuCrashDetection = import ./phase2-qemu-crash-detection.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuQmpClient = import ./phase2-qemu-qmp-client.nix {inherit pkgs lib;};

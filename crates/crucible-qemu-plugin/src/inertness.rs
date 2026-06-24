@@ -24,33 +24,37 @@ pub enum PluginSimulationMode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PluginPatchCapabilityCalls {
     /// Requests for QEMU plugin ownership of virtual time.
-    pub time_control_requests: usize,
+    pub time_control_requests: u32,
     /// Queries of QEMU plugin virtual-time ownership state.
-    pub time_control_status_queries: usize,
+    pub time_control_status_queries: u32,
     /// Updates to QEMU's virtual clock.
-    pub virtual_clock_updates: usize,
+    pub virtual_clock_updates: u32,
     /// Reads through the exact virtual-clock deadline capability.
-    pub exact_deadline_reads: usize,
+    pub exact_deadline_reads: u32,
     /// Direct virtual-time advances through the idle advance capability.
-    pub direct_virtual_time_advances: usize,
+    pub direct_virtual_time_advances: u32,
     /// Commanded vCPU-switch or interrupt preemption injections.
-    pub preemption_injections: usize,
+    pub preemption_injections: u32,
+    /// Per-vCPU register-file reads through the fingerprint introspection API.
+    pub vcpu_register_reads: u32,
+    /// Round-robin cursor reads through the fingerprint introspection API.
+    pub rr_cursor_reads: u32,
     /// Lossless guest network receive capacity queries.
-    pub network_receive_capacity_queries: usize,
+    pub network_receive_capacity_queries: u32,
     /// Lossless guest network receive queue operations.
-    pub network_receive_queues: usize,
+    pub network_receive_queues: u32,
     /// Lossless guest network receive flush operations.
-    pub network_receive_flushes: usize,
+    pub network_receive_flushes: u32,
     /// TCG-exec coverage callback registrations.
-    pub coverage_callback_registrations: usize,
+    pub coverage_callback_registrations: u32,
     /// TCG-exec coverage callback invocations.
-    pub coverage_exec_callbacks: usize,
+    pub coverage_exec_callbacks: u32,
     /// White-box guest doorbell trap registrations.
-    pub whitebox_trap_registrations: usize,
+    pub whitebox_trap_registrations: u32,
     /// Guest-memory reads through the QEMU plugin API.
-    pub guest_memory_reads: usize,
+    pub guest_memory_reads: u32,
     /// Guest-memory writes through the QEMU plugin API.
-    pub guest_memory_writes: usize,
+    pub guest_memory_writes: u32,
 }
 
 impl PluginPatchCapabilityCalls {
@@ -64,6 +68,8 @@ impl PluginPatchCapabilityCalls {
             exact_deadline_reads: 0,
             direct_virtual_time_advances: 0,
             preemption_injections: 0,
+            vcpu_register_reads: 0,
+            rr_cursor_reads: 0,
             network_receive_capacity_queries: 0,
             network_receive_queues: 0,
             network_receive_flushes: 0,
@@ -78,20 +84,22 @@ impl PluginPatchCapabilityCalls {
     /// Returns the total number of patched-capability calls.
     #[must_use]
     pub const fn total(self) -> usize {
-        self.time_control_requests
-            + self.time_control_status_queries
-            + self.virtual_clock_updates
-            + self.exact_deadline_reads
-            + self.direct_virtual_time_advances
-            + self.preemption_injections
-            + self.network_receive_capacity_queries
-            + self.network_receive_queues
-            + self.network_receive_flushes
-            + self.coverage_callback_registrations
-            + self.coverage_exec_callbacks
-            + self.whitebox_trap_registrations
-            + self.guest_memory_reads
-            + self.guest_memory_writes
+        self.time_control_requests as usize
+            + self.time_control_status_queries as usize
+            + self.virtual_clock_updates as usize
+            + self.exact_deadline_reads as usize
+            + self.direct_virtual_time_advances as usize
+            + self.preemption_injections as usize
+            + self.vcpu_register_reads as usize
+            + self.rr_cursor_reads as usize
+            + self.network_receive_capacity_queries as usize
+            + self.network_receive_queues as usize
+            + self.network_receive_flushes as usize
+            + self.coverage_callback_registrations as usize
+            + self.coverage_exec_callbacks as usize
+            + self.whitebox_trap_registrations as usize
+            + self.guest_memory_reads as usize
+            + self.guest_memory_writes as usize
     }
 }
 
@@ -355,6 +363,14 @@ mod tests {
                 ..PluginPatchCapabilityCalls::none()
             },
             PluginPatchCapabilityCalls {
+                vcpu_register_reads: 1,
+                ..PluginPatchCapabilityCalls::none()
+            },
+            PluginPatchCapabilityCalls {
+                rr_cursor_reads: 1,
+                ..PluginPatchCapabilityCalls::none()
+            },
+            PluginPatchCapabilityCalls {
                 network_receive_capacity_queries: 1,
                 ..PluginPatchCapabilityCalls::none()
             },
@@ -408,6 +424,8 @@ mod tests {
             exact_deadline_reads: 1,
             direct_virtual_time_advances: 1,
             preemption_injections: 1,
+            vcpu_register_reads: 1,
+            rr_cursor_reads: 1,
             network_receive_capacity_queries: 1,
             network_receive_queues: 1,
             network_receive_flushes: 1,

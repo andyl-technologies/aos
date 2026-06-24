@@ -141,6 +141,14 @@
         needle = "preemption_injections";
       }
       {
+        label = "vCPU register read effect";
+        needle = "vcpu_register_reads";
+      }
+      {
+        label = "RR cursor read effect";
+        needle = "rr_cursor_reads";
+      }
+      {
         label = "network capacity query effect";
         needle = "network_receive_capacity_queries";
       }
