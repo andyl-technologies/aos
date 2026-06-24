@@ -2,6 +2,8 @@
 
 use super::*;
 
+const PARSE_ERROR_SOURCE: &str = "let x = ; in x";
+
 #[test]
 fn native_instantiation_imports_file_attr_path() -> Result<()> {
     let (native, root, store) = native_with_temp_store("aos-nix-native-instantiate")?;
@@ -154,7 +156,7 @@ fn native_instantiation_empty_attr_path_selects_root() -> Result<()> {
 fn native_file_instantiation_reports_parse_errors_with_source() -> Result<()> {
     let (native, root, _store) = native_with_temp_store("aos-nix-native-instantiate-parse-error")?;
     let file = root.join("default.nix");
-    fs::write(&file, b"let { body = 1; }")?;
+    fs::write(&file, PARSE_ERROR_SOURCE.as_bytes())?;
 
     let error = native
         .instantiate(&file, "")
@@ -174,7 +176,7 @@ fn native_file_instantiation_reports_parse_errors_with_source() -> Result<()> {
         feature.contains(&file.to_string_lossy().to_string()),
         "{feature}"
     );
-    assert!(feature.contains("let { body = 1; }"), "{feature}");
+    assert!(feature.contains(PARSE_ERROR_SOURCE), "{feature}");
     assert!(!feature.contains("import "), "{feature}");
 
     fs::remove_dir_all(root)?;
@@ -193,7 +195,7 @@ fn native_file_instantiation_reports_imported_parse_cache_errors_with_source() -
     let file = root.join("default.nix");
     let child = root.join("child.nix");
     fs::write(&file, b"{ broken = import ./child.nix; }")?;
-    fs::write(&child, b"let { body = 1; }")?;
+    fs::write(&child, PARSE_ERROR_SOURCE.as_bytes())?;
 
     let error = native
         .instantiate(&file, "broken")
@@ -211,7 +213,7 @@ fn native_file_instantiation_reports_imported_parse_cache_errors_with_source() -
         message.contains(&child.to_string_lossy().to_string()),
         "{message}"
     );
-    assert!(message.contains("let { body = 1; }"), "{message}");
+    assert!(message.contains(PARSE_ERROR_SOURCE), "{message}");
     assert!(!message.contains("import ./child.nix"), "{message}");
 
     fs::remove_dir_all(root)?;

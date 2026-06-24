@@ -3,6 +3,8 @@
 
 use super::*;
 
+const PARSE_ERROR_SOURCE: &str = "let x = ; in x";
+
 #[test]
 fn native_eval_error_reports_invalid_ir_as_eval_error() {
     let error = TreeWalkError::new(
@@ -133,8 +135,8 @@ fn native_expression_parse_cache_preserves_frontend_error_spans() -> Result<()> 
     let native = NixNative::with_options(0, options)?;
 
     let err = native
-        .eval_expr("let { body = 1; }")
-        .expect_err("frontend gaps should fall back through the cached path");
+        .eval_expr(PARSE_ERROR_SOURCE)
+        .expect_err("parse errors should fall back through the cached path");
 
     assert_parse_source_report(&err);
 
@@ -146,7 +148,7 @@ fn native_expression_parse_cache_preserves_frontend_error_spans() -> Result<()> 
 fn native_expression_parse_error_uses_source_report() -> Result<()> {
     let native = NixNative::new(0)?;
     let err = native
-        .eval_expr("let { body = 1; }")
+        .eval_expr(PARSE_ERROR_SOURCE)
         .expect_err("parse errors should stay fallback-eligible");
 
     assert_parse_source_report(&err);
@@ -195,7 +197,7 @@ fn assert_parse_source_report(err: &anyhow::Error) {
     );
     assert!(feature.contains("aos_nix::parse::"), "{feature}");
     assert!(feature.contains("expr.nix"), "{feature}");
-    assert!(feature.contains("let { body = 1; }"), "{feature}");
+    assert!(feature.contains(PARSE_ERROR_SOURCE), "{feature}");
     assert!(!feature.contains("builtins.toJSON"), "{feature}");
 }
 
@@ -543,17 +545,20 @@ fn configured_native_expression_eval_still_rejects_reified_builtins_inventory() 
 }
 
 #[test]
-fn native_expression_eval_keeps_frontend_gaps_fallback_eligible() -> Result<()> {
+fn native_expression_eval_supports_legacy_let_attrsets() -> Result<()> {
     let native = NixNative::new(0)?;
-    let err = native
-        .eval_expr("let { body = 1; }")
-        .expect_err("frontend gaps should fall back to the CLI");
-
-    assert!(matches!(
-        err.downcast_ref::<NativeEvalError>(),
-        Some(NativeEvalError::Unsupported { feature, .. })
-            if feature.contains("native expression parse failure")
-    ));
+    assert_eq!(native.eval_expr("let { body = 1; }")?, "1");
+    assert_eq!(native.eval_expr("let { x = 1; body = x + 1; }")?, "2");
+    assert_eq!(native.eval_expr("let { body.foo = 1; }")?, r#"{"foo":1}"#);
+    assert_eq!(
+        native.eval_expr(r#"let { "${"body"}" = "interp"; }"#)?,
+        r#""interp""#
+    );
+    assert_eq!(
+        native.eval_expr(r#"let { name = "body"; ${name} = "dynamic"; }"#)?,
+        r#""dynamic""#
+    );
+    assert_eq!(native.eval_expr(r#"let { "body" = "ok"; }"#)?, r#""ok""#);
     Ok(())
 }
 

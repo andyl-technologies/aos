@@ -3,6 +3,8 @@
 
 use super::*;
 
+const PARSE_ERROR_SOURCE: &str = "let x = ; in x";
+
 #[test]
 fn native_instantiation_expr_returns_drv_path() -> Result<()> {
     let (native, root, store) = native_with_temp_store("native-instantiation-expr")?;
@@ -458,7 +460,7 @@ fn native_instantiation_reports_parse_errors_with_source() -> Result<()> {
     let native = NixNative::new(0)?;
 
     let error = native
-        .instantiate_expr("let { body = 1; }")
+        .instantiate_expr(PARSE_ERROR_SOURCE)
         .expect_err("parse errors should stay fallback-eligible");
 
     let Some(NativeEvalError::Unsupported {
@@ -474,7 +476,7 @@ fn native_instantiation_reports_parse_errors_with_source() -> Result<()> {
     );
     assert!(feature.contains("aos_nix::parse::"), "{feature}");
     assert!(feature.contains("expr.nix"), "{feature}");
-    assert!(feature.contains("let { body = 1; }"), "{feature}");
+    assert!(feature.contains(PARSE_ERROR_SOURCE), "{feature}");
     assert!(!feature.contains(".drvPath"), "{feature}");
     Ok(())
 }

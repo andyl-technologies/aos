@@ -723,14 +723,13 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 ### 11.2 The deprecated `let { ... }` body form
 
 - [x] **`let { x = …; body = …; }`** — the legacy recursive form whose value is
-      its `body` attribute (`let { body = "x"; }` ≡ `"x"`). **Decision: treat as
-      deprecated.** Verify whether the AOS package set or any conformance case
-      uses it; if AOS never uses it, it may be in the *documented skip list* (doc
-      15 §3.4) — but record the decision explicitly here rather than silently
-      omitting. Verified pinned Nix still accepts it; AOS `.nix` sources do not
-      use it (`rg --glob '*.nix' 'let\s*\{' .` returned no matches), so it remains
-      an intentional frontend gap that native expression evaluation sends to the
-      C++ Nix CLI fallback.
+      its `body` attribute (`let { body = "x"; }` ≡ `"x"`). **Decision: support
+      it for pinned-Nix parity despite deprecation.** The parser desugars the
+      binding block to a recursive attrset selected at `.body`, so the normal
+      recursive-attrset resolver/lowerer/evaluator path handles self-reference,
+      quoted `"body"` attributes, dotted `body.*` bindings, and dynamic body
+      keys such as `${name}`. The former `legacy let-attrset syntax gap`
+      conformance exclusions have been removed.
 
 ### 11.3 `with`
 
@@ -893,9 +892,7 @@ Stated so the design record does not overstate coverage. Each exclusion is a
       strings, or shell/test command text, so the package set does not rely on
       unquoted fetch URLs in expression position.
 - [x] **Deprecated `let { ... body = ...; }` form** — covered as *deprecated* in
-      §11.2; included only if AOS uses it (verify), otherwise skipped with a
-      recorded reason. Verified unused in AOS `.nix` sources and intentionally
-      left to native CLI fallback.
+      §11.2 and implemented for pinned-Nix parity rather than skipped.
 - [x] **Experimental pipe operators `|>` / `<|`** — covered conditionally in §6;
       local C++ Nix 2.24.5 reports `pipe-operators` disabled by default, and
       aos-nix rejects both operators by default
@@ -990,10 +987,10 @@ shallow-force rules (§10), `let`/`with` scoping with the *`with` binds looser
 than lexical scope* rule (§11), control flow and the throw/abort/assert
 catchability matrix (§12), import semantics and IFD (§13), and the language-level
 `__functor`/`__toString`/`outPath` magic attributes (§14). Everything not
-covered is explicitly scoped out (§15): the deprecated `let {}` body form
-(deprecated; skip if unused), experimental pipe operators (feature-gated), and
-error-text byte-parity (best-effort). Deprecated unquoted URL literals are no
-longer an exclusion because aos-nix implements them for C++ Nix compatibility.
+covered is explicitly scoped out (§15): experimental pipe operators
+(feature-gated) and error-text byte-parity (best-effort). Deprecated unquoted
+URL literals and the deprecated `let {}` body form are no longer exclusions
+because aos-nix implements them for C++ Nix compatibility.
 Every `- [ ]` is both a unit of implementation work and a
 conformance-suite assertion; items tagged **verify against pinned Nix** are the
 ones whose behavior is implementation-defined and must be confirmed against the

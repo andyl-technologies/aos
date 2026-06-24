@@ -113,24 +113,8 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "toJSON non-UTF-8 rejection gap",
     },
     LangCaseExclusion {
-        name: "eval-okay-arithmetic",
-        reason: "legacy let-attrset syntax gap",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-attrs",
-        reason: "legacy let-attrset syntax gap",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-attrs2",
-        reason: "legacy let-attrset syntax gap",
-    },
-    LangCaseExclusion {
         name: "eval-okay-attrs6",
         reason: "attrset override merge semantics gap",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-builtins",
-        reason: "legacy let-attrset syntax gap",
     },
     LangCaseExclusion {
         name: "eval-okay-curpos",
@@ -139,10 +123,6 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
     LangCaseExclusion {
         name: "eval-okay-eq-derivations",
         reason: "native evaluator stack-safety gap in derivation equality",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-flatten",
-        reason: "legacy let-attrset syntax gap",
     },
     LangCaseExclusion {
         name: "eval-okay-foldlStrict-lazy-initial-accumulator",
@@ -165,14 +145,6 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "recursive marker rendering shape gap",
     },
     LangCaseExclusion {
-        name: "eval-okay-let",
-        reason: "legacy let-attrset syntax gap",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-list",
-        reason: "legacy let-attrset syntax gap",
-    },
-    LangCaseExclusion {
         name: "eval-okay-overrides",
         reason: "override/update semantics gap",
     },
@@ -185,18 +157,6 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "tryEval search-path error handling gap",
     },
     LangCaseExclusion {
-        name: "eval-okay-remove",
-        reason: "legacy let-attrset syntax gap",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-scope-4",
-        reason: "legacy let-attrset syntax gap",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-scope-6",
-        reason: "legacy let-attrset syntax gap",
-    },
-    LangCaseExclusion {
         name: "eval-okay-search-path",
         reason: "implicit C++ Nix corepkgs search path is not modeled",
     },
@@ -204,13 +164,9 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         name: "eval-okay-symlink-resolution",
         reason: "symlink directory resolution gap",
     },
-    LangCaseExclusion {
-        name: "eval-okay-with",
-        reason: "legacy let-attrset syntax gap",
-    },
 ];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 178;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 31;
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 189;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 20;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",

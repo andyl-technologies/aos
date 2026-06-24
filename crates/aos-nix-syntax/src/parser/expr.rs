@@ -5,11 +5,57 @@ use super::*;
 impl<'a> Parser<'a> {
     pub(super) fn parse_let_in(&mut self) -> Result<NodeId, ParseError> {
         let start = self.expect(TokenKind::Let)?.span;
+        if self.peek()?.kind == TokenKind::LBrace {
+            return self.parse_legacy_let_attrset(start);
+        }
         let bindings = self.parse_bindings_until(TokenKind::In)?;
         self.expect(TokenKind::In)?;
         let body = self.parse_expr()?;
         let span = self.join_span(start, self.node_span(body)?);
         self.push(NodeKind::LetIn, span, NodeData::LetIn { bindings, body })
+    }
+
+    fn parse_legacy_let_attrset(&mut self, start: Span) -> Result<NodeId, ParseError> {
+        self.expect(TokenKind::LBrace)?;
+        let bindings = self.parse_bindings_until(TokenKind::RBrace)?;
+        let end = self.expect(TokenKind::RBrace)?.span;
+        let body_span = self.legacy_let_body_span(bindings)?.unwrap_or(start);
+        let body_symbol = self.intern_bytes(b"body")?;
+        let body_segment = self.push(NodeKind::Ident, body_span, NodeData::Symbol(body_symbol))?;
+        let body_path = self.push_child_slice(&[body_segment])?;
+        let receiver = self.push(
+            NodeKind::RecAttrSet,
+            self.join_span(start, end),
+            NodeData::Children(bindings),
+        )?;
+        self.push(
+            NodeKind::Select,
+            self.join_span(start, end),
+            NodeData::Select {
+                receiver,
+                path: body_path,
+                default: None,
+            },
+        )
+    }
+
+    fn legacy_let_body_span(&self, bindings: ChildSlice) -> Result<Option<Span>, ParseError> {
+        for binding in self.child_ids(bindings)? {
+            let node = self.node(binding)?;
+            let NodeData::Binding { path, .. } = node.data else {
+                continue;
+            };
+            let Some(segment) = self.child_ids(path)?.first().copied() else {
+                continue;
+            };
+            let Some(symbol) = self.static_attr_symbol(segment)? else {
+                continue;
+            };
+            if self.symbols.resolve(symbol) == Some(b"body".as_slice()) {
+                return Ok(Some(self.node_span(segment)?));
+            }
+        }
+        Ok(None)
     }
 
     pub(super) fn parse_with(&mut self) -> Result<NodeId, ParseError> {

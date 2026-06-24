@@ -233,10 +233,41 @@ fn parser_can_thread_shared_symbol_table_across_files() {
 }
 
 #[test]
+fn parses_legacy_let_attrset_as_rec_attrset_body_select() {
+    let ast = parse("let { x = 1; body = x + 1; }");
+    let root = node(&ast, ast.root);
+    assert_eq!(root.kind, NodeKind::Select);
+
+    let NodeData::Select {
+        receiver,
+        path,
+        default,
+    } = root.data
+    else {
+        panic!("legacy let attrset should lower to body selection data");
+    };
+    assert!(default.is_none());
+    assert_eq!(node(&ast, receiver).kind, NodeKind::RecAttrSet);
+    let NodeData::Children(bindings) = node(&ast, receiver).data else {
+        panic!("legacy let attrset receiver should carry bindings");
+    };
+    assert_eq!(child_ids(&ast, bindings).len(), 2);
+    let [body] = child_ids(&ast, path) else {
+        panic!("legacy let selection path should contain only body");
+    };
+    assert_eq!(node(&ast, *body).kind, NodeKind::Ident);
+    let NodeData::Symbol(symbol) = node(&ast, *body).data else {
+        panic!("legacy let selection path should use the body identifier");
+    };
+    assert_eq!(ast.symbols.resolve(symbol), Some(b"body".as_slice()));
+}
+
+#[test]
 fn parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus() {
     for source in [
         "1",
         "let x = 1; y = 2; in x + y",
+        "let { x = 1; body = x + 1; }",
         "rec { x = 1; y = x; }",
         "{ inherit (rec { x = 1; }) x; nested.value = 2; }",
         "{ ${\"dynamic\"} = 1; plain = 2; }",
