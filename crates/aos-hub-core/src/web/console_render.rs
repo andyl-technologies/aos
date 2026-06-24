@@ -763,6 +763,58 @@ pub fn login_page(error: Option<&str>, passkey_nonce: Option<&str>, started: Ins
     )
 }
 
+/// The "confirm your identity" (sudo re-authentication) page.
+///
+/// The most destructive console actions (registry/org deletion, password
+/// change, credential minting) require a *recently* re-authenticated session
+/// (a "sudo" window). When a logged-in user attempts one outside that window,
+/// this page lets them re-confirm in place — re-enter their password — rather
+/// than dead-ending on a bare `403`. `return_to` is the path to send them back
+/// to afterwards (the page they were on), carried through the form and the
+/// passwordless fallback link. `error` shows a failed attempt.
+#[must_use]
+pub fn reauth_page(
+    email: &str,
+    csrf: &str,
+    return_to: &str,
+    error: Option<&str>,
+    started: Instant,
+) -> String {
+    let mut body = String::from("<h1>Confirm your identity</h1>\n");
+    body.push_str(
+        "<p class=\"dim\">For your security, this action needs a recent sign-in. \
+         Re-enter your password to continue — you'll return to where you were.</p>\n",
+    );
+    if let Some(error) = error {
+        let _ = writeln!(body, "<p class=\"bad\">{}</p>", escape(error));
+    }
+    let _ = write!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"/-/reauth\">\n{csrf}\
+         <input type=\"hidden\" name=\"return_to\" value=\"{rt}\">\n\
+         <label>password <input type=\"password\" name=\"password\" required \
+         autocomplete=\"current-password\"></label>\n\
+         <button>confirm and continue</button>\n</form>\n",
+        csrf = csrf_field(csrf),
+        rt = escape(return_to),
+    );
+    // Passwordless accounts (SSO / magic-link) re-authenticate through the login
+    // flow, which mints a fresh sudo session and honors `next`.
+    let next_q: String = url::form_urlencoded::byte_serialize(return_to.as_bytes()).collect();
+    let _ = write!(
+        body,
+        "<p class=\"dim\">No password set? \
+         <a href=\"/login?next={next_q}\">re-authenticate with your sign-in provider →</a></p>\n",
+    );
+    page_with_session(
+        "confirm identity",
+        &[(String::new(), "confirm identity".into())],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
 /// The "check your email" confirmation after a magic link is issued.
 ///
 /// In dev mode the page also shows the link itself (the [`LogMailer`] does
@@ -3566,12 +3618,129 @@ pub fn instance_serving_page(
 /// runtime-editable from the web. The actionable lever — pushing a registry or
 /// cache elsewhere — is an org-scoped storage binding, linked from here.
 #[must_use]
+/// Render the shared storage-binding serving controls — public-access settings
+/// plus inherited-frontend management — used by both the instance default
+/// storage page and an org's custom-binding pages (RFC-0004 §12), so both share
+/// one interface. `post_action` is the form target; it dispatches `op` values
+/// `set-public` / `add-frontend` / `delete-frontend` for this `binding`.
+pub fn storage_binding_serving_section(
+    post_action: &str,
+    csrf: &str,
+    binding: &StorageBindingRecord,
+    frontends: &[FrontendRecord],
+) -> String {
+    let mut body = String::new();
+    let action = escape(post_action);
+
+    // --- Public access ---
+    body.push_str("<h2>Public access</h2>\n");
+    body.push_str(
+        "<p class=\"dim\">A <code>public</code> binding is reachable at a stable origin URL (a \
+         public bucket / CDN), so it can carry a <code>direct</code> frontend consumers fetch \
+         from straight, bypassing the hub. A <code>private</code> binding is hub-only (proxied \
+         or presigned) and can never be Direct.</p>\n",
+    );
+    let sel = |v: &str| if binding.access == v { " selected" } else { "" };
+    let _ = write!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"{action}\">{csrf}\
+         <input type=\"hidden\" name=\"op\" value=\"set-public\">\n\
+         <label>access <select name=\"access\">\
+         <option value=\"private\"{psel}>private</option>\
+         <option value=\"public\"{usel}>public</option></select></label>\n\
+         <label>public base URL <input type=\"text\" name=\"public_base_url\" value=\"{base}\" \
+         placeholder=\"https://cdn.example.com\"></label>\n\
+         <button>save access</button>\n</form>\n",
+        action = action,
+        csrf = csrf_field(csrf),
+        psel = sel("private"),
+        usel = sel("public"),
+        base = escape(binding.public_base_url.as_deref().unwrap_or("")),
+    );
+
+    // --- Frontends (inherited by every registry/cache stored here) ---
+    body.push_str("<h2>Serving frontends</h2>\n");
+    body.push_str(
+        "<p class=\"dim\">A frontend is a domain that serves this bucket. Every registry and \
+         cache stored in this binding inherits it, with its own objects under its \
+         <code>prefix</code>; a <code>direct</code>, advertised frontend over a \
+         <code>public</code> binding makes consumers pull straight from the bucket.</p>\n",
+    );
+    if frontends.is_empty() {
+        body.push_str("<p class=\"dim\">No frontends configured.</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = frontends
+            .iter()
+            .map(|f| {
+                let mut serves = Vec::new();
+                if f.serves_git {
+                    serves.push("git");
+                }
+                if f.serves_cache {
+                    serves.push("cache");
+                }
+                if f.serves_web {
+                    serves.push("web");
+                }
+                let delete = format!(
+                    "<form class=\"console\" method=\"post\" action=\"{action}\" \
+                     style=\"display:inline\">{csrf}\
+                     <input type=\"hidden\" name=\"op\" value=\"delete-frontend\">\
+                     <input type=\"hidden\" name=\"id\" value=\"{id}\">\
+                     <button class=\"danger\">delete</button></form>",
+                    action = action,
+                    csrf = csrf_field(csrf),
+                    id = f.id,
+                );
+                vec![
+                    format!("<code>{}{}</code>", escape(&f.domain), escape(&f.base_path)),
+                    escape(&f.mode),
+                    escape(&serves.join(", ")),
+                    if f.advertised {
+                        "<span class=\"ok\">advertised</span>".to_string()
+                    } else {
+                        "<span class=\"dim\">no</span>".to_string()
+                    },
+                    delete,
+                ]
+            })
+            .collect();
+        body.push_str(&table(&["domain", "mode", "serves", "advertised", ""], &rows));
+    }
+    let _ = write!(
+        body,
+        "<h3>Add a frontend</h3>\n\
+         <form class=\"console\" method=\"post\" action=\"{action}\">{csrf}\
+         <input type=\"hidden\" name=\"op\" value=\"add-frontend\">\n\
+         <label>domain <input type=\"text\" name=\"domain\" required placeholder=\"cdn.acme.com\"></label>\n\
+         <label>base path <input type=\"text\" name=\"base_path\" placeholder=\"(domain root)\"></label>\n\
+         <label>mode <select name=\"mode\"><option value=\"direct\">direct</option>\
+         <option value=\"proxied\">proxied</option></select></label>\n\
+         <label><span class=\"lbl\">serves git</span> <input type=\"checkbox\" name=\"serves_git\" value=\"1\" checked></label>\n\
+         <label><span class=\"lbl\">serves cache</span> <input type=\"checkbox\" name=\"serves_cache\" value=\"1\" checked></label>\n\
+         <label><span class=\"lbl\">serves web</span> <input type=\"checkbox\" name=\"serves_web\" value=\"1\" checked></label>\n\
+         <label><span class=\"lbl\">advertise to consumers</span> <input type=\"checkbox\" name=\"advertised\" value=\"1\" checked></label>\n\
+         <label>consumer priority <input type=\"text\" name=\"consumer_priority\" value=\"100\"></label>\n\
+         <button>add frontend</button>\n</form>\n",
+        action = action,
+        csrf = csrf_field(csrf),
+    );
+    body
+}
+
 pub fn instance_storage_page(
     email: &str,
     default_storage_location: Option<&str>,
+    binding: Option<&StorageBindingRecord>,
+    frontends: &[FrontendRecord],
+    csrf: &str,
+    notice: Option<&str>,
     started: Instant,
 ) -> String {
     let mut body = String::from("<h1>Instance · storage</h1>\n");
+    if let Some(notice) = notice {
+        let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
+    }
     body.push_str(
         "<p>Registries and caches with no explicit storage binding push to the \
          deployment's own default storage.</p>\n",
@@ -3588,13 +3757,23 @@ pub fn instance_storage_page(
         location = location,
     );
     body.push_str(
-        "<p class=\"dim\">The default store is fixed at deploy time — the Worker's R2 \
-         bucket binding, or the native hub's storage root — so it is not editable here. \
-         Changing it means redeploying the hub against a different bucket. To send a \
-         specific registry or cache elsewhere instead, add an org-scoped storage binding \
-         (under an org's <strong>Settings</strong>) and point the registry or cache at \
-         it.</p>\n",
+        "<p class=\"dim\">The default store's <em>backend</em> is fixed at deploy time (the \
+         Worker's R2 bucket, or the native hub's storage root). Its public domain and frontends \
+         below are editable — publish the bucket so binding-less registries/caches advertise a \
+         direct, edge-served URL (RFC-0004 §12).</p>\n",
     );
+    match binding {
+        Some(binding) => body.push_str(&storage_binding_serving_section(
+            "/-/instance/storage",
+            csrf,
+            binding,
+            frontends,
+        )),
+        None => body.push_str(
+            "<p class=\"dim\">The instance default binding has not been seeded yet (run \
+             <code>aos-hub init</code> to apply the latest migrations).</p>\n",
+        ),
+    }
     instance_settings_chrome(email, "storage", &body, started)
 }
 

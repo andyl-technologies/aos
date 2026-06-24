@@ -182,6 +182,12 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             }),
         )
         .route(
+            "/-/reauth",
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, f: axum::extract::Form<_>| {
+                send_bridge(handlers::reauth(from_state(s), h, r, f))
+            }),
+        )
+        .route(
             "/account/sessions/revoke-all",
             post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
                 send_bridge(handlers::account_revoke_all_sessions(from_state(s), h, f))
@@ -429,6 +435,9 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             "/-/instance/storage",
             get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart| {
                 send_bridge(handlers::instance_storage(from_state(s), h, r))
+            })
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, f: axum::extract::Form<_>| {
+                send_bridge(handlers::instance_storage_action(from_state(s), h, r, f))
             }),
         )
         .route(

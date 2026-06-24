@@ -176,23 +176,130 @@ fn check_csrf(session: &Session, csrf: &str) -> Result<(), Box<Response>> {
 ///
 /// The most destructive operations (password change, registry/org deletion,
 /// credential minting) gate on this. A session that has fallen out of the sudo
-/// window is refused with a `403` asking the user to sign in again.
+/// window is sent to the in-place re-authentication ("confirm your identity")
+/// page rather than dead-ending on a bare `403`; `headers` supplies the
+/// `Referer` so that page can return the user to where they were.
 ///
 /// # Errors
 ///
-/// Returns a boxed `403` response when the session is not sudo.
-fn require_sudo(session: &Session) -> Result<(), Box<Response>> {
+/// Returns the boxed re-authentication page — HTTP `403` (the action is
+/// forbidden until the caller re-authenticates) carrying the "confirm your
+/// identity" form as its body — when the session is not within the sudo window.
+fn require_sudo(session: &Session, headers: &HeaderMap) -> Result<(), Box<Response>> {
     if session.auth.is_sudo(crate::clock::now_unix_secs()) {
-        Ok(())
-    } else {
-        Err(Box::new(
-            (
-                StatusCode::FORBIDDEN,
-                "Re-authenticate to perform this action: sign in again, then retry.",
-            )
-                .into_response(),
-        ))
+        return Ok(());
     }
+    let return_to = same_origin_return_to(headers);
+    let page = console::reauth_page(
+        &session.email,
+        &session.csrf(),
+        &return_to,
+        None,
+        std::time::Instant::now(),
+    );
+    Err(Box::new((StatusCode::FORBIDDEN, Html(page)).into_response()))
+}
+
+/// Extract a safe same-origin return path from the request's `Referer`.
+///
+/// Used by the sudo re-auth flow to send the user back to the page they were on.
+/// Only the path-and-query is taken (never the host), so a forged `Referer` can
+/// at most return the user to a path on this origin — never an open redirect.
+/// Falls back to `/` when there is no usable `Referer`.
+fn same_origin_return_to(headers: &HeaderMap) -> String {
+    headers
+        .get(header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|referer| {
+            // A relative path is taken as-is; an absolute URL is reduced to its
+            // path+query (dropping scheme/host).
+            if let Some(stripped) = referer.strip_prefix('/') {
+                Some(format!("/{stripped}"))
+            } else {
+                url::Url::parse(referer).ok().map(|u| {
+                    let mut p = u.path().to_string();
+                    if let Some(q) = u.query() {
+                        p.push('?');
+                        p.push_str(q);
+                    }
+                    p
+                })
+            }
+        })
+        .filter(|p| p.starts_with('/') && !p.starts_with("//"))
+        .filter(|p| p != "/-/reauth" && !p.starts_with("/login"))
+        .unwrap_or_else(|| "/".to_string())
+}
+
+/// `POST /-/reauth` form: the password to confirm identity, and where to return.
+#[derive(serde::Deserialize)]
+pub(crate) struct ReauthForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    return_to: String,
+}
+
+/// `POST /-/reauth` — re-authenticate the current session into the sudo window.
+///
+/// The in-place "confirm your identity" step backing [`require_sudo`]: it
+/// verifies the logged-in user's password, elevates the session into a fresh
+/// sudo window via [`Database::elevate_session`](crate::db::Database::elevate_session),
+/// and redirects back to the (same-origin) `return_to`. A passwordless account
+/// (SSO/magic-link only) is told to re-authenticate through its sign-in provider.
+pub(crate) async fn reauth(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Form(form): Form<ReauthForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let return_to = {
+        let p = form.return_to.trim();
+        if p.starts_with('/') && !p.starts_with("//") && p != "/-/reauth" && !p.starts_with("/login")
+        {
+            p.to_string()
+        } else {
+            "/".to_string()
+        }
+    };
+    let render_err = |msg: &str| {
+        Html(console::reauth_page(
+            &session.email,
+            &session.csrf(),
+            &return_to,
+            Some(msg),
+            started,
+        ))
+        .into_response()
+    };
+    // Verify the password against the session's own user (never a different
+    // account, even if the email somehow resolves elsewhere).
+    let (user_id, hash) = match deps.db.user_for_password(&session.email).await {
+        Ok(Some(found)) => found,
+        Ok(None) => {
+            return render_err(
+                "This account has no password set — re-authenticate with your sign-in provider.",
+            );
+        }
+        Err(err) => return internal(err),
+    };
+    if user_id != session.auth.user_id || !crate::auth::password::verify_password(&form.password, &hash)
+    {
+        return render_err("Incorrect password.");
+    }
+    if let Err(err) = deps.db.elevate_session(&session.secret).await {
+        return internal(err);
+    }
+    Redirect::to(&return_to).into_response()
 }
 
 /// Authorize an anonymous-or-bearer **read** of `registry`, returning a boxed
@@ -894,7 +1001,7 @@ pub(crate) async fn account_set_password(
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    if let Err(resp) = require_sudo(&session) {
+    if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
     match sso_enforced_for(&deps, &session.email, Some(session.auth.user_id)).await {
@@ -2432,7 +2539,7 @@ pub(crate) async fn org_invite_member(
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    if let Err(resp) = require_sudo(&session) {
+    if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
@@ -2536,7 +2643,7 @@ pub(crate) async fn org_remove_member(
     {
         return (StatusCode::FORBIDDEN, "members.manage required").into_response();
     }
-    if let Err(resp) = require_sudo(&session) {
+    if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
     let Some(kind) = crate::domain::PrincipalKind::parse(&form.principal_kind) else {
@@ -2614,7 +2721,7 @@ pub(crate) async fn org_member_role(
     {
         return (StatusCode::FORBIDDEN, "members.manage required").into_response();
     }
-    if let Err(resp) = require_sudo(&session) {
+    if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
     let Some(kind) = crate::domain::PrincipalKind::parse(&form.principal_kind) else {
@@ -3404,7 +3511,7 @@ pub(crate) async fn org_delete(
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    if let Err(resp) = require_sudo(&session) {
+    if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
@@ -3509,9 +3616,24 @@ async fn render_instance(
         return (StatusCode::FORBIDDEN, "instance admin required").into_response();
     }
     if active == "storage" {
+        let binding = match deps.db.instance_default_binding().await {
+            Ok(b) => b,
+            Err(err) => return internal(err),
+        };
+        let frontends = match &binding {
+            Some(b) => match deps.db.list_storage_frontends(b.id).await {
+                Ok(f) => f,
+                Err(err) => return internal(err),
+            },
+            None => Vec::new(),
+        };
         return Html(console::instance_storage_page(
             &session.email,
             deps.default_storage_location.as_deref(),
+            binding.as_ref(),
+            &frontends,
+            &session.csrf(),
+            notice,
             started,
         ))
         .into_response();
@@ -3757,6 +3879,87 @@ pub(crate) async fn instance_serving_action(
     }
     audit_instance(&deps, &session, "instance.serving", policy.as_str()).await;
     render_instance(&deps, &session, "serving", Some("Serving defaults saved."), started).await
+}
+
+/// `POST /-/instance/storage` — manage the instance default storage binding's
+/// public access and frontends (instance admins; RFC-0004 §12). Dispatches the
+/// `op` field: `set-public` (access + `public_base_url`), `add-frontend`,
+/// `delete-frontend`.
+pub(crate) async fn instance_storage_action(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Form(form): Form<std::collections::HashMap<String, String>>,
+) -> Response {
+    let field = |k: &str| form.get(k).map(String::as_str).unwrap_or("");
+    let session = match require_instance_admin(&deps, &headers, field("csrf")).await {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let binding = match deps.db.instance_default_binding().await {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            return (StatusCode::CONFLICT, "instance default binding not seeded").into_response()
+        }
+        Err(err) => return internal(err),
+    };
+    let op = field("op").to_string();
+    let outcome: Result<&str, String> = match op.as_str() {
+        "set-public" => {
+            let url = field("public_base_url").trim();
+            let url = (!url.is_empty()).then_some(url);
+            deps.db
+                .set_binding_public(binding.id, field("access"), url)
+                .await
+                .map(|_| "Public access saved.")
+                .map_err(|e| format!("{e:#}"))
+        }
+        "add-frontend" => {
+            let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
+            deps.db
+                .create_storage_frontend(
+                    binding.id,
+                    field("domain").trim(),
+                    field("base_path").trim(),
+                    if field("mode") == "proxied" {
+                        "proxied"
+                    } else {
+                        "direct"
+                    },
+                    field("serves_git") == "1",
+                    field("serves_cache") == "1",
+                    field("serves_web") == "1",
+                    priority,
+                    field("advertised") == "1",
+                )
+                .await
+                .map(|_| "Frontend added.")
+                .map_err(|e| format!("{e:#}"))
+        }
+        "delete-frontend" => {
+            let Ok(id) = field("id").parse::<i64>() else {
+                return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
+            };
+            // Only a frontend belonging to this binding may be deleted here.
+            match deps.db.list_storage_frontends(binding.id).await {
+                Ok(list) if list.iter().any(|f| f.id == id) => {}
+                Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
+                Err(err) => return internal(err),
+            }
+            deps.db
+                .delete_frontend(id)
+                .await
+                .map(|_| "Frontend deleted.")
+                .map_err(|e| format!("{e:#}"))
+        }
+        _ => return (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
+    };
+    let notice = match outcome {
+        Ok(notice) => notice,
+        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+    };
+    audit_instance(&deps, &session, "instance.storage", &op).await;
+    render_instance(&deps, &session, "storage", Some(notice), started).await
 }
 
 /// Trim a form field to `Option`, mapping blank to `None`.
@@ -4529,7 +4732,7 @@ pub(crate) async fn registry_delete(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    registry_delete_action(&deps, &session, &registry, &form.csrf, &form.confirm).await
+    registry_delete_action(&deps, &session, &registry, &form.csrf, &form.confirm, &headers).await
 }
 
 /// The registry-delete action.
@@ -4539,11 +4742,12 @@ async fn registry_delete_action(
     registry: &RegistryRecord,
     csrf: &str,
     confirm: &str,
+    headers: &HeaderMap,
 ) -> Response {
     if let Err(resp) = check_csrf(session, csrf) {
         return *resp;
     }
-    if let Err(resp) = require_sudo(session) {
+    if let Err(resp) = require_sudo(session, headers) {
         return *resp;
     }
     let scope = Scope::parse(&registry.slug);
@@ -4634,11 +4838,12 @@ async fn tokens_create_action(
     want_read: bool,
     want_publish: bool,
     started: Instant,
+    headers: &HeaderMap,
 ) -> Response {
     if let Err(resp) = check_csrf(session, csrf) {
         return *resp;
     }
-    if let Err(resp) = require_sudo(session) {
+    if let Err(resp) = require_sudo(session, headers) {
         return *resp;
     }
     let scope = Scope::parse(&registry.slug);
@@ -4691,6 +4896,7 @@ async fn tokens_modify_action(
     token_id: &str,
     rotate: bool,
     started: Instant,
+    headers: &HeaderMap,
 ) -> Response {
     if let Err(resp) = check_csrf(session, csrf) {
         return *resp;
@@ -4699,7 +4905,7 @@ async fn tokens_modify_action(
         return *resp;
     }
     if rotate {
-        if let Err(resp) = require_sudo(session) {
+        if let Err(resp) = require_sudo(session, headers) {
             return *resp;
         }
         match deps.db.rotate_token(token_id).await {
@@ -4799,6 +5005,7 @@ pub(crate) async fn tokens_create(
         form.perm_read.is_some(),
         form.perm_publish.is_some(),
         started,
+        &headers,
     )
     .await
 }
@@ -4830,8 +5037,17 @@ pub(crate) async fn tokens_revoke(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    tokens_modify_action(&deps, &session, &registry, &form.csrf, &form.token_id, false, started)
-        .await
+    tokens_modify_action(
+        &deps,
+        &session,
+        &registry,
+        &form.csrf,
+        &form.token_id,
+        false,
+        started,
+        &headers,
+    )
+    .await
 }
 
 /// `POST /{slug}/-/settings/tokens/rotate` — rotate one of the caller's tokens.
@@ -4853,7 +5069,17 @@ pub(crate) async fn tokens_rotate(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    tokens_modify_action(&deps, &session, &registry, &form.csrf, &form.token_id, true, started).await
+    tokens_modify_action(
+        &deps,
+        &session,
+        &registry,
+        &form.csrf,
+        &form.token_id,
+        true,
+        started,
+        &headers,
+    )
+    .await
 }
 
 /// Verify the session user owns the token being revoked/rotated, else 403.
@@ -5240,7 +5466,7 @@ pub(crate) async fn org_keys_action(
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    if let Err(resp) = require_sudo(&session) {
+    if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
@@ -5624,7 +5850,7 @@ pub(crate) async fn org_sso_action(
     if let Err(resp) = check_csrf(&session, field("csrf")) {
         return *resp;
     }
-    if let Err(resp) = require_sudo(&session) {
+    if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
