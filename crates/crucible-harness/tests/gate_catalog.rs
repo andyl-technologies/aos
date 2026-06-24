@@ -48,7 +48,6 @@ fn architecture_red_placeholder_gates_are_wired() {
         "gate:patch-microtests",
         "gate:perf-bench",
         "gate:qemu-inert",
-        "gate:scheduler-liveness",
     ]);
 
     assert_eq!(placeholders, expected);
@@ -85,6 +84,10 @@ fn architecture_red_placeholder_gates_are_wired() {
     ));
     assert!(matches!(
         find_gate("gate:divergence-bisect").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
+        find_gate("gate:scheduler-liveness").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
 

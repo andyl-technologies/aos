@@ -168,7 +168,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:scheduler-liveness",
         phase: GatePhase::Phase3,
         owner: "crucible",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:control-responsive",

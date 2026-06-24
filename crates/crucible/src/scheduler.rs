@@ -10,8 +10,9 @@ use std::error::Error;
 use std::fmt;
 
 use crate::{
-    BackendError, BackendInput, Configuration, Decision, FaultId, Icount, NodeCounter, NodeId,
-    Shift, SimInstant, TimeConversionError, VirtualTime,
+    BackendError, BackendInput, Configuration, Decision, DeliveryOrderDecision, EventKey, FaultId,
+    Icount, NodeCounter, NodeId, ScenarioDef, Shift, SimInstant, TimeConversionError, VirtualTime,
+    step,
 };
 
 /// Advances the system by one scheduler quantum.
@@ -411,6 +412,697 @@ pub fn horizon_from_exact_local_event(
         ceiling: virtual_time.to_icount_ceil(shift)?,
         source,
     })
+}
+
+/// One generated node consumed by the scheduler liveness gate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerScenarioNode {
+    /// The scheduler graph node to advance.
+    pub id: SchedulerNodeId,
+    /// The node-local counter at the start of the run.
+    pub counter: NodeCounter,
+    /// Whether the node starts runnable or already idle.
+    pub activity: SchedulerNodeActivity,
+    /// The conservative cross-node lookahead horizon for this node.
+    pub network_horizon: SimInstant,
+    /// The exact local timer or idle report for this node.
+    pub exact_local_event: ExactLocalEvent,
+}
+
+/// The generated liveness activity state for one scheduler node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedulerNodeActivity {
+    /// The node has work and may be selected by PICK.
+    Runnable,
+    /// The node is idle, has no local timer or I/O work, and cannot advance.
+    Idle,
+}
+
+/// A finite scheduler scenario for checking quantum-loop liveness.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerLivenessScenario {
+    /// The configuration whose schedule records scheduler decisions.
+    pub configuration: Configuration,
+    /// The fixed icount-to-virtual-time shift for every node in the scenario.
+    pub shift: Shift,
+    /// The maximum number of quanta allowed before the scenario time-limits.
+    pub quantum_budget: u64,
+    /// The virtual-time limit that also terminates the scenario.
+    pub time_limit: SimInstant,
+    /// The generated nodes driven by the authoritative scheduler.
+    ///
+    /// A runnable generated node becomes [`SchedulerNodeActivity::Idle`] once it
+    /// reaches the horizon selected from its exact local event and network
+    /// lookahead.
+    pub nodes: Vec<SchedulerScenarioNode>,
+    /// Cross-node, I/O, fault, and control events waiting for scheduler delivery.
+    pub pending_events: Vec<ScheduledEvent>,
+}
+
+impl SchedulerLivenessScenario {
+    /// Builds a scheduler scenario with a deterministic synthetic configuration.
+    #[must_use]
+    pub fn from_canonical_material(
+        material: &str,
+        shift: Shift,
+        quantum_budget: u64,
+        time_limit: SimInstant,
+        nodes: Vec<SchedulerScenarioNode>,
+        pending_events: Vec<ScheduledEvent>,
+    ) -> Self {
+        Self {
+            configuration: Configuration::genesis(ScenarioDef::from_canonical_material(
+                "crucible.scheduler-liveness.scenario",
+                material,
+            )),
+            shift,
+            quantum_budget,
+            time_limit,
+            nodes,
+            pending_events,
+        }
+    }
+}
+
+/// The terminal scheduler condition reached by a liveness run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedulerTerminal {
+    /// No node can advance and no scheduler event remains pending.
+    Quiescent,
+    /// The run reached its virtual-time or quantum budget.
+    TimeLimitReached,
+}
+
+/// Evidence produced by a successful scheduler liveness run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerLivenessReport {
+    /// The terminal condition reached by the scheduler.
+    pub terminal: SchedulerTerminal,
+    /// The number of scheduler quanta driven.
+    pub quanta: u64,
+    /// The shared-timeline frontier after the last quantum.
+    pub frontier: VirtualTime,
+    /// The nodes advanced, in scheduler order.
+    pub advanced_nodes: Vec<SchedulerNodeId>,
+    /// The number of events resolved by the scheduler.
+    pub resolved_events: usize,
+    /// Whether every node advance happened after yielding the scheduler lock.
+    pub yielded_between_quanta: bool,
+    /// The final configuration with scheduler decisions appended.
+    pub final_configuration: Configuration,
+}
+
+/// A liveness failure reported by the scheduler gate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SchedulerLivenessError {
+    /// A scenario with no nodes cannot exercise scheduler progress.
+    EmptyScenario,
+    /// The scheduler reached a non-quiescent state with no advanceable node.
+    Deadlock {
+        /// The shared-timeline frontier at the deadlock.
+        frontier: VirtualTime,
+        /// The number of events still waiting for delivery.
+        pending_events: usize,
+    },
+    /// A runnable node remained non-quiescent but no quantum could advance it.
+    Livelock {
+        /// The zero-based quantum index that failed to make progress.
+        quantum: u64,
+        /// The stalled scheduler node.
+        node: SchedulerNodeId,
+        /// The counter at which the node stalled.
+        counter: NodeCounter,
+    },
+    /// A scheduler implementation held its internal lock across node advance.
+    LockHeldAcrossAdvance {
+        /// The zero-based quantum index that violated the yield contract.
+        quantum: u64,
+        /// The node advanced while the scheduler lock was still held.
+        node: SchedulerNodeId,
+    },
+    /// The scheduler boundary returned an operational error.
+    Scheduler(SchedulerError),
+}
+
+impl fmt::Display for SchedulerLivenessError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyScenario => f.write_str("scheduler liveness scenario has no nodes"),
+            Self::Deadlock {
+                frontier,
+                pending_events,
+            } => write!(
+                f,
+                "scheduler deadlocked at virtual time {} with {pending_events} pending events",
+                frontier.ticks
+            ),
+            Self::Livelock {
+                quantum,
+                node,
+                counter,
+            } => write!(
+                f,
+                "scheduler livelock at quantum {quantum} on {}:{:?} counter {}",
+                node.node.name, node.kind, counter.ticks
+            ),
+            Self::LockHeldAcrossAdvance { quantum, node } => write!(
+                f,
+                "scheduler held its lock across node advance at quantum {quantum} on {}:{:?}",
+                node.node.name, node.kind
+            ),
+            Self::Scheduler(error) => write!(f, "scheduler liveness check failed: {error}"),
+        }
+    }
+}
+
+impl Error for SchedulerLivenessError {}
+
+impl From<SchedulerError> for SchedulerLivenessError {
+    fn from(error: SchedulerError) -> Self {
+        Self::Scheduler(error)
+    }
+}
+
+/// The single authoritative scheduler used by the liveness gate.
+#[derive(Clone, Debug)]
+pub struct SingleScheduler {
+    configuration: Configuration,
+    timeline: SharedTimeline,
+    quantum_budget: u64,
+    time_limit: SimInstant,
+    nodes: Vec<RuntimeSchedulerNode>,
+    pending_events: Vec<ScheduledEvent>,
+    frontier: VirtualTime,
+    quanta: u64,
+    lock_held: bool,
+    last_advance: Option<NodeAdvance>,
+}
+
+impl SingleScheduler {
+    /// Builds a scheduler from a finite generated liveness scenario.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the fixed timeline shift cannot be
+    /// represented or when an initial node counter cannot be projected onto the
+    /// shared virtual timeline.
+    pub fn new(scenario: SchedulerLivenessScenario) -> Result<Self, SchedulerError> {
+        let timeline = SharedTimeline::new(scenario.shift)?;
+        let mut nodes = scenario
+            .nodes
+            .into_iter()
+            .map(RuntimeSchedulerNode::from)
+            .collect::<Vec<_>>();
+        nodes.sort_by(|left, right| left.id.cmp(&right.id));
+
+        let frontier = frontier_for(&nodes, scenario.shift)?;
+
+        Ok(Self {
+            configuration: scenario.configuration,
+            timeline,
+            quantum_budget: scenario.quantum_budget,
+            time_limit: scenario.time_limit,
+            nodes,
+            pending_events: scenario.pending_events,
+            frontier,
+            quanta: 0,
+            lock_held: false,
+            last_advance: None,
+        })
+    }
+
+    /// Returns the current scheduler configuration.
+    #[must_use]
+    pub fn configuration(&self) -> &Configuration {
+        &self.configuration
+    }
+
+    /// Returns the current shared-timeline frontier.
+    #[must_use]
+    pub fn frontier(&self) -> VirtualTime {
+        self.frontier
+    }
+
+    /// Returns the number of quanta already driven.
+    #[must_use]
+    pub fn quanta(&self) -> u64 {
+        self.quanta
+    }
+
+    fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    fn is_quiescent(&self) -> bool {
+        self.pending_events.is_empty()
+            && self
+                .nodes
+                .iter()
+                .all(|node| node.activity == SchedulerNodeActivity::Idle)
+    }
+
+    fn reached_time_limit(&self) -> bool {
+        let mut saw_runnable = false;
+
+        for node in &self.nodes {
+            if node.activity == SchedulerNodeActivity::Runnable {
+                saw_runnable = true;
+                let Ok(current_time) = node.counter.to_virtual(self.timeline.shift()) else {
+                    return false;
+                };
+                if current_time < self.time_limit {
+                    return false;
+                }
+            }
+        }
+
+        saw_runnable
+    }
+
+    fn exhausted_quantum_budget(&self) -> bool {
+        self.quanta >= self.quantum_budget
+    }
+
+    fn pick_advanceable_node(&self) -> Result<Option<AdvanceCandidate>, SchedulerError> {
+        let mut candidates = Vec::new();
+
+        for (index, node) in self.nodes.iter().enumerate() {
+            if let Some(candidate) = self.advance_candidate(index, node)? {
+                candidates.push(candidate);
+            }
+        }
+
+        candidates.sort_by(|left, right| left.key.cmp(&right.key));
+
+        Ok(candidates.into_iter().next())
+    }
+
+    fn advance_candidate(
+        &self,
+        index: usize,
+        node: &RuntimeSchedulerNode,
+    ) -> Result<Option<AdvanceCandidate>, SchedulerError> {
+        if node.activity == SchedulerNodeActivity::Idle {
+            return Ok(None);
+        }
+
+        let current_time = node.counter.to_virtual(self.timeline.shift())?;
+        let window = self.advance_window(node, current_time)?;
+
+        if current_time >= window.target_time {
+            return Ok(None);
+        }
+
+        Ok(Some(AdvanceCandidate {
+            index,
+            key: self
+                .timeline
+                .timeline_key(node.id.clone(), node.counter, index as u64)?,
+            target_time: window.target_time,
+            quiescent_horizon: window.quiescent_horizon,
+        }))
+    }
+
+    fn advance_window(
+        &self,
+        node: &RuntimeSchedulerNode,
+        current_time: SimInstant,
+    ) -> Result<AdvanceWindow, SchedulerError> {
+        let horizon = horizon_from_exact_local_event(
+            node.network_horizon,
+            node.exact_local_event,
+            self.timeline.shift(),
+        )?;
+        let mut target_time = min_instant(horizon.virtual_time, self.time_limit);
+
+        for event in &self.pending_events {
+            if event.key.consumer() == &node.id {
+                let event_time = SimInstant {
+                    nanos: event.key.virtual_time().ticks,
+                };
+                if event_time > current_time && event_time < target_time {
+                    target_time = event_time;
+                }
+            }
+        }
+
+        Ok(AdvanceWindow {
+            target_time,
+            quiescent_horizon: horizon.virtual_time,
+        })
+    }
+
+    fn drive_authoritative_quantum(
+        &mut self,
+        request: QuantumRequest,
+    ) -> Result<QuantumOutcome, SchedulerError> {
+        if request.configuration != self.configuration {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "quantum request configuration is not the scheduler frontier",
+                ),
+            });
+        }
+
+        self.last_advance = None;
+
+        let mut resolved_events = self.control_events(request.control);
+        let candidate = match self.pick_advanceable_node()? {
+            Some(candidate) => candidate,
+            None => {
+                return Ok(QuantumOutcome {
+                    configuration: self.configuration.clone(),
+                    frontier: self.frontier,
+                    advanced_node: None,
+                    resolved_events,
+                    decisions: Vec::new(),
+                });
+            }
+        };
+
+        let plan = {
+            let critical_section = SchedulerCriticalSection::enter(self);
+            critical_section.advance_plan(candidate)?
+        };
+
+        let selected_node = plan.node.clone();
+        let before = plan.before;
+        let (after, after_time, yielded_before_advance) = self.advance_node_after_yield(&plan)?;
+        resolved_events.extend(self.resolve_events_for(&selected_node, after_time));
+
+        let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime {
+                ticks: after_time.nanos,
+            },
+            order: resolved_events
+                .iter()
+                .map(|event| EventKey {
+                    sequence: event.key.sequence(),
+                })
+                .collect(),
+        });
+        let configuration = step(&self.configuration, decision.clone());
+
+        self.configuration = configuration.clone();
+        self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
+        self.quanta = self.quanta.saturating_add(1);
+        self.last_advance = Some(NodeAdvance {
+            node: selected_node.clone(),
+            before,
+            after,
+            yielded_before_advance,
+        });
+
+        Ok(QuantumOutcome {
+            configuration,
+            frontier: self.frontier,
+            advanced_node: Some(selected_node),
+            resolved_events,
+            decisions: vec![decision],
+        })
+    }
+
+    fn control_events(&self, control: Vec<ControlOperation>) -> Vec<ScheduledEvent> {
+        let mut control = control;
+        control.sort();
+        let node = SchedulerNodeId {
+            node: NodeId {
+                name: String::from("control-plane"),
+            },
+            kind: SchedulingNodeKind::ControlPlane,
+        };
+
+        control
+            .into_iter()
+            .map(|operation| ScheduledEvent {
+                key: ScheduledEventKey::from_parts(
+                    self.frontier,
+                    node.clone(),
+                    node.clone(),
+                    operation.sequence,
+                ),
+                payload: ScheduledEventPayload::Control(operation),
+            })
+            .collect()
+    }
+
+    fn resolve_events_for(
+        &mut self,
+        node: &SchedulerNodeId,
+        advanced_to: SimInstant,
+    ) -> Vec<ScheduledEvent> {
+        let mut resolved = Vec::new();
+        let mut pending = Vec::new();
+
+        for event in self.pending_events.drain(..) {
+            let due = SimInstant {
+                nanos: event.key.virtual_time().ticks,
+            };
+            if event.key.consumer() == node && due <= advanced_to {
+                resolved.push(event);
+            } else {
+                pending.push(event);
+            }
+        }
+
+        self.pending_events = pending;
+        ordered_scheduled_events(&resolved)
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    fn advance_node_after_yield(
+        &mut self,
+        plan: &AdvancePlan,
+    ) -> Result<(NodeCounter, SimInstant, bool), SchedulerError> {
+        if self.lock_held {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("scheduler lock spans node advance"),
+            });
+        }
+
+        let after = NodeCounter {
+            ticks: plan.target_counter,
+        };
+        self.nodes[plan.index].counter = after;
+        let after_time = after.to_virtual(self.timeline.shift())?;
+        if after_time >= plan.quiescent_horizon {
+            self.nodes[plan.index].activity = SchedulerNodeActivity::Idle;
+        }
+
+        Ok((after, after_time, true))
+    }
+
+    fn stalled_active_node(&self) -> Option<&RuntimeSchedulerNode> {
+        self.nodes
+            .iter()
+            .find(|node| node.activity == SchedulerNodeActivity::Runnable)
+    }
+}
+
+impl QuantumLoop for SingleScheduler {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.drive_authoritative_quantum(request)
+    }
+}
+
+/// Drives the authoritative scheduler until it terminates or fails liveness.
+///
+/// # Errors
+///
+/// Returns [`SchedulerLivenessError`] when the scenario has no nodes, when the
+/// scheduler detects deadlock or livelock, when it holds a lock across a node
+/// advance, or when a lower-level scheduler operation fails.
+pub fn check_scheduler_liveness(
+    scenario: SchedulerLivenessScenario,
+) -> Result<SchedulerLivenessReport, SchedulerLivenessError> {
+    let mut scheduler = SingleScheduler::new(scenario)?;
+    if scheduler.is_empty() {
+        return Err(SchedulerLivenessError::EmptyScenario);
+    }
+
+    let mut advanced_nodes = Vec::new();
+    let mut resolved_events = 0usize;
+    let mut yielded_between_quanta = true;
+
+    loop {
+        if scheduler.reached_time_limit() || scheduler.exhausted_quantum_budget() {
+            return Ok(SchedulerLivenessReport {
+                terminal: SchedulerTerminal::TimeLimitReached,
+                quanta: scheduler.quanta(),
+                frontier: scheduler.frontier(),
+                advanced_nodes,
+                resolved_events,
+                yielded_between_quanta,
+                final_configuration: scheduler.configuration().clone(),
+            });
+        }
+
+        if scheduler.is_quiescent() {
+            return Ok(SchedulerLivenessReport {
+                terminal: SchedulerTerminal::Quiescent,
+                quanta: scheduler.quanta(),
+                frontier: scheduler.frontier(),
+                advanced_nodes,
+                resolved_events,
+                yielded_between_quanta,
+                final_configuration: scheduler.configuration().clone(),
+            });
+        }
+
+        let request = QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        };
+        let outcome = scheduler.drive_quantum(request)?;
+
+        match &scheduler.last_advance {
+            Some(advance) => {
+                if advance.after <= advance.before {
+                    return Err(SchedulerLivenessError::Livelock {
+                        quantum: scheduler.quanta().saturating_sub(1),
+                        node: advance.node.clone(),
+                        counter: advance.before,
+                    });
+                }
+                if !advance.yielded_before_advance {
+                    return Err(SchedulerLivenessError::LockHeldAcrossAdvance {
+                        quantum: scheduler.quanta().saturating_sub(1),
+                        node: advance.node.clone(),
+                    });
+                }
+                yielded_between_quanta &= advance.yielded_before_advance;
+                advanced_nodes.push(advance.node.clone());
+            }
+            None => {
+                if let Some(node) = scheduler.stalled_active_node() {
+                    return Err(SchedulerLivenessError::Livelock {
+                        quantum: scheduler.quanta(),
+                        node: node.id.clone(),
+                        counter: node.counter,
+                    });
+                }
+
+                return Err(SchedulerLivenessError::Deadlock {
+                    frontier: scheduler.frontier(),
+                    pending_events: scheduler.pending_events.len(),
+                });
+            }
+        }
+
+        resolved_events += outcome.resolved_events.len();
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RuntimeSchedulerNode {
+    id: SchedulerNodeId,
+    counter: NodeCounter,
+    activity: SchedulerNodeActivity,
+    network_horizon: SimInstant,
+    exact_local_event: ExactLocalEvent,
+}
+
+impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
+    fn from(node: SchedulerScenarioNode) -> Self {
+        Self {
+            id: node.id,
+            counter: node.counter,
+            activity: node.activity,
+            network_horizon: node.network_horizon,
+            exact_local_event: node.exact_local_event,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AdvanceCandidate {
+    index: usize,
+    key: SharedTimelineKey,
+    target_time: SimInstant,
+    quiescent_horizon: SimInstant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AdvanceWindow {
+    target_time: SimInstant,
+    quiescent_horizon: SimInstant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AdvancePlan {
+    index: usize,
+    node: SchedulerNodeId,
+    before: NodeCounter,
+    target_counter: u64,
+    quiescent_horizon: SimInstant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NodeAdvance {
+    node: SchedulerNodeId,
+    before: NodeCounter,
+    after: NodeCounter,
+    yielded_before_advance: bool,
+}
+
+struct SchedulerCriticalSection<'a> {
+    scheduler: &'a mut SingleScheduler,
+}
+
+impl<'a> SchedulerCriticalSection<'a> {
+    fn enter(scheduler: &'a mut SingleScheduler) -> Self {
+        scheduler.lock_held = true;
+        Self { scheduler }
+    }
+
+    fn advance_plan(self, candidate: AdvanceCandidate) -> Result<AdvancePlan, SchedulerError> {
+        let selected_index = candidate.index;
+        let selected_node = self.scheduler.nodes[selected_index].id.clone();
+        let before = self.scheduler.nodes[selected_index].counter;
+        let target_counter = candidate
+            .target_time
+            .to_icount_ceil(self.scheduler.timeline.shift())?
+            .retired;
+
+        Ok(AdvancePlan {
+            index: selected_index,
+            node: selected_node,
+            before,
+            target_counter,
+            quiescent_horizon: candidate.quiescent_horizon,
+        })
+    }
+}
+
+impl Drop for SchedulerCriticalSection<'_> {
+    fn drop(&mut self) {
+        self.scheduler.lock_held = false;
+    }
+}
+
+fn frontier_for(
+    nodes: &[RuntimeSchedulerNode],
+    shift: Shift,
+) -> Result<VirtualTime, SchedulerError> {
+    let mut frontier = None;
+
+    for node in nodes {
+        let virtual_time = node.counter.to_virtual(shift)?;
+        frontier = Some(match frontier {
+            Some(current) => min_instant(current, virtual_time),
+            None => virtual_time,
+        });
+    }
+
+    Ok(VirtualTime {
+        ticks: frontier.unwrap_or(SimInstant::EPOCH).nanos,
+    })
+}
+
+fn min_instant(left: SimInstant, right: SimInstant) -> SimInstant {
+    if left <= right { left } else { right }
 }
 
 /// An error produced by the scheduler boundary.

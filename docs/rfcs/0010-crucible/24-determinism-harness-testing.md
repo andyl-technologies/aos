@@ -892,7 +892,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [ ] **T-HARN-13** Wire random in-search oracle sampling: each materialized fat
   checkpoint is also reconstructed thin and compared at a configurable rate during
   search/fuzzing; mismatch triggers bisection. — satisfies [HARN-13]; spec §6.
-- [ ] **T-HARN-14** Implement `gate:scheduler-liveness` (every generated scenario
+- [x] **T-HARN-14** Implement `gate:scheduler-liveness` (every generated scenario
   reaches Quiescent/TimeLimitReached within a quantum budget; no held lock spans a
   node advance). — satisfies [HARN-18]; spec §1.2.
 - [ ] **T-HARN-15** Implement `gate:control-responsive` (control ops acked within

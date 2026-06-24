@@ -146,7 +146,7 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible",
         test_target: "gate_scheduler_liveness",
         required_features: &["test-double"],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:control-responsive",
