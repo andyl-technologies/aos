@@ -9,11 +9,12 @@
 //!
 //! Module map: `abi` owns the raw QEMU plugin `cdylib` entry point and inert
 //! callback scaffold; `args` owns fail-closed `-plugin` argument parsing;
-//! `deadline` owns exact virtual-clock deadline introspection; `registration`
-//! owns the fail-stop registration sequencer; `setup` owns descriptor mapping
-//! and setup acknowledgement; `time_control` owns clock ownership, authorized
-//! virtual-time advancement, and the time-control ordering contract. Future
-//! modules will add live device callback behavior and QEMU-facing helpers.
+//! `deadline` owns exact virtual-clock deadline introspection; `idle_loop` owns
+//! the idle callback hot-loop state machine; `registration` owns the fail-stop
+//! registration sequencer; `setup` owns descriptor mapping and setup
+//! acknowledgement; `time_control` owns clock ownership, authorized virtual-time
+//! advancement, and the time-control ordering contract. Future modules will add
+//! live device callback behavior and QEMU-facing helpers.
 //!
 //! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
 //! pointers and delegate to safe Rust shims for time-control, callback
@@ -26,6 +27,7 @@
 pub mod abi;
 pub mod args;
 pub mod deadline;
+pub mod idle_loop;
 pub mod registration;
 pub mod setup;
 pub mod time_control;
@@ -48,6 +50,10 @@ pub use deadline::{
     ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,
     ExactDeadlineReport, PerVcpuDeadlineReport, QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
     aggregate_multi_vcpu_deadline,
+};
+pub use idle_loop::{
+    IdleHotLoopError, IdleHotLoopResult, IdleParkRequest, IdleWaitOutcome, IdleWakeCause,
+    IdleWakePlan, PluginIdleHotLoop, compute_idle_wake_plan, timer_deadline_icount,
 };
 pub use registration::{
     PluginRegistrationFailure, PluginRegistrationReady, PluginRegistrationSequence,

@@ -918,11 +918,13 @@ component that makes that purity true *inside* the QEMU process.
   plugin advances virtual time only by guest instructions up to the ceiling and by
   authorized idle jumps; ban host wall-clock/monotonic reads on the time path. —
   satisfies [PLUG-1], [PLUG-9], [PLUG-44]; spec §12.3.1, §12.10.1.
-- [ ] **T-PLUG-5** Implement the idle (HLT/WFI) callback hot loop: publish
-  icount, compute wake = min(next timer, inbound delivery, ceiling), park on the
-  wake fd/futex (no busy spin, no wall-clock timeout), jump on release, inject due
-  frames, republish status. — satisfies [PLUG-10], [PLUG-11], [PLUG-12],
-  [PLUG-13], [PLUG-17]; spec §12.3.2, §12.3.3, §12.4.1.
+- [x] **T-PLUG-5** Implement the idle (HLT/WFI) callback hot loop: publish
+  icount, compute the next local wake from exact timer and inbound delivery
+  signals against the scheduler ceiling, park on the wake fd/futex (no busy spin,
+  no wall-clock timeout), jump on scheduler release, mark done on shutdown wake,
+  inject due frames in deterministic order, and republish running/resume status. —
+  satisfies [PLUG-10], [PLUG-11], [PLUG-12], [PLUG-13], [PLUG-17]; spec §12.3.2,
+  §12.3.3, §12.4.1.
 - [ ] **T-PLUG-6** Implement exact next-deadline introspection (read the next
   `QEMU_CLOCK_VIRTUAL` deadline, `ceil`-convert to icount) and ban the
   overshoot-and-correct fallback; fail loudly if the capability is missing. —
