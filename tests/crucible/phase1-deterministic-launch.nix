@@ -139,6 +139,10 @@
       needle = "IcountShiftSetting::Fixed(0),";
     }
     {
+      label = "fixed RR switch quantum default";
+      needle = "rr_switch_quantum: DEFAULT_RR_SWITCH_QUANTUM,";
+    }
+    {
       label = "VM RTC clock default";
       needle = "rtc_clock: \"vm\".to_owned(),";
     }
@@ -288,7 +292,7 @@
     }
     {
       label = "fixed icount launch flag";
-      needle = "format!(\"shift={},sleep=off,align=off\", self.icount_shift),";
+      needle = "\"shift={},sleep=off,align=off,rr_switch_quantum={}\",";
     }
     {
       label = "VM-clock RTC launch flag";
@@ -349,6 +353,18 @@
     {
       label = "icount shift in hash material";
       needle = "format!(\"icount_shift={}\", self.icount_shift),";
+    }
+    {
+      label = "RR switch quantum in hash material";
+      needle = "format!(\"rr_switch_quantum={}\", self.rr_switch_quantum),";
+    }
+    {
+      label = "RR switch quantum units in hash material";
+      needle = "\"rr_switch_quantum_units=node-icount\".to_owned(),";
+    }
+    {
+      label = "RR vCPU rotation in hash material";
+      needle = "\"rr_vcpu_rotation=ascending-vcpu-id\".to_owned(),";
     }
     {
       label = "icount-derived time in hash material";
@@ -716,7 +732,10 @@ in
             accelerator=tcg,thread=single
             smp=1
             smp_vcpus=1
-            icount=shift=0,sleep=off,align=off
+            icount=shift=0,sleep=off,align=off,rr_switch_quantum=4096
+            rr_switch_quantum=4096
+            rr_switch_quantum_units=node-icount
+            rr_vcpu_rotation=ascending-vcpu-id
             rtc=base=2026-01-01T00:00:00,clock=vm
             timers=virtual-clock-driven
             interrupt_timing=icount-tb-boundaries

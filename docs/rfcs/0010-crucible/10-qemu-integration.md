@@ -755,11 +755,14 @@ determinism contract (04).
   line into the scenario content hash. — satisfies [QEMU-3], [QEMU-4], [QEMU-5],
   [QEMU-6], [QEMU-7], [QEMU-8], [QEMU-9], [QEMU-10], [QEMU-12], [QEMU-13],
   [QEMU-14]; spec §10.2.
-- [ ] **T-QEMU-2** Implement launch-config validation that rejects KVM /
+- [x] **T-QEMU-2** Implement launch-config validation that rejects KVM /
   non-TCG / `shift=auto` / missing-`-icount` / `thread=multi` (MTTCG) /
   unpinned `rr_switch_quantum` / `-cpu host` / host-timing-or-entropy flags,
   loudly and before spawning. — satisfies [QEMU-1], [QEMU-2], [QEMU-5],
   [QEMU-43], [QEMU-11], [QEMU-15]; spec §10.1, §10.2.
+  Completed as a pre-spawn argv validator layered over the deterministic launch
+  profile; the full launch builder/spawn path remains tracked by [T-QEMU-1],
+  [T-QEMU-3], and [T-QEMU-7].
 - [ ] **T-QEMU-3** Implement the `QemuNode` host wrapper owning one child and its
   three channels (plugin-IPC control, shmem hot path, QMP), exposing the
   synchronous scheduler node interface with the strict control/data split. —

@@ -13,7 +13,10 @@ use std::fmt;
 use crucible::NodeClockSkew;
 use entropy::{GUEST_ENTROPY_FW_CFG_NAME, GUEST_ENTROPY_RNG_ID, GUEST_ENTROPY_SEED_FILE_NAME};
 pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
-pub use validation::LaunchProfileError;
+pub use validation::{
+    LaunchProfileError, QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError,
+    validate_pre_spawn_qemu_launch_args,
+};
 use validation::{
     canonical_cpu_model, reject_kernel_cmdline_key, require_kernel_bare_flag_once,
     require_kernel_random_trust_off, validate_accelerator, validate_fixed_text,
@@ -27,6 +30,7 @@ const DEFAULT_RTC_EPOCH_UTC: &str = "2026-01-01T00:00:00";
 const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off";
 const DEFAULT_SCENARIO_SEED: u64 = 0x0010_c001;
 const DEFAULT_RUN_SEED: u64 = 0x0010_c001;
+const DEFAULT_RR_SWITCH_QUANTUM: u64 = 4096;
 const MAX_ICOUNT_SHIFT: u8 = 62;
 
 /// A candidate QEMU launch profile before determinism validation.
@@ -44,6 +48,8 @@ pub struct LaunchProfileCandidate {
     pub smp_vcpus: u16,
     /// The requested icount shift setting.
     pub icount_shift: IcountShiftSetting,
+    /// The fixed single-threaded round-robin switch quantum in node icount.
+    pub rr_switch_quantum: u64,
     /// The UTC RTC epoch supplied to QEMU.
     pub rtc_epoch_utc: String,
     /// The QEMU RTC clock mode.
@@ -75,6 +81,7 @@ impl Default for LaunchProfileCandidate {
             memory_mib: DEFAULT_MEMORY_MIB,
             smp_vcpus: 1,
             icount_shift: IcountShiftSetting::Fixed(0),
+            rr_switch_quantum: DEFAULT_RR_SWITCH_QUANTUM,
             rtc_epoch_utc: DEFAULT_RTC_EPOCH_UTC.to_owned(),
             rtc_clock: "vm".to_owned(),
             kernel_cmdline: DEFAULT_KERNEL_CMDLINE.to_owned(),
@@ -129,6 +136,13 @@ impl LaunchProfileCandidate {
     #[must_use]
     pub fn with_icount_shift(mut self, icount_shift: IcountShiftSetting) -> Self {
         self.icount_shift = icount_shift;
+        self
+    }
+
+    /// Returns a candidate with a different RR switch quantum.
+    #[must_use]
+    pub fn with_rr_switch_quantum(mut self, rr_switch_quantum: u64) -> Self {
+        self.rr_switch_quantum = rr_switch_quantum;
         self
     }
 
@@ -227,6 +241,9 @@ impl LaunchProfileCandidate {
             IcountShiftSetting::Fixed(shift) => validate_icount_shift(shift)?,
             IcountShiftSetting::Auto => return Err(LaunchProfileError::IcountShiftAuto),
         };
+        if self.rr_switch_quantum == 0 {
+            return Err(LaunchProfileError::RrSwitchQuantumZero);
+        }
 
         validate_fixed_text("rtc_epoch_utc", &self.rtc_epoch_utc)?;
         validate_fixed_text("kernel_cmdline", &self.kernel_cmdline)?;
@@ -303,6 +320,7 @@ impl LaunchProfileCandidate {
             machine_type: self.machine_type,
             memory_mib: self.memory_mib,
             icount_shift,
+            rr_switch_quantum: self.rr_switch_quantum,
             rtc_epoch_utc: self.rtc_epoch_utc,
             kernel_cmdline: self.kernel_cmdline,
             scenario_seed: self.scenario_seed,
@@ -362,6 +380,7 @@ pub struct DeterministicLaunchProfile {
     machine_type: String,
     memory_mib: u32,
     icount_shift: u8,
+    rr_switch_quantum: u64,
     rtc_epoch_utc: String,
     kernel_cmdline: String,
     scenario_seed: u64,
@@ -410,7 +429,10 @@ impl DeterministicLaunchProfile {
             "-smp".to_owned(),
             "1".to_owned(),
             "-icount".to_owned(),
-            format!("shift={},sleep=off,align=off", self.icount_shift),
+            format!(
+                "shift={},sleep=off,align=off,rr_switch_quantum={}",
+                self.icount_shift, self.rr_switch_quantum
+            ),
             "-rtc".to_owned(),
             format!("base={},clock=vm", self.rtc_epoch_utc),
             "-seed".to_owned(),
@@ -440,6 +462,9 @@ impl DeterministicLaunchProfile {
             "smp_vcpus=1".to_owned(),
             format!("accelerator={DEFAULT_ACCEL}"),
             format!("icount_shift={}", self.icount_shift),
+            format!("rr_switch_quantum={}", self.rr_switch_quantum),
+            "rr_switch_quantum_units=node-icount".to_owned(),
+            "rr_vcpu_rotation=ascending-vcpu-id".to_owned(),
             "virtual_time_ns=icount<<shift".to_owned(),
             format!("rtc_epoch_utc={}", self.rtc_epoch_utc),
             "rtc_clock=vm".to_owned(),
@@ -554,6 +579,12 @@ impl DeterministicLaunchProfile {
     #[must_use]
     pub fn icount_shift(&self) -> u8 {
         self.icount_shift
+    }
+
+    /// Returns the fixed single-threaded round-robin switch quantum.
+    #[must_use]
+    pub fn rr_switch_quantum(&self) -> u64 {
+        self.rr_switch_quantum
     }
 
     /// Validates that every node launch declaration uses this profile's shift.

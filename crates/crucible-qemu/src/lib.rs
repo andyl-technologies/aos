@@ -48,7 +48,8 @@ pub use launch::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
     GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
     LaunchProfileCandidate, LaunchProfileError, MachineResetMode, NodeClockSkewDeclaration,
-    NodeIcountShift,
+    NodeIcountShift, QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError,
+    validate_pre_spawn_qemu_launch_args,
 };
 pub use qmp::{
     QMP_CAPABILITIES_COMMAND, QMP_JOB_QUERY_INTERVAL, QMP_JOB_QUERY_LIMIT, QMP_QUERY_JOBS_COMMAND,

@@ -7,7 +7,8 @@ use crucible::{ClockDriftRate, NodeClockSkew, ScenarioDef, SimOffset};
 use crucible_qemu::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
     IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
-    NodeClockSkewDeclaration, NodeIcountShift,
+    NodeClockSkewDeclaration, NodeIcountShift, QemuPreSpawnLaunchValidationError,
+    validate_pre_spawn_qemu_launch_args,
 };
 
 fn default_profile() -> DeterministicLaunchProfile {
@@ -68,10 +69,11 @@ fn default_launch_profile_pins_contract_a_arguments() {
     );
     assert!(args.windows(2).any(|window| window == ["-m", "512M"]));
     assert!(args.windows(2).any(|window| window == ["-smp", "1"]));
-    assert!(
-        args.windows(2)
-            .any(|window| window == ["-icount", "shift=0,sleep=off,align=off"])
-    );
+    assert!(args.windows(2).any(|window| window
+        == [
+            "-icount",
+            "shift=0,sleep=off,align=off,rr_switch_quantum=4096"
+        ]));
     assert!(
         args.windows(2)
             .any(|window| window == ["-rtc", "base=2026-01-01T00:00:00,clock=vm"])
@@ -101,6 +103,251 @@ fn default_launch_profile_pins_contract_a_arguments() {
     );
     assert!(args.iter().any(|arg| arg == "-nodefaults"));
     assert!(args.iter().any(|arg| arg == "-no-user-config"));
+}
+
+#[test]
+fn pre_spawn_launch_validation_accepts_canonical_arguments() {
+    let args = default_profile().canonical_qemu_args();
+    let validation = validate_pre_spawn_qemu_launch_args(&args)
+        .unwrap_or_else(|error| panic!("canonical launch args should validate: {error}"));
+
+    assert_eq!(validation.accelerator(), "tcg,thread=single");
+    assert_eq!(validation.icount_shift(), 0);
+    assert_eq!(validation.rr_switch_quantum(), 4096);
+    assert_eq!(validation.smp_vcpus(), 1);
+    assert_eq!(validation.cpu_model(), "qemu64,-rdrand,-rdseed");
+}
+
+#[test]
+fn pre_spawn_launch_validation_rejects_kvm_and_non_tcg() {
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&qemu_args(["-enable-kvm"])),
+        Err(
+            QemuPreSpawnLaunchValidationError::KvmOrHardwareAcceleration {
+                argument: String::from("-enable-kvm"),
+            }
+        )
+    );
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&qemu_args([
+            "-accel",
+            "kvm",
+            "-smp",
+            "1",
+            "-icount",
+            "shift=0,sleep=off,align=off,rr_switch_quantum=4096",
+            "-cpu",
+            "qemu64,-rdrand,-rdseed",
+        ])),
+        Err(
+            QemuPreSpawnLaunchValidationError::KvmOrHardwareAcceleration {
+                argument: String::from("kvm"),
+            }
+        )
+    );
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&qemu_args([
+            "-accel",
+            "hvf",
+            "-smp",
+            "1",
+            "-icount",
+            "shift=0,sleep=off,align=off,rr_switch_quantum=4096",
+            "-cpu",
+            "qemu64,-rdrand,-rdseed",
+        ])),
+        Err(
+            QemuPreSpawnLaunchValidationError::KvmOrHardwareAcceleration {
+                argument: String::from("hvf"),
+            }
+        )
+    );
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&qemu_args([
+            "-accel",
+            "tcg,thread=single",
+            "-machine",
+            "q35,accel=kvm",
+            "-smp",
+            "1",
+            "-icount",
+            "shift=0,sleep=off,align=off,rr_switch_quantum=4096",
+            "-cpu",
+            "qemu64,-rdrand,-rdseed",
+        ])),
+        Err(
+            QemuPreSpawnLaunchValidationError::MachineUsesNonTcgAcceleration {
+                machine: String::from("q35,accel=kvm"),
+            }
+        )
+    );
+}
+
+#[test]
+fn pre_spawn_launch_validation_rejects_bad_icount_and_mttcg() {
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(
+        &mut args,
+        "-icount",
+        "shift=auto,sleep=off,align=off,rr_switch_quantum=4096",
+    );
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::IcountShiftAuto)
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    remove_option_pair(&mut args, "-icount");
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::MissingOption { option: "-icount" })
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(&mut args, "-accel", "tcg,thread=multi");
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::MultiThreadTcg {
+            accelerator: String::from("tcg,thread=multi"),
+        })
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(&mut args, "-accel", "tcg");
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(
+            QemuPreSpawnLaunchValidationError::SingleThreadTcgNotPinned {
+                accelerator: String::from("tcg"),
+            }
+        )
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(&mut args, "-icount", "shift=0,sleep=off,align=off");
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::RrSwitchQuantumUnpinned)
+    );
+}
+
+#[test]
+fn pre_spawn_launch_validation_rejects_host_cpu_timing_and_entropy() {
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(&mut args, "-cpu", "host");
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::CpuModelUsesHost)
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(&mut args, "-cpu", "qemu64,+rdrand");
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::CpuEntropyFeatureEnabled { feature: "rdrand" })
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(&mut args, "-rtc", "base=localtime,clock=host");
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(
+            QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
+                argument: String::from("-rtc base=localtime,clock=host"),
+                reason: "host RTC clock",
+            }
+        )
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(&mut args, "-rtc", "clock=vm");
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(
+            QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
+                argument: String::from("-rtc clock=vm"),
+                reason: "host RTC base",
+            }
+        )
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(&mut args, "-rtc", "base=utc,clock=vm");
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(
+            QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
+                argument: String::from("-rtc base=utc,clock=vm"),
+                reason: "host RTC base",
+            }
+        )
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    remove_option_pair(&mut args, "-rtc");
+    args.push(String::from("-rtc=base=utc,clock=vm"));
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(
+            QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
+                argument: String::from("-rtc base=utc,clock=vm"),
+                reason: "host RTC base",
+            }
+        )
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    args.extend(qemu_args(["-netdev", "user,id=net0"]));
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(
+            QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
+                argument: String::from("-netdev user,id=net0"),
+                reason: "host-timing user networking",
+            }
+        )
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    args.push(String::from("-netdev=user,id=net1"));
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(
+            QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
+                argument: String::from("-netdev=user,id=net1"),
+                reason: "host-timing user networking",
+            }
+        )
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    args.extend(qemu_args([
+        "-object",
+        "rng-random,id=hostrng,filename=/dev/urandom",
+    ]));
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(
+            QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
+                argument: String::from("-object rng-random,id=hostrng,filename=/dev/urandom"),
+                reason: "host entropy",
+            }
+        )
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    args.push(String::from(
+        "-object=rng-random,id=hostrng,filename=/tmp/seed",
+    ));
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(
+            QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
+                argument: String::from("-object=rng-random,id=hostrng,filename=/tmp/seed"),
+                reason: "host entropy",
+            }
+        )
+    );
 }
 
 #[test]
@@ -356,6 +603,7 @@ fn launch_profile_rejects_per_node_icount_shift_mismatch() {
     let profile = default_profile();
 
     assert_eq!(profile.icount_shift(), 0);
+    assert_eq!(profile.rr_switch_quantum(), 4096);
     assert_eq!(
         profile.validate_node_icount_shifts(&[
             NodeIcountShift::new("vm-a", 0),
@@ -396,6 +644,12 @@ fn launch_profile_rejects_per_node_icount_shift_mismatch() {
     assert_eq!(
         profile.scenario_hash_material_for_nodes(&[NodeIcountShift::new("vm-a", 63)]),
         Err(LaunchProfileError::IcountShiftTooLarge { shift: 63 })
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_rr_switch_quantum(0)
+            .try_into_deterministic(),
+        Err(LaunchProfileError::RrSwitchQuantumZero)
     );
     assert_eq!(
         profile.scenario_hash_material_for_nodes(&[NodeIcountShift::new("", 0)]),
@@ -537,6 +791,9 @@ fn launch_hash_material_records_every_determinism_field() {
         "smp_vcpus=1",
         "accelerator=tcg,thread=single",
         "icount_shift=0",
+        "rr_switch_quantum=4096",
+        "rr_switch_quantum_units=node-icount",
+        "rr_vcpu_rotation=ascending-vcpu-id",
         "virtual_time_ns=icount<<shift",
         "rtc_epoch_utc=2026-01-01T00:00:00",
         "rtc_clock=vm",
@@ -582,6 +839,8 @@ fn launch_hash_material_records_every_determinism_field() {
         LaunchProfileCandidate::default().with_icount_shift(IcountShiftSetting::Fixed(1)),
     )
     .scenario_hash_material();
+    let rr_quantum = deterministic(LaunchProfileCandidate::default().with_rr_switch_quantum(8192))
+        .scenario_hash_material();
     let machine = deterministic(LaunchProfileCandidate::default().with_machine_type("pc-q35-9.1"))
         .scenario_hash_material();
     let memory = deterministic(LaunchProfileCandidate::default().with_memory_mib(1024))
@@ -599,12 +858,32 @@ fn launch_hash_material_records_every_determinism_field() {
         .scenario_hash_material();
 
     assert_ne!(material, shifted);
+    assert_ne!(material, rr_quantum);
     assert_ne!(material, machine);
     assert_ne!(material, memory);
     assert_ne!(material, epoch);
     assert_ne!(material, cmdline);
     assert_ne!(material, scenario_seed);
     assert_ne!(material, run_seed);
+}
+
+fn qemu_args<const N: usize>(parts: [&str; N]) -> Vec<String> {
+    parts.iter().map(|part| (*part).to_owned()).collect()
+}
+
+fn replace_option_value(args: &mut [String], option: &str, replacement: &str) {
+    if let Some(index) = args.iter().position(|arg| arg == option)
+        && let Some(value) = args.get_mut(index + 1)
+    {
+        *value = replacement.to_owned();
+    }
+}
+
+fn remove_option_pair(args: &mut Vec<String>, option: &str) {
+    if let Some(index) = args.iter().position(|arg| arg == option) {
+        let end = (index + 2).min(args.len());
+        args.drain(index..end);
+    }
 }
 
 #[test]
