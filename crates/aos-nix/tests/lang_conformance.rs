@@ -89,10 +89,6 @@ const PINNED_LANG_CPP_NIX_VERSION: LangVersion = LangVersion::new(2, 24, 12);
 const LANG_VERSION_SKIP_RULES: &[LangVersionSkipRule] = &[];
 const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
     LangCaseExclusion {
-        name: "eval-fail-dup-dynamic-attrs",
-        reason: "duplicate dynamic attr detection gap",
-    },
-    LangCaseExclusion {
         name: "eval-fail-infinite-recursion-lambda",
         reason: "native evaluator stack-safety gap for infinite lambda recursion",
     },
@@ -157,8 +153,8 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "symlink directory resolution gap",
     },
 ];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 191;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 18;
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 192;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 17;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",
@@ -1269,6 +1265,31 @@ fn eval_fail_detection_allows_successful_non_numeric_values() -> Result<()> {
     );
 
     Ok(())
+}
+
+#[test]
+fn eval_fail_dup_dynamic_attrs_rejects_runtime_duplicates() {
+    let source = br#"{
+  set = { "${"" + "b"}" = 1; };
+  set = { "${"b" + ""}" = 2; };
+}"#;
+
+    let parsed = parse_bytes(source).expect("source parses");
+    let resolved = resolve(parsed).expect("source resolves");
+    let ir = lower(resolved).expect("source lowers");
+    eval_whnf_owned_with_options(&ir, TreeWalkOptions::default())
+        .expect("duplicate dynamic key remains latent at top-level WHNF");
+
+    let error = eval_strict_case(source, TreeWalkOptions::default())
+        .expect_err("strict eval should force the duplicate dynamic key");
+    assert!(
+        error.to_string().contains("evaluating strict expression"),
+        "{error:?}"
+    );
+    assert!(
+        format!("{error:?}").contains("duplicate attribute key"),
+        "{error:?}"
+    );
 }
 
 #[test]
