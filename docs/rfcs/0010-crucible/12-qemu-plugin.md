@@ -935,7 +935,7 @@ component that makes that purity true *inside* the QEMU process.
   bottom-halves from the idle context, so the wake-point architectural state is
   bit-identical regardless of host timing. — satisfies
   [PLUG-16]; spec §12.3.5.
-- [ ] **T-PLUG-8** Implement inbound-frame polling/injection: peek delivery
+- [x] **T-PLUG-8** Implement inbound-frame polling/injection: peek delivery
   icount, deliver iff `delivery_icount <= current_icount`, order injections by
   `(delivery_icount, src_node, seq)`, and fail loudly on an already-passed
   delivery icount. — satisfies [PLUG-18], [PLUG-19], [PLUG-20]; spec §12.4.2.
