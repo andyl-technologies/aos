@@ -975,7 +975,7 @@ component that makes that purity true *inside* the QEMU process.
 - [x] **T-PLUG-18** Implement the boot barrier: block on the initial-ceiling
   publish before the first instruction, using the wake fd/futex (never a
   wall-clock sleep as the gate). — satisfies [PLUG-42]; spec §12.9.3.
-- [ ] **T-PLUG-19** Implement teardown on `shutdown_requested` / `Quit`: wake,
+- [x] **T-PLUG-19** Implement teardown on `shutdown_requested` / `Quit`: wake,
   mark done, stop touching shmem, initiate orderly QEMU shutdown so no child
   leaks. — satisfies [PLUG-43]; spec §12.9.4.
 - [ ] **T-PLUG-20** Enforce the cross-process atomic-ordering rules on every shmem
