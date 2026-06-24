@@ -34,11 +34,18 @@
       then "read-only"
       else "read-write"
     })"
+    # passno 0 for erofs: it is a read-only, build-time-verified image that
+    # needs no boot-time fsck (and `fsck.ext4` would choke on it). ext4 keeps
+    # passno 1.
     "${cfg.rootDevice}  /  ${cfg.rootFsType}  ${
       if cfg.rootReadOnly
       then "ro"
       else "rw"
-    },relatime  0  1"
+    },relatime  0  ${
+      if cfg.rootFsType == "erofs"
+      then "0"
+      else "1"
+    }"
     ""
     "# EFI System Partition — FAT32 so UEFI firmware can read it."
     "${cfg.espDevice}  /boot  vfat  ro,noatime,fmask=0077,dmask=0077  0  2"
