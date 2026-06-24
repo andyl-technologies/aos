@@ -16,11 +16,13 @@ use thiserror::Error;
 
 #[cfg(unix)]
 use crucible_protocol::ReceivedSetup;
+use crucible_shmem::NodeSlot;
 
 use crate::{
-    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, CoverageCallback, CoverageCapabilities,
-    CoverageError, CoverageRegistrationPlan, ExactDeadlineError, ExactDeadlineReader, PluginArgs,
-    PluginArgsParseError, PluginControlHandshake, PluginCoverage, PluginHandshakeError,
+    BootBarrierError, BootBarrierRelease, CANONICAL_TIME_CONTROL_REGISTRATION_ORDER,
+    CoverageCallback, CoverageCapabilities, CoverageError, CoverageRegistrationPlan,
+    ExactDeadlineError, ExactDeadlineReader, PluginArgs, PluginArgsParseError, PluginBootBarrier,
+    PluginControlHandshake, PluginCoverage, PluginHandshakeError, PluginReadySetupAck,
     PluginRegistrationStep, QemuAdvanceVirtualTimeDirectFn, QemuClockDeadlineFn,
     SynchronousIdleAdvance, SynchronousIdleAdvanceError, TimeControlRegistrationPlan,
     perform_plugin_handshake,
@@ -227,14 +229,35 @@ impl PluginRegistrationSequence {
         writer: &mut W,
         completion: &PluginSetupCompletion,
         callbacks: &PluginCallbackCapabilities,
-    ) -> Result<(), PluginRegistrationSequenceError>
+    ) -> Result<PluginReadySetupAck, PluginRegistrationSequenceError>
     where
         W: Write,
     {
         self.ensure_next_step(PluginRegistrationStep::SendSetupAck)?;
-        plugin_send_ready_setup_ack(writer, completion, callbacks)
+        let setup_ack = plugin_send_ready_setup_ack(writer, completion, callbacks)
             .map_err(|source| self.fail_ready_setup_ack(source))?;
-        self.record_step_unchecked(PluginRegistrationStep::SendSetupAck)
+        self.record_step_unchecked(PluginRegistrationStep::SendSetupAck)?;
+        Ok(setup_ack)
+    }
+
+    /// Waits for the scheduler to publish the initial boot ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginRegistrationSequenceError`] when the sequence has not
+    /// reached the boot-barrier step, the shared-memory wait precondition cannot
+    /// be published, or the non-private futex wait fails.
+    pub fn wait_boot_barrier(
+        &mut self,
+        setup_ack: PluginReadySetupAck,
+        slot: &NodeSlot,
+        icount_shift: u8,
+    ) -> Result<BootBarrierRelease, PluginRegistrationSequenceError> {
+        self.ensure_next_step(PluginRegistrationStep::WaitBootBarrier)?;
+        let release = PluginBootBarrier::wait(setup_ack, slot, icount_shift)
+            .map_err(|source| self.fail_boot_barrier(source))?;
+        self.record_step_unchecked(PluginRegistrationStep::WaitBootBarrier)?;
+        Ok(release)
     }
 
     /// Records successful completion of one registration step.
@@ -248,10 +271,28 @@ impl PluginRegistrationSequence {
         &mut self,
         step: PluginRegistrationStep,
     ) -> Result<(), PluginRegistrationSequenceError> {
+        if let Some(failure) = &self.failure {
+            return Err(PluginRegistrationSequenceError::AfterFailure {
+                failed_step: failure.step,
+                blocked_step: step,
+            });
+        }
         if step == PluginRegistrationStep::RegisterCallbacks {
             return Err(self.fail_step(
                 PluginRegistrationStep::RegisterCallbacks,
                 "exact deadline and synchronous idle-advance capabilities, plus optional coverage callback planning, must be required before registering callbacks",
+            ));
+        }
+        if step == PluginRegistrationStep::SendSetupAck {
+            return Err(self.fail_step(
+                PluginRegistrationStep::SendSetupAck,
+                "ready SetupAck(0) must be written with setup completion and callback tokens",
+            ));
+        }
+        if step == PluginRegistrationStep::WaitBootBarrier {
+            return Err(self.fail_step(
+                PluginRegistrationStep::WaitBootBarrier,
+                "the boot barrier must wait on the shared-memory wake_signal futex before guest code",
             ));
         }
 
@@ -265,6 +306,15 @@ impl PluginRegistrationSequence {
         self.ensure_next_step(step)?;
         self.completed_steps.push(step);
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_test_ready_setup_ack(
+        &mut self,
+    ) -> Result<PluginReadySetupAck, PluginRegistrationSequenceError> {
+        self.ensure_next_step(PluginRegistrationStep::SendSetupAck)?;
+        self.record_step_unchecked(PluginRegistrationStep::SendSetupAck)?;
+        Ok(PluginReadySetupAck::test_acknowledged())
     }
 
     fn ensure_next_step(
@@ -492,6 +542,13 @@ impl PluginRegistrationSequence {
         )
     }
 
+    fn fail_boot_barrier(&mut self, source: BootBarrierError) -> PluginRegistrationSequenceError {
+        self.fail_step(
+            PluginRegistrationStep::WaitBootBarrier,
+            format!("boot barrier wait failed: {source}"),
+        )
+    }
+
     fn fail_synchronous_idle_advance_capability(
         &mut self,
         source: SynchronousIdleAdvanceError,
@@ -626,7 +683,7 @@ mod tests {
     use std::io::{Cursor, Read, Write};
 
     use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
-    use crucible_shmem::ABI_VERSION;
+    use crucible_shmem::{ABI_VERSION, KIND_VM, NodeSlot, authorize_advance_ceiling};
 
     #[test]
     fn registration_order_accepts_fixed_happy_path() {
@@ -822,13 +879,95 @@ mod tests {
     #[test]
     fn registration_order_requires_boot_barrier_before_first_instruction() {
         let mut sequence = PluginRegistrationSequence::new();
-        record_steps_through_setup_ack(&mut sequence);
+        let _setup_ack = record_steps_through_setup_ack(&mut sequence);
 
         assert_eq!(
             sequence.record_step(PluginRegistrationStep::FirstVisibleInstruction),
             Err(PluginRegistrationSequenceError::OutOfOrderStep {
                 expected: PluginRegistrationStep::WaitBootBarrier,
                 actual: PluginRegistrationStep::FirstVisibleInstruction,
+            })
+        );
+    }
+
+    #[test]
+    fn registration_order_requires_boot_barrier_wait_helper() {
+        let mut sequence = PluginRegistrationSequence::new();
+        let _setup_ack = record_steps_through_setup_ack(&mut sequence);
+
+        let error = sequence
+            .record_step(PluginRegistrationStep::WaitBootBarrier)
+            .err()
+            .unwrap_or_else(|| panic!("direct boot-barrier record should fail"));
+        let PluginRegistrationSequenceError::StepFailed { failure } = error else {
+            panic!("expected boot-barrier step failure, got {error:?}");
+        };
+
+        assert_eq!(failure.step(), PluginRegistrationStep::WaitBootBarrier);
+        assert!(failure.diagnostic().contains("wake_signal futex"));
+        assert_eq!(
+            sequence.record_step(PluginRegistrationStep::FirstVisibleInstruction),
+            Err(PluginRegistrationSequenceError::AfterFailure {
+                failed_step: PluginRegistrationStep::WaitBootBarrier,
+                blocked_step: PluginRegistrationStep::FirstVisibleInstruction,
+            })
+        );
+    }
+
+    #[test]
+    fn registration_order_waits_boot_barrier_before_first_instruction() {
+        let mut sequence = PluginRegistrationSequence::new();
+        let setup_ack = record_steps_through_setup_ack(&mut sequence);
+        let slot = boot_barrier_slot(3);
+
+        let release = sequence
+            .wait_boot_barrier(setup_ack, &slot, 0)
+            .unwrap_or_else(|error| panic!("boot barrier should release: {error}"));
+
+        assert_eq!(
+            release.first_guest_icount(),
+            crate::BOOT_BARRIER_FIRST_GUEST_ICOUNT
+        );
+        assert_eq!(release.released_ceiling(), 3);
+        if let Err(error) = sequence.record_step(PluginRegistrationStep::FirstVisibleInstruction) {
+            panic!("first instruction sentinel should record after boot barrier: {error}");
+        }
+        assert_eq!(
+            sequence.completed_steps(),
+            PluginRegistrationSequence::fixed_order()
+        );
+    }
+
+    #[test]
+    fn registration_order_requires_ready_setup_ack_helper() {
+        let mut sequence = PluginRegistrationSequence::new();
+        record_steps_through_wake_fd(&mut sequence);
+        let args = registration_args("simfd=3,slot=0");
+        sequence
+            .register_callbacks_with_exact_deadline(
+                &args,
+                Some(registration_test_deadline),
+                Some(registration_test_direct_advance),
+                CoverageCapabilities::none(),
+            )
+            .unwrap_or_else(|error| panic!("exact deadline capability should register: {error}"));
+
+        let error = sequence
+            .record_step(PluginRegistrationStep::SendSetupAck)
+            .err()
+            .unwrap_or_else(|| panic!("direct ready-ack record should fail"));
+        let PluginRegistrationSequenceError::StepFailed { failure } = error else {
+            panic!("expected ready-ack step failure, got {error:?}");
+        };
+
+        assert_eq!(failure.step(), PluginRegistrationStep::SendSetupAck);
+        assert!(failure.diagnostic().contains("SetupAck(0)"));
+        assert!(failure.diagnostic().contains("callback tokens"));
+        assert_eq!(
+            sequence.record_step(PluginRegistrationStep::WaitBootBarrier),
+            Err(PluginRegistrationSequenceError::AfterFailure {
+                failed_step: PluginRegistrationStep::SendSetupAck,
+                blocked_step: PluginRegistrationStep::WaitBootBarrier,
             })
         );
     }
@@ -1084,7 +1223,9 @@ mod tests {
         }
     }
 
-    fn record_steps_through_setup_ack(sequence: &mut PluginRegistrationSequence) {
+    fn record_steps_through_setup_ack(
+        sequence: &mut PluginRegistrationSequence,
+    ) -> PluginReadySetupAck {
         record_steps_through_wake_fd(sequence);
         let args = registration_args("simfd=3,slot=0");
         if let Err(error) = sequence.register_callbacks_with_exact_deadline(
@@ -1095,20 +1236,19 @@ mod tests {
         ) {
             panic!("exact deadline capability should register callbacks: {error}");
         }
-        if let Err(error) = sequence.record_step(PluginRegistrationStep::SendSetupAck) {
-            panic!("setup ack step should record: {error}");
-        }
+        sequence
+            .record_test_ready_setup_ack()
+            .unwrap_or_else(|error| panic!("setup ack step should record: {error}"))
     }
 
     fn record_fixed_sequence(sequence: &mut PluginRegistrationSequence) {
-        record_steps_through_setup_ack(sequence);
-        for step in [
-            PluginRegistrationStep::WaitBootBarrier,
-            PluginRegistrationStep::FirstVisibleInstruction,
-        ] {
-            if let Err(error) = sequence.record_step(step) {
-                panic!("canonical step {step:?} should record: {error}");
-            }
+        let setup_ack = record_steps_through_setup_ack(sequence);
+        let slot = boot_barrier_slot(2);
+        if let Err(error) = sequence.wait_boot_barrier(setup_ack, &slot, 0) {
+            panic!("boot barrier should release: {error}");
+        }
+        if let Err(error) = sequence.record_step(PluginRegistrationStep::FirstVisibleInstruction) {
+            panic!("canonical first-instruction step should record: {error}");
         }
     }
 
@@ -1120,6 +1260,15 @@ mod tests {
 
     fn registration_args(raw: &str) -> PluginArgs {
         PluginArgs::parse(raw).unwrap_or_else(|error| panic!("test args should parse: {error}"))
+    }
+
+    fn boot_barrier_slot(max_advance_icount: u64) -> NodeSlot {
+        let slot = NodeSlot::new(KIND_VM);
+        let ceiling = authorize_advance_ceiling(0, max_advance_icount, None)
+            .unwrap_or_else(|error| panic!("boot barrier ceiling should authorize: {error}"));
+        slot.publish_scheduler_ceiling(ceiling)
+            .unwrap_or_else(|error| panic!("boot barrier ceiling should publish: {error}"));
+        slot
     }
 
     fn handshake_io(slot_index: u32, node_count: u32) -> ScriptedIo {

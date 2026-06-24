@@ -196,8 +196,24 @@
         needle = "plugin_send_setup_ack(writer, SETUP_ACK_STATUS_READY)";
       }
       {
+        label = "ready setup ack token";
+        needle = "pub struct PluginReadySetupAck";
+      }
+      {
+        label = "ready ack returns ack token";
+        needle = "Result<PluginReadySetupAck, PluginSetupError>";
+      }
+      {
         label = "ready ack requires callback token";
         needle = "_callbacks: &PluginCallbackCapabilities";
+      }
+      {
+        label = "ready ack token constructed after write";
+        needle = "Ok(PluginReadySetupAck::acknowledged())";
+      }
+      {
+        label = "ready ack production constructor is private";
+        needle = "const fn acknowledged() -> Self";
       }
       {
         label = "failure setup ack";
@@ -252,6 +268,10 @@
       {
         label = "registration passes callback token to setup ack";
         needle = "plugin_send_ready_setup_ack(writer, completion, callbacks)";
+      }
+      {
+        label = "registration returns ready ack token";
+        needle = "Ok(setup_ack)";
       }
       {
         label = "setup receive failure mapping";

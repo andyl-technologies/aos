@@ -87,6 +87,23 @@ impl PluginSetupCompletion {
     }
 }
 
+/// Typed evidence that the ready `SetupAck(0)` was sent.
+#[derive(Debug)]
+pub struct PluginReadySetupAck {
+    _private: (),
+}
+
+impl PluginReadySetupAck {
+    const fn acknowledged() -> Self {
+        Self { _private: () }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn test_acknowledged() -> Self {
+        Self::acknowledged()
+    }
+}
+
 /// Receives the setup frame and its fixed-order shared-memory and wake descriptors.
 ///
 /// # Errors
@@ -228,12 +245,13 @@ pub fn send_ready_setup_ack<W>(
     writer: &mut W,
     _completion: &PluginSetupCompletion,
     _callbacks: &PluginCallbackCapabilities,
-) -> Result<(), PluginSetupError>
+) -> Result<PluginReadySetupAck, PluginSetupError>
 where
     W: Write,
 {
     plugin_send_setup_ack(writer, SETUP_ACK_STATUS_READY)
-        .map_err(|source| PluginSetupError::SendReadyAck { source })
+        .map_err(|source| PluginSetupError::SendReadyAck { source })?;
+    Ok(PluginReadySetupAck::acknowledged())
 }
 
 #[cfg(unix)]

@@ -1615,6 +1615,7 @@ mod tests {
         let mut sequence = PluginRegistrationSequence::new();
         let args = PluginArgs::parse("simfd=3,slot=0")
             .unwrap_or_else(|error| panic!("test args should parse: {error}"));
+        let mut setup_ack = None;
         for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
             let result = if step == crate::PluginRegistrationStep::RegisterCallbacks {
                 sequence
@@ -1625,6 +1626,17 @@ mod tests {
                         CoverageCapabilities::none(),
                     )
                     .map(|_capabilities| ())
+            } else if step == crate::PluginRegistrationStep::SendSetupAck {
+                sequence.record_test_ready_setup_ack().map(|ack| {
+                    setup_ack = Some(ack);
+                })
+            } else if step == crate::PluginRegistrationStep::WaitBootBarrier {
+                let ack = setup_ack
+                    .take()
+                    .unwrap_or_else(|| panic!("setup ack should precede boot barrier"));
+                let slot = NodeSlot::new(KIND_VM);
+                publish_ceiling(&slot, ceiling(0, crate::BOOT_BARRIER_FIRST_GUEST_ICOUNT));
+                sequence.wait_boot_barrier(ack, &slot, 0).map(|_release| ())
             } else {
                 sequence.record_step(step)
             };

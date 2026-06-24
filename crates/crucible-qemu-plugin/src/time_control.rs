@@ -677,6 +677,8 @@ mod tests {
 
     use std::cell::Cell;
 
+    use crucible_shmem::{KIND_VM, NodeSlot, authorize_advance_ceiling};
+
     thread_local! {
         static LAST_DIRECT_ADVANCE_NS: Cell<i64> = const { Cell::new(-1) };
     }
@@ -998,6 +1000,7 @@ mod tests {
         let mut sequence = crate::PluginRegistrationSequence::new();
         let args = crate::PluginArgs::parse("simfd=3,slot=0")
             .unwrap_or_else(|error| panic!("test args should parse: {error}"));
+        let mut setup_ack = None;
         for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
             let result = if step == PluginRegistrationStep::RegisterCallbacks {
                 sequence
@@ -1008,6 +1011,17 @@ mod tests {
                         crate::CoverageCapabilities::none(),
                     )
                     .map(|_capabilities| ())
+            } else if step == PluginRegistrationStep::SendSetupAck {
+                sequence.record_test_ready_setup_ack().map(|ack| {
+                    setup_ack = Some(ack);
+                })
+            } else if step == PluginRegistrationStep::WaitBootBarrier {
+                let ack = setup_ack
+                    .take()
+                    .unwrap_or_else(|| panic!("setup ack should precede boot barrier"));
+                let slot = NodeSlot::new(KIND_VM);
+                publish_boot_barrier_ceiling(&slot);
+                sequence.wait_boot_barrier(ack, &slot, 0).map(|_release| ())
             } else {
                 sequence.record_step(step)
             };
@@ -1026,6 +1040,13 @@ mod tests {
     }
 
     extern "C" fn time_control_test_direct_advance(_target_virtual_ns: i64) {}
+
+    fn publish_boot_barrier_ceiling(slot: &NodeSlot) {
+        let ceiling = authorize_advance_ceiling(0, crate::BOOT_BARRIER_FIRST_GUEST_ICOUNT, None)
+            .unwrap_or_else(|error| panic!("boot barrier ceiling should authorize: {error}"));
+        slot.publish_scheduler_ceiling(ceiling)
+            .unwrap_or_else(|error| panic!("boot barrier ceiling should publish: {error}"));
+    }
 
     extern "C" fn test_direct_advance(target_virtual_ns: i64) {
         set_last_direct_advance_ns(target_virtual_ns);
