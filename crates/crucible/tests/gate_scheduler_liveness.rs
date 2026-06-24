@@ -8,6 +8,18 @@ use crucible::{
     SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulerTerminal,
     SchedulingNodeKind, Shift, SimInstant, VirtualTime, check_scheduler_liveness,
 };
+use std::fmt::Debug;
+
+struct SimDouble;
+
+impl SimDouble {
+    fn check_scheduler_liveness(
+        &self,
+        scenario: SchedulerLivenessScenario,
+    ) -> Result<crucible::SchedulerLivenessReport, SchedulerLivenessError> {
+        check_scheduler_liveness(scenario)
+    }
+}
 
 #[test]
 fn gate_scheduler_liveness_generated_scenarios_terminate() {
@@ -205,10 +217,8 @@ fn generated_events(seed: u32, nodes: &[SchedulerScenarioNode], scale: u64) -> V
 fn assert_scheduler_liveness(
     scenario: SchedulerLivenessScenario,
 ) -> crucible::SchedulerLivenessReport {
-    match check_scheduler_liveness(scenario) {
-        Ok(report) => report,
-        Err(error) => panic!("scheduler liveness gate failed: {error}"),
-    }
+    let double = SimDouble;
+    assert_twice_reduce_canonical_digest(|| double.check_scheduler_liveness(scenario.clone()))
 }
 
 fn scenario_node(
@@ -269,6 +279,24 @@ fn backend_event(
             payload: payload.to_vec(),
         }),
     }
+}
+
+fn assert_twice_reduce_canonical_digest<T, E, F>(mut reduce: F) -> T
+where
+    T: Debug + PartialEq,
+    E: Debug,
+    F: FnMut() -> Result<T, E>,
+{
+    let first = match reduce() {
+        Ok(value) => value,
+        Err(error) => panic!("first scheduler liveness reduction failed: {error:?}"),
+    };
+    let second = match reduce() {
+        Ok(value) => value,
+        Err(error) => panic!("second scheduler liveness reduction failed: {error:?}"),
+    };
+    assert_eq!(first, second);
+    first
 }
 
 fn shift(bits: u8) -> Shift {

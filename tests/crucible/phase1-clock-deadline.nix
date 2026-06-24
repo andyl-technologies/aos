@@ -135,6 +135,10 @@
         label = "no armed timer sentinel assertion";
         needle = "no_armed_timer_sentinel=-1";
       }
+      {
+        label = "stock negative control";
+        needle = "stock_negative_control_deadline_symbol_absent=true";
+      }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginRoot [
       {
@@ -351,6 +355,32 @@ in
             }
             PLUGIN_API_FIXTURE
 
+            cat > stock-clock-deadline-negative.c <<'STOCK_NEGATIVE'
+            #include <stddef.h>
+            #include <stdint.h>
+
+            struct qemu_plugin_register;
+            typedef struct GByteArray GByteArray;
+
+            #include "plugins/api.c"
+
+            int main(void)
+            {
+                return (int)qemu_plugin_clock_deadline_ns();
+            }
+            STOCK_NEGATIVE
+            if cc -std=c11 -Wall -Werror \
+              -I include \
+              -I . \
+              -c stock-clock-deadline-negative.c \
+              -o stock-clock-deadline-negative.o \
+              2> stock-clock-deadline-negative.err
+            then
+              echo "stock clock-deadline plugin API unexpectedly compiled" >&2
+              exit 1
+            fi
+            grep -q 'qemu_plugin_clock_deadline_ns' stock-clock-deadline-negative.err
+
             patch --batch --fuzz=0 -p1 < "$patchSourcePath"
             cp "$microtestSourcePath" phase1-clock-deadline.c
             cc -std=c11 -O2 -Wall -Wextra -Werror \
@@ -369,6 +399,7 @@ in
             grep -q '^realtime_clock_reads=0$' "$out/clock-deadline-microtest"
             grep -q '^host_clock_reads=0$' "$out/clock-deadline-microtest"
             grep -q '^no_armed_timer_sentinel=-1$' "$out/clock-deadline-microtest"
+            grep -q '^stock_negative_control_deadline_symbol_absent=true$' "$out/clock-deadline-microtest"
 
             cd "$TMPDIR"
             cd "$NIX_BUILD_TOP/source/crates"
@@ -391,6 +422,8 @@ in
             cp "$TMPDIR/clock-deadline-fixture/plugins/api.c" "$out/api.c.patched"
             cp "$TMPDIR/clock-deadline-fixture/include/qemu/qemu-plugin.h" \
               "$out/qemu-plugin.h.patched"
+            cp "$TMPDIR/clock-deadline-fixture/stock-clock-deadline-negative.err" \
+              "$out/stock-negative-control.err"
           '';
         }
         {
@@ -403,7 +436,10 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             gate=gate:layer0-determinism
             gate=gate:scheduler-liveness
+            gate=gate:patch-microtests
             patch=0005-crucible-clock-deadline.patch
+            patched_fixture_exercised=true
+            stock_negative_control=true
             deadline_symbol=qemu_plugin_clock_deadline_ns
             deadline_source=QEMU_CLOCK_VIRTUAL
             deadline_absolute_time=124456

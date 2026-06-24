@@ -263,6 +263,7 @@ in
             tasks=T-DET-4
             patch=0004-crucible-deterministic-qemu-entropy.patch
             patched_fixture_exercised=true
+            stock_negative_control=true
             qemu_seed_option_controls_guest_random=true
             qemu_seed_option_controls_glib_global_prng=true
             unseeded_guest_random_uses_host_crypto=true

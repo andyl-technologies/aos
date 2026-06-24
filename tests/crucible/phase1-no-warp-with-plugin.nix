@@ -379,6 +379,7 @@ in
             tasks=T-DET-3
             patch=0003-crucible-no-warp-with-plugin.patch
             patched_fixture_exercised=true
+            stock_negative_control=true
             time_control_predicate=qemu_plugin_has_time_control
             wall_clock_warp_under_time_control=false
             notify_preserved_under_time_control=true

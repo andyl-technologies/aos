@@ -178,7 +178,7 @@
       package = "crucible-qemu-plugin";
       testTarget = "gate_patch_microtests";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:divergence-bisect";
@@ -374,7 +374,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=17
+            placeholder_targets=16
             RESULT
           '';
         }
