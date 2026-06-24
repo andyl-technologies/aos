@@ -8,8 +8,11 @@
 //! because the plugin speaks QEMU's C ABI and may read guest memory.
 //!
 //! Module map: the crate root currently reserves the plugin ABI boundary;
-//! future modules will split entry points, time control, device callbacks, and
-//! QEMU-facing helpers.
+//! `args` owns fail-closed `-plugin` argument parsing; `deadline` owns exact
+//! virtual-clock deadline introspection; `setup` owns descriptor mapping and
+//! setup acknowledgement; `time_control` owns the registration-order contract.
+//! Future modules will add entry points, device callbacks, and QEMU-facing
+//! helpers.
 //!
 //! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
 //! pointers and delegate to safe Rust shims for time-control, callback
@@ -19,10 +22,15 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+pub mod args;
 pub mod deadline;
 pub mod setup;
 pub mod time_control;
 
+pub use args::{
+    PLUGIN_ARG_COVERAGE, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD,
+    PLUGIN_ARG_WHITEBOX, PluginArgs, PluginArgsParseError, PluginInheritedFds, PluginSwitch,
+};
 pub use deadline::{
     ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,
     ExactDeadlineReport, PerVcpuDeadlineReport, QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,

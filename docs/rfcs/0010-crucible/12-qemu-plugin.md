@@ -904,7 +904,7 @@ component that makes that purity true *inside* the QEMU process.
   and channel callbacks (net TX/RX, block/9p submit/poll, white-box doorbell trap)
   so no host component injects/completes/stamps except through these paths. —
   satisfies [PLUG-2], [PLUG-3], [PLUG-4]; spec §12.1, §12.5, §12.6, §12.7.
-- [ ] **T-PLUG-2** Implement plugin-argument parsing (`simfd`, `slot`,
+- [x] **T-PLUG-2** Implement plugin-argument parsing (`simfd`, `slot`,
   `shmemfd`/`wakefd`, `whitebox`, `coverage`) as a total, fail-closed parser that
   aborts registration on any malformed or missing required key. — satisfies
   [PLUG-5], [PLUG-6]; spec §12.2.1.
