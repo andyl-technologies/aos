@@ -11,7 +11,8 @@
 //! canonical QEMU argument construction; `single_vm_fingerprint` owns the
 //! safe run-twice-and-diff hook consumed by `gate:single-vm-fingerprint`;
 //! `shutdown` owns the graceful QEMU child shutdown escalation ladder; and
-//! `setup_failure` owns setup-abort classification and teardown.
+//! `setup_failure` owns setup-abort classification and teardown; `inertness`
+//! owns the sim-off/sim-on QEMU control-plane inertness assertion.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
 //! details stay private; public callers use a safe host-driver API that
@@ -21,11 +22,17 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod inertness;
 mod launch;
 mod setup_failure;
 mod shutdown;
 mod single_vm_fingerprint;
 
+pub use inertness::{
+    QemuControlFrameClass, QemuControlPlaneInertnessError, QemuControlPlaneInertnessReport,
+    QemuControlPlaneObservation, QemuSimulationMode, SIM_ON_CONTROL_FRAME_CLASSES,
+    assert_qemu_control_plane_inert,
+};
 pub use launch::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
     GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
