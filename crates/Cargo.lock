@@ -1565,6 +1565,8 @@ name = "crucible-qemu"
 version = "0.1.0"
 dependencies = [
  "crucible",
+ "crucible-protocol",
+ "libc",
  "thiserror",
 ]
 

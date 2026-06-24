@@ -9,7 +9,8 @@
 //!
 //! Module map: `launch` owns the deterministic Contract-A launch profile and
 //! canonical QEMU argument construction; `single_vm_fingerprint` owns the
-//! safe run-twice-and-diff hook consumed by `gate:single-vm-fingerprint`.
+//! safe run-twice-and-diff hook consumed by `gate:single-vm-fingerprint`;
+//! `shutdown` owns the graceful QEMU child shutdown escalation ladder.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
 //! details stay private; public callers use a safe host-driver API that
@@ -20,6 +21,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod launch;
+mod shutdown;
 mod single_vm_fingerprint;
 
 pub use launch::{
@@ -27,6 +29,12 @@ pub use launch::{
     GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
     LaunchProfileCandidate, LaunchProfileError, MachineResetMode, NodeClockSkewDeclaration,
     NodeIcountShift,
+};
+pub use shutdown::{
+    QEMU_SHUTDOWN_ESCALATION_ORDER, QMP_QUIT_COMMAND, QemuChildWait, QemuReap, QemuShutdownAttempt,
+    QemuShutdownError, QemuShutdownFailure, QemuShutdownPolicy, QemuShutdownReport,
+    QemuShutdownRung, QemuShutdownTarget, QemuShutdownTargetError, UnixQemuChildShutdownTarget,
+    send_control_quit_frame, send_qmp_quit_command, shutdown_qemu_child,
 };
 pub use single_vm_fingerprint::{
     SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintBisectionError,
