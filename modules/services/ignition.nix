@@ -75,7 +75,6 @@
   };
 in {
   config = {
-
     # Initrd services. The cpio assembler in modules/base/initrd-builder.nix
     # picks these up via `system.build.systemdInitrdUnits`.
     #

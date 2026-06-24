@@ -283,7 +283,6 @@ in {
       ];
     };
 
-
     # Per-interface network files.
     environment.etc = let
       interfaceFiles =

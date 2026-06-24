@@ -161,7 +161,6 @@ in {
       ];
     };
 
-
     # /etc/chrony.conf — chronyd configuration.
     environment.etc."chrony.conf" = {
       text = chronyConf;

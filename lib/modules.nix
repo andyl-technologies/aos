@@ -47,6 +47,7 @@
   mkOption = {
     type ? types.anything,
     default ? _noDefault,
+    defaultText ? null,
     description ? "",
     example ? null,
     readOnly ? false,
@@ -63,6 +64,7 @@
     inherit
       type
       default
+      defaultText
       description
       example
       readOnly
