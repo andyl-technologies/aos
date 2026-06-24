@@ -229,6 +229,7 @@ async fn registry_settings_view(
     session: &Session,
     registry: &RegistryRecord,
     result: Option<&str>,
+    active: &str,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
     if let Some(deny) =
@@ -318,6 +319,7 @@ async fn registry_settings_view(
             &linkable_caches,
             can_delete,
             result,
+            active,
             Instant::now(),
         ))
     }
@@ -369,7 +371,7 @@ async fn registry_visibility_action(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => return internal(err),
     };
-    registry_settings_view(state, session, &updated, Some(change_id.0.as_str())).await
+    registry_settings_view(state, session, &updated, Some(change_id.0.as_str()), "general").await
 }
 
 /// The registry-delete action: CSRF + sudo + owner/admin (`IamAdmin`) gate and
@@ -451,9 +453,9 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
         // The config-edit page is GET (form) + POST (submit); the change-request
         // list is GET-only.
         "settings/config" => true,
-        // The settings landing page is GET-only; visibility and delete are
-        // POST-only mutations.
-        "settings" => !is_post,
+        // The settings tabs (general landing, storage, binary caches, danger)
+        // are GET-only; visibility and delete are POST-only mutations.
+        "settings" | "settings/storage" | "settings/caches" | "settings/danger" => !is_post,
         "settings/visibility" | "settings/delete" => is_post,
         // The serving & mirror page is GET (view) + POST (mutate).
         "settings/serving" => true,
@@ -589,7 +591,18 @@ pub(crate) async fn dispatch_nested(
         }
         ("settings/serving", false) => serving_view(state, &session, &registry, None).await,
         ("settings/serving", true) => serving_action(state, &session, &registry, &fields).await,
-        ("settings", false) => registry_settings_view(state, &session, &registry, None).await,
+        ("settings", false) => {
+            registry_settings_view(state, &session, &registry, None, "general").await
+        }
+        ("settings/storage", false) => {
+            registry_settings_view(state, &session, &registry, None, "storage").await
+        }
+        ("settings/caches", false) => {
+            registry_settings_view(state, &session, &registry, None, "caches").await
+        }
+        ("settings/danger", false) => {
+            registry_settings_view(state, &session, &registry, None, "danger").await
+        }
         ("settings/visibility", true) => {
             registry_visibility_action(
                 state,

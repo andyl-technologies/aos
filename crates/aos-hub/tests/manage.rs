@@ -592,7 +592,17 @@ async fn settings_page_renders_links_and_visibility_edit_audits() {
         resp.body.contains("/acme/infra/prod/cdn/-/keys"),
         "keys link"
     );
-    assert!(resp.body.contains("remove registry"), "delete form");
+    // The remove-registry form now lives on its own Danger tab.
+    let danger = send(
+        &app,
+        "GET",
+        "/acme/infra/prod/cdn/-/settings/danger",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(danger.status, StatusCode::OK, "{}", danger.body);
+    assert!(danger.body.contains("remove registry"), "delete form");
 
     // The registry home shows a manage link for this authorized session.
     let resp = send(&app, "GET", "/acme/infra/prod/cdn/", Some(&cookie), None).await;
