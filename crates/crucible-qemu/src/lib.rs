@@ -13,11 +13,13 @@
 //! `shutdown` owns the graceful QEMU child shutdown escalation ladder;
 //! `setup_failure` owns setup-abort classification and teardown; `inertness`
 //! owns the sim-off/sim-on QEMU control-plane inertness assertion;
-//! `crash_detection` owns typed crashed-node status classification; `node` owns
-//! the scheduler-facing one-child/three-channel QEMU wrapper; `qmp` owns the
-//! minimal typed QMP client; `realization` owns the start/resume/fork
-//! instantiate branch coordinator; and `savevm_policy` owns the conservative
-//! thin-replay fallback for incomplete QEMU `savevm`/`loadvm` coverage.
+//! `determinism_boundary` owns the QEMU hermeticity/fingerprint/microtest
+//! boundary assertion; `crash_detection` owns typed crashed-node status
+//! classification; `node` owns the scheduler-facing one-child/three-channel
+//! QEMU wrapper; `qmp` owns the minimal typed QMP client; `realization` owns the
+//! start/resume/fork instantiate branch coordinator; and `savevm_policy` owns
+//! the conservative thin-replay fallback for incomplete QEMU `savevm`/`loadvm`
+//! coverage.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
 //! details stay private; public callers use a safe host-driver API that
@@ -28,6 +30,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod crash_detection;
+mod determinism_boundary;
 mod inertness;
 mod launch;
 mod node;
@@ -44,6 +47,14 @@ pub use crash_detection::{
     QemuChannelFailure, QemuChildExitProbe, QemuChildStatusProbeError, QemuCrashCause,
     QemuCrashDetector, QemuCrashHandling, QemuCrashedNodeStatus, QemuIntendedCrashFaultStatus,
     QemuNodeRunStatus, QemuProcessExit,
+};
+pub use determinism_boundary::{
+    QEMU_EXECUTION_FINGERPRINT_CADENCE_ICOUNT, QemuDeterminismBoundaryError,
+    QemuDeterminismBoundaryReport, QemuEntropyElimination, QemuEntropyEliminationMicrotest,
+    QemuEntropyEliminationNegativeCase, QemuExecutionFingerprintDefinition,
+    QemuFingerprintStateComponent, REQUIRED_QEMU_ENTROPY_ELIMINATIONS,
+    REQUIRED_QEMU_FINGERPRINT_COMPONENTS, REQUIRED_QEMU_FINGERPRINT_EVENT_BOUNDARIES,
+    qemu_entropy_elimination_microtests, validate_qemu_determinism_boundary,
 };
 pub use inertness::{
     QemuControlFrameClass, QemuControlPlaneInertnessError, QemuControlPlaneInertnessReport,
