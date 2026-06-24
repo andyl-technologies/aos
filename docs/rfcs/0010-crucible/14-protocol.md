@@ -473,7 +473,7 @@ The control channel is determinism-neutral by construction.
   Setup payload, SetupAck, Quit at the current `proto_version`) and wire it into
   `gate:abi-conformance` with the version-bump-regenerates rule. — satisfies
   [PROTO-23]; spec §6, §24 §8.1.
-- [ ] **T-PROTO-10** Add the structure-aware codec fuzz target (malformed /
+- [x] **T-PROTO-10** Add the structure-aware codec fuzz target (malformed /
   adversarial frames; round-trip on well-formed inputs) to `gate:abi-conformance`
   and seed the regression corpus. — satisfies [PROTO-22], [PROTO-23]; spec §6,
   §24 §8.3.
