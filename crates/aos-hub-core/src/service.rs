@@ -37,7 +37,7 @@ use aos_registry_surface::object::Oid;
 use crate::auth::jwt::{Claims, JwtKeys};
 use crate::binding::{BindingKind, RuntimeKind};
 use crate::clock;
-use crate::db::{Database, IndexStatus, RegistryRecord};
+use crate::db::{Database, FrontendRecord, IndexStatus, RegistryRecord};
 use crate::fetch::SurfaceProvider;
 use crate::keymap;
 use crate::lease::PublishLease;
@@ -2558,11 +2558,54 @@ impl RpcService {
         Ok(pb::DeleteCacheResponse { deleted })
     }
 
-    /// The consumer-facing base URL a managed cache is served at
-    /// (`{external_url}/{slug}`) — the URL committed into a registry's
-    /// `[[caches]]` when the cache is advertised.
+    /// The hub-served base URL a managed cache is reachable at
+    /// (`{external_url}/{slug}`) — the fallback when no direct frontend lets a
+    /// consumer reach the bucket without the hub in the path.
     fn cache_advertise_url(&self, cache_slug: &str) -> String {
         format!("{}/{}", self.external_url.trim_end_matches('/'), cache_slug)
+    }
+
+    /// The consumer-facing base URL to advertise for a managed cache.
+    ///
+    /// Prefers a **direct, advertised** frontend the cache is reachable at — its
+    /// own cache frontend (an operator override), else one **inherited from its
+    /// storage binding** (the bucket's public CDN origin, with the cache's
+    /// `prefix` appended) — so consumers pull NARs straight from the bucket and
+    /// the hub leaves the byte path (RFC-0004 §12). Falls back to the
+    /// hub-served [`cache_advertise_url`](Self::cache_advertise_url) when no such
+    /// frontend exists. An inherited frontend is honored only over a `public`
+    /// binding (the create gate already forbids a Direct frontend over a private
+    /// one; this re-checks defensively).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    async fn cache_consumer_url(&self, cache: &crate::db::Cache) -> Result<String, RpcError> {
+        let own = self
+            .db
+            .list_cache_frontends(cache.id)
+            .await
+            .map_err(RpcError::internal)?;
+        if let Some(f) = pick_direct_cache_frontend(&own) {
+            return Ok(frontend_base_url(&f.domain, &f.base_path, ""));
+        }
+        if let Some(binding_id) = cache.storage_binding_id {
+            let public = matches!(
+                self.db.storage_binding(binding_id).await.map_err(RpcError::internal)?,
+                Some(b) if b.access == "public"
+            );
+            if public {
+                let inherited = self
+                    .db
+                    .list_storage_frontends(binding_id)
+                    .await
+                    .map_err(RpcError::internal)?;
+                if let Some(f) = pick_direct_cache_frontend(&inherited) {
+                    return Ok(frontend_base_url(&f.domain, &f.base_path, &cache.prefix));
+                }
+            }
+        }
+        Ok(self.cache_advertise_url(&cache.slug))
     }
 
     /// Reconcile a registry's committed `[[caches]]` with a cache's advertise
@@ -2608,7 +2651,18 @@ impl RpcService {
             .writer(registry)
             .await
             .map_err(|err| RpcError::invalid(format!("{err:#}")))?;
-        let url = self.cache_advertise_url(cache_slug);
+        // Advertise the bucket-direct URL when the cache has a direct frontend
+        // (its own or inherited from its storage binding); else the hub URL. A
+        // since-deleted cache (unadvertise path) falls back to the slug URL.
+        let url = match self
+            .db
+            .cache_by_slug(cache_slug)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            Some(cache) => self.cache_consumer_url(&cache).await?,
+            None => self.cache_advertise_url(cache_slug),
+        };
         let label = format!("{}:{}", claims.owner_kind, claims.owner_id);
         let proposed = crate::gitwrite::propose_cache_advertisement(
             &self.db,
@@ -4863,6 +4917,48 @@ async fn apply_revert_revision(
     Ok(())
 }
 
+/// Pick the highest-priority `direct`, advertised, cache-serving frontend in
+/// `frontends`, if any.
+///
+/// The `list_*` queries return frontends ordered by `consumer_priority DESC`,
+/// so an explicit `is_primary` wins and otherwise the first (highest-priority)
+/// eligible row does. Used by [`RpcService::cache_consumer_url`] to advertise a
+/// bucket-direct URL when one exists (RFC-0004 §12).
+fn pick_direct_cache_frontend(frontends: &[FrontendRecord]) -> Option<&FrontendRecord> {
+    let eligible: Vec<&FrontendRecord> = frontends
+        .iter()
+        .filter(|f| f.mode == "direct" && f.advertised && f.serves_cache)
+        .collect();
+    eligible
+        .iter()
+        .copied()
+        .find(|f| f.is_primary)
+        .or_else(|| eligible.first().copied())
+}
+
+/// Join a frontend `domain`, its `base_path`, and a consumer `prefix` into a
+/// consumer-facing base URL (`https://{domain}/{base_path}/{prefix}`), dropping
+/// empty/`/`-only segments.
+///
+/// `prefix` is the consumer's upload location within the bucket, so an inherited
+/// storage-binding frontend resolves to where that consumer's objects actually
+/// live; pass `""` for a per-consumer frontend whose `base_path` is already the
+/// consumer's root.
+fn frontend_base_url(domain: &str, base_path: &str, prefix: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in [base_path, prefix] {
+        let trimmed = segment.trim_matches('/');
+        if !trimmed.is_empty() {
+            segments.push(trimmed);
+        }
+    }
+    if segments.is_empty() {
+        format!("https://{domain}")
+    } else {
+        format!("https://{domain}/{}", segments.join("/"))
+    }
+}
+
 #[cfg(test)]
 mod cache_facade_tests {
     use super::{
@@ -4968,5 +5064,75 @@ mod cache_facade_tests {
         assert!(s.contains("WantMassQuery: 1"), "{s}");
         assert!(s.contains("Priority: 40"), "{s}");
         assert!(render_nix_cache_info(false, 7).contains("WantMassQuery: 0"));
+    }
+}
+
+#[cfg(test)]
+mod frontend_url_tests {
+    use super::{frontend_base_url, pick_direct_cache_frontend};
+    use crate::db::FrontendRecord;
+
+    fn frontend(mode: &str, advertised: bool, serves_cache: bool) -> FrontendRecord {
+        FrontendRecord {
+            id: 0,
+            registry_id: None,
+            cache_id: None,
+            storage_binding_id: Some(1),
+            domain: "cdn.example.com".into(),
+            base_path: String::new(),
+            mode: mode.into(),
+            serves_git: true,
+            serves_cache,
+            serves_web: true,
+            consumer_priority: 100,
+            advertised,
+            proxy_config: None,
+            is_primary: false,
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn base_url_joins_and_trims_segments() {
+        assert_eq!(
+            frontend_base_url("cdn.example.com", "/v1/", "acme/prod/"),
+            "https://cdn.example.com/v1/acme/prod"
+        );
+        assert_eq!(
+            frontend_base_url("cdn.example.com", "", "acme"),
+            "https://cdn.example.com/acme"
+        );
+        // An empty base_path and prefix (a per-consumer frontend at the root).
+        assert_eq!(frontend_base_url("cdn.example.com", "", ""), "https://cdn.example.com");
+    }
+
+    #[test]
+    fn pick_requires_direct_advertised_and_serving() {
+        // Proxied, unadvertised, or non-cache-serving frontends are ineligible.
+        assert!(pick_direct_cache_frontend(&[frontend("proxied", true, true)]).is_none());
+        assert!(pick_direct_cache_frontend(&[frontend("direct", false, true)]).is_none());
+        assert!(pick_direct_cache_frontend(&[frontend("direct", true, false)]).is_none());
+        assert!(pick_direct_cache_frontend(&[frontend("direct", true, true)]).is_some());
+    }
+
+    #[test]
+    fn pick_prefers_primary_then_priority_order() {
+        let mut primary = frontend("direct", true, true);
+        primary.domain = "primary.example.com".into();
+        primary.is_primary = true;
+        let mut first = frontend("direct", true, true);
+        first.domain = "first.example.com".into();
+        // `is_primary` wins regardless of list position.
+        let list = [first.clone(), primary.clone()];
+        assert_eq!(
+            pick_direct_cache_frontend(&list).unwrap().domain,
+            "primary.example.com"
+        );
+        // Without a primary, the first (highest-priority) eligible row wins.
+        let list = [first, frontend("direct", true, true)];
+        assert_eq!(
+            pick_direct_cache_frontend(&list).unwrap().domain,
+            "first.example.com"
+        );
     }
 }
