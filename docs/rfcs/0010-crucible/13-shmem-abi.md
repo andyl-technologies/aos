@@ -920,7 +920,7 @@ by when the producer's store landed in shared memory.
 - [x] **T-SHM-15** Add property-based and `loom`-style SPSC concurrency tests
   (no loss/dup/tear/early-read) feeding `gate:abi-conformance`. — satisfies
   [SHM-23]; spec §13.6, forward-ref §24.
-- [ ] **T-SHM-16** Represent a multi-vCPU node with a single `NodeSlot` carrying
+- [x] **T-SHM-16** Represent a multi-vCPU node with a single `NodeSlot` carrying
   the node's aggregate clock/ceiling/idle-wake (node `idle_wake_icount` = min over
   its vCPUs' deadlines; `device_io_active` and the RR sub-division node-scoped);
   keep per-vCPU icount/state out of the ABI so `ABI_VERSION` is unchanged for
