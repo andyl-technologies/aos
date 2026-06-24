@@ -747,7 +747,7 @@ determinism contract (04).
 > populate Phase 1–2 (the determinism/transport foundation and
 > the QEMU layer built on it).
 
-- [ ] **T-QEMU-1** Implement the launch-config builder: TCG + fixed
+- [x] **T-QEMU-1** Implement the launch-config builder: TCG + fixed
   `-icount shift=N`, `-accel tcg,thread=single` with `-smp N`, fixed `-cpu` (no
   RDRAND/RDSEED, never `host`), fixed `-machine`/`-m`/reset, icount-derived RTC,
   seeded `fw_cfg`/virtio-rng, seeded internal PRNG, CoW disks,
@@ -755,6 +755,16 @@ determinism contract (04).
   line into the scenario content hash. — satisfies [QEMU-3], [QEMU-4], [QEMU-5],
   [QEMU-6], [QEMU-7], [QEMU-8], [QEMU-9], [QEMU-10], [QEMU-12], [QEMU-13],
   [QEMU-14]; spec §10.2.
+  Completed as the typed `crucible-qemu` launch-command builder: it validates the
+  deterministic profile, requires content-addressed VM launch artifacts resolved
+  to AOS store paths (QEMU binary, plugin, kernel, root image, optional initrd),
+  emits the CoW root-disk argv, appends the plugin activation argument with fixed
+  child fd numbers (`simfd=3`, `shmemfd=4`, `wakefd=5`, `slot`,
+  white-box/coverage switches), re-runs the pre-spawn determinism validator over
+  the final argv, and exposes world-derived VM material plus executable+argv
+  material for scenario identity. Child ownership/fd-passing remains tracked by
+  [T-QEMU-3] and [T-QEMU-7]; the N-vCPU launch extension remains tracked by
+  [T-QEMU-15].
 - [x] **T-QEMU-2** Implement launch-config validation that rejects KVM /
   non-TCG / `shift=auto` / missing-`-icount` / `thread=multi` (MTTCG) /
   unpinned `rr_switch_quantum` / `-cpu host` / host-timing-or-entropy flags,
