@@ -24,14 +24,12 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 
 use crate::download::join_cache_url;
-use crate::gitcmd;
 use crate::provenance::{self, PACKAGE_PROVENANCE_TRANSPARENCY_LOG};
-use crate::registry::{channel, fetch, keys, tuf, verify};
+use crate::registry::{channel, fetch, keys, repo, tuf, verify};
 use crate::security::{self, KeyStore, TrustedKey, key_fingerprint};
 use crate::types::{
     RegistryConfig, RegistryState, TrackingMode, validate_attestation_provenance_ref,
@@ -64,30 +62,9 @@ struct ResolvedHead {
     release_tag: Option<String>,
 }
 
-/// Oldest git release with reliable sha256 object-format support.
-const MIN_SHA256_GIT_VERSION: GitVersion = GitVersion {
-    major: 2,
-    minor: 42,
-    patch: 0,
-};
-
 /// Default freshness window (14 days) for channel-tracked registries when
 /// `max_staleness_seconds` is not configured.
 const DEFAULT_CHANNEL_MAX_STALENESS_SECONDS: u64 = 14 * 24 * 60 * 60;
-
-/// Parsed `major.minor.patch` triple from `git --version`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct GitVersion {
-    major: u32,
-    minor: u32,
-    patch: u32,
-}
-
-impl std::fmt::Display for GitVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Main sync flow
@@ -154,7 +131,6 @@ pub async fn sync_git(
             config.name,
         );
     }
-    ensure_sha256_capable_git().await?;
     if is_plain_http_url(&config.url) {
         preflight_git_native_http_origin(&git_url).await?;
     }
@@ -644,166 +620,44 @@ async fn probe_static_http_status(
     Ok(response.status())
 }
 
-/// Verify the local git is new enough for sha256 repositories, both by
-/// version number and by actually probing `git init --object-format=sha256`.
-async fn ensure_sha256_capable_git() -> Result<()> {
-    let version_output = gitcmd::hermetic_async()
-        .arg("--version")
-        .output()
-        .await
-        .context("running git --version")?;
-    if !version_output.status.success() {
-        bail!(
-            "this registry requires a sha256-capable git {MIN_SHA256_GIT_VERSION} or newer; \
-             git --version failed: {}",
-            String::from_utf8_lossy(&version_output.stderr).trim(),
-        );
-    }
-
-    let version_text = String::from_utf8_lossy(&version_output.stdout);
-    let version = parse_git_version(&version_text).ok_or_else(|| {
-        anyhow::anyhow!(
-            "this registry requires a sha256-capable git {MIN_SHA256_GIT_VERSION} or newer; \
-             could not parse `git --version` output '{}'",
-            version_text.trim(),
-        )
-    })?;
-    if version < MIN_SHA256_GIT_VERSION {
-        bail!(
-            "this registry requires a sha256-capable git {MIN_SHA256_GIT_VERSION} or newer; \
-             found {} from `git --version`. Upgrade git before syncing sha256 dumb-HTTP registries.",
-            version_text.trim(),
-        );
-    }
-
-    let tmp = tempfile::TempDir::new().context("creating temporary git capability probe repo")?;
-    let output = gitcmd::hermetic_async()
-        .args(["init", "--bare", "--object-format=sha256"])
-        .arg(tmp.path())
-        .output()
-        .await
-        .context("running git sha256 capability probe")?;
-    if !output.status.success() {
-        bail!(
-            "this registry requires a sha256-capable git {MIN_SHA256_GIT_VERSION} or newer; \
-             {} cannot run `git init --bare --object-format=sha256`: {}",
-            version_text.trim(),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    Ok(())
-}
-
-/// Parse `git --version` output (e.g. `git version 2.42.0`).
-fn parse_git_version(output: &str) -> Option<GitVersion> {
-    let token = output
-        .trim()
-        .strip_prefix("git version ")?
-        .split_whitespace()
-        .next()?;
-    let mut parts = token.split('.');
-    let major = parse_leading_u32(parts.next()?)?;
-    let minor = parts.next().and_then(parse_leading_u32).unwrap_or(0);
-    let patch = parts.next().and_then(parse_leading_u32).unwrap_or(0);
-    Some(GitVersion {
-        major,
-        minor,
-        patch,
-    })
-}
-
-/// Parse the leading digits of a version component (`0-rc1` -> `0`).
-fn parse_leading_u32(part: &str) -> Option<u32> {
-    let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        None
-    } else {
-        digits.parse().ok()
-    }
-}
-
 /// Initialize a bare git repo at `repo_dir` if it does not already exist.
 async fn ensure_repo(repo_dir: &Path, _url: &str) -> Result<()> {
-    if repo_dir.join("HEAD").exists() {
-        return Ok(());
-    }
-
-    tokio::fs::create_dir_all(repo_dir)
-        .await
-        .with_context(|| format!("creating {}", repo_dir.display()))?;
-
-    let output = gitcmd::hermetic_async()
-        .args(["init", "--bare", "--object-format=sha256"])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .context("running git init --bare --object-format=sha256")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "git init --bare --object-format=sha256 failed: {}",
-            stderr.trim()
-        );
-    }
-
-    Ok(())
+    repo::init_bare_sha256(repo_dir).await
 }
 
-/// Run `git fetch` with the appropriate refspec based on tracking mode.
+/// Fetch the refs selected by `tracking_mode` from `url`.
+///
+/// Builds force (`+`) refspecs and dispatches through [`repo::fetch`], which
+/// uses libgit2's smart transport for `git://`/`ssh://` and the pure-Rust
+/// dumb-HTTP reader for `http(s)://`. Returns whether the remote roster HEAD
+/// was additionally fetched.
 async fn fetch_refs(
     repo_dir: &Path,
     url: &str,
     tracking_mode: &TrackingMode,
     fetch_roster_head: bool,
 ) -> Result<bool> {
-    let mut args = vec!["fetch".to_string(), url.to_string()];
-
-    match tracking_mode {
-        TrackingMode::Commit(hash) => {
-            // Fetch the specific commit.
-            args.push(hash.clone());
-        }
+    let refspecs: Vec<String> = match tracking_mode {
+        // Fetch the specific commit by object id (no local ref).
+        TrackingMode::Commit(hash) => vec![hash.clone()],
         TrackingMode::Branch(branch) => {
-            // Fetch the branch.
-            args.push(format!("refs/heads/{branch}:refs/remotes/origin/{branch}"));
+            vec![format!("+refs/heads/{branch}:refs/remotes/origin/{branch}")]
         }
-        TrackingMode::Channel(channel) => {
-            args.push(format!(
-                "refs/heads/{channel}:refs/remotes/origin/{channel}"
-            ));
-            args.push("refs/tags/*:refs/tags/*".to_string());
-        }
-        TrackingMode::Tag(tag) => {
-            // Fetch the specific tag.
-            args.push(format!("refs/tags/{tag}:refs/tags/{tag}"));
-        }
-        TrackingMode::Version(_) => {
-            // Need all tags to do semver matching.
-            args.push("refs/tags/*:refs/tags/*".to_string());
-        }
-        TrackingMode::Default => {
-            // Follow the remote's default branch HEAD when no explicit
-            // tracking selector is configured.
-            args.push("HEAD:refs/remotes/origin/HEAD".to_string());
-        }
-    }
+        TrackingMode::Channel(channel) => vec![
+            format!("+refs/heads/{channel}:refs/remotes/origin/{channel}"),
+            "+refs/tags/*:refs/tags/*".to_string(),
+        ],
+        TrackingMode::Tag(tag) => vec![format!("+refs/tags/{tag}:refs/tags/{tag}")],
+        // Need all tags to do semver matching.
+        TrackingMode::Version(_) => vec!["+refs/tags/*:refs/tags/*".to_string()],
+        // Follow the remote's default branch HEAD when no explicit selector
+        // is configured.
+        TrackingMode::Default => vec!["+HEAD:refs/remotes/origin/HEAD".to_string()],
+    };
 
-    // Add --force to allow tag updates.
-    args.push("--force".to_string());
-
-    let output = gitcmd::transport_async()
-        .args(&args)
-        .current_dir(repo_dir)
-        .output()
+    repo::fetch(repo_dir, url, &refspecs)
         .await
-        .with_context(|| format!("running git fetch against {url}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git fetch failed: {}", stderr.trim());
-    }
+        .with_context(|| format!("fetching from {url}"))?;
 
     if fetch_roster_head {
         fetch_origin_head(repo_dir, url).await
@@ -812,26 +666,33 @@ async fn fetch_refs(
     }
 }
 
+/// Fetch the remote default `HEAD` into `refs/remotes/origin/HEAD`.
+///
+/// Returns `Ok(false)` when the origin advertises no `HEAD` (the historical
+/// "couldn't find remote ref HEAD" case), so channel/tag/version tracking can
+/// fall back to the selected ref.
 async fn fetch_origin_head(repo_dir: &Path, url: &str) -> Result<bool> {
-    let output = gitcmd::transport_async()
-        .args(["fetch", url, "HEAD:refs/remotes/origin/HEAD", "--force"])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("fetching remote roster head from {url}"))?;
-
-    if output.status.success() {
-        return Ok(true);
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("couldn't find remote ref HEAD")
-        || stderr.contains("couldn't find remote ref")
-        || stderr.contains("could not find remote ref HEAD")
+    match repo::fetch(
+        repo_dir,
+        url,
+        &["+HEAD:refs/remotes/origin/HEAD".to_string()],
+    )
+    .await
     {
-        return Ok(false);
+        Ok(()) => Ok(true),
+        Err(err) => {
+            let message = err.to_string().to_lowercase();
+            if message.contains("head")
+                || message.contains("not found")
+                || message.contains("couldn't find")
+                || message.contains("does not advertise")
+            {
+                Ok(false)
+            } else {
+                Err(err).with_context(|| format!("fetching remote roster head from {url}"))
+            }
+        }
     }
-    bail!("git fetch remote HEAD failed: {}", stderr.trim());
 }
 
 fn uses_remote_head_roster(tracking_mode: &TrackingMode) -> bool {
@@ -842,21 +703,9 @@ fn uses_remote_head_roster(tracking_mode: &TrackingMode) -> bool {
 }
 
 async fn resolve_origin_head(repo_dir: &Path) -> Result<String> {
-    let output = gitcmd::hermetic_async()
-        .args(["rev-parse", "refs/remotes/origin/HEAD"])
-        .current_dir(repo_dir)
-        .output()
+    repo::rev_parse(repo_dir, "refs/remotes/origin/HEAD")
         .await
-        .context("resolving remote roster head")?;
-
-    if !output.status.success() {
-        bail!(
-            "git rev-parse refs/remotes/origin/HEAD failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .context("resolving remote roster head")
 }
 
 /// Resolve the authenticated commit to use after fetching.
@@ -885,42 +734,18 @@ async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Re
         TrackingMode::Default => "refs/remotes/origin/HEAD".to_string(),
     };
 
-    let output = gitcmd::hermetic_async()
-        .args(["rev-parse", &ref_to_resolve])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("resolving ref {ref_to_resolve}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git rev-parse {} failed: {}", ref_to_resolve, stderr.trim());
-    }
-
     Ok(ResolvedHead {
-        commit: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        commit: repo::rev_parse(repo_dir, &ref_to_resolve)
+            .await
+            .with_context(|| format!("resolving ref {ref_to_resolve}"))?,
         release_tag: None,
     })
 }
 
 async fn resolve_ref_to_commit(repo_dir: &Path, ref_to_resolve: &str) -> Result<String> {
-    let output = gitcmd::hermetic_async()
-        .args(["rev-parse", &format!("{ref_to_resolve}^{{commit}}")])
-        .current_dir(repo_dir)
-        .output()
+    repo::rev_parse_commit(repo_dir, ref_to_resolve)
         .await
-        .with_context(|| format!("resolving ref {ref_to_resolve} to commit"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "git rev-parse {}^{{commit}} failed: {}",
-            ref_to_resolve,
-            stderr.trim(),
-        );
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .with_context(|| format!("resolving ref {ref_to_resolve} to commit"))
 }
 
 /// Resolve a channel partition to a verified release.
@@ -1029,7 +854,9 @@ async fn fetch_and_verify_partition(
         return Ok(None);
     };
 
-    let channel_oid = hash_tag_object(repo_dir, &bytes)?;
+    let channel_oid = repo::hash_tag_object(repo_dir, &bytes)
+        .await
+        .context("hashing channel partition tag object")?;
     verify::verify_tag_chain(
         repo_dir,
         &channel_oid,
@@ -1040,77 +867,11 @@ async fn fetch_and_verify_partition(
     .map(|release| Some((release, channel_oid)))
 }
 
-/// Write raw tag-object bytes into the repo with `git hash-object -w -t tag`
-/// and return the resulting object id.
-fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
-    let mut child = gitcmd::hermetic()
-        .args(["hash-object", "-w", "-t", "tag", "--stdin"])
-        .current_dir(repo_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("running git hash-object for channel tag")?;
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin was piped")
-        .write_all(bytes)
-        .context("writing channel tag to git hash-object")?;
-    let output = child
-        .wait_with_output()
-        .context("waiting for git hash-object")?;
-    if !output.status.success() {
-        bail!(
-            "git hash-object failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 /// Map every semver-named tag's *tag object id* to its parsed version.
 async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semver::Version>> {
-    let output = gitcmd::hermetic_async()
-        .args(["tag", "-l"])
-        .current_dir(repo_dir)
-        .output()
+    repo::semver_tag_object_map(repo_dir)
         .await
-        .context("listing tags for channel resolution")?;
-    if !output.status.success() {
-        bail!(
-            "git tag -l failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    let mut map = BTreeMap::new();
-    for tag in String::from_utf8_lossy(&output.stdout).lines() {
-        let tag = tag.trim();
-        let Ok(version) = semver::Version::parse(tag) else {
-            continue;
-        };
-        let oid = resolve_tag_object(repo_dir, tag).await?;
-        map.insert(oid, version);
-    }
-    Ok(map)
-}
-
-/// Resolve a tag ref to its tag *object* id (not the peeled commit).
-async fn resolve_tag_object(repo_dir: &Path, tag: &str) -> Result<String> {
-    let output = gitcmd::hermetic_async()
-        .args(["rev-parse", &format!("{tag}^{{tag}}")])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("resolving tag object for {tag}"))?;
-    if !output.status.success() {
-        bail!(
-            "git rev-parse {tag}^{{tag}} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .context("listing tags for channel resolution")
 }
 
 /// Delete `releases/<X>/<Y>/<Z>` directories for releases the client no
@@ -1163,22 +924,13 @@ async fn resolve_best_version_tag(
     repo_dir: &Path,
     req: &semver::VersionReq,
 ) -> Result<ResolvedHead> {
-    let output = gitcmd::hermetic_async()
-        .args(["tag", "-l"])
-        .current_dir(repo_dir)
-        .output()
+    let tags = repo::tag_names(repo_dir)
         .await
         .context("listing tags for version matching")?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git tag -l failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let mut best: Option<(semver::Version, String)> = None;
 
-    for tag in stdout.lines() {
+    for tag in &tags {
         let tag = tag.trim();
         if tag.is_empty() {
             continue;
@@ -1238,23 +990,16 @@ fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
 }
 
 /// Enforce that `new_commit` is a descendant of `old_commit` (fast-forward).
-///
-/// Uses `git merge-base --is-ancestor` to check the relationship.
 async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &str) -> Result<()> {
     if old_commit == new_commit {
         return Ok(());
     }
 
-    let output = gitcmd::hermetic_async()
-        .args(["merge-base", "--is-ancestor", old_commit, new_commit])
-        .current_dir(repo_dir)
-        .output()
+    let is_descendant = repo::is_ancestor(repo_dir, old_commit, new_commit)
         .await
-        .with_context(|| {
-            format!("running git merge-base --is-ancestor {old_commit} {new_commit}")
-        })?;
+        .with_context(|| format!("checking ancestry of {old_commit}..{new_commit}"))?;
 
-    if !output.status.success() {
+    if !is_descendant {
         bail!(
             "registry downgrade detected: commit {new_commit} is not a \
              descendant of previously verified commit {old_commit}.\n\n\
@@ -1511,45 +1256,31 @@ async fn extract_required_registry_blob(
     ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
     remove_cached_registry_artifact_target(&output_path).await?;
 
-    let object = format!("{commit}:{tree_path}");
-    let object_type = gitcmd::hermetic_async()
-        .args(["cat-file", "-t", &object])
-        .current_dir(repo_dir)
-        .output()
+    let kind = repo::path_object_kind(repo_dir, commit, tree_path)
         .await
         .with_context(|| format!("checking registry artifact {tree_path}"))?;
-    if !object_type.status.success() {
-        bail!(
-            "registry artifact '{}' declared by package metadata is missing from commit {}: {}",
+    match kind {
+        None => bail!(
+            "registry artifact '{}' declared by package metadata is missing from commit {}",
             tree_path,
             commit,
-            String::from_utf8_lossy(&object_type.stderr).trim(),
-        );
-    }
-    let object_type = String::from_utf8_lossy(&object_type.stdout);
-    let object_type = object_type.trim();
-    if object_type != "blob" {
-        bail!(
+        ),
+        Some(git2::ObjectType::Blob) => {}
+        Some(other) => bail!(
             "registry artifact '{}' declared by package metadata is a {}, not a file",
             tree_path,
-            object_type,
-        );
+            other,
+        ),
     }
 
-    let content = gitcmd::hermetic_async()
-        .args(["show", &object])
-        .current_dir(repo_dir)
-        .output()
+    let content = repo::read_blob_at(repo_dir, commit, tree_path)
         .await
-        .with_context(|| format!("reading registry artifact {tree_path}"))?;
-    if !content.status.success() {
-        bail!(
-            "reading registry artifact '{}' from commit {} failed: {}",
-            tree_path,
-            commit,
-            String::from_utf8_lossy(&content.stderr).trim(),
-        );
-    }
+        .with_context(|| format!("reading registry artifact {tree_path}"))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "registry artifact '{tree_path}' vanished from commit {commit} during read"
+            )
+        })?;
 
     let mut output = OpenOptions::new()
         .write(true)
@@ -1559,7 +1290,7 @@ async fn extract_required_registry_blob(
         .open(&output_path)
         .with_context(|| format!("opening registry artifact {}", output_path.display()))?;
     output
-        .write_all(&content.stdout)
+        .write_all(&content)
         .with_context(|| format!("writing registry artifact {}", output_path.display()))?;
     Ok(())
 }
@@ -1676,66 +1407,19 @@ async fn extract_tree_dir(
             .with_context(|| format!("cleaning {}", output_dir.display()))?;
     }
 
-    if !tree_path_exists(repo_dir, commit, tree_path).await? {
-        if create_empty_when_absent {
-            tokio::fs::create_dir_all(output_dir)
-                .await
-                .with_context(|| format!("creating {}", output_dir.display()))?;
-        }
-        return Ok(());
-    }
-
-    tokio::fs::create_dir_all(output_dir)
-        .await
-        .with_context(|| format!("creating {}", output_dir.display()))?;
-
-    let tarball = tempfile::NamedTempFile::new().context("creating temporary git archive")?;
-    let archive = gitcmd::hermetic_async()
-        .args(["archive", "--format=tar", "-o"])
-        .arg(tarball.path())
-        .arg(commit)
-        .arg(format!("{tree_path}/"))
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("running git archive {commit} {tree_path}/"))?;
-    if !archive.status.success() {
-        bail!(
-            "git archive {commit} {tree_path}/ failed: {}",
-            String::from_utf8_lossy(&archive.stderr).trim(),
-        );
-    }
-
-    let tar = std::process::Command::new("tar")
-        .arg("-x")
-        .arg("--strip-components=1")
-        .arg("-f")
-        .arg(tarball.path())
-        .arg("-C")
-        .arg(output_dir)
-        .output()
-        .with_context(|| format!("running tar to extract {tree_path}"))?;
-
-    if !tar.status.success() {
-        let stderr = String::from_utf8_lossy(&tar.stderr);
-        bail!(
-            "failed to extract {tree_path} from commit {commit}: {}",
-            stderr.trim(),
-        );
-    }
-
-    Ok(())
-}
-
-/// `true` when `commit:tree_path` exists (`git cat-file -e`).
-async fn tree_path_exists(repo_dir: &Path, commit: &str, tree_path: &str) -> Result<bool> {
-    let output = gitcmd::hermetic_async()
-        .args(["cat-file", "-e", &format!("{commit}:{tree_path}")])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("checking tree path {commit}:{tree_path}"))?;
-    Ok(output.status.success())
+    // libgit2 tree walk replaces `git archive <commit> <tree_path>/ | tar -x
+    // --strip-components=1`: it materializes `commit:tree_path/` directly,
+    // preserving file modes and symlinks, and handles the absent-path case via
+    // `create_empty_when_absent`.
+    repo::extract_tree_dir(
+        repo_dir,
+        commit,
+        tree_path,
+        output_dir,
+        create_empty_when_absent,
+    )
+    .await
+    .with_context(|| format!("extracting {tree_path} from commit {commit}"))
 }
 
 /// Extract repo-root support files into `target_dir`.
@@ -1775,39 +1459,25 @@ async fn extract_optional_root_file(
     target_dir: &Path,
     file: &str,
 ) -> Result<()> {
-    let output = gitcmd::hermetic_async()
-        .args(["show", &format!("{commit}:{file}")])
-        .current_dir(repo_dir)
-        .output()
+    let dest = target_dir.join(file);
+    match repo::read_blob_at(repo_dir, commit, file)
         .await
-        .with_context(|| format!("running git show {commit}:{file}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if is_missing_tree_path(&stderr, file) {
-            let dest = target_dir.join(file);
+        .with_context(|| format!("reading {commit}:{file}"))?
+    {
+        Some(content) => {
+            tokio::fs::write(&dest, &content)
+                .await
+                .with_context(|| format!("writing {}", dest.display()))?;
+        }
+        None => {
             if dest.exists() {
                 tokio::fs::remove_file(&dest)
                     .await
                     .with_context(|| format!("removing stale {}", dest.display()))?;
             }
-            return Ok(());
         }
-        bail!("git show {commit}:{file} failed: {}", stderr.trim(),);
     }
-
-    let dest = target_dir.join(file);
-    tokio::fs::write(&dest, &output.stdout)
-        .await
-        .with_context(|| format!("writing {}", dest.display()))?;
     Ok(())
-}
-
-/// Heuristically classify `git show` stderr as "path absent from commit".
-fn is_missing_tree_path(stderr: &str, file: &str) -> bool {
-    stderr.contains("does not exist")
-        || stderr.contains("exists on disk, but not in")
-        || stderr.contains(&format!("path '{file}'"))
 }
 
 /// Decide whether a successful channel resolution counts as a fresh
@@ -2326,51 +1996,6 @@ mod tests {
             normalize_git_url("git://github.com/andyl/registry.git"),
             "git://github.com/andyl/registry.git"
         );
-    }
-
-    #[test]
-    fn parse_git_version_handles_common_formats() {
-        assert_eq!(
-            parse_git_version("git version 2.42.0\n"),
-            Some(GitVersion {
-                major: 2,
-                minor: 42,
-                patch: 0,
-            })
-        );
-        assert_eq!(
-            parse_git_version("git version 2.43.1 (Apple Git-155)\n"),
-            Some(GitVersion {
-                major: 2,
-                minor: 43,
-                patch: 1,
-            })
-        );
-        assert_eq!(
-            parse_git_version("git version 2.42.0.windows.1\n"),
-            Some(GitVersion {
-                major: 2,
-                minor: 42,
-                patch: 0,
-            })
-        );
-    }
-
-    #[test]
-    fn sha256_git_floor_is_git_2_42_0() {
-        let below = parse_git_version("git version 2.41.3").unwrap();
-        let floor = parse_git_version("git version 2.42.0").unwrap();
-        let above = parse_git_version("git version 2.43.0").unwrap();
-
-        assert!(below < MIN_SHA256_GIT_VERSION);
-        assert_eq!(floor, MIN_SHA256_GIT_VERSION);
-        assert!(above > MIN_SHA256_GIT_VERSION);
-    }
-
-    #[test]
-    fn parse_git_version_rejects_unexpected_output() {
-        assert_eq!(parse_git_version("not git"), None);
-        assert_eq!(parse_git_version("git version vendor-build"), None);
     }
 
     #[test]

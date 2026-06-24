@@ -13,47 +13,35 @@
 //! transfer artifacts and are stitched into the root store via relative
 //! alternates ([`write_alternates`]).
 
+use std::collections::HashSet;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
-
-use crate::gitcmd;
 
 /// Initialize `dir` as a bare sha256 git repository and point `HEAD` at the
 /// default channel branch.
 ///
 /// # Errors
 ///
-/// Returns an error if `git init`, `git symbolic-ref`, or the sha256 format
-/// guard fails.
+/// Returns an error if libgit2 cannot initialize the repository or the sha256
+/// format guard fails.
 pub fn init_bare_sha256(dir: &Path, default_channel: &str) -> Result<()> {
     if default_channel.is_empty() || default_channel.contains('/') {
         bail!("default channel must be a single non-empty ref segment");
     }
 
-    let output = gitcmd::hermetic()
-        .args(["init", "--bare", "--object-format=sha256"])
-        .arg(dir)
-        .output()
-        .with_context(|| format!("running git init for {}", dir.display()))?;
-    if !output.status.success() {
-        bail!(
-            "git init --bare --object-format=sha256 failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    run_git_dir(
-        dir,
-        &[
-            "symbolic-ref",
-            "HEAD",
-            &format!("refs/heads/{default_channel}"),
-        ],
-    )?;
+    let mut opts = git2::RepositoryInitOptions::new();
+    opts.bare(true)
+        .mkpath(true)
+        .object_format(git2::ObjectFormat::Sha256)
+        .initial_head(&format!("refs/heads/{default_channel}"));
+    git2::Repository::init_opts(dir, &opts).with_context(|| {
+        format!(
+            "git init --bare --object-format=sha256 for {}",
+            dir.display()
+        )
+    })?;
     assert_sha256(dir)?;
     Ok(())
 }
@@ -106,7 +94,10 @@ pub fn write_release_objects(repo: &Path, version: &semver::Version, revspec: &s
     assert_sha256(repo)?;
     let git_dir = repo_git_dir(repo)?;
     if !revspec.is_empty() {
-        run_git_dir(&git_dir, &["rev-list", "--objects", revspec])?;
+        let repository = open_git_dir(&git_dir)?;
+        repository
+            .revparse_single(revspec)
+            .with_context(|| format!("revspec {revspec} is unknown to {}", git_dir.display()))?;
     }
 
     let objects_dir = git_dir.join("releases").join(release_object_dir(version));
@@ -119,129 +110,243 @@ pub fn write_release_objects(repo: &Path, version: &semver::Version, revspec: &s
 
 /// Ensure every reachable object has a loose copy in the root `/objects/` store.
 ///
-/// Full packs found under the root repo and per-release pack dirs are unpacked
-/// into the root object store, then every object reachable from refs is checked
-/// for a loose `objects/xx/rest` file.
+/// Enumerates every object reachable from the repository's refs (including
+/// objects that live only in per-release pack alternates) and writes any that
+/// are not already loose into `objects/xx/rest`, so dumb-HTTP clients can fetch
+/// the full graph.
 ///
 /// # Errors
 ///
-/// Returns an error if pack unpacking fails or any reachable object remains
-/// missing as a loose object.
+/// Returns an error if a reachable object cannot be read or a loose object
+/// cannot be written.
 pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
     assert_sha256(repo)?;
     let git_dir = repo_git_dir(repo)?;
+    let repository = open_git_dir(&git_dir)?;
+    let odb = repository.odb().context("opening object database")?;
+    let objects_dir = git_dir.join("objects");
 
-    for pack in full_pack_files(&git_dir)? {
-        unpack_pack(&git_dir, &pack).with_context(|| format!("unpacking {}", pack.display()))?;
-    }
-
-    let missing = missing_loose_objects(&git_dir)?;
-    for oid in &missing {
-        write_loose_object(&git_dir, oid)
+    // Every reachable object (including those living only in per-release pack
+    // alternates) is read from the object database and written as a loose
+    // object in the root store, which is what dumb-HTTP clients fetch. We write
+    // the loose file directly rather than via `Odb::write`, which is a no-op
+    // when the object already exists in a pack and so would not create the
+    // loose copy.
+    for oid in reachable_objects(&repository)? {
+        let loose = objects_dir.join(loose_object_path(&oid.to_string())?);
+        if loose.exists() {
+            continue;
+        }
+        let object = odb
+            .read(oid)
+            .with_context(|| format!("reading reachable object {oid}"))?;
+        write_loose_object_file(&loose, object.kind(), object.data())
             .with_context(|| format!("materializing loose git object {oid}"))?;
-    }
-
-    let missing = missing_loose_objects(&git_dir)?;
-    if !missing.is_empty() {
-        bail!(
-            "reachable objects are not present loose in root store: {}",
-            missing.join(", "),
-        );
     }
 
     Ok(())
 }
 
-fn missing_loose_objects(git_dir: &Path) -> Result<Vec<String>> {
-    let objects = run_git_dir(git_dir, &["rev-list", "--objects", "--all"])?;
-    let mut missing = Vec::new();
-    for line in objects.lines() {
-        let Some(oid) = line.split_whitespace().next() else {
+/// Write a single loose git object to `path` (`objects/<2>/<62>`).
+///
+/// The on-disk loose format is the zlib-compressed `"<type> <size>\0<body>"`
+/// pre-image whose SHA-256 is the object id; the write is atomic via a temp
+/// file rename.
+fn write_loose_object_file(path: &Path, kind: git2::ObjectType, data: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let type_str = match kind {
+        git2::ObjectType::Blob => "blob",
+        git2::ObjectType::Commit => "commit",
+        git2::ObjectType::Tree => "tree",
+        git2::ObjectType::Tag => "tag",
+        other => bail!("unsupported git object type {other:?}"),
+    };
+    let mut content = format!("{type_str} {}\0", data.len()).into_bytes();
+    content.extend_from_slice(data);
+
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(&content)
+        .context("zlib-compressing loose object")?;
+    let compressed = encoder.finish().context("finishing zlib stream")?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, &compressed).with_context(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("installing {}", path.display()))?;
+    Ok(())
+}
+
+/// Enumerate every object reachable from the repository's refs — the
+/// equivalent of `git rev-list --objects --all`: commits, their trees and
+/// blobs, and annotated tag objects. Objects living only in the per-release
+/// pack alternates are reached through the object database.
+fn reachable_objects(repo: &git2::Repository) -> Result<Vec<git2::Oid>> {
+    let mut seen: HashSet<git2::Oid> = HashSet::new();
+    let mut out: Vec<git2::Oid> = Vec::new();
+
+    let mut revwalk = repo.revwalk().context("creating revwalk")?;
+    for reference in repo.references().context("listing references")? {
+        let reference = reference?;
+        if let Some(oid) = reference.target() {
+            // push() peels tags to their commit; ignore non-committish refs.
+            let _ = revwalk.push(oid);
+        }
+    }
+    for oid in revwalk {
+        let commit_oid = oid?;
+        if seen.insert(commit_oid) {
+            out.push(commit_oid);
+        }
+        let commit = repo
+            .find_commit(commit_oid)
+            .with_context(|| format!("reading commit {commit_oid}"))?;
+        let tree = commit.tree().context("reading commit tree")?;
+        if seen.insert(tree.id()) {
+            out.push(tree.id());
+        }
+        collect_tree(repo, &tree, &mut seen, &mut out)?;
+    }
+
+    // revwalk only yields commits; record the annotated tag objects in each
+    // refs/tags chain as well.
+    for reference in repo
+        .references_glob("refs/tags/*")
+        .context("listing tags")?
+    {
+        let reference = reference?;
+        let Some(mut oid) = reference.target() else {
             continue;
         };
-        let loose = git_dir.join("objects").join(loose_object_path(oid)?);
-        if !loose.exists() {
-            missing.push(oid.to_string());
+        while let Ok(object) = repo.find_object(oid, None) {
+            if object.kind() != Some(git2::ObjectType::Tag) {
+                break;
+            }
+            if seen.insert(oid) {
+                out.push(oid);
+            }
+            let Some(tag) = object.as_tag() else { break };
+            oid = tag.target_id();
         }
     }
 
-    Ok(missing)
+    Ok(out)
 }
 
-fn write_loose_object(git_dir: &Path, oid: &str) -> Result<()> {
-    let object_type = run_git_dir(git_dir, &["cat-file", "-t", oid])?;
-    match object_type.as_str() {
-        "blob" | "commit" | "tag" | "tree" => {}
-        other => bail!("unsupported git object type '{other}' for {oid}"),
+/// Recursively record every tree and blob OID under `tree`.
+fn collect_tree(
+    repo: &git2::Repository,
+    tree: &git2::Tree<'_>,
+    seen: &mut HashSet<git2::Oid>,
+    out: &mut Vec<git2::Oid>,
+) -> Result<()> {
+    for entry in tree.iter() {
+        let oid = entry.id();
+        match entry.kind() {
+            Some(git2::ObjectType::Tree) => {
+                if seen.insert(oid) {
+                    out.push(oid);
+                    let object = entry
+                        .to_object(repo)
+                        .with_context(|| format!("reading tree {oid}"))?;
+                    if let Some(subtree) = object.as_tree() {
+                        collect_tree(repo, subtree, seen, out)?;
+                    }
+                }
+            }
+            Some(git2::ObjectType::Blob) => {
+                if seen.insert(oid) {
+                    out.push(oid);
+                }
+            }
+            // Submodule gitlinks and other kinds are not stored here.
+            _ => {}
+        }
     }
-
-    let object = gitcmd::hermetic()
-        .arg("--git-dir")
-        .arg(git_dir)
-        .arg("cat-file")
-        .arg(&object_type)
-        .arg(oid)
-        .output()
-        .with_context(|| format!("reading git object {oid}"))?;
-    if !object.status.success() {
-        bail!(
-            "git cat-file {} {oid} failed: {}",
-            object_type,
-            String::from_utf8_lossy(&object.stderr).trim(),
-        );
-    }
-
-    let objects_dir = git_dir.join("objects");
-    let tmp = tempfile::Builder::new()
-        .prefix(".hash-object-")
-        .tempdir_in(&objects_dir)
-        .with_context(|| format!("creating temporary object dir in {}", objects_dir.display()))?;
-    let mut child = gitcmd::hermetic()
-        .arg("--git-dir")
-        .arg(git_dir)
-        .args(["hash-object", "-w", "-t", &object_type, "--stdin"])
-        .env("GIT_OBJECT_DIRECTORY", tmp.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("running git hash-object")?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .context("opening git hash-object stdin")?;
-    stdin
-        .write_all(&object.stdout)
-        .context("writing git object to hash-object")?;
-    drop(stdin);
-
-    let output = child
-        .wait_with_output()
-        .context("waiting for git hash-object")?;
-    if !output.status.success() {
-        bail!(
-            "git hash-object failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    let written = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if written != oid {
-        bail!("git hash-object wrote {written}, expected {oid}");
-    }
-    merge_loose_objects(tmp.path(), &objects_dir)?;
     Ok(())
 }
 
 /// Regenerate dumb-HTTP metadata (`info/refs` and `objects/info/packs`).
 ///
+/// This is the producer counterpart to [`crate::registry::dumb_http`]: it
+/// writes the same layout `git update-server-info` would, which that reader
+/// consumes.
+///
+/// - `info/refs`: a `<oid>\t<refname>` line per ref, plus a peeled
+///   `<commit-oid>\t<refname>^{}` line for each annotated tag.
+/// - `objects/info/packs`: a `P <pack-name>.pack` line per pack.
+///
 /// # Errors
 ///
-/// Returns an error if `git update-server-info` fails.
+/// Returns an error if the repository cannot be read or the metadata files
+/// cannot be written.
 pub fn refresh_server_info(repo: &Path) -> Result<()> {
     assert_sha256(repo)?;
     let git_dir = repo_git_dir(repo)?;
-    run_git_dir(&git_dir, &["update-server-info"])?;
+    let repository = open_git_dir(&git_dir)?;
+
+    // info/refs
+    let mut ref_lines: Vec<String> = Vec::new();
+    for reference in repository.references().context("listing references")? {
+        let reference = reference?;
+        let Ok(name) = reference.name() else {
+            continue;
+        };
+        if name == "HEAD" {
+            continue;
+        }
+        let Some(oid) = reference.target() else {
+            continue; // skip symbolic refs
+        };
+        ref_lines.push(format!("{oid}\t{name}"));
+        if let Ok(object) = repository.find_object(oid, None)
+            && object.kind() == Some(git2::ObjectType::Tag)
+            && let Ok(peeled) = object.peel(git2::ObjectType::Commit)
+        {
+            ref_lines.push(format!("{}\t{name}^{{}}", peeled.id()));
+        }
+    }
+    ref_lines.sort();
+    let info_dir = git_dir.join("info");
+    fs::create_dir_all(&info_dir).with_context(|| format!("creating {}", info_dir.display()))?;
+    let mut info_refs = ref_lines.join("\n");
+    if !info_refs.is_empty() {
+        info_refs.push('\n');
+    }
+    fs::write(info_dir.join("refs"), info_refs)
+        .with_context(|| format!("writing {}", info_dir.join("refs").display()))?;
+
+    // objects/info/packs
+    let pack_dir = git_dir.join("objects").join("pack");
+    let mut packs: Vec<String> = Vec::new();
+    if pack_dir.exists() {
+        for entry in
+            fs::read_dir(&pack_dir).with_context(|| format!("reading {}", pack_dir.display()))?
+        {
+            let entry = entry?;
+            if let Some(name) = entry.file_name().to_str()
+                && name.starts_with("pack-")
+                && name.ends_with(".pack")
+            {
+                packs.push(name.to_string());
+            }
+        }
+    }
+    packs.sort();
+    let mut packs_body = String::new();
+    for pack in packs {
+        packs_body.push_str("P ");
+        packs_body.push_str(&pack);
+        packs_body.push('\n');
+    }
+    let objects_info = git_dir.join("objects").join("info");
+    fs::create_dir_all(&objects_info)
+        .with_context(|| format!("creating {}", objects_info.display()))?;
+    fs::write(objects_info.join("packs"), packs_body)
+        .with_context(|| format!("writing {}", objects_info.join("packs").display()))?;
+
     Ok(())
 }
 
@@ -283,12 +388,17 @@ pub fn write_alternates(repo: &Path, releases: &[semver::Version]) -> Result<()>
 /// format is not exactly `sha256`.
 pub fn assert_sha256(repo: &Path) -> Result<()> {
     let git_dir = repo_git_dir(repo)?;
-    let format = run_git_dir(&git_dir, &["rev-parse", "--show-object-format"])?;
-    if format.trim() != "sha256" {
+    let repository = open_git_dir(&git_dir)?;
+    // SHA-256 repositories record `extensions.objectformat = sha256` in config.
+    let format = repository
+        .config()
+        .and_then(|cfg| cfg.get_string("extensions.objectformat"))
+        .unwrap_or_default();
+    if format != "sha256" {
         bail!(
             "registry repo {} uses object format '{}', expected sha256",
             repo.display(),
-            format.trim(),
+            if format.is_empty() { "sha1" } else { &format },
         );
     }
     Ok(())
@@ -308,142 +418,16 @@ pub fn repo_git_dir(repo: &Path) -> Result<PathBuf> {
         return Ok(repo.to_path_buf());
     }
 
-    let output = gitcmd::hermetic()
-        .arg("-C")
-        .arg(repo)
-        .args(["rev-parse", "--absolute-git-dir"])
-        .output()
+    let repository = git2::Repository::open(repo)
         .with_context(|| format!("resolving git dir for {}", repo.display()))?;
-
-    if !output.status.success() {
-        bail!(
-            "git rev-parse --absolute-git-dir failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
-        bail!("git rev-parse --absolute-git-dir returned an empty path");
-    }
-    Ok(PathBuf::from(path))
+    Ok(repository.path().to_path_buf())
 }
 
-/// Run a git command with `--git-dir <repo>` and return trimmed stdout.
-fn run_git_dir(repo: &Path, args: &[&str]) -> Result<String> {
-    let output = gitcmd::hermetic()
-        .arg("--git-dir")
-        .arg(repo)
-        .args(args)
-        .output()
-        .with_context(|| format!("running git {} in {}", args.join(" "), repo.display()))?;
-
-    if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-/// Unpack one pack file into the repository's loose-object store.
-///
-/// `git unpack-objects` skips objects that already exist in the repository,
-/// including objects that exist only in a pack. To force loose copies for
-/// dumb-HTTP serving, unpack into a temporary object directory first and then
-/// merge the loose object files into the root object store.
-fn unpack_pack(repo: &Path, pack: &Path) -> Result<()> {
-    let pack_file = fs::File::open(pack).with_context(|| format!("opening {}", pack.display()))?;
-    let objects_dir = repo.join("objects");
-    let tmp = tempfile::Builder::new()
-        .prefix(".unpack-objects-")
-        .tempdir_in(&objects_dir)
-        .with_context(|| format!("creating temporary object dir in {}", objects_dir.display()))?;
-    let output = gitcmd::hermetic()
-        .arg("--git-dir")
-        .arg(repo)
-        .arg("unpack-objects")
-        .arg("-r")
-        .env("GIT_OBJECT_DIRECTORY", tmp.path())
-        .stdin(Stdio::from(pack_file))
-        .output()
-        .context("running git unpack-objects")?;
-
-    if !output.status.success() {
-        bail!(
-            "git unpack-objects failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    merge_loose_objects(tmp.path(), &objects_dir)?;
-    Ok(())
-}
-
-/// Copy loose objects from a temporary object directory into `objects_dir`.
-fn merge_loose_objects(src_objects: &Path, objects_dir: &Path) -> Result<()> {
-    for fanout in
-        fs::read_dir(src_objects).with_context(|| format!("reading {}", src_objects.display()))?
-    {
-        let fanout = fanout?;
-        if !fanout.file_type()?.is_dir() {
-            continue;
-        }
-        let fanout_name = fanout.file_name();
-        let fanout_name = fanout_name.to_string_lossy();
-        if fanout_name.len() != 2 || !fanout_name.bytes().all(|b| b.is_ascii_hexdigit()) {
-            continue;
-        }
-        let dest_fanout = objects_dir.join(fanout_name.as_ref());
-        fs::create_dir_all(&dest_fanout)
-            .with_context(|| format!("creating {}", dest_fanout.display()))?;
-        for object in fs::read_dir(fanout.path())
-            .with_context(|| format!("reading {}", fanout.path().display()))?
-        {
-            let object = object?;
-            if !object.file_type()?.is_file() {
-                continue;
-            }
-            let dest = dest_fanout.join(object.file_name());
-            if dest.exists() {
-                continue;
-            }
-            fs::copy(object.path(), &dest)
-                .with_context(|| format!("copying loose object to {}", dest.display()))?;
-        }
-    }
-    Ok(())
-}
-
-/// Find every `pack-*.pack` under the root pack dir and the release dirs.
-fn full_pack_files(repo: &Path) -> Result<Vec<PathBuf>> {
-    let mut packs = Vec::new();
-    collect_full_packs(&repo.join("objects").join("pack"), &mut packs)?;
-    collect_full_packs(&repo.join("releases"), &mut packs)?;
-    Ok(packs)
-}
-
-/// Recursively collect `pack-*.pack` files under `dir` (missing dir is ok).
-fn collect_full_packs(dir: &Path, packs: &mut Vec<PathBuf>) -> Result<()> {
-    if !dir.exists() {
-        return Ok(());
-    }
-
-    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_full_packs(&path, packs)?;
-        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with("pack-") && name.ends_with(".pack") {
-                packs.push(path);
-            }
-        }
-    }
-    Ok(())
+/// Open the bare git directory at `git_dir` directly (it is already the
+/// resolved object-store directory from [`repo_git_dir`]).
+fn open_git_dir(git_dir: &Path) -> Result<git2::Repository> {
+    git2::Repository::open(git_dir)
+        .with_context(|| format!("opening git repository at {}", git_dir.display()))
 }
 
 #[cfg(test)]
@@ -459,6 +443,24 @@ mod tests {
 
     fn v(s: &str) -> semver::Version {
         semver::Version::parse(s).unwrap()
+    }
+
+    /// Run a git CLI command with `--git-dir <git_dir>` (test-only helper).
+    fn run_git_dir(git_dir: &Path, args: &[&str]) -> Result<String> {
+        let output = crate::testutil::git_command(git_dir)
+            .arg("--git-dir")
+            .arg(git_dir)
+            .args(args)
+            .output()
+            .with_context(|| format!("running git {} in {}", args.join(" "), git_dir.display()))?;
+        if !output.status.success() {
+            bail!(
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim(),
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     #[test]

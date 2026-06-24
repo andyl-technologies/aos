@@ -6,13 +6,14 @@
 //! any CLI commands itself.
 
 use std::fs;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use sha2::{Digest, Sha256};
+use ssh_key::{HashAlg, LineEnding, PrivateKey, PublicKey, SshSig};
+
+use crate::registry::repo;
 
 // ---------------------------------------------------------------------------
 // Key types
@@ -499,199 +500,153 @@ pub fn tofu_check(
 // Commit signature verification
 // ---------------------------------------------------------------------------
 
-/// Build a temporary `allowed_signers` file for a set of trusted keys.
+/// Parse a `registry:Ed25519:<base64>` trust line into an OpenSSH public key.
 ///
-/// Each key (in `registry:Ed25519:<base64>` form) becomes one
-/// `<principal> ssh-ed25519 <base64>` line, so `git verify-commit` /
-/// `git verify-tag` succeed when a signature matches *any* listed key.
+/// The base64 field is the same key blob that follows `ssh-ed25519 ` in an
+/// `authorized_keys` line, so we reconstruct that one-line form and let
+/// `ssh-key` decode it.
 ///
-/// An empty key set is a hard error: verification against nothing must
-/// never pass, and refusing up front keeps every caller fail-closed.
-fn write_allowed_signers(trusted_keys: &[String]) -> Result<tempfile::NamedTempFile> {
+/// # Errors
+///
+/// Returns an error when the trust line is malformed or the key blob is not a
+/// valid OpenSSH ed25519 public key.
+fn trusted_ssh_public_key(trusted_key: &str) -> Result<PublicKey> {
+    let (_registry, _algorithm, public_key) = parse_signing_key(trusted_key)?;
+    PublicKey::from_openssh(&format!("ssh-ed25519 {public_key}"))
+        .with_context(|| "parsing trusted ssh-ed25519 public key")
+}
+
+/// Verify an armored SSHSIG over `message` in `namespace` against any key in
+/// `trusted_keys`.
+///
+/// An empty key set is a hard error: verification against nothing must never
+/// pass. A malformed or non-matching signature returns `Ok(false)`.
+fn verify_sshsig_any(
+    signature_pem: &[u8],
+    message: &[u8],
+    namespace: &str,
+    trusted_keys: &[String],
+) -> Result<bool> {
     if trusted_keys.is_empty() {
         bail!("empty trusted key set; refusing to verify signatures against no keys");
     }
-
-    let mut signers_content = String::new();
+    let Ok(signature) = SshSig::from_pem(signature_pem) else {
+        return Ok(false);
+    };
     for key in trusted_keys {
-        let (_reg, _algo, pubkey) = parse_signing_key(key)?;
-        signers_content.push_str(&format!("registry ssh-ed25519 {pubkey}\n"));
+        let public_key = trusted_ssh_public_key(key)?;
+        if public_key.verify(namespace, message, &signature).is_ok() {
+            return Ok(true);
+        }
     }
-
-    let mut signers_file =
-        tempfile::NamedTempFile::new().context("creating temporary allowed-signers file")?;
-    std::io::Write::write_all(&mut signers_file, signers_content.as_bytes())
-        .context("writing temporary allowed-signers file")?;
-    Ok(signers_file)
+    Ok(false)
 }
 
 /// Verify a git commit's SSH signature against a set of trusted Ed25519
 /// keys.
 ///
-/// Creates a temporary `allowed_signers` file with one line per key and
-/// invokes `git verify-commit`; the signature is accepted when it matches
-/// *any* key in `trusted_keys` (each in `registry:Ed25519:<base64>` form).
-/// Returns `Ok(true)` if the signature is valid, `Ok(false)` if the
-/// signature is invalid or missing.
+/// Extracts the commit's `gpgsig` SSH signature and the exact signed payload
+/// (the commit object with the signature header removed) via libgit2, then
+/// checks it in the `git` SSHSIG namespace against each key (in
+/// `registry:Ed25519:<base64>` form). Returns `Ok(true)` when the signature
+/// matches *any* trusted key, `Ok(false)` when it is invalid or missing.
 ///
 /// # Errors
 ///
-/// Returns an error when `trusted_keys` is empty, a key fails to parse,
-/// or the git command itself could not be executed.
+/// Returns an error when `trusted_keys` is empty, a key fails to parse, or the
+/// commit cannot be read.
 pub fn verify_commit_signature(
     repo_path: &Path,
     commit: &str,
     trusted_keys: &[String],
 ) -> Result<bool> {
-    let signers_file = write_allowed_signers(trusted_keys)?;
-    let signers_path = signers_file.path();
-
-    // Configure git to use SSH signing verification with our signers file.
-    let mut command = crate::gitcmd::hermetic();
-    crate::gitcmd::add_ssh_program_config(&mut command);
-    let output = command
-        .arg("-c")
-        .arg(format!(
-            "gpg.ssh.allowedSignersFile={}",
-            signers_path.display()
-        ))
-        .arg("verify-commit")
-        .arg(commit)
-        .current_dir(repo_path)
-        .output()
-        .context("running git verify-commit")?;
-
-    // signers_file is dropped here, which removes the temp file automatically.
-    Ok(output.status.success())
+    let Some((signature, signed)) = repo::commit_signature(repo_path, commit)? else {
+        return Ok(false);
+    };
+    verify_sshsig_any(&signature, &signed, "git", trusted_keys)
 }
 
-/// Verify a git tag object's SSH signature against a set of trusted
-/// Ed25519 keys.
+/// Verify a git tag object's SSH signature against a set of trusted Ed25519
+/// keys.
 ///
-/// This mirrors [`verify_commit_signature`] but invokes `git verify-tag`.
-/// Returns `Ok(true)` when the signature matches any key in
-/// `trusted_keys`, `Ok(false)` when it is invalid or missing.
+/// Mirrors [`verify_commit_signature`] for annotated tags: the signed payload
+/// is the tag object up to its appended SSH signature block.
 ///
 /// # Errors
 ///
-/// Returns an error when `trusted_keys` is empty, a key fails to parse,
-/// or only for local execution/setup failures.
+/// Returns an error when `trusted_keys` is empty, a key fails to parse, or the
+/// tag cannot be read.
 pub fn verify_tag_signature(repo_path: &Path, tag: &str, trusted_keys: &[String]) -> Result<bool> {
-    let signers_file = write_allowed_signers(trusted_keys)?;
-    let signers_path = signers_file.path();
+    let Some((signature, signed)) = repo::tag_signature(repo_path, tag)? else {
+        return Ok(false);
+    };
+    verify_sshsig_any(&signature, &signed, "git", trusted_keys)
+}
 
-    let mut command = crate::gitcmd::hermetic();
-    crate::gitcmd::add_ssh_program_config(&mut command);
-    let output = command
-        .arg("-c")
-        .arg(format!(
-            "gpg.ssh.allowedSignersFile={}",
-            signers_path.display()
-        ))
-        .arg("verify-tag")
-        .arg(tag)
-        .current_dir(repo_path)
-        .output()
-        .context("running git verify-tag")?;
-
-    Ok(output.status.success())
+/// Derive the base64 SSH wire-format public key of an OpenSSH Ed25519 private
+/// key — the `<base64>` field of a `ssh-ed25519 <base64>` line, which is the
+/// material a `registry:Ed25519:<base64>` trust line carries.
+///
+/// # Errors
+///
+/// Returns an error when the key cannot be read, is not Ed25519, or cannot be
+/// encoded.
+pub fn public_ed25519_blob(key_path: &Path) -> Result<String> {
+    let key = PrivateKey::read_openssh_file(key_path)
+        .with_context(|| format!("reading signing key {}", key_path.display()))?;
+    let public = key.public_key();
+    if public.algorithm() != ssh_key::Algorithm::Ed25519 {
+        anyhow::bail!("unsupported signing key type; registry keys must be Ed25519");
+    }
+    let openssh = public.to_openssh().context("encoding public key")?;
+    openssh
+        .split_whitespace()
+        .nth(1)
+        .map(ToString::to_string)
+        .context("public key has no key material")
 }
 
 /// Sign an arbitrary payload with an OpenSSH Ed25519 private key.
 ///
-/// The payload is signed with `ssh-keygen -Y sign` under `namespace`, which
-/// keeps registry metadata signatures in the same OpenSSH format as the
-/// git commit and tag signatures verified elsewhere in this module.
+/// Produces an armored SSHSIG over `payload` in `namespace` — the same
+/// OpenSSH format (`-----BEGIN SSH SIGNATURE-----`) that `ssh-keygen -Y sign`
+/// emits and that the verification helpers above accept.
 ///
 /// # Errors
 ///
-/// Returns an error when the temporary payload cannot be written, the
-/// signer cannot be executed, signing fails, or the generated signature
-/// cannot be read as UTF-8 text.
+/// Returns an error when the private key cannot be read, is not an unencrypted
+/// OpenSSH key, or signing fails.
 pub fn sign_payload_signature(key_path: &Path, namespace: &str, payload: &[u8]) -> Result<String> {
-    let tmp = tempfile::TempDir::new().context("creating temporary signing directory")?;
-    let payload_path = tmp.path().join("payload");
-    fs::write(&payload_path, payload)
-        .with_context(|| format!("writing temporary payload {}", payload_path.display()))?;
-
-    let output = crate::gitcmd::ssh_keygen()
-        .arg("-Y")
-        .arg("sign")
-        .arg("-f")
-        .arg(key_path)
-        .arg("-n")
-        .arg(namespace)
-        .arg(&payload_path)
-        .output()
-        .with_context(|| format!("running ssh-keygen -Y sign with {}", key_path.display()))?;
-    if !output.status.success() {
-        bail!(
-            "ssh-keygen -Y sign failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    let signature_path = payload_path.with_extension("sig");
-    fs::read_to_string(&signature_path)
-        .with_context(|| format!("reading signature {}", signature_path.display()))
+    let key = PrivateKey::read_openssh_file(key_path)
+        .with_context(|| format!("reading signing key {}", key_path.display()))?;
+    let signature = key
+        .sign(namespace, HashAlg::Sha512, payload)
+        .context("creating SSH signature")?;
+    signature
+        .to_pem(LineEnding::LF)
+        .context("encoding SSH signature")
 }
 
 /// Verify an OpenSSH detached signature over an arbitrary payload.
 ///
-/// `trusted_key` uses the normal `registry:Ed25519:<base64>` trust-line
-/// format. Verification succeeds only when `signature` validates over
-/// `payload` in `namespace` for that exact key.
+/// `trusted_key` uses the `registry:Ed25519:<base64>` trust-line format.
+/// Verification succeeds only when `signature` validates over `payload` in
+/// `namespace` for that exact key.
 ///
 /// # Errors
 ///
-/// Returns an error when the trusted key is malformed, temporary files
-/// cannot be written, or `ssh-keygen -Y verify` cannot be executed.
+/// Returns an error when the trusted key is malformed.
 pub fn verify_payload_signature(
     payload: &[u8],
     signature: &str,
     trusted_key: &str,
     namespace: &str,
 ) -> Result<bool> {
-    let (registry, _algorithm, public_key) = parse_signing_key(trusted_key)?;
-    let mut signers_file =
-        tempfile::NamedTempFile::new().context("creating temporary allowed-signers file")?;
-    writeln!(signers_file, "{registry} ssh-ed25519 {public_key}")
-        .context("writing temporary allowed-signers file")?;
-
-    let mut signature_file =
-        tempfile::NamedTempFile::new().context("creating temporary SSH signature file")?;
-    signature_file
-        .write_all(signature.as_bytes())
-        .context("writing temporary SSH signature file")?;
-
-    let mut child = crate::gitcmd::ssh_keygen()
-        .arg("-Y")
-        .arg("verify")
-        .arg("-f")
-        .arg(signers_file.path())
-        .arg("-I")
-        .arg(&registry)
-        .arg("-n")
-        .arg(namespace)
-        .arg("-s")
-        .arg(signature_file.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("running ssh-keygen -Y verify")?;
-    let Some(mut stdin) = child.stdin.take() else {
-        bail!("ssh-keygen -Y verify stdin was not piped");
+    let Ok(signature) = SshSig::from_pem(signature.as_bytes()) else {
+        return Ok(false);
     };
-    stdin
-        .write_all(payload)
-        .context("writing payload to ssh-keygen -Y verify")?;
-    drop(stdin);
-
-    let output = child
-        .wait_with_output()
-        .context("waiting for ssh-keygen -Y verify")?;
-    Ok(output.status.success())
+    let public_key = trusted_ssh_public_key(trusted_key)?;
+    Ok(public_key.verify(namespace, payload, &signature).is_ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -730,28 +685,16 @@ pub fn check_downgrade(
     }
 
     // Is current an ancestor of new? (fast-forward)
-    let ff = crate::gitcmd::hermetic()
-        .args(["merge-base", "--is-ancestor", current_commit, new_commit])
-        .current_dir(repo_path)
-        .output()
-        .with_context(|| {
-            format!("running git merge-base --is-ancestor {current_commit} {new_commit}")
-        })?;
-
-    if ff.status.success() {
+    if repo::is_ancestor_blocking(repo_path, current_commit, new_commit)
+        .with_context(|| format!("checking ancestry of {current_commit}..{new_commit}"))?
+    {
         return Ok(DowngradeStatus::FastForward);
     }
 
     // Is new an ancestor of current? (downgrade)
-    let dg = crate::gitcmd::hermetic()
-        .args(["merge-base", "--is-ancestor", new_commit, current_commit])
-        .current_dir(repo_path)
-        .output()
-        .with_context(|| {
-            format!("running git merge-base --is-ancestor {new_commit} {current_commit}")
-        })?;
-
-    if dg.status.success() {
+    if repo::is_ancestor_blocking(repo_path, new_commit, current_commit)
+        .with_context(|| format!("checking ancestry of {new_commit}..{current_commit}"))?
+    {
         return Ok(DowngradeStatus::Downgrade);
     }
 
@@ -1202,6 +1145,54 @@ mod tests {
         assert!(
             format!("{err:#}").contains("empty trusted key set"),
             "{err:#}"
+        );
+    }
+
+    #[test]
+    fn verify_commit_signature_accepts_any_key_in_set() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        // SHA-256 repo, matching the registry's object format.
+        git(&repo, &["init", "--object-format=sha256"]);
+        git(&repo, &["config", "user.name", "registry"]);
+        git(&repo, &["config", "user.email", "registry"]);
+
+        let (key_a, _path_a) = test_keypair(temp.path(), "registry", [1_u8; 32], "key_a");
+        let (key_b, path_b) = test_keypair(temp.path(), "registry", [2_u8; 32], "key_b");
+
+        fs::write(repo.join("file"), "content").unwrap();
+        git(&repo, &["add", "file"]);
+        // Commit signed by B with an SSH key (gpg.format=ssh), the same way the
+        // registry head commit is signed.
+        git(
+            &repo,
+            &[
+                "-c",
+                "gpg.format=ssh",
+                "-c",
+                &format!("user.signingkey={}", path_b.display()),
+                "-c",
+                "commit.gpgsign=true",
+                "commit",
+                "-m",
+                "signed commit",
+            ],
+        );
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        let head = String::from_utf8(out.stdout).unwrap().trim().to_string();
+
+        assert!(
+            verify_commit_signature(&repo, &head, &[key_a.clone(), key_b.clone()]).unwrap(),
+            "commit signed by B must verify when B is in the trusted set"
+        );
+        assert!(
+            !verify_commit_signature(&repo, &head, std::slice::from_ref(&key_a)).unwrap(),
+            "must not verify when the signing key is absent"
         );
     }
 

@@ -13,13 +13,12 @@
 //! optionally aided by a trained dictionary ([`train_dictionary`]).
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 
-use crate::gitcmd;
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+
+use crate::registry::thinpack;
 
 /// Compression level used for the zstd transport wrapper.
 pub const ZSTD_LEVEL: &str = "-22";
@@ -105,60 +104,60 @@ pub fn scheme_deltas(
 ///
 /// # Errors
 ///
-/// Returns an error if `git rev-parse` or `git pack-objects` fails.
+/// Returns an error if the commit cannot be resolved or the pack cannot be
+/// built or written.
 pub async fn full_pack(repo: &Path, release_commit: &str, out_dir: &Path) -> Result<PathBuf> {
     tokio::fs::create_dir_all(out_dir)
         .await
         .with_context(|| format!("creating {}", out_dir.display()))?;
+    let repo = repo.to_path_buf();
+    let commit = release_commit.to_string();
+    let out_dir = out_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || full_pack_blocking(&repo, &commit, &out_dir))
+        .await
+        .context("full-pack task panicked")?
+}
 
-    let commit = git_output(
-        repo,
-        &["rev-parse", &format!("{release_commit}^{{commit}}")],
-    )
-    .await?;
-    let prefix = out_dir.join("pack");
+/// Build a self-contained pack of everything reachable from `release_commit`
+/// with libgit2's pack builder, named `pack-<hash>.pack` after its trailing
+/// checksum.
+fn full_pack_blocking(repo: &Path, release_commit: &str, out_dir: &Path) -> Result<PathBuf> {
+    let repository = git2::Repository::open(repo)
+        .with_context(|| format!("opening git repository at {}", repo.display()))?;
+    let oid = repository
+        .revparse_single(release_commit)
+        .with_context(|| format!("resolving {release_commit}"))?
+        .peel_to_commit()
+        .with_context(|| format!("{release_commit} is not a commit"))?
+        .id();
 
-    let mut child = gitcmd::hermetic_async()
-        .arg("-C")
-        .arg(repo)
-        .args(pack_objects_args(false))
-        .arg(prefix.as_os_str())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("running git pack-objects")?;
+    let mut builder = repository.packbuilder().context("creating pack builder")?;
+    let mut revwalk = repository.revwalk().context("creating revwalk")?;
+    revwalk.push(oid).context("seeding pack revwalk")?;
+    builder
+        .insert_walk(&mut revwalk)
+        .context("inserting objects into pack")?;
+    let mut buf = git2::Buf::new();
+    builder.write_buf(&mut buf).context("writing pack")?;
+    let bytes: &[u8] = &buf;
 
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(commit.trim().as_bytes()).await?;
-        stdin.write_all(b"\n").await?;
-    }
-
-    let output = child.wait_with_output().await?;
-    if !output.status.success() {
-        bail!(
-            "git pack-objects full pack failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if hash.is_empty() {
-        bail!("git pack-objects did not report a pack hash");
-    }
-    Ok(out_dir.join(format!("pack-{hash}.pack")))
+    // git names a pack after its trailing checksum (32 bytes for sha256).
+    let hash = hex::encode(&bytes[bytes.len().saturating_sub(32)..]);
+    let path = out_dir.join(format!("pack-{hash}.pack"));
+    std::fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
 }
 
 /// Generate a thin delta pack from `from_commit` to `to_commit`.
 ///
-/// The output filename is `delta-<from_semver>.pack`. The pack may reference
-/// base objects it does not contain; consumers complete it with
+/// The output filename is `delta-<from_semver>.pack`. The pack references base
+/// objects it does not contain; consumers complete it with
 /// [`index_pack_fix_thin`].
 ///
 /// # Errors
 ///
-/// Returns an error if the output directory or file cannot be created, or if
-/// `git pack-objects --thin` fails.
+/// Returns an error if the output directory cannot be created or the pack
+/// cannot be generated.
 pub async fn thin_delta(
     repo: &Path,
     from_commit: &str,
@@ -170,34 +169,13 @@ pub async fn thin_delta(
         .await
         .with_context(|| format!("creating {}", out_dir.display()))?;
     let out = out_dir.join(format!("delta-{from_semver}.pack"));
-    let file =
-        std::fs::File::create(&out).with_context(|| format!("creating {}", out.display()))?;
-
-    let mut child = gitcmd::hermetic_async()
-        .arg("-C")
-        .arg(repo)
-        .args(pack_objects_args(true))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::from(file))
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("running git pack-objects --thin")?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(to_commit.as_bytes()).await?;
-        stdin.write_all(b"\n^").await?;
-        stdin.write_all(from_commit.as_bytes()).await?;
-        stdin.write_all(b"\n").await?;
-    }
-
-    let output = child.wait_with_output().await?;
-    if !output.status.success() {
-        bail!(
-            "git pack-objects thin delta failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
+    let repo = repo.to_path_buf();
+    let from = from_commit.to_string();
+    let to = to_commit.to_string();
+    let out_path = out.clone();
+    tokio::task::spawn_blocking(move || thinpack::write_thin_pack(&repo, &from, &to, &out_path))
+        .await
+        .context("thin-pack task panicked")??;
     Ok(out)
 }
 
@@ -255,51 +233,42 @@ pub async fn zstd_decompress(path: &Path, dict: Option<&Path>) -> Result<PathBuf
 
 /// Complete a thin pack with bases from `repo`.
 ///
-/// Runs `git index-pack --fix-thin --stdin`, which appends the missing base
-/// objects and writes the pack plus index into the repository.
+/// libgit2's pack writer indexes the pack and resolves any thin deltas against
+/// the repository's existing objects (the `git index-pack --fix-thin`
+/// behavior).
 ///
 /// # Errors
 ///
-/// Returns an error if the pack file cannot be opened or `git index-pack`
-/// fails (e.g. a base object is missing from `repo`).
+/// Returns an error if the pack cannot be read or indexed (e.g. a base object
+/// is missing from `repo`).
 pub async fn index_pack_fix_thin(repo: &Path, pack: &Path) -> Result<()> {
-    let file = std::fs::File::open(pack).with_context(|| format!("opening {}", pack.display()))?;
-    let mut cmd = gitcmd::hermetic_async();
-    cmd.arg("-C")
-        .arg(repo)
-        .arg("index-pack")
-        .arg("--fix-thin")
-        .arg("--stdin")
-        .stdin(Stdio::from(file));
-    run_status(cmd, "git index-pack --fix-thin").await
+    index_pack(repo, pack).await
 }
 
-/// Index a self-contained full pack.
+/// Index a pack into `repo`'s object store via libgit2's pack writer, which
+/// regenerates and verifies the index (and resolves thin deltas against the
+/// repository's objects, so it also completes thin packs).
 ///
 /// # Errors
 ///
-/// Returns an error if `git index-pack` fails, e.g. the pack is truncated
-/// or corrupt.
+/// Returns an error if the pack cannot be read, is corrupt, or references base
+/// objects absent from `repo`.
 pub async fn index_pack(repo: &Path, pack: &Path) -> Result<()> {
-    let mut cmd = gitcmd::hermetic_async();
-    cmd.arg("-C").arg(repo).arg("index-pack").arg(pack);
-    run_status(cmd, "git index-pack").await
-}
-
-/// Verify that an indexed pack is readable and matches its index.
-///
-/// # Errors
-///
-/// Returns an error if `git verify-pack` reports a mismatch or cannot read
-/// the pack.
-pub async fn verify_pack_index(repo: &Path, idx: &Path) -> Result<()> {
-    let mut cmd = gitcmd::hermetic_async();
-    cmd.arg("-C")
-        .arg(repo)
-        .arg("verify-pack")
-        .arg("-v")
-        .arg(idx);
-    run_status(cmd, "git verify-pack").await
+    let repo = repo.to_path_buf();
+    let pack = pack.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        use std::io::Write as _;
+        let repository = git2::Repository::open(&repo)
+            .with_context(|| format!("opening git repository at {}", repo.display()))?;
+        let odb = repository.odb().context("opening object database")?;
+        let bytes = std::fs::read(&pack).with_context(|| format!("reading {}", pack.display()))?;
+        let mut writer = odb.packwriter().context("creating pack writer")?;
+        writer.write_all(&bytes).context("writing pack data")?;
+        writer.commit().context("indexing pack")?;
+        Ok(())
+    })
+    .await
+    .context("index-pack task panicked")?
 }
 
 /// Train a zstd dictionary over a release line's delta packs.
@@ -331,45 +300,6 @@ fn push_if_published(
     if published.iter().any(|v| *v == candidate) && !bases.contains(&candidate) {
         bases.push(candidate);
     }
-}
-
-/// Shared `git pack-objects` flags: deep delta windows, no object reuse,
-/// and `--compression=0` so zstd does the transport compression.
-fn pack_objects_args(thin: bool) -> Vec<&'static str> {
-    let mut args = vec![
-        "pack-objects",
-        "--revs",
-        "--no-reuse-object",
-        "--no-reuse-delta",
-        "--window=350",
-        "--depth=50",
-        "--threads=0",
-        "--compression=0",
-    ];
-    if thin {
-        args.push("--thin");
-        args.push("--stdout");
-    }
-    args
-}
-
-/// Run a git command in `repo` and return trimmed stdout.
-async fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
-    let output = gitcmd::hermetic_async()
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .await
-        .with_context(|| format!("running git {}", args.join(" ")))?;
-    if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Run a command and fail with its stderr if it exits non-zero.
