@@ -283,13 +283,28 @@ in
             # timestamps and -U pins the UUID for a reproducible image. EROFS is
             # content-sized, so there is no over-provisioning, journal, or
             # shrink step.
+            #
+            # Compression tuning (measured on the server closure):
+            #   * -C262144 — 256 KiB compression cluster. The 4 KiB default is
+            #     far too small for zstd to find context; 256 KiB is the knee of
+            #     the size/read-amplification curve for a RAM-ample, read-mostly
+            #     server root (a cold page fault decompresses one 256 KiB cluster;
+            #     the hot path is served from the page cache regardless).
+            #   * -Efragments,ztailpacking — packs the many small-file tails the
+            #     /nix store is full of into shared fragment blocks / inode
+            #     metadata. The single biggest win (~18 MiB) and, unlike a bigger
+            #     cluster, it adds no read amplification.
+            # Together: ~200 MiB (plain zstd-19) -> ~160 MiB. (Block dedupe was
+            # measured at 0 bytes saved — nix store paths are content-addressed.)
             mkfs.erofs --all-root -T0 \
               -U bdfb6fc9-0000-4000-8000-000000000001 \
               -z zstd,level=19 \
+              -C262144 \
+              -Efragments,ztailpacking \
               -L ${label} root.img rootfs
             fsck.erofs root.img >/dev/null
             final_bytes=$(stat -c %s root.img)
-            echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-19)"
+            echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-19, 256K cluster, fragments)"
             echo "$final_bytes" > rootfs-size-bytes
           ''
           else ''
