@@ -171,6 +171,7 @@ in {
     qemuPluginRegistrationOrder = import ./phase2-plugin-registration-order.nix {inherit pkgs lib;};
     qemuPluginTimeControl = import ./phase2-plugin-time-control.nix {inherit pkgs lib;};
     qemuPluginIdleLoop = import ./phase2-plugin-idle-loop.nix {inherit pkgs lib;};
+    qemuPluginDeadlineIntrospection = import ./phase2-plugin-deadline-introspection.nix {inherit pkgs lib;};
     qemuCrashDetection = import ./phase2-qemu-crash-detection.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuQmpClient = import ./phase2-qemu-qmp-client.nix {inherit pkgs lib;};

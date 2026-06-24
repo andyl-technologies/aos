@@ -11,8 +11,8 @@
 use thiserror::Error;
 
 use crate::{
-    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, PluginArgs, PluginArgsParseError,
-    PluginRegistrationStep, TimeControlRegistrationPlan,
+    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, ExactDeadlineError, ExactDeadlineReader, PluginArgs,
+    PluginArgsParseError, PluginRegistrationStep, QemuClockDeadlineFn, TimeControlRegistrationPlan,
 };
 
 /// Safe recorder for the fixed plugin registration path.
@@ -74,6 +74,20 @@ impl PluginRegistrationSequence {
         &mut self,
         step: PluginRegistrationStep,
     ) -> Result<(), PluginRegistrationSequenceError> {
+        if step == PluginRegistrationStep::RegisterCallbacks {
+            return Err(self.fail_step(
+                PluginRegistrationStep::RegisterCallbacks,
+                "exact deadline capability must be required before registering callbacks",
+            ));
+        }
+
+        self.record_step_unchecked(step)
+    }
+
+    fn record_step_unchecked(
+        &mut self,
+        step: PluginRegistrationStep,
+    ) -> Result<(), PluginRegistrationSequenceError> {
         if let Some(failure) = &self.failure {
             return Err(PluginRegistrationSequenceError::AfterFailure {
                 failed_step: failure.step,
@@ -91,6 +105,23 @@ impl PluginRegistrationSequence {
 
         self.completed_steps.push(step);
         Ok(())
+    }
+
+    /// Records callback registration after requiring exact-deadline introspection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginRegistrationSequenceError`] when
+    /// `qemu_plugin_clock_deadline_ns` is unavailable, when the registration order
+    /// is wrong, or when registration has already failed.
+    pub fn register_callbacks_with_exact_deadline(
+        &mut self,
+        clock_deadline_ns: Option<QemuClockDeadlineFn>,
+    ) -> Result<ExactDeadlineReader, PluginRegistrationSequenceError> {
+        let reader = ExactDeadlineReader::require(clock_deadline_ns)
+            .map_err(|source| self.fail_exact_deadline_capability(source))?;
+        self.record_step_unchecked(PluginRegistrationStep::RegisterCallbacks)?;
+        Ok(reader)
     }
 
     /// Records a fail-loud abort at the current registration step.
@@ -201,6 +232,16 @@ impl PluginRegistrationSequence {
         )
     }
 
+    fn fail_exact_deadline_capability(
+        &mut self,
+        source: ExactDeadlineError,
+    ) -> PluginRegistrationSequenceError {
+        self.fail_step(
+            PluginRegistrationStep::RegisterCallbacks,
+            format!("exact deadline introspection failed: {source}"),
+        )
+    }
+
     fn poison_out_of_order(
         &mut self,
         expected: PluginRegistrationStep,
@@ -294,11 +335,7 @@ mod tests {
     fn registration_order_accepts_fixed_happy_path() {
         let mut sequence = PluginRegistrationSequence::new();
 
-        for step in PluginRegistrationSequence::fixed_order() {
-            if let Err(error) = sequence.record_step(*step) {
-                panic!("canonical step {step:?} should record: {error}");
-            }
-        }
+        record_fixed_sequence(&mut sequence);
 
         assert_eq!(
             sequence.completed_steps(),
@@ -314,11 +351,7 @@ mod tests {
     #[test]
     fn registration_ready_token_consumes_sequence() {
         let mut sequence = PluginRegistrationSequence::new();
-        for step in PluginRegistrationSequence::fixed_order() {
-            if let Err(error) = sequence.record_step(*step) {
-                panic!("canonical step {step:?} should record: {error}");
-            }
-        }
+        record_fixed_sequence(&mut sequence);
 
         let ready = match sequence.finish() {
             Ok(ready) => ready,
@@ -419,26 +452,34 @@ mod tests {
     #[test]
     fn registration_order_requires_boot_barrier_before_first_instruction() {
         let mut sequence = PluginRegistrationSequence::new();
-        for step in [
-            PluginRegistrationStep::ParseArguments,
-            PluginRegistrationStep::ControlHandshake,
-            PluginRegistrationStep::RequestTimeControl,
-            PluginRegistrationStep::ReceiveSetup,
-            PluginRegistrationStep::MapSharedMemory,
-            PluginRegistrationStep::ArmWakeFd,
-            PluginRegistrationStep::RegisterCallbacks,
-            PluginRegistrationStep::SendSetupAck,
-        ] {
-            if let Err(error) = sequence.record_step(step) {
-                panic!("prerequisite step {step:?} should record: {error}");
-            }
-        }
+        record_steps_through_setup_ack(&mut sequence);
 
         assert_eq!(
             sequence.record_step(PluginRegistrationStep::FirstVisibleInstruction),
             Err(PluginRegistrationSequenceError::OutOfOrderStep {
                 expected: PluginRegistrationStep::WaitBootBarrier,
                 actual: PluginRegistrationStep::FirstVisibleInstruction,
+            })
+        );
+    }
+
+    #[test]
+    fn registration_order_rejects_callback_registration_without_exact_deadline_capability() {
+        let mut sequence = PluginRegistrationSequence::new();
+        record_steps_through_wake_fd(&mut sequence);
+
+        let error = sequence.record_step(PluginRegistrationStep::RegisterCallbacks);
+
+        let Err(PluginRegistrationSequenceError::StepFailed { failure }) = error else {
+            panic!("direct callback registration should fail, got {error:?}");
+        };
+        assert_eq!(failure.step(), PluginRegistrationStep::RegisterCallbacks);
+        assert!(failure.diagnostic().contains("exact deadline capability"));
+        assert_eq!(
+            sequence.record_step(PluginRegistrationStep::SendSetupAck),
+            Err(PluginRegistrationSequenceError::AfterFailure {
+                failed_step: PluginRegistrationStep::RegisterCallbacks,
+                blocked_step: PluginRegistrationStep::SendSetupAck,
             })
         );
     }
@@ -453,5 +494,106 @@ mod tests {
             PluginRegistrationSequence::validate_canonical_plan(),
             Ok(())
         );
+    }
+
+    #[test]
+    fn registration_order_records_callbacks_after_exact_deadline_capability_check() {
+        let mut sequence = PluginRegistrationSequence::new();
+        record_steps_through_wake_fd(&mut sequence);
+
+        let reader = match sequence
+            .register_callbacks_with_exact_deadline(Some(registration_test_deadline))
+        {
+            Ok(reader) => reader,
+            Err(error) => panic!("exact deadline capability should register callbacks: {error}"),
+        };
+
+        assert_eq!(
+            reader.read_next_deadline(),
+            Ok(crate::ExactDeadlineReport::Armed { deadline_ns: 777 })
+        );
+        assert_eq!(
+            sequence.completed_steps(),
+            &[
+                PluginRegistrationStep::ParseArguments,
+                PluginRegistrationStep::ControlHandshake,
+                PluginRegistrationStep::RequestTimeControl,
+                PluginRegistrationStep::ReceiveSetup,
+                PluginRegistrationStep::MapSharedMemory,
+                PluginRegistrationStep::ArmWakeFd,
+                PluginRegistrationStep::RegisterCallbacks,
+            ]
+        );
+    }
+
+    #[test]
+    fn registration_order_fails_loud_when_exact_deadline_capability_missing() {
+        let mut sequence = PluginRegistrationSequence::new();
+        record_steps_through_wake_fd(&mut sequence);
+
+        let error = sequence
+            .register_callbacks_with_exact_deadline(None)
+            .err()
+            .unwrap_or_else(|| panic!("missing exact deadline capability should fail"));
+        let PluginRegistrationSequenceError::StepFailed { failure } = error else {
+            panic!("expected registration step failure, got {error:?}");
+        };
+
+        assert_eq!(failure.step(), PluginRegistrationStep::RegisterCallbacks);
+        assert!(
+            failure
+                .diagnostic()
+                .contains(crate::QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL)
+        );
+        assert_eq!(
+            sequence.record_step(PluginRegistrationStep::SendSetupAck),
+            Err(PluginRegistrationSequenceError::AfterFailure {
+                failed_step: PluginRegistrationStep::RegisterCallbacks,
+                blocked_step: PluginRegistrationStep::SendSetupAck,
+            })
+        );
+    }
+
+    fn record_steps_through_wake_fd(sequence: &mut PluginRegistrationSequence) {
+        for step in [
+            PluginRegistrationStep::ParseArguments,
+            PluginRegistrationStep::ControlHandshake,
+            PluginRegistrationStep::RequestTimeControl,
+            PluginRegistrationStep::ReceiveSetup,
+            PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::ArmWakeFd,
+        ] {
+            if let Err(error) = sequence.record_step(step) {
+                panic!("prerequisite step {step:?} should record: {error}");
+            }
+        }
+    }
+
+    fn record_steps_through_setup_ack(sequence: &mut PluginRegistrationSequence) {
+        record_steps_through_wake_fd(sequence);
+        if let Err(error) =
+            sequence.register_callbacks_with_exact_deadline(Some(registration_test_deadline))
+        {
+            panic!("exact deadline capability should register callbacks: {error}");
+        }
+        if let Err(error) = sequence.record_step(PluginRegistrationStep::SendSetupAck) {
+            panic!("setup ack step should record: {error}");
+        }
+    }
+
+    fn record_fixed_sequence(sequence: &mut PluginRegistrationSequence) {
+        record_steps_through_setup_ack(sequence);
+        for step in [
+            PluginRegistrationStep::WaitBootBarrier,
+            PluginRegistrationStep::FirstVisibleInstruction,
+        ] {
+            if let Err(error) = sequence.record_step(step) {
+                panic!("canonical step {step:?} should record: {error}");
+            }
+        }
+    }
+
+    extern "C" fn registration_test_deadline() -> i64 {
+        777
     }
 }

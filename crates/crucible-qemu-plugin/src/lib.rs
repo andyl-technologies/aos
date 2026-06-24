@@ -39,8 +39,9 @@ pub use abi::{
     QEMU_PLUGIN_INSTALL_SYMBOL, QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL, QEMU_PLUGIN_VERSION_SYMBOL,
     QemuPluginAbiError, QemuPluginExecutionModel, QemuPluginId, QemuPluginInfo, QemuTcgThreading,
     RegisteredDeviceCallbacks, execution_model_from_qemu_info, install_inert_scaffold,
-    install_inert_scaffold_from_qemu_info, qemu_plugin_install, qemu_plugin_version,
-    validate_install_boundary,
+    install_inert_scaffold_from_qemu_info, install_required_deadline_scaffold,
+    install_required_deadline_scaffold_from_qemu_info, qemu_plugin_install, qemu_plugin_version,
+    resolve_qemu_clock_deadline_symbol, validate_install_boundary,
 };
 pub use args::{
     PLUGIN_ARG_COVERAGE, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD,
@@ -48,8 +49,8 @@ pub use args::{
 };
 pub use deadline::{
     ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,
-    ExactDeadlineReport, PerVcpuDeadlineReport, QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
-    aggregate_multi_vcpu_deadline,
+    ExactDeadlineReader, ExactDeadlineReport, PerVcpuDeadlineReport,
+    QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL, QemuClockDeadlineFn, aggregate_multi_vcpu_deadline,
 };
 pub use idle_loop::{
     IdleHotLoopError, IdleHotLoopResult, IdleParkRequest, IdleWaitOutcome, IdleWakeCause,

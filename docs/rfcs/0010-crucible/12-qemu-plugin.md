@@ -925,9 +925,10 @@ component that makes that purity true *inside* the QEMU process.
   inject due frames in deterministic order, and republish running/resume status. —
   satisfies [PLUG-10], [PLUG-11], [PLUG-12], [PLUG-13], [PLUG-17]; spec §12.3.2,
   §12.3.3, §12.4.1.
-- [ ] **T-PLUG-6** Implement exact next-deadline introspection (read the next
-  `QEMU_CLOCK_VIRTUAL` deadline, `ceil`-convert to icount) and ban the
-  overshoot-and-correct fallback; fail loudly if the capability is missing. —
+- [x] **T-PLUG-6** Implement exact next-deadline introspection (read the next
+  `QEMU_CLOCK_VIRTUAL` deadline via the required plugin export, `ceil`-convert to
+  icount) and ban the overshoot-and-correct fallback; fail loudly during callback
+  registration if the capability is missing. —
   satisfies [PLUG-14], [PLUG-15]; spec §12.3.4.
 - [ ] **T-PLUG-7** Implement synchronous idle-jump advancement that fires due
   timers inline and drains bottom-halves from the idle context, so the wake-point

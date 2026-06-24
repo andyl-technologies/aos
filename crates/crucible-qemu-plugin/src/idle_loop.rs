@@ -14,7 +14,8 @@ use crucible_shmem::{
 };
 
 use crate::{
-    ExactDeadlineReport, PluginClockAdvance, PluginClockError, PluginVirtualClock, SchedulerCeiling,
+    ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport, PluginClockAdvance,
+    PluginClockError, PluginVirtualClock, SchedulerCeiling,
 };
 
 /// The source that determined the node's next idle wake.
@@ -146,7 +147,7 @@ impl IdleHotLoopResult {
 pub struct PluginIdleHotLoop;
 
 impl PluginIdleHotLoop {
-    /// Publishes idle state and prepares the futex wait precondition.
+    /// Reads QEMU's exact virtual deadline, publishes idle state, and prepares the futex wait.
     ///
     /// The caller supplies the already-peeked head inbound delivery icount. This
     /// keeps ring ownership outside the hot-loop core while preserving the
@@ -155,8 +156,20 @@ impl PluginIdleHotLoop {
     /// # Errors
     ///
     /// Returns [`IdleHotLoopError`] when timer conversion, slot publication, or
-    /// ceiling validation fails.
+    /// ceiling validation fails, or when the required exact-deadline read fails.
     pub fn begin_idle(
+        slot: &NodeSlot,
+        clock: &PluginVirtualClock,
+        exact_deadline_reader: &ExactDeadlineReader,
+        next_inbound_delivery_icount: Option<u64>,
+    ) -> Result<IdleParkRequest, IdleHotLoopError> {
+        let exact_deadline = exact_deadline_reader
+            .read_next_deadline()
+            .map_err(|source| IdleHotLoopError::ReadExactDeadline { source })?;
+        Self::begin_idle_from_report(slot, clock, exact_deadline, next_inbound_delivery_icount)
+    }
+
+    fn begin_idle_from_report(
         slot: &NodeSlot,
         clock: &PluginVirtualClock,
         exact_deadline: ExactDeadlineReport,
@@ -438,6 +451,12 @@ pub enum IdleHotLoopError {
         /// The futex syscall error.
         source: FutexError,
     },
+    /// Reading QEMU's exact virtual-clock deadline failed.
+    #[error("reading exact idle deadline failed: {source}")]
+    ReadExactDeadline {
+        /// The exact deadline introspection error.
+        source: ExactDeadlineError,
+    },
     /// The no-op futex shim could not prove a scheduler release.
     #[error("idle wake {desired_wake_icount} is still blocked by ceiling {ceiling_icount}")]
     WakeStillBlocked {
@@ -528,15 +547,12 @@ mod tests {
         let clock = owned_clock(10, 0);
         publish_ceiling(&slot, ceiling(0, 10));
 
-        let request = match PluginIdleHotLoop::begin_idle(
-            &slot,
-            &clock,
-            ExactDeadlineReport::Armed { deadline_ns: 20 },
-            None,
-        ) {
-            Ok(request) => request,
-            Err(error) => panic!("idle publish should succeed: {error}"),
-        };
+        let request =
+            match PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_20), None)
+            {
+                Ok(request) => request,
+                Err(error) => panic!("idle publish should succeed: {error}"),
+            };
 
         assert_eq!(request.plan().current_icount(), 10);
         assert_eq!(request.plan().desired_wake_icount(), 20);
@@ -556,15 +572,12 @@ mod tests {
         let slot = NodeSlot::new(KIND_VM);
         publish_ceiling(&slot, ceiling(0, 10));
         let clock = owned_clock(10, 0);
-        let request = match PluginIdleHotLoop::begin_idle(
-            &slot,
-            &clock,
-            ExactDeadlineReport::Armed { deadline_ns: 10 },
-            None,
-        ) {
-            Ok(request) => request,
-            Err(error) => panic!("idle publish should be immediately runnable: {error}"),
-        };
+        let request =
+            match PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_10), None)
+            {
+                Ok(request) => request,
+                Err(error) => panic!("idle publish should be immediately runnable: {error}"),
+            };
 
         assert_eq!(request.futex_wait(), FutexWait::Runnable);
         assert_eq!(
@@ -579,15 +592,12 @@ mod tests {
         let slot = NodeSlot::new(KIND_VM);
         publish_ceiling(&slot, ceiling(0, 10));
         let clock = owned_clock(10, 0);
-        let request = match PluginIdleHotLoop::begin_idle(
-            &slot,
-            &clock,
-            ExactDeadlineReport::Armed { deadline_ns: 20 },
-            None,
-        ) {
-            Ok(request) => request,
-            Err(error) => panic!("idle publish should park for future timer: {error}"),
-        };
+        let request =
+            match PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_20), None)
+            {
+                Ok(request) => request,
+                Err(error) => panic!("idle publish should park for future timer: {error}"),
+            };
 
         if let Err(error) = header.request_shutdown([&slot]) {
             panic!("shutdown should wake idle slot: {error}");
@@ -612,7 +622,7 @@ mod tests {
         let request = match PluginIdleHotLoop::begin_idle(
             &slot,
             &clock,
-            ExactDeadlineReport::Armed { deadline_ns: 40 },
+            &deadline_reader(deadline_40),
             Some(40),
         ) {
             Ok(request) => request,
@@ -665,15 +675,12 @@ mod tests {
         let slot = NodeSlot::new(KIND_VM);
         let clock = owned_clock(10, 0);
         publish_ceiling(&slot, ceiling(0, 10));
-        let request = match PluginIdleHotLoop::begin_idle(
-            &slot,
-            &clock,
-            ExactDeadlineReport::Armed { deadline_ns: 20 },
-            None,
-        ) {
-            Ok(request) => request,
-            Err(error) => panic!("idle begin should succeed: {error}"),
-        };
+        let request =
+            match PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_20), None)
+            {
+                Ok(request) => request,
+                Err(error) => panic!("idle begin should succeed: {error}"),
+            };
         let mut clock = clock;
 
         assert_eq!(
@@ -725,6 +732,25 @@ mod tests {
         }
     }
 
+    fn deadline_reader(deadline: crate::QemuClockDeadlineFn) -> ExactDeadlineReader {
+        match ExactDeadlineReader::require(Some(deadline)) {
+            Ok(reader) => reader,
+            Err(error) => panic!("test deadline reader should require symbol: {error}"),
+        }
+    }
+
+    extern "C" fn deadline_10() -> i64 {
+        10
+    }
+
+    extern "C" fn deadline_20() -> i64 {
+        20
+    }
+
+    extern "C" fn deadline_40() -> i64 {
+        40
+    }
+
     fn ownership() -> PluginTimeControlOwnership {
         PluginTimeControlOwnership::acquired_after_registration(registration_ready())
     }
@@ -732,14 +758,25 @@ mod tests {
     fn registration_ready() -> crate::PluginRegistrationReady {
         let mut sequence = PluginRegistrationSequence::new();
         for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
-            if let Err(error) = sequence.record_step(step) {
-                panic!("test registration step should record: {error}");
+            let result = if step == crate::PluginRegistrationStep::RegisterCallbacks {
+                sequence
+                    .register_callbacks_with_exact_deadline(Some(idle_loop_test_deadline))
+                    .map(|_reader| ())
+            } else {
+                sequence.record_step(step)
+            };
+            if let Err(error) = result {
+                panic!("test registration step {step:?} should record: {error}");
             }
         }
         match sequence.finish() {
             Ok(ready) => ready,
             Err(error) => panic!("test registration should finish: {error}"),
         }
+    }
+
+    extern "C" fn idle_loop_test_deadline() -> i64 {
+        1
     }
 
     fn ceiling(current_icount: u64, max_advance_icount: u64) -> AdvanceCeiling {
