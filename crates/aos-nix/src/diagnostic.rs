@@ -408,6 +408,7 @@ fn ir_error_code(kind: &IrErrorKind) -> &'static str {
         IrErrorKind::TooManyInlineCacheSites => "aos_nix::lower::too_many_inline_cache_sites",
         IrErrorKind::InvalidBindingKey => "aos_nix::lower::invalid_binding_key",
         IrErrorKind::InvalidInheritSource => "aos_nix::lower::invalid_inherit_source",
+        IrErrorKind::UnsupportedDialectOp { .. } => "aos_nix::lower::unsupported_dialect_op",
         IrErrorKind::Ast(_) => "aos_nix::lower::ast",
     }
 }
@@ -416,6 +417,9 @@ fn ir_error_help(kind: &IrErrorKind) -> Option<&'static str> {
     match kind {
         IrErrorKind::InvalidBindingKey => Some("Use a static single-segment binding key."),
         IrErrorKind::InvalidInheritSource => Some("Use a valid inherit source expression."),
+        IrErrorKind::UnsupportedDialectOp { .. } => {
+            Some("Lower this expression through a language dialect that supports the operation.")
+        }
         IrErrorKind::InvalidNodeId(_)
         | IrErrorKind::InvalidChildSlice
         | IrErrorKind::InvalidWithChain { .. }

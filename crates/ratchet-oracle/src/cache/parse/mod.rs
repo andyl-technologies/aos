@@ -30,9 +30,9 @@ use thiserror::Error;
 use crate::cache::DurableBlake3Hash;
 use crate::compile::{
     EffectClass, FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, Ir, IrArena,
-    IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrError,
-    IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain, ResolvedAst,
-    ScopeError, ScopeTables, Upvalue, WithChain, resolve,
+    IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp,
+    IrError, IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain,
+    ResolvedAst, ScopeError, ScopeTables, Upvalue, WithChain, resolve,
 };
 use crate::runtime::builtins::{BuiltinDirect, direct_builtin};
 use crate::syntax::{
@@ -42,7 +42,7 @@ use crate::syntax::{
 use aos_nix_dialect::nix_lower;
 
 /// The schema version included in every parse-cache key and metadata file.
-pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 6;
+pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 7;
 
 const KEY_PERSONALIZATION: &[u8] = b"aos-nix-parse-cache-key-v1";
 const FLAG_ENCODING_VERSION: u8 = 1;

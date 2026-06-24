@@ -303,11 +303,11 @@ match [28](28-generalization-and-language-dialects.md) §3 /
       `aos-nix-dialect` new, `aos-nix-compat` from the store glue,
       `aos-nix-harness`). Reserve but do not create `ratchet-gc` (P3),
       `ratchet-cache` (P2), `ratchet-jit` (P6), `ratchet-parallel` (P3.5).
-- [ ] **Core/dialect IR split.** Generic `IrKind` stays in `ratchet-core`; move
-      `DerivationStrict` and `WithVar` behind the dialect escape hatch, reusing the
-      existing `PrimOp(symbol, args)` indirection; the resolver's "unresolved
-      name" path becomes a dialect hook (Nix emits `WithVar`; other dialects
-      error).
+- [x] **Core/dialect IR split.** Generic `IrKind` stays in `ratchet-core`;
+      `DerivationStrict` and `WithVar` are Nix-owned dialect ops behind the
+      `PrimOp` escape hatch (`IrData::DialectNode` /
+      `IrData::DialectScopeVar` with Nix op keys), and the resolver's
+      "unresolved name" path lowers only through a dialect hook.
 - [x] **`EffectClass` → open trait (`S-23`).** Replace the closed
       `enum EffectClass { Pure, Effectful }` with a `ratchet-core` trait
       (`is_speculable` + `effect_key`); the Nix dialect supplies the members

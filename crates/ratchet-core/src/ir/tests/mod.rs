@@ -4,11 +4,13 @@
 //! [`lowering_tests`] and [`primop_tests`] submodules.
 
 use super::*;
-use crate::builtins::BuiltinEffect;
+use crate::builtins::{BuiltinDirect, BuiltinEffect};
 use crate::syntax::{AstArena, parse_str};
 use crate::{ScopeTables, resolve};
 
 const TEST_NIX_EFFECTFUL: EffectClass = EffectClass::new(1, false);
+const TEST_DERIVATION_STRICT_OP: IrDialectOp = IrDialectOp::new(1);
+const TEST_WITH_VAR_OP: IrDialectOp = IrDialectOp::new(2);
 
 pub(super) fn lowered(source: &str) -> Ir {
     lower(resolve(parse_str(source).expect("source parses")).expect("source resolves"))
@@ -19,16 +21,32 @@ pub(super) fn lowered(source: &str) -> Ir {
 /// ratchet-core's own tests can exercise the dialect-supplied effect routing
 /// without depending on a dialect crate.
 fn nix_effect_of(kind: IrKind) -> EffectClass {
-    match kind {
-        IrKind::DerivationStrict => TEST_NIX_EFFECTFUL,
-        _ => EffectClass::pure(),
-    }
+    let _ = kind;
+    EffectClass::pure()
 }
 
 fn nix_builtin_effect_of(_name: Option<&[u8]>, effect: BuiltinEffect) -> EffectClass {
     match effect {
         BuiltinEffect::Pure => EffectClass::pure(),
         BuiltinEffect::Effectful => TEST_NIX_EFFECTFUL,
+    }
+}
+
+fn nix_builtin_dialect_op(_name: Option<&[u8]>, direct: BuiltinDirect) -> Option<IrDialectOp> {
+    match direct {
+        BuiltinDirect::DerivationStrict => Some(TEST_DERIVATION_STRICT_OP),
+        _ => None,
+    }
+}
+
+fn nix_dynamic_scope_var_op() -> Option<IrDialectOp> {
+    Some(TEST_WITH_VAR_OP)
+}
+
+fn nix_dialect_op_effect_of(op: IrDialectOp) -> EffectClass {
+    match op {
+        TEST_DERIVATION_STRICT_OP => TEST_NIX_EFFECTFUL,
+        _ => EffectClass::pure(),
     }
 }
 
@@ -40,7 +58,10 @@ pub(super) fn lowered_nix(source: &str) -> Ir {
         resolved,
         IrLowerOptions::new()
             .with_effect_of(nix_effect_of)
-            .with_builtin_effect_of(nix_builtin_effect_of),
+            .with_builtin_effect_of(nix_builtin_effect_of)
+            .with_builtin_dialect_op(nix_builtin_dialect_op)
+            .with_dynamic_scope_var_op(nix_dynamic_scope_var_op)
+            .with_dialect_op_effect_of(nix_dialect_op_effect_of),
     )
     .expect("IR lowers")
 }

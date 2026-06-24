@@ -1210,6 +1210,14 @@ pub enum TreeWalkErrorKind {
         /// The unsupported primop symbol.
         symbol: Symbol,
     },
+    /// A dialect operation exists in IR but is outside this evaluator slice.
+    #[error("unsupported tree-walk dialect operation {op:?} at {id:?}")]
+    UnsupportedDialectOp {
+        /// The primop node id.
+        id: IrId,
+        /// The unsupported dialect operation key.
+        op: IrDialectOp,
+    },
     /// A `builtins` attribute exists but is outside this evaluator slice.
     #[error("unsupported builtins attribute {symbol:?} at node {id:?}")]
     UnsupportedBuiltinAttr {

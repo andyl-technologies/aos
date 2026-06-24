@@ -1,17 +1,25 @@
 //! Static builtin and direct primitive-operation reference detection.
 //!
 //! These helpers inspect resolved AST nodes to recognize unshadowed `builtins`
-//! references that lower to direct [`IrKind::PrimOp`] or
-//! [`IrKind::DerivationStrict`] nodes instead of ordinary applications.
+//! references that lower to direct [`IrKind::PrimOp`] nodes instead of ordinary
+//! applications. Dialects may map a direct builtin to a dialect-owned operation
+//! carried by the same generic primop escape hatch.
 
 use super::*;
 
 impl IrLowerer {
-    pub(super) fn is_derivation_strict_ref(&self, id: NodeId) -> Result<bool, IrError> {
+    pub(super) fn builtin_dialect_op_ref(
+        &self,
+        id: NodeId,
+    ) -> Result<Option<(Symbol, IrDialectOp)>, IrError> {
         let Some(symbol) = self.direct_builtin_ref_symbol(id)? else {
-            return Ok(false);
+            return Ok(None);
         };
-        Ok(self.direct_builtin(symbol) == Some(BuiltinDirect::DerivationStrict))
+        let Some(direct) = self.direct_builtin(symbol) else {
+            return Ok(None);
+        };
+        let op = (self.options.builtin_dialect_op())(self.resolved.symbols.resolve(symbol), direct);
+        Ok(op.map(|op| (symbol, op)))
     }
 
     pub(super) fn strict_unary_primop_ref(

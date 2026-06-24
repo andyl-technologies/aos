@@ -22,10 +22,9 @@ use crate::ir::IrKind;
 fn ir_kind_taxonomy_is_language_agnostic() {
     fn assert_known(kind: IrKind) {
         // No wildcard arm: this match must remain exhaustive by enumeration.
-        // The only dialect-shaped variants the RFC currently sanctions are the
-        // `With`/`WithVar` scoping nodes and `DerivationStrict` (RFC-0007 1b #2
-        // routes these toward the PrimOp escape hatch over time). Do NOT add
-        // more — new builtins use `IrKind::PrimOp`.
+        // Dialect-shaped operations, including Nix dynamic `with` probes and
+        // `derivationStrict`, must route through the generic `IrKind::PrimOp`
+        // escape hatch. Do NOT add language-specific variants here.
         match kind {
             IrKind::Int
             | IrKind::Float
@@ -39,7 +38,6 @@ fn ir_kind_taxonomy_is_language_agnostic() {
             | IrKind::UpvalVar
             | IrKind::GlobalVar
             | IrKind::BuiltinAttr
-            | IrKind::WithVar
             | IrKind::List
             | IrKind::AttrSet
             | IrKind::Lambda
@@ -56,8 +54,7 @@ fn ir_kind_taxonomy_is_language_agnostic() {
             | IrKind::UnaryOp
             | IrKind::Interp
             | IrKind::ThunkAlloc
-            | IrKind::PrimOp
-            | IrKind::DerivationStrict => {}
+            | IrKind::PrimOp => {}
         }
     }
 

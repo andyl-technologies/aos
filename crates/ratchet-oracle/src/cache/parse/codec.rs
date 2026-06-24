@@ -107,6 +107,17 @@ pub(super) fn encode_ir_data(out: &mut Vec<u8>, data: IrData) {
             write_u32(out, symbol.as_u32());
             encode_ir_child_slice(out, args);
         }
+        IrData::DialectNode { op, argument } => {
+            out.push(23);
+            write_u32(out, u32::from(op.as_u16()));
+            write_u32(out, argument.as_u32());
+        }
+        IrData::DialectScopeVar { op, symbol, chain } => {
+            out.push(24);
+            write_u32(out, u32::from(op.as_u16()));
+            write_u32(out, symbol.as_u32());
+            write_u32(out, chain);
+        }
         IrData::Lambda {
             pattern,
             body,
@@ -164,11 +175,6 @@ pub(super) fn encode_ir_data(out: &mut Vec<u8>, data: IrData) {
             out.push(21);
             write_u32(out, depth);
             write_u32(out, slot);
-        }
-        IrData::WithVar { symbol, chain } => {
-            out.push(22);
-            write_u32(out, symbol.as_u32());
-            write_u32(out, chain);
         }
     }
 }
@@ -250,7 +256,12 @@ pub(super) fn decode_ir_data(reader: &mut BinaryReader<'_>) -> Result<IrData, St
             depth: reader.read_u32()?,
             slot: reader.read_u32()?,
         }),
-        22 => Ok(IrData::WithVar {
+        23 => Ok(IrData::DialectNode {
+            op: decode_ir_dialect_op(reader.read_u32()?)?,
+            argument: IrId::new(reader.read_u32()?),
+        }),
+        24 => Ok(IrData::DialectScopeVar {
+            op: decode_ir_dialect_op(reader.read_u32()?)?,
             symbol: Symbol::new(reader.read_u32()?),
             chain: reader.read_u32()?,
         }),
@@ -588,7 +599,6 @@ pub(super) fn ir_kind_tag(kind: IrKind) -> u8 {
         IrKind::LocalVar => 8,
         IrKind::UpvalVar => 9,
         IrKind::GlobalVar => 10,
-        IrKind::WithVar => 11,
         IrKind::List => 12,
         IrKind::AttrSet => 13,
         IrKind::Lambda => 14,
@@ -606,7 +616,6 @@ pub(super) fn ir_kind_tag(kind: IrKind) -> u8 {
         IrKind::Interp => 26,
         IrKind::ThunkAlloc => 27,
         IrKind::PrimOp => 28,
-        IrKind::DerivationStrict => 29,
         IrKind::BuiltinAttr => 30,
     }
 }
@@ -624,7 +633,6 @@ pub(super) fn decode_ir_kind(tag: u8) -> Result<IrKind, String> {
         8 => Ok(IrKind::LocalVar),
         9 => Ok(IrKind::UpvalVar),
         10 => Ok(IrKind::GlobalVar),
-        11 => Ok(IrKind::WithVar),
         12 => Ok(IrKind::List),
         13 => Ok(IrKind::AttrSet),
         14 => Ok(IrKind::Lambda),
@@ -642,10 +650,14 @@ pub(super) fn decode_ir_kind(tag: u8) -> Result<IrKind, String> {
         26 => Ok(IrKind::Interp),
         27 => Ok(IrKind::ThunkAlloc),
         28 => Ok(IrKind::PrimOp),
-        29 => Ok(IrKind::DerivationStrict),
         30 => Ok(IrKind::BuiltinAttr),
         tag => Err(format!("invalid IR kind tag {tag}")),
     }
+}
+
+fn decode_ir_dialect_op(raw: u32) -> Result<IrDialectOp, String> {
+    let raw = u16::try_from(raw).map_err(|_| format!("invalid dialect op key {raw}"))?;
+    Ok(IrDialectOp::new(raw))
 }
 
 pub(super) fn effect_class_tag(effect: EffectClass) -> u8 {

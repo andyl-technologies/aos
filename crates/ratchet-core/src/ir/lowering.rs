@@ -70,7 +70,7 @@ impl IrLowerer {
                 self.push(IrKind::UpvalVar, node.span, IrData::Upval { depth, slot })
             }
             NodeKind::GlobalVar => self.lower_global(node),
-            NodeKind::WithVar => self.lower_with_var(node),
+            NodeKind::WithVar => self.lower_dynamic_scope_var(node),
             NodeKind::List => self.lower_list(node),
             NodeKind::AttrSet => self.lower_attrset(id, node, false),
             NodeKind::RecAttrSet => self.lower_attrset(id, node, true),
@@ -117,15 +117,24 @@ impl IrLowerer {
         }
     }
 
-    pub(super) fn lower_with_var(&mut self, node: Node) -> Result<IrId, IrError> {
+    pub(super) fn lower_dynamic_scope_var(&mut self, node: Node) -> Result<IrId, IrError> {
         let NodeData::WithVar { symbol, chain } = node.data else {
             return Err(self.invalid_shape(node, "with-var payload"));
         };
+        let Some(op) = (self.options.dynamic_scope_var_op())() else {
+            return Err(IrError::new(
+                IrErrorKind::UnsupportedDialectOp {
+                    operation: "dynamic scope variable",
+                },
+                node.span,
+            ));
+        };
         let chain = self.lower_with_chain(chain, node.span)?;
-        self.push(
-            IrKind::WithVar,
+        self.push_with_effect(
+            IrKind::PrimOp,
             node.span,
-            IrData::WithVar { symbol, chain },
+            (self.options.dialect_op_effect_of())(op),
+            IrData::DialectScopeVar { op, symbol, chain },
         )
     }
 
@@ -321,9 +330,14 @@ impl IrLowerer {
         else {
             return Err(self.invalid_shape(node, "application pair"));
         };
-        if self.is_derivation_strict_ref(function)? {
+        if let Some((_symbol, op)) = self.builtin_dialect_op_ref(function)? {
             let argument = self.lower_expr(argument)?;
-            return self.push(IrKind::DerivationStrict, node.span, IrData::Node(argument));
+            return self.push_with_effect(
+                IrKind::PrimOp,
+                node.span,
+                (self.options.dialect_op_effect_of())(op),
+                IrData::DialectNode { op, argument },
+            );
         }
         if let Some((symbol, effect)) = self.strict_unary_primop_ref(function)? {
             let argument = self.lower_expr(argument)?;

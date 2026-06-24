@@ -55,7 +55,7 @@ use crate::cache::{
 };
 use crate::compile::{
     FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,
-    IrData, IrId, IrKind, IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions,
+    IrData, IrDialectOp, IrId, IrKind, IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions,
     ScopeResolver, resolve,
 };
 use crate::drv_materialize::materialize_drv;

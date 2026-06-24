@@ -54,6 +54,30 @@ pub fn all_pure_builtin(_name: Option<&[u8]>, _effect: BuiltinEffect) -> EffectC
     EffectClass::pure()
 }
 
+/// The language-agnostic default direct-builtin dialect-op classifier.
+///
+/// Without a dialect-supplied mapping, direct builtins never lower to dialect
+/// operations.
+pub fn no_builtin_dialect_op(_name: Option<&[u8]>, _direct: BuiltinDirect) -> Option<IrDialectOp> {
+    None
+}
+
+/// The language-agnostic default dynamic-scope variable operation.
+///
+/// Without a dialect-supplied operation, unresolved names under dynamic scopes
+/// are rejected during lowering.
+pub fn no_dynamic_scope_var_op() -> Option<IrDialectOp> {
+    None
+}
+
+/// The language-agnostic default dialect-op effect classifier.
+///
+/// Unknown dialect operations carry no engine-owned effect knowledge. Dialects
+/// install a classifier for their operation keys when lowering.
+pub fn all_pure_dialect_op(_op: IrDialectOp) -> EffectClass {
+    EffectClass::pure()
+}
+
 /// Configuration for IR lowering.
 #[derive(Clone, Copy, Debug)]
 pub struct IrLowerOptions {
@@ -68,6 +92,13 @@ pub struct IrLowerOptions {
     /// Defaults to [`all_pure_builtin`]; a language dialect installs its own
     /// classifier so impure builtins are not hardcoded in the engine.
     builtin_effect_of: fn(Option<&[u8]>, BuiltinEffect) -> EffectClass,
+    /// The dialect-owned operation key for a direct builtin, when that builtin
+    /// should lower to a dialect operation instead of a normal primop.
+    builtin_dialect_op: fn(Option<&[u8]>, BuiltinDirect) -> Option<IrDialectOp>,
+    /// The dialect-owned operation key used for unresolved dynamic-scope names.
+    dynamic_scope_var_op: fn() -> Option<IrDialectOp>,
+    /// The classifier mapping dialect operation keys to effect stamps.
+    dialect_op_effect_of: fn(IrDialectOp) -> EffectClass,
 }
 
 impl PartialEq for IrLowerOptions {
@@ -81,6 +112,9 @@ impl PartialEq for IrLowerOptions {
         self.dynamic_builtin_scope == other.dynamic_builtin_scope
             && std::ptr::fn_addr_eq(self.effect_of, other.effect_of)
             && std::ptr::fn_addr_eq(self.builtin_effect_of, other.builtin_effect_of)
+            && std::ptr::fn_addr_eq(self.builtin_dialect_op, other.builtin_dialect_op)
+            && std::ptr::fn_addr_eq(self.dynamic_scope_var_op, other.dynamic_scope_var_op)
+            && std::ptr::fn_addr_eq(self.dialect_op_effect_of, other.dialect_op_effect_of)
     }
 }
 
@@ -100,6 +134,9 @@ impl IrLowerOptions {
             dynamic_builtin_scope: false,
             effect_of: all_pure,
             builtin_effect_of: all_pure_builtin,
+            builtin_dialect_op: no_builtin_dialect_op,
+            dynamic_scope_var_op: no_dynamic_scope_var_op,
+            dialect_op_effect_of: all_pure_dialect_op,
         }
     }
 
@@ -109,6 +146,9 @@ impl IrLowerOptions {
             dynamic_builtin_scope: true,
             effect_of: all_pure,
             builtin_effect_of: all_pure_builtin,
+            builtin_dialect_op: no_builtin_dialect_op,
+            dynamic_scope_var_op: no_dynamic_scope_var_op,
+            dialect_op_effect_of: all_pure_dialect_op,
         }
     }
 
@@ -138,6 +178,43 @@ impl IrLowerOptions {
         self
     }
 
+    /// Returns a copy of these options with the given direct-builtin dialect-op
+    /// classifier installed.
+    ///
+    /// Dialects use this hook for builtins that are not ordinary primops but
+    /// still need a compact, statically locatable operation in lowered IR.
+    pub const fn with_builtin_dialect_op(
+        mut self,
+        builtin_dialect_op: fn(Option<&[u8]>, BuiltinDirect) -> Option<IrDialectOp>,
+    ) -> Self {
+        self.builtin_dialect_op = builtin_dialect_op;
+        self
+    }
+
+    /// Returns a copy of these options with a dynamic-scope variable operation
+    /// installed.
+    ///
+    /// Languages with `with`-style dynamic lookup provide an operation key here;
+    /// languages without dynamic scope leave the default in place and lowering
+    /// rejects unresolved dynamic-scope variables.
+    pub const fn with_dynamic_scope_var_op(
+        mut self,
+        dynamic_scope_var_op: fn() -> Option<IrDialectOp>,
+    ) -> Self {
+        self.dynamic_scope_var_op = dynamic_scope_var_op;
+        self
+    }
+
+    /// Returns a copy of these options with the given dialect-op effect
+    /// classifier installed.
+    pub const fn with_dialect_op_effect_of(
+        mut self,
+        dialect_op_effect_of: fn(IrDialectOp) -> EffectClass,
+    ) -> Self {
+        self.dialect_op_effect_of = dialect_op_effect_of;
+        self
+    }
+
     /// Returns whether builtin references must remain dynamic runtime lookups.
     pub const fn dynamic_builtin_scope(&self) -> bool {
         self.dynamic_builtin_scope
@@ -151,6 +228,23 @@ impl IrLowerOptions {
     /// Returns the direct-builtin effect classifier installed in these options.
     pub const fn builtin_effect_of(&self) -> fn(Option<&[u8]>, BuiltinEffect) -> EffectClass {
         self.builtin_effect_of
+    }
+
+    /// Returns the direct-builtin dialect-op classifier installed in these options.
+    pub const fn builtin_dialect_op(
+        &self,
+    ) -> fn(Option<&[u8]>, BuiltinDirect) -> Option<IrDialectOp> {
+        self.builtin_dialect_op
+    }
+
+    /// Returns the dynamic-scope variable operation provider installed in these options.
+    pub const fn dynamic_scope_var_op(&self) -> fn() -> Option<IrDialectOp> {
+        self.dynamic_scope_var_op
+    }
+
+    /// Returns the dialect-op effect classifier installed in these options.
+    pub const fn dialect_op_effect_of(&self) -> fn(IrDialectOp) -> EffectClass {
+        self.dialect_op_effect_of
     }
 }
 
@@ -306,6 +400,26 @@ impl IrInlineCacheSiteId {
     }
 }
 
+/// A compact dialect-owned operation key used by the generic primop escape hatch.
+///
+/// The engine stores and serializes the key, but the key space is owned by the
+/// installed dialect. Key `0` is reserved for "no dialect operation"; dialects
+/// should assign stable non-zero keys for persistent parse-cache compatibility.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct IrDialectOp(u16);
+
+impl IrDialectOp {
+    /// Creates a dialect operation key from a stable raw value.
+    pub const fn new(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    /// Returns the raw operation key.
+    pub const fn as_u16(self) -> u16 {
+        self.0
+    }
+}
+
 /// A fixed-stride IR node.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IrNode {
@@ -359,8 +473,6 @@ pub enum IrKind {
     GlobalVar,
     /// A statically known builtin attribute value.
     BuiltinAttr,
-    /// A dynamic lookup through active `with` scopes.
-    WithVar,
     /// A list construction.
     List,
     /// An attribute-set construction.
@@ -393,10 +505,8 @@ pub enum IrKind {
     Interp,
     /// A conservative lazy thunk allocation.
     ThunkAlloc,
-    /// A direct primitive operation call.
+    /// A direct primitive operation call or dialect-owned operation.
     PrimOp,
-    /// The strict derivation boundary.
-    DerivationStrict,
 }
 
 /// The kind-specific payload for an IR node.
@@ -477,6 +587,22 @@ pub enum IrData {
         /// The lowered argument nodes.
         args: IrChildSlice,
     },
+    /// The node represents a dialect-owned operation with one strict child.
+    DialectNode {
+        /// The dialect-owned operation key.
+        op: IrDialectOp,
+        /// The operation argument.
+        argument: IrId,
+    },
+    /// The node represents a dialect-owned dynamic-scope variable probe.
+    DialectScopeVar {
+        /// The dialect-owned operation key.
+        op: IrDialectOp,
+        /// The unresolved symbol to probe.
+        symbol: Symbol,
+        /// The resolver dynamic-scope chain id.
+        chain: u32,
+    },
     /// The node represents a lambda closure.
     Lambda {
         /// The lowered parameter pattern.
@@ -535,13 +661,6 @@ pub enum IrData {
         depth: u32,
         /// The slot inside the target frame.
         slot: u32,
-    },
-    /// The node represents a dynamic `with` lookup.
-    WithVar {
-        /// The unresolved symbol to probe.
-        symbol: Symbol,
-        /// The resolver with-chain id.
-        chain: u32,
     },
 }
 
@@ -750,6 +869,12 @@ pub enum IrErrorKind {
     /// A resolved inherit binding had an unexpected source shape.
     #[error("invalid inherit source shape")]
     InvalidInheritSource,
+    /// The resolved AST needed a dialect operation that was not registered.
+    #[error("unsupported dialect operation: {operation}")]
+    UnsupportedDialectOp {
+        /// The unsupported operation needed by lowering.
+        operation: &'static str,
+    },
     /// A raw AST arena error escaped resolution.
     #[error("AST arena error: {0}")]
     Ast(AstErrorKind),

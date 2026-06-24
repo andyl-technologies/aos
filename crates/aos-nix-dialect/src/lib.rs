@@ -21,7 +21,8 @@
 pub mod string_context;
 
 use ratchet_core::{
-    EffectClass, Ir, IrError, IrKind, IrLowerOptions, ResolvedAst, builtins::BuiltinEffect,
+    EffectClass, Ir, IrDialectOp, IrError, IrKind, IrLowerOptions, ResolvedAst,
+    builtins::{BuiltinDirect, BuiltinEffect},
 };
 use ratchet_dialect::Dialect;
 
@@ -55,6 +56,12 @@ pub const NIX_EFFECT_TRACE: EffectClass = EffectClass::new(8, false);
 /// A conservative fallback for effectful Nix builtins without a refined member.
 pub const NIX_EFFECT_GENERIC: EffectClass = EffectClass::new(9, false);
 
+/// Nix dialect operation for the `derivationStrict` `.drv` boundary.
+pub const NIX_OP_DERIVATION_STRICT: IrDialectOp = IrDialectOp::new(1);
+
+/// Nix dialect operation for dynamic lookup through active `with` scopes.
+pub const NIX_OP_WITH_VAR: IrDialectOp = IrDialectOp::new(2);
+
 /// The Nix language dialect.
 ///
 /// Implements [`Dialect`] for the Nix language. The dialect is zero-sized; it
@@ -71,19 +78,33 @@ impl Dialect for NixDialect {
     fn builtin_effect_of(&self, name: Option<&[u8]>, effect: BuiltinEffect) -> EffectClass {
         nix_builtin_effect_of(name, effect)
     }
+
+    fn builtin_dialect_op(
+        &self,
+        name: Option<&[u8]>,
+        direct: BuiltinDirect,
+    ) -> Option<IrDialectOp> {
+        nix_builtin_dialect_op(name, direct)
+    }
+
+    fn dynamic_scope_var_op(&self) -> Option<IrDialectOp> {
+        nix_dynamic_scope_var_op()
+    }
+
+    fn dialect_op_effect_of(&self, op: IrDialectOp) -> EffectClass {
+        nix_dialect_op_effect_of(op)
+    }
 }
 
 /// Returns the Nix effect classification for a core IR node kind.
 ///
 /// This is the free-function form of [`NixDialect::effect_of`], suitable for
 /// installation into [`IrLowerOptions::with_effect_of`] as a `fn` pointer.
-/// Nix's `derivationStrict` boundary carries a Nix-owned effect member; every
-/// other core node is pure by default.
+/// Every core node is pure by default. Nix-only operations such as
+/// `derivationStrict` are classified through [`nix_dialect_op_effect_of`].
 pub fn nix_effect_of(kind: IrKind) -> EffectClass {
-    match kind {
-        IrKind::DerivationStrict => NIX_EFFECT_DERIVATION_STRICT,
-        _ => NIX_EFFECT_PURE,
-    }
+    let _ = kind;
+    NIX_EFFECT_PURE
 }
 
 /// Returns the Nix effect classification for a direct-lowered builtin.
@@ -115,6 +136,29 @@ pub fn nix_builtin_effect_of(name: Option<&[u8]>, effect: BuiltinEffect) -> Effe
     }
 }
 
+/// Returns the Nix dialect operation for a direct-lowered builtin, when the
+/// builtin is a Nix dialect operation instead of an ordinary primop.
+pub fn nix_builtin_dialect_op(_name: Option<&[u8]>, direct: BuiltinDirect) -> Option<IrDialectOp> {
+    match direct {
+        BuiltinDirect::DerivationStrict => Some(NIX_OP_DERIVATION_STRICT),
+        _ => None,
+    }
+}
+
+/// Returns the Nix dialect operation for dynamic `with` variable probes.
+pub fn nix_dynamic_scope_var_op() -> Option<IrDialectOp> {
+    Some(NIX_OP_WITH_VAR)
+}
+
+/// Returns the Nix effect classification for a dialect operation key.
+pub fn nix_dialect_op_effect_of(op: IrDialectOp) -> EffectClass {
+    match op {
+        NIX_OP_DERIVATION_STRICT => NIX_EFFECT_DERIVATION_STRICT,
+        NIX_OP_WITH_VAR => NIX_EFFECT_PURE,
+        _ => NIX_EFFECT_GENERIC,
+    }
+}
+
 /// Returns default lowering options carrying the Nix effect classifier.
 ///
 /// Equivalent to [`IrLowerOptions::new`] with [`nix_effect_of`] and
@@ -123,6 +167,9 @@ pub fn nix_lower_options() -> IrLowerOptions {
     IrLowerOptions::new()
         .with_effect_of(nix_effect_of)
         .with_builtin_effect_of(nix_builtin_effect_of)
+        .with_builtin_dialect_op(nix_builtin_dialect_op)
+        .with_dynamic_scope_var_op(nix_dynamic_scope_var_op)
+        .with_dialect_op_effect_of(nix_dialect_op_effect_of)
 }
 
 /// Lowers a scope-resolved Nix AST into evaluator IR with Nix semantics.
@@ -161,7 +208,10 @@ pub fn nix_lower_with_options(
         resolved,
         options
             .with_effect_of(nix_effect_of)
-            .with_builtin_effect_of(nix_builtin_effect_of),
+            .with_builtin_effect_of(nix_builtin_effect_of)
+            .with_builtin_dialect_op(nix_builtin_dialect_op)
+            .with_dynamic_scope_var_op(nix_dynamic_scope_var_op)
+            .with_dialect_op_effect_of(nix_dialect_op_effect_of),
     )
 }
 
@@ -173,8 +223,13 @@ mod tests {
     #[test]
     fn nix_effect_members_are_dialect_owned() {
         assert_eq!(
-            nix_effect_of(IrKind::DerivationStrict),
+            nix_dialect_op_effect_of(NIX_OP_DERIVATION_STRICT),
             NIX_EFFECT_DERIVATION_STRICT
+        );
+        assert_eq!(nix_dialect_op_effect_of(NIX_OP_WITH_VAR), NIX_EFFECT_PURE);
+        assert_eq!(
+            nix_builtin_dialect_op(Some(b"derivationStrict"), BuiltinDirect::DerivationStrict),
+            Some(NIX_OP_DERIVATION_STRICT)
         );
         assert_eq!(
             nix_builtin_effect_of(Some(b"import"), BuiltinEffect::Effectful),
@@ -232,7 +287,35 @@ mod tests {
         .expect("source resolves");
         let ir = nix_lower(resolved).expect("source lowers");
         let root = ir.arena.node(ir.root).expect("root node exists");
-        assert_eq!(root.kind, IrKind::DerivationStrict);
+        assert_eq!(root.kind, IrKind::PrimOp);
         assert_eq!(root.effect, NIX_EFFECT_DERIVATION_STRICT);
+        assert!(matches!(
+            root.data,
+            IrData::DialectNode {
+                op: NIX_OP_DERIVATION_STRICT,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn nix_lower_stamps_with_vars_as_dialect_ops() {
+        let resolved = resolve(parse_str("with { a = 1; }; a").expect("source parses"))
+            .expect("source resolves");
+        let ir = nix_lower(resolved).expect("source lowers");
+        let IrData::Pair { second, .. } = ir.arena.node(ir.root).expect("root node exists").data
+        else {
+            panic!("with payload expected");
+        };
+        let body = ir.arena.node(second).expect("body node exists");
+        assert_eq!(body.kind, IrKind::PrimOp);
+        assert_eq!(body.effect, NIX_EFFECT_PURE);
+        assert!(matches!(
+            body.data,
+            IrData::DialectScopeVar {
+                op: NIX_OP_WITH_VAR,
+                ..
+            }
+        ));
     }
 }

@@ -11,9 +11,10 @@ fn invalid_with_chain_metadata_is_reported() {
     let invalid_chain = manual_ir_with_with_chains(
         root,
         vec![pure_node(
-            IrKind::WithVar,
+            IrKind::PrimOp,
             span,
-            IrData::WithVar {
+            IrData::DialectScopeVar {
+                op: aos_nix_dialect::NIX_OP_WITH_VAR,
                 symbol: missing,
                 chain: 0,
             },
@@ -34,9 +35,10 @@ fn invalid_with_chain_metadata_is_reported() {
         root,
         vec![
             pure_node(
-                IrKind::WithVar,
+                IrKind::PrimOp,
                 span,
-                IrData::WithVar {
+                IrData::DialectScopeVar {
+                    op: aos_nix_dialect::NIX_OP_WITH_VAR,
                     symbol: missing,
                     chain: 0,
                 },

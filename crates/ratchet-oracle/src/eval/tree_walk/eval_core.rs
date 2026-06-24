@@ -164,7 +164,6 @@ impl TreeWalk {
             IrKind::Interp => self.eval_interp(id, &node),
             IrKind::LocalVar => self.eval_local_var(id, &node),
             IrKind::UpvalVar => self.eval_upval_var(id, &node),
-            IrKind::WithVar => self.eval_with_var(id, &node),
             IrKind::GlobalVar => self.eval_global_var(id, &node),
             IrKind::BuiltinAttr => self.eval_builtin_attr(id, &node),
             IrKind::List => self.eval_list(id, &node),
@@ -181,7 +180,6 @@ impl TreeWalk {
             IrKind::Select => self.eval_select(id, &node),
             IrKind::HasAttr => self.eval_has_attr(id, &node),
             IrKind::ThunkAlloc => self.eval_thunk_alloc(id, &node),
-            IrKind::DerivationStrict => self.eval_derivation_strict(id, &node),
             kind => Err(TreeWalkError::new(
                 TreeWalkErrorKind::InvalidNodeKind { id, kind },
                 node.span,

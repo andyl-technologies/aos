@@ -20,7 +20,10 @@
 
 #![forbid(unsafe_code)]
 
-use ratchet_core::{EffectClass, IrKind, builtins::BuiltinEffect};
+use ratchet_core::{
+    EffectClass, IrDialectOp, IrKind,
+    builtins::{BuiltinDirect, BuiltinEffect},
+};
 
 /// A language dialect that supplies the engine with language-specific semantics.
 ///
@@ -46,4 +49,20 @@ pub trait Dialect {
     /// members such as import, file IO, environment access, and derivation
     /// construction.
     fn builtin_effect_of(&self, name: Option<&[u8]>, effect: BuiltinEffect) -> EffectClass;
+
+    /// Returns the dialect operation key for a direct-lowered builtin.
+    ///
+    /// Dialect operations are distinct from ordinary primitive operations even
+    /// though they use the same compact escape-hatch storage in the engine.
+    fn builtin_dialect_op(&self, name: Option<&[u8]>, direct: BuiltinDirect)
+    -> Option<IrDialectOp>;
+
+    /// Returns the dialect operation key for unresolved dynamic-scope variables.
+    ///
+    /// Dialects without dynamic scope return `None`, causing lowering to reject
+    /// source forms that require a dynamic lookup operation.
+    fn dynamic_scope_var_op(&self) -> Option<IrDialectOp>;
+
+    /// Returns the dialect's effect classification for a dialect operation key.
+    fn dialect_op_effect_of(&self, op: IrDialectOp) -> EffectClass;
 }

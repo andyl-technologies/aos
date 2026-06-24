@@ -548,7 +548,6 @@ fn malformed_variable_and_let_payloads_are_reported() {
         (IrKind::UpvalVar, "upvalue payload"),
         (IrKind::Let, "let payload"),
         (IrKind::With, "with pair"),
-        (IrKind::WithVar, "with-var payload"),
     ];
 
     for (index, (kind, expected)) in cases.into_iter().enumerate() {

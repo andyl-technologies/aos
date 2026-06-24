@@ -91,7 +91,7 @@ impl TreeWalk {
         id: IrId,
         node: &IrNode,
     ) -> Result<Value, TreeWalkError> {
-        let IrData::WithVar { symbol, chain } = node.data else {
+        let IrData::DialectScopeVar { symbol, chain, .. } = node.data else {
             return Err(self.invalid_payload(id, node, "with-var payload"));
         };
         if self.symbols.resolve(symbol).is_none() {
@@ -211,8 +211,21 @@ impl TreeWalk {
     }
 
     pub(super) fn eval_primop(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
-        let IrData::PrimOp { symbol, args } = node.data else {
-            return Err(self.invalid_payload(id, node, "primop payload"));
+        let (symbol, args) = match node.data {
+            IrData::PrimOp { symbol, args } => (symbol, args),
+            IrData::DialectNode { op, .. } if op == aos_nix_dialect::NIX_OP_DERIVATION_STRICT => {
+                return self.eval_derivation_strict(id, node);
+            }
+            IrData::DialectScopeVar { op, .. } if op == aos_nix_dialect::NIX_OP_WITH_VAR => {
+                return self.eval_with_var(id, node);
+            }
+            IrData::DialectNode { op, .. } | IrData::DialectScopeVar { op, .. } => {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedDialectOp { id, op },
+                    node.span,
+                ));
+            }
+            _ => return Err(self.invalid_payload(id, node, "primop payload")),
         };
         let name = self.symbols.resolve(symbol).ok_or_else(|| {
             TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)

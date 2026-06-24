@@ -378,6 +378,17 @@ impl TreeWalk {
                 )?,
                 args,
             }),
+            IrData::DialectScopeVar { op, symbol, chain } => Ok(IrData::DialectScopeVar {
+                op,
+                symbol: Self::remap_cached_symbol(
+                    argument,
+                    argument_span,
+                    path,
+                    symbol_map,
+                    symbol,
+                )?,
+                chain,
+            }),
             IrData::FormalSet {
                 formals,
                 ellipsis,
@@ -394,16 +405,6 @@ impl TreeWalk {
             IrData::Formal { name, default } => Ok(IrData::Formal {
                 name: Self::remap_cached_symbol(argument, argument_span, path, symbol_map, name)?,
                 default,
-            }),
-            IrData::WithVar { symbol, chain } => Ok(IrData::WithVar {
-                symbol: Self::remap_cached_symbol(
-                    argument,
-                    argument_span,
-                    path,
-                    symbol_map,
-                    symbol,
-                )?,
-                chain,
             }),
             other => Ok(other),
         }

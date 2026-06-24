@@ -136,7 +136,7 @@ impl TreeWalk {
         id: IrId,
         node: &IrNode,
     ) -> Result<Value, TreeWalkError> {
-        let IrData::Node(argument) = node.data else {
+        let IrData::DialectNode { argument, .. } = node.data else {
             return Err(self.invalid_payload(id, node, "derivationStrict argument payload"));
         };
         let argument_span = self.node(argument)?.span;

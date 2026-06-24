@@ -26,8 +26,9 @@ pub mod scope;
 
 pub use ir::{
     Effect, EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice,
-    IrChildSlice, IrData, IrError, IrErrorKind, IrId, IrInlineCacheSiteId, IrKind, IrLowerOptions,
-    IrNode, IrShape, IrShapeId, IrWithChain, all_pure, all_pure_builtin, lower, lower_with_options,
+    IrChildSlice, IrData, IrDialectOp, IrError, IrErrorKind, IrId, IrInlineCacheSiteId, IrKind,
+    IrLowerOptions, IrNode, IrShape, IrShapeId, IrWithChain, all_pure, all_pure_builtin, lower,
+    lower_with_options,
 };
 pub use scope::{
     FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, ResolvedAst,

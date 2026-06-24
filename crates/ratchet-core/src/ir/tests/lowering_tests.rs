@@ -186,8 +186,22 @@ fn with_shadowed_bool_name_remains_global() {
 }
 
 #[test]
+fn default_core_lowering_rejects_dynamic_scope_variables() {
+    let resolved =
+        resolve(parse_str("with {}; missing").expect("source parses")).expect("source resolves");
+    let error = lower(resolved).expect_err("plain core lowering has no dynamic-scope op");
+
+    assert_eq!(
+        error.kind(),
+        &IrErrorKind::UnsupportedDialectOp {
+            operation: "dynamic scope variable",
+        }
+    );
+}
+
+#[test]
 fn with_var_chains_point_to_lowered_scopes_inner_first() {
-    let ir = lowered("with { outer = 1; }; with { inner = 2; }; missing");
+    let ir = lowered_nix("with { outer = 1; }; with { inner = 2; }; missing");
     let IrData::Pair {
         first: outer,
         second: inner_with,
@@ -202,7 +216,7 @@ fn with_var_chains_point_to_lowered_scopes_inner_first() {
     else {
         panic!("inner with payload expected");
     };
-    let IrData::WithVar { chain, .. } = node(&ir, body).data else {
+    let IrData::DialectScopeVar { chain, .. } = node(&ir, body).data else {
         panic!("with-var payload expected");
     };
 
@@ -212,7 +226,7 @@ fn with_var_chains_point_to_lowered_scopes_inner_first() {
 
 #[test]
 fn with_scrutinees_are_explicit_lazy_scope_nodes() {
-    let ir = lowered("with { a = 1; }; a");
+    let ir = lowered_nix("with { a = 1; }; a");
     let IrData::Pair {
         first: scope,
         second: body,
@@ -223,7 +237,7 @@ fn with_scrutinees_are_explicit_lazy_scope_nodes() {
     assert_eq!(node(&ir, scope).kind, IrKind::ThunkAlloc);
     assert_eq!(node(&ir, thunk_inner(&ir, scope)).kind, IrKind::AttrSet);
 
-    let IrData::WithVar { chain, .. } = node(&ir, body).data else {
+    let IrData::DialectScopeVar { chain, .. } = node(&ir, body).data else {
         panic!("with-var payload expected");
     };
     assert_eq!(ir.with_chains[chain as usize].scopes.as_ref(), &[scope]);
@@ -249,9 +263,13 @@ fn lowers_direct_derivation_strict_to_effectful_boundary() {
     ] {
         let ir = lowered_nix(source);
         let root = root_node(&ir);
-        assert_eq!(root.kind, IrKind::DerivationStrict);
+        assert_eq!(root.kind, IrKind::PrimOp);
         assert_eq!(root.effect, TEST_NIX_EFFECTFUL);
-        let IrData::Node(argument) = root.data else {
+        let IrData::DialectNode {
+            op: TEST_DERIVATION_STRICT_OP,
+            argument,
+        } = root.data
+        else {
             panic!("derivationStrict payload expected");
         };
         assert_eq!(node(&ir, argument).kind, IrKind::AttrSet);
@@ -290,9 +308,13 @@ fn with_shadowed_derivation_strict_lowers_to_effectful_boundary() {
     let IrData::Pair { second: body, .. } = root_node(&ir).data else {
         panic!("with payload expected");
     };
-    assert_eq!(node(&ir, body).kind, IrKind::DerivationStrict);
+    assert_eq!(node(&ir, body).kind, IrKind::PrimOp);
     assert_eq!(node(&ir, body).effect, TEST_NIX_EFFECTFUL);
-    let IrData::Node(argument) = node(&ir, body).data else {
+    let IrData::DialectNode {
+        op: TEST_DERIVATION_STRICT_OP,
+        argument,
+    } = node(&ir, body).data
+    else {
         panic!("derivationStrict payload expected");
     };
     assert_eq!(node(&ir, argument).kind, IrKind::Int);

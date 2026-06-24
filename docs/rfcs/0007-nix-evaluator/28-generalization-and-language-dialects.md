@@ -311,14 +311,14 @@ P1 fold these in as they go, rewriting already-done modules to fit.
   from `syntax/`, `aos-nix-dialect` new, `aos-nix-compat` from the store glue,
   `aos-nix-harness`). Reserve but do not create `ratchet-gc` (P3),
   `ratchet-cache` (P2), `ratchet-jit` (P6), `ratchet-parallel` (P3.5).
-- [ ] **Core/dialect IR split.** Generic `IrKind` stays in `ratchet-core`;
-  `DerivationStrict` and `WithVar` become dialect-owned ops, registered through the
+- [x] **Core/dialect IR split.** Generic `IrKind` stays in `ratchet-core`;
+  `DerivationStrict` and `WithVar` are dialect-owned ops registered through the
   same indexed escape-hatch *mechanism* as `PrimOp(symbol, args)` — not collapsed
-  into a generic `PrimOp` node. `DerivationStrict` keeps its own distinct,
-  statically-locatable `NodeKind` (the `.drv` boundary the harness anchors on, per
-  [25](25-intermediate-representation.md) §4.7); the dialect owns it rather than
-  Core. The resolver's "unresolved name" path becomes a dialect hook (Nix emits
-  `WithVar`; other dialects error).
+  into an ordinary builtin `PrimOp` symbol. `DerivationStrict` keeps its own
+  distinct, statically locatable dialect-op key/payload (the `.drv` boundary the
+  harness anchors on, per [25](25-intermediate-representation.md) §4.7), owned by
+  the Nix dialect rather than Core. The resolver's "unresolved name" path becomes
+  a dialect hook (Nix emits `WithVar`; other dialects error).
 - [x] **`EffectClass` → open trait (`S-23`).** Replace the closed
   `enum EffectClass { Pure, Effectful }` with a `ratchet-core` trait
   (`is_speculable` + `effect_key`); the Nix dialect supplies the members
@@ -385,10 +385,10 @@ migration is Phase 1b ([17](17-roadmap-and-risks.md) §6, [22](22-implementation
 ### Architecture (this doc)
 
 - [ ] `ratchet-*` naming and the three-band topology adopted (§3) — `S-22`.
-- [ ] Core/dialect boundary drawn at the IR (§4): `DerivationStrict`, `with`,
+- [x] Core/dialect boundary drawn at the IR (§4): `DerivationStrict`, `with`,
   string-context, builtins, effect members are the Nix dialect; everything else is
   Core — `S-22`.
-- [ ] `ratchet-dialect` registration-time trait, monomorphized, no force-path
+- [x] `ratchet-dialect` registration-time trait, monomorphized, no force-path
   `dyn` (§5) — `S-22`.
 - [x] Open effect lattice (`is_speculable` + `effect_key`) replacing the closed
   enum (§5, §8) — `S-23`.
@@ -396,7 +396,7 @@ migration is Phase 1b ([17](17-roadmap-and-risks.md) §6, [22](22-implementation
 ### Phase 1b migration (§10)
 
 - [ ] Crate split with `ratchet` naming; engine crates reserved per phase.
-- [ ] Core/dialect IR split via the `PrimOp` escape hatch; resolver unresolved-name
+- [x] Core/dialect IR split via the `PrimOp` escape hatch; resolver unresolved-name
   dialect hook.
 - [x] `EffectClass` → open trait; remove the hardcoded `DerivationStrict` effect.
 - [ ] String-context extracted from `ratchet-value` into `aos-nix-dialect`.

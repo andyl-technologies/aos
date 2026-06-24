@@ -166,7 +166,7 @@ fn write_meta_creates_entry_directory() {
 
     entry.write_meta(&meta).expect("metadata writes");
     let text = fs::read_to_string(entry.meta_path()).expect("metadata is readable");
-    assert!(text.contains("schema_version = 6"));
+    assert!(text.contains("schema_version = 7"));
     assert!(!entry.is_complete());
 
     let _ = fs::remove_dir_all(root);
@@ -251,7 +251,7 @@ fn artifact_bundle_round_trips_complete_entry_payloads() {
     let decoded = ParseArtifactBundle::decode(&encoded).expect("artifact bundle decodes");
 
     assert_eq!(decoded, bundle);
-    assert!(String::from_utf8_lossy(decoded.meta_toml_bytes()).contains("schema_version = 6"));
+    assert!(String::from_utf8_lossy(decoded.meta_toml_bytes()).contains("schema_version = 7"));
     let meta = decoded.decode_meta().expect("bundle metadata decodes");
     assert_eq!(meta.schema_version, cache.schema_version());
     assert_eq!(meta.source_hint.as_deref(), Some("expr.nix"));
@@ -703,10 +703,13 @@ fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
         root: IrId::new(0),
         arena: IrArena::from_raw_parts(
             vec![IrNode::new(
-                IrKind::DerivationStrict,
+                IrKind::PrimOp,
                 Span::new(0, 16),
                 EffectClass::pure(),
-                IrData::Node(IrId::new(0)),
+                IrData::DialectNode {
+                    op: aos_nix_dialect::NIX_OP_DERIVATION_STRICT,
+                    argument: IrId::new(0),
+                },
             )],
             Vec::new(),
         ),

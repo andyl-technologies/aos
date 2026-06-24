@@ -66,13 +66,14 @@ linear passes of the resolver and the simplifier.
 The one IR is the generic **Core IR** — the lazy-functional core that lives in
 the `ratchet-core` crate ([28](28-generalization-and-language-dialects.md)). The
 invariant above is precisely "**one Core IR for all tiers**," and it holds intact:
-the Nix-specific nodes (`DerivationStrict`, `WithVar`, the string-context value
-property, the builtin identities, the concrete effects) are *not* separate IRs —
-they are a *dialect* that extends Core through the indexed escape hatch already
-built into it (§4.5, §2.1). The three consequences below — the oracle as a valid
-correctness reference, deopt as a `NodeId`/slot correspondence, and the optimizer
-as an IR-to-IR pass — are properties of the Core IR and are unchanged by the
-dialect layering, which is orthogonal to the tier axis.
+the Nix-specific operations (`DerivationStrict`, `WithVar`, the string-context
+value property, the builtin identities, the concrete effects) are *not* separate
+IRs and not Core `IrKind` variants — they are a *dialect* that extends Core
+through the indexed escape hatch already built into it (§4.5, §2.1). The three
+consequences below — the oracle as a valid correctness reference, deopt as a
+`NodeId`/slot correspondence, and the optimizer as an IR-to-IR pass — are
+properties of the Core IR and are unchanged by the dialect layering, which is
+orthogonal to the tier axis.
 
 ## 2. The IR node taxonomy
 
@@ -83,28 +84,26 @@ these node kinds. The taxonomy is fixed; adding a kind is an
 
 ```text
   literals        Int  Float  Bool  Null  Str  Path
-  variables       LocalVar(slot)  UpvalVar(depth,slot)  GlobalVar(sym)  WithVar(sym, chain)†
+  variables       LocalVar(slot)  UpvalVar(depth,slot)  GlobalVar(sym)
   binders         Lambda(pattern, body)  Let(frame, bindings, body)  With(scrutinee, body)
   construction    AttrSet(shape, entries, rec?, dynamic?)  List(elems)
   access          Select(recv, path, default?)  HasAttr(recv, path)
   control         If(cond, then, else)  Assert(cond, body)
   operators       BinOp(op, lhs, rhs)  UnaryOp(op, operand)
   application     Apply(fn, arg)
-  effects         PrimOp(prim, args)  Interp(fragments)
+  effects         PrimOp(prim, args)  DialectNode(op, arg)†  DialectScopeVar(op, sym, chain)†  Interp(fragments)
   laziness        ThunkAlloc(inner)
-  boundary        DerivationStrict(arg)†       // the .drv emission boundary
 ```
 
-**Core kinds vs dialect ops.** All of the kinds above except the two marked `†`
-are **generic Core** ([28](28-generalization-and-language-dialects.md) §4): a lazy
-lambda calculus that any pure-lazy-functional frontend shares. The two `†` kinds —
-`WithVar` (dynamic `with` scope) and `DerivationStrict` (the `.drv` boundary) — are
-**Nix-dialect** nodes. They are not separate Core variants in the language-agnostic
-sense; they are reached through the *same indexed escape hatch* the IR already uses
-for primops (§2.1, §4.5). The string-context value property and the concrete
-builtin/effect identities are likewise dialect-supplied, not Core. This keeps the
-taxonomy a closed Core set plus a dialect-registered extension, rather than a
-Nix-specific grab bag.
+**Core kinds vs dialect ops.** All unmarked entries above are **generic Core**
+([28](28-generalization-and-language-dialects.md) §4): a lazy lambda calculus
+that any pure-lazy-functional frontend shares. The `†` entries are payload forms
+under the generic `IrKind::PrimOp` escape hatch, not separate `IrKind` variants.
+For Nix, `DialectNode(NIX_OP_DERIVATION_STRICT, arg)` is the `.drv` boundary and
+`DialectScopeVar(NIX_OP_WITH_VAR, sym, chain)` is dynamic `with` lookup. The
+string-context value property and the concrete builtin/effect identities are
+likewise dialect-supplied, not Core. This keeps the taxonomy a closed Core set
+plus dialect-registered operations, rather than a Nix-specific grab bag.
 
 ### 2.1 The Rust enum shape
 
@@ -114,12 +113,13 @@ tables (the child pool, the attrset-entry table, the frame table) addressed by
 `u32` offsets — exactly as in the AST (`04` §4.1), so that lowering is a refinement
 of the arena, not a new data structure.
 
-The `NodeKind` enum below is the Core taxonomy; the Nix-dialect kinds
-(`WithVar`, `DerivationStrict`) sit in it as the *indexed escape-hatch* citizens
-they are ([28](28-generalization-and-language-dialects.md) §5). The escape hatch
-is the same mechanism `PrimOp` already uses (§4.5): an indexed, statically-known op
-baked into the IR at lowering, resolved once into a concrete runtime symbol — never
-a per-force `dyn` dispatch. A second dialect would register *its* extra ops through
+The `NodeKind` enum below is the Core taxonomy. Nix-dialect operations
+(`WithVar`, `DerivationStrict`) do not sit in it as separate variants; they are
+encoded as dialect-owned payloads under `IrKind::PrimOp`
+([28](28-generalization-and-language-dialects.md) §5). The escape hatch is the
+same mechanism `PrimOp` already uses (§4.5): an indexed, statically-known op baked
+into the IR at lowering, resolved once into concrete runtime behavior — never a
+per-force `dyn` dispatch. A second dialect would register *its* extra ops through
 the same seam rather than minting new Core variants, which is why the Core enum
 stays closed and small.
 
@@ -155,7 +155,6 @@ pub enum NodeKind {
     LocalVar,   // data: slot                    -> env[slot]
     UpvalVar,   // data: (depth, slot)           -> parent^depth[slot]
     GlobalVar,  // data: Symbol                  -> builtins/global (true, map, ...)
-    WithVar,    // data: (Symbol, WithChainId)   -> dynamic `with` probe (§4.4); Nix-dialect node
 
     // --- binders ---
     Lambda,     // data: LambdaId (pattern, frame, captures) -> §4.2
@@ -182,14 +181,11 @@ pub enum NodeKind {
     Apply,      // data: (fn: NodeId, arg: NodeId)  (curried: one arg per node)
 
     // --- effects & strings ---
-    PrimOp,     // data: (Prim, ChildSlice)  -> direct builtin call (§4.5)
+    PrimOp,     // data: PrimOp or dialect-op payload -> direct builtin / dialect op (§4.5)
     Interp,     // data: ChildSlice -> string-concat fragments, left-to-right
 
     // --- explicit laziness ---
     ThunkAlloc, // data: NodeId  -> wrap inner in a suspended thunk (§4.1)
-
-    // --- the derivation boundary (Nix-dialect node; §4.7) ---
-    DerivationStrict, // data: NodeId (the attrset arg)  -> §4.7
 }
 
 /// Binary operator kinds. `+` is overloaded across int/float/string/path; the
@@ -245,8 +241,9 @@ already run, and three guarantees hold over every node:
 
 1. **No name lookup survives except the genuinely dynamic `with` case.** Every
    `Ident` of the AST has become a `LocalVar(slot)`, `UpvalVar(depth, slot)`,
-   `GlobalVar(sym)`, or `WithVar(sym, chain)`. Lexical access is an array index
-   off an environment pointer — `env[slot]` at depth 0, a parent-chain walk
+   `GlobalVar(sym)`, or a dialect `WithVar` payload under `IrKind::PrimOp`.
+   Lexical access is an array index off an environment pointer — `env[slot]` at
+   depth 0, a parent-chain walk
    `env.parent^depth[slot]` otherwise — never a hash lookup. This is the de
    Bruijn-style addressing borrowed from the lambda-calculus literature (resolve
    a use to a count of intervening binders), specialized to a `(depth, slot)`
@@ -382,11 +379,12 @@ membership test, sharing the path encoding and the inline-cache machinery.
 `with e; body` makes every attribute of `e` available unqualified, but *which*
 attributes exist is only known at runtime. The IR does not try to know it
 statically. The `With` node holds the scrutinee and body; every unqualified name
-inside that the resolver could *not* bind lexically becomes a `WithVar(sym,
-chain)`, where `chain` (a `WithChainId` into a side table) records the enclosing
-`with` scopes innermost-first that must be probed at runtime. Nix's resolution
-order — **lexical bindings beat `with`; inner `with` beats outer** — is baked into
-when a `WithVar` is emitted (only if no lexical binder shadows) and into the
+inside that the resolver could *not* bind lexically becomes a Nix dialect
+`DialectScopeVar(NIX_OP_WITH_VAR, sym, chain)` payload under `IrKind::PrimOp`,
+where `chain` (a `WithChainId` into a side table) records the enclosing `with`
+scopes innermost-first that must be probed at runtime. Nix's resolution order —
+**lexical bindings beat `with`; inner `with` beats outer** — is baked into when a
+source-level `WithVar` is emitted (only if no lexical binder shadows) and into the
 chain's probe order. The runtime probe rides the same hidden-class / inline-cache
 machinery as `Select`, so a `with`'s attrset shape, once seen, caches the
 membership test and offset per site.
@@ -410,14 +408,14 @@ thunked unless the primop is known to force it. The primop's `effect` annotation
 (§5) is what gates whether the simplifier may speculate on it.
 
 The `PrimOp` node *is* the dialect escape hatch
-([28](28-generalization-and-language-dialects.md) §5). Its `prim` index is
-statically known and baked into the IR at lowering, so it carries no per-force
-dynamic dispatch: the node kind is generic Core, while the *builtin set* it indexes
-into is supplied by the dialect (the Nix dialect for RFC-0007). `DerivationStrict`
-(§4.7) is exactly this mechanism viewed at one remove — a distinguished, always-
-effectful primop of the Nix dialect — given its own node kind only so it is
-statically locatable as the `.drv` boundary, not because it needs a different
-dispatch path.
+([28](28-generalization-and-language-dialects.md) §5). Its ordinary builtin symbol
+or dialect-op key is statically known and baked into the IR at lowering, so it
+carries no per-force dynamic dispatch: the node kind is generic Core, while the
+*builtin set* and dialect-op key space are supplied by the dialect (the Nix
+dialect for RFC-0007). `DerivationStrict` (§4.7) is exactly this mechanism viewed
+at one remove — a distinguished, always-effectful operation of the Nix dialect —
+given its own dialect-op key/payload so it is statically locatable as the `.drv`
+boundary, not because it needs a new Core node kind.
 
 ### 4.6 String contexts
 
@@ -441,12 +439,12 @@ simplifier's soundness rule (§5) enforces.
 
 ### 4.7 The `derivationStrict` boundary
 
-`DerivationStrict(arg)` is the single IR node that marks the
-*derivation-construction boundary*. `derivationStrict` is the primop that takes a
-fully-evaluated attrset and emits a `.drv`
+`DialectNode(NIX_OP_DERIVATION_STRICT, arg)` is the single Nix dialect operation
+payload that marks the *derivation-construction boundary*. `derivationStrict` is
+the primop that takes a fully-evaluated attrset and emits a `.drv`
 ([derivation and store compatibility](11-derivation-and-store-compatibility.md)).
-It is given its own node kind, rather than being one more `PrimOp`, for two
-reasons:
+It is given its own dialect-op key and payload, rather than being one more
+ordinary builtin `PrimOp(symbol, args)`, for two reasons:
 
 1. **It is the byte-identity gate.** Everything the whole RFC defends —
    byte-identical ATerm `.drv`, identical store paths, exact string contexts —
@@ -456,15 +454,16 @@ reasons:
    simplifier may never fold across it, speculate it, or reorder it relative to
    other effects, and the demand graph treats it as a re-execution boundary.
 
-The IR thus makes the `.drv` boundary a first-class, statically locatable node —
-the point every other consumer (harness, store layer, incremental cache) can
-anchor on.
+The IR thus makes the `.drv` boundary first-class and statically locatable by its
+dialect-op key — the point every other consumer (harness, store layer,
+incremental cache) can anchor on.
 
-`DerivationStrict` is a **Nix-dialect** node, not Core
-([28](28-generalization-and-language-dialects.md) §4): it lives in `aos-nix-dialect`
-and is reached through the indexed escape hatch (§4.5), the same way the Nix
-builtin table is. A non-Nix dialect simply would not register it. Core remains
-unaware of derivations; the `.drv` boundary is a property the Nix dialect adds.
+`DerivationStrict` is a **Nix-dialect** operation, not Core
+([28](28-generalization-and-language-dialects.md) §4): it lives in
+`aos-nix-dialect` as `NIX_OP_DERIVATION_STRICT` and is reached through the indexed
+escape hatch (§4.5), the same way the Nix builtin table is. A non-Nix dialect
+simply would not register it. Core remains unaware of derivations; the `.drv`
+boundary is a property the Nix dialect adds.
 
 ## 5. The effect-class annotation
 
@@ -689,8 +688,8 @@ The IR is the **P1** contract (decision `S-19`): the single arena IR every tier 
 ### Arena and node taxonomy (§2)
 
 - [x] Flat-arena `Vec<IrNode>` storage: fixed-stride `IrNode { kind, span, effect, data }`, compact `u32` `IrId`/`Symbol` handles, and variable-arity children in an `IrChildSlice { start, len }` over the arena child pool (§2, §2.1) — **P1**, `S-19`. Implemented by `Ir { root, arena, symbols, frames, with_chains, attr_paths, bindings, shapes }`, `IrArena { nodes: Vec<IrNode>, children: Vec<IrId> }`, `IrNode`, `IrId(u32)`, `Symbol(u32)`, and checked `push_node`/`push_child_slice` conversions that reject side tables outside `u32` addressability. Covered by `compile::ir` lowering tests that inspect arena nodes, child slices, static shapes, dynamic attr paths, with-chain side tables, thunk placement, primop arg slices, and inline-cache site ids, plus parse-cache IR artifact roundtrip/validation tests. The stable raw-memory layout and near-`memcpy` load/store guarantee remain tracked by the open serialization row.
-- [x] The current closed `IrKind` taxonomy (literals, de Bruijn variables, binders/formals, construction, access, control, operators, application, direct builtins/primops, interp, `ThunkAlloc`, `DerivationStrict`); adding a serialized kind is a schema-version bump (§2, §2.1) — **P1**, `S-19`. Implemented as the closed `#[repr(u8)]` `IrKind` enum with explicit cache-artifact tags in `cache::parse::codec::{ir_kind_tag, decode_ir_kind}`, no wildcard in the encoder match, unknown tag rejection on decode, `PARSE_CACHE_SCHEMA_VERSION` in every parse-cache key/metadata file, and `cache::parse::validate` checks tying each kind to its legal `IrData` shape and effect. Covered by `compile::ir` lowering tests across the taxonomy and parse-cache roundtrip/corruption/validation tests including inconsistent payload/effect rejection. The future Core/dialect factoring of this taxonomy remains tracked by the separate Phase 1b row.
-- [ ] Core/dialect split: generic Core kinds live in `ratchet-core`; the Nix-dialect nodes (`WithVar`, `DerivationStrict`), the builtin table, string-context, and the effect members are the `aos-nix-dialect`, reached via the indexed `PrimOp` escape hatch — not new Core variants (§1, §2, §4.5) — **Phase 1b** ([28](28-generalization-and-language-dialects.md) §10), `S-22`.
+- [x] The current closed `IrKind` taxonomy (literals, de Bruijn variables, binders/formals, construction, access, control, operators, application, direct builtins/dialect ops through `PrimOp`, interp, `ThunkAlloc`); adding a serialized kind is a schema-version bump (§2, §2.1) — **P1**, `S-19`. Implemented as the closed `#[repr(u8)]` `IrKind` enum with explicit cache-artifact tags in `cache::parse::codec::{ir_kind_tag, decode_ir_kind}`, no wildcard in the encoder match, unknown tag rejection on decode, `PARSE_CACHE_SCHEMA_VERSION` in every parse-cache key/metadata file, and `cache::parse::validate` checks tying each kind to its legal `IrData` shape and effect. Covered by `compile::ir` lowering tests across the taxonomy and parse-cache roundtrip/corruption/validation tests including inconsistent payload/effect rejection. The Phase 1b Core/dialect split is implemented by dialect payloads under `IrKind::PrimOp`, not Nix-specific Core variants.
+- [x] Core/dialect split: generic Core kinds live in `ratchet-core`; the Nix-dialect operations (`WithVar`, `DerivationStrict`), the builtin table, string-context, and the effect members are owned by `aos-nix-dialect`, reached via the indexed `PrimOp` escape hatch as Nix-owned dialect payloads rather than Core `IrKind` variants (§1, §2, §4.5) — **Phase 1b** ([28](28-generalization-and-language-dialects.md) §10), `S-22`.
 - [x] `BinOpKind`/`UnOpKind` enums with `+` overload deferred to evaluation, matching C++ Nix (§2.1) — **P1**; operator conformance ([20](20-nix-language-conformance.md)). Implemented as `syntax::BinOpKind`/`UnaryOpKind`, preserved in `IrData::Binary`/`IrData::Unary` by `IrLowerer::lower_binary`/`lower_unary` without type-specializing the operator at lowering time. The overloaded `+` dispatch remains in tree-walk evaluation (`TreeWalk::eval_add`), where the forced left operand selects numeric addition, string/path concatenation, or attrset-to-string coercion before concatenation. Covered by IR lowering tests for binary/unary payload preservation and pipe laziness, tree-walk numeric/string/path/add tests, and the C++-Nix operator parity cases in [20](20-nix-language-conformance.md).
 - [x] Side tables: `ChildPool`/`ChildSlice`, `FrameInfo`, `Upvalue`, `AttrPathSeg` (static-symbol / dynamic-`${}`); inline literal payloads (`i64`/`f64`/bit/interned `Symbol`) (§2.2) — **P1**, `S-19`. Implemented as `IrArena`'s child pool plus `IrChildSlice`, resolver `FrameInfo { slot_count, captures, rec, has_with }` and `Upvalue { depth, slot }`, lowered `IrAttrPathSegment::{Static, Dynamic}`, and inline `IrData::{Int, Float, Bool, Symbol}` payloads. Covered by resolver capture tests (`resolves_let_lambda_to_de_bruijn_slots`, `nested_lambdas_record_transitive_capture_sets`), IR lowering tests for child slices, dynamic attr-path side-table segments, with-chain side tables, shape side tables, and inline bool/symbol payloads. The stronger exact-capture invariant and serialized cache layout remain tracked by their separate rows below.
 
@@ -710,18 +709,18 @@ The IR is the **P1** contract (decision `S-19`): the single arena IR every tier 
 - [x] `Select`/`HasAttr` node shape with `AttrPathSeg` path + `or` default + a stable inline-cache site id (§4.3) — **P1** node shape, `S-10`. Implemented as `IrData::Select { site, receiver, path, default }`, `IrData::HasAttr { site, receiver, path }`, `IrInlineCacheSiteId`, and monotonic `IrLowerer::next_inline_cache_site`; dynamic/default attribute paths lower through the attr-path side table. Covered by `assigns_stable_inline_cache_sites_to_lookups`, `inherit_from_targets_share_one_source_thunk`, dynamic attr-path lowering tests, and select/hasAttr tree-walk tests.
 - [x] Tree-walk `Select`/`HasAttr` runtime semantics over lowered attr paths: evaluate the receiver and only reached dynamic path segments in Nix order, force intermediate selected values when traversal continues, apply `or` defaults for selection misses/non-attr receivers, and make `?` return false without forcing terminal values (§4.3) — **P1**, `S-10`. Implemented by `TreeWalk::eval_select`, `eval_select_from_value`, `eval_has_attr`, and `eval_attr_name`, with shared attr-path side-table lookup and direct `FlatAttrs` access. Covered by select/hasAttr tests for static/dynamic paths, receiver/key evaluation order, default behavior, type errors, missing attributes, and hasAttr non-forcing behavior.
 - [ ] Native/runtime routing of `Select`/`HasAttr` through `aos_select_ic`; the PIC itself remains **P5**, `S-10`. The current tree-walk path performs direct checked attr lookup without inline-cache dispatch.
-- [x] `With(scrutinee, body)` + `WithVar(sym, WithChainId)` baking in lexical-beats-`with` / inner-beats-outer probe order (§4.4) — **P1**; `with`-scope conformance. Implemented by the resolver classifying lexical hits as `LocalVar`/`UpvalVar` before `WithVar`, building `WithChain` scopes innermost-first, and IR lowering preserving `With` pairs plus `IrData::WithVar { symbol, chain }` into `IrWithChain` side tables whose scrutinees are explicit lazy scope nodes. Covered by `lexical_bindings_beat_active_with_scopes`, `with_variables_record_innermost_first_probe_chains`, `lambda_parameters_shadow_active_with_scopes`, `with_var_chains_point_to_lowered_scopes_inner_first`, `with_scrutinees_are_explicit_lazy_scope_nodes`, and tree-walk `with` probe tests.
-- [x] Tree-walk `WithVar` runtime probing over lowered `WithChain` side tables: push each active `with` scrutinee as a lazy scope value, probe scopes in the baked innermost-first order, force a scope only when probing it, require probed scopes to be attrsets, and report unresolved names only when every probed attrset scope misses (§4.4) — **P1**. Implemented by `TreeWalk::eval_with`, `eval_with_var`, `with_chain_scope(_ref)`, and `with_scope_value`, with direct `FlatAttrs` lookup for each forced scope. Covered by `with_scopes_capture_lexical_environments`, `with_lookup_reports_non_attr_scopes_and_missing_names`, invalid with-chain tests, and resolver/IR tests for lexical-before-with and innermost-first chain order.
+- [x] `With(scrutinee, body)` + Nix dialect `WithVar(sym, WithChainId)` baking in lexical-beats-`with` / inner-beats-outer probe order (§4.4) — **P1**; `with`-scope conformance. Implemented by the resolver classifying lexical hits as `LocalVar`/`UpvalVar` before source-level `WithVar`, building `WithChain` scopes innermost-first, and IR lowering preserving `With` pairs plus `IrData::DialectScopeVar { op: NIX_OP_WITH_VAR, symbol, chain }` into `IrWithChain` side tables whose scrutinees are explicit lazy scope nodes. Covered by `lexical_bindings_beat_active_with_scopes`, `with_variables_record_innermost_first_probe_chains`, `lambda_parameters_shadow_active_with_scopes`, `with_var_chains_point_to_lowered_scopes_inner_first`, `with_scrutinees_are_explicit_lazy_scope_nodes`, and tree-walk `with` probe tests.
+- [x] Tree-walk `WithVar` runtime probing over lowered `WithChain` side tables: push each active `with` scrutinee as a lazy scope value, probe scopes in the baked innermost-first order, force a scope only when probing it, require probed scopes to be attrsets, and report unresolved names only when every probed attrset scope misses (§4.4) — **P1**. Implemented by `TreeWalk::eval_with`, dialect-op dispatch through `eval_primop`, `eval_with_var`, `with_chain_scope(_ref)`, and `with_scope_value`, with direct `FlatAttrs` lookup for each forced scope. Covered by `with_scopes_capture_lexical_environments`, `with_lookup_reports_non_attr_scopes_and_missing_names`, invalid with-chain tests, and resolver/IR tests for lexical-before-with and innermost-first chain order.
 - [ ] Runtime `WithVar` probing on the inline-cache machinery remains tied to the **P5** select/PIC work; the current tree-walk path performs direct checked attr lookup without inline-cache dispatch.
 - [x] `PrimOp(prim, args)` as a *direct* statically-known builtin call (vs `GlobalVar`/`Apply` for indirected builtins), per-primop argument strictness matching C++ Nix (§4.5) — **P1**, `S-12`. Implemented as `IrData::PrimOp { symbol, args }` plus `BuiltinDirect` arity, strict/lazy, and effect metadata: unshadowed direct builtin references lower through `IrLowerer::{strict_unary_primop_ref,lazy_unary_primop_ref,strict_binary_primop_ref,strict_lazy_binary_primop_ref,lazy_strict_binary_primop_ref,strict_ternary_primop_ref}` with `lower_expr` vs `lower_lazy` preserving the table's forcing contract, while shadowed/default-selected/dynamic-builtin cases remain ordinary `Apply`/`GlobalVar`/`Select` forms. Covered by `compile::ir::tests::primop_tests::*` and `compile::ir::tests::primop_shadowing_tests::*`. Full builtin-surface completion remains tracked by [10](10-primops-and-runtime-abi.md) and [21](21-builtins-conformance.md).
 - [x] String-context encoding: `Interp` fixes fragment order for deterministic context union; `BinOp(Add)` unions; context builtins are ordinary `PrimOp`s — IR never reorders/drops context-bearing concat (§4.6) — **P1**; string-context parity (`S-13`). Implemented by ordered `IrKind::Interp` child slices, `IrKind::BinOp` preserving `BinOpKind::Add`, and context-manipulating builtins lowering through `IrData::PrimOp`; tree-walk `eval_interp` folds children left-to-right through `concat_strings`, `eval_add` delegates string/attr coercions to the same context-unioning concat path, and `hasContext`/`getContext`/`appendContext`/`addDrvOutputDependencies`/`unsafeDiscard*` dispatch through the direct primop table. Covered by context propagation property tests, context builtin tests, `unsafe_discard_string_context_primop_returns_context_free_string`, and the C++-oracle string-context helpers where configured. The interned/COW context representation remains tracked by [11](11-derivation-and-store-compatibility.md) §8.3.
-- [x] `DerivationStrict(arg)` as the first-class, statically-locatable `.drv` boundary node with a current closed-IR effectful barrier (§4.7) — **P1**, `S-13`; the differential harness anchors here. Implemented as `IrKind::DerivationStrict` with `IrData::Node(argument)` and `EffectClass::Effectful`: direct unshadowed `derivationStrict` / `builtins.derivationStrict` applications lower to the boundary node, lexically shadowed, `builtins`-attr-shadowed, and default-selected cases stay ordinary `Apply`/`Select`, cache-parse validation accepts only the node shape and rejects `derivationStrict` as a normal `PrimOp`, and tree-walk `eval_derivation_strict` forces an attrset argument before running the `.drv` construction path. Covered by `lowers_direct_derivation_strict_to_effectful_boundary`, shadowing/default-select lowering tests, `derivation_strict_first_class_values_call_builtin`, derivation algorithm tests, and doc 11's checked `derivationStrict` rows.
-- [ ] Open dialect/effect-key treatment for `DerivationStrict`: model it as the Nix-dialect op reached through the indexed escape hatch, expose non-speculation through `is_speculable` / distinct `effect_key`, and replace the current hardcoded `EffectClass::Effectful` barrier with the Phase 1b dialect effect lattice (§4.7, §5) — **Phase 1b**, `S-22`/`S-23` ([28](28-generalization-and-language-dialects.md) §10).
+- [x] `DialectNode(NIX_OP_DERIVATION_STRICT, arg)` as the first-class, statically-locatable `.drv` boundary with a Nix-owned dialect effect (§4.7) — **P1**, `S-13`; the differential harness anchors here. Implemented as `IrKind::PrimOp` carrying `IrData::DialectNode { op: NIX_OP_DERIVATION_STRICT, argument }` and `NIX_EFFECT_DERIVATION_STRICT`: direct unshadowed `derivationStrict` / `builtins.derivationStrict` applications lower to the dialect boundary, lexically shadowed, `builtins`-attr-shadowed, and default-selected cases stay ordinary `Apply`/`Select`, cache-parse validation accepts only the dialect node shape/effect pairing, and tree-walk dialect-op dispatch forces an attrset argument before running the `.drv` construction path. Covered by `lowers_direct_derivation_strict_to_effectful_boundary`, shadowing/default-select lowering tests, `derivation_strict_first_class_values_call_builtin`, derivation algorithm tests, and doc 11's checked `derivationStrict` rows.
+- [x] Open dialect/effect-key treatment for `DerivationStrict`: model it as the Nix-dialect op reached through the indexed escape hatch, expose non-speculation through `is_speculable` / distinct `effect_key`, and replace the hardcoded `EffectClass::Effectful` barrier with the Phase 1b dialect effect lattice (§4.7, §5) — **Phase 1b**, `S-22`/`S-23` ([28](28-generalization-and-language-dialects.md) §10).
 
 ### Effect-class annotation (§5)
 
-- [x] Current closed-IR effect annotation on every node: `IrNode.effect: EffectClass` records `Pure` versus `Effectful`, direct primops inherit `BuiltinEffect`, and `DerivationStrict` is an effectful barrier (§5) — **P1**, `S-19`/`C-20`. Implemented by `EffectClass`, `IrLowerer::push_with_effect`, `effect_for`, primop metadata conversion from `BuiltinEffect`, cache artifact effect tags, native fallback preflight reporting effectful nodes as unsupported/fallback-eligible, and `cache::parse::validate` checks that reject inconsistent node/effect pairs. Covered by effectful primop lowering tests, `lowers_direct_derivation_strict_to_effectful_boundary`, `with_shadowed_derivation_strict_lowers_to_effectful_boundary`, `direct_builtin_declarations_mark_effectful_boundaries`, and `lowered_ir_rejects_inconsistent_node_payload_and_effect`. The broader dialect-open effect API remains the separate Phase 1b row.
-- [ ] Dialect-supplied effect on every node, read through `is_speculable` / `effect_key` (open lattice, not a closed enum); Nix-dialect classification rule (non-speculable = `DerivationStrict`, `import`, IFD, fs/env readers; speculable = everything else) (§5) — **Phase 1b**, `S-19`/`S-23`/`C-20` ([28](28-generalization-and-language-dialects.md) §10).
+- [x] Dialect-open effect annotation on every node: `IrNode.effect: EffectClass` records a dialect-owned key plus speculation bit, direct primops inherit Nix-refined builtin effects, and `DerivationStrict` is a Nix dialect-op barrier (§5) — **P1**, `S-19`/`C-20`. Implemented by `EffectClass::{new,pure,from_cache_key}`, `IrLowerer::push_with_effect`, dialect effect hooks, cache artifact effect tags, native fallback preflight reporting non-speculable nodes as unsupported/fallback-eligible, and `cache::parse::validate` checks that reject inconsistent node/effect pairs. Covered by effectful primop lowering tests, `lowers_direct_derivation_strict_to_effectful_boundary`, `with_shadowed_derivation_strict_lowers_to_effectful_boundary`, `direct_builtin_declarations_mark_effectful_boundaries`, and `lowered_ir_rejects_inconsistent_node_payload_and_effect`.
+- [x] Dialect-supplied effect on every node, read through `is_speculable` / `effect_key` (open lattice, not a closed enum); Nix-dialect classification rule (non-speculable = `DerivationStrict`, `import`, IFD, fs/env readers; speculable = everything else) (§5) — **Phase 1b**, `S-19`/`S-23`/`C-20` ([28](28-generalization-and-language-dialects.md) §10).
 - [ ] The error-quarantine discipline consumed in all three places — speculation, the simplifier, the demand graph — so no speculative/eager work surfaces an error or effect until genuinely demanded (§5) — **P1** contract; enforced by speculation (`C-19`, [04](04-frontend-parser-and-ir.md) §9.6), the simplifier (`C-21`, [07](07-laziness-and-whole-program-analyses.md) §7.5.3), and the cache (`C-20`, [12](12-incremental-evaluation-cache.md)).
 
 ### Demand-graph integration (§6)

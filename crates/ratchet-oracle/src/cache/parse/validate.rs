@@ -226,7 +226,6 @@ fn validate_ir_node_shape(node: IrNode) -> Result<(), String> {
             | (IrKind::UpvalVar, IrData::Upval { .. })
             | (IrKind::GlobalVar, IrData::Symbol(_))
             | (IrKind::BuiltinAttr, IrData::Symbol(_))
-            | (IrKind::WithVar, IrData::WithVar { .. })
             | (IrKind::List, IrData::Children(_))
             | (IrKind::AttrSet, IrData::AttrSet { .. })
             | (IrKind::Lambda, IrData::Lambda { .. })
@@ -246,7 +245,8 @@ fn validate_ir_node_shape(node: IrNode) -> Result<(), String> {
             | (IrKind::Interp, IrData::Children(_))
             | (IrKind::ThunkAlloc, IrData::Node(_))
             | (IrKind::PrimOp, IrData::PrimOp { .. })
-            | (IrKind::DerivationStrict, IrData::Node(_))
+            | (IrKind::PrimOp, IrData::DialectNode { .. })
+            | (IrKind::PrimOp, IrData::DialectScopeVar { .. })
     );
     if valid {
         Ok(())
@@ -260,15 +260,32 @@ fn validate_ir_node_effect(ir: &Ir, node: IrNode) -> Result<(), String> {
         IrKind::PrimOp => match node.data {
             IrData::PrimOp { symbol, .. } => primop_effect(ir.symbols.resolve(symbol))
                 .ok_or_else(|| format!("unknown IR primop symbol {symbol:?}"))?,
+            IrData::DialectNode { op, .. } => dialect_node_effect(op)?,
+            IrData::DialectScopeVar { op, .. } => dialect_scope_var_effect(op)?,
             _ => node.effect,
         },
-        IrKind::DerivationStrict => aos_nix_dialect::nix_effect_of(node.kind),
         _ => aos_nix_dialect::nix_effect_of(node.kind),
     };
     if node.effect == expected {
         Ok(())
     } else {
         Err(format!("invalid IR effect for {:?} node", node.kind))
+    }
+}
+
+fn dialect_node_effect(op: IrDialectOp) -> Result<EffectClass, String> {
+    match op {
+        aos_nix_dialect::NIX_OP_DERIVATION_STRICT => {
+            Ok(aos_nix_dialect::nix_dialect_op_effect_of(op))
+        }
+        _ => Err(format!("invalid IR dialect node op {op:?}")),
+    }
+}
+
+fn dialect_scope_var_effect(op: IrDialectOp) -> Result<EffectClass, String> {
+    match op {
+        aos_nix_dialect::NIX_OP_WITH_VAR => Ok(aos_nix_dialect::nix_dialect_op_effect_of(op)),
+        _ => Err(format!("invalid IR dialect scope-var op {op:?}")),
     }
 }
 
@@ -333,6 +350,19 @@ fn validate_ir_data(ir: &Ir, data: IrData) -> Result<(), String> {
             check_ir_symbol(ir, symbol)?;
             check_ir_child_slice(ir, args)
         }
+        IrData::DialectNode { op, argument } => {
+            dialect_node_effect(op)?;
+            check_ir_id(ir, argument, "dialect op argument")
+        }
+        IrData::DialectScopeVar { op, symbol, chain } => {
+            dialect_scope_var_effect(op)?;
+            check_ir_symbol(ir, symbol)?;
+            let chain = usize::try_from(chain).map_err(|_| "with-chain id overflow".to_owned())?;
+            if chain >= ir.with_chains.len() {
+                return Err("with-chain id out of range".to_owned());
+            }
+            Ok(())
+        }
         IrData::Lambda {
             pattern,
             body,
@@ -385,14 +415,6 @@ fn validate_ir_data(ir: &Ir, data: IrData) -> Result<(), String> {
             Ok(())
         }
         IrData::Local { .. } | IrData::Upval { .. } => Ok(()),
-        IrData::WithVar { symbol, chain } => {
-            check_ir_symbol(ir, symbol)?;
-            let chain = usize::try_from(chain).map_err(|_| "with-chain id overflow".to_owned())?;
-            if chain >= ir.with_chains.len() {
-                return Err("with-chain id out of range".to_owned());
-            }
-            Ok(())
-        }
     }
 }
 
