@@ -469,7 +469,7 @@ The control channel is determinism-neutral by construction.
   (no version overlap, ABI mismatch, bad slot, wrong fd count, short/invalid
   region, non-zero SetupAck, premature socket close): abort the node, escalate
   teardown, reap the child. — satisfies [PROTO-21]; spec §5.4.
-- [ ] **T-PROTO-9** Freeze the protocol golden-vector corpus (Hello, HelloAck,
+- [x] **T-PROTO-9** Freeze the protocol golden-vector corpus (Hello, HelloAck,
   Setup payload, SetupAck, Quit at the current `proto_version`) and wire it into
   `gate:abi-conformance` with the version-bump-regenerates rule. — satisfies
   [PROTO-23]; spec §6, §24 §8.1.

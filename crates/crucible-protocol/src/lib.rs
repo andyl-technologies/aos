@@ -10,7 +10,7 @@
 //! Module map: the crate root owns the frame-format constants, closed tag
 //! registry, message bodies, pure codec, frame I/O helpers, handshake
 //! orchestration, setup descriptor passing, and control/data split contract.
-//! Future modules will split golden vectors.
+//! `golden_vectors` owns the frozen ABI-conformance corpus.
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
 //! details stay private; public callers use safe setup descriptor handover wrappers.
@@ -30,9 +30,16 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod golden_vectors;
+
 use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+
+pub use golden_vectors::{
+    ControlGoldenVector, ControlGoldenVectorMessage, GOLDEN_CONTROL_VECTORS,
+    GOLDEN_VECTOR_PROTOCOL_VERSION, GOLDEN_VECTOR_REGENERATION_RULE,
+};
 
 use thiserror::Error;
 
