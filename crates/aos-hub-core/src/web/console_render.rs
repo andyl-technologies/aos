@@ -2411,6 +2411,9 @@ pub fn registry_settings_page(
     caches: &[RegistryCacheRow],
     linkable_caches: &[(String, String)],
     can_delete: bool,
+    // Whether this registry advertises its inherited storage-binding frontend
+    // (RFC-0004 §12) — the storage tab's opt-out checkbox.
+    advertise_storage_frontend: bool,
     result: Option<&str>,
     // Which registry settings section to render: `general` (visibility + crawl),
     // `storage`, `caches`, or `danger`. The former single dense page is split
@@ -2561,6 +2564,23 @@ pub fn registry_settings_page(
             );
         }
     }
+
+    // Advertise the inherited storage-binding frontend (RFC-0004 §12): when its
+    // bucket is public and has a direct frontend, this registry's setup snippets
+    // point clients straight at the bucket. Un-check to keep it hub-served.
+    let _ = write!(
+        body,
+        "<h3>Bucket-direct serving</h3>\n\
+         <p class=\"dim\">When this registry's storage bucket is public and has a direct \
+         frontend, advertise it so clients fetch the git surface straight from the bucket.</p>\n\
+         <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/advertise-frontend\">{csrf}\
+         <label><span class=\"lbl\">advertise the inherited bucket frontend</span> \
+         <input type=\"checkbox\" name=\"advertise\" value=\"1\"{checked}></label>\n\
+         <button>save</button>\n</form>\n",
+        slug = escape(slug),
+        csrf = csrf_field(csrf),
+        checked = if advertise_storage_frontend { " checked" } else { "" },
+    );
 
     }
 
