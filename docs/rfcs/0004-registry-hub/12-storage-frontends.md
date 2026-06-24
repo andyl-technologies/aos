@@ -190,17 +190,23 @@ proxied/private path is unchanged.
 
 ## Implementation checklist
 
+- [x] Migration v29: `frontends.storage_binding_id` + 3-way one-of CHECK (table
+      rebuild); `FrontendRecord` field; `create_storage_frontend`
+      (Direct-over-private gate); `list_storage_frontends`; shared SELECT/row map.
+- [x] Effective-frontend resolver (cache path): `RpcService::cache_consumer_url`
+      inherits binding frontends, derives URL from `prefix`, applies own-frontend
+      precedence + the public-binding gate; `advertise_cache_change` repointed at
+      the derived URL. Pure helpers unit-tested.
+- [ ] Registry-side resolver (git/web surfaces) — the cache path landed first.
 - [ ] Migration: seed the instance-default `storage_bindings` row; resolve
       `storage_binding_id IS NULL` to it; replace the `binding.rs` synthetic row.
-- [ ] Migration: `frontends.storage_binding_id` + 3-way one-of CHECK (table
-      rebuild); `FrontendRecord` field; `list_storage_frontends`.
-- [ ] Effective-frontend resolver: inherit binding frontends, derive URL from
-      `prefix`, consumer override precedence, public/visibility gate.
-- [ ] Advertise toggle (config or column) + repoint advertisement URL at the
-      derived frontend; verify `advertised_caches`/probes still reconcile.
+      **Central to the common case (most content is on the default bucket), but
+      the most invasive — touches the load-bearing surface-root resolution.**
 - [ ] `StorageService` frontend-on-binding CRUD + the shared frontends sub-form
-      (default + custom bindings, same shape).
+      (default + custom bindings, same shape) — operator-facing create/edit.
 - [ ] `worker deploy`: record default bucket `public_base_url` + optional
       default `direct` frontend.
-- [ ] Security tests: a private binding/consumer can never be advertised or
-      direct; a public consumer on a public binding resolves to the bucket URL.
+- [ ] End-to-end security test: a private binding/consumer is never advertised
+      or direct; a public consumer on a public binding resolves to the bucket URL.
+      (The create-time Direct-over-private gate and the resolver's public-binding
+      re-check are in; the unit tests cover the pure selection/URL logic.)
