@@ -54,13 +54,39 @@ pub fn aos_nix_env() -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Resolves a real-Nix `program` name to the binary that should run it.
+///
+/// When `AOS_NIX_ORACLE` points at a `nix-instantiate` binary, sibling tools
+/// (`nix-instantiate`, `nix-store`, `nix-build`, …) are resolved from the same
+/// directory so the whole real-Nix toolchain comes from one pinned
+/// distribution. This is what makes the acceptance gate's C++ oracle honor the
+/// pinned conformance version (e.g. 2.24.12) instead of silently using whatever
+/// `nix-instantiate` happens to be first on `PATH` (which produces version-drift
+/// divergences, e.g. nix 2.34 stripping `__impure = false` from fixed-output
+/// derivation environments where 2.24 keeps it). Falls back to the bare program
+/// name (PATH lookup) when the variable is unset or its directory lacks the
+/// requested tool.
+fn resolve_nix_program(program: &str) -> std::ffi::OsString {
+    if let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") {
+        if let Some(dir) = std::path::Path::new(&oracle).parent() {
+            let candidate = dir.join(program);
+            if candidate.is_file() {
+                return candidate.into_os_string();
+            }
+        }
+    }
+    program.into()
+}
+
 /// Creates a real-Nix subprocess command with AOS store env bindings applied.
 ///
 /// Private evaluator-control flags are removed so evaluator selection and
 /// canary verification never leak into C++ Nix subprocesses. `AOS_ROOT`-derived
-/// store bindings are then applied through [`aos_nix_env`].
+/// store bindings are then applied through [`aos_nix_env`]. The program is
+/// resolved through [`resolve_nix_program`] so `AOS_NIX_ORACLE` pins the oracle
+/// nix distribution.
 pub fn aos_nix_command(program: &str) -> Command {
-    let mut command = Command::new(program);
+    let mut command = Command::new(resolve_nix_program(program));
     command
         .env_remove("AOS_NIX_NATIVE")
         .env_remove("AOS_NIX_NATIVE_VERIFY")
@@ -72,7 +98,7 @@ pub fn aos_nix_command(program: &str) -> Command {
 ///
 /// This is the async equivalent of [`aos_nix_command`].
 pub fn aos_tokio_nix_command(program: &str) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(program);
+    let mut command = tokio::process::Command::new(resolve_nix_program(program));
     command
         .env_remove("AOS_NIX_NATIVE")
         .env_remove("AOS_NIX_NATIVE_VERIFY")
