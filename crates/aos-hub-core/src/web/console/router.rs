@@ -495,6 +495,12 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             }),
         )
         .route(
+            "/{slug}/-/settings/advertise-frontend",
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::registry_set_advertise_frontend(from_state(s), h, r, u, p, f))
+            }),
+        )
+        .route(
             "/{slug}/-/settings/caches",
             get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
                 send_bridge(handlers::registry_caches(from_state(s), h, r, u, p))

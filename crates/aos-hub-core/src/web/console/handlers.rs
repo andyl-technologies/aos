@@ -4318,6 +4318,10 @@ async fn registry_settings_view(
             None => Vec::new(),
         };
         let can_delete = session.allows(&deps.db, Permission::IamAdmin, &scope).await;
+        let advertise_frontend = deps
+            .db
+            .registry_advertises_storage_frontend(registry.id)
+            .await?;
         let binding_ref = binding
             .as_ref()
             .map(|(n, r, p)| (n.as_str(), r.as_str(), p.as_str()));
@@ -4331,6 +4335,7 @@ async fn registry_settings_view(
             &caches,
             &linkable_caches,
             can_delete,
+            advertise_frontend,
             result,
             active,
             started,
@@ -4673,6 +4678,54 @@ pub(crate) async fn registry_change_storage(
         Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(err) => internal(err),
     }
+}
+
+/// `POST /{slug}/-/settings/advertise-frontend` form: the advertise checkbox.
+#[derive(serde::Deserialize)]
+pub(crate) struct AdvertiseFrontendForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    advertise: Option<String>,
+}
+
+/// `POST /{slug}/-/settings/advertise-frontend` — toggle whether the registry
+/// advertises its inherited storage-binding frontend (RFC-0004 §12).
+pub(crate) async fn registry_set_advertise_frontend(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<AdvertiseFrontendForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&registry.slug);
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    if let Err(err) = deps
+        .db
+        .set_registry_advertise_storage_frontend(registry.id, form.advertise.is_some())
+        .await
+    {
+        return internal(err);
+    }
+    registry_settings_view(&deps, &session, &registry, None, "storage", started).await
 }
 
 /// Resolve a storage-change form's `binding` value to a target binding id.
