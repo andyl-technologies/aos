@@ -1355,11 +1355,14 @@ pub fn org_dashboard(
         .then(|| format!("registries_page={}", reg_pager.page()))
         .unwrap_or_default();
     let slug = &org.slug;
-    // The org's dense overview is now split across sidebar tabs: registries
-    // (default), binary caches, and settings (projects/storage/members/danger).
+    // The org's dense overview is split across focused sidebar tabs; each
+    // `active` value renders exactly one section.
     let section_label = match active {
+        "projects" => "projects",
+        "members" => "members",
         "caches" => "binary caches",
-        "settings" => "settings",
+        "storage" => "storage",
+        "danger" => "danger zone",
         _ => "registries",
     };
     let mut body = format!(
@@ -1494,10 +1497,8 @@ pub fn org_dashboard(
         }
     }
 
-    // -- Settings: projects, storage, members, and the danger zone -----------
-    if active != "settings" {
-        return org_settings_chrome(email, slug, active, &body, started);
-    }
+    // -- Projects ------------------------------------------------------------
+    if active == "projects" {
     body.push_str("<h2>Projects</h2>\n");
     if projects.is_empty() {
         body.push_str("<p class=\"dim\">No projects.</p>\n");
@@ -1540,7 +1541,10 @@ pub fn org_dashboard(
             csrf = csrf_field(csrf),
         );
     }
+    }
 
+    // -- Storage -------------------------------------------------------------
+    if active == "storage" {
     body.push_str("<h2>Storage</h2>\n");
     // The deployment's default storage is always present and is what new
     // registries use with no binding at all. Render it as the first row — a
@@ -1551,7 +1555,7 @@ pub fn org_dashboard(
     let mut rows: Vec<Vec<String>> = vec![vec![
         "<span class=\"chip\">default</span>".to_string(),
         escape(RuntimeKind::current().default_storage_kind()),
-        "<a href=\"/-/instance#storage\">deployment default →</a>".to_string(),
+        "<a href=\"/-/instance/storage\">deployment default →</a>".to_string(),
         String::new(),
     ]];
     rows.extend(bindings.iter().map(|b| {
@@ -1624,7 +1628,10 @@ pub fn org_dashboard(
             access_help = help::marker("binding.access"),
         );
     }
+    }
 
+    // -- Members -------------------------------------------------------------
+    if active == "members" {
     body.push_str("<h2>Members</h2>\n");
     let rows: Vec<Vec<String>> = mem_pager
         .slice(members)
@@ -1693,7 +1700,10 @@ pub fn org_dashboard(
             csrf_field(csrf),
         );
     }
+    }
 
+    // -- Danger zone: delete the org -----------------------------------------
+    if active == "danger" {
     if can_delete {
         body.push_str("<h2 class=\"danger\">Delete organization</h2>\n");
         let _ = write!(
@@ -1708,6 +1718,11 @@ pub fn org_dashboard(
             slug = escape(slug),
             csrf = csrf_field(csrf),
         );
+    } else {
+        body.push_str(
+            "<p class=\"dim\">You do not have permission to delete this organization.</p>\n",
+        );
+    }
     }
 
     org_settings_chrome(email, slug, active, &body, started)
@@ -2174,22 +2189,22 @@ fn registry_settings_tabs(slug: &str, active: &str) -> Vec<SettingsTab> {
     vec![
         SettingsTab::new("general", "General", format!("/{slug}/-/settings"), active),
         SettingsTab::new(
-            "tokens",
-            "Tokens",
-            format!("/{slug}/-/settings/tokens"),
+            "storage",
+            "Storage",
+            format!("/{slug}/-/settings/storage"),
+            active,
+        ),
+        SettingsTab::new(
+            "caches",
+            "Binary caches",
+            format!("/{slug}/-/settings/caches"),
             active,
         ),
         SettingsTab::new("keys", "Keys", format!("/{slug}/-/keys"), active),
         SettingsTab::new(
-            "changes",
-            "Change requests",
-            format!("/{slug}/-/changes"),
-            active,
-        ),
-        SettingsTab::new(
-            "config",
-            "Config",
-            format!("/{slug}/-/settings/config"),
+            "tokens",
+            "Tokens",
+            format!("/{slug}/-/settings/tokens"),
             active,
         ),
         SettingsTab::new(
@@ -2199,9 +2214,27 @@ fn registry_settings_tabs(slug: &str, active: &str) -> Vec<SettingsTab> {
             active,
         ),
         SettingsTab::new(
+            "config",
+            "Config",
+            format!("/{slug}/-/settings/config"),
+            active,
+        ),
+        SettingsTab::new(
+            "changes",
+            "Change requests",
+            format!("/{slug}/-/changes"),
+            active,
+        ),
+        SettingsTab::new(
             "publishes",
             "Publishes",
             format!("/{slug}/-/publishes"),
+            active,
+        ),
+        SettingsTab::new(
+            "danger",
+            "Danger",
+            format!("/{slug}/-/settings/danger"),
             active,
         ),
     ]
@@ -2232,8 +2265,10 @@ pub fn registry_settings_chrome(
 
 /// The org-scope settings sidebar (one of the org management pages active).
 ///
-/// `active` is the key of the current page (`registries`, `caches`, `settings`,
-/// `keys`, `webhooks`, `sso`, `audit`).
+/// `active` is the key of the current page (`registries`, `projects`,
+/// `members`, `caches`, `storage`, `keys`, `webhooks`, `sso`, `audit`,
+/// `danger`). Ordered contents → people → infra → integrations → audit →
+/// danger.
 fn org_settings_tabs(org_slug: &str, active: &str) -> Vec<SettingsTab> {
     vec![
         SettingsTab::new(
@@ -2243,15 +2278,27 @@ fn org_settings_tabs(org_slug: &str, active: &str) -> Vec<SettingsTab> {
             active,
         ),
         SettingsTab::new(
+            "projects",
+            "Projects",
+            format!("/-/org/{org_slug}/projects"),
+            active,
+        ),
+        SettingsTab::new(
+            "members",
+            "Members",
+            format!("/-/org/{org_slug}/members"),
+            active,
+        ),
+        SettingsTab::new(
             "caches",
             "Binary caches",
             format!("/-/org/{org_slug}/caches"),
             active,
         ),
         SettingsTab::new(
-            "settings",
-            "Settings",
-            format!("/-/org/{org_slug}/settings"),
+            "storage",
+            "Storage",
+            format!("/-/org/{org_slug}/storage"),
             active,
         ),
         SettingsTab::new(
@@ -2268,6 +2315,12 @@ fn org_settings_tabs(org_slug: &str, active: &str) -> Vec<SettingsTab> {
         ),
         SettingsTab::new("sso", "SSO", format!("/-/org/{org_slug}/sso"), active),
         SettingsTab::new("audit", "Audit", format!("/-/org/{org_slug}/audit"), active),
+        SettingsTab::new(
+            "danger",
+            "Danger",
+            format!("/-/org/{org_slug}/danger"),
+            active,
+        ),
     ]
 }
 
@@ -2295,6 +2348,7 @@ fn org_settings_chrome(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn registry_settings_page(
     email: &str,
     registry: &RegistryRecord,
@@ -2306,10 +2360,20 @@ pub fn registry_settings_page(
     linkable_caches: &[(String, String)],
     can_delete: bool,
     result: Option<&str>,
+    // Which registry settings section to render: `general` (visibility + crawl),
+    // `storage`, `caches`, or `danger`. The former single dense page is split
+    // across these sidebar tabs.
+    active: &str,
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = format!("<h1>Settings · {}</h1>\n", escape(slug));
+    let section_label = match active {
+        "storage" => "Storage",
+        "caches" => "Binary caches",
+        "danger" => "Danger zone",
+        _ => "General",
+    };
+    let mut body = format!("<h1>{} · {}</h1>\n", section_label, escape(slug));
 
     if let Some(change_id) = result {
         let _ = writeln!(
@@ -2319,6 +2383,8 @@ pub fn registry_settings_page(
         );
     }
 
+    // -- General: visibility + crawl policy ----------------------------------
+    if active == "general" {
     // Visibility: the one in-place edit on this page.
     body.push_str("<h2>Visibility</h2>\n");
     let _ = writeln!(
@@ -2376,7 +2442,10 @@ pub fn registry_settings_page(
         crawl_options = crawl_options,
         policy_help = help::marker("registry.crawl_policy"),
     );
+    }
 
+    // -- Storage: current backend + change storage ---------------------------
+    if active == "storage" {
     // Storage (read-only). Three cases: a custom binding, the deployment's
     // default storage (a managed registry with no binding), or a phase-1
     // source-URL mirror (read-only upstream, no writable surface here).
@@ -2408,7 +2477,7 @@ pub fn registry_settings_page(
             let _ = writeln!(
                 body,
                 "<p><span class=\"chip\">default storage</span> · prefix <code>{}</code> · \
-                 <a href=\"/-/instance#storage\">deployment default →</a></p>",
+                 <a href=\"/-/instance/storage\">deployment default →</a></p>",
                 escape(prefix),
             );
         }
@@ -2443,6 +2512,10 @@ pub fn registry_settings_page(
         }
     }
 
+    }
+
+    // -- Binary caches serving this registry ---------------------------------
+    if active == "caches" {
     // Binary caches serving this registry (the reverse of a cache's
     // linked-registries list) — managed here from the registry side, and
     // equivalently from each cache's own page. Both routes share the same
@@ -2538,27 +2611,10 @@ pub fn registry_settings_page(
             roots_help = help::marker("link.roots_packages"),
         );
     }
-
-    // Trust anchors (read-only — editing is the signed keys.toml flow).
-    body.push_str("<h2>Trust anchors</h2>\n");
-    if registry.trust_keys.is_empty() {
-        body.push_str("<p class=\"warn\">No pinned trust anchors.</p>\n");
-    } else {
-        let rows: Vec<Vec<String>> = registry
-            .trust_keys
-            .iter()
-            .map(|k| vec![format!("<code>{}</code>", escape(k))])
-            .collect();
-        body.push_str(&table(&["pinned anchor"], &rows));
     }
-    let _ = writeln!(
-        body,
-        "<p class=\"dim\">Editing the roster is the signed <code>keys.toml</code> flow: see \
-         the <a href=\"/{slug}/-/keys\">key roster</a> and propose roster edits as a \
-         <a href=\"/{slug}/-/settings/config\">config change request</a>.</p>",
-        slug = escape(slug),
-    );
 
+    // -- Danger zone: remove the registry ------------------------------------
+    if active == "danger" {
     if can_delete {
         body.push_str("<h2 class=\"danger\">Remove registry</h2>\n");
         let _ = write!(
@@ -2573,9 +2629,14 @@ pub fn registry_settings_page(
             slug = escape(slug),
             csrf = csrf_field(csrf),
         );
+    } else {
+        body.push_str(
+            "<p class=\"dim\">You do not have permission to remove this registry.</p>\n",
+        );
+    }
     }
 
-    registry_settings_chrome(email, slug, "general", &body, started)
+    registry_settings_chrome(email, slug, active, &body, started)
 }
 
 /// The per-registry token management page.
@@ -2854,6 +2915,26 @@ pub fn keys_page(
             escape(slug),
         );
     }
+
+    // Trust anchors (read-only — editing is the signed keys.toml flow). Shown
+    // alongside the roster since both concern this registry's signing identity.
+    body.push_str("<h2>Trust anchors</h2>\n");
+    if registry.trust_keys.is_empty() {
+        body.push_str("<p class=\"warn\">No pinned trust anchors.</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = registry
+            .trust_keys
+            .iter()
+            .map(|k| vec![format!("<code>{}</code>", escape(k))])
+            .collect();
+        body.push_str(&table(&["pinned anchor"], &rows));
+    }
+    let _ = writeln!(
+        body,
+        "<p class=\"dim\">Editing the roster is the signed <code>keys.toml</code> flow: propose \
+         roster edits as a <a href=\"/{slug}/-/settings/config\">config change request</a>.</p>",
+        slug = escape(slug),
+    );
 
     registry_settings_chrome(email, slug, "keys", &body, started)
 }

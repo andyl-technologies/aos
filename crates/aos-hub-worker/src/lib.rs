@@ -457,6 +457,30 @@ mod entry {
             .is_some_and(|cc| cc.to_ascii_lowercase().contains("public"))
     }
 
+    /// The edge-cache key for `req` when it is a cacheable facade read, else
+    /// `None`.
+    ///
+    /// Only anonymous, whole-object `GET`s are eligible: a `GET` carrying no
+    /// `Authorization` (a private-registry read must never land in a shared
+    /// cache) and no `Range` (the Cloudflare Cache API serves a partial read
+    /// from the cached *whole* object on lookup, and refuses to *store* a `206`).
+    /// The key is the full request URL, which uniquely identifies a public
+    /// machine-facade object (`*.narinfo`, `nar/**`, …). Non-facade `GET`s (the
+    /// browse UI) may match here but are excluded at *store* time by
+    /// [`is_publicly_cacheable`], so they are never actually cached.
+    fn facade_cache_key(req: &Request) -> Option<String> {
+        if req.method() != Method::Get {
+            return None;
+        }
+        let headers = req.headers();
+        if headers.get("authorization").ok().flatten().is_some()
+            || headers.get("range").ok().flatten().is_some()
+        {
+            return None;
+        }
+        req.url().ok().map(|url| url.to_string())
+    }
+
     /// The HTTP entry point: bridge every request to the shared router.
     ///
     /// The shared router ([`aos_hub_core::connect::router`]) owns the
@@ -471,10 +495,25 @@ mod entry {
     /// init --target d1:<name>`), never over HTTP. A handler error is logged and
     /// returned as a `500` so a binding/back-end failure never panics the isolate.
     #[worker::event(fetch, respond_with_errors)]
-    async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // Route the shared core's `tracing` events to the console so handler
         // errors land in Workers Logs (idempotent; see `crate::tracinglog`).
         crate::tracinglog::init();
+
+        // Edge cache read-through: a previously-stored public facade object
+        // (NAR/narinfo/...) is served straight from this colo's cache — no D1
+        // session, no R2 read, no shared-router dispatch. Only anonymous
+        // whole-object GETs are eligible (`facade_cache_key`); the Cache API
+        // honors a `Range` on lookup against the cached whole object, so range
+        // reads are served from it too once it is warm. Everything else falls
+        // through to the router below.
+        let cache_key = facade_cache_key(&req);
+        if let Some(key) = &cache_key {
+            if let Ok(Some(hit)) = worker::Cache::default().get(key.clone(), false).await {
+                return Ok(hit);
+            }
+        }
+
         // The request's own `scheme://host`, the fallback canonical URL when
         // `HUB_EXTERNAL_URL` is unset (a no-custom-domain deploy).
         let request_origin = req
@@ -515,6 +554,25 @@ mod entry {
                      HttpOnly; Secure; SameSite=Lax"
                 );
                 resp.headers_mut().append("set-cookie", &cookie)?;
+            }
+        }
+
+        // Edge cache write-through: store a fresh public facade response so the
+        // read-through above serves repeat reads from this colo without touching
+        // D1 or R2. `wait_until` runs the store after the response is returned,
+        // off its critical path, and `cloned` tees the (possibly streamed) body
+        // so the client is served concurrently. Gated on a `200` *and*
+        // [`is_publicly_cacheable`], so browse/RPC/private/error responses — and
+        // anything carrying the bookmark `Set-Cookie` — are never stored.
+        if let Some(key) = cache_key {
+            if resp.status_code() == 200 && is_publicly_cacheable(&resp) {
+                if let Ok(clone) = resp.cloned() {
+                    ctx.wait_until(async move {
+                        if let Err(err) = worker::Cache::default().put(key, clone).await {
+                            worker::console_error!("edge cache put failed: {err}");
+                        }
+                    });
+                }
             }
         }
         Ok(resp)

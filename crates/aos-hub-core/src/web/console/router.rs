@@ -261,7 +261,10 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/-/org/{org}/members",
-            post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, q: Query<_>| {
+                send_bridge(handlers::org_members(from_state(s), h, r, p, q))
+            })
+            .post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
                 send_bridge(handlers::org_invite_member(from_state(s), h, p, f))
             }),
         )
@@ -279,7 +282,10 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/-/org/{org}/projects",
-            post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, q: Query<_>| {
+                send_bridge(handlers::org_projects(from_state(s), h, r, p, q))
+            })
+            .post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
                 send_bridge(handlers::org_create_project(from_state(s), h, p, f))
             }),
         )
@@ -287,6 +293,18 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             "/-/org/{org}/projects/delete",
             post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
                 send_bridge(handlers::org_delete_project(from_state(s), h, p, f))
+            }),
+        )
+        .route(
+            "/-/org/{org}/storage",
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, q: Query<_>| {
+                send_bridge(handlers::org_storage(from_state(s), h, r, p, q))
+            }),
+        )
+        .route(
+            "/-/org/{org}/danger",
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, q: Query<_>| {
+                send_bridge(handlers::org_danger(from_state(s), h, r, p, q))
             }),
         )
         .route(
@@ -312,9 +330,7 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/-/org/{org}/settings",
-            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, q: Query<_>| {
-                send_bridge(handlers::org_settings(from_state(s), h, r, p, q))
-            }),
+            get(|p: Path<_>| send_bridge(handlers::org_settings(p))),
         )
         .route(
             "/-/org/{org}/caches/{slug}",
@@ -453,8 +469,23 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/{slug}/-/settings/storage",
-            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
+                send_bridge(handlers::registry_storage(from_state(s), h, r, u, p))
+            })
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
                 send_bridge(handlers::registry_change_storage(from_state(s), h, r, u, p, f))
+            }),
+        )
+        .route(
+            "/{slug}/-/settings/caches",
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
+                send_bridge(handlers::registry_caches(from_state(s), h, r, u, p))
+            }),
+        )
+        .route(
+            "/{slug}/-/settings/danger",
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
+                send_bridge(handlers::registry_danger(from_state(s), h, r, u, p))
             }),
         )
         .route(

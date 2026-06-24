@@ -1490,16 +1490,56 @@ pub(crate) async fn org_caches(
     org_view(deps, headers, started, path, pages, "caches").await
 }
 
-/// `GET /-/org/{org}/settings` — the org's settings tab (projects, storage,
-/// members, danger zone).
-pub(crate) async fn org_settings(
+/// `GET /-/org/{org}/projects` — the org's projects tab.
+pub(crate) async fn org_projects(
     deps: ConsoleDeps,
     headers: HeaderMap,
     started: RequestStart,
     path: Path<String>,
     pages: Query<DashboardPages>,
 ) -> Response {
-    org_view(deps, headers, started, path, pages, "settings").await
+    org_view(deps, headers, started, path, pages, "projects").await
+}
+
+/// `GET /-/org/{org}/members` — the org's members tab.
+pub(crate) async fn org_members(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    path: Path<String>,
+    pages: Query<DashboardPages>,
+) -> Response {
+    org_view(deps, headers, started, path, pages, "members").await
+}
+
+/// `GET /-/org/{org}/storage` — the org's storage-bindings tab.
+pub(crate) async fn org_storage(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    path: Path<String>,
+    pages: Query<DashboardPages>,
+) -> Response {
+    org_view(deps, headers, started, path, pages, "storage").await
+}
+
+/// `GET /-/org/{org}/danger` — the org's danger-zone tab (delete org).
+pub(crate) async fn org_danger(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    path: Path<String>,
+    pages: Query<DashboardPages>,
+) -> Response {
+    org_view(deps, headers, started, path, pages, "danger").await
+}
+
+/// `GET /-/org/{org}/settings` — legacy alias; the former single settings tab
+/// is now split into Projects/Members/Storage/Danger. Redirect to Projects.
+pub(crate) async fn org_settings(
+    Path(org_slug): Path<String>,
+) -> Response {
+    Redirect::to(&format!("/-/org/{org_slug}/projects")).into_response()
 }
 
 /// Renders one org section (`registries` / `caches` / `settings`) — the split
@@ -3850,15 +3890,18 @@ pub(crate) async fn registry_settings(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    registry_settings_view(&deps, &session, &registry, None, started).await
+    registry_settings_view(&deps, &session, &registry, None, "general", started).await
 }
 
-/// Render the registry settings landing page.
+/// Render one registry settings section (`general` / `storage` / `caches` /
+/// `danger`) — the split of the former single dense settings page. All load the
+/// same data and differ only in which section `registry_settings_page` renders.
 async fn registry_settings_view(
     deps: &ConsoleDeps,
     session: &Session,
     registry: &RegistryRecord,
     result: Option<&str>,
+    active: &str,
     started: Instant,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
@@ -3943,6 +3986,7 @@ async fn registry_settings_view(
             &linkable_caches,
             can_delete,
             result,
+            active,
             started,
         ))
     }
@@ -3951,6 +3995,62 @@ async fn registry_settings_view(
         Ok(html) => Html(html).into_response(),
         Err(err) => internal(err),
     }
+}
+
+/// `GET /{slug}/-/settings/storage` — the registry's storage tab.
+pub(crate) async fn registry_storage(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    uri: axum::http::Uri,
+    path: Path<String>,
+) -> Response {
+    registry_settings_section(deps, headers, started, uri, path, "storage").await
+}
+
+/// `GET /{slug}/-/settings/caches` — the registry's binary-caches tab.
+pub(crate) async fn registry_caches(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    uri: axum::http::Uri,
+    path: Path<String>,
+) -> Response {
+    registry_settings_section(deps, headers, started, uri, path, "caches").await
+}
+
+/// `GET /{slug}/-/settings/danger` — the registry's danger-zone tab.
+pub(crate) async fn registry_danger(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    uri: axum::http::Uri,
+    path: Path<String>,
+) -> Response {
+    registry_settings_section(deps, headers, started, uri, path, "danger").await
+}
+
+/// Shared body for the registry settings section tabs: resolve the registry,
+/// then render the requested `active` section through [`registry_settings_view`].
+async fn registry_settings_section(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    active: &str,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    registry_settings_view(&deps, &session, &registry, None, active, started).await
 }
 
 /// `POST /{slug}/-/settings/cache-link` form: the cache and the link flags.
@@ -4091,7 +4191,8 @@ pub(crate) async fn registry_cache_link(
     match outcome {
         Ok(Ok(proposed)) => {
             let notice = cache_advertise_notice(&deps, &registry, proposed.as_ref());
-            registry_settings_view(&deps, &session, &registry, notice.as_deref(), started).await
+            registry_settings_view(&deps, &session, &registry, notice.as_deref(), "caches", started)
+                .await
         }
         Ok(Err(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(err) => internal(err),
@@ -4148,7 +4249,8 @@ pub(crate) async fn registry_cache_unlink(
     match outcome {
         Ok(proposed) => {
             let notice = cache_advertise_notice(&deps, &registry, proposed.as_ref());
-            registry_settings_view(&deps, &session, &registry, notice.as_deref(), started).await
+            registry_settings_view(&deps, &session, &registry, notice.as_deref(), "caches", started)
+                .await
         }
         Err(err) => internal(err),
     }
@@ -4219,7 +4321,9 @@ pub(crate) async fn registry_change_storage(
     }
     .await;
     match result {
-        Ok(None) => registry_settings_view(&deps, &session, &registry, None, started).await,
+        Ok(None) => {
+            registry_settings_view(&deps, &session, &registry, None, "storage", started).await
+        }
         Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(err) => internal(err),
     }
@@ -4323,7 +4427,8 @@ async fn registry_visibility_action(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => return internal(err),
     };
-    registry_settings_view(deps, session, &updated, Some(change_id.0.as_str()), started).await
+    registry_settings_view(deps, session, &updated, Some(change_id.0.as_str()), "general", started)
+        .await
 }
 
 /// `POST /{slug}/-/settings/crawl` form: the new crawl policy.
@@ -4394,7 +4499,8 @@ async fn registry_crawl_policy_action(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => return internal(err),
     };
-    registry_settings_view(deps, session, &updated, Some(change_id.0.as_str()), started).await
+    registry_settings_view(deps, session, &updated, Some(change_id.0.as_str()), "general", started)
+        .await
 }
 
 /// `POST /{slug}/-/settings/delete` form: the typed-confirmation name.

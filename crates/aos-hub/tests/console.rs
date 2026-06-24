@@ -682,21 +682,26 @@ async fn org_dashboard_shows_create_affordances_to_admins() {
     let app = router(app_state(Arc::clone(&db)).await).await;
 
     let a_cookie = login(&app, &db, "admin@acme.com").await;
-    // The org view is split across tabs: registries (default) shows the create-
-    // registry affordance; projects/storage create forms live under settings.
+    // The org view is split across focused tabs: registries (default) shows the
+    // create-registry affordance; the create forms live on their own tabs.
     let resp = send(&app, "GET", "/-/org/acme", Some(&a_cookie), None).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("create a registry"), "{}", resp.body);
-    let resp = send(&app, "GET", "/-/org/acme/settings", Some(&a_cookie), None).await;
+    let resp = send(&app, "GET", "/-/org/acme/projects", Some(&a_cookie), None).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("create project"), "{}", resp.body);
+    let resp = send(&app, "GET", "/-/org/acme/storage", Some(&a_cookie), None).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("create binding"), "{}", resp.body);
-    // An admin is NOT an owner, so the delete form stays hidden (settings tab).
+    // An admin is NOT an owner, so the delete form stays hidden on the danger tab.
+    let resp = send(&app, "GET", "/-/org/acme/danger", Some(&a_cookie), None).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(!resp.body.contains("delete organization"), "{}", resp.body);
 
-    // An owner additionally sees the typed-confirmation delete form on settings.
+    // An owner additionally sees the typed-confirmation delete form on the
+    // danger tab.
     let o_cookie = login(&app, &db, "owner@acme.com").await;
-    let resp = send(&app, "GET", "/-/org/acme/settings", Some(&o_cookie), None).await;
+    let resp = send(&app, "GET", "/-/org/acme/danger", Some(&o_cookie), None).await;
     assert!(resp.body.contains("delete organization"), "{}", resp.body);
 }
 
