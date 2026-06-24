@@ -668,6 +668,19 @@ impl TreeWalk {
             return Err(self.invalid_payload(id, node, "attrset payload"));
         };
         let binding_range = self.binding_range(id, bindings, node.span)?;
+        let overrides_symbol = if recursive {
+            Some(self.intern_builtin_attr_symbol(id, OVERRIDES_ATTR, node.span)?)
+        } else {
+            None
+        };
+        let has_overrides = overrides_symbol.is_some_and(|symbol| {
+            binding_range.clone().any(|binding_index| {
+                matches!(
+                    self.current_ir().bindings[binding_index].key,
+                    IrAttrPathSegment::Static(binding_symbol) if binding_symbol == symbol
+                )
+            })
+        });
         {
             let shape_keys = self
                 .current_ir()
@@ -732,11 +745,12 @@ impl TreeWalk {
             self.env.push(Rc::clone(frame_values));
         }
         let result = (|| {
+            let mut static_slots = BTreeMap::new();
             if let Some(frame_values) = &frame_values {
                 let mut slot = 0u32;
                 for binding_index in binding_range.clone() {
                     let binding = self.current_ir().bindings[binding_index];
-                    if matches!(binding.key, IrAttrPathSegment::Static(_)) {
+                    if let IrAttrPathSegment::Static(symbol) = binding.key {
                         let value = self.eval_attr_binding_value(
                             id,
                             node.span,
@@ -746,30 +760,101 @@ impl TreeWalk {
                         frame_values.set(slot, value).map_err(|source| {
                             TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
                         })?;
+                        static_slots.insert(symbol, slot);
                         slot += 1;
                     }
                 }
             }
 
-            let mut slot = 0u32;
-            for binding_index in binding_range {
-                let binding = self.current_ir().bindings[binding_index];
-                let key = self.eval_attr_name(
-                    id,
-                    binding.key,
-                    DynamicAttrNullPolicy::SkipNull,
-                    node.span,
-                )?;
-                let Some(key) = key else {
-                    continue;
-                };
-                let value = if let Some(frame_values) = &frame_values {
-                    if matches!(binding.key, IrAttrPathSegment::Static(_)) {
+            if has_overrides {
+                let frame_values = frame_values
+                    .as_ref()
+                    .expect("recursive attrsets with overrides have a frame");
+                let mut slot = 0u32;
+                for binding_index in binding_range.clone() {
+                    let binding = self.current_ir().bindings[binding_index];
+                    if let IrAttrPathSegment::Static(key) = binding.key {
                         let value = frame_values.get(slot).map_err(|source| {
                             TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
                         })?;
                         slot += 1;
-                        value
+                        let position = binding
+                            .position
+                            .map(|span| AttrPosition::new(self.current_module.as_u32(), span));
+                        let entry = match position {
+                            Some(position) => AttrEntry::with_position(key, value, position),
+                            None => AttrEntry::new(key, value),
+                        };
+                        entries.push(entry);
+                    }
+                }
+
+                self.apply_recursive_attrset_overrides(
+                    id,
+                    node.span,
+                    overrides_symbol.expect("overrides symbol exists"),
+                    frame_values,
+                    &static_slots,
+                    &mut entries,
+                )?;
+
+                for binding_index in binding_range {
+                    let binding = self.current_ir().bindings[binding_index];
+                    if matches!(binding.key, IrAttrPathSegment::Static(_)) {
+                        continue;
+                    }
+                    let key = self.eval_attr_name(
+                        id,
+                        binding.key,
+                        DynamicAttrNullPolicy::SkipNull,
+                        node.span,
+                    )?;
+                    let Some(key) = key else {
+                        continue;
+                    };
+                    let value = self.eval_attr_binding_value(
+                        id,
+                        node.span,
+                        binding.value,
+                        &mut inherit_source_thunks,
+                    )?;
+                    let position = binding
+                        .position
+                        .map(|span| AttrPosition::new(self.current_module.as_u32(), span));
+                    let entry = match position {
+                        Some(position) => AttrEntry::with_position(key, value, position),
+                        None => AttrEntry::new(key, value),
+                    };
+                    entries.push(entry);
+                }
+            } else {
+                let mut slot = 0u32;
+                for binding_index in binding_range {
+                    let binding = self.current_ir().bindings[binding_index];
+                    let key = self.eval_attr_name(
+                        id,
+                        binding.key,
+                        DynamicAttrNullPolicy::SkipNull,
+                        node.span,
+                    )?;
+                    let Some(key) = key else {
+                        continue;
+                    };
+                    let value = if let Some(frame_values) = &frame_values {
+                        if matches!(binding.key, IrAttrPathSegment::Static(_)) {
+                            let value = frame_values.get(slot).map_err(|source| {
+                                TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+                            })?;
+                            slot += 1;
+                            value
+                        } else {
+                            self.eval_attr_binding_value(
+                                id,
+                                node.span,
+                                binding.value,
+                                &mut inherit_source_thunks,
+                            )?
+                        }
                     } else {
                         self.eval_attr_binding_value(
                             id,
@@ -777,23 +862,16 @@ impl TreeWalk {
                             binding.value,
                             &mut inherit_source_thunks,
                         )?
-                    }
-                } else {
-                    self.eval_attr_binding_value(
-                        id,
-                        node.span,
-                        binding.value,
-                        &mut inherit_source_thunks,
-                    )?
-                };
-                let position = binding
-                    .position
-                    .map(|span| AttrPosition::new(self.current_module.as_u32(), span));
-                let entry = match position {
-                    Some(position) => AttrEntry::with_position(key, value, position),
-                    None => AttrEntry::new(key, value),
-                };
-                entries.push(entry);
+                    };
+                    let position = binding
+                        .position
+                        .map(|span| AttrPosition::new(self.current_module.as_u32(), span));
+                    let entry = match position {
+                        Some(position) => AttrEntry::with_position(key, value, position),
+                        None => AttrEntry::new(key, value),
+                    };
+                    entries.push(entry);
+                }
             }
             Ok(entries)
         })();
@@ -808,6 +886,92 @@ impl TreeWalk {
         self.heap
             .alloc_attrs(shape.as_u32(), attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    pub(super) fn apply_recursive_attrset_overrides(
+        &mut self,
+        id: IrId,
+        span: Span,
+        overrides_symbol: Symbol,
+        frame_values: &Rc<EvalFrame>,
+        static_slots: &BTreeMap<Symbol, u32>,
+        entries: &mut Vec<AttrEntry>,
+    ) -> Result<(), TreeWalkError> {
+        let Some(overrides_slot) = static_slots.get(&overrides_symbol).copied() else {
+            return Ok(());
+        };
+        let overrides_value = frame_values
+            .get(overrides_slot)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))?;
+        let overrides_value = self
+            .force_value(id, span, overrides_value)
+            .map_err(|error| self.prepend_overrides_context(id, span, error))?;
+        if overrides_value.tag() != ValueTag::Attrs {
+            let error = TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "attrs",
+                    actual: overrides_value.tag(),
+                },
+                span,
+            );
+            return Err(self.prepend_overrides_context(id, span, error));
+        }
+
+        let override_entries = {
+            let attrs = self.heap.get_attrs(overrides_value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            Self::clone_attr_entries_source_order(id, span, attrs)?
+        };
+        entries
+            .try_reserve_exact(override_entries.len())
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::AllocationFailed {
+                            entries: entries.len().saturating_add(override_entries.len()),
+                        },
+                    },
+                    span,
+                )
+            })?;
+
+        for override_entry in override_entries {
+            if let Some(slot) = static_slots.get(&override_entry.key).copied() {
+                frame_values
+                    .set(slot, override_entry.value)
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+                    })?;
+                if let Some(entry) = entries
+                    .iter_mut()
+                    .find(|entry| entry.key == override_entry.key)
+                {
+                    *entry = override_entry;
+                    continue;
+                }
+            }
+            entries.push(override_entry);
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn prepend_overrides_context(
+        &self,
+        id: IrId,
+        span: Span,
+        error: TreeWalkError,
+    ) -> TreeWalkError {
+        error
+            .try_prepend_context(
+                id,
+                span,
+                self.context_with_current_source(b"the `__overrides` attribute".to_vec()),
+            )
+            .unwrap_or_else(|error| error)
     }
 
     pub(super) fn eval_attr_binding_value(

@@ -82,6 +82,7 @@ const BUILDER_ATTR: &[u8] = b"builder";
 const SYSTEM_ATTR: &[u8] = b"system";
 const ARGS_ATTR: &[u8] = b"args";
 const OUTPUTS_ATTR: &[u8] = b"outputs";
+const OVERRIDES_ATTR: &[u8] = b"__overrides";
 const STRUCTURED_ATTRS_ATTR: &[u8] = b"__structuredAttrs";
 const IGNORE_NULLS_ATTR: &[u8] = b"__ignoreNulls";
 const OUTPUT_HASH_ATTR: &[u8] = b"outputHash";

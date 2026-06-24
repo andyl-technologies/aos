@@ -93,14 +93,6 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "native evaluator stack-safety gap for infinite lambda recursion",
     },
     LangCaseExclusion {
-        name: "eval-fail-set-override",
-        reason: "__overrides validation gap",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-attrs6",
-        reason: "attrset override merge semantics gap",
-    },
-    LangCaseExclusion {
         name: "eval-okay-curpos",
         reason: "__curPos builtin scope gap",
     },
@@ -125,10 +117,6 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "recursive marker rendering shape gap",
     },
     LangCaseExclusion {
-        name: "eval-okay-overrides",
-        reason: "override/update semantics gap",
-    },
-    LangCaseExclusion {
         name: "eval-okay-print",
         reason: "recursive marker rendering shape gap",
     },
@@ -145,8 +133,8 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "symlink directory resolution gap",
     },
 ];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 194;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 15;
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 197;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 12;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",
@@ -1317,6 +1305,61 @@ builtins.foldl'
     let output =
         eval_raw_bytes_with_options(&ir, TreeWalkOptions::default()).expect("source evaluates");
     assert_eq!(output, b"42");
+}
+
+#[test]
+fn eval_fail_set_override_rejects_non_attrset_overrides() {
+    let source = br#"rec { __overrides = 1; }"#;
+
+    let error = eval_strict_case(source, TreeWalkOptions::default())
+        .expect_err("__overrides should evaluate to an attrset");
+    assert!(
+        error.to_string().contains("evaluating strict expression"),
+        "{error:?}"
+    );
+    assert!(format!("{error:?}").contains("__overrides"), "{error:?}");
+}
+
+#[test]
+fn eval_okay_overrides_replaces_recursive_scope() {
+    let source = br#"let
+  overrides = { a = 2; b = 3; };
+in (rec {
+  __overrides = overrides;
+  x = a;
+  a = 1;
+}).x
+"#;
+
+    eval_strict_case(source, TreeWalkOptions::default())
+        .expect("__overrides should replace the recursive scope value");
+    let parsed = parse_bytes(source).expect("source parses");
+    let resolved = resolve(parsed).expect("source resolves");
+    let ir = lower(resolved).expect("source lowers");
+    let output =
+        eval_raw_bytes_with_options(&ir, TreeWalkOptions::default()).expect("source evaluates");
+    assert_eq!(output, b"2");
+}
+
+#[test]
+fn eval_okay_attrs6_applies_overrides_before_dynamic_attrs() {
+    let source = br#"rec {
+  "${"foo"}" = "bar";
+   __overrides = { bar = "qux"; };
+}
+"#;
+
+    eval_strict_case(source, TreeWalkOptions::default())
+        .expect("__overrides should merge before dynamic attrs");
+    let parsed = parse_bytes(source).expect("source parses");
+    let resolved = resolve(parsed).expect("source resolves");
+    let ir = lower(resolved).expect("source lowers");
+    let output =
+        eval_raw_bytes_with_options(&ir, TreeWalkOptions::default()).expect("source evaluates");
+    assert_eq!(
+        output,
+        br#"{ __overrides = { bar = "qux"; }; bar = "qux"; foo = "bar"; }"#
+    );
 }
 
 #[test]

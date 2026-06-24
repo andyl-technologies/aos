@@ -591,6 +591,47 @@ fn evaluates_static_recursive_attrsets_with_lazy_self_scope() {
 }
 
 #[test]
+fn recursive_attrset_overrides_replace_self_scope_and_final_attrs() {
+    assert_eq!(
+        eval(
+            "let overrides = { a = 2; b = 3; };
+             in (rec {
+               __overrides = overrides;
+               x = a;
+               a = 1;
+             }).x"
+        )
+        .as_int(),
+        Ok(2)
+    );
+    assert_eq!(
+        eval_json_bytes(
+            r#"rec {
+                 "${"foo"}" = "bar";
+                 __overrides = { bar = "qux"; };
+               }"#
+        ),
+        br#"{"__overrides":{"bar":"qux"},"bar":"qux","foo":"bar"}"#.to_vec()
+    );
+}
+
+#[test]
+fn recursive_attrset_overrides_must_be_attrs() {
+    let error = eval_whnf_owned(&lower("rec { __overrides = 1; }"))
+        .expect_err("__overrides must evaluate to an attrset");
+
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::Type {
+            expected: "attrs",
+            actual: ValueTag::Int,
+            ..
+        }
+    ));
+    assert!(error.to_string().contains("__overrides"), "{error:?}");
+}
+
+#[test]
 fn forcing_attr_value_thunks_memoizes_whnf_results() {
     let ir = lower("{ a = 1 + 2; }");
     let a = symbol_for(&ir, b"a");
