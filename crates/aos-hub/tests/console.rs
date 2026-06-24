@@ -682,17 +682,21 @@ async fn org_dashboard_shows_create_affordances_to_admins() {
     let app = router(app_state(Arc::clone(&db)).await).await;
 
     let a_cookie = login(&app, &db, "admin@acme.com").await;
+    // The org view is split across tabs: registries (default) shows the create-
+    // registry affordance; projects/storage create forms live under settings.
     let resp = send(&app, "GET", "/-/org/acme", Some(&a_cookie), None).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("create a registry"), "{}", resp.body);
+    let resp = send(&app, "GET", "/-/org/acme/settings", Some(&a_cookie), None).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("create project"), "{}", resp.body);
     assert!(resp.body.contains("create binding"), "{}", resp.body);
-    // An admin is NOT an owner, so the delete form stays hidden.
+    // An admin is NOT an owner, so the delete form stays hidden (settings tab).
     assert!(!resp.body.contains("delete organization"), "{}", resp.body);
 
-    // An owner additionally sees the typed-confirmation delete form.
+    // An owner additionally sees the typed-confirmation delete form on settings.
     let o_cookie = login(&app, &db, "owner@acme.com").await;
-    let resp = send(&app, "GET", "/-/org/acme", Some(&o_cookie), None).await;
+    let resp = send(&app, "GET", "/-/org/acme/settings", Some(&o_cookie), None).await;
     assert!(resp.body.contains("delete organization"), "{}", resp.body);
 }
 
