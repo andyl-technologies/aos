@@ -782,7 +782,7 @@ determinism contract (04).
   memfd + wake eventfd at fixed fd numbers, dup'd for the child) and die-with-host
   on every exit path (`kill_on_drop` + `PR_SET_PDEATHSIG=SIGKILL`). — satisfies
   [QEMU-28], [QEMU-29]; spec §10.6.
-- [ ] **T-QEMU-8** Implement the graceful-shutdown escalation (Quit → QMP quit →
+- [x] **T-QEMU-8** Implement the graceful-shutdown escalation (Quit → QMP quit →
   SIGTERM → SIGKILL → reap) with bounded per-rung timeouts and an unconditional
   reap; add the no-leak test that induces each termination path and asserts zero
   surviving children. — satisfies [QEMU-30], [QEMU-31]; spec §10.6.
