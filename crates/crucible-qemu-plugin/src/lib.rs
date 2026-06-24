@@ -35,7 +35,9 @@
 //!
 //! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
 //! pointers and delegate to safe Rust shims for time-control, callback
-//! registration, and memory access.
+//! registration, and memory access. The setup path owns descriptor and mmap
+//! lifetimes with typed tokens, and guest memory is represented as opaque ranges
+//! read or written only through QEMU plugin API adapters.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]

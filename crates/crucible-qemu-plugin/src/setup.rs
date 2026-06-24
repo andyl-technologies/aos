@@ -4,6 +4,8 @@
 //! region for exactly the advertised byte length, validates the region header,
 //! and arms the wake fd for event-loop use. The caller then registers plugin
 //! callbacks before sending `SetupAck(0)` with the returned completion token.
+//! Descriptor validity comes from the fixed SCM_RIGHTS handoff, and mmap
+//! lifetime is owned by the returned [`PluginSetupCompletion`] token.
 
 #[cfg(unix)]
 use std::io::Write;
@@ -40,8 +42,9 @@ impl ArmedWakeFd {
     /// Arms an owned wake fd for run-loop integration.
     ///
     /// The current implementation configures close-on-exec and nonblocking
-    /// operation. The QEMU FFI registration added later consumes this token
-    /// rather than a raw descriptor.
+    /// operation on the descriptor received through the validated setup
+    /// handoff. The QEMU FFI registration added later consumes this token rather
+    /// than a raw descriptor.
     ///
     /// # Errors
     ///
@@ -61,6 +64,9 @@ impl ArmedWakeFd {
 }
 
 /// Typed evidence that the plugin completed setup before acknowledging readiness.
+///
+/// The mapped shared-memory region stays live while this token is live; callers
+/// keep it for the plugin process lifetime before any callback touches shmem.
 #[cfg(unix)]
 pub struct PluginSetupCompletion {
     mapped_region: MappedSetupRegion,
@@ -174,6 +180,8 @@ where
     let shmem_fd = setup.descriptors.shmem_fd;
     let wake_fd = setup.descriptors.wake_fd;
 
+    // The mmap lifetime is carried by `MappedSetupRegion`; no raw pointer to
+    // shmem escapes setup without that owner and the validated-region token.
     let mapped_region = match mmap_setup_region(shmem_fd.as_fd(), region_len) {
         Ok(mapped_region) => mapped_region,
         Err(source) => {
@@ -270,7 +278,8 @@ where
 
 #[cfg(unix)]
 fn set_close_on_exec(fd: RawFd) -> Result<(), WakeFdArmError> {
-    // SAFETY: `fcntl(F_GETFD)` reads descriptor flags for a live fd.
+    // SAFETY: `fd` comes from an owned setup wake descriptor borrowed by
+    // `ArmedWakeFd::arm`; `fcntl(F_GETFD)` reads descriptor flags only.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags < 0 {
         return Err(WakeFdArmError::Fcntl {
@@ -279,7 +288,8 @@ fn set_close_on_exec(fd: RawFd) -> Result<(), WakeFdArmError> {
         });
     }
 
-    // SAFETY: `fcntl(F_SETFD)` updates descriptor flags for a live fd.
+    // SAFETY: `fd` is the same live owned setup wake descriptor, and
+    // `fcntl(F_SETFD)` updates only descriptor flags.
     let result = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
     if result < 0 {
         return Err(WakeFdArmError::Fcntl {
@@ -292,7 +302,8 @@ fn set_close_on_exec(fd: RawFd) -> Result<(), WakeFdArmError> {
 
 #[cfg(unix)]
 fn set_nonblocking(fd: RawFd) -> Result<(), WakeFdArmError> {
-    // SAFETY: `fcntl(F_GETFL)` reads descriptor status flags for a live fd.
+    // SAFETY: `fd` comes from an owned setup wake descriptor borrowed by
+    // `ArmedWakeFd::arm`; `fcntl(F_GETFL)` reads descriptor status flags only.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 {
         return Err(WakeFdArmError::Fcntl {
@@ -301,7 +312,8 @@ fn set_nonblocking(fd: RawFd) -> Result<(), WakeFdArmError> {
         });
     }
 
-    // SAFETY: `fcntl(F_SETFL)` updates descriptor status flags for a live fd.
+    // SAFETY: `fd` is the same live owned setup wake descriptor, and
+    // `fcntl(F_SETFL)` updates only descriptor status flags.
     let result = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
     if result < 0 {
         return Err(WakeFdArmError::Fcntl {

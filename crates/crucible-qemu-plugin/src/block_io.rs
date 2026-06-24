@@ -11,8 +11,8 @@ use std::cell::Cell;
 use thiserror::Error;
 
 use crucible_shmem::{
-    DirectedRing, FrameDeliveryKey, FrameEntry, FrameEntryError, NodeSlot, RingHeader, SLOT_BLK_IO,
-    SpscRingError,
+    DirectedRing, FrameDeliveryKey, FrameEntry, FrameEntryError, MAX_FRAME_DATA, NodeSlot,
+    RingHeader, SLOT_BLK_IO, SpscRingError,
 };
 
 use crate::{
@@ -553,6 +553,14 @@ impl BlockRequest {
             .ok_or(BlockWireError::PayloadLengthOverflow {
                 len: self.payload.len(),
             })?;
+        if payload_len > MAX_FRAME_DATA {
+            return Err(BlockWireError::FramePayload {
+                source: FrameEntryError::PayloadLengthExceedsCapacity {
+                    len: payload_len,
+                    capacity: MAX_FRAME_DATA,
+                },
+            });
+        }
         let mut out = Vec::with_capacity(payload_len);
         out.push(self.operation.wire_type());
         out.push(BLOCK_WIRE_VERSION);
@@ -1087,9 +1095,7 @@ fn peek_head_frame(ring: &BlockInboundRing<'_>) -> Result<Option<FrameEntry>, Bl
 mod tests {
     use super::*;
 
-    use crucible_shmem::{
-        KIND_VM, MAX_FRAME_DATA, RegionConfig, RegionLayout, ReservedExecutorSlot,
-    };
+    use crucible_shmem::{KIND_VM, RegionConfig, RegionLayout, ReservedExecutorSlot};
 
     #[test]
     fn block_io_state_binds_reserved_block_rings() {
@@ -1195,6 +1201,38 @@ mod tests {
         );
         assert_eq!(freeze.pending_requests(), 0);
         assert_eq!(slot.snapshot().device_io_active, 0);
+        assert_eq!(header.write_index(), 0);
+    }
+
+    #[test]
+    fn block_submit_rejects_oversized_write_before_copying_payload() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let block = PluginBlockIo::new(2, 8, 9);
+        let header = RingHeader::new();
+        let mut entries = empty_entries(4);
+        let mut ring = outbound_ring(8, 2, &header, &mut entries);
+        let request = match BlockRequest::write(4096, vec![0xa5; MAX_FRAME_DATA]) {
+            Ok(request) => request,
+            Err(error) => {
+                panic!("write request should build before frame-size validation: {error}")
+            }
+        };
+
+        assert_eq!(
+            block.submit_request(&mut freeze, &slot, &mut ring, 77, &request),
+            Err(BlockIoError::Wire {
+                source: BlockWireError::FramePayload {
+                    source: FrameEntryError::PayloadLengthExceedsCapacity {
+                        len: BLOCK_REQUEST_HEADER_LEN + MAX_FRAME_DATA,
+                        capacity: MAX_FRAME_DATA,
+                    },
+                },
+            })
+        );
+        assert_eq!(freeze.pending_requests(), 0);
+        assert_eq!(slot.snapshot().device_io_active, 0);
+        assert_eq!(block.next_request_id(), 0);
         assert_eq!(header.write_index(), 0);
     }
 

@@ -982,7 +982,7 @@ component that makes that purity true *inside* the QEMU process.
   access (acquire loads / release stores matching the ABI) despite the
   single-threaded plugin side, and document that relaxed is only used for
   self-owned counters outside shmem. — satisfies [PLUG-45]; spec §12.10.1.
-- [ ] **T-PLUG-21** Audit and minimize every `unsafe` block with a `// SAFETY:`
+- [x] **T-PLUG-21** Audit and minimize every `unsafe` block with a `// SAFETY:`
   comment (single-vCPU serialization, mmap lifetime, descriptor validity,
   vCPU-thread callback contract); read guest memory only via the plugin API; bounds-
   check all payload copies. — satisfies [PLUG-46], [PLUG-47]; spec §12.10.2.

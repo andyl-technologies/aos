@@ -217,6 +217,7 @@ impl PluginWhiteboxDoorbell {
                 payload_len: input.payload().len(),
             });
         }
+        self.validate_payload_range(input.payload_range())?;
         if current_icount < input.delivery_icount() {
             return Ok(WhiteboxGuestInputOutcome::NotReady {
                 delivery_icount: input.delivery_icount(),
@@ -1054,6 +1055,27 @@ mod tests {
             writer.writes,
             vec![(50, input.payload_range(), b"ack".to_vec())]
         );
+    }
+
+    #[test]
+    fn whitebox_guest_input_rejects_oversized_payload_before_guest_memory_write() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            3,
+        );
+        let capability = guest_input_capability(&doorbell);
+        let input = input_at(50, b"toolong");
+        let mut writer = RecordingGuestInputWriter::default();
+
+        assert_eq!(
+            handle_whitebox_guest_input_callback(&doorbell, &capability, &mut writer, 50, &input),
+            Err(WhiteboxDoorbellError::PayloadTooLarge {
+                len: 7,
+                max_payload_len: 3,
+            })
+        );
+        assert!(writer.writes.is_empty());
     }
 
     #[test]
