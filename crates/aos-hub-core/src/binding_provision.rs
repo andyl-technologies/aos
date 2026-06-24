@@ -102,7 +102,7 @@ pub async fn provision_binding(
     }
 
     // Resolve access mode + sealed credential + endpoint per kind.
-    let (access, public_base_url, credential_ref) = match req.kind {
+    let (access, endpoint, credential_ref) = match req.kind {
         BindingKind::LocalFs => {
             let path = std::path::Path::new(root);
             if !path.is_absolute()
@@ -180,11 +180,11 @@ pub async fn provision_binding(
     let id = db
         .create_storage_binding(req.org_id, name, req.kind.as_str(), root)
         .await?;
-    if access != "public" || public_base_url.is_some() || credential_ref.is_some() {
+    if access != "public" || endpoint.is_some() || credential_ref.is_some() {
         db.set_storage_binding_access(
             id,
             &access,
-            public_base_url.as_deref(),
+            endpoint.as_deref(),
             credential_ref.as_deref(),
         )
         .await?;
@@ -255,7 +255,7 @@ mod tests {
         assert_eq!(b.kind, "r2");
         assert_eq!(b.access, "private");
         assert_eq!(
-            b.public_base_url.as_deref(),
+            b.endpoint.as_deref(),
             Some("https://acct.r2.cloudflarestorage.com")
         );
         // The credential is sealed at rest — the plaintext secret is absent — and
@@ -316,7 +316,7 @@ mod tests {
         .unwrap();
         let b = db.storage_binding(id).await.unwrap().unwrap();
         assert_eq!(b.access, "public");
-        assert_eq!(b.public_base_url.as_deref(), Some("https://cdn.example.com"));
+        assert_eq!(b.endpoint.as_deref(), Some("https://cdn.example.com"));
         assert!(b.credential_ref.is_none());
     }
 

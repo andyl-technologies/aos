@@ -1447,6 +1447,18 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX change_reviews_change_idx ON change_reviews (change_id, id);
     ",
+    // v33: rename storage_bindings.public_base_url -> endpoint (RFC-0004 §12
+    // follow-up). The column only ever held the S3/R2 API endpoint the hub
+    // writes objects through and presigns reads against (see `s3surface`) — it
+    // was never a separate public read origin. Consumer-facing read URLs live
+    // in `frontends`. The old name, plus a serving-page field labeled "public
+    // base URL" with a CDN-domain placeholder, invited operators to overwrite
+    // the API endpoint with a CDN domain, silently breaking the write/presign
+    // path. Renaming the column makes its single role honest. SQLite (>=3.25)
+    // and D1 support RENAME COLUMN directly — no table rebuild needed.
+    "
+    ALTER TABLE storage_bindings RENAME COLUMN public_base_url TO endpoint;
+    ",
 ];
 
 /// Returns every migration's individual SQL statements, in order.
@@ -1549,12 +1561,15 @@ pub struct StorageBindingRecord {
     /// Backend root: a filesystem path for `local_fs`, or the bucket name
     /// (optionally `bucket/sub-prefix`) for `s3`/`r2`.
     pub root: String,
-    /// Access mode: `public` (Direct-eligible, served at `public_base_url`) or
-    /// `private` (hub-only; reads must be proxied or presigned).
+    /// Access mode: `public` (Direct-eligible — consumers may be steered to a
+    /// `direct` frontend) or `private` (hub-only; reads must be proxied or
+    /// presigned).
     pub access: String,
-    /// For a `public` binding, the stable origin URL a Direct frontend rewrites
-    /// reads to; `None` when unset.
-    pub public_base_url: Option<String>,
+    /// The S3/R2 API endpoint the hub writes objects through and presigns reads
+    /// against (path-style `{endpoint}/{bucket}/{key}`); `None` for `local_fs`
+    /// or when unset. This is the bucket's *origin*, not a consumer-facing read
+    /// URL — those live in [`FrontendRecord`]s attached to the binding.
+    pub endpoint: Option<String>,
     /// For a `private` binding, the sealed credential reference the hub uses to
     /// sign authenticated-origin reads; `None` when unset.
     pub credential_ref: Option<String>,
@@ -6723,10 +6738,10 @@ impl Database {
 
     /// Set a storage binding's access mode and origin/credential metadata.
     ///
-    /// `access` must be `public` or `private`. `public_base_url` is the stable
-    /// read origin for a public (Direct-eligible) binding; `credential_ref` is
-    /// the sealed credential a private binding's authenticated-origin reads sign
-    /// with. Returns `false` when no binding has `id`.
+    /// `access` must be `public` or `private`. `endpoint` is the S3/R2 API
+    /// endpoint the hub writes/presigns against; `credential_ref` is the sealed
+    /// credential a private binding's authenticated-origin reads sign with.
+    /// Returns `false` when no binding has `id`.
     ///
     /// # Errors
     ///
@@ -6735,7 +6750,7 @@ impl Database {
         &self,
         id: i64,
         access: &str,
-        public_base_url: Option<&str>,
+        endpoint: Option<&str>,
         credential_ref: Option<&str>,
     ) -> Result<bool> {
         if !matches!(access, "public" | "private") {
@@ -6745,9 +6760,9 @@ impl Database {
             .backend
             .execute(
                 "UPDATE storage_bindings
-                 SET access = ?2, public_base_url = ?3, credential_ref = ?4
+                 SET access = ?2, endpoint = ?3, credential_ref = ?4
                  WHERE id = ?1",
-                &vals![id, access, public_base_url, credential_ref],
+                &vals![id, access, endpoint, credential_ref],
             )
             .await?;
         Ok(n > 0)
@@ -6761,7 +6776,7 @@ impl Database {
     pub async fn storage_binding(&self, id: i64) -> Result<Option<StorageBindingRecord>> {
         self.backend
             .query_opt(
-                "SELECT id, org_id, name, kind, root, access, public_base_url,
+                "SELECT id, org_id, name, kind, root, access, endpoint,
                  credential_ref, is_instance_default, created_at
                  FROM storage_bindings WHERE id = ?1",
                 &vals![id],
@@ -6783,7 +6798,7 @@ impl Database {
     pub async fn instance_default_binding(&self) -> Result<Option<StorageBindingRecord>> {
         self.backend
             .query_opt(
-                "SELECT id, org_id, name, kind, root, access, public_base_url,
+                "SELECT id, org_id, name, kind, root, access, endpoint,
                  credential_ref, is_instance_default, created_at
                  FROM storage_bindings WHERE is_instance_default = 1 LIMIT 1",
                 &[],
@@ -6794,14 +6809,15 @@ impl Database {
             .transpose()
     }
 
-    /// Update a storage binding's public-serving settings — its `access` mode
-    /// (`public`/`private`) and, for a public binding, the `public_base_url` its
-    /// objects are reachable at (the origin a Direct frontend hands consumers).
-    /// Returns `false` when no binding has `id`.
+    /// Update a storage binding's access mode (`public`/`private`) and its
+    /// `endpoint` — the S3/R2 API endpoint the hub writes objects through and
+    /// presigns reads against. Returns `false` when no binding has `id`.
     ///
     /// Setting `access = "private"` clears the binding's Direct eligibility;
     /// existing Direct frontends over it then no longer resolve to an advertised
-    /// URL (the resolver re-checks `access == "public"`).
+    /// URL (the resolver re-checks `access == "public"`). The `endpoint` is the
+    /// bucket's *origin*, never a consumer-facing read URL — consumer read URLs
+    /// are served by [`FrontendRecord`]s, not this field.
     ///
     /// # Errors
     ///
@@ -6810,25 +6826,25 @@ impl Database {
         &self,
         id: i64,
         access: &str,
-        public_base_url: Option<&str>,
+        endpoint: Option<&str>,
     ) -> Result<bool> {
         let access = match access {
             "public" | "private" => access,
             other => bail!("unknown storage access mode '{other}' (expected public or private)"),
         };
-        // The public base URL is the bucket origin presign/direct serving builds
-        // against (and the hub fetches from), so require a safe http(s) origin.
-        if let Some(url) = public_base_url {
+        // The endpoint is the bucket origin the hub writes/presigns against, so
+        // require a safe http(s) origin.
+        if let Some(url) = endpoint {
             if !url.trim().is_empty() {
                 crate::url_guard::is_safe_remote_url(url.trim())
-                    .with_context(|| format!("rejecting public base URL '{url}'"))?;
+                    .with_context(|| format!("rejecting endpoint URL '{url}'"))?;
             }
         }
         let n = self
             .backend
             .execute(
-                "UPDATE storage_bindings SET access = ?2, public_base_url = ?3 WHERE id = ?1",
-                &vals![id, access, public_base_url],
+                "UPDATE storage_bindings SET access = ?2, endpoint = ?3 WHERE id = ?1",
+                &vals![id, access, endpoint],
             )
             .await?;
         Ok(n > 0)
@@ -6921,7 +6937,7 @@ impl Database {
     ) -> Result<Option<StorageBindingRecord>> {
         self.backend
             .query_opt(
-                "SELECT id, org_id, name, kind, root, access, public_base_url,
+                "SELECT id, org_id, name, kind, root, access, endpoint,
                  credential_ref, is_instance_default, created_at
                  FROM storage_bindings WHERE org_id = ?1 AND name = ?2",
                 &vals![org_id, name],
@@ -6941,7 +6957,7 @@ impl Database {
         let rows = self
             .backend
             .query(
-                "SELECT id, org_id, name, kind, root, access, public_base_url,
+                "SELECT id, org_id, name, kind, root, access, endpoint,
                  credential_ref, is_instance_default, created_at
              FROM storage_bindings WHERE org_id = ?1 ORDER BY name",
                 &vals![org_id],
@@ -11426,7 +11442,7 @@ fn row_to_storage_binding(row: &Row) -> Result<StorageBindingRecord> {
         kind: row.get(3)?,
         root: row.get(4)?,
         access: row.get(5)?,
-        public_base_url: row.get(6)?,
+        endpoint: row.get(6)?,
         credential_ref: row.get(7)?,
         is_instance_default: row.get(8)?,
         created_at: row.get(9)?,
@@ -13298,7 +13314,7 @@ mod tests {
 
         // Access mode defaults to public; set-access updates it + metadata.
         assert_eq!(binding.access, "public");
-        assert_eq!(binding.public_base_url, None);
+        assert_eq!(binding.endpoint, None);
         assert!(db
             .set_storage_binding_access(id, "private", None, Some("sealed:cred-1"))
             .await
@@ -13312,7 +13328,7 @@ mod tests {
             .unwrap());
         let b = db.storage_binding(id).await.unwrap().unwrap();
         assert_eq!(b.access, "public");
-        assert_eq!(b.public_base_url.as_deref(), Some("https://cdn.example/"));
+        assert_eq!(b.endpoint.as_deref(), Some("https://cdn.example/"));
         // An invalid access value is rejected.
         assert!(db
             .set_storage_binding_access(id, "bogus", None, None)
