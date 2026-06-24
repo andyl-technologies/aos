@@ -602,6 +602,9 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
       whole passed attrset.
 - [x] **`@`-pattern, name on right: `{ a, ... } @ args: body`** — equivalent
       form; both are accepted.
+- [x] **`@`-pattern alias collisions** — `args@{ args, ... }: body` and
+      `{ args, ... } @ args: body` are parse errors; the alias is a binding and
+      cannot duplicate a formal name.
 - [x] **`args@` excludes defaults** — "`args` does *not* include any default
       values specified with `?`" — `args` is the attrset *as passed*, before
       defaults are filled.

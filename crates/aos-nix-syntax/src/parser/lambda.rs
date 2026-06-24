@@ -70,6 +70,14 @@ impl<'a> Parser<'a> {
                 let name_token = self.expect_symbol_token()?;
                 let name_span = name_token.span;
                 let name = self.intern_token(name_token)?;
+                if prefix_alias == Some(name) {
+                    return Err(self.error_at(
+                        name_span,
+                        ParseErrorKind::InvalidFormalPattern {
+                            reason: "formal argument duplicates pattern alias",
+                        },
+                    ));
+                }
                 if formal_names.contains(&name) {
                     return Err(self.error_at(
                         name_span,
@@ -117,7 +125,16 @@ impl<'a> Parser<'a> {
             }
             self.bump()?;
             let alias_token = self.expect_symbol_token()?;
-            alias = Some(self.intern_token(alias_token)?);
+            let suffix_alias = self.intern_token(alias_token)?;
+            if formal_names.contains(&suffix_alias) {
+                return Err(self.error_at(
+                    alias_token.span,
+                    ParseErrorKind::InvalidFormalPattern {
+                        reason: "formal argument duplicates pattern alias",
+                    },
+                ));
+            }
+            alias = Some(suffix_alias);
         }
         let formals = self.push_child_slice(&formals)?;
         self.push(

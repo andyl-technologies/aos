@@ -159,36 +159,19 @@ const CONFORMANCE_CORPUS_ATTRSET: &str = "conformance";
 const CONFORMANCE_CORPUS_BUILDER: &str =
     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-nix-conformance-builder";
 const LANG_CASE_EXCLUSION_NAMES: &[&str] = &[
-    "parse-fail-patterns-1",
-    "eval-fail-derivation-name",
-    "eval-fail-dup-dynamic-attrs",
-    "eval-fail-infinite-recursion-lambda",
-    "eval-fail-set-override",
-    "eval-fail-toJSON-non-utf-8",
-    "eval-okay-arithmetic",
-    "eval-okay-attrs",
-    "eval-okay-attrs2",
     "eval-okay-attrs6",
-    "eval-okay-builtins",
     "eval-okay-curpos",
     "eval-okay-eq-derivations",
-    "eval-okay-flatten",
     "eval-okay-foldlStrict-lazy-initial-accumulator",
     "eval-okay-getattrpos",
     "eval-okay-getattrpos-functionargs",
     "eval-okay-inherit-attr-pos",
     "eval-okay-inherit-from",
-    "eval-okay-let",
-    "eval-okay-list",
     "eval-okay-overrides",
     "eval-okay-print",
     "eval-okay-redefine-builtin",
-    "eval-okay-remove",
-    "eval-okay-scope-4",
-    "eval-okay-scope-6",
     "eval-okay-search-path",
     "eval-okay-symlink-resolution",
-    "eval-okay-with",
 ];
 const CONFORMANCE_WRAPPER_ONLY_EXCLUSION_NAMES: &[&str] = &[
     // `lang.sh` fixes HOME and TEST_VAR for these cases; `nix-diff` has no

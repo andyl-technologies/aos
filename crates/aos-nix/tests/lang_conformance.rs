@@ -89,10 +89,6 @@ const PINNED_LANG_CPP_NIX_VERSION: LangVersion = LangVersion::new(2, 24, 12);
 const LANG_VERSION_SKIP_RULES: &[LangVersionSkipRule] = &[];
 const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
     LangCaseExclusion {
-        name: "parse-fail-patterns-1",
-        reason: "formal pattern duplicate-binding check is not implemented",
-    },
-    LangCaseExclusion {
         name: "eval-fail-derivation-name",
         reason: "derivation name validation gap",
     },
@@ -165,8 +161,8 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "symlink directory resolution gap",
     },
 ];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 189;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 20;
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 190;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 19;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",

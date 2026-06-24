@@ -584,7 +584,13 @@ fn rejects_invalid_formal_patterns() {
         ));
     }
 
-    for source in ["{ ..., }: 1", "{ a, ..., }: a", "{ a, a }: a"] {
+    for source in [
+        "{ ..., }: 1",
+        "{ a, ..., }: a",
+        "{ a, a }: a",
+        "args@{ args }: args",
+        "{ args } @ args: args",
+    ] {
         let error = parse_str(source).expect_err("invalid formal pattern");
         assert!(matches!(
             error.kind(),
