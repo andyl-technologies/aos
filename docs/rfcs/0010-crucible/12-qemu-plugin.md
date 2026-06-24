@@ -968,7 +968,7 @@ component that makes that purity true *inside* the QEMU process.
 - [x] **T-PLUG-16** Implement the handshake and slot cross-check
   (`Hello`/`HelloAck`, exact ABI match, `slot_index < node_count`, launch-arg
   agreement). — satisfies [PLUG-38], [PLUG-39]; spec §12.9.1.
-- [ ] **T-PLUG-17** Implement setup completion: receive the two `SCM_RIGHTS` fds,
+- [x] **T-PLUG-17** Implement setup completion: receive the two `SCM_RIGHTS` fds,
   `mmap` and validate the region header/ABI, arm the wake fd, and reply
   `SetupAck`; refuse to participate on non-zero status. — satisfies [PLUG-40],
   [PLUG-41]; spec §12.9.2.

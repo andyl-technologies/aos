@@ -14,14 +14,17 @@ use thiserror::Error;
 
 #[cfg(unix)]
 use crucible_protocol::{
-    ReceivedSetup, SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED, SetupCompletionError,
-    plugin_send_setup_ack,
+    DescriptorHandoverError, ReceivedSetup, SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED,
+    SetupCompletionError, plugin_send_setup_ack, recv_setup_with_descriptors,
 };
 #[cfg(unix)]
 use crucible_shmem::{
     MappedSetupRegion, RegionSetupValidationError, SetupRegionMapError, ValidatedSetupRegion,
     mmap_setup_region,
 };
+
+#[cfg(unix)]
+use crate::{PluginCallbackCapabilities, PluginControlHandshake};
 
 /// An eventfd descriptor armed for setup-complete wake handling.
 #[cfg(unix)]
@@ -84,23 +87,66 @@ impl PluginSetupCompletion {
     }
 }
 
+/// Receives the setup frame and its fixed-order shared-memory and wake descriptors.
+///
+/// # Errors
+///
+/// Returns [`PluginSetupError::ReceiveSetup`] when the control socket does not
+/// carry a valid `Setup` frame with exactly two `SCM_RIGHTS` descriptors, or
+/// [`PluginSetupError::SendFailureAck`] when that setup failure cannot be
+/// acknowledged.
+#[cfg(unix)]
+pub fn receive_setup_with_descriptors<S>(stream: &mut S) -> Result<ReceivedSetup, PluginSetupError>
+where
+    S: AsRawFd + Write,
+{
+    match recv_setup_with_descriptors(stream.as_raw_fd()) {
+        Ok(setup) => Ok(setup),
+        Err(source) => {
+            send_setup_failure_ack(stream, PluginSetupFailureStage::ReceiveSetup)?;
+            Err(PluginSetupError::ReceiveSetup { source })
+        }
+    }
+}
+
+/// Receives and prepares setup using the negotiated handshake assignment.
+///
+/// # Errors
+///
+/// Returns [`PluginSetupError`] when descriptor handover, mapping, header
+/// validation, handshake/header cross-checking, wake-fd arming, or failure
+/// acknowledgement fails.
+#[cfg(unix)]
+pub fn receive_and_prepare_setup_completion<S>(
+    stream: &mut S,
+    handshake: PluginControlHandshake,
+) -> Result<PluginSetupCompletion, PluginSetupError>
+where
+    S: AsRawFd + Write,
+{
+    let setup = receive_setup_with_descriptors(stream)?;
+    prepare_setup_completion(stream, setup, handshake)
+}
+
 /// Prepares plugin setup completion before callback registration and ready ack.
 ///
 /// On success, this function has mapped the shared-memory descriptor for
 /// exactly `Setup.region_len`, validated the shmem ABI marker and geometry, and
-/// armed the wake fd. It intentionally does not send `SetupAck(0)`; callers must
-/// first register plugin callbacks and then call [`send_ready_setup_ack`]. On
-/// setup failure before callback registration, it attempts to send a nonzero
-/// `SetupAck` before returning the setup error.
+/// armed the wake fd after cross-checking the mapped region against the
+/// negotiated handshake assignment. It intentionally does not send
+/// `SetupAck(0)`; callers must first register plugin callbacks and then call
+/// [`send_ready_setup_ack`]. On setup failure before callback registration, it
+/// attempts to send a nonzero `SetupAck` before returning the setup error.
 ///
 /// # Errors
 ///
-/// Returns [`PluginSetupError`] when mapping, validation, wake-fd arming, or
-/// failure-acknowledgement I/O fails.
+/// Returns [`PluginSetupError`] when mapping, validation, handshake/header slot
+/// consistency, wake-fd arming, or failure-acknowledgement I/O fails.
 #[cfg(unix)]
 pub fn prepare_setup_completion<W>(
     writer: &mut W,
     setup: ReceivedSetup,
+    handshake: PluginControlHandshake,
 ) -> Result<PluginSetupCompletion, PluginSetupError>
 where
     W: Write,
@@ -112,23 +158,26 @@ where
     let mapped_region = match mmap_setup_region(shmem_fd.as_fd(), region_len) {
         Ok(mapped_region) => mapped_region,
         Err(source) => {
-            send_setup_failure_ack(writer)?;
+            send_setup_failure_ack(writer, PluginSetupFailureStage::MapRegion)?;
             return Err(PluginSetupError::MapRegion { source });
         }
     };
 
+    let header_snapshot = mapped_region.header_snapshot();
     let validated_region = match mapped_region.validate_header() {
         Ok(validated_region) => validated_region,
         Err(source) => {
-            send_setup_failure_ack(writer)?;
+            send_setup_failure_ack(writer, PluginSetupFailureStage::ValidateRegion)?;
             return Err(PluginSetupError::ValidateRegion { source });
         }
     };
 
+    validate_setup_handshake_slot(writer, handshake, header_snapshot.node_count)?;
+
     let wake_fd = match ArmedWakeFd::arm(wake_fd) {
         Ok(wake_fd) => wake_fd,
         Err(source) => {
-            send_setup_failure_ack(writer)?;
+            send_setup_failure_ack(writer, PluginSetupFailureStage::ArmWakeFd)?;
             return Err(PluginSetupError::ArmWakeFd { source });
         }
     };
@@ -138,6 +187,34 @@ where
         validated_region,
         wake_fd,
     })
+}
+
+#[cfg(unix)]
+fn validate_setup_handshake_slot<W>(
+    writer: &mut W,
+    handshake: PluginControlHandshake,
+    region_node_count: u32,
+) -> Result<(), PluginSetupError>
+where
+    W: Write,
+{
+    if handshake.node_count() != region_node_count {
+        send_setup_failure_ack(writer, PluginSetupFailureStage::CrossCheckSlot)?;
+        return Err(PluginSetupError::NodeCountMismatch {
+            handshake_node_count: handshake.node_count(),
+            region_node_count,
+        });
+    }
+
+    if handshake.slot_index() >= region_node_count {
+        send_setup_failure_ack(writer, PluginSetupFailureStage::CrossCheckSlot)?;
+        return Err(PluginSetupError::SlotOutsideRegionNodeCount {
+            slot_index: handshake.slot_index(),
+            region_node_count,
+        });
+    }
+
+    Ok(())
 }
 
 /// Sends `SetupAck(0)` after setup preparation and callback registration.
@@ -150,6 +227,7 @@ where
 pub fn send_ready_setup_ack<W>(
     writer: &mut W,
     _completion: &PluginSetupCompletion,
+    _callbacks: &PluginCallbackCapabilities,
 ) -> Result<(), PluginSetupError>
 where
     W: Write,
@@ -159,12 +237,15 @@ where
 }
 
 #[cfg(unix)]
-fn send_setup_failure_ack<W>(writer: &mut W) -> Result<(), PluginSetupError>
+fn send_setup_failure_ack<W>(
+    writer: &mut W,
+    stage: PluginSetupFailureStage,
+) -> Result<(), PluginSetupError>
 where
     W: Write,
 {
     plugin_send_setup_ack(writer, SETUP_ACK_STATUS_SETUP_FAILED)
-        .map_err(|source| PluginSetupError::SendFailureAck { source })
+        .map_err(|source| PluginSetupError::SendFailureAck { stage, source })
 }
 
 #[cfg(unix)]
@@ -230,10 +311,32 @@ pub enum WakeFdArmError {
     },
 }
 
+/// Setup stage whose failure triggered a nonzero `SetupAck`.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginSetupFailureStage {
+    /// Receiving the setup frame or descriptors failed.
+    ReceiveSetup,
+    /// Mapping the shared-memory region failed.
+    MapRegion,
+    /// Validating the mapped shared-memory header failed.
+    ValidateRegion,
+    /// Cross-checking the handshake assignment against the mapped header failed.
+    CrossCheckSlot,
+    /// Arming the wake fd failed.
+    ArmWakeFd,
+}
+
 /// An error produced while completing plugin setup.
 #[cfg(unix)]
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PluginSetupError {
+    /// Receiving the setup frame and descriptors failed.
+    #[error("receiving setup descriptors failed")]
+    ReceiveSetup {
+        /// Underlying descriptor-handover error.
+        source: DescriptorHandoverError,
+    },
     /// Mapping the setup shared-memory descriptor failed.
     #[error("setup shared-memory mmap failed")]
     MapRegion {
@@ -245,6 +348,24 @@ pub enum PluginSetupError {
     ValidateRegion {
         /// Underlying validation error.
         source: RegionSetupValidationError,
+    },
+    /// The handshake node count disagrees with the mapped shared-memory header.
+    #[error(
+        "setup node_count mismatch: handshake {handshake_node_count}, region {region_node_count}"
+    )]
+    NodeCountMismatch {
+        /// Node count accepted during `Hello`/`HelloAck`.
+        handshake_node_count: u32,
+        /// Node count read from the mapped region header.
+        region_node_count: u32,
+    },
+    /// The negotiated slot does not fit in the mapped shared-memory region.
+    #[error("handshake slot {slot_index} is outside setup region node_count {region_node_count}")]
+    SlotOutsideRegionNodeCount {
+        /// Slot accepted during `Hello`/`HelloAck`.
+        slot_index: u32,
+        /// Node count read from the mapped region header.
+        region_node_count: u32,
     },
     /// Arming the setup wake fd failed.
     #[error("setup wake fd arming failed")]
@@ -259,8 +380,10 @@ pub enum PluginSetupError {
         source: SetupCompletionError,
     },
     /// The failure `SetupAck(nonzero)` could not be sent.
-    #[error("sending failure SetupAck failed")]
+    #[error("sending failure SetupAck failed after {stage:?}")]
     SendFailureAck {
+        /// Setup stage whose failure could not be acknowledged.
+        stage: PluginSetupFailureStage,
         /// Underlying frame I/O error.
         source: SetupCompletionError,
     },
@@ -279,8 +402,10 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use crucible_protocol::{
-        PluginMsg, ReceivedSetup, ReceivedSetupDescriptors, SETUP_ACK_STATUS_READY,
-        SETUP_ACK_STATUS_SETUP_FAILED, control_decode_plugin_msg, read_control_frame,
+        CONTROL_PROTOCOL_VERSION, DescriptorHandoverError, HostMsg, NegotiatedHandshake, PluginMsg,
+        ReceivedSetup, ReceivedSetupDescriptors, SETUP_ACK_STATUS_READY,
+        SETUP_ACK_STATUS_SETUP_FAILED, SetupDescriptorFds, control_decode_plugin_msg,
+        control_encode_host_msg, read_control_frame, send_setup_with_descriptors,
     };
     use crucible_shmem::{
         ABI_VERSION, DEFAULT_QUEUE_CAPACITY, FRAME_ENTRY_SIZE, NODE_SLOT_SIZE,
@@ -290,6 +415,11 @@ mod tests {
         REGION_HEADER_REGION_SIZE_OFFSET, REGION_HEADER_RING_COUNT_OFFSET,
         REGION_HEADER_RING_DATA_OFF_OFFSET, REGION_HEADER_RING_HDR_OFF_OFFSET, REGION_HEADER_SIZE,
         REGION_MAGIC, RESERVED_SLOTS, RING_HEADER_SIZE, RegionConfig, RegionLayout,
+    };
+
+    use crate::{
+        CoverageCapabilities, PluginArgs, PluginRegistrationSequence, PluginRegistrationStep,
+        validate_plugin_handshake,
     };
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -306,7 +436,11 @@ mod tests {
         };
         let mut io = ScriptedIo::default();
 
-        let completion = match prepare_setup_completion(&mut io, setup) {
+        let completion = match prepare_setup_completion(
+            &mut io,
+            setup,
+            plugin_handshake(1, layout.node_count),
+        ) {
             Ok(completion) => completion,
             Err(error) => panic!("valid setup should complete: {error}"),
         };
@@ -317,7 +451,8 @@ mod tests {
         assert!(io.written().is_empty());
         assert_eq!(io.flush_count(), 0);
 
-        if let Err(error) = send_ready_setup_ack(&mut io, &completion) {
+        let callbacks = callback_capabilities();
+        if let Err(error) = send_ready_setup_ack(&mut io, &completion, &callbacks) {
             panic!("ready setup acknowledgement should send: {error}");
         }
         assert_eq!(
@@ -340,7 +475,7 @@ mod tests {
         let mut io = ScriptedIo::default();
 
         assert!(matches!(
-            prepare_setup_completion(&mut io, setup),
+            prepare_setup_completion(&mut io, setup, plugin_handshake(0, 1)),
             Err(PluginSetupError::ValidateRegion { .. })
         ));
         assert_eq!(
@@ -348,6 +483,121 @@ mod tests {
             SETUP_ACK_STATUS_SETUP_FAILED
         );
         assert_eq!(io.flush_count(), 1);
+    }
+
+    #[test]
+    fn receive_setup_sends_nonzero_ack_when_descriptor_count_is_wrong() {
+        let (mut host, mut plugin) = setup_socket_pair();
+        let frame = control_encode_host_msg(&HostMsg::Setup {
+            region_len: REGION_HEADER_SIZE as u64,
+        });
+        if let Err(error) = host.write_all(&frame) {
+            panic!("setup frame write should succeed: {error}");
+        }
+
+        let error = receive_setup_with_descriptors(&mut plugin)
+            .err()
+            .unwrap_or_else(|| panic!("missing descriptors should fail"));
+        assert!(matches!(
+            error,
+            PluginSetupError::ReceiveSetup {
+                source: DescriptorHandoverError::WrongDescriptorCount { count: 0 },
+            }
+        ));
+        assert_eq!(
+            decode_single_setup_ack_from_stream(&mut host),
+            SETUP_ACK_STATUS_SETUP_FAILED
+        );
+    }
+
+    #[test]
+    fn receive_and_prepare_setup_receives_descriptors_and_cross_checks_handshake() {
+        let layout = valid_layout();
+        let region_file = valid_region_file(layout);
+        let wake_file = wake_fd();
+        let (mut host, mut plugin) = setup_socket_pair();
+        if let Err(error) = send_setup_with_descriptors(
+            host.as_raw_fd(),
+            layout.region_size,
+            SetupDescriptorFds {
+                shmem_fd: region_file.as_raw_fd(),
+                wake_fd: wake_file.as_raw_fd(),
+            },
+        ) {
+            panic!("setup descriptor send should succeed: {error}");
+        }
+
+        let handshake = plugin_handshake(1, layout.node_count);
+        let completion = receive_and_prepare_setup_completion(&mut plugin, handshake)
+            .unwrap_or_else(|error| panic!("setup should complete: {error}"));
+
+        assert_eq!(completion.validated_region().region_len, layout.region_size);
+        assert_nonblocking(completion.wake_fd().as_raw_fd());
+        let callbacks = callback_capabilities();
+        send_ready_setup_ack(&mut plugin, &completion, &callbacks)
+            .unwrap_or_else(|error| panic!("ready ack should send: {error}"));
+        assert_eq!(
+            decode_single_setup_ack_from_stream(&mut host),
+            SETUP_ACK_STATUS_READY
+        );
+    }
+
+    #[test]
+    fn prepare_setup_sends_nonzero_ack_when_handshake_node_count_disagrees() {
+        let layout = valid_layout();
+        let setup = ReceivedSetup {
+            region_len: layout.region_size,
+            descriptors: ReceivedSetupDescriptors {
+                shmem_fd: valid_region_file(layout).into(),
+                wake_fd: wake_fd().into(),
+            },
+        };
+        let mut io = ScriptedIo::default();
+        let handshake = plugin_handshake(1, layout.node_count + 1);
+
+        let error = prepare_setup_completion(&mut io, setup, handshake)
+            .err()
+            .unwrap_or_else(|| panic!("node-count mismatch should fail"));
+        assert_eq!(
+            error,
+            PluginSetupError::NodeCountMismatch {
+                handshake_node_count: layout.node_count + 1,
+                region_node_count: layout.node_count,
+            }
+        );
+        assert_eq!(
+            decode_single_setup_ack(io.written()),
+            SETUP_ACK_STATUS_SETUP_FAILED
+        );
+    }
+
+    #[test]
+    fn prepare_setup_sends_nonzero_ack_when_handshake_slot_exceeds_region() {
+        let layout = valid_layout();
+        let setup = ReceivedSetup {
+            region_len: layout.region_size,
+            descriptors: ReceivedSetupDescriptors {
+                shmem_fd: valid_region_file(layout).into(),
+                wake_fd: wake_fd().into(),
+            },
+        };
+        let mut io = ScriptedIo::default();
+        let handshake = plugin_handshake(layout.node_count, layout.node_count + 1);
+
+        let error = prepare_setup_completion(&mut io, setup, handshake)
+            .err()
+            .unwrap_or_else(|| panic!("slot beyond region should fail"));
+        assert_eq!(
+            error,
+            PluginSetupError::NodeCountMismatch {
+                handshake_node_count: layout.node_count + 1,
+                region_node_count: layout.node_count,
+            }
+        );
+        assert_eq!(
+            decode_single_setup_ack(io.written()),
+            SETUP_ACK_STATUS_SETUP_FAILED
+        );
     }
 
     #[test]
@@ -452,6 +702,59 @@ mod tests {
         region_file_from_bytes(&bytes)
     }
 
+    fn plugin_handshake(slot_index: u32, node_count: u32) -> PluginControlHandshake {
+        let args = PluginArgs::parse(&format!("simfd=3,slot={slot_index}"))
+            .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"));
+        let negotiated = NegotiatedHandshake {
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: ABI_VERSION,
+            slot_index,
+            node_count,
+        };
+        validate_plugin_handshake(&args, negotiated)
+            .unwrap_or_else(|error| panic!("test handshake should validate: {error}"))
+    }
+
+    fn callback_capabilities() -> PluginCallbackCapabilities {
+        let mut sequence = PluginRegistrationSequence::new();
+        for step in [
+            PluginRegistrationStep::ParseArguments,
+            PluginRegistrationStep::ControlHandshake,
+            PluginRegistrationStep::RequestTimeControl,
+            PluginRegistrationStep::ReceiveSetup,
+            PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::ArmWakeFd,
+        ] {
+            if let Err(error) = sequence.record_step(step) {
+                panic!("callback prerequisite {step:?} should record: {error}");
+            }
+        }
+        let args = PluginArgs::parse("simfd=3,slot=0")
+            .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"));
+        sequence
+            .register_callbacks_with_exact_deadline(
+                &args,
+                Some(setup_test_deadline),
+                Some(setup_test_direct_advance),
+                CoverageCapabilities::none(),
+            )
+            .unwrap_or_else(|error| panic!("test callbacks should register: {error}"))
+    }
+
+    extern "C" fn setup_test_deadline() -> i64 {
+        777
+    }
+
+    extern "C" fn setup_test_direct_advance(_target_virtual_ns: i64) {}
+
+    fn setup_socket_pair() -> (
+        std::os::unix::net::UnixStream,
+        std::os::unix::net::UnixStream,
+    ) {
+        std::os::unix::net::UnixStream::pair()
+            .unwrap_or_else(|error| panic!("failed to create setup socket pair: {error}"))
+    }
+
     fn zeroed_region_file(region_len: u64) -> File {
         region_file_from_bytes(&vec![0; region_len as usize])
     }
@@ -501,15 +804,17 @@ mod tests {
 
     fn decode_single_setup_ack(bytes: &[u8]) -> u8 {
         let mut cursor = Cursor::new(bytes);
-        let frame = match read_control_frame(&mut cursor) {
+        decode_single_setup_ack_from_stream(&mut cursor)
+    }
+
+    fn decode_single_setup_ack_from_stream<R>(stream: &mut R) -> u8
+    where
+        R: Read,
+    {
+        let frame = match read_control_frame(stream) {
             Ok(frame) => frame,
             Err(error) => panic!("setup ack frame should decode: {error}"),
         };
-        let mut trailing = Vec::new();
-        if let Err(error) = cursor.read_to_end(&mut trailing) {
-            panic!("failed to read trailing ack bytes: {error}");
-        }
-        assert!(trailing.is_empty());
         match control_decode_plugin_msg(&frame) {
             Ok(PluginMsg::SetupAck { status }) => status,
             Ok(message) => panic!("expected SetupAck, got {message:?}"),
