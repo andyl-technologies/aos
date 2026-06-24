@@ -867,24 +867,24 @@ by when the producer's store landed in shared memory.
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
 > whose primary area is the shared-memory ABI, tracked here by [PLAN-3].
 
-- [ ] **T-SHM-1** Define the `#[repr(C)]` `RegionHeader`, `NodeSlot`,
+- [x] **T-SHM-1** Define the `#[repr(C)]` `RegionHeader`, `NodeSlot`,
   `RingHeader`, and `FrameEntry` in `crucible-shmem` with the field set, order,
   and padding of §13.3, and the constants of §13.4; make the region the only
   channel for virtual-time advancement and cross-node frame delivery (the IPC
   protocol carries no per-quantum timing or per-frame delivery decisions). —
   satisfies [SHM-1], [SHM-2], [SHM-7], [SHM-9], [SHM-12], [SHM-13]; spec §13.1,
   §13.3, §13.4.
-- [ ] **T-SHM-2** Add Rust `const _: () = assert!(size_of/align_of/offset_of...)`
+- [x] **T-SHM-2** Add Rust `const _: () = assert!(size_of/align_of/offset_of...)`
   for every shared struct and field per §13.4. — satisfies [SHM-5], [SHM-14];
   spec §13.4.
 - [ ] **T-SHM-3** Generate `crucible_shmem_abi.h` mechanically from the Rust
   definitions, with `_Static_assert` on every size and offset, and a build step
   that fails if the committed header differs from the regenerated one. —
   satisfies [SHM-3], [SHM-4], [SHM-5]; spec §13.2.
-- [ ] **T-SHM-4** Pin the layout to `x86_64-unknown-linux-gnu`, little-endian,
+- [x] **T-SHM-4** Pin the layout to `x86_64-unknown-linux-gnu`, little-endian,
   fixed offsets; reject other targets in the layout module. — satisfies [SHM-6],
   [SHM-15]; spec §13.2, §13.4.
-- [ ] **T-SHM-5** Implement region creation: header init (magic, version, counts,
+- [x] **T-SHM-5** Implement region creation: header init (magic, version, counts,
   computed sub-region offsets, icount shift), slot init (ceiling 0, status, kind),
   and ring/entry storage allocation. — satisfies [SHM-7], [SHM-8], [SHM-11];
   spec §13.3.1, §13.3.2.
@@ -908,7 +908,7 @@ by when the producer's store landed in shared memory.
 - [ ] **T-SHM-11** Implement global `pause_requested`/`shutdown_requested`
   observation and the wake-all-on-flag behavior. — satisfies [SHM-29]; spec
   §13.7.
-- [ ] **T-SHM-12** Implement the logical-node → physical-slot allocator, with the
+- [x] **T-SHM-12** Implement the logical-node → physical-slot allocator, with the
   reserved executor slots, and assert no `MAX_NODES` reference escapes this layer.
   — satisfies [SHM-16], [SHM-17], [SHM-18]; spec §13.5.
 - [x] **T-SHM-13** Implement deliverability (`delivery_icount <= current_icount`)
