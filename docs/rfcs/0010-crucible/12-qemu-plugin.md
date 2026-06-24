@@ -956,7 +956,7 @@ component that makes that purity true *inside* the QEMU process.
 - [x] **T-PLUG-13** Implement the 9p submit/poll/burst-done callbacks against the
   reserved 9p slots, holding the freeze for the whole burst. — satisfies
   [PLUG-29], [PLUG-30], [PLUG-31]; spec §12.6.
-- [ ] **T-PLUG-14** Implement the optional white-box doorbell trap: trap the
+- [x] **T-PLUG-14** Implement the optional white-box doorbell trap: trap the
   reserved instruction/port, read guest memory via the plugin API, stamp the
   marker with the exact icount; ensure off-mode installs nothing and black-box is
   fully functional; route white-box inputs through the injection contract. —
