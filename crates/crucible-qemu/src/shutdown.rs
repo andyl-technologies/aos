@@ -403,7 +403,7 @@ where
     }
 }
 
-fn wait_child(
+pub(crate) fn wait_child(
     child: &mut Child,
     timeout: Duration,
 ) -> Result<QemuChildWait, QemuShutdownTargetError> {
@@ -427,7 +427,7 @@ fn wait_child(
     }
 }
 
-fn signal_child(
+pub(crate) fn signal_child(
     pid: u32,
     signal: libc::c_int,
     operation: &'static str,
