@@ -176,7 +176,7 @@
       }
       {
         label = "deterministic frame injection ordering";
-        needle = "sort_by_key(FrameEntry::delivery_key)";
+        needle = "PluginInboundFrames::select_deliverable_frames";
       }
       {
         label = "timer/inbound/ceiling wake test";

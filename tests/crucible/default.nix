@@ -173,6 +173,7 @@ in {
     qemuPluginIdleLoop = import ./phase2-plugin-idle-loop.nix {inherit pkgs lib;};
     qemuPluginDeadlineIntrospection = import ./phase2-plugin-deadline-introspection.nix {inherit pkgs lib;};
     qemuPluginSynchronousIdleAdvance = import ./phase2-plugin-synchronous-idle-advance.nix {inherit pkgs lib;};
+    qemuPluginInboundFrames = import ./phase2-plugin-inbound-frames.nix {inherit pkgs lib;};
     qemuCrashDetection = import ./phase2-qemu-crash-detection.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuQmpClient = import ./phase2-qemu-qmp-client.nix {inherit pkgs lib;};

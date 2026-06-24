@@ -10,7 +10,8 @@
 //! Module map: `abi` owns the raw QEMU plugin `cdylib` entry point and inert
 //! callback scaffold; `args` owns fail-closed `-plugin` argument parsing;
 //! `deadline` owns exact virtual-clock deadline introspection; `idle_loop` owns
-//! the idle callback hot-loop state machine; `registration` owns the fail-stop
+//! the idle callback hot-loop state machine; `inbound` owns inbound frame polling
+//! and deterministic injection ordering; `registration` owns the fail-stop
 //! registration sequencer; `setup` owns descriptor mapping and setup
 //! acknowledgement; `time_control` owns clock ownership, authorized virtual-time
 //! advancement, and the time-control ordering contract. Future modules will add
@@ -28,6 +29,7 @@ pub mod abi;
 pub mod args;
 pub mod deadline;
 pub mod idle_loop;
+pub mod inbound;
 pub mod registration;
 pub mod setup;
 pub mod time_control;
@@ -58,6 +60,7 @@ pub use idle_loop::{
     IdleHotLoopError, IdleHotLoopResult, IdleParkRequest, IdleWaitOutcome, IdleWakeCause,
     IdleWakePlan, PluginIdleHotLoop, compute_idle_wake_plan, timer_deadline_icount,
 };
+pub use inbound::{InboundFrameBatch, InboundFrameError, InboundFrameRing, PluginInboundFrames};
 pub use registration::{
     PluginCallbackCapabilities, PluginRegistrationFailure, PluginRegistrationReady,
     PluginRegistrationSequence, PluginRegistrationSequenceError,
