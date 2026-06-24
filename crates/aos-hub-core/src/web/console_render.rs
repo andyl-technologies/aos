@@ -1660,9 +1660,9 @@ pub fn org_dashboard(
              <label><span><span class=\"local-only\">path</span><span class=\"s3-only\">bucket</span></span> \
              <input type=\"text\" name=\"root\" required placeholder=\"/srv/registries/acme\"></label>\n\
              <div class=\"s3-only\">\n\
-             <label>endpoint <input type=\"text\" name=\"endpoint\" \
+             <label><span class=\"lbl\">endpoint{endpoint_help}</span> <input type=\"text\" name=\"endpoint\" \
              placeholder=\"https://&lt;account&gt;.r2.cloudflarestorage.com\"></label>\n\
-             <label>region <input type=\"text\" name=\"region\" value=\"auto\"></label>\n\
+             <label><span class=\"lbl\">region{region_help}</span> <input type=\"text\" name=\"region\" value=\"auto\"></label>\n\
              <label><span class=\"lbl\">access{access_help}</span> <select name=\"access\">\
              <option value=\"private\">private (read/write, credentialed)</option>\
              <option value=\"public\">public (read-only, no credentials)</option></select></label>\n\
@@ -1677,6 +1677,8 @@ pub fn org_dashboard(
             kinds = kind_options,
             kind_help = help::marker("binding.kind"),
             access_help = help::marker("binding.access"),
+            endpoint_help = help::marker("binding.endpoint"),
+            region_help = help::marker("binding.region"),
         );
     }
     }
@@ -2154,7 +2156,7 @@ pub fn new_registry_page(
          <option value=\"private\">private</option>\
          <option value=\"internal\">internal</option>\
          <option value=\"public\">public</option></select></label>\n\
-         <label>prefix \
+         <label><span class=\"lbl\">prefix{prefix_help}</span> \
          <input type=\"text\" name=\"prefix\" placeholder=\"defaults to the registry slug\"> \
          <span class=\"dim\">optional</span></label>\n\
          <label><span class=\"lbl\">trust anchors{trust_help}</span> \
@@ -2169,6 +2171,7 @@ pub fn new_registry_page(
         vis_help = help::marker("registry.visibility"),
         trust_help = help::marker("registry.trust_anchors"),
         sig_help = help::marker("registry.require_signatures"),
+        prefix_help = help::marker("registry.prefix"),
         projects = project_options,
         bindings = binding_options,
     );
@@ -3285,10 +3288,12 @@ pub fn org_webhooks_page(
         );
     }
     body.push_str("</fieldset>\n");
-    body.push_str(
-        "<label>secret <input type=\"text\" name=\"secret\" \
+    let _ = write!(
+        body,
+        "<label><span class=\"lbl\">secret{secret_help}</span> <input type=\"text\" name=\"secret\" \
          placeholder=\"leave blank to generate\"></label>\n\
          <button>add webhook</button>\n</form>\n",
+        secret_help = help::marker("webhook.secret"),
     );
 
     org_settings_chrome(email, org_slug, "webhooks", &body, started)
@@ -3338,7 +3343,8 @@ pub fn org_sso_page(
         body,
         "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/sso\">\n{csrf}\
          <input type=\"hidden\" name=\"op\" value=\"set-idp\">\n\
-         <label>issuer <input type=\"text\" name=\"issuer\" required value=\"{issuer}\" \
+         <label><span class=\"lbl\">issuer{endpoints_help}</span> \
+         <input type=\"text\" name=\"issuer\" required value=\"{issuer}\" \
          placeholder=\"https://idp.example.com\"></label>\n\
          <label>authorization endpoint <input type=\"url\" name=\"auth_url\" required value=\"{auth}\"></label>\n\
          <label>token endpoint <input type=\"url\" name=\"token_url\" required value=\"{token}\"></label>\n\
@@ -3353,6 +3359,7 @@ pub fn org_sso_page(
          placeholder=\"{{&quot;admins&quot;:&quot;admin&quot;}}\"></label>\n",
         org = escape(org_slug),
         csrf = csrf_field(csrf),
+        endpoints_help = help::marker("sso.endpoints"),
         issuer = val(&cur(&|c| c.issuer.clone())),
         auth = val(&cur(&|c| c.authorization_endpoint.clone())),
         token = val(&cur(&|c| c.token_endpoint.clone())),
@@ -3378,11 +3385,13 @@ pub fn org_sso_page(
     let enforce = idp.is_some_and(|c| c.enforce_sso);
     let _ = write!(
         body,
-        "<label><span class=\"lbl\">just-in-time provision unknown users</span> \
+        "<label><span class=\"lbl\">just-in-time provision unknown users{jit_help}</span> \
          <input type=\"checkbox\" name=\"allow_jit\" value=\"1\"{jit}></label>\n\
-         <label><span class=\"lbl\">force org members through SSO</span> \
+         <label><span class=\"lbl\">force org members through SSO{enforce_help}</span> \
          <input type=\"checkbox\" name=\"enforce_sso\" value=\"1\"{enforce}></label>\n\
          <button>save identity provider</button>\n</form>\n",
+        jit_help = help::marker("sso.jit"),
+        enforce_help = help::marker("sso.enforce"),
         jit = if jit { " checked" } else { "" },
         enforce = if enforce { " checked" } else { "" },
     );
@@ -3593,18 +3602,19 @@ pub fn instance_branding_page(
          <span class=\"dim\">shown in the masthead; empty uses the deploy brand</span></label>\n\
          <label><span class=\"lbl\">tagline</span> \
          <input type=\"text\" name=\"tagline\" value=\"{tagline}\"></label>\n\
-         <label><span class=\"lbl\">announcement banner</span> \
+         <label><span class=\"lbl\">announcement banner{announce_help}</span> \
          <textarea name=\"announcement\" rows=\"2\" cols=\"60\">{announce}</textarea> \
          <span class=\"dim\">shown on every page; empty for none</span></label>\n\
          <h2>Footer links</h2>\n\
          <label><span class=\"lbl\">terms of service URL</span> \
-         <input type=\"text\" name=\"tos_url\" value=\"{tos}\"></label>\n\
+         <input type=\"text\" name=\"tos_url\" value=\"{tos}\" placeholder=\"https://…\"></label>\n\
          <label><span class=\"lbl\">privacy policy URL</span> \
-         <input type=\"text\" name=\"privacy_url\" value=\"{privacy}\"></label>\n\
+         <input type=\"text\" name=\"privacy_url\" value=\"{privacy}\" placeholder=\"https://…\"></label>\n\
          <label><span class=\"lbl\">support URL</span> \
-         <input type=\"text\" name=\"support_url\" value=\"{support}\"></label>\n\
+         <input type=\"text\" name=\"support_url\" value=\"{support}\" placeholder=\"https://…\"></label>\n\
          <button>save</button>\n</form>\n",
         csrf = csrf_field(csrf),
+        announce_help = help::marker("instance.announcement"),
         title = val(&settings.site_title),
         tagline = val(&settings.tagline),
         announce = val(&settings.announcement),
