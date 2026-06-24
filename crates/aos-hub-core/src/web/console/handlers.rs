@@ -3454,6 +3454,36 @@ pub(crate) async fn org_binding_action(
                 .map(|_| "Frontend added.")
                 .map_err(|e| format!("{e:#}"))
         }
+        "edit-frontend" => {
+            let Ok(id) = field("id").parse::<i64>() else {
+                return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
+            };
+            match deps.db.list_storage_frontends(binding_id).await {
+                Ok(list) if list.iter().any(|f| f.id == id) => {}
+                Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
+                Err(err) => return internal(err),
+            }
+            let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
+            deps.db
+                .update_frontend(
+                    id,
+                    field("domain").trim(),
+                    field("base_path").trim(),
+                    if field("mode") == "proxied" {
+                        "proxied"
+                    } else {
+                        "direct"
+                    },
+                    field("serves_git") == "1",
+                    field("serves_cache") == "1",
+                    field("serves_web") == "1",
+                    priority,
+                    field("advertised") == "1",
+                )
+                .await
+                .map(|_| "Frontend updated.")
+                .map_err(|e| format!("{e:#}"))
+        }
         "delete-frontend" => {
             let Ok(id) = field("id").parse::<i64>() else {
                 return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
@@ -3998,6 +4028,22 @@ pub(crate) async fn instance_branding_action(
         Ok(s) => s,
         Err(resp) => return resp,
     };
+    // Footer links render as `href`s; require an http(s) scheme so a blank or
+    // `javascript:`/`data:` value can never become a stored XSS vector.
+    for (label, value) in [
+        ("ToS URL", &form.tos_url),
+        ("Privacy URL", &form.privacy_url),
+        ("Support URL", &form.support_url),
+    ] {
+        let v = value.trim();
+        if !v.is_empty() && crate::url_guard::require_http_scheme(v).is_err() {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("{label} must be an http(s):// URL"),
+            )
+                .into_response();
+        }
+    }
     let result = async {
         for (key, value) in [
             ("site_title", &form.site_title),
@@ -4123,6 +4169,37 @@ pub(crate) async fn instance_storage_action(
                 )
                 .await
                 .map(|_| "Frontend added.")
+                .map_err(|e| format!("{e:#}"))
+        }
+        "edit-frontend" => {
+            let Ok(id) = field("id").parse::<i64>() else {
+                return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
+            };
+            // Only a frontend belonging to this binding may be edited here.
+            match deps.db.list_storage_frontends(binding.id).await {
+                Ok(list) if list.iter().any(|f| f.id == id) => {}
+                Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
+                Err(err) => return internal(err),
+            }
+            let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
+            deps.db
+                .update_frontend(
+                    id,
+                    field("domain").trim(),
+                    field("base_path").trim(),
+                    if field("mode") == "proxied" {
+                        "proxied"
+                    } else {
+                        "direct"
+                    },
+                    field("serves_git") == "1",
+                    field("serves_cache") == "1",
+                    field("serves_web") == "1",
+                    priority,
+                    field("advertised") == "1",
+                )
+                .await
+                .map(|_| "Frontend updated.")
                 .map_err(|e| format!("{e:#}"))
         }
         "delete-frontend" => {
@@ -6392,11 +6469,46 @@ async fn serving_view(
     let result = async {
         let frontends = deps.db.list_frontends(registry.id).await?;
         let mirror = deps.db.mirror_source(registry.id).await?;
+        // Frontends inherited from the storage binding this registry lives on
+        // (the instance-default binding when the registry is unbound): they also
+        // serve this registry, under its prefix. Shown read-only, with a link to
+        // edit them at the binding.
+        let binding = match registry.storage_binding_id {
+            Some(id) => deps.db.storage_binding(id).await?,
+            None => deps.db.instance_default_binding().await?,
+        };
+        let (inherited, inh_label, inh_href) = match &binding {
+            Some(b) => {
+                let list = deps.db.list_storage_frontends(b.id).await?;
+                let (label, href) = if b.is_instance_default {
+                    (
+                        "default storage".to_string(),
+                        "/-/instance/storage".to_string(),
+                    )
+                } else {
+                    let org = match registry.org_id {
+                        Some(oid) => deps
+                            .db
+                            .org_by_id(oid)
+                            .await?
+                            .map(|o| o.slug)
+                            .unwrap_or_default(),
+                        None => String::new(),
+                    };
+                    (b.name.clone(), format!("/-/org/{org}/bindings/{}", b.id))
+                };
+                (list, label, href)
+            }
+            None => (Vec::new(), String::new(), String::new()),
+        };
         Ok::<_, anyhow::Error>(console::serving_page(
             &session.email,
             registry,
             &session.csrf(),
             &frontends,
+            &inherited,
+            &inh_label,
+            &inh_href,
             mirror.as_ref(),
             notice,
             started,
@@ -6507,6 +6619,41 @@ async fn serving_action(
             }
             serving_view(deps, session, registry, Some("Frontend added."), started).await
         }
+        "edit-frontend" => {
+            let Ok(id) = field("id").parse::<i64>() else {
+                return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
+            };
+            match deps.db.list_frontends(registry.id).await {
+                Ok(list) if list.iter().any(|f| f.id == id) => {}
+                Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
+                Err(err) => return internal(err),
+            }
+            let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
+            let updated = deps
+                .db
+                .update_frontend(
+                    id,
+                    field("domain").trim(),
+                    field("base_path").trim(),
+                    match field("mode") {
+                        "proxied" => "proxied",
+                        _ => "direct",
+                    },
+                    field("serves_git") == "1",
+                    field("serves_cache") == "1",
+                    field("serves_web") == "1",
+                    priority,
+                    field("advertised") == "1",
+                )
+                .await;
+            if let Err(err) = updated {
+                return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response();
+            }
+            if let Err(err) = audit(deps, session, registry, "frontend.edit", &id.to_string()).await {
+                return internal(err);
+            }
+            serving_view(deps, session, registry, Some("Frontend updated."), started).await
+        }
         "delete-frontend" => {
             let Ok(id) = field("id").parse::<i64>() else {
                 return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
@@ -6529,6 +6676,11 @@ async fn serving_action(
             let upstream = field("upstream_url").trim();
             if upstream.is_empty() {
                 return (StatusCode::BAD_REQUEST, "upstream URL is required").into_response();
+            }
+            // The hub fetches the upstream on the mirror schedule, so reject a
+            // non-http(s) or local/internal origin (SSRF) at the write.
+            if let Err(err) = crate::url_guard::is_safe_remote_url(upstream) {
+                return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response();
             }
             let secs: i64 = field("schedule_secs").trim().parse().unwrap_or(3600);
             let r = deps

@@ -3545,18 +3545,21 @@ pub fn instance_settings_page(
          <label><span class=\"lbl\">org signup{help}</span> <select name=\"signup_policy\">\
          <option value=\"invite_only\"{invite_sel}>invite only</option>\
          <option value=\"open\"{open_sel}>open</option></select></label>\n\
-         <label><span class=\"lbl\">signup domain allowlist</span> \
+         <label><span class=\"lbl\">signup domain allowlist{domains_help}</span> \
          <input type=\"text\" name=\"signup_domains\" value=\"{domains}\" \
          placeholder=\"acme.com, example.org\"> \
          <span class=\"dim\">comma-separated; empty allows any domain</span></label>\n\
-         <label><span class=\"lbl\">offer password login</span> \
+         <label><span class=\"lbl\">offer password login{pw_help}</span> \
          <input type=\"checkbox\" name=\"password_login\" value=\"1\"{pw}></label>\n\
-         <label><span class=\"lbl\">session lifetime (seconds)</span> \
+         <label><span class=\"lbl\">session lifetime (seconds){life_help}</span> \
          <input type=\"number\" name=\"session_lifetime_secs\" value=\"{lifetime}\" min=\"0\"> \
          <span class=\"dim\">empty uses the built-in default</span></label>\n\
          <button>save</button>\n</form>\n",
         csrf = csrf_field(csrf),
         help = help::marker("instance.signup_policy"),
+        domains_help = help::marker("instance.signup_domains"),
+        pw_help = help::marker("instance.password_login"),
+        life_help = help::marker("instance.session_lifetime"),
         domains = escape(&settings.signup_domains.join(", ")),
     );
     instance_settings_chrome(email, "general", &body, started)
@@ -3647,12 +3650,13 @@ pub fn instance_serving_page(
          <label><span class=\"lbl\">default crawl policy{help}</span> \
          <select name=\"default_crawl_policy\">{crawl}</select> \
          <span class=\"dim\">new registries inherit this robots.txt posture</span></label>\n\
-         <label><span class=\"lbl\">max upload (bytes)</span> \
+         <label><span class=\"lbl\">max upload (bytes){upload_help}</span> \
          <input type=\"number\" name=\"max_upload_bytes\" value=\"{max_upload}\" min=\"0\"> \
          <span class=\"dim\">empty uses the built-in default</span></label>\n\
          <button>save</button>\n</form>\n",
         csrf = csrf_field(csrf),
         help = help::marker("registry.crawl_policy"),
+        upload_help = help::marker("instance.max_upload"),
         crawl = crawl_options,
     );
     instance_settings_chrome(email, "serving", &body, started)
@@ -3665,12 +3669,57 @@ pub fn instance_serving_page(
 /// native hub's storage root), fixed when the hub is deployed and not
 /// runtime-editable from the web. The actionable lever — pushing a registry or
 /// cache elsewhere — is an org-scoped storage binding, linked from here.
+/// The shared frontend field set (domain, base path, mode, serves-*, advertise,
+/// priority) with attached help, used by every "add a frontend" form and its
+/// per-row "edit" form. When `f` is `Some`, the inputs are pre-filled for an
+/// edit; when `None`, sensible add-defaults apply. The `domain` input is a bare
+/// host (no scheme) — that is validated server-side.
+fn frontend_form_fields(f: Option<&FrontendRecord>) -> String {
+    let ck = |on: bool| if on { " checked" } else { "" };
+    let mode = f.map_or("direct", |x| x.mode.as_str());
+    format!(
+        "<label>domain <input type=\"text\" name=\"domain\" required value=\"{domain}\" \
+         placeholder=\"cdn.acme.com\"> <span class=\"dim\">host only — no https://</span></label>\n\
+         <label>base path <input type=\"text\" name=\"base_path\" value=\"{base_path}\" \
+         placeholder=\"(domain root)\"></label>\n\
+         <label><span class=\"lbl\">mode{mode_help}</span> <select name=\"mode\">\
+         <option value=\"direct\"{dsel}>direct</option>\
+         <option value=\"proxied\"{psel}>proxied</option></select></label>\n\
+         <label><span class=\"lbl\">serves git{git_help}</span> \
+         <input type=\"checkbox\" name=\"serves_git\" value=\"1\"{g}></label>\n\
+         <label><span class=\"lbl\">serves cache{cache_help}</span> \
+         <input type=\"checkbox\" name=\"serves_cache\" value=\"1\"{ca}></label>\n\
+         <label><span class=\"lbl\">serves web{web_help}</span> \
+         <input type=\"checkbox\" name=\"serves_web\" value=\"1\"{w}></label>\n\
+         <label><span class=\"lbl\">advertise to consumers{adv_help}</span> \
+         <input type=\"checkbox\" name=\"advertised\" value=\"1\"{adv}></label>\n\
+         <label><span class=\"lbl\">consumer priority{prio_help}</span> \
+         <input type=\"text\" name=\"consumer_priority\" value=\"{prio}\"></label>\n",
+        domain = escape(f.map_or("", |x| x.domain.as_str())),
+        base_path = escape(f.map_or("", |x| x.base_path.as_str())),
+        mode_help = help::marker("frontend.mode"),
+        dsel = if mode == "direct" { " selected" } else { "" },
+        psel = if mode == "proxied" { " selected" } else { "" },
+        git_help = help::marker("frontend.serves_git"),
+        g = ck(f.map_or(true, |x| x.serves_git)),
+        cache_help = help::marker("frontend.serves_cache"),
+        ca = ck(f.map_or(true, |x| x.serves_cache)),
+        web_help = help::marker("frontend.serves_web"),
+        w = ck(f.map_or(true, |x| x.serves_web)),
+        adv_help = help::marker("frontend.advertised"),
+        adv = ck(f.map_or(true, |x| x.advertised)),
+        prio_help = help::marker("frontend.priority"),
+        prio = f.map_or(100, |x| x.consumer_priority),
+    )
+}
+
 #[must_use]
 /// Render the shared storage-binding serving controls — public-access settings
 /// plus inherited-frontend management — used by both the instance default
 /// storage page and an org's custom-binding pages (RFC-0004 §12), so both share
 /// one interface. `post_action` is the form target; it dispatches `op` values
-/// `set-public` / `add-frontend` / `delete-frontend` for this `binding`.
+/// `set-public` / `add-frontend` / `edit-frontend` / `delete-frontend` for this
+/// `binding`.
 pub fn storage_binding_serving_section(
     post_action: &str,
     csrf: &str,
@@ -3693,14 +3742,17 @@ pub fn storage_binding_serving_section(
         body,
         "<form class=\"console\" method=\"post\" action=\"{action}\">{csrf}\
          <input type=\"hidden\" name=\"op\" value=\"set-public\">\n\
-         <label>access <select name=\"access\">\
+         <label><span class=\"lbl\">access{access_help}</span> <select name=\"access\">\
          <option value=\"private\"{psel}>private</option>\
          <option value=\"public\"{usel}>public</option></select></label>\n\
-         <label>public base URL <input type=\"text\" name=\"public_base_url\" value=\"{base}\" \
+         <label><span class=\"lbl\">public base URL{base_help}</span> \
+         <input type=\"text\" name=\"public_base_url\" value=\"{base}\" \
          placeholder=\"https://cdn.example.com\"></label>\n\
          <button>save access</button>\n</form>\n",
         action = action,
         csrf = csrf_field(csrf),
+        access_help = help::marker("binding.access"),
+        base_help = help::marker("binding.public_base_url"),
         psel = sel("private"),
         usel = sel("public"),
         base = escape(binding.public_base_url.as_deref().unwrap_or("")),
@@ -3730,8 +3782,15 @@ pub fn storage_binding_serving_section(
                 if f.serves_web {
                     serves.push("web");
                 }
-                let delete = format!(
-                    "<form class=\"console\" method=\"post\" action=\"{action}\" \
+                // Per-row actions: an inline "edit" disclosure (pre-filled form)
+                // and a delete button.
+                let actions = format!(
+                    "<details><summary>edit</summary>\
+                     <form class=\"console\" method=\"post\" action=\"{action}\">{csrf}\
+                     <input type=\"hidden\" name=\"op\" value=\"edit-frontend\">\
+                     <input type=\"hidden\" name=\"id\" value=\"{id}\">\n{fields}\
+                     <button>save changes</button></form></details>\n\
+                     <form class=\"console\" method=\"post\" action=\"{action}\" \
                      style=\"display:inline\">{csrf}\
                      <input type=\"hidden\" name=\"op\" value=\"delete-frontend\">\
                      <input type=\"hidden\" name=\"id\" value=\"{id}\">\
@@ -3739,6 +3798,7 @@ pub fn storage_binding_serving_section(
                     action = action,
                     csrf = csrf_field(csrf),
                     id = f.id,
+                    fields = frontend_form_fields(Some(f)),
                 );
                 vec![
                     format!("<code>{}{}</code>", escape(&f.domain), escape(&f.base_path)),
@@ -3749,7 +3809,7 @@ pub fn storage_binding_serving_section(
                     } else {
                         "<span class=\"dim\">no</span>".to_string()
                     },
-                    delete,
+                    actions,
                 ]
             })
             .collect();
@@ -3759,19 +3819,11 @@ pub fn storage_binding_serving_section(
         body,
         "<h3>Add a frontend</h3>\n\
          <form class=\"console\" method=\"post\" action=\"{action}\">{csrf}\
-         <input type=\"hidden\" name=\"op\" value=\"add-frontend\">\n\
-         <label>domain <input type=\"text\" name=\"domain\" required placeholder=\"cdn.acme.com\"></label>\n\
-         <label>base path <input type=\"text\" name=\"base_path\" placeholder=\"(domain root)\"></label>\n\
-         <label>mode <select name=\"mode\"><option value=\"direct\">direct</option>\
-         <option value=\"proxied\">proxied</option></select></label>\n\
-         <label><span class=\"lbl\">serves git</span> <input type=\"checkbox\" name=\"serves_git\" value=\"1\" checked></label>\n\
-         <label><span class=\"lbl\">serves cache</span> <input type=\"checkbox\" name=\"serves_cache\" value=\"1\" checked></label>\n\
-         <label><span class=\"lbl\">serves web</span> <input type=\"checkbox\" name=\"serves_web\" value=\"1\" checked></label>\n\
-         <label><span class=\"lbl\">advertise to consumers</span> <input type=\"checkbox\" name=\"advertised\" value=\"1\" checked></label>\n\
-         <label>consumer priority <input type=\"text\" name=\"consumer_priority\" value=\"100\"></label>\n\
+         <input type=\"hidden\" name=\"op\" value=\"add-frontend\">\n{fields}\
          <button>add frontend</button>\n</form>\n",
         action = action,
         csrf = csrf_field(csrf),
+        fields = frontend_form_fields(None),
     );
     body
 }
@@ -3867,12 +3919,19 @@ pub fn org_binding_page(
 /// Frontends and mirror config are registry metadata, not signed surface
 /// content, so they are direct mutations. (Triggering a mirror *sync* is a
 /// scheduled background job / a CLI action, not a web button.)
+#[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn serving_page(
     email: &str,
     registry: &RegistryRecord,
     csrf: &str,
     frontends: &[FrontendRecord],
+    // Frontends inherited from the storage binding this registry lives on (or the
+    // instance-default binding when unbound): read-only here, edited at the
+    // binding. `inherited_label`/`inherited_href` name + link to that binding.
+    inherited: &[FrontendRecord],
+    inherited_label: &str,
+    inherited_href: &str,
     mirror: Option<&MirrorSource>,
     notice: Option<&str>,
     started: Instant,
@@ -3907,8 +3966,14 @@ pub fn serving_page(
                 if f.serves_web {
                     serves.push("web");
                 }
-                let delete = format!(
-                    "<form class=\"console\" method=\"post\" \
+                let actions = format!(
+                    "<details><summary>edit</summary>\
+                     <form class=\"console\" method=\"post\" \
+                     action=\"/{slug}/-/settings/serving\">{csrf}\
+                     <input type=\"hidden\" name=\"op\" value=\"edit-frontend\">\
+                     <input type=\"hidden\" name=\"id\" value=\"{id}\">\n{fields}\
+                     <button>save changes</button></form></details>\n\
+                     <form class=\"console\" method=\"post\" \
                      action=\"/{slug}/-/settings/serving\" style=\"display:inline\">{csrf}\
                      <input type=\"hidden\" name=\"op\" value=\"delete-frontend\">\
                      <input type=\"hidden\" name=\"id\" value=\"{id}\">\
@@ -3916,6 +3981,7 @@ pub fn serving_page(
                     slug = escape(slug),
                     csrf = csrf_field(csrf),
                     id = f.id,
+                    fields = frontend_form_fields(Some(f)),
                 );
                 vec![
                     format!("<code>{}{}</code>", escape(&f.domain), escape(&f.base_path)),
@@ -3926,7 +3992,7 @@ pub fn serving_page(
                     } else {
                         "<span class=\"dim\">no</span>".to_string()
                     },
-                    delete,
+                    actions,
                 ]
             })
             .collect();
@@ -3939,20 +4005,53 @@ pub fn serving_page(
         body,
         "<h3>Add a frontend</h3>\n\
          <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/serving\">{csrf}\
-         <input type=\"hidden\" name=\"op\" value=\"add-frontend\">\n\
-         <label>domain <input type=\"text\" name=\"domain\" required placeholder=\"cdn.acme.com\"></label>\n\
-         <label>base path <input type=\"text\" name=\"base_path\" placeholder=\"(domain root)\"></label>\n\
-         <label>mode <select name=\"mode\"><option value=\"direct\">direct</option>\
-         <option value=\"proxied\">proxied</option></select></label>\n\
-         <label><span class=\"lbl\">serves git</span> <input type=\"checkbox\" name=\"serves_git\" value=\"1\" checked></label>\n\
-         <label><span class=\"lbl\">serves cache</span> <input type=\"checkbox\" name=\"serves_cache\" value=\"1\" checked></label>\n\
-         <label><span class=\"lbl\">serves web</span> <input type=\"checkbox\" name=\"serves_web\" value=\"1\" checked></label>\n\
-         <label><span class=\"lbl\">advertise to consumers</span> <input type=\"checkbox\" name=\"advertised\" value=\"1\"></label>\n\
-         <label>consumer priority <input type=\"text\" name=\"consumer_priority\" value=\"100\"></label>\n\
+         <input type=\"hidden\" name=\"op\" value=\"add-frontend\">\n{fields}\
          <button>add frontend</button>\n</form>\n",
         slug = escape(slug),
         csrf = csrf_field(csrf),
+        fields = frontend_form_fields(None),
     );
+
+    // --- Inherited frontends (from the storage binding) ---
+    // A registry with no direct frontend of its own is still served through the
+    // frontends of the storage binding it lives on (the instance-default binding
+    // when unbound). Show them read-only, with a link to edit them at the binding.
+    if !inherited.is_empty() {
+        let _ = write!(
+            body,
+            "<h3>Inherited from {label}</h3>\n\
+             <p class=\"dim\">Frontends on this registry's storage binding also serve it \
+             (under this registry's prefix). Edit them at <a href=\"{href}\">{label}</a>.</p>\n",
+            label = escape(inherited_label),
+            href = escape(inherited_href),
+        );
+        let rows: Vec<Vec<String>> = inherited
+            .iter()
+            .map(|f| {
+                let mut serves = Vec::new();
+                if f.serves_git {
+                    serves.push("git");
+                }
+                if f.serves_cache {
+                    serves.push("cache");
+                }
+                if f.serves_web {
+                    serves.push("web");
+                }
+                vec![
+                    format!("<code>{}{}</code>", escape(&f.domain), escape(&f.base_path)),
+                    escape(&f.mode),
+                    escape(&serves.join(", ")),
+                    if f.advertised {
+                        "<span class=\"ok\">advertised</span>".to_string()
+                    } else {
+                        "<span class=\"dim\">no</span>".to_string()
+                    },
+                ]
+            })
+            .collect();
+        body.push_str(&table(&["domain", "mode", "serves", "advertised"], &rows));
+    }
 
     // --- Mirror ---
     body.push_str("<h2>Upstream mirror</h2>\n");

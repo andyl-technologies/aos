@@ -3715,12 +3715,10 @@ impl Database {
                 }
             }
         }
-        // Hostnames are case-insensitive: store lowercase so a request `Host`
-        // (which the dispatcher lowercases) matches, and the UNIQUE(domain,
-        // base_path) constraint can't be dodged by case.
-        let domain = domain.to_ascii_lowercase();
-        crate::url_guard::is_safe_remote_url(&frontend_probe_url(&domain))
-            .with_context(|| format!("rejecting frontend domain '{domain}'"))?;
+        // Validate + normalize the bare host and rooted base path (lowercased so
+        // a request `Host`, which the dispatcher lowercases, matches and the
+        // UNIQUE(domain, base_path) constraint can't be dodged by case).
+        let (domain, base_path) = validate_frontend_target(domain, base_path)?;
         self.backend
             .execute_insert(
                 "INSERT INTO frontends
@@ -3741,6 +3739,89 @@ impl Database {
                 ],
             )
             .await
+    }
+
+    /// Update an existing frontend's mutable fields (domain, base path, mode,
+    /// serves-flags, consumer priority, advertised) by id.
+    ///
+    /// The target (registry / cache / storage binding) is fixed at creation and
+    /// not changed here. `domain`/`base_path` are validated and normalized exactly
+    /// as on create ([`validate_frontend_target`]); a `direct` mode is rejected
+    /// when the frontend's underlying storage binding is `private` (same rule as
+    /// create), so an edit can't sneak a Direct frontend onto a private binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown id, an invalid mode/domain/base path, a
+    /// Direct-over-private violation, or a database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_frontend(
+        &self,
+        id: i64,
+        domain: &str,
+        base_path: &str,
+        mode: &str,
+        serves_git: bool,
+        serves_cache: bool,
+        serves_web: bool,
+        consumer_priority: i64,
+        advertised: bool,
+    ) -> Result<()> {
+        if !matches!(mode, "direct" | "proxied") {
+            bail!("unsupported frontend mode '{mode}' (expected direct or proxied)");
+        }
+        // Resolve the frontend's target to enforce the Direct-over-private rule.
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT registry_id, cache_id, storage_binding_id FROM frontends WHERE id = ?1",
+                &vals![id],
+            )
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("frontend {id} not found"))?;
+        if mode == "direct" {
+            let registry_id: Option<i64> = row.get(0)?;
+            let cache_id: Option<i64> = row.get(1)?;
+            let binding_id: Option<i64> = match row.get::<Option<i64>>(2)? {
+                Some(b) => Some(b),
+                None => match (registry_id, cache_id) {
+                    (Some(r), _) => self.registry_by_id(r).await?.and_then(|x| x.storage_binding_id),
+                    (_, Some(c)) => self.cache_by_id(c).await?.and_then(|x| x.storage_binding_id),
+                    _ => None,
+                },
+            };
+            if let Some(binding_id) = binding_id {
+                if let Some(binding) = self.storage_binding(binding_id).await? {
+                    if binding.access == "private" {
+                        bail!(
+                            "cannot set a Direct frontend over private storage binding '{}': \
+                             private bindings must be served proxied or presigned",
+                            binding.name
+                        );
+                    }
+                }
+            }
+        }
+        let (domain, base_path) = validate_frontend_target(domain, base_path)?;
+        self.backend
+            .execute(
+                "UPDATE frontends SET domain = ?2, base_path = ?3, mode = ?4, \
+                 serves_git = ?5, serves_cache = ?6, serves_web = ?7, \
+                 consumer_priority = ?8, advertised = ?9 WHERE id = ?1",
+                &vals![
+                    id,
+                    domain,
+                    base_path,
+                    mode,
+                    serves_git,
+                    serves_cache,
+                    serves_web,
+                    consumer_priority,
+                    advertised
+                ],
+            )
+            .await?;
+        Ok(())
     }
 
     /// List a registry's frontends, ordered by descending consumer priority
@@ -3809,11 +3890,8 @@ impl Database {
                 }
             }
         }
-        // Hostnames are case-insensitive: store lowercase so the dispatcher's
-        // (lowercased) request `Host` matches and the UNIQUE constraint holds.
-        let domain = domain.to_ascii_lowercase();
-        crate::url_guard::is_safe_remote_url(&frontend_probe_url(&domain))
-            .with_context(|| format!("rejecting frontend domain '{domain}'"))?;
+        // Validate + normalize the bare host and rooted base path.
+        let (domain, base_path) = validate_frontend_target(domain, base_path)?;
         self.backend
             .execute_insert(
                 "INSERT INTO frontends
@@ -3875,11 +3953,8 @@ impl Database {
                 binding.name
             );
         }
-        // Hostnames are case-insensitive: store lowercase so the dispatcher's
-        // (lowercased) request `Host` matches and the UNIQUE constraint holds.
-        let domain = domain.to_ascii_lowercase();
-        crate::url_guard::is_safe_remote_url(&frontend_probe_url(&domain))
-            .with_context(|| format!("rejecting frontend domain '{domain}'"))?;
+        // Validate + normalize the bare host and rooted base path.
+        let (domain, base_path) = validate_frontend_target(domain, base_path)?;
         self.backend
             .execute_insert(
                 "INSERT INTO frontends
@@ -6623,6 +6698,14 @@ impl Database {
             "public" | "private" => access,
             other => bail!("unknown storage access mode '{other}' (expected public or private)"),
         };
+        // The public base URL is the bucket origin presign/direct serving builds
+        // against (and the hub fetches from), so require a safe http(s) origin.
+        if let Some(url) = public_base_url {
+            if !url.trim().is_empty() {
+                crate::url_guard::is_safe_remote_url(url.trim())
+                    .with_context(|| format!("rejecting public base URL '{url}'"))?;
+            }
+        }
         let n = self
             .backend
             .execute(
@@ -10870,6 +10953,46 @@ fn frontend_probe_url(domain: &str) -> String {
     } else {
         format!("https://{}", domain.trim_end_matches('/'))
     }
+}
+
+/// Validate a frontend `domain` + `base_path`, returning the normalized
+/// `(domain, base_path)` to store.
+///
+/// A frontend `domain` is a **bare host** — the request `Host` the dispatcher
+/// matches and the host consumer URLs are built from by string concatenation.
+/// An embedded scheme (`https://…`) or path would double-scheme or corrupt those
+/// URLs, so they are rejected here rather than stored. The host is additionally
+/// run through the SSRF guard ([`is_safe_remote_url`](crate::url_guard::is_safe_remote_url)).
+/// `base_path` must be empty or a rooted path (`/…`) with no scheme or `..`.
+///
+/// # Errors
+///
+/// Returns an error when `domain` carries a scheme/path/whitespace, is not a
+/// plausible host, fails the SSRF guard, or `base_path` is not a safe rooted
+/// path.
+fn validate_frontend_target(domain: &str, base_path: &str) -> Result<(String, String)> {
+    let domain = domain.trim().to_ascii_lowercase();
+    if domain.contains("://") {
+        bail!("frontend domain '{domain}' must be a bare host with no scheme (drop the https://)");
+    }
+    if domain.contains('/') {
+        bail!("frontend domain '{domain}' must be a host only; put any path in the base path field");
+    }
+    if domain.is_empty() || domain.contains(char::is_whitespace) || !domain.contains('.') {
+        bail!("frontend domain '{domain}' is not a valid host");
+    }
+    crate::url_guard::is_safe_remote_url(&frontend_probe_url(&domain))
+        .with_context(|| format!("rejecting frontend domain '{domain}'"))?;
+    let base_path = base_path.trim();
+    if !base_path.is_empty() {
+        if base_path.contains("://") || base_path.contains("..") || base_path.contains("//") {
+            bail!("frontend base path '{base_path}' must be a simple rooted path with no scheme or '..'");
+        }
+        if !base_path.starts_with('/') {
+            bail!("frontend base path '{base_path}' must start with '/' (or be empty for the domain root)");
+        }
+    }
+    Ok((domain, base_path.to_string()))
 }
 
 /// Map a `frontends` row into a [`FrontendRecord`] (columns in the order
