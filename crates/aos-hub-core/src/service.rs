@@ -1126,6 +1126,66 @@ impl RpcService {
         Ok(false)
     }
 
+    /// Enforces the instance email-domain allowlist at the signup moment.
+    ///
+    /// When `signup_domains` is set (non-empty), a *new* user principal — one
+    /// with no existing membership and no instance-admin grant — must present an
+    /// email whose lowercased domain is on the allowlist. Service accounts,
+    /// existing members, and instance admins are exempt (the allowlist gates who
+    /// may join, not who may keep operating). A user with no email on file is
+    /// rejected when the allowlist is active (fail closed).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::PermissionDenied`] when the caller's email domain is
+    /// not allowlisted, and [`RpcError::Internal`] on database failure.
+    async fn enforce_signup_domain(&self, claims: &Claims) -> Result<(), RpcError> {
+        let settings = self.db.instance_settings().await.map_err(RpcError::internal)?;
+        if settings.signup_domains.is_empty() {
+            return Ok(());
+        }
+        let Some(principal) = claims_principal(claims) else {
+            return Ok(());
+        };
+        // Only user signups are gated; service accounts are provisioned by admins.
+        if principal.kind != PrincipalKind::User {
+            return Ok(());
+        }
+        // Established users (already a member or an instance admin) are exempt.
+        if self
+            .db
+            .user_has_any_membership(principal.id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Ok(());
+        }
+        let grants = self
+            .db
+            .effective_scopes(principal)
+            .await
+            .map_err(RpcError::internal)?;
+        if iam::allow(&grants, Permission::IamAdmin, &Scope::root()) {
+            return Ok(());
+        }
+        // A new user: their email domain must be on the allowlist.
+        let email = self
+            .db
+            .user_email(principal.id)
+            .await
+            .map_err(RpcError::internal)?;
+        let domain = email
+            .as_deref()
+            .and_then(|e| e.rsplit_once('@'))
+            .map(|(_, d)| d.to_lowercase());
+        match domain {
+            Some(d) if settings.signup_domains.iter().any(|allowed| allowed == &d) => Ok(()),
+            _ => Err(RpcError::PermissionDenied(
+                "your email domain is not permitted to sign up on this instance".into(),
+            )),
+        }
+    }
+
     /// `OrgService.CreateOrg` — create an org and grant the caller `Owner`.
     ///
     /// The bootstrap exception: any authenticated principal may create an org.
@@ -1168,6 +1228,11 @@ impl RpcService {
                 "org creation is invite-only on this instance".into(),
             ));
         }
+        // Instance email-domain allowlist: when set, a *new* user signing up
+        // (creating their first org) must have an allowlisted email domain.
+        // Existing members and instance admins are exempt — the allowlist gates
+        // the signup moment, not established tenants.
+        self.enforce_signup_domain(&claims).await?;
         // Bound the creation rate per authenticated principal (the JWT owner),
         // after the cheap input/policy gates so a rejected request does not
         // consume the caller's creation budget.
@@ -1956,7 +2021,7 @@ impl RpcService {
             )
             .await
             .map_err(|e| RpcError::AlreadyExists(format!("{e:#}")))?;
-        let record = self
+        let mut record = self
             .db
             .registry_by_scope(&org.slug, &req.project_path, &req.name)
             .await
@@ -1964,6 +2029,27 @@ impl RpcService {
             .ok_or_else(|| {
                 RpcError::internal(anyhow::anyhow!("registry {id} vanished after creation"))
             })?;
+        // Seed the new registry's crawl policy from the instance default when the
+        // operator has set one other than the built-in `allow_all`. New
+        // registries inherit the instance posture (e.g. an AI-averse instance
+        // defaulting to `allow_no_ai`); a per-registry override can be applied
+        // later via `set_crawl_policy`.
+        if let Some(default) = self
+            .db
+            .instance_config_get("default_crawl_policy")
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if let Ok(policy) = crate::crawl::CrawlPolicy::parse(&default) {
+                if policy.as_str() != record.crawl_policy {
+                    self.db
+                        .set_registry_crawl_policy(&record.slug, policy.as_str())
+                        .await
+                        .map_err(RpcError::internal)?;
+                    record.crawl_policy = policy.as_str().to_string();
+                }
+            }
+        }
         let status = self
             .db
             .index_status(record.id)
@@ -4251,6 +4337,26 @@ impl RpcService {
     /// Simpler than the registry write: NARs/narinfo are content-addressed and
     /// immutable, so there is no publish lease and no re-index. Requires cache
     /// write authority ([`Self::require_cache_admin`]); charges the org storage
+    /// The effective per-request upload cap in bytes.
+    ///
+    /// The instance `max_upload_bytes` setting overrides the built-in
+    /// [`MAX_UPLOAD_BYTES`] when an operator has set a positive value; otherwise
+    /// the built-in default applies. Read on the write path so a change takes
+    /// effect without a restart; a malformed or non-positive stored value falls
+    /// back to the default (fail safe).
+    async fn effective_max_upload_bytes(&self) -> usize {
+        match self.db.instance_config_get("max_upload_bytes").await {
+            Ok(Some(v)) => v
+                .parse::<u64>()
+                .ok()
+                .filter(|n| *n > 0)
+                .map_or(MAX_UPLOAD_BYTES, |n| {
+                    usize::try_from(n).unwrap_or(MAX_UPLOAD_BYTES)
+                }),
+            _ => MAX_UPLOAD_BYTES,
+        }
+    }
+
     /// quota with a TOCTOU-safe reserve-before-write.
     async fn put_cache_path(
         &self,
@@ -4271,7 +4377,7 @@ impl RpcService {
         if crate::url_guard::validate_http_surface_path(path).is_err() {
             return FacadeWrite::BadPath("unsafe surface path");
         }
-        if body.len() > MAX_UPLOAD_BYTES {
+        if body.len() > self.effective_max_upload_bytes().await {
             return FacadeWrite::TooLarge;
         }
         // Server-side narinfo signing: a key-bearing cache signs each uploaded
@@ -4536,7 +4642,7 @@ impl RpcService {
         if crate::url_guard::validate_http_surface_path(path).is_err() {
             return FacadeWrite::BadPath("unsafe surface path");
         }
-        if body.len() > MAX_UPLOAD_BYTES {
+        if body.len() > self.effective_max_upload_bytes().await {
             return FacadeWrite::TooLarge;
         }
 

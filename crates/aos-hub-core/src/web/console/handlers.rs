@@ -484,6 +484,17 @@ pub(crate) async fn login_password(
     if email.is_empty() || !email.contains('@') || form.password.is_empty() {
         return invalid();
     }
+    // Instance policy: when local password login is disabled, refuse it outright
+    // (the instance is SSO/magic-link only). This is a global posture, not
+    // account-specific, so a clear message is no account-existence oracle.
+    if !password_login_enabled(&deps).await {
+        return Html(console::login_page(
+            Some("Password login is disabled on this instance. Use SSO or a magic link."),
+            None,
+            started,
+        ))
+        .into_response();
+    }
     // Rate-limit on both the target email and the source IP before doing the
     // (deliberately expensive) Argon2 verify, so a spray cannot burn CPU.
     let now = crate::clock::now_unix_secs();
@@ -527,12 +538,9 @@ pub(crate) async fn login_password(
         Err(err) => return internal(err),
     }
     // A correct password is a re-authentication: the session is sudo-capable.
-    let cookie = match deps
-        .db
-        .create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1)
-        .await
-    {
-        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
+    let lifetime = effective_session_lifetime(&deps).await;
+    let cookie = match deps.db.create_session(user_id, lifetime, 1).await {
+        Ok(secret) => set_cookie_header(&secret, lifetime),
         Err(err) => return internal(err),
     };
     ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
@@ -718,12 +726,9 @@ pub(crate) async fn oidc_callback(
         }
     };
     // A fresh SSO sign-in is a re-authentication: the session is sudo-capable.
-    let cookie = match deps
-        .db
-        .create_session(login.user_id, ABSOLUTE_LIFETIME_SECS, 1)
-        .await
-    {
-        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
+    let lifetime = effective_session_lifetime(&deps).await;
+    let cookie = match deps.db.create_session(login.user_id, lifetime, 1).await {
+        Ok(secret) => set_cookie_header(&secret, lifetime),
         Err(err) => return internal(err),
     };
     // Honor the staged redirect only for same-origin relative paths (a leading
@@ -812,12 +817,9 @@ pub(crate) async fn magic_consume(
         Ok(id) => id,
         Err(err) => return internal(err),
     };
-    let cookie = match deps
-        .db
-        .create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1)
-        .await
-    {
-        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
+    let lifetime = effective_session_lifetime(&deps).await;
+    let cookie = match deps.db.create_session(user_id, lifetime, 1).await {
+        Ok(secret) => set_cookie_header(&secret, lifetime),
         Err(err) => return internal(err),
     };
     ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
@@ -957,12 +959,13 @@ pub(crate) async fn account_set_password(
     if let Err(err) = deps.db.revoke_all_user_sessions(session.auth.user_id).await {
         return internal(err);
     }
+    let lifetime = effective_session_lifetime(&deps).await;
     let cookie = match deps
         .db
-        .create_session(session.auth.user_id, ABSOLUTE_LIFETIME_SECS, 1)
+        .create_session(session.auth.user_id, lifetime, 1)
         .await
     {
-        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
+        Ok(secret) => set_cookie_header(&secret, lifetime),
         Err(err) => return internal(err),
     };
     ([(header::SET_COOKIE, cookie)], Redirect::to("/account")).into_response()
@@ -1222,12 +1225,9 @@ pub(crate) async fn passkey_login_finish(
         Ok(None) => return (StatusCode::UNAUTHORIZED, "passkey sign-in failed").into_response(),
         Err(err) => return internal(err),
     }
-    let cookie = match deps
-        .db
-        .create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1)
-        .await
-    {
-        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
+    let lifetime = effective_session_lifetime(&deps).await;
+    let cookie = match deps.db.create_session(user_id, lifetime, 1).await {
+        Ok(secret) => set_cookie_header(&secret, lifetime),
         Err(err) => return internal(err),
     };
     (
@@ -3747,6 +3747,39 @@ async fn audit_instance(deps: &ConsoleDeps, session: &Session, action: &str, det
         .await
     {
         tracing::warn!(error = %format!("{err:#}"), "recording {action} audit");
+    }
+}
+
+/// The effective absolute session lifetime in seconds for newly created sessions.
+///
+/// The instance `session_lifetime_secs` setting overrides the built-in
+/// [`ABSOLUTE_LIFETIME_SECS`] when an operator has set a positive value;
+/// otherwise the built-in default applies. Read at login so a change takes
+/// effect for subsequent logins without a restart; a malformed or non-positive
+/// stored value falls back to the default (fail safe). The same value is used
+/// for both the session row's expiry and the cookie `Max-Age`, so they cannot
+/// drift.
+async fn effective_session_lifetime(deps: &ConsoleDeps) -> i64 {
+    match deps.db.instance_config_get("session_lifetime_secs").await {
+        Ok(Some(v)) => v
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .unwrap_or(ABSOLUTE_LIFETIME_SECS),
+        _ => ABSOLUTE_LIFETIME_SECS,
+    }
+}
+
+/// Whether local password login is offered on this instance.
+///
+/// Reads the instance `password_login` setting, which defaults to enabled; only
+/// the explicit off spellings (`off`/`false`/`0`) disable it. A database error
+/// fails open to enabled, so a transient read failure never locks every
+/// password user out.
+async fn password_login_enabled(deps: &ConsoleDeps) -> bool {
+    match deps.db.instance_config_get("password_login").await {
+        Ok(Some(v)) => !matches!(v.as_str(), "off" | "false" | "0"),
+        _ => true,
     }
 }
 
