@@ -167,6 +167,7 @@ in {
     protocolCodecFuzz = import ./phase2-protocol-codec-fuzz.nix {inherit pkgs lib;};
     protocolInertness = import ./phase2-protocol-inertness.nix {inherit pkgs lib;};
     qemuShutdownEscalation = import ./phase2-qemu-shutdown-escalation.nix {inherit pkgs lib;};
+    qemuSingleVmFingerprint = import ./phase2-qemu-single-vm-fingerprint.nix {inherit pkgs lib;};
     shmemRegionLayout = import ./phase2-shmem-region-layout.nix {inherit pkgs lib;};
     shmemGeneratedHeader = import ./phase2-shmem-generated-header.nix {inherit pkgs lib;};
     shmemAbiConformance = import ./phase2-shmem-abi-conformance.nix {inherit pkgs lib;};

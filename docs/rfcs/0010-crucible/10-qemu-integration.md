@@ -795,7 +795,7 @@ determinism contract (04).
   (periodic icount + register/memory/device digest via the plugin), and add the
   per-elimination micro-tests + inertness checks. — satisfies [QEMU-33],
   [QEMU-35]; spec §10.7.
-- [ ] **T-QEMU-11** Implement the single-VM fingerprint hook for
+- [x] **T-QEMU-11** Implement the single-VM fingerprint hook for
   `gate:single-vm-fingerprint`: run-twice-and-diff under adversarial host
   conditions with first-mismatch icount-window localization and a fixed,
   content-addressed fingerprint definition. — satisfies [QEMU-34]; spec §10.7,
