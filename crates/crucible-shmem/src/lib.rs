@@ -62,6 +62,10 @@
 mod abi_header;
 
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, BorrowedFd};
+#[cfg(unix)]
+use std::ptr::NonNull;
 
 pub use abi_header::generated_c_header;
 
@@ -342,6 +346,175 @@ pub struct RegionHeaderSnapshot {
     pub pause_requested: u8,
     /// Nonzero when the scheduler requested shutdown.
     pub shutdown_requested: u8,
+}
+
+/// A setup-time region whose header matched the compiled shared-memory ABI and geometry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ValidatedSetupRegion {
+    /// The mapped byte length supplied by the control-protocol `Setup` frame.
+    pub region_len: u64,
+    /// The ABI version observed in the region header.
+    pub abi_version: u32,
+}
+
+/// Validates the setup-time shared-memory header snapshot before slot access.
+///
+/// The plugin calls this after mapping exactly the `region_len` carried by the
+/// control-protocol `Setup` frame. The check accepts only the current
+/// [`REGION_MAGIC`], the current [`ABI_VERSION`], a header `region_size` equal
+/// to the mapped length, and geometry that can be recomputed by the current
+/// layout model.
+///
+/// # Errors
+///
+/// Returns [`RegionSetupValidationError`] when the mapped length is too small
+/// for a header, the magic or ABI version does not match this crate, the
+/// header's `region_size` differs from the `Setup` length, or the header
+/// geometry does not match this crate's layout model.
+pub fn validate_setup_region_header(
+    snapshot: RegionHeaderSnapshot,
+    region_len: u64,
+) -> Result<ValidatedSetupRegion, RegionSetupValidationError> {
+    let minimum_len = REGION_HEADER_SIZE as u64;
+    if region_len < minimum_len {
+        return Err(RegionSetupValidationError::RegionTooSmall {
+            region_len,
+            minimum_len,
+        });
+    }
+
+    if snapshot.magic != REGION_MAGIC {
+        return Err(RegionSetupValidationError::InvalidMagic {
+            actual: snapshot.magic,
+            expected: REGION_MAGIC,
+        });
+    }
+
+    if snapshot.abi_version != ABI_VERSION {
+        return Err(RegionSetupValidationError::AbiVersionMismatch {
+            actual: snapshot.abi_version,
+            expected: ABI_VERSION,
+        });
+    }
+
+    if snapshot.region_size != region_len {
+        return Err(RegionSetupValidationError::RegionLengthMismatch {
+            setup_region_len: region_len,
+            header_region_size: snapshot.region_size,
+        });
+    }
+
+    validate_setup_region_geometry(snapshot, region_len)?;
+
+    Ok(ValidatedSetupRegion {
+        region_len,
+        abi_version: snapshot.abi_version,
+    })
+}
+
+/// An owned setup-time `mmap` of the shared-memory region descriptor.
+#[cfg(unix)]
+pub struct MappedSetupRegion {
+    ptr: NonNull<u8>,
+    len: usize,
+    region_len: u64,
+}
+
+#[cfg(unix)]
+impl MappedSetupRegion {
+    /// Returns the mapped length supplied by the control-protocol `Setup` frame.
+    #[must_use]
+    pub const fn region_len(&self) -> u64 {
+        self.region_len
+    }
+
+    /// Returns an acquire snapshot of the mapped region header.
+    #[must_use]
+    pub fn header_snapshot(&self) -> RegionHeaderSnapshot {
+        // SAFETY: `mmap_setup_region` checks the mapping is large enough for
+        // `RegionHeader` and aligned for the ABI before constructing `Self`.
+        let header = unsafe { &*self.ptr.as_ptr().cast::<RegionHeader>() };
+        header.snapshot()
+    }
+
+    /// Validates the mapped header against the current shared-memory ABI.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionSetupValidationError`] when the header magic, ABI
+    /// version, or region-size field does not match the setup contract.
+    pub fn validate_header(&self) -> Result<ValidatedSetupRegion, RegionSetupValidationError> {
+        validate_setup_region_header(self.header_snapshot(), self.region_len)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for MappedSetupRegion {
+    fn drop(&mut self) {
+        // SAFETY: `ptr` and `len` were returned by `mmap` and are owned by this
+        // value until `Drop`.
+        unsafe {
+            libc::munmap(self.ptr.as_ptr().cast::<libc::c_void>(), self.len);
+        }
+    }
+}
+
+/// Maps a setup shared-memory descriptor for exactly the `Setup.region_len`.
+///
+/// # Errors
+///
+/// Returns [`SetupRegionMapError`] when `region_len` cannot fit in `usize`, is
+/// too small for a [`RegionHeader`], or when `mmap` fails or returns a mapping
+/// unsuitable for the shared-memory ABI.
+#[cfg(unix)]
+pub fn mmap_setup_region(
+    fd: BorrowedFd<'_>,
+    region_len: u64,
+) -> Result<MappedSetupRegion, SetupRegionMapError> {
+    let len = usize::try_from(region_len)
+        .map_err(|_| SetupRegionMapError::RegionLenTooLarge { region_len })?;
+    let minimum_len = REGION_HEADER_SIZE as u64;
+    if region_len < minimum_len {
+        return Err(SetupRegionMapError::RegionTooSmall {
+            region_len,
+            minimum_len,
+        });
+    }
+
+    // SAFETY: the returned mapping is checked before being wrapped. The fd is
+    // borrowed for the syscall only; the mapping owns the resulting address.
+    let raw = unsafe {
+        libc::mmap(
+            core::ptr::null_mut(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            fd.as_raw_fd(),
+            0,
+        )
+    };
+    if raw == libc::MAP_FAILED {
+        return Err(SetupRegionMapError::MmapFailed {
+            errno: last_os_error(),
+        });
+    }
+
+    let Some(ptr) = NonNull::new(raw.cast::<u8>()) else {
+        unmap_setup_region(raw, len);
+        return Err(SetupRegionMapError::NullMapping);
+    };
+    if !(ptr.as_ptr() as usize).is_multiple_of(REGION_HEADER_ALIGN) {
+        unmap_setup_region(raw, len);
+        return Err(SetupRegionMapError::UnalignedMapping {
+            alignment: REGION_HEADER_ALIGN,
+        });
+    }
+
+    Ok(MappedSetupRegion {
+        ptr,
+        len,
+        region_len,
+    })
 }
 
 /// A requested shared-memory region shape.
@@ -673,6 +846,62 @@ fn directed_rings(vm_node_count: u32) -> Result<Vec<DirectedRing>, RegionLayoutE
     Ok(rings)
 }
 
+fn validate_setup_region_geometry(
+    snapshot: RegionHeaderSnapshot,
+    region_len: u64,
+) -> Result<(), RegionSetupValidationError> {
+    let rings_per_vm = (RESERVED_SLOTS as u32)
+        .checked_mul(2)
+        .ok_or(RegionSetupValidationError::GeometryOverflow)?;
+    if snapshot.ring_count == 0 || !snapshot.ring_count.is_multiple_of(rings_per_vm) {
+        return Err(RegionSetupValidationError::InvalidRingCount {
+            ring_count: snapshot.ring_count,
+            rings_per_vm,
+        });
+    }
+
+    let vm_node_count = snapshot.ring_count / rings_per_vm;
+    let layout = RegionLayout::for_config(RegionConfig::new(
+        vm_node_count,
+        snapshot.queue_capacity,
+        snapshot.icount_shift,
+    ))
+    .map_err(|source| RegionSetupValidationError::InvalidLayout { source })?;
+
+    if snapshot.node_count != layout.node_count {
+        return Err(RegionSetupValidationError::InvalidNodeCount {
+            actual: snapshot.node_count,
+            expected: layout.node_count,
+        });
+    }
+    if snapshot.ring_hdr_off != layout.ring_hdr_off {
+        return Err(RegionSetupValidationError::InvalidRingHeaderOffset {
+            actual: snapshot.ring_hdr_off,
+            expected: layout.ring_hdr_off,
+        });
+    }
+    if snapshot.ring_data_off != layout.ring_data_off {
+        return Err(RegionSetupValidationError::InvalidRingDataOffset {
+            actual: snapshot.ring_data_off,
+            expected: layout.ring_data_off,
+        });
+    }
+    if snapshot.entry_stride != layout.entry_stride {
+        return Err(RegionSetupValidationError::InvalidEntryStride {
+            actual: snapshot.entry_stride,
+            expected: layout.entry_stride,
+        });
+    }
+    if layout.region_size != region_len {
+        return Err(RegionSetupValidationError::LayoutRegionLengthMismatch {
+            setup_region_len: region_len,
+            layout_region_size: layout.region_size,
+        });
+    }
+
+    Ok(())
+}
+
 fn node_slot_for_physical_index(vm_node_count: u32, slot: usize) -> NodeSlot {
     if slot < vm_node_count as usize {
         NodeSlot::new_with_status(KIND_VM, STATUS_IDLE)
@@ -689,6 +918,19 @@ fn node_slot_for_physical_index(vm_node_count: u32, slot: usize) -> NodeSlot {
 
 fn usize_to_u64(value: usize) -> Result<u64, RegionLayoutError> {
     u64::try_from(value).map_err(|_| RegionLayoutError::GeometryOverflow)
+}
+
+#[cfg(unix)]
+fn unmap_setup_region(ptr: *mut libc::c_void, len: usize) {
+    // SAFETY: callers pass an address and length returned by `mmap`.
+    unsafe {
+        libc::munmap(ptr, len);
+    }
+}
+
+#[cfg(unix)]
+fn last_os_error() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 fn wake_all_slots_for_control<'a>(
@@ -1818,6 +2060,139 @@ pub enum FrameEntryError {
         /// The configured frame payload capacity.
         capacity: usize,
     },
+}
+
+/// An error produced while mapping a setup shared-memory descriptor.
+#[cfg(unix)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum SetupRegionMapError {
+    /// The `Setup.region_len` cannot be represented as a process-local mapping length.
+    #[error("setup region length {region_len} cannot fit in usize")]
+    RegionLenTooLarge {
+        /// The rejected `Setup.region_len`.
+        region_len: u64,
+    },
+    /// The `Setup.region_len` is too small to contain a shared-memory header.
+    #[error("setup region length {region_len} is smaller than header size {minimum_len}")]
+    RegionTooSmall {
+        /// The rejected `Setup.region_len`.
+        region_len: u64,
+        /// The minimum mappable length required for the header.
+        minimum_len: u64,
+    },
+    /// The OS rejected the shared-memory `mmap`.
+    #[error("setup region mmap failed with errno {errno}")]
+    MmapFailed {
+        /// Raw OS errno value.
+        errno: i32,
+    },
+    /// The OS returned a null mapping address.
+    #[error("setup region mmap returned a null address")]
+    NullMapping,
+    /// The mapping base is not aligned for [`RegionHeader`].
+    #[error("setup region mmap base is not aligned to {alignment} bytes")]
+    UnalignedMapping {
+        /// Required ABI alignment.
+        alignment: usize,
+    },
+}
+
+/// An error produced while validating a mapped setup region header.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum RegionSetupValidationError {
+    /// The mapped length is too small to contain a shared-memory header.
+    #[error("setup region length {region_len} is smaller than header size {minimum_len}")]
+    RegionTooSmall {
+        /// The rejected `Setup.region_len`.
+        region_len: u64,
+        /// The minimum mappable length required for the header.
+        minimum_len: u64,
+    },
+    /// The region header magic is not [`REGION_MAGIC`].
+    #[error("setup region magic {actual:#x} does not match expected {expected:#x}")]
+    InvalidMagic {
+        /// Magic value read from the mapped header.
+        actual: u64,
+        /// Required magic value.
+        expected: u64,
+    },
+    /// The region header ABI version is not [`ABI_VERSION`].
+    #[error("setup region ABI version {actual} does not match expected {expected}")]
+    AbiVersionMismatch {
+        /// ABI version read from the mapped header.
+        actual: u32,
+        /// ABI version compiled into this crate.
+        expected: u32,
+    },
+    /// The header's region size does not match the control-protocol setup length.
+    #[error(
+        "setup region length {setup_region_len} does not match header region_size {header_region_size}"
+    )]
+    RegionLengthMismatch {
+        /// Length from the control-protocol `Setup` frame.
+        setup_region_len: u64,
+        /// Length read from the mapped region header.
+        header_region_size: u64,
+    },
+    /// The directed-ring count cannot represent any valid VM-node count.
+    #[error("setup region ring count {ring_count} is not a positive multiple of {rings_per_vm}")]
+    InvalidRingCount {
+        /// Ring count read from the mapped region header.
+        ring_count: u32,
+        /// Required directed-ring count per VM node.
+        rings_per_vm: u32,
+    },
+    /// The header geometry cannot be recomputed by the current layout model.
+    #[error("setup region layout is invalid")]
+    InvalidLayout {
+        /// Underlying layout-model error.
+        source: RegionLayoutError,
+    },
+    /// The header node count does not match the fixed ABI slot array.
+    #[error("setup region node count {actual} does not match expected {expected}")]
+    InvalidNodeCount {
+        /// Node count read from the mapped region header.
+        actual: u32,
+        /// Required physical node count.
+        expected: u32,
+    },
+    /// The header ring-header offset does not match the recomputed layout.
+    #[error("setup region ring header offset {actual} does not match expected {expected}")]
+    InvalidRingHeaderOffset {
+        /// Offset read from the mapped region header.
+        actual: u64,
+        /// Required offset from the recomputed layout.
+        expected: u64,
+    },
+    /// The header frame-entry offset does not match the recomputed layout.
+    #[error("setup region ring data offset {actual} does not match expected {expected}")]
+    InvalidRingDataOffset {
+        /// Offset read from the mapped region header.
+        actual: u64,
+        /// Required offset from the recomputed layout.
+        expected: u64,
+    },
+    /// The header frame-entry stride does not match the ABI entry size.
+    #[error("setup region entry stride {actual} does not match expected {expected}")]
+    InvalidEntryStride {
+        /// Stride read from the mapped region header.
+        actual: u64,
+        /// Required frame-entry stride.
+        expected: u64,
+    },
+    /// The recomputed layout size does not match the control-protocol setup length.
+    #[error(
+        "setup region length {setup_region_len} does not match computed layout size {layout_region_size}"
+    )]
+    LayoutRegionLengthMismatch {
+        /// Length from the control-protocol `Setup` frame.
+        setup_region_len: u64,
+        /// Length recomputed from the header geometry.
+        layout_region_size: u64,
+    },
+    /// The layout recomputation overflowed.
+    #[error("setup region geometry overflowed during validation")]
+    GeometryOverflow,
 }
 
 /// An error produced while validating or allocating a shared-memory region.

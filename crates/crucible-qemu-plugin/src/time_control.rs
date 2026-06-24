@@ -10,12 +10,13 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 /// The canonical registration steps that protect virtual time before guest code runs.
-pub const CANONICAL_TIME_CONTROL_REGISTRATION_ORDER: [PluginRegistrationStep; 9] = [
+pub const CANONICAL_TIME_CONTROL_REGISTRATION_ORDER: [PluginRegistrationStep; 10] = [
     PluginRegistrationStep::ParseArguments,
     PluginRegistrationStep::ControlHandshake,
     PluginRegistrationStep::RequestTimeControl,
     PluginRegistrationStep::ReceiveSetup,
     PluginRegistrationStep::MapSharedMemory,
+    PluginRegistrationStep::ArmWakeFd,
     PluginRegistrationStep::RegisterCallbacks,
     PluginRegistrationStep::SendSetupAck,
     PluginRegistrationStep::WaitBootBarrier,
@@ -35,6 +36,8 @@ pub enum PluginRegistrationStep {
     ReceiveSetup,
     /// Maps and validates the shared-memory ABI region.
     MapSharedMemory,
+    /// Arms the setup wake fd before acknowledging readiness.
+    ArmWakeFd,
     /// Registers deterministic device, coverage, and white-box callbacks.
     RegisterCallbacks,
     /// Sends `SetupAck` only after setup has completed.
@@ -102,6 +105,14 @@ impl TimeControlRegistrationPlan {
         )?;
         self.require_before(
             PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::ArmWakeFd,
+        )?;
+        self.require_before(
+            PluginRegistrationStep::ArmWakeFd,
+            PluginRegistrationStep::SendSetupAck,
+        )?;
+        self.require_before(
+            PluginRegistrationStep::ArmWakeFd,
             PluginRegistrationStep::RegisterCallbacks,
         )?;
         self.require_before(
@@ -201,12 +212,22 @@ mod tests {
             PluginRegistrationStep::RequestTimeControl,
             PluginRegistrationStep::ReceiveSetup,
         );
+        assert_order(
+            &plan,
+            PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::ArmWakeFd,
+        );
     }
 
     #[test]
     fn time_control_registration_order_keeps_boot_barrier_before_guest_code() {
         let plan = TimeControlRegistrationPlan::canonical();
 
+        assert_order(
+            &plan,
+            PluginRegistrationStep::ArmWakeFd,
+            PluginRegistrationStep::SendSetupAck,
+        );
         assert_order(
             &plan,
             PluginRegistrationStep::SendSetupAck,
@@ -227,6 +248,7 @@ mod tests {
             PluginRegistrationStep::ReceiveSetup,
             PluginRegistrationStep::RequestTimeControl,
             PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::ArmWakeFd,
             PluginRegistrationStep::RegisterCallbacks,
             PluginRegistrationStep::SendSetupAck,
             PluginRegistrationStep::WaitBootBarrier,
@@ -237,6 +259,7 @@ mod tests {
             PluginRegistrationStep::ControlHandshake,
             PluginRegistrationStep::ReceiveSetup,
             PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::ArmWakeFd,
             PluginRegistrationStep::RegisterCallbacks,
             PluginRegistrationStep::SendSetupAck,
             PluginRegistrationStep::WaitBootBarrier,
@@ -259,6 +282,30 @@ mod tests {
     }
 
     #[test]
+    fn time_control_registration_order_rejects_setup_ack_before_wake_fd_arm() {
+        let early_setup_ack = TimeControlRegistrationPlan::from_steps([
+            PluginRegistrationStep::ParseArguments,
+            PluginRegistrationStep::ControlHandshake,
+            PluginRegistrationStep::RequestTimeControl,
+            PluginRegistrationStep::ReceiveSetup,
+            PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::SendSetupAck,
+            PluginRegistrationStep::ArmWakeFd,
+            PluginRegistrationStep::RegisterCallbacks,
+            PluginRegistrationStep::WaitBootBarrier,
+            PluginRegistrationStep::FirstVisibleInstruction,
+        ]);
+
+        assert_eq!(
+            early_setup_ack.validate(),
+            Err(TimeControlRegistrationError::OutOfOrderStep {
+                earlier: PluginRegistrationStep::ArmWakeFd,
+                later: PluginRegistrationStep::SendSetupAck,
+            })
+        );
+    }
+
+    #[test]
     fn time_control_registration_order_rejects_duplicate_steps() {
         let duplicate_control = TimeControlRegistrationPlan::from_steps([
             PluginRegistrationStep::ParseArguments,
@@ -267,6 +314,7 @@ mod tests {
             PluginRegistrationStep::RequestTimeControl,
             PluginRegistrationStep::ReceiveSetup,
             PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::ArmWakeFd,
             PluginRegistrationStep::RegisterCallbacks,
             PluginRegistrationStep::SendSetupAck,
             PluginRegistrationStep::WaitBootBarrier,

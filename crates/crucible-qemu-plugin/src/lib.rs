@@ -20,12 +20,18 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod deadline;
+pub mod setup;
 pub mod time_control;
 
 pub use deadline::{
     ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,
     ExactDeadlineReport, PerVcpuDeadlineReport, QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
     aggregate_multi_vcpu_deadline,
+};
+#[cfg(unix)]
+pub use setup::{
+    ArmedWakeFd, PluginSetupCompletion, PluginSetupError, WakeFdArmError, prepare_setup_completion,
+    send_ready_setup_ack,
 };
 pub use time_control::{
     CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, PluginRegistrationStep,
