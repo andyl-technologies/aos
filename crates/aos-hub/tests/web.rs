@@ -405,7 +405,11 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
     );
     assert!(body.contains("aos.apm.registries.demo"), "{body}");
     assert!(body.contains("trustKeys"), "{body}");
-    assert!(body.contains("substituters = http://127.0.0.1:8420/demo/"));
+    // substituters point at the advertised binary cache, not the registry URL.
+    assert!(
+        body.contains("substituters = https://cache.example.com"),
+        "{body}"
+    );
     assert!(body.contains("trusted-public-keys ="), "{body}");
     // The pinned anchor appears in full and as a SHA256: fingerprint.
     assert!(body.contains(&fixture.trust_key), "{body}");

@@ -184,7 +184,7 @@ async fn login_flow_creates_user_session_and_logout_revokes() {
     assert!(db.user_by_email("dev@acme.com").await.unwrap().is_some());
 
     // /account renders for the session.
-    let resp = send(&app, "GET", "/account", Some(&cookie), None).await;
+    let resp = send(&app, "GET", "/-/account", Some(&cookie), None).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("dev@acme.com"));
     assert!(resp.body.contains("log out"), "masthead session indicator");
@@ -192,7 +192,7 @@ async fn login_flow_creates_user_session_and_logout_revokes() {
     // logout revokes and clears the cookie; /account then bounces to /login.
     let resp = send(&app, "GET", "/logout", Some(&cookie), None).await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER);
-    let resp = send(&app, "GET", "/account", Some(&cookie), None).await;
+    let resp = send(&app, "GET", "/-/account", Some(&cookie), None).await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER);
     assert_eq!(resp.location.as_deref(), Some("/login"));
 }
@@ -304,7 +304,7 @@ async fn post_without_csrf_is_forbidden() {
     let resp = send(
         &app,
         "POST",
-        "/account/sessions/revoke-all",
+        "/-/account/sessions/revoke-all",
         Some(&cookie),
         Some(""),
     )
@@ -315,7 +315,7 @@ async fn post_without_csrf_is_forbidden() {
     let resp = send(
         &app,
         "POST",
-        "/account/sessions/revoke-all",
+        "/-/account/sessions/revoke-all",
         Some(&cookie),
         Some("csrf=garbage"),
     )

@@ -149,7 +149,7 @@ async fn set_password_then_login_creates_session() {
     );
 
     // The session works: /account renders.
-    let resp = send(&app, "GET", "/account", Some(&cookie), None).await;
+    let resp = send(&app, "GET", "/-/account", Some(&cookie), None).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("dev@acme.com"));
 }
@@ -283,7 +283,7 @@ async fn account_set_password_flow() {
     );
 
     // The account page shows the "set password" affordance.
-    let page = send(&app, "GET", "/account", Some(&cookie), None).await;
+    let page = send(&app, "GET", "/-/account", Some(&cookie), None).await;
     assert!(page.body.contains("set password"), "{}", page.body);
 
     // Set a password (CSRF-protected). The magic-link session is fresh, so it
@@ -292,13 +292,13 @@ async fn account_set_password_flow() {
     let resp = send(
         &app,
         "POST",
-        "/account/password",
+        "/-/account/password",
         Some(&cookie),
         Some(&format!("csrf={csrf}&password=brand-new-pass")),
     )
     .await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
-    assert_eq!(resp.location.as_deref(), Some("/account"));
+    assert_eq!(resp.location.as_deref(), Some("/-/account"));
     assert!(
         db.user_has_password(user).await.unwrap(),
         "password now set"
@@ -321,20 +321,20 @@ async fn account_set_password_flow() {
         cookie_value(&resp.set_cookie.expect("password change re-issues a cookie"))
     );
     assert_ne!(new_cookie, cookie, "a fresh cookie is minted");
-    let old = send(&app, "GET", "/account", Some(&cookie), None).await;
+    let old = send(&app, "GET", "/-/account", Some(&cookie), None).await;
     assert_eq!(
         old.status,
         StatusCode::SEE_OTHER,
         "old session is revoked, bounced to /login"
     );
-    let fresh = send(&app, "GET", "/account", Some(&new_cookie), None).await;
+    let fresh = send(&app, "GET", "/-/account", Some(&new_cookie), None).await;
     assert_eq!(fresh.status, StatusCode::OK, "new session is live");
 
     // A bad CSRF token is rejected (using the live, re-issued cookie).
     let resp = send(
         &app,
         "POST",
-        "/account/password",
+        "/-/account/password",
         Some(&new_cookie),
         Some("csrf=bogus&password=whatever"),
     )
@@ -362,7 +362,7 @@ async fn password_change_evicts_sibling_sessions() {
         db.create_session(user, 30 * 24 * 60 * 60, 1).await.unwrap()
     );
     assert_eq!(
-        send(&app, "GET", "/account", Some(&b), None).await.status,
+        send(&app, "GET", "/-/account", Some(&b), None).await.status,
         StatusCode::OK,
         "sibling session starts live"
     );
@@ -372,7 +372,7 @@ async fn password_change_evicts_sibling_sessions() {
     let resp = send(
         &app,
         "POST",
-        "/account/password",
+        "/-/account/password",
         Some(&a),
         Some(&format!("csrf={csrf}&password=fresh-secret-pass")),
     )
@@ -385,18 +385,18 @@ async fn password_change_evicts_sibling_sessions() {
 
     // Browser B (the sibling) is now evicted.
     assert_eq!(
-        send(&app, "GET", "/account", Some(&b), None).await.status,
+        send(&app, "GET", "/-/account", Some(&b), None).await.status,
         StatusCode::SEE_OTHER,
         "sibling session evicted"
     );
     // The original A cookie is dead too; the re-issued one is live.
     assert_eq!(
-        send(&app, "GET", "/account", Some(&a), None).await.status,
+        send(&app, "GET", "/-/account", Some(&a), None).await.status,
         StatusCode::SEE_OTHER,
         "old A cookie evicted"
     );
     assert_eq!(
-        send(&app, "GET", "/account", Some(&a_new), None)
+        send(&app, "GET", "/-/account", Some(&a_new), None)
             .await
             .status,
         StatusCode::OK,
@@ -420,7 +420,7 @@ async fn password_change_requires_sudo() {
     );
     // It is authenticated enough to view the account page...
     assert_eq!(
-        send(&app, "GET", "/account", Some(&cookie), None)
+        send(&app, "GET", "/-/account", Some(&cookie), None)
             .await
             .status,
         StatusCode::OK,
@@ -430,7 +430,7 @@ async fn password_change_requires_sudo() {
     let resp = send(
         &app,
         "POST",
-        "/account/password",
+        "/-/account/password",
         Some(&cookie),
         Some(&format!("csrf={csrf}&password=should-be-refused")),
     )
@@ -608,7 +608,7 @@ async fn enforced_user_cannot_set_password() {
     let resp = send(
         &app,
         "POST",
-        "/account/password",
+        "/-/account/password",
         Some(&cookie),
         Some(&format!("csrf={csrf}&password=brand-new-pass")),
     )
@@ -658,7 +658,7 @@ async fn enforced_user_cannot_enroll_passkey() {
     .to_string();
     let req = Request::builder()
         .method("POST")
-        .uri("/account/passkeys/finish")
+        .uri("/-/account/passkeys/finish")
         .header(header::COOKIE, &cookie)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))

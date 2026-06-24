@@ -83,7 +83,7 @@ impl PageChrome {
                 "<span class=\"session\">\
                  <a href=\"/\">registries</a> · \
                  <a href=\"/-/orgs\">organizations</a> · \
-                 <a href=\"/account\">account</a> · \
+                 <a href=\"/-/account\">account</a> · \
                  <span class=\"who\">{}</span> · \
                  <a href=\"/logout\">log out</a></span>",
                 escape(email),
