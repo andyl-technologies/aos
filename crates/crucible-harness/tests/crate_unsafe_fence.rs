@@ -55,8 +55,12 @@ const FENCE_SPECS: &[FenceSpec] = &[
     FenceSpec {
         package: "crucible-protocol",
         root: "src/lib.rs",
-        unsafe_boundary: false,
-        safe_wrapper_contract: &[],
+        unsafe_boundary: true,
+        safe_wrapper_contract: &[
+            "Unsafe boundary discipline:",
+            "public callers use safe setup descriptor handover wrappers",
+            "validate the fixed two-fd order and descriptor count",
+        ],
     },
     FenceSpec {
         package: "crucible-device",

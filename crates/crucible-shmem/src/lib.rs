@@ -1512,9 +1512,8 @@ fn futex_wake_nonprivate(
     wake_signal: &AtomicU32,
     max_waiters: u32,
 ) -> Result<FutexWakeResult, FutexError> {
+    // SAFETY: `wake_signal` is an aligned live `AtomicU32` valid for this syscall.
     let raw = unsafe {
-        // SAFETY: `wake_signal` is an aligned `AtomicU32` stored in a live
-        // `NodeSlot`; its address is valid for the duration of the syscall.
         libc::syscall(
             libc::SYS_futex,
             wake_signal.as_ptr(),
@@ -1552,10 +1551,8 @@ fn futex_wait_nonprivate(
     wake_signal: &AtomicU32,
     expected: u32,
 ) -> Result<FutexWaitOutcome, FutexError> {
+    // SAFETY: `wake_signal` is aligned and live, and the null timeout is never dereferenced.
     let raw = unsafe {
-        // SAFETY: `wake_signal` is an aligned `AtomicU32` stored in a live
-        // `NodeSlot`; the timeout pointer is null, so the kernel does not read a
-        // userspace `timespec`.
         libc::syscall(
             libc::SYS_futex,
             wake_signal.as_ptr(),
