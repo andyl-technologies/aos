@@ -786,7 +786,7 @@ determinism contract (04).
   SIGTERM → SIGKILL → reap) with bounded per-rung timeouts and an unconditional
   reap; add the no-leak test that induces each termination path and asserts zero
   surviving children. — satisfies [QEMU-30], [QEMU-31]; spec §10.6.
-- [ ] **T-QEMU-9** Implement crash detection (unexpected child exit, plugin-IPC
+- [x] **T-QEMU-9** Implement crash detection (unexpected child exit, plugin-IPC
   close, QMP disconnect) surfaced as a typed crashed-node status distinct from an
   intended crash fault, localized rather than retried on gated paths. —
   satisfies [QEMU-32]; spec §10.6.
