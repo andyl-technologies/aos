@@ -157,6 +157,7 @@ in {
   phase2 = {
     shmemRegionLayout = import ./phase2-shmem-region-layout.nix {inherit pkgs lib;};
     shmemGeneratedHeader = import ./phase2-shmem-generated-header.nix {inherit pkgs lib;};
+    shmemAbiConformance = import ./phase2-shmem-abi-conformance.nix {inherit pkgs lib;};
     spscConcurrency = import ./phase2-spsc-concurrency.nix {inherit pkgs lib;};
     shmemSpscAbiConformance = import ./phase2-shmem-spsc-abi-conformance.nix {inherit pkgs lib;};
     shmemSnapshotRestore = import ./phase2-shmem-snapshot-restore.nix {inherit pkgs lib;};

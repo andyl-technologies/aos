@@ -914,7 +914,7 @@ by when the producer's store landed in shared memory.
 - [x] **T-SHM-13** Implement deliverability (`delivery_icount <= current_icount`)
   and the `(delivery_icount, src_node, seq)` total order on the consumer side. —
   satisfies [SHM-33], [SHM-34], [SHM-35]; spec §13.9.
-- [ ] **T-SHM-14** Wire `gate:abi-conformance`: generated-header diff +
+- [x] **T-SHM-14** Wire `gate:abi-conformance`: generated-header diff +
   bilateral static asserts + golden-vector round-trip. — satisfies [SHM-30],
   [SHM-31], [SHM-32]; spec §13.8.
 - [x] **T-SHM-15** Add property-based and `loom`-style SPSC concurrency tests

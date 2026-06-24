@@ -198,7 +198,7 @@
       }
       {
         label = "updated placeholder count";
-        needle = "placeholder_targets=15";
+        needle = "placeholder_targets=14";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
