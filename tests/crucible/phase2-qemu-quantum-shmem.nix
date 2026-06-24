@@ -1,0 +1,327 @@
+{
+  pkgs,
+  lib,
+  attrPath ? "checks.crucible.phase2.qemuQuantumShmem",
+  taskIds ? ["T-QEMU-12"],
+}: let
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = pkgs.fetchCargoDeps {
+    src = crucibleSrc;
+    sourceRoot = "source/crates";
+    hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
+  };
+
+  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
+  quantumLib = builtins.readFile ../../crates/crucible-qemu/src/quantum.rs;
+  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  defaultChecks = builtins.readFile ./default.nix;
+
+  taskList = builtins.concatStringsSep "," taskIds;
+
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
+
+  failuresFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (!(hasInfix requirement.needle content)) [
+          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  forbiddenFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (hasInfix requirement.needle content) [
+          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  failures =
+    failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+      {
+        label = "T-QEMU-12 checklist complete";
+        needle = "- [x] **T-QEMU-12**";
+      }
+      {
+        label = "completion note names shmem hot path";
+        needle = "shared-memory hot path";
+      }
+      {
+        label = "completion note preserves frame follow-up";
+        needle = "device-I/O freeze semantics remain tracked by";
+      }
+      {
+        label = "completion note preserves async follow-up";
+        needle = "real-time async wait remains tracked by";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+      {
+        label = "quantum module";
+        needle = "mod quantum;";
+      }
+      {
+        label = "quantum exports";
+        needle = "pub use quantum::{";
+      }
+      {
+        label = "hot-path adapter export";
+        needle = "QemuQuantumShmemHotPath";
+      }
+      {
+        label = "shmem-only assertion export";
+        needle = "assert_qemu_quantum_hot_path_is_shmem_only";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/quantum.rs" quantumLib [
+      {
+        label = "module docs";
+        needle = "QEMU per-quantum shared-memory hot path";
+      }
+      {
+        label = "borrowed shared-memory view";
+        needle = "pub struct QemuQuantumShmemView";
+      }
+      {
+        label = "hot-path adapter";
+        needle = "pub struct QemuQuantumShmemHotPath";
+      }
+      {
+        label = "pending quantum token";
+        needle = "pub struct QemuPendingQuantum";
+      }
+      {
+        label = "existing node trait implementation";
+        needle = "impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath";
+      }
+      {
+        label = "quantum start API";
+        needle = "pub fn start_quantum";
+      }
+      {
+        label = "quantum finish API";
+        needle = "pub fn finish_quantum";
+      }
+      {
+        label = "external node-slot binding";
+        needle = "node_slot: &'a NodeSlot";
+      }
+      {
+        label = "external inbound ring binding";
+        needle = "inbound_ring: &'a RingHeader";
+      }
+      {
+        label = "external outbound ring binding";
+        needle = "outbound_ring: &'a RingHeader";
+      }
+      {
+        label = "node report read operation";
+        needle = "ReadNodeReport";
+      }
+      {
+        label = "scheduler ceiling operation";
+        needle = "StoreSchedulerCeiling";
+      }
+      {
+        label = "futex wake operation";
+        needle = "FutexWake";
+      }
+      {
+        label = "plugin report observation operation";
+        needle = "ObservePluginReport";
+      }
+      {
+        label = "inbound SPSC frame enqueue";
+        needle = "enqueue_inbound_frame";
+      }
+      {
+        label = "outbound SPSC frame enqueue";
+        needle = "enqueue_outbound_frame_from_plugin";
+      }
+      {
+        label = "lookahead ceiling authorization";
+        needle = "authorize_advance_ceiling";
+      }
+      {
+        label = "scheduler ceiling store";
+        needle = "publish_scheduler_ceiling";
+      }
+      {
+        label = "frame wake";
+        needle = "wake_for_frame_delivery";
+      }
+      {
+        label = "SPSC enqueue";
+        needle = ".enqueue(self.view.inbound_entries";
+      }
+      {
+        label = "SPSC dequeue";
+        needle = ".dequeue(self.view.outbound_entries)";
+      }
+      {
+        label = "stale report rejection";
+        needle = "PluginReportNotPublished";
+      }
+      {
+        label = "shmem-only assertion";
+        needle = "assert_qemu_quantum_hot_path_is_shmem_only";
+      }
+      {
+        label = "forbidden plugin IPC plane";
+        needle = "PluginIpcControlFrame";
+      }
+      {
+        label = "forbidden QMP plane";
+        needle = "QmpCommand";
+      }
+      {
+        label = "ceiling cycle test";
+        needle = "qemu_quantum_binds_external_shmem_and_finishes_after_plugin_report";
+      }
+      {
+        label = "stale report test";
+        needle = "qemu_quantum_rejects_finish_before_shared_plugin_report_changes";
+      }
+      {
+        label = "idle report test";
+        needle = "qemu_quantum_reports_idle_before_horizon";
+      }
+      {
+        label = "lookahead rejection test";
+        needle = "qemu_quantum_rejects_horizon_that_would_reach_possible_frame_delivery";
+      }
+      {
+        label = "outbound frame test";
+        needle = "qemu_quantum_drains_plugin_emitted_frames_toward_router";
+      }
+      {
+        label = "forbidden plane test";
+        needle = "qemu_quantum_hot_path_rejects_qmp_or_plugin_ipc_operations";
+      }
+      {
+        label = "node trait test";
+        needle = "qemu_quantum_implements_existing_shmem_hot_path_trait";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-qemu/src/quantum.rs" quantumLib [
+      {
+        label = "production unwrap";
+        needle = ".unwrap()";
+      }
+      {
+        label = "production expect";
+        needle = ".expect(";
+      }
+      {
+        label = "hard-coded host shell";
+        needle = "/bin/sh";
+      }
+    ]
+    ++ failuresFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase2 exposes qemu quantum shmem check";
+        needle = "qemuQuantumShmem = import ./phase2-qemu-quantum-shmem.nix";
+      }
+    ];
+in
+  if failures != []
+  then throw "crucible phase2 qemu quantum-shmem check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase2-qemu-quantum-shmem";
+      version = "0";
+      src = crucibleSrc;
+
+      buildDeps = [
+        pkgs.rust
+        pkgs.sed
+      ];
+
+      cargoDeps = cargoDeps;
+
+      phases = [
+        {
+          name = "unpack";
+          script = ''
+            cp -R "$src" source
+            chmod -R u+w source
+            cd source
+          '';
+        }
+        {
+          name = "configure";
+          script = ''
+            export CARGO_HOME="$TMPDIR/cargo"
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            mkdir -p "$CARGO_HOME" .cargo
+            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+                > .cargo/config.toml
+            else
+              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+                > .cargo/config.toml
+            fi
+          '';
+        }
+        {
+          name = "run-qemu-quantum-shmem";
+          script = ''
+            set -eu
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-qemu-quantum-shmem-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu \
+              --lib \
+              quantum::tests \
+              -- --test-threads=1
+          '';
+        }
+        {
+          name = "write-result";
+          script = ''
+            set -eu
+            mkdir -p "$out"
+            cat > "$out/result" <<'RESULT'
+            PASS
+            attr_path=${attrPath}
+            tasks=${taskList}
+            qemu_36=implemented
+            qemu_quantum_hot_path=shared-memory-only
+            ceiling_cycle=report-current-icount,set-max-advance,futex-wake,observe-report
+            frame_path=spsc-inbound-and-outbound
+            qmp_per_quantum=forbidden
+            plugin_ipc_per_quantum=forbidden
+            exact_injection_contract_pending=T-QEMU-13
+            bounded_async_wait_pending=T-QEMU-14
+            rust_tests=crucible-qemu::quantum::tests
+            RESULT
+          '';
+        }
+      ];
+
+      meta = {
+        description = "Crucible Phase 2 QEMU per-quantum shared-memory hot-path gate";
+      };
+    }

@@ -858,10 +858,19 @@ determinism contract (04).
   conditions with first-mismatch icount-window localization and a fixed,
   content-addressed fingerprint definition. — satisfies [QEMU-34]; spec §10.7,
   §24.
-- [ ] **T-QEMU-12** Implement the per-quantum data flow at the QEMU level (run to
+- [x] **T-QEMU-12** Implement the per-quantum data flow at the QEMU level (run to
   ceiling-or-idle → report icount/idle-deadline → scheduler ceiling store →
   futex wake → advance → frame inject/emit / I/O), entirely over shmem with no
   per-quantum QMP/plugin-IPC traffic. — satisfies [QEMU-36]; spec §10.8.
+  Completed as the `crucible-qemu` shared-memory hot path: the
+  `QemuQuantumShmemHotPath` adapter observes plugin-published node reports,
+  authorizes and stores scheduler ceilings through the node slot, wakes the
+  plugin via the futex word, finishes after a later shared-memory completion
+  report is visible, moves inbound and outbound frame records through SPSC
+  rings, and asserts the per-quantum operation log is shared-memory-only with
+  QMP and plugin IPC rejected from the hot path. The exact frame visibility and
+  device-I/O freeze semantics remain tracked by [T-QEMU-13], and the bounded
+  real-time async wait remains tracked by [T-QEMU-14].
 - [ ] **T-QEMU-13** Implement injection-contract frame inject/emit at the QEMU
   level: visibility at exactly `delivery_icount`, `(delivery_icount, src_node,
   seq)` total order, fail-loud on a past-delivery node; and the

@@ -16,10 +16,10 @@
 //! `determinism_boundary` owns the QEMU hermeticity/fingerprint/microtest
 //! boundary assertion; `crash_detection` owns typed crashed-node status
 //! classification; `node` owns the scheduler-facing one-child/three-channel
-//! QEMU wrapper; `qmp` owns the minimal typed QMP client; `realization` owns the
-//! start/resume/fork instantiate branch coordinator; and `savevm_policy` owns
-//! the conservative thin-replay fallback for incomplete QEMU `savevm`/`loadvm`
-//! coverage.
+//! QEMU wrapper; `quantum` owns the per-quantum shared-memory hot path; `qmp`
+//! owns the minimal typed QMP client; `realization` owns the start/resume/fork
+//! instantiate branch coordinator; and `savevm_policy` owns the conservative
+//! thin-replay fallback for incomplete QEMU `savevm`/`loadvm` coverage.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
 //! details stay private; public callers use a safe host-driver API that
@@ -35,6 +35,7 @@ mod inertness;
 mod launch;
 mod node;
 mod qmp;
+mod quantum;
 mod realization;
 mod savevm_policy;
 mod setup_failure;
@@ -81,6 +82,11 @@ pub use qmp::{
     QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
     QMP_SNAPSHOT_VMSTATE_DEVICE, QmpClient, QmpCommandComplete, QmpCommandKind, QmpError,
     QmpGreeting, QmpJobPollPolicy, QmpSnapshotTag,
+};
+pub use quantum::{
+    QemuDueInboundFrame, QemuInboundFrame, QemuOutboundFrame, QemuPendingQuantum, QemuQuantumError,
+    QemuQuantumOperation, QemuQuantumOperationPlane, QemuQuantumReport, QemuQuantumShmemConfig,
+    QemuQuantumShmemHotPath, QemuQuantumShmemView, assert_qemu_quantum_hot_path_is_shmem_only,
 };
 pub use realization::{
     QemuBakedGenesisSnapshot, QemuCachedAncestor, QemuVmBakeExecutor, QemuVmLoadvmAdmissionPolicy,
