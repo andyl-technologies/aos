@@ -157,6 +157,7 @@ in {
   phase2 = {
     spscConcurrency = import ./phase2-spsc-concurrency.nix {inherit pkgs lib;};
     shmemHandoffFutex = import ./phase2-shmem-handoff-futex.nix {inherit pkgs lib;};
+    shmemDeliverability = import ./phase2-shmem-deliverability.nix {inherit pkgs lib;};
     gates = {
       abiConformance = redGate {
         attrPath = "checks.crucible.phase2.gates.abiConformance";
