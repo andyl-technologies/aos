@@ -18,9 +18,10 @@
 //! the fail-stop registration sequencer; `setup` owns descriptor mapping and setup
 //! acknowledgement; `time_control` owns clock ownership, authorized virtual-time
 //! advancement, and the time-control ordering contract; `block_io` owns guest
-//! block submit/poll request routing through the reserved block executor.
-//! Future modules will add live device callback behavior and QEMU-facing
-//! helpers.
+//! block submit/poll request routing through the reserved block executor;
+//! `ninep_io` owns raw 9p submit/poll/burst routing through the reserved 9p
+//! executor. Future modules will add live device callback behavior and
+//! QEMU-facing helpers.
 //!
 //! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
 //! pointers and delegate to safe Rust shims for time-control, callback
@@ -39,6 +40,7 @@ pub mod idle_loop;
 pub mod inbound;
 pub mod network_rx;
 pub mod network_tx;
+pub mod ninep_io;
 pub mod registration;
 pub mod setup;
 pub mod time_control;
@@ -88,6 +90,12 @@ pub use network_rx::{
 };
 pub use network_tx::{
     NetworkTxEnqueue, NetworkTxError, NetworkTxRing, PluginNetworkTx, handle_network_tx_callback,
+};
+pub use ninep_io::{
+    NinePGuestCompletion, NinePGuestCompletionError, NinePInboundRing, NinePIoError,
+    NinePOutboundRing, NinePPoll, NinePRequest, NinePRequestToken, NinePResponse, NinePSubmit,
+    PluginNinePIo, handle_9p_burst_done_callback, handle_9p_burst_start_callback,
+    handle_9p_poll_callback, handle_9p_submit_callback,
 };
 pub use registration::{
     PluginCallbackCapabilities, PluginRegistrationFailure, PluginRegistrationReady,

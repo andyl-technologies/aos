@@ -953,7 +953,7 @@ component that makes that purity true *inside* the QEMU process.
   reserved block slots, freezing time on submit and validating the response's
   delivery icount before delivery. — satisfies [PLUG-28], [PLUG-30], [PLUG-31];
   spec §12.6.
-- [ ] **T-PLUG-13** Implement the 9p submit/poll/burst-done callbacks against the
+- [x] **T-PLUG-13** Implement the 9p submit/poll/burst-done callbacks against the
   reserved 9p slots, holding the freeze for the whole burst. — satisfies
   [PLUG-29], [PLUG-30], [PLUG-31]; spec §12.6.
 - [ ] **T-PLUG-14** Implement the optional white-box doorbell trap: trap the
