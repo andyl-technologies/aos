@@ -891,7 +891,7 @@ by when the producer's store landed in shared memory.
 - [x] **T-SHM-6** Implement the Lamport SPSC `enqueue`/`dequeue`/
   `peek_delivery_icount` with the §13.6 acquire/release ordering. — satisfies
   [SHM-19], [SHM-20], [SHM-21]; spec §13.6.
-- [ ] **T-SHM-7** Implement `snapshot`/`restore` under quiescence with a
+- [x] **T-SHM-7** Implement `snapshot`/`restore` under quiescence with a
   byte-deterministic, padding-canonicalized serialization for content addressing.
   — satisfies [SHM-21], [SHM-22]; spec §13.6.
 - [x] **T-SHM-8** Implement the advance-ceiling handshake helpers (publish
