@@ -167,29 +167,104 @@ in {
     };
 
     # chronyd.service — NTP time synchronization daemon.
+    #
+    # chronyd starts as root, then drops privileges to the `chrony` user via
+    # `-u chrony`. We deliberately do NOT set `User=`/`RuntimeDirectory=`:
+    # systemd's RuntimeDirectory would create /run/chrony owned by the unit's
+    # user (root, since chronyd needs root to start), and after the privilege
+    # drop chronyd would warn `Wrong owner of /run/chrony (UID != <chrony>)`.
+    # Instead chronyd manages /run/chrony itself (and tmpfiles pre-creates it
+    # with the correct owner), mirroring upstream Nixpkgs' chrony service.
     systemd.services."chronyd" = {
       description = "NTP Time Synchronization (chrony)";
       wantedBy = ["multi-user.target"];
       after = ["network-online.target"];
       wants = ["network-online.target"];
+
+      # Skip the unit where the manager has no CAP_SYS_TIME (e.g. an
+      # unprivileged container): chronyd cannot steer the clock there anyway.
+      unitConfig.ConditionCapability = "CAP_SYS_TIME";
+
       serviceConfig = {
-        Type = "forking";
-        ExecStart = "${pkgs.chrony}/sbin/chronyd -f /etc/chrony.conf -u chrony";
+        # Type=notify + `-n` (foreground): chronyd signals readiness via the
+        # sd_notify protocol, which it implements natively (it writes to
+        # $NOTIFY_SOCKET itself and does not link libsystemd). No PIDFile needed.
+        Type = "notify";
+        ExecStart = "${pkgs.chrony}/sbin/chronyd -n -u chrony -f /etc/chrony.conf";
         ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
         RestartSec = "5s";
-        PIDFile = "/run/chrony/chronyd.pid";
-        # Security hardening.
+
+        # Writable state: driftfile (/var/lib/chrony) and logdir (/var/log/chrony).
+        ReadWritePaths = ["/var/lib/chrony" "/var/log/chrony"];
+        UMask = "0027";
+
+        # Proc filesystem.
+        ProcSubset = "pid";
+        ProtectProc = "invisible";
+
+        # Capability ceiling retained across the privilege drop to `chrony`:
+        #   CAP_SYS_TIME         — step/slew the system clock (the point)
+        #   CAP_NET_BIND_SERVICE — bind UDP/123 to serve time
+        #   CAP_SETUID/SETGID    — drop privileges to the chrony user
+        #   CAP_CHOWN/DAC_OVERRIDE — create + chown /run/chrony to chrony
+        #   CAP_SYS_RESOURCE     — adjust resource limits
+        CapabilityBoundingSet = [
+          "CAP_CHOWN"
+          "CAP_DAC_OVERRIDE"
+          "CAP_NET_BIND_SERVICE"
+          "CAP_SETGID"
+          "CAP_SETUID"
+          "CAP_SYS_RESOURCE"
+          "CAP_SYS_TIME"
+        ];
+
+        # Device access — rtcsync needs the RTC; pps/ptp for hw timestamping.
+        DeviceAllow = [
+          "char-pps rw"
+          "char-ptp rw"
+          "char-rtc rw"
+        ];
+        DevicePolicy = "closed";
+
+        # Sandboxing.
+        NoNewPrivileges = true;
         ProtectSystem = "full";
         ProtectHome = true;
-        NoNewPrivileges = true;
         PrivateTmp = true;
-        RuntimeDirectory = "chrony";
-        RuntimeDirectoryMode = "0750";
+        PrivateDevices = false; # needs /dev/rtc, /dev/pps*
+        PrivateUsers = false; # needs real UIDs to drop to chrony
+        ProtectHostname = true;
+        ProtectClock = false; # MUST be able to write the clock
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectKernelLogs = true;
+        ProtectControlGroups = true;
+        RestrictAddressFamilies = ["AF_UNIX" "AF_INET" "AF_INET6"];
+        RestrictNamespaces = true;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        RemoveIPC = true;
+        PrivateMounts = true;
+
+        # System call filtering.
+        SystemCallArchitectures = "native";
+        SystemCallFilter = [
+          "~@cpu-emulation @debug @keyring @mount @obsolete @privileged @resources"
+          "@clock"
+          "@setuid"
+          "capset"
+          "@chown"
+        ];
       };
     };
 
-    # Ensure chrony state directories exist.
+    # Ensure chrony state directories exist. /run/chrony is pre-created with
+    # the chrony owner (not root) so that chronyd, after dropping privileges
+    # to the chrony user, finds the correct owner and does not warn — this
+    # replaces the old RuntimeDirectory=chrony, which created it root-owned.
     environment.etc."tmpfiles.d/aos-chrony.conf" = {
       text = ''
         # Chrony state directories.
