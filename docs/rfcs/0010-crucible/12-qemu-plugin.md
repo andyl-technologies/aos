@@ -942,7 +942,7 @@ component that makes that purity true *inside* the QEMU process.
 - [x] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
   `device_io_active`/pending-counter, paired one-to-one with submit/completion and
   cleared on burst-done. — satisfies [PLUG-21], [PLUG-22]; spec §12.4.3.
-- [ ] **T-PLUG-10** Implement the network TX interception callback: enqueue guest
+- [x] **T-PLUG-10** Implement the network TX interception callback: enqueue guest
   frames into the outbound router ring with an emit-icount stamp, re-entrancy-safe,
   rejecting oversize frames and full rings loudly. — satisfies [PLUG-23],
   [PLUG-24], [PLUG-25]; spec §12.5.1.
