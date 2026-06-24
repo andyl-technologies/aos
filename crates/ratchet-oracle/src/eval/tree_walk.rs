@@ -652,19 +652,32 @@ pub struct TreeWalk {
     lazy_identity_thunks: BTreeSet<u64>,
 }
 
+/// The *derivation hash modulo* (`hashDerivationModulo`) of a derivation.
+///
+/// Nix derivation/store identity rests on three distinct SHA-256 values that are
+/// easy to conflate when all are bare `[u8; 32]`: the derivation-hash-modulo (the
+/// recursive ATerm-with-input-substitution hash that seeds input-addressed output
+/// paths), the raw `.drv` ATerm hash, and an output/content-address digest. This
+/// newtype gives the hash-modulo a distinct type so it cannot be passed where a
+/// raw ATerm hash or an output digest is expected. The wrapped bytes are the
+/// modulo digest itself; unwrap with `.0` only at the points that serialize it
+/// (hex into an ATerm) or feed it to `makeStorePath` for an output path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct DerivationHashModulo(pub(crate) [u8; 32]);
+
 #[derive(Clone, Debug)]
 struct KnownDerivation {
     id: IrId,
     span: Span,
     derivation: nix_compat::derivation::Derivation,
-    hash_derivation_modulo: [u8; 32],
+    hash_derivation_modulo: DerivationHashModulo,
     output_names: BTreeSet<String>,
     output_resolution: DerivationOutputResolution,
 }
 
 #[derive(Clone, Debug)]
 struct KnownDerivationInputHashes {
-    hashes: BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
+    hashes: BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
     has_deferred: bool,
 }
 

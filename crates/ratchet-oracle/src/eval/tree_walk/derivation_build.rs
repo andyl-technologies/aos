@@ -291,7 +291,7 @@ impl TreeWalk {
         span: Span,
         name: &str,
         derivation: &mut nix_compat::derivation::Derivation,
-        hash_derivation_modulo: &[u8; 32],
+        hash_derivation_modulo: &DerivationHashModulo,
     ) -> Result<(), TreeWalkError> {
         for (output_name, output) in derivation.outputs.iter_mut() {
             debug_assert!(output.path.is_none());
@@ -310,7 +310,7 @@ impl TreeWalk {
                     id,
                     span,
                     format!("output:{output_name}").as_bytes(),
-                    hash_derivation_modulo,
+                    &hash_derivation_modulo.0,
                     &path_name,
                 )?
             };
@@ -328,13 +328,13 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         derivation: &nix_compat::derivation::Derivation,
-        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
-    ) -> Result<[u8; 32], TreeWalkError> {
+        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
+    ) -> Result<DerivationHashModulo, TreeWalkError> {
         if let Some(digest) = self.fixed_output_derivation_digest(id, span, derivation)? {
             return Ok(digest);
         }
         let aterm = self.derivation_aterm_bytes_with_input_hashes(derivation, input_hashes);
-        Ok(Self::sha256_array(&aterm))
+        Ok(DerivationHashModulo(Self::sha256_array(&aterm)))
     }
 
     pub(super) fn fixed_output_derivation_digest(
@@ -342,7 +342,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         derivation: &nix_compat::derivation::Derivation,
-    ) -> Result<Option<[u8; 32]>, TreeWalkError> {
+    ) -> Result<Option<DerivationHashModulo>, TreeWalkError> {
         if derivation.outputs.len() != 1 {
             return Ok(None);
         }
@@ -363,7 +363,7 @@ impl TreeWalk {
         bytes.extend_from_slice(ca_hash.hash().to_nix_lowerhex_string().as_bytes());
         bytes.push(b':');
         bytes.extend_from_slice(&output_path);
-        Ok(Some(Self::sha256_array(&bytes)))
+        Ok(Some(DerivationHashModulo(Self::sha256_array(&bytes))))
     }
 
     pub(super) fn build_text_path(
@@ -539,18 +539,18 @@ impl TreeWalk {
         &self,
         derivation: &nix_compat::derivation::Derivation,
         floating_ca_output: FloatingCaOutput,
-        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
-    ) -> [u8; 32] {
+        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
+    ) -> DerivationHashModulo {
         let aterm = self.floating_ca_derivation_aterm_bytes(
             derivation,
             floating_ca_output,
             Some(input_hashes),
         );
-        Self::sha256_array(&aterm)
+        DerivationHashModulo(Self::sha256_array(&aterm))
     }
 
-    pub(super) fn impure_derivation_hash_modulo() -> [u8; 32] {
-        Self::sha256_array(b"impure")
+    pub(super) fn impure_derivation_hash_modulo() -> DerivationHashModulo {
+        DerivationHashModulo(Self::sha256_array(b"impure"))
     }
 
     pub(super) fn calculate_floating_ca_derivation_path(
@@ -595,7 +595,7 @@ impl TreeWalk {
         &self,
         derivation: &nix_compat::derivation::Derivation,
         floating_ca_output: FloatingCaOutput,
-        input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>>,
+        input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>>,
     ) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"Derive(");
@@ -643,7 +643,7 @@ impl TreeWalk {
         &self,
         derivation: &nix_compat::derivation::Derivation,
         impure_output: FloatingCaOutput,
-        input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>>,
+        input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>>,
     ) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"Derive(");
@@ -667,7 +667,7 @@ impl TreeWalk {
     pub(super) fn derivation_aterm_bytes_with_input_hashes(
         &self,
         derivation: &nix_compat::derivation::Derivation,
-        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
+        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
     ) -> Vec<u8> {
         let replacements = Self::input_hash_replacements(derivation, input_hashes);
         let mut out = Vec::new();
@@ -691,7 +691,7 @@ impl TreeWalk {
 
     pub(super) fn input_hash_replacements(
         derivation: &nix_compat::derivation::Derivation,
-        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
+        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
     ) -> BTreeMap<[u8; 32], BTreeSet<String>> {
         let mut replacements: BTreeMap<[u8; 32], BTreeSet<String>> = BTreeMap::new();
         for (drv_path, outputs) in &derivation.input_derivations {
@@ -699,7 +699,7 @@ impl TreeWalk {
                 continue;
             };
             replacements
-                .entry(*hash)
+                .entry(hash.0)
                 .or_default()
                 .extend(outputs.iter().cloned());
         }

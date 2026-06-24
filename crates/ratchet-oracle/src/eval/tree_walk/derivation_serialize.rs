@@ -150,7 +150,7 @@ impl TreeWalk {
         &self,
         out: &mut Vec<u8>,
         derivation: &nix_compat::derivation::Derivation,
-        input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>>,
+        input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>>,
     ) {
         match input_hashes {
             Some(input_hashes) => {
@@ -697,7 +697,7 @@ impl TreeWalk {
         span: Span,
         drv_path: nix_compat::store_path::StorePath<String>,
         derivation: &nix_compat::derivation::Derivation,
-        hash_derivation_modulo: [u8; 32],
+        hash_derivation_modulo: DerivationHashModulo,
         output_resolution: DerivationOutputResolution,
     ) {
         let output_names = derivation.outputs.keys().cloned().collect();
