@@ -52,10 +52,15 @@
   linuxGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
 
   mkRootfs = import ../../lib/build/rootfs.nix;
+  # The image's root filesystem matches the system's declared root fstype, so
+  # the fstab/mount and the on-disk image agree. Production systems set this to
+  # "erofs" (compressed, read-only) for a much smaller bootable image.
+  rootFsType = system.config.aos.filesystems.rootFsType;
   rootfs = mkRootfs {
     inherit pkgs lib system;
     pname = "aos-image-${name}-rootfs";
     label = "aos-root";
+    fsType = rootFsType;
     shrinkToFit = true;
     headroomMiB = 64;
   };
@@ -245,7 +250,7 @@
             "kernelParams": "${kernelParams}",
             "partitions": [
               { "number": 1, "label": "ESP", "type": "esp", "filesystem": "vfat", "sizeMiB": $esp_size_mib },
-              { "number": 2, "label": "root-a", "type": "linux", "filesystem": "ext4", "sizeMiB": $root_size_mib }
+              { "number": 2, "label": "root-a", "type": "linux", "filesystem": "${rootFsType}", "sizeMiB": $root_size_mib }
             ],
             "esp": {
               "uki": "EFI/Linux/${ukiFilename}",
