@@ -14,6 +14,8 @@ use crucible::{Checkpoint, ContentHash};
 use serde_json::{Value, json};
 use thiserror::Error;
 
+use crate::QemuLoadvmCommandAuthorization;
+
 /// QMP command name used for capability negotiation.
 pub const QMP_CAPABILITIES_COMMAND: &str = "qmp_capabilities";
 /// QMP command name used for saving the QEMU VMState half of a checkpoint.
@@ -109,13 +111,20 @@ where
 
     /// Loads the VMState snapshot named by a checkpoint-derived tag.
     ///
+    /// This only performs the low-level QMP command. Runtime admission remains a
+    /// separate replay-oracle-validated policy decision.
+    ///
     /// # Errors
     ///
     /// Returns [`QmpError`] when the request cannot be written, when the response
     /// cannot be read or decoded, when QMP returns an error response, or when
     /// the snapshot job reports failure or does not conclude within
     /// [`QMP_JOB_QUERY_LIMIT`] polls.
-    pub fn loadvm(&mut self, tag: &QmpSnapshotTag) -> Result<QmpCommandComplete, QmpError> {
+    pub fn loadvm(
+        &mut self,
+        tag: &QmpSnapshotTag,
+        _authorization: QemuLoadvmCommandAuthorization,
+    ) -> Result<QmpCommandComplete, QmpError> {
         let job_id = snapshot_job_id("load", tag);
         self.send_command(QmpCommand::LoadVm {
             tag,
