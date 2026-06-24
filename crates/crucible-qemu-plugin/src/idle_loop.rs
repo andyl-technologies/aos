@@ -800,7 +800,7 @@ pub enum IdleHotLoopError {
 mod tests {
     use super::*;
 
-    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::cell::Cell;
 
     use crucible_shmem::{
         AdvanceCeiling, KIND_VM, RegionConfig, RegionHeader, RegionLayout, RingHeader, STATUS_DONE,
@@ -812,8 +812,10 @@ mod tests {
         PluginRegistrationSequence, PluginTimeControlOwnership,
     };
 
-    static LAST_DIRECT_ADVANCE_NS: AtomicI64 = AtomicI64::new(-1);
-    static BLOCKED_DIRECT_ADVANCE_NS: AtomicI64 = AtomicI64::new(-1);
+    thread_local! {
+        static LAST_DIRECT_ADVANCE_NS: Cell<i64> = const { Cell::new(-1) };
+        static BLOCKED_DIRECT_ADVANCE_NS: Cell<i64> = const { Cell::new(-1) };
+    }
 
     #[test]
     fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {
@@ -1028,7 +1030,7 @@ mod tests {
 
         publish_ceiling(&slot, ceiling(10, 20));
         let mut clock = clock;
-        LAST_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        set_last_direct_advance_ns(-1);
         let synchronous_idle_advance = synchronous_idle_advance();
         let result = match PluginIdleHotLoop::complete_after_scheduler_wake(
             &slot,
@@ -1051,7 +1053,7 @@ mod tests {
         assert_eq!(result.advance().virtual_ns(), 40);
         assert_eq!(result.synchronous_drain().target_virtual_ns(), 40);
         assert!(result.synchronous_drain().drained_bottom_halves());
-        assert_eq!(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), 40);
+        assert_eq!(last_direct_advance_ns(), 40);
         assert_eq!(clock.current_icount(), 20);
         assert_eq!(
             result
@@ -1104,7 +1106,7 @@ mod tests {
 
         publish_ceiling(&slot, ceiling(10, 20));
         let mut clock = clock;
-        LAST_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        set_last_direct_advance_ns(-1);
         let result = match PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings(
             &slot,
             &mut clock,
@@ -1119,7 +1121,7 @@ mod tests {
             Err(error) => panic!("idle completion should drain inbound rings: {error}"),
         };
 
-        assert_eq!(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), 40);
+        assert_eq!(last_direct_advance_ns(), 40);
         assert_eq!(clock.current_icount(), 20);
         assert_eq!(
             result
@@ -1171,7 +1173,7 @@ mod tests {
 
         publish_ceiling(&slot, ceiling(10, 20));
         let mut clock = clock;
-        LAST_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        set_last_direct_advance_ns(-1);
         let network_rx = PluginNetworkRx::new();
         let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
         let result =
@@ -1191,7 +1193,7 @@ mod tests {
                 Err(error) => panic!("idle completion should inject RX frames: {error}"),
             };
 
-        assert_eq!(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), 40);
+        assert_eq!(last_direct_advance_ns(), 40);
         assert_eq!(rx_queue.direct_advance_ns_at_queue, vec![40, 40, 40]);
         assert_eq!(
             rx_queue.slot_status_at_queue,
@@ -1249,7 +1251,7 @@ mod tests {
 
         publish_ceiling(&slot, ceiling(10, 20));
         let mut clock = clock;
-        LAST_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        set_last_direct_advance_ns(-1);
         let network_rx = PluginNetworkRx::new();
         let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
         rx_queue.queue_error_at = Some(0);
@@ -1272,7 +1274,7 @@ mod tests {
             })
         );
 
-        assert_eq!(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), 40);
+        assert_eq!(last_direct_advance_ns(), 40);
         assert_eq!(clock.current_icount(), 20);
         assert_eq!(ring.read_index(), 0);
         assert!(rx_queue.queued_payloads.is_empty());
@@ -1301,7 +1303,7 @@ mod tests {
             futex_wait: FutexWait::Runnable,
         };
         let before = slot.snapshot();
-        BLOCKED_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        set_blocked_direct_advance_ns(-1);
 
         assert_eq!(
             PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings(
@@ -1323,7 +1325,7 @@ mod tests {
         assert_eq!(clock.current_icount(), 10);
         assert_eq!(slot.snapshot(), before);
         assert_eq!(ring.read_index(), 0);
-        assert_eq!(BLOCKED_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), -1);
+        assert_eq!(blocked_direct_advance_ns(), -1);
     }
 
     #[test]
@@ -1344,7 +1346,7 @@ mod tests {
             futex_wait: FutexWait::Runnable,
         };
         let before = slot.snapshot();
-        BLOCKED_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        set_blocked_direct_advance_ns(-1);
 
         assert_eq!(
             PluginIdleHotLoop::complete_after_scheduler_wake(
@@ -1365,7 +1367,7 @@ mod tests {
 
         assert_eq!(clock.current_icount(), 10);
         assert_eq!(slot.snapshot(), before);
-        assert_eq!(BLOCKED_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), -1);
+        assert_eq!(blocked_direct_advance_ns(), -1);
     }
 
     #[test]
@@ -1470,7 +1472,7 @@ mod tests {
         let mut clock = owned_clock(0, crate::MAX_PLUGIN_ICOUNT_SHIFT);
         publish_ceiling(&slot, ceiling(0, 1));
         let before = slot.snapshot();
-        BLOCKED_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        set_blocked_direct_advance_ns(-1);
         let request = IdleParkRequest {
             plan: IdleWakePlan {
                 current_icount: 0,
@@ -1501,7 +1503,7 @@ mod tests {
 
         assert_eq!(clock.current_icount(), 0);
         assert_eq!(slot.snapshot(), before);
-        assert_eq!(BLOCKED_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), -1);
+        assert_eq!(blocked_direct_advance_ns(), -1);
     }
 
     #[test]
@@ -1582,11 +1584,27 @@ mod tests {
     }
 
     extern "C" fn test_direct_advance(target_virtual_ns: i64) {
-        LAST_DIRECT_ADVANCE_NS.store(target_virtual_ns, Ordering::SeqCst);
+        set_last_direct_advance_ns(target_virtual_ns);
     }
 
     extern "C" fn test_blocked_direct_advance(target_virtual_ns: i64) {
-        BLOCKED_DIRECT_ADVANCE_NS.store(target_virtual_ns, Ordering::SeqCst);
+        set_blocked_direct_advance_ns(target_virtual_ns);
+    }
+
+    fn set_last_direct_advance_ns(value: i64) {
+        LAST_DIRECT_ADVANCE_NS.with(|cell| cell.set(value));
+    }
+
+    fn last_direct_advance_ns() -> i64 {
+        LAST_DIRECT_ADVANCE_NS.with(|cell| cell.get())
+    }
+
+    fn set_blocked_direct_advance_ns(value: i64) {
+        BLOCKED_DIRECT_ADVANCE_NS.with(|cell| cell.set(value));
+    }
+
+    fn blocked_direct_advance_ns() -> i64 {
+        BLOCKED_DIRECT_ADVANCE_NS.with(|cell| cell.get())
     }
 
     fn ownership() -> PluginTimeControlOwnership {
@@ -1663,7 +1681,7 @@ mod tests {
                 return Err(NetworkRxQueueError::queue("test queue failure"));
             }
             self.direct_advance_ns_at_queue
-                .push(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst));
+                .push(last_direct_advance_ns());
             self.slot_status_at_queue.push(self.slot.snapshot().status);
             self.queued_payloads.push(payload.to_vec());
             Ok(())

@@ -949,7 +949,7 @@ component that makes that purity true *inside* the QEMU process.
 - [x] **T-PLUG-11** Implement RX injection via the lossless queueing path from
   the idle context, after the idle jump, gated by the delivery-icount rule. —
   satisfies [PLUG-26], [PLUG-27]; spec §12.5.2.
-- [ ] **T-PLUG-12** Implement the block submit/poll callbacks against the
+- [x] **T-PLUG-12** Implement the block submit/poll callbacks against the
   reserved block slots, freezing time on submit and validating the response's
   delivery icount before delivery. — satisfies [PLUG-28], [PLUG-30], [PLUG-31];
   spec §12.6.

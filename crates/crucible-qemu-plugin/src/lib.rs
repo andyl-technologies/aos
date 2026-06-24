@@ -17,8 +17,10 @@
 //! network transmit interception and outbound ring enqueueing; `registration` owns
 //! the fail-stop registration sequencer; `setup` owns descriptor mapping and setup
 //! acknowledgement; `time_control` owns clock ownership, authorized virtual-time
-//! advancement, and the time-control ordering contract. Future modules will add
-//! live device callback behavior and QEMU-facing helpers.
+//! advancement, and the time-control ordering contract; `block_io` owns guest
+//! block submit/poll request routing through the reserved block executor.
+//! Future modules will add live device callback behavior and QEMU-facing
+//! helpers.
 //!
 //! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
 //! pointers and delegate to safe Rust shims for time-control, callback
@@ -30,6 +32,7 @@
 
 pub mod abi;
 pub mod args;
+pub mod block_io;
 pub mod deadline;
 pub mod device_io;
 pub mod idle_loop;
@@ -56,6 +59,12 @@ pub use abi::{
 pub use args::{
     PLUGIN_ARG_COVERAGE, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD,
     PLUGIN_ARG_WHITEBOX, PluginArgs, PluginArgsParseError, PluginInheritedFds, PluginSwitch,
+};
+pub use block_io::{
+    BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,
+    BlockOperation, BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestToken, BlockResponse,
+    BlockResponseStatus, BlockSubmit, BlockWireError, PluginBlockIo, handle_block_poll_callback,
+    handle_block_submit_callback,
 };
 pub use deadline::{
     ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,
