@@ -1051,10 +1051,8 @@ pub fn account_page(
     error: Option<&str>,
     started: Instant,
 ) -> String {
-    let mut body = format!(
-        "<h1>Account</h1>\n<p>signed in as <code>{}</code></p>\n",
-        escape(email)
-    );
+    // No page-title <h1>: the masthead/title already say "account".
+    let mut body = format!("<p>signed in as <code>{}</code></p>\n", escape(email));
 
     if let Some(error) = error {
         let _ = writeln!(body, "<p class=\"bad\">{}</p>", escape(error));
@@ -1223,7 +1221,8 @@ pub fn orgs_page(
     page_number: usize,
     started: Instant,
 ) -> String {
-    let mut body = String::from("<h1>Organizations</h1>\n");
+    // No page-title <h1>: the masthead/title already say "organizations".
+    let mut body = String::new();
     if can_create {
         body.push_str("<p><a href=\"/new\">+ create an organization</a></p>\n");
     }
@@ -1407,22 +1406,10 @@ pub fn org_dashboard(
         .then(|| format!("registries_page={}", reg_pager.page()))
         .unwrap_or_default();
     let slug = &org.slug;
-    // The org's dense overview is split across focused sidebar tabs; each
-    // `active` value renders exactly one section.
-    let section_label = match active {
-        "projects" => "projects",
-        "members" => "members",
-        "caches" => "binary caches",
-        "storage" => "storage",
-        "danger" => "danger zone",
-        _ => "registries",
-    };
-    let mut body = format!(
-        "<h1>{} · {}</h1>\n",
-        escape(&org.name),
-        escape(section_label)
-    );
-    let _ = writeln!(body, "<p class=\"dim\"><code>{}</code></p>", escape(slug));
+    // No page-title <h1>: the selected sidebar tab names the section and the
+    // masthead crumbs name the org, so a "{org} · {section}" heading would just
+    // repeat them. Each section supplies its own descriptive <h2> below.
+    let mut body = format!("<p class=\"dim\"><code>{}</code></p>\n", escape(slug));
 
     // -- Registries (the default tab) ----------------------------------------
     if active == "registries" {
@@ -2031,7 +2018,8 @@ pub fn audit_page(
     page_number: usize,
     started: Instant,
 ) -> String {
-    let mut body = format!("<h1>Audit · {}</h1>\n", escape(&org.name));
+    // No page-title <h1>: the selected "Audit" tab + crumbs already say it.
+    let mut body = String::new();
     if rows.is_empty() {
         body.push_str("<p class=\"dim\">No audit entries.</p>\n");
     } else {
@@ -2419,13 +2407,11 @@ pub fn registry_settings_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let section_label = match active {
-        "storage" => "Storage",
-        "caches" => "Binary caches",
-        "danger" => "Danger zone",
-        _ => "General",
-    };
-    let mut body = format!("<h1>{} · {}</h1>\n", section_label, escape(slug));
+    // No page-title <h1>: the selected sidebar tab names the section and the
+    // masthead crumbs name the registry, so a "{section} · {slug}" heading would
+    // just repeat them. Each section's own <h2> (Visibility, Storage, …) is the
+    // descriptive heading.
+    let mut body = String::new();
 
     if let Some(change_id) = result {
         let _ = writeln!(
@@ -2709,7 +2695,8 @@ pub fn tokens_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = format!("<h1>Tokens · {}</h1>\n", escape(slug));
+    // No page-title <h1>: the selected "Tokens" tab + crumbs already say it.
+    let mut body = String::new();
 
     if let Some((label, secret)) = result {
         let _ = write!(
@@ -2929,7 +2916,8 @@ pub fn keys_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = format!("<h1>Keys · {}</h1>\n", escape(slug));
+    // No page-title <h1>: the selected "Keys" tab + crumbs already say it.
+    let mut body = String::new();
     body.push_str(
         "<p class=\"dim\">The roster is signed tree content. Keys are added and retired by \
          client-side signing, never by a raw web mutation.</p>\n",
@@ -3048,7 +3036,8 @@ pub fn org_hosted_keys_page(
     started: Instant,
 ) -> String {
     let org_slug = &org.slug;
-    let mut body = format!("<h1>Hosted signing keys · {}</h1>\n", escape(&org.name));
+    // No page-title <h1>: the selected "Hosted keys" tab + crumbs already say it.
+    let mut body = String::new();
     body.push_str(
         "<p class=\"dim\">A hosted key lets the hub sign channel advances and tag re-signs \
          directly from the web. The seed is held sealed and every use is audited. Pin the public \
@@ -3164,7 +3153,8 @@ pub fn org_webhooks_page(
     started: Instant,
 ) -> String {
     let org_slug = &org.slug;
-    let mut body = format!("<h1>Webhooks · {}</h1>\n", escape(&org.name));
+    // No page-title <h1>: the selected "Webhooks" tab + crumbs already say it.
+    let mut body = String::new();
     body.push_str(
         "<p class=\"dim\">Each subscription receives an HMAC-SHA256-signed JSON \
          <code>POST</code> for the events you select (none selected means every event). \
@@ -3268,7 +3258,8 @@ pub fn org_sso_page(
     started: Instant,
 ) -> String {
     let org_slug = &org.slug;
-    let mut body = format!("<h1>Single sign-on · {}</h1>\n", escape(&org.name));
+    // No page-title <h1>: the selected "SSO" tab + crumbs already say it.
+    let mut body = String::new();
     body.push_str(
         "<p class=\"dim\">Configure an OIDC identity provider and capture the email domains \
          whose users sign in through it. The client secret is sealed at rest and never shown \
@@ -3473,7 +3464,8 @@ pub fn instance_settings_page(
     notice: Option<&str>,
     started: Instant,
 ) -> String {
-    let mut body = String::from("<h1>Instance · general</h1>\n");
+    // No page-title <h1>: the selected "General" tab + crumbs already say it.
+    let mut body = String::new();
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
     }
@@ -3530,7 +3522,8 @@ pub fn instance_branding_page(
     notice: Option<&str>,
     started: Instant,
 ) -> String {
-    let mut body = String::from("<h1>Instance · branding</h1>\n");
+    // No page-title <h1>: the selected "Branding" tab + crumbs already say it.
+    let mut body = String::new();
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
     }
@@ -3576,7 +3569,8 @@ pub fn instance_serving_page(
     notice: Option<&str>,
     started: Instant,
 ) -> String {
-    let mut body = String::from("<h1>Instance · serving</h1>\n");
+    // No page-title <h1>: the selected "Serving" tab + crumbs already say it.
+    let mut body = String::new();
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
     }
@@ -3737,7 +3731,8 @@ pub fn instance_storage_page(
     notice: Option<&str>,
     started: Instant,
 ) -> String {
-    let mut body = String::from("<h1>Instance · storage</h1>\n");
+    // No page-title <h1>: the selected "Storage" tab + crumbs already say it.
+    let mut body = String::new();
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
     }
@@ -3777,6 +3772,41 @@ pub fn instance_storage_page(
     instance_settings_chrome(email, "storage", &body, started)
 }
 
+/// An org custom storage binding's serving page: edit its public access and
+/// frontends through the same [`storage_binding_serving_section`] the instance
+/// default storage uses, so custom + default bindings share one interface
+/// (RFC-0004 §12).
+pub fn org_binding_page(
+    email: &str,
+    org_slug: &str,
+    binding: &StorageBindingRecord,
+    frontends: &[FrontendRecord],
+    csrf: &str,
+    notice: Option<&str>,
+    started: Instant,
+) -> String {
+    let mut body = format!("<h1>Storage binding · {}</h1>\n", escape(&binding.name));
+    if let Some(notice) = notice {
+        let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
+    }
+    let _ = writeln!(
+        body,
+        "<p>kind <span class=\"chip\">{}</span> · root <code>{}</code></p>",
+        escape(&binding.kind),
+        escape(&binding.root),
+    );
+    let action = format!("/-/org/{}/bindings/{}", org_slug, binding.id);
+    body.push_str(&storage_binding_serving_section(
+        &action, csrf, binding, frontends,
+    ));
+    let _ = write!(
+        body,
+        "<p class=\"dim\"><a href=\"/-/org/{}/storage\">&larr; back to storage</a></p>\n",
+        escape(org_slug),
+    );
+    org_settings_chrome(email, org_slug, "storage", &body, started)
+}
+
 /// The registry "serving & mirror" page: the serving frontends (domains) and
 /// the optional upstream mirror configuration.
 ///
@@ -3794,7 +3824,8 @@ pub fn serving_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = format!("<h1>Serving &amp; mirror · {}</h1>\n", escape(slug));
+    // No page-title <h1>: the selected "Serving & mirror" tab + crumbs say it.
+    let mut body = String::new();
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
     }
@@ -3957,7 +3988,8 @@ pub fn publishes_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = format!("<h1>Publishes · {}</h1>\n", escape(slug));
+    // No page-title <h1>: the selected "Publishes" tab + crumbs already say it.
+    let mut body = String::new();
 
     body.push_str("<h2>Index</h2>\n");
     let (state, commit) = match status {
@@ -4095,7 +4127,8 @@ pub fn config_edit_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = format!("<h1>Edit config: {}</h1>\n", escape(slug));
+    // No page-title <h1>: the selected "Config" tab + crumbs already say it.
+    let mut body = String::new();
     body.push_str(
         "<p class=\"dim\">Web edits to committed config are <strong>change \
          requests</strong>. The hub commits the edit, draft-signed by a key \
@@ -4188,7 +4221,8 @@ pub fn registry_config_form_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = format!("<h1>Edit config: {}</h1>\n", escape(slug));
+    // No page-title <h1>: the selected "Config" tab + crumbs already say it.
+    let mut body = String::new();
     body.push_str(
         "<p class=\"dim\">Web edits to committed config are <strong>change \
          requests</strong>. The hub commits the edit, draft-signed by a key \
@@ -4285,7 +4319,8 @@ pub fn changes_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = format!("<h1>Change requests: {}</h1>\n", escape(slug));
+    // No page-title <h1>: the selected "Change requests" tab + crumbs say it.
+    let mut body = String::new();
     body.push_str(&format!(
         "<p><a href=\"/{}/-/settings/config\">propose a config change</a></p>\n",
         escape(slug),
