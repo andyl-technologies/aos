@@ -447,7 +447,7 @@ The control channel is determinism-neutral by construction.
   host attaches `[shmem_fd, wake_fd]` in fixed order; plugin reads exactly two
   fds and fails setup on any other count. — satisfies [PROTO-8], [PROTO-9],
   [PROTO-12]; spec §3.4, §3.7.
-- [ ] **T-PROTO-4** Implement the handshake: plugin sends `Hello(proto, abi)`,
+- [x] **T-PROTO-4** Implement the handshake: plugin sends `Hello(proto, abi)`,
   host negotiates `proto = min(...)`, cross-checks `abi` exactly against the
   shmem ABI version, and replies `HelloAck(proto, abi, slot_index, node_count)`;
   plugin bounds-checks `slot_index < node_count`. — satisfies [PROTO-3],
