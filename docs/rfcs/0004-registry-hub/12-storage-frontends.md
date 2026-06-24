@@ -1,8 +1,10 @@
 # Storage-binding frontends — direct-from-bucket serving by inheritance
 
-- **Status:** Proposed (2026-06-24). Design only; not yet implemented. This
-  file carries its own working status and the implementation checklist at the
-  bottom.
+- **Status:** Implemented (2026-06-24). Schema (migrations v29–v30), the
+  cache + registry bucket-direct resolvers, the instance-default and org
+  custom-binding WebUI, and the security gate are all in and green; see the
+  implementation checklist at the bottom for the per-item state and the small
+  remaining polish.
 - **Builds on:** [`01-architecture.md`](01-architecture.md) (a control plane
   over a *static data plane*), [`03-api-storage-frontends.md`](03-api-storage-frontends.md)
   (`StorageBinding`, shared buckets, direct/proxied frontends), and
@@ -209,15 +211,26 @@ proxied/private path is unchanged.
       default binding's public access (`set-public`) and frontends
       (`add-frontend`/`delete-frontend`) via the shared
       `storage_binding_serving_section` — the same form custom bindings will use.
-- [ ] Apply the shared `storage_binding_serving_section` to the **org
-      custom-binding** page (`/-/org/{org}/storage`) so custom + default share one
-      interface — the section + handler exist; only the org page wiring + an
-      org-scoped action handler/route remain.
-- [ ] Registry-side resolver (git/web surfaces) — the cache path landed first.
-- [ ] `worker deploy`: optionally pre-set the default bucket `public_base_url`
-      (operators can already set it in the WebUI above; deploy seeding is now a
-      convenience, not a prerequisite).
-- [ ] End-to-end security test: a private binding/consumer is never advertised
-      or direct; a public consumer on a public binding resolves to the bucket URL.
-      (The create-time Direct-over-private gate and the resolver's public-binding
-      re-check are in; the unit tests cover the pure selection/URL logic.)
+- [x] WebUI: org **custom** storage bindings share the same interface — a
+      per-binding page (`GET`/`POST /-/org/{org}/bindings/{id}`) edits public
+      access + frontends via the same `storage_binding_serving_section`, gated by
+      `StorageManage` and scoped to the owning org; the org storage tab links
+      each binding to it.
+- [x] Registry-side resolver: `registry_consumer_url` (a shared
+      `direct_consumer_url` over a `FrontendSurface` git/cache) resolves a
+      registry's git surface to a bucket-direct URL when a direct frontend (own
+      or inherited) exists; wired into the browse setup snippets.
+- [x] Security test: `storage_frontends_reject_direct_over_private_binding`
+      asserts the boundary at the data layer (private rejects Direct, publish
+      permits it, frontends scope to the binding, the seeded default is org-less
+      and private). The create-time gate + resolve-time public re-check are in;
+      pure selection/URL logic is unit-tested.
+- [~] `worker deploy` default-bucket `public_base_url` seeding — **not built;
+      unnecessary.** The migration seeds the row and operators set
+      `public_base_url` in the WebUI; the deploy has no operator CDN domain to
+      auto-seed, so there is nothing to pre-populate.
+
+**Status: implemented.** All §12 work landed and is green (347 core tests +
+wasm). Remaining polish only: a registry-config advertise *toggle* (today
+advertising follows the frontend's `advertised` flag), and pointing `apr`/git
+clients at an advertised git frontend (the open questions above).
