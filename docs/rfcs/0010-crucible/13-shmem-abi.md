@@ -894,16 +894,16 @@ by when the producer's store landed in shared memory.
 - [ ] **T-SHM-7** Implement `snapshot`/`restore` under quiescence with a
   byte-deterministic, padding-canonicalized serialization for content addressing.
   — satisfies [SHM-21], [SHM-22]; spec §13.6.
-- [ ] **T-SHM-8** Implement the advance-ceiling handshake helpers (publish
+- [x] **T-SHM-8** Implement the advance-ceiling handshake helpers (publish
   current icount + gen; scheduler-only ceiling store; node-side acquire load +
   advance check), with the `publish_gen` seqlock writer/reader discipline for
   torn-free multi-field slot snapshots. — satisfies [SHM-10], [SHM-24], [SHM-25],
   [SHM-36]; spec §13.6, §13.3.4.
-- [ ] **T-SHM-9** Implement the cross-process (non-private) futex
+- [x] **T-SHM-9** Implement the cross-process (non-private) futex
   `wait`/`wake` on `wake_signal` with the race-free idiom, plus the
   raise-ceiling and frame-delivered wake triggers. — satisfies [SHM-26],
   [SHM-27]; spec §13.7.
-- [ ] **T-SHM-10** Implement the off-Linux no-op shim for the futex path so the
+- [x] **T-SHM-10** Implement the off-Linux no-op shim for the futex path so the
   pure atomic/SPSC logic unit-tests off-Linux. — satisfies [SHM-28]; spec §13.7.
 - [ ] **T-SHM-11** Implement global `pause_requested`/`shutdown_requested`
   observation and the wake-all-on-flag behavior. — satisfies [SHM-29]; spec

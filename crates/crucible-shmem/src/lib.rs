@@ -390,7 +390,9 @@ impl NodeSlot {
     /// # Errors
     ///
     /// Returns [`NodeSlotError::CeilingBeforePublishedCurrent`] when the ceiling
-    /// is already behind the slot's published current icount.
+    /// is already behind the slot's published current icount, or
+    /// [`NodeSlotError::FutexWake`] when the non-private futex wake syscall
+    /// fails.
     pub fn publish_scheduler_ceiling(
         &self,
         ceiling: AdvanceCeiling,
@@ -406,7 +408,8 @@ impl NodeSlot {
         self.max_advance_icount
             .store(ceiling.max_advance_icount, Ordering::Release);
 
-        Ok(self.bump_wake_signal())
+        self.wake_after_signal_increment()
+            .map_err(|source| NodeSlotError::FutexWake { source })
     }
 
     /// Loads the scheduler-published ceiling with acquire ordering.
@@ -507,17 +510,23 @@ impl NodeSlot {
     }
 
     /// Wakes a node because an inbound frame became actionable.
-    #[must_use]
-    pub fn wake_for_frame_delivery(&self) -> WakeAction {
-        self.bump_wake_signal()
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FutexError`] when the Linux futex wake syscall fails for an
+    /// unexpected reason. Non-Linux developer-tooling builds return a no-op
+    /// success with zero woken waiters.
+    pub fn wake_for_frame_delivery(&self) -> Result<WakeAction, FutexError> {
+        self.wake_after_signal_increment()
     }
 
     /// Issues a non-private futex wake on this node's wake-signal word.
     ///
     /// # Errors
     ///
-    /// Returns [`FutexError`] when the host is not Linux or the futex syscall
-    /// fails for a reason other than no waiters.
+    /// Returns [`FutexError`] when the Linux futex syscall fails for a reason
+    /// other than no waiters. Non-Linux developer-tooling builds return a
+    /// no-op success with zero woken waiters.
     pub fn futex_wake_nonprivate(&self, max_waiters: u32) -> Result<FutexWakeResult, FutexError> {
         futex_wake_nonprivate(&self.wake_signal, max_waiters)
     }
@@ -526,8 +535,9 @@ impl NodeSlot {
     ///
     /// # Errors
     ///
-    /// Returns [`FutexError`] when the host is not Linux or the futex syscall
-    /// fails for an unexpected reason.
+    /// Returns [`FutexError`] when the Linux futex syscall fails for an
+    /// unexpected reason. Non-Linux developer-tooling builds return
+    /// [`FutexWaitOutcome::Noop`] after the race-free pre-check.
     pub fn futex_wait_nonprivate(&self, wait: FutexWait) -> Result<FutexWaitOutcome, FutexError> {
         match wait {
             FutexWait::Runnable => Ok(FutexWaitOutcome::Runnable),
@@ -549,8 +559,9 @@ impl NodeSlot {
     ///
     /// # Errors
     ///
-    /// Returns [`FutexError`] when the host is not Linux or the futex syscall
-    /// fails for an unexpected reason.
+    /// Returns [`FutexError`] when the Linux futex syscall fails for an
+    /// unexpected reason. Non-Linux developer-tooling builds return
+    /// [`FutexWaitOutcome::Noop`].
     pub fn futex_wait_word_nonprivate(
         &self,
         expected: u32,
@@ -609,12 +620,14 @@ impl NodeSlot {
         status != STATUS_IDLE || max_advance_icount >= idle_wake_icount
     }
 
-    fn bump_wake_signal(&self) -> WakeAction {
+    fn wake_after_signal_increment(&self) -> Result<WakeAction, FutexError> {
         let previous = self.wake_signal.fetch_add(1, Ordering::Release);
-        WakeAction::Wake {
+        let futex = self.futex_wake_nonprivate(1)?;
+        Ok(WakeAction::Wake {
             previous,
             new: previous.wrapping_add(1),
-        }
+            futex,
+        })
     }
 }
 
@@ -650,12 +663,14 @@ pub struct NodeSlotSnapshot {
 /// A scheduler wake action for a parked node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WakeAction {
-    /// The wake signal was incremented and a non-private futex wake is required.
+    /// The wake signal was incremented and a non-private futex wake was issued.
     Wake {
         /// The wake signal value before the release increment.
         previous: u32,
         /// The wake signal value after the release increment.
         new: u32,
+        /// The result of issuing `FUTEX_WAKE` on the wake-signal word.
+        futex: FutexWakeResult,
     },
 }
 
@@ -691,14 +706,13 @@ pub enum FutexWaitOutcome {
     Interrupted,
     /// The futex wait returned because a waker woke this waiter.
     Woken,
+    /// The non-Linux developer-tooling shim compiled the wait path to a no-op.
+    Noop,
 }
 
 /// A futex syscall error.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FutexError {
-    /// The non-private futex path is only available on Linux.
-    #[error("non-private futex operations are only available on Linux")]
-    UnsupportedPlatform,
     /// The futex syscall failed unexpectedly.
     #[error("{operation} syscall failed with errno {errno}")]
     Syscall {
@@ -768,7 +782,10 @@ fn futex_wake_nonprivate(
     _wake_signal: &AtomicU32,
     _max_waiters: u32,
 ) -> Result<FutexWakeResult, FutexError> {
-    Err(FutexError::UnsupportedPlatform)
+    Ok(FutexWakeResult {
+        waiters_woken: 0,
+        futex_private: FUTEX_PRIVATE,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -808,7 +825,7 @@ fn futex_wait_nonprivate(
     _wake_signal: &AtomicU32,
     _expected: u32,
 ) -> Result<FutexWaitOutcome, FutexError> {
-    Err(FutexError::UnsupportedPlatform)
+    Ok(FutexWaitOutcome::Noop)
 }
 
 #[cfg(target_os = "linux")]
@@ -1153,5 +1170,11 @@ pub enum NodeSlotError {
         current_icount: u64,
         /// The rejected idle wake icount.
         idle_wake_icount: u64,
+    },
+    /// A non-private futex wake failed after `wake_signal` was incremented.
+    #[error("non-private futex wake failed after incrementing wake_signal: {source}")]
+    FutexWake {
+        /// The futex syscall failure.
+        source: FutexError,
     },
 }
