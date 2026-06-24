@@ -12,8 +12,43 @@ use thiserror::Error;
 
 use crate::{
     CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, ExactDeadlineError, ExactDeadlineReader, PluginArgs,
-    PluginArgsParseError, PluginRegistrationStep, QemuClockDeadlineFn, TimeControlRegistrationPlan,
+    PluginArgsParseError, PluginRegistrationStep, QemuAdvanceVirtualTimeDirectFn,
+    QemuClockDeadlineFn, SynchronousIdleAdvance, SynchronousIdleAdvanceError,
+    TimeControlRegistrationPlan,
 };
+
+/// QEMU capabilities captured at callback registration.
+#[derive(Clone, Debug)]
+pub struct PluginCallbackCapabilities {
+    exact_deadline_reader: ExactDeadlineReader,
+    synchronous_idle_advance: SynchronousIdleAdvance,
+}
+
+impl PluginCallbackCapabilities {
+    /// Builds callback capabilities from required QEMU handles.
+    #[must_use]
+    pub const fn new(
+        exact_deadline_reader: ExactDeadlineReader,
+        synchronous_idle_advance: SynchronousIdleAdvance,
+    ) -> Self {
+        Self {
+            exact_deadline_reader,
+            synchronous_idle_advance,
+        }
+    }
+
+    /// Returns the exact-deadline reader required by the idle callback.
+    #[must_use]
+    pub const fn exact_deadline_reader(&self) -> &ExactDeadlineReader {
+        &self.exact_deadline_reader
+    }
+
+    /// Returns the synchronous direct-advance handle required by the idle callback.
+    #[must_use]
+    pub const fn synchronous_idle_advance(&self) -> &SynchronousIdleAdvance {
+        &self.synchronous_idle_advance
+    }
+}
 
 /// Safe recorder for the fixed plugin registration path.
 ///
@@ -77,7 +112,7 @@ impl PluginRegistrationSequence {
         if step == PluginRegistrationStep::RegisterCallbacks {
             return Err(self.fail_step(
                 PluginRegistrationStep::RegisterCallbacks,
-                "exact deadline capability must be required before registering callbacks",
+                "exact deadline and synchronous idle-advance capabilities must be required before registering callbacks",
             ));
         }
 
@@ -107,21 +142,28 @@ impl PluginRegistrationSequence {
         Ok(())
     }
 
-    /// Records callback registration after requiring exact-deadline introspection.
+    /// Records callback registration after requiring idle-time QEMU capabilities.
     ///
     /// # Errors
     ///
     /// Returns [`PluginRegistrationSequenceError`] when
-    /// `qemu_plugin_clock_deadline_ns` is unavailable, when the registration order
-    /// is wrong, or when registration has already failed.
+    /// `qemu_plugin_clock_deadline_ns` or
+    /// `qemu_plugin_advance_virtual_time_direct` is unavailable, when the
+    /// registration order is wrong, or when registration has already failed.
     pub fn register_callbacks_with_exact_deadline(
         &mut self,
         clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    ) -> Result<ExactDeadlineReader, PluginRegistrationSequenceError> {
-        let reader = ExactDeadlineReader::require(clock_deadline_ns)
+        advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+    ) -> Result<PluginCallbackCapabilities, PluginRegistrationSequenceError> {
+        let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ns)
             .map_err(|source| self.fail_exact_deadline_capability(source))?;
+        let synchronous_idle_advance = SynchronousIdleAdvance::require(advance_virtual_time_direct)
+            .map_err(|source| self.fail_synchronous_idle_advance_capability(source))?;
         self.record_step_unchecked(PluginRegistrationStep::RegisterCallbacks)?;
-        Ok(reader)
+        Ok(PluginCallbackCapabilities::new(
+            exact_deadline_reader,
+            synchronous_idle_advance,
+        ))
     }
 
     /// Records a fail-loud abort at the current registration step.
@@ -239,6 +281,16 @@ impl PluginRegistrationSequence {
         self.fail_step(
             PluginRegistrationStep::RegisterCallbacks,
             format!("exact deadline introspection failed: {source}"),
+        )
+    }
+
+    fn fail_synchronous_idle_advance_capability(
+        &mut self,
+        source: SynchronousIdleAdvanceError,
+    ) -> PluginRegistrationSequenceError {
+        self.fail_step(
+            PluginRegistrationStep::RegisterCallbacks,
+            format!("synchronous idle advance failed: {source}"),
         )
     }
 
@@ -474,7 +526,8 @@ mod tests {
             panic!("direct callback registration should fail, got {error:?}");
         };
         assert_eq!(failure.step(), PluginRegistrationStep::RegisterCallbacks);
-        assert!(failure.diagnostic().contains("exact deadline capability"));
+        assert!(failure.diagnostic().contains("exact deadline"));
+        assert!(failure.diagnostic().contains("synchronous idle-advance"));
         assert_eq!(
             sequence.record_step(PluginRegistrationStep::SendSetupAck),
             Err(PluginRegistrationSequenceError::AfterFailure {
@@ -501,15 +554,16 @@ mod tests {
         let mut sequence = PluginRegistrationSequence::new();
         record_steps_through_wake_fd(&mut sequence);
 
-        let reader = match sequence
-            .register_callbacks_with_exact_deadline(Some(registration_test_deadline))
-        {
-            Ok(reader) => reader,
+        let capabilities = match sequence.register_callbacks_with_exact_deadline(
+            Some(registration_test_deadline),
+            Some(registration_test_direct_advance),
+        ) {
+            Ok(capabilities) => capabilities,
             Err(error) => panic!("exact deadline capability should register callbacks: {error}"),
         };
 
         assert_eq!(
-            reader.read_next_deadline(),
+            capabilities.exact_deadline_reader().read_next_deadline(),
             Ok(crate::ExactDeadlineReport::Armed { deadline_ns: 777 })
         );
         assert_eq!(
@@ -532,7 +586,7 @@ mod tests {
         record_steps_through_wake_fd(&mut sequence);
 
         let error = sequence
-            .register_callbacks_with_exact_deadline(None)
+            .register_callbacks_with_exact_deadline(None, Some(registration_test_direct_advance))
             .err()
             .unwrap_or_else(|| panic!("missing exact deadline capability should fail"));
         let PluginRegistrationSequenceError::StepFailed { failure } = error else {
@@ -544,6 +598,34 @@ mod tests {
             failure
                 .diagnostic()
                 .contains(crate::QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL)
+        );
+        assert_eq!(
+            sequence.record_step(PluginRegistrationStep::SendSetupAck),
+            Err(PluginRegistrationSequenceError::AfterFailure {
+                failed_step: PluginRegistrationStep::RegisterCallbacks,
+                blocked_step: PluginRegistrationStep::SendSetupAck,
+            })
+        );
+    }
+
+    #[test]
+    fn registration_order_fails_loud_when_synchronous_idle_advance_missing() {
+        let mut sequence = PluginRegistrationSequence::new();
+        record_steps_through_wake_fd(&mut sequence);
+
+        let error = sequence
+            .register_callbacks_with_exact_deadline(Some(registration_test_deadline), None)
+            .err()
+            .unwrap_or_else(|| panic!("missing synchronous idle advance should fail"));
+        let PluginRegistrationSequenceError::StepFailed { failure } = error else {
+            panic!("expected registration step failure, got {error:?}");
+        };
+
+        assert_eq!(failure.step(), PluginRegistrationStep::RegisterCallbacks);
+        assert!(
+            failure
+                .diagnostic()
+                .contains(crate::QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL)
         );
         assert_eq!(
             sequence.record_step(PluginRegistrationStep::SendSetupAck),
@@ -571,9 +653,10 @@ mod tests {
 
     fn record_steps_through_setup_ack(sequence: &mut PluginRegistrationSequence) {
         record_steps_through_wake_fd(sequence);
-        if let Err(error) =
-            sequence.register_callbacks_with_exact_deadline(Some(registration_test_deadline))
-        {
+        if let Err(error) = sequence.register_callbacks_with_exact_deadline(
+            Some(registration_test_deadline),
+            Some(registration_test_direct_advance),
+        ) {
             panic!("exact deadline capability should register callbacks: {error}");
         }
         if let Err(error) = sequence.record_step(PluginRegistrationStep::SendSetupAck) {
@@ -596,4 +679,6 @@ mod tests {
     extern "C" fn registration_test_deadline() -> i64 {
         777
     }
+
+    extern "C" fn registration_test_direct_advance(_target_virtual_ns: i64) {}
 }

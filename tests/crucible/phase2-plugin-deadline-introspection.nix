@@ -143,7 +143,7 @@
       }
       {
         label = "install path missing symbol test";
-        needle = "abi_install_entrypoint_fails_closed_without_exact_deadline_symbol";
+        needle = "abi_install_entrypoint_fails_closed_without_exact_deadline_or_direct_advance_symbols";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [

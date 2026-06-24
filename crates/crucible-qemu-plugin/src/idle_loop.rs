@@ -15,7 +15,8 @@ use crucible_shmem::{
 
 use crate::{
     ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport, PluginClockAdvance,
-    PluginClockError, PluginVirtualClock, SchedulerCeiling,
+    PluginClockError, PluginVirtualClock, SchedulerCeiling, SynchronousIdleAdvance,
+    SynchronousIdleAdvanceError, SynchronousIdleDrain,
 };
 
 /// The source that determined the node's next idle wake.
@@ -119,6 +120,7 @@ pub enum IdleWaitOutcome {
 pub struct IdleHotLoopResult {
     wake_plan: IdleWakePlan,
     advance: PluginClockAdvance,
+    synchronous_drain: SynchronousIdleDrain,
     injected_frames: Vec<FrameEntry>,
 }
 
@@ -133,6 +135,12 @@ impl IdleHotLoopResult {
     #[must_use]
     pub const fn advance(&self) -> PluginClockAdvance {
         self.advance
+    }
+
+    /// Returns the synchronous QEMU timer/BH drain performed for the idle jump.
+    #[must_use]
+    pub const fn synchronous_drain(&self) -> SynchronousIdleDrain {
+        self.synchronous_drain
     }
 
     /// Returns due inbound frames in deterministic injection order.
@@ -274,6 +282,7 @@ impl PluginIdleHotLoop {
     pub fn complete_after_scheduler_wake(
         slot: &NodeSlot,
         clock: &mut PluginVirtualClock,
+        synchronous_idle_advance: &SynchronousIdleAdvance,
         request: IdleParkRequest,
         candidate_frames: impl IntoIterator<Item = FrameEntry>,
     ) -> Result<IdleHotLoopResult, IdleHotLoopError> {
@@ -291,6 +300,12 @@ impl PluginIdleHotLoop {
                 SchedulerCeiling::new(ceiling_icount),
             )
             .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
+        let target_virtual_ns = authorization
+            .target_virtual_ns(clock.icount_shift())
+            .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
+        let synchronous_drain = synchronous_idle_advance
+            .advance_and_drain(target_virtual_ns)
+            .map_err(|source| IdleHotLoopError::SynchronousIdleAdvance { source })?;
         let advance = clock
             .advance_authorized_idle_jump(authorization)
             .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
@@ -307,6 +322,7 @@ impl PluginIdleHotLoop {
         Ok(IdleHotLoopResult {
             wake_plan: request.plan,
             advance,
+            synchronous_drain,
             injected_frames,
         })
     }
@@ -479,11 +495,19 @@ pub enum IdleHotLoopError {
         /// The plugin clock error.
         source: PluginClockError,
     },
+    /// Synchronously advancing QEMU virtual time or draining timer/BH work failed.
+    #[error("synchronous idle advance failed: {source}")]
+    SynchronousIdleAdvance {
+        /// The synchronous direct-advance error.
+        source: SynchronousIdleAdvanceError,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::atomic::{AtomicI64, Ordering};
 
     use crucible_shmem::{
         AdvanceCeiling, KIND_VM, RegionConfig, RegionHeader, RegionLayout, STATUS_DONE,
@@ -494,6 +518,8 @@ mod tests {
         CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, PluginRegistrationSequence,
         PluginTimeControlOwnership,
     };
+
+    static LAST_DIRECT_ADVANCE_NS: AtomicI64 = AtomicI64::new(-1);
 
     #[test]
     fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {
@@ -632,9 +658,12 @@ mod tests {
 
         publish_ceiling(&slot, ceiling(10, 20));
         let mut clock = clock;
+        LAST_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        let synchronous_idle_advance = synchronous_idle_advance();
         let result = match PluginIdleHotLoop::complete_after_scheduler_wake(
             &slot,
             &mut clock,
+            &synchronous_idle_advance,
             request,
             [
                 frame(20, 9, 4, b"late-by-key"),
@@ -650,6 +679,9 @@ mod tests {
         assert_eq!(result.advance().from_icount(), 10);
         assert_eq!(result.advance().to_icount(), 20);
         assert_eq!(result.advance().virtual_ns(), 40);
+        assert_eq!(result.synchronous_drain().target_virtual_ns(), 40);
+        assert!(result.synchronous_drain().drained_bottom_halves());
+        assert_eq!(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), 40);
         assert_eq!(clock.current_icount(), 20);
         assert_eq!(
             result
@@ -684,12 +716,57 @@ mod tests {
         let mut clock = clock;
 
         assert_eq!(
-            PluginIdleHotLoop::complete_after_scheduler_wake(&slot, &mut clock, request, []),
+            PluginIdleHotLoop::complete_after_scheduler_wake(
+                &slot,
+                &mut clock,
+                &synchronous_idle_advance(),
+                request,
+                []
+            ),
             Err(IdleHotLoopError::WakeNotAuthorized {
                 desired_wake_icount: 20,
                 ceiling_icount: 10,
             })
         );
+    }
+
+    #[test]
+    fn idle_loop_direct_advance_range_failure_leaves_clock_and_slot_unchanged() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut clock = owned_clock(0, crate::MAX_PLUGIN_ICOUNT_SHIFT);
+        publish_ceiling(&slot, ceiling(0, 1));
+        let before = slot.snapshot();
+        LAST_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        let request = IdleParkRequest {
+            plan: IdleWakePlan {
+                current_icount: 0,
+                desired_wake_icount: 1,
+                ceiling_icount: 1,
+                timer_deadline_icount: Some(1),
+                inbound_delivery_icount: None,
+                cause: IdleWakeCause::TimerDeadline,
+            },
+            futex_wait: FutexWait::Runnable,
+        };
+
+        assert_eq!(
+            PluginIdleHotLoop::complete_after_scheduler_wake(
+                &slot,
+                &mut clock,
+                &synchronous_idle_advance(),
+                request,
+                [frame(1, 1, 1, b"would-be-due")]
+            ),
+            Err(IdleHotLoopError::SynchronousIdleAdvance {
+                source: SynchronousIdleAdvanceError::VirtualTimeOutOfRange {
+                    target_virtual_ns: i64::MAX as u64 + 1,
+                },
+            })
+        );
+
+        assert_eq!(clock.current_icount(), 0);
+        assert_eq!(slot.snapshot(), before);
+        assert_eq!(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), -1);
     }
 
     #[test]
@@ -739,6 +816,13 @@ mod tests {
         }
     }
 
+    fn synchronous_idle_advance() -> SynchronousIdleAdvance {
+        match SynchronousIdleAdvance::require(Some(test_direct_advance)) {
+            Ok(advance) => advance,
+            Err(error) => panic!("test direct advance should require symbol: {error}"),
+        }
+    }
+
     extern "C" fn deadline_10() -> i64 {
         10
     }
@@ -751,6 +835,10 @@ mod tests {
         40
     }
 
+    extern "C" fn test_direct_advance(target_virtual_ns: i64) {
+        LAST_DIRECT_ADVANCE_NS.store(target_virtual_ns, Ordering::SeqCst);
+    }
+
     fn ownership() -> PluginTimeControlOwnership {
         PluginTimeControlOwnership::acquired_after_registration(registration_ready())
     }
@@ -760,8 +848,11 @@ mod tests {
         for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
             let result = if step == crate::PluginRegistrationStep::RegisterCallbacks {
                 sequence
-                    .register_callbacks_with_exact_deadline(Some(idle_loop_test_deadline))
-                    .map(|_reader| ())
+                    .register_callbacks_with_exact_deadline(
+                        Some(idle_loop_test_deadline),
+                        Some(idle_loop_test_direct_advance),
+                    )
+                    .map(|_capabilities| ())
             } else {
                 sequence.record_step(step)
             };
@@ -778,6 +869,8 @@ mod tests {
     extern "C" fn idle_loop_test_deadline() -> i64 {
         1
     }
+
+    extern "C" fn idle_loop_test_direct_advance(_target_virtual_ns: i64) {}
 
     fn ceiling(current_icount: u64, max_advance_icount: u64) -> AdvanceCeiling {
         match authorize_advance_ceiling(current_icount, max_advance_icount, None) {
