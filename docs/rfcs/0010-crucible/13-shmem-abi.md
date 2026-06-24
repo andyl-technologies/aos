@@ -917,7 +917,7 @@ by when the producer's store landed in shared memory.
 - [ ] **T-SHM-14** Wire `gate:abi-conformance`: generated-header diff +
   bilateral static asserts + golden-vector round-trip. — satisfies [SHM-30],
   [SHM-31], [SHM-32]; spec §13.8.
-- [ ] **T-SHM-15** Add property-based and `loom`-style SPSC concurrency tests
+- [x] **T-SHM-15** Add property-based and `loom`-style SPSC concurrency tests
   (no loss/dup/tear/early-read) feeding `gate:abi-conformance`. — satisfies
   [SHM-23]; spec §13.6, forward-ref §24.
 - [ ] **T-SHM-16** Represent a multi-vCPU node with a single `NodeSlot` carrying
