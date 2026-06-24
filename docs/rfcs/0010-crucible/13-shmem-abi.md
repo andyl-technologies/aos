@@ -877,7 +877,7 @@ by when the producer's store landed in shared memory.
 - [x] **T-SHM-2** Add Rust `const _: () = assert!(size_of/align_of/offset_of...)`
   for every shared struct and field per §13.4. — satisfies [SHM-5], [SHM-14];
   spec §13.4.
-- [ ] **T-SHM-3** Generate `crucible_shmem_abi.h` mechanically from the Rust
+- [x] **T-SHM-3** Generate `crucible_shmem_abi.h` mechanically from the Rust
   definitions, with `_Static_assert` on every size and offset, and a build step
   that fails if the committed header differs from the regenerated one. —
   satisfies [SHM-3], [SHM-4], [SHM-5]; spec §13.2.

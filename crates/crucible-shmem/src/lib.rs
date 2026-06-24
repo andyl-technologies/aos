@@ -59,7 +59,11 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod abi_header;
+
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+
+pub use abi_header::generated_c_header;
 
 use thiserror::Error;
 
