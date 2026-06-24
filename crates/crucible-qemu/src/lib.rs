@@ -15,7 +15,8 @@
 //! owns the sim-off/sim-on QEMU control-plane inertness assertion;
 //! `crash_detection` owns typed crashed-node status classification; `node` owns
 //! the scheduler-facing one-child/three-channel QEMU wrapper; `qmp` owns the
-//! minimal typed QMP client; and `savevm_policy` owns the conservative
+//! minimal typed QMP client; `realization` owns the start/resume/fork
+//! instantiate branch coordinator; and `savevm_policy` owns the conservative
 //! thin-replay fallback for incomplete QEMU `savevm`/`loadvm` coverage.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
@@ -31,6 +32,7 @@ mod inertness;
 mod launch;
 mod node;
 mod qmp;
+mod realization;
 mod savevm_policy;
 mod setup_failure;
 mod shutdown;
@@ -68,6 +70,12 @@ pub use qmp::{
     QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
     QMP_SNAPSHOT_VMSTATE_DEVICE, QmpClient, QmpCommandComplete, QmpCommandKind, QmpError,
     QmpGreeting, QmpJobPollPolicy, QmpSnapshotTag,
+};
+pub use realization::{
+    QemuBakedGenesisSnapshot, QemuCachedAncestor, QemuVmBakeExecutor, QemuVmLoadvmAdmissionPolicy,
+    QemuVmRealization, QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmRealizationKind,
+    QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot,
+    bake_qemu_genesis_vm, fork_qemu_vm, instantiate_qemu_vm, resume_qemu_vm, start_qemu_vm,
 };
 pub use savevm_policy::{
     QEMU_SAVEVM_FALLBACK_MARKER, QEMU_SAVEVM_PHASE0_S3_CHECK, QemuLoadvmCommandAuthorization,

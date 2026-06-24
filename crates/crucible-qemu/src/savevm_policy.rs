@@ -231,6 +231,15 @@ impl QemuLoadvmCommandAuthorization {
     pub const fn purpose(self) -> QemuLoadvmCommandPurpose {
         self.purpose
     }
+
+    /// Returns a runtime-realization authorization for crate-internal tests.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn runtime_realization_for_test() -> Self {
+        Self {
+            purpose: QemuLoadvmCommandPurpose::RuntimeRealization,
+        }
+    }
 }
 
 /// Replay-oracle evidence for a `loadvm`-realized runtime.
