@@ -326,6 +326,15 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             }),
         )
         .route(
+            "/-/org/{org}/bindings/{id}",
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                send_bridge(handlers::org_binding(from_state(s), h, r, p))
+            })
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::org_binding_action(from_state(s), h, r, p, f))
+            }),
+        )
+        .route(
             "/-/org/{org}/caches",
             get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, q: Query<_>| {
                 send_bridge(handlers::org_caches(from_state(s), h, r, p, q))

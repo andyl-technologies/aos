@@ -1624,7 +1624,19 @@ pub fn org_dashboard(
                 access = escape(&b.access),
             )
         };
-        vec![escape(&b.name), escape(&b.kind), location, action]
+        // The name links to the binding's serving page (public access +
+        // frontends) for those who can configure it (RFC-0004 §12).
+        let name_cell = if can_configure {
+            format!(
+                "<a href=\"/-/org/{org}/bindings/{id}\">{name}</a>",
+                org = escape(slug),
+                id = b.id,
+                name = escape(&b.name),
+            )
+        } else {
+            escape(&b.name)
+        };
+        vec![name_cell, escape(&b.kind), location, action]
     }));
     body.push_str(&table(&["name", "kind", "location", ""], &rows));
     if can_configure {

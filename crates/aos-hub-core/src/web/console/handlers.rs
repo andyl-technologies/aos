@@ -3289,6 +3289,149 @@ pub(crate) async fn org_create_binding(
     }
 }
 
+/// `GET /-/org/{org}/bindings/{id}` — a custom storage binding's serving page
+/// (public access + frontends), RFC-0004 §12.
+pub(crate) async fn org_binding(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, binding_id)): Path<(String, i64)>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::StorageManage).await {
+        return *deny;
+    }
+    org_binding_view(&deps, &session, &org_slug, binding_id, None, started).await
+}
+
+/// Render an org binding's serving page (or `404` when the binding is not the
+/// org's). Shared by the GET page and the POST action's re-render.
+async fn org_binding_view(
+    deps: &ConsoleDeps,
+    session: &Session,
+    org_slug: &str,
+    binding_id: i64,
+    notice: Option<&str>,
+    started: Instant,
+) -> Response {
+    let org = match deps.db.org_by_slug(org_slug).await {
+        Ok(Some(o)) => o,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => return internal(err),
+    };
+    let binding = match deps.db.storage_binding(binding_id).await {
+        Ok(Some(b)) if b.org_id == Some(org.id) => b,
+        Ok(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => return internal(err),
+    };
+    let frontends = match deps.db.list_storage_frontends(binding_id).await {
+        Ok(f) => f,
+        Err(err) => return internal(err),
+    };
+    Html(console::org_binding_page(
+        &session.email,
+        org_slug,
+        &binding,
+        &frontends,
+        &session.csrf(),
+        notice,
+        started,
+    ))
+    .into_response()
+}
+
+/// `POST /-/org/{org}/bindings/{id}` — manage a custom binding's public access
+/// and frontends (`op`: `set-public` / `add-frontend` / `delete-frontend`).
+pub(crate) async fn org_binding_action(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, binding_id)): Path<(String, i64)>,
+    Form(form): Form<std::collections::HashMap<String, String>>,
+) -> Response {
+    let field = |k: &str| form.get(k).map(String::as_str).unwrap_or("");
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, field("csrf")) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::StorageManage).await {
+        return *deny;
+    }
+    // The binding must belong to this org.
+    let org = match deps.db.org_by_slug(&org_slug).await {
+        Ok(Some(o)) => o,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => return internal(err),
+    };
+    match deps.db.storage_binding(binding_id).await {
+        Ok(Some(b)) if b.org_id == Some(org.id) => {}
+        Ok(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => return internal(err),
+    }
+    let outcome: Result<&str, String> = match field("op") {
+        "set-public" => {
+            let url = field("public_base_url").trim();
+            let url = (!url.is_empty()).then_some(url);
+            deps.db
+                .set_binding_public(binding_id, field("access"), url)
+                .await
+                .map(|_| "Public access saved.")
+                .map_err(|e| format!("{e:#}"))
+        }
+        "add-frontend" => {
+            let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
+            deps.db
+                .create_storage_frontend(
+                    binding_id,
+                    field("domain").trim(),
+                    field("base_path").trim(),
+                    if field("mode") == "proxied" {
+                        "proxied"
+                    } else {
+                        "direct"
+                    },
+                    field("serves_git") == "1",
+                    field("serves_cache") == "1",
+                    field("serves_web") == "1",
+                    priority,
+                    field("advertised") == "1",
+                )
+                .await
+                .map(|_| "Frontend added.")
+                .map_err(|e| format!("{e:#}"))
+        }
+        "delete-frontend" => {
+            let Ok(id) = field("id").parse::<i64>() else {
+                return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
+            };
+            match deps.db.list_storage_frontends(binding_id).await {
+                Ok(list) if list.iter().any(|f| f.id == id) => {}
+                Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
+                Err(err) => return internal(err),
+            }
+            deps.db
+                .delete_frontend(id)
+                .await
+                .map(|_| "Frontend deleted.")
+                .map_err(|e| format!("{e:#}"))
+        }
+        _ => return (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
+    };
+    let notice = match outcome {
+        Ok(n) => n,
+        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+    };
+    org_binding_view(&deps, &session, &org_slug, binding_id, Some(notice), started).await
+}
+
 /// `GET /-/org/{org}/registries/new` — the create-registry form.
 pub(crate) async fn org_new_registry_form(
     deps: ConsoleDeps,
