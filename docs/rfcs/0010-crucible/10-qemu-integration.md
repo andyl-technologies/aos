@@ -801,11 +801,22 @@ determinism contract (04).
   disabled, and requires replay-oracle validation before any future `loadvm`
   runtime can be accepted. The full S3 pass remains open with
   `full_fat_checkpoint_complete=false`.
-- [ ] **T-QEMU-6** Implement the VM `instantiate` realization with three branches
+- [x] **T-QEMU-6** Implement the VM `instantiate` realization with three branches
   (loadvm / ancestor-replay / baked-genesis load) plus `bake`'s single cold boot
   to the ready point; wire `start`/`resume`/`fork` as the same call differing
   only in the configuration. — satisfies [QEMU-23], [QEMU-24], [QEMU-25],
   [QEMU-26], [QEMU-27]; spec §10.5.
+  Completed as the `crucible-qemu` QEMU VM realization coordinator: it exposes
+  `instantiate_qemu_vm` plus `start`, `resume`, and `fork` wrappers that all
+  delegate to the same instantiate path, selects exact-snapshot `loadvm`,
+  nearest-ancestor replay, or baked-genesis load in priority order, keeps runtime
+  `loadvm` gated by replay-oracle admission through the savevm-completeness
+  policy, validates checkpoint/configuration and baked-World identity, rejects
+  invalid ancestors and tip-as-fork requests, dispatches replay one recorded
+  decision at a time to the quantum executor, and exposes `bake_qemu_genesis_vm`
+  as the only cold-boot-to-ready-point entry. The concrete shmem/QEMU quantum
+  machinery remains tracked by [T-QEMU-12] and frame/device replay details remain
+  tracked by [T-QEMU-13].
 - [x] **T-QEMU-7** Implement spawn with fd passing (control socket pair + shmem
   memfd + wake eventfd at fixed fd numbers, dup'd for the child) and die-with-host
   on every exit path (`kill_on_drop` + `PR_SET_PDEATHSIG=SIGKILL`). — satisfies
