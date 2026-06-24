@@ -434,8 +434,10 @@ impl TreeWalk {
         };
 
         let initial_span = self.node(initial_id)?.span;
-        let mut accumulator = self.eval_node(initial_id)?;
-        accumulator = self.force_value(initial_id, initial_span, accumulator)?;
+        let mut accumulator = self.alloc_thunk_for_node(initial_id, initial_id, initial_span)?;
+        if elements.is_empty() {
+            return self.eval_lazy_identity_value(initial_id, initial_span, accumulator);
+        }
         for element in elements {
             let step =
                 self.apply_lambda_value(id, span, op_id, op, op_span, initial_id, accumulator)?;

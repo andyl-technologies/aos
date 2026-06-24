@@ -382,10 +382,11 @@ Forcing order is observable and must match (see
       preserved. `f` forced per element.
 - [x] `map` (f list) — list of `f elem` thunks; lazy in elements, strict in the
       argument list's spine.
-- [x] `foldl'` (op nul list) — **strict** left fold: forces the accumulator at
-      every step (its whole reason to exist over the non-strict `foldl`, which
-      is *not* a builtin — `lib.foldr`/`foldl` are Nix-level). The worker/wrapper
-      optimization keys off this strictness (see
+- [x] `foldl'` (op nul list) — **strict** left fold: forces every operator
+      result before the next step, but does not force `nul` unconditionally
+      before the first step (its whole reason to exist over the non-strict
+      `foldl`, which is *not* a builtin — `lib.foldr`/`foldl` are Nix-level).
+      The worker/wrapper optimization keys off this strictness (see
       [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md)).
 - [x] `genList` (generator length) — `[ (generator 0) … (generator (length-1)) ]`,
       elements as thunks. Negative length throws.

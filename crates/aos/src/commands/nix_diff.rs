@@ -162,7 +162,6 @@ const LANG_CASE_EXCLUSION_NAMES: &[&str] = &[
     "eval-okay-attrs6",
     "eval-okay-curpos",
     "eval-okay-eq-derivations",
-    "eval-okay-foldlStrict-lazy-initial-accumulator",
     "eval-okay-getattrpos",
     "eval-okay-getattrpos-functionargs",
     "eval-okay-inherit-attr-pos",

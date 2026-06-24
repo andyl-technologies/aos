@@ -449,10 +449,28 @@ fn foldl_strict_primop_folds_left_and_forces_accumulator() {
     let outcome = eval_whnf_owned(&lower("builtins.foldl' (acc: x: { a = 1 / 0; }) 0 [ 1 ]"))
         .expect("foldl' forces accumulator to WHNF only");
     assert_eq!(outcome.value().tag(), ValueTag::Attrs);
+
+    assert_eq!(
+        eval(
+            "builtins.foldl' (_: x: x) (throw \"initial is lazy\") \
+             [ \"but operator results are forced\" 42 ]"
+        )
+        .as_int(),
+        Ok(42)
+    );
+    assert_eq!(
+        eval(
+            "let f = builtins.foldl'; in \
+             f (_: x: x) (throw \"initial is lazy\") \
+             [ \"but operator results are forced\" 42 ]"
+        )
+        .as_int(),
+        Ok(42)
+    );
 }
 
 #[test]
-fn foldl_strict_primop_checks_operator_then_list_then_initial() {
+fn foldl_strict_primop_checks_operator_then_list_without_forcing_initial() {
     let ir = lower("builtins.foldl' (1 / 0) 0 []");
     let root = ir.arena.node(ir.root).expect("root exists");
     let IrData::PrimOp { args, .. } = root.data else {
@@ -509,26 +527,13 @@ fn foldl_strict_primop_checks_operator_then_list_then_initial() {
     );
     assert_eq!(error.span(), list_span);
 
-    let ir = lower("builtins.foldl' (acc: x: acc) (1 / 0) []");
-    let root = ir.arena.node(ir.root).expect("root exists");
-    let IrData::PrimOp { args, .. } = root.data else {
-        panic!("root is a primop");
-    };
-    let args = ir.arena.child_slice(args).expect("primop args exist");
-    let initial = args[1];
-    let initial_span = ir
-        .arena
-        .node(initial)
-        .expect("initial argument exists")
-        .span;
-
-    let error = eval_whnf(&ir).expect_err("foldl' forces initial value after list");
-
+    let outcome = eval_whnf_owned(&lower("builtins.foldl' (acc: x: acc) (1 / 0) []"))
+        .expect("foldl' returns an empty-list initial accumulator lazily");
+    assert_eq!(outcome.value().tag(), ValueTag::Thunk);
     assert_eq!(
-        error.kind(),
-        TreeWalkErrorKind::DivisionByZero { id: initial }
+        eval("builtins.add (builtins.foldl' (acc: x: acc) (1 + 2) []) 1").as_int(),
+        Ok(4)
     );
-    assert_eq!(error.span(), initial_span);
 
     let error = eval_whnf_owned(&lower("let f = builtins.foldl'; in f (1 / 0) 0 []"))
         .expect_err("first-class foldl' forces operator first");
@@ -564,15 +569,15 @@ fn foldl_strict_primop_checks_operator_then_list_then_initial() {
         }
     ));
 
-    let error = eval_whnf_owned(&lower(
+    let outcome = eval_whnf_owned(&lower(
         "let f = builtins.foldl'; in f (acc: x: acc) (1 / 0) []",
     ))
-    .expect_err("first-class foldl' forces initial after list");
-
-    assert!(matches!(
-        error.kind(),
-        TreeWalkErrorKind::DivisionByZero { .. }
-    ));
+    .expect("first-class foldl' returns an empty-list initial accumulator lazily");
+    assert_eq!(outcome.value().tag(), ValueTag::Thunk);
+    assert_eq!(
+        eval("let f = builtins.foldl'; in builtins.add (f (acc: x: acc) (1 + 2) []) 1").as_int(),
+        Ok(4)
+    );
 }
 
 #[test]

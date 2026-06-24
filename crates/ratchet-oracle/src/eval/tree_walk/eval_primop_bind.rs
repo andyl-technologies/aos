@@ -76,8 +76,14 @@ impl TreeWalk {
             Self::clone_list_elements(list_arg.id(), list_arg.span(), list)?
         };
 
-        let mut accumulator =
-            self.force_value(initial_arg.id(), initial_arg.span(), initial_arg.value())?;
+        let mut accumulator = initial_arg.value();
+        if elements.is_empty() {
+            return self.eval_lazy_identity_value(
+                initial_arg.id(),
+                initial_arg.span(),
+                accumulator,
+            );
+        }
         for element in elements {
             let step = self.apply_lambda_value(
                 id,
