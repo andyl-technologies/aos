@@ -20,7 +20,8 @@
 //! receive injection through QEMU's lossless queue; `network_tx` owns guest
 //! network transmit interception and outbound ring enqueueing; `registration` owns
 //! the fail-stop registration sequencer; `setup` owns descriptor mapping and setup
-//! acknowledgement; `time_control` owns clock ownership, authorized virtual-time
+//! acknowledgement; `teardown` owns shutdown trigger proofs and post-trigger
+//! shmem sealing; `time_control` owns clock ownership, authorized virtual-time
 //! advancement, and the time-control ordering contract; `block_io` owns guest
 //! block submit/poll request routing through the reserved block executor;
 //! `ninep_io` owns raw 9p submit/poll/burst routing through the reserved 9p
@@ -53,6 +54,7 @@ pub mod network_tx;
 pub mod ninep_io;
 pub mod registration;
 pub mod setup;
+pub mod teardown;
 pub mod time_control;
 pub mod whitebox_doorbell;
 
@@ -132,6 +134,11 @@ pub use setup::{
     ArmedWakeFd, PluginSetupCompletion, PluginSetupError, PluginSetupFailureStage, WakeFdArmError,
     prepare_setup_completion, receive_and_prepare_setup_completion, receive_setup_with_descriptors,
     send_ready_setup_ack,
+};
+pub use teardown::{
+    PluginHostQuit, PluginQemuShutdown, PluginQemuShutdownError, PluginShmemAccess,
+    PluginShutdownRequested, PluginTeardown, PluginTeardownComplete, PluginTeardownError,
+    PluginTeardownTrigger,
 };
 pub use time_control::{
     CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, MAX_PLUGIN_ICOUNT_SHIFT, PluginClockAdvance,
