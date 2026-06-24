@@ -945,7 +945,7 @@ pub(crate) async fn logout(deps: ConsoleDeps, headers: HeaderMap) -> Response {
 
 // -- account ----------------------------------------------------------------
 
-/// `GET /account` — the profile page (email, sessions, tokens, passkeys).
+/// `GET /-/account` — the profile page (email, sessions, tokens, passkeys).
 pub(crate) async fn account(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -974,7 +974,7 @@ pub(crate) async fn account(
     .into_response()
 }
 
-/// `POST /account/password` body: the CSRF token and the new password.
+/// `POST /-/account/password` body: the CSRF token and the new password.
 #[derive(serde::Deserialize)]
 pub(crate) struct SetPasswordForm {
     #[serde(default)]
@@ -982,7 +982,7 @@ pub(crate) struct SetPasswordForm {
     password: String,
 }
 
-/// `POST /account/password` — set or change the logged-in user's password.
+/// `POST /-/account/password` — set or change the logged-in user's password.
 ///
 /// Session-authed, CSRF-protected, and **sudo-gated**. A member of an
 /// SSO-enforced org is refused (a local password would bypass IdP
@@ -1075,10 +1075,10 @@ pub(crate) async fn account_set_password(
         Ok(secret) => set_cookie_header(&secret, lifetime),
         Err(err) => return internal(err),
     };
-    ([(header::SET_COOKIE, cookie)], Redirect::to("/account")).into_response()
+    ([(header::SET_COOKIE, cookie)], Redirect::to("/-/account")).into_response()
 }
 
-/// `POST /account/sessions/revoke-all` — sign out of every browser.
+/// `POST /-/account/sessions/revoke-all` — sign out of every browser.
 pub(crate) async fn account_revoke_all_sessions(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -1100,7 +1100,7 @@ pub(crate) async fn account_revoke_all_sessions(
 
 // -- passkeys / WebAuthn ----------------------------------------------------
 
-/// `GET /account/passkeys` — list the user's passkeys and offer to add one.
+/// `GET /-/account/passkeys` — list the user's passkeys and offer to add one.
 pub(crate) async fn passkeys(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -1119,7 +1119,7 @@ pub(crate) async fn passkeys(
     passkey_html_response(html, &nonce)
 }
 
-/// A `POST /account/passkeys/remove` body: a CSRF token and the passkey id.
+/// A `POST /-/account/passkeys/remove` body: a CSRF token and the passkey id.
 #[derive(serde::Deserialize)]
 pub(crate) struct PasskeyRemoveForm {
     #[serde(default)]
@@ -1127,7 +1127,7 @@ pub(crate) struct PasskeyRemoveForm {
     id: i64,
 }
 
-/// `POST /account/passkeys/remove` — delete one of the signed-in user's
+/// `POST /-/account/passkeys/remove` — delete one of the signed-in user's
 /// passkeys, then return to the passkeys page.
 ///
 /// Scoped to the session user, so a request can only remove the caller's own
@@ -1150,7 +1150,7 @@ pub(crate) async fn passkeys_remove(
         .delete_webauthn_credential(session.auth.user_id, form.id)
         .await
     {
-        Ok(_) => Redirect::to("/account/passkeys").into_response(),
+        Ok(_) => Redirect::to("/-/account/passkeys").into_response(),
         Err(err) => internal(err),
     }
 }
@@ -1168,7 +1168,7 @@ pub(crate) struct PasskeyBeginForm {
     csrf: String,
 }
 
-/// `POST /account/passkeys/begin` — stage a registration challenge (JSON).
+/// `POST /-/account/passkeys/begin` — stage a registration challenge (JSON).
 pub(crate) async fn passkeys_begin(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -1213,7 +1213,7 @@ pub(crate) struct PasskeyFinishBody {
     attestation_object: String,
 }
 
-/// `POST /account/passkeys/finish` — verify + persist the new credential.
+/// `POST /-/account/passkeys/finish` — verify + persist the new credential.
 pub(crate) async fn passkeys_finish(
     deps: ConsoleDeps,
     headers: HeaderMap,

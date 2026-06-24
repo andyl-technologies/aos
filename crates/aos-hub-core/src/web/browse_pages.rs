@@ -468,7 +468,25 @@ pub fn registry_home(
         "<p class=\"dim\">AOS module:</p>\n<pre>{}</pre>\n",
         escape(&stanza),
     );
-    let mut plain = format!("substituters = {url}/");
+    // `substituters` are the registry's advertised *binary caches*, not the
+    // registry URL: the registry serves the index/git surface, while nar/narinfo
+    // — the heavy traffic — come from the caches, which front their own
+    // CDN/frontend domains (the advertised URLs already resolve to a cache's
+    // frontend where one is configured), keeping substitution off the registry's
+    // critical path. Highest priority (lowest number) first. A registry that
+    // advertises no cache falls back to serving as its own cache.
+    let substituters = if caches.is_empty() {
+        format!("{url}/")
+    } else {
+        let mut ordered: Vec<&(String, u32)> = caches.iter().collect();
+        ordered.sort_by_key(|(_, priority)| *priority);
+        ordered
+            .iter()
+            .map(|(u, _)| u.trim_end_matches('/'))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut plain = format!("substituters = {substituters}");
     if !registry.trust_keys.is_empty() {
         let _ = write!(
             plain,
@@ -478,7 +496,7 @@ pub fn registry_home(
     }
     let _ = write!(
         body,
-        "<p class=\"dim\">plain Nix:</p>\n<pre>{}</pre>\n",
+        "<p class=\"dim\">plain Nix (substitute from the advertised cache):</p>\n<pre>{}</pre>\n",
         escape(&plain),
     );
 
@@ -2258,7 +2276,10 @@ mod tests {
         assert!(html.contains("SHA256:"));
         assert!(html.contains("aos.apm.registries.demo"));
         assert!(html.contains("trustKeys"));
-        assert!(html.contains("substituters = http://127.0.0.1:8420/demo/"));
+        // substituters point at the advertised binary cache (its own frontend),
+        // not the registry URL — the registry serves the index, the cache serves
+        // nar/narinfo.
+        assert!(html.contains("substituters = https://cache.example"));
         assert!(html.contains("trusted-public-keys = demo:Ed25519:AAAA"));
         // Unvalidated caches say so; the health page is linked.
         assert!(html.contains("not yet validated"));

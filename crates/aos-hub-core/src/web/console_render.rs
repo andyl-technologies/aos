@@ -293,7 +293,7 @@ impl SessionIndicator {
                 "<span class=\"session\">\
                  <a href=\"/\">registries</a> · \
                  <a href=\"/-/orgs\">organizations</a> · \
-                 <a href=\"/account\">account</a> · \
+                 <a href=\"/-/account\">account</a> · \
                  <span class=\"who\">{}</span> · \
                  <a href=\"/logout\">log out</a></span>",
                 escape(email),
@@ -906,9 +906,9 @@ fn passkey_login_script(nonce: &str) -> String {
 /// (`navigator.credentials.create`), nonced for the page's CSP.
 ///
 /// The script reads the CSRF token from the page, POSTs
-/// `/account/passkeys/begin` for the options, runs the WebAuthn `create`
+/// `/-/account/passkeys/begin` for the options, runs the WebAuthn `create`
 /// ceremony, base64url-encodes the response, and POSTs it to
-/// `/account/passkeys/finish`; on success it reloads to show the new passkey.
+/// `/-/account/passkeys/finish`; on success it reloads to show the new passkey.
 fn passkey_register_script(nonce: &str) -> String {
     format!(
         "<script nonce=\"{nonce}\">\n{}\n</script>\n",
@@ -945,7 +945,7 @@ document.getElementById('passkey-add').addEventListener('click', async function(
   var csrf=document.getElementById('passkey-csrf').value;
   var label=document.getElementById('passkey-label').value;
   try{
-    var opts=await (await fetch('/account/passkeys/begin',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'csrf='+encodeURIComponent(csrf)})).json();
+    var opts=await (await fetch('/-/account/passkeys/begin',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'csrf='+encodeURIComponent(csrf)})).json();
     var ex=(opts.exclude_credentials||[]).map(function(id){return {type:'public-key',id:b64uToBuf(id)};});
     var cred=await navigator.credentials.create({publicKey:{
       challenge:b64uToBuf(opts.challenge),
@@ -958,7 +958,7 @@ document.getElementById('passkey-add').addEventListener('click', async function(
       timeout:60000
     }});
     var body={csrf:csrf,label:label,client_data_json:bufToB64u(cred.response.clientDataJSON),attestation_object:bufToB64u(cred.response.attestationObject)};
-    var r=await fetch('/account/passkeys/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    var r=await fetch('/-/account/passkeys/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(r.ok){window.location.reload();}else{err.textContent='Could not register the passkey.';}
   }catch(e){err.textContent='Passkey registration was cancelled or failed.';}
 });
@@ -998,7 +998,7 @@ pub fn passkeys_page(
                 let last = c.last_used_at.map_or_else(|| "never".to_string(), ago);
                 let remove = format!(
                     "<form class=\"console\" method=\"post\" \
-                     action=\"/account/passkeys/remove\" style=\"display:inline\">{csrf}\
+                     action=\"/-/account/passkeys/remove\" style=\"display:inline\">{csrf}\
                      <input type=\"hidden\" name=\"id\" value=\"{id}\">\
                      <button class=\"danger\">remove</button></form>",
                     csrf = csrf_field(csrf),
@@ -1059,7 +1059,7 @@ pub fn account_page(
     }
 
     // Password: set one, or change an existing one. The CSRF-protected form
-    // posts the new password to /account/password for the logged-in user.
+    // posts the new password to /-/account/password for the logged-in user.
     body.push_str("<h2>Password</h2>\n");
     if password_set {
         body.push_str(
@@ -1072,7 +1072,7 @@ pub fn account_page(
              your email and password.</p>\n",
         );
     }
-    body.push_str("<form class=\"console\" method=\"post\" action=\"/account/password\">\n");
+    body.push_str("<form class=\"console\" method=\"post\" action=\"/-/account/password\">\n");
     body.push_str(&csrf_field(csrf));
     let _ = write!(
         body,
@@ -1088,7 +1088,7 @@ pub fn account_page(
     body.push_str("<h2>Sessions</h2>\n");
     body.push_str(
         "<p class=\"dim\">Sign out of every browser, including this one.</p>\n\
-         <form class=\"console\" method=\"post\" action=\"/account/sessions/revoke-all\">\n",
+         <form class=\"console\" method=\"post\" action=\"/-/account/sessions/revoke-all\">\n",
     );
     body.push_str(&csrf_field(csrf));
     body.push_str("<button>sign out everywhere</button>\n</form>\n");
@@ -1123,7 +1123,7 @@ pub fn account_page(
     body.push_str(
         "<h2>Passkeys</h2>\n\
          <p class=\"dim\">Sign in with your device instead of an email link. \
-         <a href=\"/account/passkeys\">Manage passkeys →</a></p>\n",
+         <a href=\"/-/account/passkeys\">Manage passkeys →</a></p>\n",
     );
 
     page_with_session(

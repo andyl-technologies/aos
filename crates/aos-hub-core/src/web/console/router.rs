@@ -170,13 +170,13 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             }),
         )
         .route(
-            "/account",
+            "/-/account",
             get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart| {
                 send_bridge(handlers::account(from_state(s), h, r))
             }),
         )
         .route(
-            "/account/password",
+            "/-/account/password",
             post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, f: axum::extract::Form<_>| {
                 send_bridge(handlers::account_set_password(from_state(s), h, r, f))
             }),
@@ -188,31 +188,31 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             }),
         )
         .route(
-            "/account/sessions/revoke-all",
+            "/-/account/sessions/revoke-all",
             post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
                 send_bridge(handlers::account_revoke_all_sessions(from_state(s), h, f))
             }),
         )
         .route(
-            "/account/passkeys",
+            "/-/account/passkeys",
             get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart| {
                 send_bridge(handlers::passkeys(from_state(s), h, r))
             }),
         )
         .route(
-            "/account/passkeys/remove",
+            "/-/account/passkeys/remove",
             post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
                 send_bridge(handlers::passkeys_remove(from_state(s), h, f))
             }),
         )
         .route(
-            "/account/passkeys/begin",
+            "/-/account/passkeys/begin",
             post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
                 send_bridge(handlers::passkeys_begin(from_state(s), h, f))
             }),
         )
         .route(
-            "/account/passkeys/finish",
+            "/-/account/passkeys/finish",
             post(|State(s): State<SharedState>, h: HeaderMap, j: axum::Json<_>| {
                 send_bridge(handlers::passkeys_finish(from_state(s), h, j))
             }),
