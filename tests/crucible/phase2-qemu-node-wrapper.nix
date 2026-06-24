@@ -13,7 +13,6 @@
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   nodeLib = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
-  nodeTest = builtins.readFile ../../crates/crucible-qemu/tests/node.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -125,6 +124,10 @@
       {
         label = "owned child stores std child";
         needle = "child: Child,";
+      }
+      {
+        label = "owned child constructor is crate-private";
+        needle = "pub(crate) const fn new(child: Child) -> Self";
       }
       {
         label = "three-channel bundle field";
@@ -257,11 +260,15 @@
         needle = "impl Clone for QemuNodeChild";
       }
       {
+        label = "public arbitrary child wrapper";
+        needle = "pub const fn new(child: Child) -> Self";
+      }
+      {
         label = "hot path trait can send QMP quit";
         needle = "QemuShmemHotPathChannel for" + " QemuQmpMachineControlChannel";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/node.rs" nodeTest [
+    ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeLib [
       {
         label = "one child three channel role test";
         needle = "qemu_node_owns_one_child_and_exactly_three_channel_roles";
@@ -375,7 +382,8 @@ in
               --target-dir "$TMPDIR/crucible-qemu-node-wrapper-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu \
-              --test node \
+              --lib \
+              node::tests \
               -- --test-threads=1
           '';
         }
@@ -395,7 +403,7 @@ in
             channels=plugin-ipc-control,shmem-hot-path,qmp-machine-control
             hot_path=shared-memory-only
             backend_interface=synchronous
-            spawn_fd_passing=deferred-to-T-QEMU-7
+            spawn_fd_passing=covered-by-T-QEMU-7
             per_quantum_flow=deferred-to-T-QEMU-12
             child_process_tool=coreutils-sleep
             RESULT

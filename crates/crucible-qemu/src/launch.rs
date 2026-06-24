@@ -41,6 +41,12 @@ const PLUGIN_ARG_COVERAGE: &str = "coverage";
 const FIXED_PLUGIN_SIM_FD: i32 = 3;
 const FIXED_PLUGIN_SHMEM_FD: i32 = 4;
 const FIXED_PLUGIN_WAKE_FD: i32 = 5;
+/// Fixed child descriptor number for the host/plugin control socket.
+pub const QEMU_PLUGIN_CONTROL_FD: i32 = FIXED_PLUGIN_SIM_FD;
+/// Fixed child descriptor number for the inherited shared-memory region.
+pub const QEMU_PLUGIN_SHMEM_FD: i32 = FIXED_PLUGIN_SHMEM_FD;
+/// Fixed child descriptor number for the inherited wake event descriptor.
+pub const QEMU_PLUGIN_WAKE_FD: i32 = FIXED_PLUGIN_WAKE_FD;
 const DEFAULT_ROOT_OVERLAY_FILE_NAME: &str = "crucible-root-overlay.qcow2";
 const ROOT_DRIVE_ID: &str = "crucible-root0";
 const ROOT_DEVICE_ID: &str = "crucible-root-device0";

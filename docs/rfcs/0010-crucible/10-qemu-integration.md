@@ -806,10 +806,19 @@ determinism contract (04).
   to the ready point; wire `start`/`resume`/`fork` as the same call differing
   only in the configuration. — satisfies [QEMU-23], [QEMU-24], [QEMU-25],
   [QEMU-26], [QEMU-27]; spec §10.5.
-- [ ] **T-QEMU-7** Implement spawn with fd passing (control socket pair + shmem
+- [x] **T-QEMU-7** Implement spawn with fd passing (control socket pair + shmem
   memfd + wake eventfd at fixed fd numbers, dup'd for the child) and die-with-host
   on every exit path (`kill_on_drop` + `PR_SET_PDEATHSIG=SIGKILL`). — satisfies
   [QEMU-28], [QEMU-29]; spec §10.6.
+  Completed as the Linux-only `crucible-qemu` spawn adapter: it consumes a
+  validated `QemuLaunchCommand`, creates the per-node plugin control
+  `socketpair`, shmem `memfd`, and wake `eventfd`, keeps host copies, duplicates
+  child copies, maps the child side to fd 3/4/5 in `pre_exec`, sets
+  `PR_SET_PDEATHSIG=SIGKILL`, verifies the parent did not change before `exec`,
+  and wraps the child in `QemuNodeChild`, whose drop path kills and reaps any
+  unreaped process. The protocol setup handshake remains tracked by [T-PROTO-3]
+  and setup-completion tasks; realization-level `start`/`resume`/`fork` assembly
+  remains tracked by [T-QEMU-6].
 - [x] **T-QEMU-8** Implement the graceful-shutdown escalation (Quit → QMP quit →
   SIGTERM → SIGKILL → reap) with bounded per-rung timeouts and an unconditional
   reap; add the no-leak test that induces each termination path and asserts zero

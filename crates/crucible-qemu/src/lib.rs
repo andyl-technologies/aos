@@ -35,6 +35,8 @@ mod savevm_policy;
 mod setup_failure;
 mod shutdown;
 mod single_vm_fingerprint;
+#[cfg(target_os = "linux")]
+mod spawn;
 
 pub use crash_detection::{
     QemuChannelFailure, QemuChildExitProbe, QemuChildStatusProbeError, QemuCrashCause,
@@ -50,8 +52,9 @@ pub use launch::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
     GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
     LaunchProfileCandidate, LaunchProfileError, MachineResetMode, NodeClockSkewDeclaration,
-    NodeIcountShift, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
-    QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    NodeIcountShift, QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD,
+    QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchCommandError,
+    QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
     QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig,
     validate_pre_spawn_qemu_launch_args,
 };
@@ -92,4 +95,8 @@ pub use single_vm_fingerprint::{
     SingleVmFingerprintSample, SingleVmFingerprintScenario, SingleVmFingerprintStream,
     SingleVmFingerprintTrigger, SingleVmHostProfile, compare_single_vm_fingerprint_streams,
     run_single_vm_fingerprint_gate,
+};
+#[cfg(target_os = "linux")]
+pub use spawn::{
+    QemuSpawnError, QemuSpawnHostResources, QemuSpawnedChild, spawn_qemu_child_with_fds,
 };
