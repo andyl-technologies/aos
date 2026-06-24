@@ -79,7 +79,7 @@ lever is the *technique stack*. Equally, we treat C++ Nix as the reference
 baseline **to beat**, not Haskell or any toy. C++ Nix is genuinely fast; its
 dominant cost is the Boehm conservative GC and the per-thunk allocation churn,
 both of which we attack head-on rather than assuming we win by default. See
-[motivation and goals](01-motivation-and-goals.md) for the measure-first gate
+[motivation and goals](01-motivation-and-goals.md) for the measure-first discipline
 that holds us to this.
 
 ---
@@ -587,7 +587,7 @@ This gate shapes the architecture in three concrete ways:
    (see [roadmap and risks](17-roadmap-and-risks.md)) mandates parser + scope +
    tree-walk oracle + harness *first*, because only the oracle proves parity is
    achievable on AOS constructs and yields the baseline eval-time number that
-   the measure-first gate demands. JIT speed is meaningless if parity is not
+   the measure-first characterization demands. JIT speed is meaningless if parity is not
    first demonstrated.
 2. **It makes L1 (the store backend) a firewall, not an optimization target.**
    We do *not* get to be clever about ATerm serialization, attr ordering, string
@@ -607,7 +607,7 @@ alongside the `.drv`-diff harness. See [differential testing and benchmarking](1
 
 ---
 
-## 6. Tier model of *adoption*: the ranked subset
+## 6. Tier model of *adoption*: the ranked build sequence
 
 Distinct from the *execution* tiers, the architecture is delivered in a ranked
 order chosen so that the biggest real-world wins land first and each phase is
@@ -623,8 +623,8 @@ are even attempted).
    2    bump-arena heap + precise generational GC    P3                kills Boehm tax
    3    strictness + escape analysis                 P1                deletes allocations; helps tier0 too
    4    hidden classes + PIC, then Cranelift tiering P2, P4            constant-factor on the residue
-   5    pointer tagging, full-laziness, region inf., (P1/P3/P4         measured follow-ups
-        parallel forcing, concurrent GC              + parallel)
+   5    pointer tagging, full-laziness, region inf., P1/P3/P4 +       advanced stack;
+        concurrent moving GC                         profiles          build variants
 ```
 
 The ordering encodes a thesis: **rank 1 (the P0 cache) is expected to be the
@@ -635,10 +635,10 @@ pay off before any JIT exists. Only at rank 4 do we build the Cranelift tiers,
 because by then the foundation, the cache, the heap, and the analyses are proven
 and we are optimizing a well-understood residue rather than a moving target.
 
-This is the practical face of the synthesis thesis: we are not building all of
-the SOTA at once. We are building the *ranked 90% subset* in an order where each
-step is measurable, individually shippable behind the `AOS_NIX_NATIVE` gate, and
-backed at all times by the tier0 oracle and the permanent `NixCli` fallback.
+This is the practical face of the synthesis thesis: we are building the full
+technique stack through a ranked sequence where each step is measurable,
+individually shippable behind the `AOS_NIX_NATIVE` gate, and backed at all times
+by the tier0 oracle and the permanent `NixCli` fallback.
 
 ---
 

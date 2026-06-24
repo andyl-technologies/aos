@@ -624,7 +624,7 @@ real derivation envs against `nix-instantiate` byte-for-byte.
 
 ## 8. Measure-first, validation, and tuning surface
 
-Per the measure-first gate of [motivation and goals](01-motivation-and-goals.md),
+Per the measure-first discipline of [motivation and goals](01-motivation-and-goals.md),
 none of the thresholds, caps, or representation choices here are committed on
 intuition. The instrumentation plan:
 
@@ -640,8 +640,8 @@ intuition. The instrumentation plan:
 - **`//` size and chain-depth distribution.** Measure operand sizes and
   override-chain depths to calibrate the `Flat`↔`Hamt` threshold. The HAMT is
   only justified where deep chains over large bases actually occur; if they do
-  not, `Hamt` may be deferred entirely as a measured follow-up (consistent with
-  the ranked-subset roadmap in [roadmap and risks](17-roadmap-and-risks.md),
+  not, `Hamt` may remain behind the measured policy (consistent with
+  the ranked build sequence in [roadmap and risks](17-roadmap-and-risks.md),
   where hidden classes + PIC precede HAMT and the deeper JIT work).
 - **Order parity.** The differential `.drv`-diff harness against
   `nix-instantiate` over the whole AOS closure is the acceptance gate; a single
@@ -694,7 +694,7 @@ produced bytes, only speed — a property the harness enforces.
 | Small / static `//` | Shape-transition + flat copy | C++ Nix | Optimal for the small-set majority |
 | Large / override-heavy `//` | HAMT/CHAMP persistent map, structural sharing | Bagwell 2001; Clojure; Steindorfer & Vinju 2015 | Immutability makes persistence free; overlays don't copy the base |
 | Iteration order | Lexicographic-by-spelling, cached permutation per shape | C++ Nix observable semantics | Hard correctness constraint, not an optimization |
-| Representation choice | Measured `Flat`↔`Hamt` policy; invisible to `.drv` bytes | measure-first gate | Speed-only; never alters produced bytes |
+| Representation choice | Measured `Flat`↔`Hamt` policy; invisible to `.drv` bytes | measure-first discipline | Speed-only; never alters produced bytes |
 
 Open questions: **O-1** (byte- vs codepoint-collation of attribute names —
 §7.2); the `Flat`↔`Hamt` thresholds and whether `Hamt` ships in the first cut

@@ -479,7 +479,8 @@ upstream fixes. See [derivation and store compatibility](11-derivation-and-store
 in the middle of a long-running activation that began in a lower tier, rather than
 waiting for the next call — the dual of deoptimization. In Nix it targets the
 dynamic equivalents of hot loops (a deep `foldl'`, a long `genList`, a recursive
-`fix`). A measured follow-up, not a phase-1 requirement. See [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
+`fix`). An advanced measured variant, not a phase-1 requirement. See
+[execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
 
 **Oracle (tier-0 tree-walk)** — The simplest faithful interpreter of Nix semantics,
 written in *safe* Rust, walking the arena IR directly. It is the permanent
@@ -539,11 +540,12 @@ naming/layering decision (`S-22`) that does not change what aos-nix delivers —
 byte-identical Nix evaluator. See
 [generalization and language dialects](28-generalization-and-language-dialects.md).
 
-**Region inference** — A static analysis (a measured follow-up) that assigns
+**Region inference** — A static analysis (an advanced measured variant) that assigns
 allocations to lexical *regions* freed wholesale when the region exits, reducing
 GC pressure for daemon mode by bounding object lifetimes statically. The committed
 subset is the *lexical/escape* pass; full effect-based region inference (Tofte–
-Talpin) is a flagged research item. See [memory management and GC](06-memory-management-and-gc.md).
+Talpin) is built and selected in the advanced stack. See
+[memory management and GC](06-memory-management-and-gc.md).
 
 **Rewrite RULES / fusion** — The **algebraic, semantics-preserving rewrites** the
 simplifier applies during simplification (GHC's `RULES`). The high-value

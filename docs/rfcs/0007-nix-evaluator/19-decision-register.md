@@ -16,7 +16,7 @@ Each row carries a **status**:
 | **Settled** | Decided as a baseline architectural choice in the design docs. | Build it as written. |
 | **Closed** | Was an open question; **resolved during the review pass** (recorded both here and in the owning doc). | Build the recorded resolution. |
 | **Measure-gated** | A *default* is specified; whether to change it is decided by the differential harness / profiler, not by design. | Build the default; revisit only if the named measurement says so. |
-| **Research-grade** | Deferred; outside the ranked "90% subset". A default (often "don't build it yet") is given. | Do not build in the first cuts; the default holds. |
+| **Research-grade** | Committed high-risk work whose implementation policy is selected by measurement and correctness gates. | Build the variants after their prerequisites; keep the measured winner or policy. |
 
 The crucial property: **nothing that is Measure-gated or Research-grade blocks
 Phase 1.** Phase 1 ([roadmap](17-roadmap-and-risks.md) §6) touches only Settled
@@ -116,9 +116,9 @@ decides whether to change it. **None of these block Phase 1** — most are
 
 | ID | Question | Default (build this) | Decided by | Owner |
 | --- | --- | --- | --- | --- |
-| M-1 | Does the incremental cache alone clear the build-time goal? | Build cache + arena + oracle first; treat the JIT as deferred. | Phase 1/2 baseline vs warm numbers. | [01](01-motivation-and-goals.md), [17](17-roadmap-and-risks.md) |
-| M-2 | What is the real cold-eval ceiling on AOS? | (No default — Phase 1 *produces* it.) | Phase 1 `nix-instantiate` + `NIX_SHOW_STATS`. | [01](01-motivation-and-goals.md) |
-| M-3 | What fraction of CI eval is cold vs warm? | Assume re-eval-dominated; validate. | Instrumented CI traces. | [12](12-incremental-evaluation-cache.md) §8.1 |
+| M-1 | Does the incremental cache alone clear the build-time goal? | Build cache + arena + oracle first; treat the JIT as deferred. | P1.5 opening data recorded in [phase1-baseline-characterization.md](phase1-baseline-characterization.md); final answer waits for P2 cache measurements. | [01](01-motivation-and-goals.md), [17](17-roadmap-and-risks.md) |
+| M-2 | What is the real cold-eval ceiling on AOS? | P1 representative baseline recorded; use it as the initial target. | Resolved for the committed representative slice in [phase1-baseline-characterization.md](phase1-baseline-characterization.md). | [01](01-motivation-and-goals.md) |
+| M-3 | What fraction of CI eval is cold vs warm? | Assume re-eval-dominated; validate. | First P1.5 cold/warm read recorded; real CI distribution still requires instrumented CI traces. | [12](12-incremental-evaluation-cache.md) §8.1 |
 | M-4 | Does NaN-boxing pay off net of the i64-box tax? | 16-byte tagged value (no NaN-boxing). | Register-passing benchmark. | [05](05-value-representation.md) §12 |
 | M-5 | Does the Cranelift JIT pay for itself in one-shot CLI mode? | Tree-walk + cache; JIT reserved for where it profiles well; copy-and-patch is the hedge. | Warmup-vs-one-shot benchmark. | [08](08-execution-tiers-and-cranelift.md) §10 |
 | M-6 | Is OSR worth its complexity? | No OSR in the first JIT cut. | Profile for long single activations. | [08](08-execution-tiers-and-cranelift.md) §10 |
@@ -143,19 +143,21 @@ decides whether to change it. **None of these block Phase 1** — most are
 
 ---
 
-## 4. Research-grade / deferred decisions
+## 4. Research-grade committed decisions
 
-Outside the 90% subset. The default is "do not build yet"; the baseline holds.
+In scope under the budget mandate. The first safe baseline still lands before
+these variants, but the variants are built and selected by measurement rather
+than descoped by default.
 
 | ID | Item | Default / stance | Owner |
 | --- | --- | --- | --- |
 | R-1 | Concurrent moving GC (ZGC/Shenandoah-style) × monotonic thunk mutation. | Daemon-only; single-threaded precise-generational first cut sidesteps it. | [03](03-architecture-overview.md), [13](13-parallel-evaluation.md) |
-| R-2 | Tier-2-emitted GC load barriers. | Out of scope for the first JIT; Stage B0 stop-the-world is the shipping answer. | [08](08-execution-tiers-and-cranelift.md), [13](13-parallel-evaluation.md) |
-| R-3 | WHNF tag bits vs colored-pointer bits co-design. | Unsolved; may force a wider value. Deferred to daemon GC work. | [13](13-parallel-evaluation.md) §8 |
+| R-2 | Tier-2-emitted GC load barriers. | Stage B0 stop-the-world is the first shipping answer; tier-2 load barriers are built with the concurrent moving-GC variant. | [08](08-execution-tiers-and-cranelift.md), [13](13-parallel-evaluation.md) |
+| R-3 | WHNF tag bits vs colored-pointer bits co-design. | Unsolved; build the daemon-GC variants and widen the value if the measured policy requires it. | [13](13-parallel-evaluation.md) §8 |
 | R-4 | Memory-ordering audit of the parallel thunk protocol (weak memory). | **Promoted to a committed, early gate** (C-12): the acquire/release CAS discipline must pass a `loom`/Miri audit *before the parallel tier is trusted* — it is the safety gate on shipping parallel thunk-graph evaluation, not a deferred nicety. (The harder *load-barrier* proof for a concurrent moving collector remains research-grade with R-1/R-2.) | [13](13-parallel-evaluation.md) §8 |
-| R-5 | Full effect-based region inference. | Flagged research item, not a committed deliverable; the lexical/escape pass is the committed subset. | [06](06-memory-management-and-gc.md) §5.2 |
+| R-5 | Full effect-based region inference. | Committed advanced deliverable; lexical/escape regions land first, then the full effect-based variant is built and benchmarked in P8. | [06](06-memory-management-and-gc.md) §5.2 |
 | R-6 | Daemon float-outward residency policy. | Tuning parameter; no daemon workload exists yet. | [07](07-laziness-and-whole-program-analyses.md) §10 |
-| R-7 | Tier-2-only fused "super-node" IR. | Deferred; the "one IR for all tiers" invariant holds until tiering is measured. | [04](04-frontend-parser-and-ir.md) §12 |
+| R-7 | Tier-2-only fused "super-node" IR. | The "one IR for all tiers" invariant holds for the first tiers; build a fused-IR variant only after tiering data justifies it. | [04](04-frontend-parser-and-ir.md) §12 |
 | R-8 | Frontend `with`-shape speculation hooks. | Leave entirely to runtime inline caches for now. | [04](04-frontend-parser-and-ir.md) §12, [09](09-attribute-sets-hidden-classes-and-inline-caches.md) |
 | R-9 | Escape signatures for the ~120-primop surface. | Hand-authored + **property-test fuzzing** (not just the closure diff), since a wrong escape-transparency claim could corrupt a result; default-off until green. | [07](07-laziness-and-whole-program-analyses.md) §10 |
 | R-10 | Impure-primop dependency edges into the cache. | `readFile`/`readDir`/`getEnv`/etc. keyed as explicit content-hash inputs; `currentTime` not cached. Edge-exactness is research-grade. | [10](10-primops-and-runtime-abi.md), [12](12-incremental-evaluation-cache.md) |
@@ -193,7 +195,8 @@ A few items are neither settled design nor measurable defaults — they are
   multi-arch, version spoofing, the error library, and the IFD handoff.)
 - **24 Measure-gated** items each carry a buildable default; the harness and
   profiler (not a meeting) decide whether to move off it.
-- **14 Research-grade** items are explicitly deferred with a holding default.
+- **14 Research-grade** items are committed advanced work with measurement- or
+  proof-selected implementation policy.
 - The through-line: this RFC does not pretend every micro-decision is pre-made;
   it pretends *nothing*. Each fork is either decided, or has a default plus the
   exact measurement that will decide it. That is what makes the design

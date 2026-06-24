@@ -381,7 +381,7 @@ the closed set twice:
 
 - The rare dynamic `builtins.${name}` stays on the ordinary attrset/select path
   and uses the same registry-backed exact-name lookup. Tier-2 speculation for
-  monomorphic dynamic names remains a measured follow-up.
+  monomorphic dynamic names remains a measured policy choice.
 
 So perfect hashing is not merely "a fast map" — it is the mechanism that lets
 the common saturated builtin call *skip* dynamic attrset lookup, becoming a
@@ -676,12 +676,12 @@ None of these are theoretical; each corresponds to a real C++ Nix behavior that
 
 - **Inlining the most expensive primops.** Whether to give Cranelift IR-level
   bodies (not just symbol calls) for a tiny hot core (`map`, `elemAt`,
-  `length`, `concatMap`, `++`) is a measured follow-up. The benefit is removing
+  `length`, `concatMap`, `++`) is a measured policy choice. The benefit is removing
   the call and enabling cross-primop optimization; the cost is duplicating
   semantics out of the single Rust oracle, which risks compatibility drift. The
   default position is **symbol call only**, and we only special-case after the
-  benchmark says so. This is the conservative reading of the measure-first gate
-  (doc 01).
+  benchmark says so. This is the conservative reading of the measure-first
+  discipline (doc 01).
 
 - **`nix-compat` API churn.** `derivationStrict` depends on the `nix-compat`
   crate (from the Snix project) for ATerm and store-path hashing. That crate's

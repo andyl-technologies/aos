@@ -96,7 +96,7 @@ Full spec: **[27 — engineering standards and code quality](27-engineering-stan
 | [14](14-integration-with-aos.md) | The `NixEval` trait, the aos-core seam, `AOS_NIX_NATIVE` gating, `NixCli` fallback, and the `unsafe` policy |
 | [15](15-differential-testing-and-benchmarking.md) | The `.drv`-diff harness, conformance-suite reuse, `NIX_SHOW_STATS`, per-commit benchmarking, measure-first |
 | [16](16-prior-art-and-references.md) | Tvix/Snix, C++ Nix, hnix, GHC, HotSpot, V8/LuaJIT/PyPy, Salsa/Adapton/Skip, Cranelift - with citations |
-| [17](17-roadmap-and-risks.md) | The phased build order, the ranked 90% subset, the risk register, and open questions |
+| [17](17-roadmap-and-risks.md) | The phased build order, ranked build sequence, risk register, and open questions |
 | [18](18-glossary.md) | Terms: WHNF, thunk, hidden class, inline cache, early cutoff, hash-consing, ATerm, deopt, and more |
 | [19](19-decision-register.md) | Consolidated decision register: every settled, closed, measure-gated, and research-grade decision, with its resolution or gating measurement |
 | [20](20-nix-language-conformance.md) | Nix *language* conformance checklist: every syntax/semantic/edge-case rule to reproduce for parity (operators, attrsets, fixpoints, scoping, strings/contexts, coercions) |
@@ -156,7 +156,7 @@ Build order (full detail in [17](17-roadmap-and-risks.md)):
    is achievable on AOS's hand-rolled `mkDerivation` / `ccWrapper` /
    `evalModules` constructs - before any Cranelift work.
 
-Then the ranked **90% subset**, in order:
+Then the ranked build sequence, in order:
 
 2. **Incremental early-cutoff cache + hash-consing** - the biggest
    real-world win, largely independent of interpreter speed; may solve
@@ -166,8 +166,10 @@ Then the ranked **90% subset**, in order:
    even the tree-walk tier.
 5. **Hidden classes + inline caches, then Cranelift tiering + deopt.**
 
-Everything else (pointer tagging, full-laziness, region inference,
-parallel forcing, concurrent GC) is a measured, profile-driven follow-up.
+The advanced stack (pointer tagging, full-laziness, region inference,
+concurrent moving GC, and related variants) is built and selected by measured
+policy. Parallel forcing is first-class earlier in the sequence, not part of the
+tail.
 
 > An RFC is a design record, not living documentation. Once aos-nix
 > ships, this body is frozen and only the status header above is

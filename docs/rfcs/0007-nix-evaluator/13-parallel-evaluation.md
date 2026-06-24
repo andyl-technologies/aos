@@ -54,15 +54,14 @@ extend it with a coarser, lower-risk outer layer and a GC interaction design
 that C++ Nix sidesteps only because it uses conservative Boehm GC — a luxury we
 deliberately gave up (see [memory management and GC](06-memory-management-and-gc.md)).
 
-> **Measure-first gate.** Parallel forcing is item (5) on the RFC-0007 roadmap —
-> a *measured follow-up*, not a phase-1 deliverable. The incremental
-> early-cutoff cache (item 1) and the bump-arena/precise-GC heap (item 2)
-> attack the systemic cost first. We turn on parallelism only after the
-> single-threaded evaluator is correct, the differential harness is green, and
-> profiling shows that *forcing* (not allocation, not hashing, not `.drv`
-> serialization) is the remaining wall-clock bottleneck. A parallel evaluator
-> that races to the wrong answer is infinitely slower than a correct serial one,
-> because a single divergent `.drv` triggers a from-source toolchain rebuild.
+> **Measurement checkpoint.** Parallel forcing is P3.5 on the RFC-0007 roadmap,
+> not a phase-1 deliverable. The incremental early-cutoff cache (P2) and the
+> bump-arena/precise-GC heap (P3) attack the systemic cost first. We trust the
+> parallel tier only after the single-threaded evaluator is correct, the
+> differential harness is green, and the `loom`/Miri memory-ordering audit is
+> green. A parallel evaluator that races to the wrong answer is infinitely slower
+> than a correct serial one, because a single divergent `.drv` triggers a
+> from-source toolchain rebuild.
 
 ## 2. Design layers
 
@@ -72,7 +71,7 @@ risk/reward profiles. We build them in this order:
 | Layer | Unit of parallelism | Shared mutable state | Risk | Status |
 |-------|---------------------|----------------------|------|--------|
 | **L1 — coarse top-level** | independent top-level derivations | only *immutable* tables (IR, symbols, hash-cons, primops) | low | first target |
-| **L2 — lock-free forcing** | individual thunks | the thunk graph (CAS-claimed) | high | measured follow-up |
+| **L2 — lock-free forcing** | individual thunks | the thunk graph (CAS-claimed) | high | committed P3.5 target |
 
 The thesis is that **L1 captures most of the available speedup at a fraction of
 the complexity**, and L2 is only worth its danger once L1's load imbalance (a
@@ -526,7 +525,7 @@ collection in the ZGC/Shenandoah lineage. The mechanism:
   flag explicitly below.
 
 ```text
-   Tier B0 (ship first):           Tier B1 (research, measured follow-up):
+   Tier B0 (ship first):           Tier B1 (advanced measured variant):
 
    mutators ──┐                    mutator: load ─► [barrier] ─► CAS state
               ▼ safepoint                              │

@@ -326,7 +326,7 @@ long-running loop rather than waiting for the next call.
 > tier 0 (tree-walk oracle = interpreter), tier 1 (Cranelift baseline = C1-like,
 > fast compile, no speculation), tier 2 (Cranelift optimized = C2-like,
 > speculative). We collapse C1/C2 onto one backend (Cranelift) at two
-> optimization levels. OSR is adopted as a *measured follow-up* for the dynamic
+> optimization levels. OSR is adopted as an *advanced measured variant* for the dynamic
 > equivalents of hot loops (deep `foldl'`, long `genList`, iterated `fix`).
 
 Source: "How Tiered Compilation works in OpenJDK" (interpreter -> C1 -> C2, OSR,

@@ -23,9 +23,11 @@ or unverified against `aos-nix`'s own workload, it is marked as an open question
 > or *how primops are dispatched* ([primops and runtime ABI](10-primops-and-runtime-abi.md)).
 > Those touch the engine and are cross-referenced, but their detail lives in their
 > own documents. Critically, this document is also downstream of the
-> [measure-first gate](01-motivation-and-goals.md): **none of tiers 1 and 2 are
-> built until the tree-walk oracle plus the differential harness have produced a
-> baseline eval-time number that proves eval, not build, is the bottleneck.**
+> [measure-first characterization](01-motivation-and-goals.md): tiers 1 and 2
+> are ordered after the tree-walk oracle plus the differential harness have
+> produced a baseline eval-time number and counter breakdown. Under the budget
+> mandate, the JIT tiers remain in scope; the characterization decides priority
+> and validation targets, not whether the tiers exist.
 
 ---
 
@@ -36,8 +38,9 @@ or unverified against `aos-nix`'s own workload, it is marked as an open question
 The defining quantitative property of Nix evaluation, and the one that dictates the
 entire execution model, is the (large, expected) ratio between **expressions** and
 **thunk activations**. The order-of-magnitude figures below are estimates the
-measure-first gate must confirm on the AOS package set before any JIT is built;
-their *ratio*, not their absolute values, is what the design leans on.
+measure-first characterization must confirm on the AOS package set before JIT
+work is prioritized; their *ratio*, not their absolute values, is what the design
+leans on.
 
 - The number of distinct *expressions* in the AOS package set — every lambda body,
   every `let` binding, every attrset literal, every `if`, across all of nixpkgs-scale
@@ -158,12 +161,13 @@ existence:
    giving a memory-safe reference implementation that exercises the same value
    representation, primops, and store logic as the JIT.
 
-Tier 0 must be *fast enough to be the baseline number*. The measure-first gate is
-satisfied by tier 0 alone: if tier 0 plus the incremental cache
-([12-incremental-evaluation-cache.md](12-incremental-evaluation-cache.md)) already
-beats `nix-instantiate` wall-clock on the AOS package set, the JIT may never need
-to be built. The roadmap explicitly ranks the incremental early-cutoff cache and
-the bump-arena heap *above* the JIT for exactly this reason.
+Tier 0 must be *fast enough to be the baseline number*. The measure-first
+characterization is satisfied by tier 0 alone: if tier 0 plus the incremental
+cache ([12-incremental-evaluation-cache.md](12-incremental-evaluation-cache.md)) already
+beats `nix-instantiate` wall-clock on the AOS package set, the JIT no longer
+carries near-term workload urgency. The roadmap explicitly ranks the incremental
+early-cutoff cache and the bump-arena heap *above* the JIT for exactly this
+reason.
 
 ### 2.2 Tier 1 — the Cranelift baseline JIT
 
@@ -333,7 +337,7 @@ internal loop that is already on the stack when it crosses the hotness threshold
 Without OSR, we could only promote them on the *next* top-level evaluation; with
 OSR, we can swap the running activation to tier-2 code mid-flight.
 
-OSR is **explicitly a measured follow-up, not a phase-1 requirement.** It is the
+OSR is **explicitly an advanced measured variant, not a phase-1 requirement.** It is the
 most mechanically delicate tier-2 feature (it requires entering a compiled function
 at a non-entry point with a tier-0 frame's state), and its benefit is bounded to a
 small number of genuinely long-running single activations. The roadmap places it
@@ -531,8 +535,8 @@ content-addressed, and loaded as native code with no JIT warmup at all. Because 
 set is small, stable, and shared across every CI machine, the slow LLVM compile is
 paid once and amortized across the entire fleet — the same logic the
 [incremental cache](12-incremental-evaluation-cache.md) applies to *values*, applied
-to *code*. This is a measured follow-up, not a phase-1 item, and it is strictly
-additive: it never replaces Cranelift, it pre-warms a fixed prefix.
+to *code*. This is an advanced measured variant, not a phase-1 item, and it is
+strictly additive: it never replaces Cranelift, it pre-warms a fixed prefix.
 
 ### 5.3 Not WASM
 

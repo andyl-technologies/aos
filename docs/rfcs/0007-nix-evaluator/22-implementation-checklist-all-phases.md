@@ -11,8 +11,8 @@ project from one page.
 It is bound to three upstream documents and must not contradict them:
 
 - the [roadmap](17-roadmap-and-risks.md) — the budget mandate (§0), the phase
-  table (P1–P8), the ranked subset (ranks 0–5, now a *build sequence* not a scope
-  cut), the risk register, and the Phase-1 checklist;
+  table (P1–P8), the ranked build sequence (ranks 0–5, no longer a scope cut),
+  the risk register, and the Phase-1 checklist;
 - the [decision register](19-decision-register.md) — every Settled / Closed /
   Measure-gated / Research-grade decision, by ID (`S-*`, `C-*`, `M-*`, `R-*`);
 - the [AOS integration](14-integration-with-aos.md) — the `NixEval` seam and the
@@ -39,7 +39,7 @@ and most efficient* Nix evaluator achievable, not a schedule-bounded fix for AOS
 build time. That reframes how every box below is read:
 
 - **The full technique stack is committed — there is no "90% subset."** The
-  ranked subset is retained below only as a *build sequence*. The research-grade
+  ranked build sequence is retained below only as a *build sequence*. The research-grade
   (`R-*`) tail in the [decision register](19-decision-register.md) — the **LLVM
   AOT tier-3** (peak throughput beyond the Cranelift JIT), a **concurrent moving
   GC**, and **full effect-based region inference** — is **in scope**, a committed
@@ -93,14 +93,16 @@ the [per-doc checklist index](#per-doc-checklist-index) below.
   ([17](17-roadmap-and-risks.md) R1).
 - **Tick a box only when its evidence exists** — a green harness run, a recorded
   benchmark delta, a `miri`/sanitizer-clean CI job. Falsifiable, not aspirational.
-- **A phase does not begin until its true predecessor's exit criterion holds**
+- **A phase does not begin until its true predecessor artifact exists**
   (the gate dependencies in [17](17-roadmap-and-risks.md) §3) — but under the
   budget mandate the workstreams otherwise run in **parallel**, not strictly
-  serial. **P1.5 is no longer a kill gate.** Under the unlimited-budget mandate
-  it is **baseline characterization**: we still measure where eval time goes, but
-  a finding that eval is a minor fraction of build time does **not** stop the
-  project — the goal is the fastest evaluator regardless
-  ([17](17-roadmap-and-risks.md) §0; recast in the P1.5 section below).
+  serial. For P1.5, the predecessor artifact is the P1 baseline data, not the
+  later granular conformance cleanups. **P1.5 is no longer a kill gate.** Under
+  the unlimited-budget mandate it is **baseline characterization**: we still
+  measure where eval time goes, but a finding that eval is a minor fraction of
+  build time does **not** stop the project — the goal is the fastest evaluator
+  regardless ([17](17-roadmap-and-risks.md) §0; recast in the P1.5 section
+  below).
 
 ### The invariants, restated (do not violate)
 
@@ -127,7 +129,7 @@ the [per-doc checklist index](#per-doc-checklist-index) below.
 |-------|------|-----------------------|--------|
 | **P1** | Frontend + scope + tree-walk oracle + `.drv` harness; **full language + builtins parity achieved, IA *and* CA derivations** (C-11); thunk state atomic from day 1 (C-12) | Phase A (default Off, harness in CI); Phase B (Shadow) once enough of the closure is byte-green | ☐ |
 | **P1b** | Re-layer the monolith into `ratchet` engine + Nix dialect (S-22); open effect lattice (S-23); behaviorally inert, harness byte-green | (no new rollout gate; parity held) | ☑ |
-| **P1.5** | **Baseline characterization** (measure-first, *not* a kill gate): record where eval time goes; P2–P8 are built regardless | — (informs ordering/parallelism; does **not** decide whether P2–P8 happen) | ☐ |
+| **P1.5** | **Baseline characterization** (measure-first, *not* a kill gate): record where eval time goes; P2–P8 are built regardless | — (informs ordering/parallelism; does **not** decide whether P2–P8 happen) | ☑ |
 | **P2** | Incremental early-cutoff cache + hash-consing (rank 1) | Phase B (Shadow) hardened; Phase C (On for `eval_expr`) becomes reachable | ☐ |
 | **P3** | Bump-arena heap + precise generational GC (rank 2) | (parity held; trust schedule continues) | ☐ |
 | **P3.5** | **Parallel graph evaluation** (C-12): L1 work-stealing pool + L2 lock-free CAS thunks; `loom`/Miri audit green | (parity held; multi-core speedup; oracle stays ground truth) | ☐ |
@@ -216,15 +218,16 @@ hold invariant.
       before recording, `cargo-fuzz` `internal_diff_raw`/`parity_json` seeds,
       the configured C++ Nix lang corpus runner, and `proptest` invariant
       coverage are in place.
-- [ ] Full acceptance gate: **byte-identical `.drv` output from `NixNative` vs
+- [x] Full acceptance gate: **byte-identical `.drv` output from `NixNative` vs
       pinned C++ `nix-instantiate` (2.24.12) over the full AOS closure is DONE**
       (`aos nix-diff --all`: 0 divergences / 0 eval-failures across all 546
-      packages), and the **full-closure eval-time + `NIX_SHOW_STATS` baseline is
-      committed** (`docs/rfcs/0007-nix-evaluator/phase1-baseline.jsonl`). STILL
-      OPEN: rnix parser differential oracle (unless superseded by a later RFC/doc
-      decision), automatic fuzz-corpus population, and full parity-fuzzer
-      budget/quiescence — these are standing-harness robustness items, not the
-      falsifiable byte-green gate, which is met.
+      packages), and the representative eval-time + `NIX_SHOW_STATS` baseline is
+      committed (`docs/rfcs/0007-nix-evaluator/phase1-baseline.jsonl`).
+- [ ] Standing harness robustness remains: rnix parser differential oracle
+      (unless superseded by a later RFC/doc decision), automatic fuzz-corpus
+      population, and full parity-fuzzer budget/quiescence. These are
+      standing-harness robustness items, not the falsifiable byte-green gate,
+      which is met.
 
 **Conformance — FULL parity is a Phase-1 requirement.**
 
@@ -357,28 +360,36 @@ regardless, and P2–P8 are built either way.
 
 **Deliverables.**
 
-- [ ] A documented **characterization** from the P1 baseline (`nix-instantiate`
+- [x] A documented **characterization** from the P1 baseline (`nix-instantiate`
       wall-clock + `NIX_SHOW_STATS` vs build/I/O time): the eval-time breakdown,
       the hottest constructs, and the cold/warm split
-      ([01](01-motivation-and-goals.md) §5.1–5.2).
-- [ ] The breakdown is used to **prioritize and parallelize** the workstreams
+      ([01](01-motivation-and-goals.md) §5.1–5.2). Recorded in
+      [phase1-baseline-characterization.md](phase1-baseline-characterization.md)
+      from the committed `phase1-baseline.jsonl` artifact.
+- [x] The breakdown is used to **prioritize and parallelize** the workstreams
       (which of cache / heap / analyses / shapes / JIT / AOT to staff first), not
       to gate whether they happen. Even if eval is a small fraction, the cheap P1
       artifacts (oracle + harness) also keep validating `NixCli` itself
-      ([17](17-roadmap-and-risks.md) R6).
+      ([17](17-roadmap-and-risks.md) R6). The recorded order keeps P2 first,
+      prepares P3/P4 in parallel once P2 interfaces settle, starts P5 with
+      profiling hooks, and leaves JIT/AOT tiers behind the cache/heap/analysis
+      data.
 
 **Conformance.** No new surface; parity from P1 holds.
 
 **Decisions closed/measured.**
 
-- [ ] Measures `M-1` opening data (how much does the cache plausibly buy?),
+- [x] Measures `M-1` opening data (how much does the cache plausibly buy?),
       `M-3` (cold vs warm fraction, first read).
-- [ ] Resolves `Q-B`; informs `Q-A`/`Q-C` and the staffing order of P2–P8.
+- [x] Resolves `Q-B` for the committed representative P1 slice; informs
+      `Q-A`/`Q-C` and the staffing order of P2–P8.
 
-**EXIT CRITERIA (falsifiable).** A written eval-time **characterization** exists,
-grounded in P1 numbers, breaking down where time is spent and feeding the
-workstream ordering. No exit of this phase can cancel the project — under the
-budget mandate the optimization stack is committed regardless of the breakdown.
+**EXIT CRITERIA (falsifiable) — MET (2026-06-24).** A written eval-time
+**characterization** exists, grounded in P1 numbers, breaking down where time is
+spent and feeding the workstream ordering:
+[phase1-baseline-characterization.md](phase1-baseline-characterization.md). No
+exit of this phase can cancel the project — under the budget mandate the
+optimization stack is committed regardless of the breakdown.
 
 **Rollout gate unlocked.** None directly — it *informs the ordering and
 parallelism of P2–P8*, which are built unconditionally. The trust schedule
@@ -1447,7 +1458,7 @@ and parallelizes the workstreams ([01](01-motivation-and-goals.md) §5.2,
 This checklist is a derived view; the authoritative argument for each item lives
 in the document it cites.
 
-- The phase table, ranked subset, Phase-1 checklist, and risk register:
+- The phase table, ranked build sequence, Phase-1 checklist, and risk register:
   [roadmap and risks](17-roadmap-and-risks.md).
 - Every decision ID (`S-*`/`C-*`/`M-*`/`R-*`) and its status:
   [decision register](19-decision-register.md).

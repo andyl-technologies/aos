@@ -7,13 +7,13 @@ deliberately the most conservative document in the RFC, because the ambition
 described elsewhere — a tiered Cranelift JIT, a precise generational collector,
 whole-program strictness analysis, a cross-machine incremental cache — is
 research-grade in aggregate, and the single most effective defense against
-research-grade scope is a ranked subset built in an order where each step is
+research-grade scope is a ranked build sequence where each step is
 independently shippable and independently valuable.
 
 Read this after the [motivation and goals](01-motivation-and-goals.md) (which
-establishes the measure-first gate and the success criteria the roadmap is built
-to satisfy), the [architecture overview](03-architecture-overview.md) (whose §6
-previews the ranked subset this document expands), and the
+establishes the measure-first discipline and the success criteria the roadmap is
+built to satisfy), the [architecture overview](03-architecture-overview.md) (whose §6
+previews the ranked build sequence this document expands), and the
 [AOS integration](14-integration-with-aos.md) doc (whose phased flip — Off,
 Shadow, On-for-`eval_expr`, On-for-`instantiate` — is the rollout half of this
 roadmap). The [incremental cache](12-incremental-evaluation-cache.md) and
@@ -79,13 +79,13 @@ established upstream and restated here because they *determine* phase 1,
 constrain the entire plan:
 
 1. **Measure before you optimize.** The
-   [measure-first gate](01-motivation-and-goals.md) forbids any
-   optimizing-compiler work until measurement proves that *evaluation* — not
-   building, not I/O — is the dominant cost on representative AOS workloads. We
-   do not have those numbers yet (it is an open question in
-   [01](01-motivation-and-goals.md) §7). Producing them is therefore *itself a
-   deliverable*, and it cannot be produced without a working evaluator to
-   measure and a `nix-instantiate` baseline to measure against.
+   [measure-first characterization](01-motivation-and-goals.md) requires a
+   baseline before optimization work is ordered: measure *evaluation* separately
+   from building and I/O, then use the counter breakdown to decide which
+   workstreams get staff first. Under the budget mandate in §0, the measurement
+   no longer cancels the later phases; producing it is still a deliverable, and
+   it cannot be produced without a working evaluator to measure and a
+   `nix-instantiate` baseline to measure against.
 
 2. **Prove parity before you trust speed.** The
    [acceptance gate](03-architecture-overview.md) §5 makes the differential
@@ -102,7 +102,7 @@ scheduling decision of the whole project:
 > **Phase 1 is fixed: parser + scope resolution + tree-walk interpreter (the
 > correctness oracle) + the differential `.drv`-diff harness, built FIRST,
 > before a single line of Cranelift.** That phase simultaneously (a) yields the
-> baseline eval-time number the measure-first gate demands, and (b) proves
+> baseline eval-time number the measure-first characterization demands, and (b) proves
 > byte-identical `.drv` parity is achievable on AOS's hand-rolled
 > `mkDerivation`, `ccWrapper`, and `evalModules` constructs — the constructs
 > that actually appear in the AOS package set — *before* we invest in making
@@ -116,10 +116,10 @@ It is also slow — and that is fine, because phase 1's job is not speed. Its jo
 is to answer two empirical questions that the rest of the roadmap is
 contingent on:
 
-- *Is eval actually the bottleneck?* If the measure-first data says eval is a
-  minor fraction of AOS wall-clock, the roadmap **stops or re-scopes**
-  ([01](01-motivation-and-goals.md) §5.2). The oracle plus the harness is the
-  instrument that settles this.
+- *Where does eval actually cost us?* If the measure-first data says eval is a
+  minor fraction of long first builds, that changes priority and validation
+  targets rather than cancelling the roadmap. The oracle plus the harness is the
+  instrument that settles this for each workload class.
 - *Is byte-identical parity achievable on AOS at all?* If the oracle cannot be
   made to match `nix-instantiate` on the AOS closure even with unlimited time,
   no amount of JIT engineering rescues the project. Phase 1 de-risks the
@@ -134,10 +134,10 @@ built first because everything downstream depends on it, not despite that.
 
 ---
 
-## 2. The ranked 90% subset
+## 2. The ranked build sequence
 
 The architecture overview ([03](03-architecture-overview.md) §6) introduces the
-*ranked subset*: the order in which the technique stack is delivered so the
+*ranked build sequence*: the order in which the technique stack is delivered so the
 biggest real-world wins land first and each rank is independently valuable even
 if later ranks slip. This section is the authoritative expansion. The ordering
 encodes a thesis — **the systemic win (not evaluating at all) dwarfs the
@@ -227,17 +227,18 @@ the tier-0 oracle remains the deopt target and the correctness backstop. This
 rank is a constant-factor optimization on the *residue* the cache cannot elide —
 which is why it comes after the cache, not before.
 
-### Rank 5 — Measured follow-ups only
+### Rank 5 — Advanced stack, build-and-select
 
-Everything whose payoff is uncertain enough that it ships *only* on a measured
-delta: **pointer tagging** for WHNF-test fast paths ([05](05-value-representation.md)),
-**NaN-boxing** (open question, since Nix `i64` ints do not fit a NaN-box
-payload — [01](01-motivation-and-goals.md) §7, [05](05-value-representation.md)),
-**full-laziness / let-floating** ([07](07-laziness-and-whole-program-analyses.md)),
-**region inference**, and **concurrent/moving GC** for daemon mode
-(ZGC/Shenandoah-style colored pointers + load barriers —
-[06](06-memory-management-and-gc.md)). None of these is committed; each is a
-hypothesis to be confirmed against AOS traces before it lands (C6 in
+Everything whose payoff is uncertain enough that it ships behind a measured
+policy: **pointer tagging** for WHNF-test fast paths
+([05](05-value-representation.md)), **NaN-boxing** as a comparator to the tagged
+baseline ([01](01-motivation-and-goals.md) §7,
+[05](05-value-representation.md)), **full-laziness / let-floating**
+([07](07-laziness-and-whole-program-analyses.md)), **region inference**, and
+**concurrent/moving GC** for daemon mode (ZGC/Shenandoah-style colored pointers
++ load barriers — [06](06-memory-management-and-gc.md)). Under the budget
+mandate these variants are in scope: build the competing implementations,
+measure them against AOS traces, and keep the winner or best policy (C6 in
 [01](01-motivation-and-goals.md) §6).
 
 > **Promoted out of rank 5 (decision C-11/C-12).** **Content-addressed
@@ -253,7 +254,7 @@ hypothesis to be confirmed against AOS traces before it lands (C6 in
 > a distinct problem from parallel forcing, and one-shot mode sidesteps it with
 > per-worker bump nurseries + never-free.
 
-### The ranked subset, summarized
+### The ranked build sequence, summarized
 
 ```text
   RANK  DELIVERABLE                                   PROBLEM    INDEPENDENT VALUE
@@ -270,8 +271,8 @@ hypothesis to be confirmed against AOS traces before it lands (C6 in
         + deopt                                                  residue the cache can't elide
   3.5   parallel thunk-graph evaluation (CAS thunks    ‖         first-class (C-12); uses all
         + work-stealing forcing)                                 cores; oracle stays ground truth
-   5    pointer tagging, NaN-box, full-laziness,       P1/P3/P4  measured follow-ups; ship
-        region inference, concurrent moving GC         + ‖       only on a measured delta
+   5    pointer tagging, NaN-box, full-laziness,       P1/P3/P4  advanced stack; build
+        region inference, concurrent moving GC         + ‖       variants and keep winner
 ```
 ```text
   NOTE  content-addressed derivations (C-11) are built into P1's compat core,
@@ -282,8 +283,8 @@ The shape of the table is the argument: ranks 1–3 each carry independent value
 *and* help the tree-walk oracle, so they are de-risked optimizations that pay off
 before the first Cranelift instruction. Rank 4 (the JIT) is deferred precisely
 because by then we are optimizing a well-understood residue against a stable
-oracle, not chasing a moving target. Rank 5 is the explicitly-uncertain tail,
-gated on measurement.
+oracle, not chasing a moving target. Rank 5 is the explicitly-uncertain advanced
+tail: build the variants, measure them, and keep the winning policy.
 
 ---
 
@@ -302,7 +303,7 @@ in the last column).
 |-------|--------------|------------------------------|--------|----------|
 | **P1** | Frontend + tree-walk oracle + `.drv` harness (rank 0); compat core covers **both IA and CA derivations** (C-11); thunk state machine **atomic from day 1** to admit parallelism later (C-12) | Harness runs the *full* AOS closure under the oracle vs `NixCli`; baseline eval-time and `NIX_SHOW_STATS` numbers recorded; parity demonstrated on `mkDerivation`/`ccWrapper`/`evalModules` constructs **and on CA-derivation fixtures + the RFC-0005 graph** (zero divergence on the tested subset). | **L** | — |
 | **P1b** | Re-layer the P1 monolith into the `ratchet` engine + Nix dialect (Core/dialect IR split, open effect lattice, crate split) — behaviorally inert. See [28](28-generalization-and-language-dialects.md) §10. | Differential `.drv` harness byte-green on the same fixtures as before the split; crate boundaries match [27](27-engineering-standards.md) §1.1 / [28](28-generalization-and-language-dialects.md) §3. | **M** | P1 skeleton byte-green |
-| **P1.5** | Measure-first decision | Documented determination, from P1 data, that eval (not build/I/O) is the dominant AOS cost. If not → **STOP/re-scope** ([01](01-motivation-and-goals.md) §5.2). | **S** | P1 |
+| **P1.5** | Baseline characterization | Documented characterization, from P1 data, of where eval time goes: eval vs build/I/O, hottest counters, and cold vs warm. The result orders and parallelizes P2-P8; it does **not** cancel later phases under the budget mandate (§0). | **S** | P1 baseline artifact |
 | **P2** | Incremental cache + hash-consing (rank 1) | A semantically-irrelevant edit (comment/whitespace/leaf-package) recomputes a *bounded, small* fraction of the closure and emits unchanged `.drv` downstream (C4 in [01](01-motivation-and-goals.md) §6); `AOS_NIX_CACHE=0` and cached runs agree byte-for-byte on the harness. | **L** | P1.5 |
 | **P3** | Bump-arena + precise generational GC (rank 2) | One-shot CLI eval allocates through `aos_alloc_*`, frees nothing, drops at exit; measured allocation/GC time on the oracle is materially below the Boehm baseline from P1; precise GC passes `miri`/ASan on the safe tree. | **M** | P2 |
 | **P3.5** | Parallel thunk-graph evaluation (rank 3.5, C-12): L1 work-stealing pool + L2 lock-free CAS thunk forcing ([13](13-parallel-evaluation.md)) | The parallel evaluator is differentially identical to the **sequential** oracle across the full closure (output determinism under nondeterministic scheduling); the `loom`/Miri memory-ordering audit (R-4) is green; measured multi-core speedup over the serial baseline on the AOS closure. **No data races, ever.** | **L** | P3 |
@@ -310,7 +311,7 @@ in the last column).
 | **P5** | Hidden classes + PIC (rank 4a) | `select` sites resolve via shape-check + constant-offset load with a polymorphic inline cache; attr iteration order remains byte-identical to C++ Nix (the ordering invariant of [09](09-attribute-sets-hidden-classes-and-inline-caches.md)); harness byte-green. | **M** | P4 |
 | **P6** | Cranelift baseline JIT (rank 4b, tier 1) | Hot thunks compile per-expression once via Cranelift; tier-1 output is differentially identical to the tier-0 oracle across the closure; warmup cost measured against one-shot CLI workload. | **L** | P5 |
 | **P7** | Cranelift optimized + deopt + OSR (rank 4c, tier 2) | Speculation guarded by uncommon traps; every deopt path lands in semantics identical to the oracle (no observable `.drv` difference, ever); OSR enters hot loops mid-execution; harness byte-green under all tiers. | **XL** | P6 |
-| **P8** | Measured follow-ups (rank 5) | Each of pointer tagging / NaN-box / full-laziness / region inference / concurrent *moving* GC lands *only* with a recorded benchmark delta (C6); any that fails to show a delta is dropped, not shipped. (Parallel *forcing* is no longer here — it is P3.5; only the concurrent *moving collector* remains deferred.) | **XL** | P7 |
+| **P8** | Advanced stack (rank 5): pointer tagging, full-laziness, concurrent *moving* GC, and full effect-based region inference | Each advanced variant lands behind the same byte-parity and benchmark evidence discipline (C6); under the budget mandate the variants are built and benchmarked, then the winner or best policy is selected. (Parallel *forcing* is no longer here — it is P3.5; only the concurrent *moving collector* remains in this tail.) | **XL** | P7 |
 
 A few properties of the table are deliberate and worth stating:
 
@@ -323,10 +324,12 @@ A few properties of the table are deliberate and worth stating:
   complete before P2**, because P2 builds `ratchet-cache` and the open effect
   lattice (`S-23`), which should be born in the new Core/dialect model rather than
   retrofitted onto the monolith.
-- **P1.5 is a real gate, not a formality.** It is the only phase whose exit can
-  *cancel the project*, and it sits immediately after the first phase precisely
-  so the existential question is answered before the expensive phases begin. The
-  measure-first gate ([01](01-motivation-and-goals.md) §5) is encoded here.
+- **P1.5 is a real measurement checkpoint, not a formality.** It sits
+  immediately after the first phase so the workload profile is known before the
+  expensive phases are staffed. Under the budget mandate (§0), its exit cannot
+  cancel the project; it orders and parallelizes the committed optimization
+  stack. The measure-first discipline ([01](01-motivation-and-goals.md) §5) is
+  encoded here.
 - **The rollout phases (Off → Shadow → On) run in parallel with P2–P8, not
   after them.** The phased flip from [14](14-integration-with-aos.md) §7.1 —
   Phase A (default Off, harness in CI), Phase B (Shadow mode), Phase C (On for
@@ -362,12 +365,12 @@ and is named the dominant risk throughout the set
 | **R1** | **Long tail of `.drv` divergence.** Parity (C1) is binary, but reaching it surfaces a long tail of subtle quirks — float formatting, error-as-value edge cases, `__structuredAttrs`, string-context propagation corners, attr-ordering edge cases — that pass the harness on tested packages but diverge on a rarely-evaluated one and silently force a toolchain rebuild. | **Catastrophic** (from-source rebuild of the GCC ladder / Rust / Java chains) | **High** | **Never default-on until the harness is byte-green on the *full* closure** ([14](14-integration-with-aos.md) §7). Defense-in-depth: default `Off`; `Shadow` mode diffs every real CI eval; `AOS_NIX_NATIVE_VERIFY` sampling as a residual canary even after default-on; **`NixCli` permanent fallback** flippable by one env var. The tree-walk oracle localizes each divergence as *semantics* vs *codegen* before it can reach the store. |
 | **R2** | **JIT debuggability.** Speculative, deoptimizing, on-stack-replaced Cranelift code is hard to step through; a divergence introduced in tier 1/2 is hard to attribute and bisect. | **High** (slows the long-tail fix in R1) | **Medium** | The **tier-0 tree-walk oracle is the tie-breaker by construction** ([03](03-architecture-overview.md) §4.1): the harness runs against the oracle *first* to localize whether a divergence is a semantics bug (oracle wrong) or a codegen bug (JIT-only). Every deopt path must land in semantics identical to the oracle ([03](03-architecture-overview.md) §5.3), so the slow path is always a correct continuation of the fast path. The oracle is the trivially-traceable reference the JIT is diffed against. |
 | **R3** | **Large `unsafe` surface.** NaN-boxing/tagged values, JIT fn-ptr calls, and the raw-heap/GC are irreducibly `unsafe` ([14](14-integration-with-aos.md) §9) — memory-safety or UB bugs there could corrupt a value and, downstream, a `.drv`, violating AOS's "avoid `unsafe` at all costs" rule. | **High** (UB → wrong output or crash) | **Medium** | **Fence the `unsafe` into a small, audited core.** The oracle/frontend/`nix-compat`-glue/harness are `#![forbid(unsafe_code)]` and kept `miri`/sanitizer-clean; the unsafe modules use `#![deny(unsafe_op_in_unsafe_fn)]` with a `// SAFETY:` comment per block, two-maintainer review, ASan/UBSan CI, and `cargo fuzz` on value-decode/GC/ATerm ([14](14-integration-with-aos.md) §9.3). The safe oracle gives `miri` a complete program to analyze; the `unsafe` tiers are differential-tested against it and are never the *final* arbiter of a store path. |
-| **R4** | **Research-grade scope.** The full SOTA design (tiered JIT + precise/concurrent GC + whole-program analyses + cross-machine cache) is unbounded; attempting it all at once risks never shipping anything. | **High** (project stalls, delivers nothing) | **Medium-High** | **The ranked subset (§2) and the phase gates (§3).** Each rank is independently shippable behind `AOS_NIX_NATIVE` and individually valuable; ranks 1–3 pay off *on the oracle* before any JIT exists; rank 5 is explicitly the deferred, measured-only tail. The P1.5 measure-first gate can cancel the expensive phases outright. Non-goals ([01](01-motivation-and-goals.md) §4) bound the language/primop surface to what AOS exercises. |
+| **R4** | **Research-grade scope.** The full SOTA design (tiered JIT + precise/concurrent GC + whole-program analyses + cross-machine cache) is unbounded; attempting it all at once risks never shipping anything. | **High** (project stalls, delivers nothing) | **Medium-High** | **The ranked build sequence (§2), correctness gates (§3), and P1.5 characterization.** Each rank is independently shippable behind `AOS_NIX_NATIVE` and individually valuable; ranks 1–3 pay off *on the oracle* before any JIT exists; the P1.5 data orders the work rather than cancelling it. Non-goals ([01](01-motivation-and-goals.md) §4) bound the language/primop surface to what AOS exercises. |
 | **R5** | **`nix-compat` / Snix API instability.** `NixNative` depends on Snix's `nix-compat` crate (pinned git rev) for ATerm/store-path/NAR formats on the parity-critical path; its API is explicitly pre-1.0 and has already moved (Tvix → Snix rename, March 2025; Derivation/ATerm sliced out and reparsed). | **Medium** (maintenance churn on the critical path; *not* a correctness risk — output is still diffed) | **High** | **Pin a specific git rev**, carry local patches, and **expect to contribute fixes upstream** ([14](14-integration-with-aos.md) §13). A breaking change is a *maintenance* cost, not a correctness one: any regression it introduces is caught by the differential gate before it can reach the store. The leverage of reusing a faithful, battle-tested store backend outweighs the churn. |
-| **R6** | **Measure-first proves eval is *not* the bottleneck.** P1 data could show eval is a minor fraction of AOS wall-clock, making the whole evaluator a misallocation. | **High** (sunk cost of P1) | **Low-Medium** | **P1.5 is the explicit kill/re-scope gate** ([01](01-motivation-and-goals.md) §5.2). The cost of being wrong is bounded to P1 (the oracle + harness), which is *also* the cheapest phase and produces independently-useful artifacts (a from-scratch oracle, a `.drv`-diff harness usable to validate `NixCli` itself). We pay one cheap phase to de-risk the premise before any expensive phase. |
+| **R6** | **Measure-first shows eval is workload-dependent.** P1 data can show eval is a minor fraction of long first builds while still dominating no-op, already-built, or repeated eval workloads. | **Medium** (wrong workstream priority) | **Low-Medium** | **P1.5 is the explicit characterization point** ([01](01-motivation-and-goals.md) §5.2). Under the budget mandate it does not kill/re-scope the project; it prevents a false global claim and feeds the P2-P8 staffing order. The oracle + harness remain independently useful artifacts and continue validating `NixCli` itself. |
 | **R7** | **Incremental cache under-tracks a dependency.** An implementation bug that fails to reify a read as a graph edge (e.g. an `import`/`readFile` not hashed as an input) lets a stale value survive a change it should have invalidated. | **High** (stale `.drv` → wrong build) | **Medium** | The **leak invariant** ([12](12-incremental-evaluation-cache.md) §5.2) keeps internal hashes out of Nix-observed hashes; the **differential harness** catches any mis-cached value that altered a `.drv`; **`AOS_NIX_CACHE=0`** gives a minimal reproducer when cached and uncached runs disagree; **periodic cold re-validation** in CI catches latent under-tracking ([12](12-incremental-evaluation-cache.md) §8.3); and the **permanent `NixCli` fallback** is the ultimate reference. A cache miss only ever costs a recompute, never a wrong answer. |
 | **R8** | **One-shot CLI is the worst case for a JIT.** The dominant AOS workload is one-shot `aos build`, which gives the JIT no time to amortize warmup; tier 1/2 may never pay for themselves in CLI mode. | **Medium** (wasted JIT effort in the dominant mode) | **Medium** | The win in CLI mode is expected to come from **P0 (cache) + P3 (arena) + tier-0 improvements**, with the JIT reserved for daemon mode ([03](03-architecture-overview.md) §7 Q1). **Copy-and-patch** ([01](01-motivation-and-goals.md) §4, [08](08-execution-tiers-and-cranelift.md)) is the ultra-low-warmup hedge to measure if Cranelift's baseline warmup proves too high. Crucially, the JIT (rank 4) is deferred *behind* the cache and arena precisely so this risk is characterized before it is incurred. |
-| **R9** | **Concurrent/moving GC × thunk mutation.** The interaction of a concurrent moving collector with the monotonic thunk-update protocol and JIT-emitted read/write barriers is the deepest unsolved coupling in the design ([03](03-architecture-overview.md) §7 Q3). | **High** (subtle GC/JIT bugs) | **Low** (daemon-only) | **Daemon-mode only**; the dominant one-shot CLI mode sidesteps it entirely via the **never-free bump arena** ([06](06-memory-management-and-gc.md)). It is explicitly **rank 5** (measured follow-up), not on the critical path, and the `aos_alloc_*` runtime-symbol discipline ([03](03-architecture-overview.md) §4.5) localizes the coupling to the allocator implementation rather than spreading it through JIT-emitted code. |
+| **R9** | **Concurrent/moving GC × thunk mutation.** The interaction of a concurrent moving collector with the monotonic thunk-update protocol and JIT-emitted read/write barriers is the deepest unsolved coupling in the design ([03](03-architecture-overview.md) §7 Q3). | **High** (subtle GC/JIT bugs) | **Low** (daemon-only) | **Daemon-mode only**; the dominant one-shot CLI mode sidesteps it entirely via the **never-free bump arena** ([06](06-memory-management-and-gc.md)). It is explicitly **rank 5** advanced-stack work, not on the one-shot critical path, and the `aos_alloc_*` runtime-symbol discipline ([03](03-architecture-overview.md) §4.5) localizes the coupling to the allocator implementation rather than spreading it through JIT-emitted code. |
 
 ### 4.1 The asymmetry that orders the register
 
@@ -395,15 +398,19 @@ here so the design record does not overstate certainty.
   reducing the JIT (rank 4) and the rank-5 tail to measured-but-deferred
   follow-ups ([01](01-motivation-and-goals.md) §7,
   [12](12-incremental-evaluation-cache.md) §1). The P1/P2 measure-first data
-  should settle it. *This is the single most consequential open question in the
-  roadmap; if the answer is yes, phases P5–P8 may never be built.* **Open until
-  measured.**
+  should settle it. *This is the single most consequential ordering question in
+  the roadmap; if the answer is yes, later tiers still exist under the budget
+  mandate but no longer carry the same short-workload urgency.* **Open until P2
+  cache measurements exist.**
 
-- **Q-B — What is the real cold-eval ceiling on AOS?** We do not yet have the
-  baseline `nix-instantiate` + `NIX_SHOW_STATS` numbers for the AOS closure that
-  the measure-first gate demands ([01](01-motivation-and-goals.md) §5.1). Until
-  P1 produces them, C3's target speedup multiple is undefined *by design* — the
-  baseline sets the target, not a guess. **Open until P1.**
+- **Q-B — What is the real cold-eval ceiling on AOS?** The committed P1
+  baseline gives the representative `nix-instantiate` + `NIX_SHOW_STATS`
+  numbers that the measure-first characterization needs
+  ([01](01-motivation-and-goals.md) §5.1). C3's target is now anchored by a
+  measurement instead of a guess. **Resolved for the committed representative P1
+  slice on 2026-06-24**:
+  [phase1-baseline-characterization.md](phase1-baseline-characterization.md).
+  The larger CI workload distribution remains Q-C.
 
 - **Q-C — What fraction of AOS CI eval time is cold vs warm?** The cache's entire
   value is in re-evaluation; if AOS CI is dominated by cold first-runs on fresh
@@ -566,16 +573,17 @@ AOS package set. Build it in this order.
       `--all` package, `--systems` toplevel, explicit toolchain, and optional
       lang-conformance corpora; and fail corpus runs with binary all-or-nothing
       semantics.
-- [ ] Full `.drv` acceptance gate still open: the harness must be byte-green
-      from `NixNative` vs the pinned C++ `nix-instantiate` over the full AOS
-      closure and must block regressions through the default-off, shadow, and
-      default-on rollout gates.
+- [x] Full `.drv` acceptance gate: the harness is byte-green from `NixNative` vs
+      the pinned C++ `nix-instantiate` over the full AOS closure and must block
+      regressions through the default-off, shadow, and default-on rollout gates.
 - [x] Baseline/stat capture tooling: `NixCli::instantiate_with_stats`,
       `aos nix-diff --oracle-stats`, `aos nix-bench`, benchmark corpus discovery,
       stats aggregation, and the byte-parity guard before recording are in place.
-- [ ] Recorded baseline still open: capture and commit the actual full AOS
-      closure `nix-instantiate` wall-clock + `NIX_SHOW_STATS` (thunks, fn calls,
-      gc); this is the number that sets C3's target and answers Q-B.
+- [x] Recorded baseline: capture and commit representative AOS
+      `nix-instantiate` wall-clock + `NIX_SHOW_STATS` (thunks, fn calls, gc) in
+      `phase1-baseline.jsonl`; the P1.5 characterization in
+      [phase1-baseline-characterization.md](phase1-baseline-characterization.md)
+      sets the initial C3 target and answers Q-B for the committed slice.
 - [x] Current fuzz/conformance scaffolds: `cargo-fuzz` targets and seed corpora
       for `internal_diff_raw` and `parity_json`, source-seed passthrough,
       structure-aware valid-expression generation, the configured C++ Nix lang
@@ -647,23 +655,24 @@ boundaries match [28](28-generalization-and-language-dialects.md) §3 /
 The roadmap is fixed at its head and ranked through its body. Phase 1 — parser,
 scope resolution, the tree-walk correctness oracle, and the differential
 `.drv`-diff harness — is built first and non-negotiably, because it is the only
-way to produce both the baseline eval-time number the measure-first gate demands
-and the parity proof on AOS's `mkDerivation`/`ccWrapper`/`evalModules`
-constructs that the acceptance gate demands, *before* any optimizing compiler
-exists. The P1.5 gate can cancel the project if eval turns out not to be the
-bottleneck. After that, the ranked 90% subset delivers the biggest systemic win
-first — the incremental early-cutoff cache, which may solve the build-time
-problem on its own and pays off even on the oracle — then the arena/precise GC,
-then the strictness/escape analyses (all three of which help the tree-walk tier
-before any JIT exists), then hidden classes + PIC and the Cranelift tiers, and
-finally the measured-only tail of pointer tagging, NaN-boxing, full-laziness,
-region inference, parallel forcing, and concurrent GC. The risk register is a
-single theme stated nine ways: a wrong `.drv` is catastrophic and a slow `.drv`
-is merely slow, so the fast path is never the final arbiter — the tree-walk
-oracle and the permanent `NixCli` fallback are always there to catch it, and
-`AOS_NIX_NATIVE` stays default-Off until the harness is byte-green on the full
-closure. The fastest evaluator is the one that does not evaluate; the safest
-rollout is the one that can be undone with a single environment variable.
+way to produce both the baseline eval-time number the measure-first
+characterization needs and the parity proof on AOS's
+`mkDerivation`/`ccWrapper`/`evalModules` constructs that the acceptance gate
+demands, *before* any optimizing compiler exists. P1.5 characterizes where eval
+time goes and orders the committed optimization stack. After that, the ranked
+sequence delivers the biggest systemic win first — the incremental early-cutoff
+cache, which may solve the build-time problem on its own and pays off even on
+the oracle — then the arena/precise GC, then the strictness/escape analyses
+(all three of which help the tree-walk tier before any JIT exists), then hidden
+classes + PIC and the Cranelift tiers, and finally the advanced tail of pointer
+tagging, NaN-boxing, full-laziness, region inference, and concurrent moving GC.
+The risk register is a single theme stated nine ways: a wrong
+`.drv` is catastrophic and a slow `.drv` is merely slow, so the fast path is
+never the final arbiter — the tree-walk oracle and the permanent `NixCli`
+fallback are always there to catch it, and `AOS_NIX_NATIVE` stays default-Off
+until the harness is byte-green on the full closure. The fastest evaluator is
+the one that does not evaluate; the safest rollout is the one that can be undone
+with a single environment variable.
 
 ---
 
@@ -675,7 +684,7 @@ cites.
 
 - Measure-first gate, success criteria, backend selection, and the long-tail /
   `nix-compat` open questions: [motivation and goals](01-motivation-and-goals.md).
-- The ranked subset, the tier model, the acceptance gate as an architectural
+- The ranked build sequence, the tier model, the acceptance gate as an architectural
   force, and the per-rank prior-art mapping:
   [architecture overview](03-architecture-overview.md).
 - Early cutoff, the verifying/constructive trace model, hashing policy, and the

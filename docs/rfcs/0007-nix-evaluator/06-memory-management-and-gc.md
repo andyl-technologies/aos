@@ -628,7 +628,8 @@ explicitly as such.** Open questions:
 We therefore scope region inference as: (1) a *conceptual unification* of arena
 and nursery, realized concretely as (2) a **lexical/escape-driven region pass**
 that pops obvious non-escaping sub-arenas, with (3) *full* effect-based region
-inference flagged as an open research item, not a committed deliverable.
+inference built as the advanced P8 variant and kept only where profiles show it
+beats the simpler lexical/escape policy.
 
 ---
 
@@ -640,8 +641,8 @@ Stop-the-world pauses are irrelevant to a CLI batch job (Tier A never collects)
 and tolerable for a daemon doing bulk CI evaluation. They become a problem only
 for *interactive* daemon use (editor integration, a responsive registry hub)
 where a multi-hundred-millisecond major-GC pause is user-visible. Concurrent
-collection is therefore explicitly a **measured follow-up**, last in the RFC's
-ranked subset, not part of the first cut.
+collection is therefore explicitly a P8 **advanced measured variant**, last in
+the RFC's ranked build sequence, not part of the first cut.
 
 ### 6.2 The ZGC / Shenandoah model and how it maps
 

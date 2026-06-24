@@ -295,7 +295,7 @@ and runs alongside the tail of Phase 1.
 
 **Ordering.** Phase 1b *enters* once the parser → Core IR → oracle skeleton
 compiles and the first fixtures are byte-green; it overlaps the remainder of
-Phase 1 feature work and the P1.5 measure-first gate; it **must complete before
+Phase 1 feature work and the P1.5 characterization; it **must complete before
 Phase 2**, because Phase 2 builds `ratchet-cache` and the open effect lattice and
 those should be *born* in the new model, not retrofitted.
 

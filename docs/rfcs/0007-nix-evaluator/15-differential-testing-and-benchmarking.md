@@ -467,7 +467,7 @@ The exact field set varies by Nix version, but the load-bearing ones are:
 | GC time / bytes | collector cost | G4 (precise GC replacing Boehm) |
 | symbol-table size | interning pressure | G5 (`u32` symbol interning) |
 
-This is exactly the phase-attribution data the measure-first gate in
+This is exactly the phase-attribution data the measure-first characterization in
 [motivation and goals](01-motivation-and-goals.md) §5 demands: a large
 `nrThunks` with high GC time argues for G4; a small cold/warm gap with high
 attribute-lookup counts argues for G5; a large cold/warm gap argues for the G2
@@ -594,14 +594,15 @@ closure.
 
 ## 6. The measure-first principle in practice
 
-The measure-first gate (defined in [motivation and goals](01-motivation-and-goals.md)
-§5) is not a one-time ceremony. This document is where it is *operationalized*
-into a standing discipline.
+The measure-first characterization (defined in
+[motivation and goals](01-motivation-and-goals.md) §5) is not a one-time
+ceremony. This document is where it is *operationalized* into a standing
+discipline.
 
 ### 6.1 The opening measurement (phase 1 deliverable)
 
-Before any optimizing-compiler work, phase 1 produces the baseline the gate
-demands:
+Before optimization work is ordered, phase 1 produces the baseline the
+characterization needs:
 
 ```text
    1. Phase-attribute wall-clock on representative AOS workloads:
@@ -617,15 +618,17 @@ demands:
          high GC time           => evidence for G4 (precise GC)
          high attr-lookup count => evidence for G5 (hidden classes)
 
-   GATE:  eval dominant?  ─ yes ─► proceed with the ranked roadmap (G2 first)
-                          └ no  ─► STOP / re-scope: the bottleneck is build
-                                   or I/O; an evaluator does not help
+   CHARACTERIZE:
+      eval-dominated short/repeated workloads => prioritize G2/G3/G4 first
+      build/I/O-dominated long realizations   => avoid false global claims;
+                                                validate repeated/no-op eval wins
 ```
 
 This is also the phase that builds the tree-walk oracle and the `.drv`-diff
-harness *first* — so that the baseline number (which the gate needs) and the
-parity proof (which C1 needs) both exist before a single Cranelift instruction
-is emitted. The build order is fixed by the gate (see
+harness *first* — so that the baseline number (which the characterization
+needs) and the parity proof (which C1 needs) both exist before a single
+Cranelift instruction is emitted. The build order is fixed by the
+characterization (see
 [motivation and goals](01-motivation-and-goals.md) §5.3 and the roadmap in
 [roadmap and risks](17-roadmap-and-risks.md)).
 
@@ -885,8 +888,8 @@ The cutover is permitted **iff all** of the following are simultaneously true:
       microbenchmarks, with `NIX_SHOW_STATS` deltas, commit-keyed history,
       regression blocking, and perf-win admissibility tooling; `aos nix-measure`
       records eval/build phase attribution plus cold/warm samples for the
-      non-diagnostic real-workload measure-first gate (§5, §6.1). This supports
-      the benchmark premise but does not establish a speed win.
+      non-diagnostic real-workload measure-first characterization (§5, §6.1).
+      This supports the benchmark premise but does not establish a speed win.
 - [ ] **Benchmark premise result remains.** Before default-on, run the
       representative real AOS workload benchmark gate and show aos-nix at or below
       C++ Nix wall-clock with green `.drv` parity and explanatory counters; a
@@ -990,7 +993,7 @@ and `NixCli` retained as a permanent fallback — every box a harness result, an
 single unchecked box keeping `AOS_NIX_NATIVE` default-off.
 
 **Performance — the defended budget.** `NIX_SHOW_STATS`/`NIX_SHOW_STATS_PATH`
-supply the baseline phase-attribution that the **measure-first** gate demands,
+supply the baseline phase-attribution that the **measure-first** discipline demands,
 and aos-nix mirrors those counters (plus its own `early_cutoffs`,
 `inline_cache_hits`, `tier_promotions`, `deopts`) so every optimization's win is
 *explained*, not merely observed. **Per-commit, Windtunnel-style benchmarking**
@@ -1035,7 +1038,7 @@ This document *is* the gate. The differential `.drv`-diff harness is a **P1** de
 
 ### Eval statistics: where the time goes (§4)
 
-- [x] `NIX_SHOW_STATS` / `NIX_SHOW_STATS_PATH` baseline capture (JSON, `jq`-queryable) on representative AOS workloads, parsed defensively against the single pinned Nix version (§4.1): `NixCli::instantiate_with_stats` sets `NIX_SHOW_STATS=1` plus a temporary `NIX_SHOW_STATS_PATH`, captures elapsed wall time, returns the raw stats JSON, prefers the stats file while falling back to stderr/stdout JSON extraction, accepts added fields by preserving the object and recognizing known stats keys, and fails loudly on missing/multiple stats objects. `aos nix-diff --oracle-stats` exposes the capture path for single attrs plus `--all`/`--systems`, JSON reports carry raw stats and elapsed time, and corpus reports aggregate captured count plus elapsed total/average. Covered by stats-file preference/fallback/parser rejection tests, non-UTF-8 stderr-with-file handling, single-report JSON tests, and corpus aggregation tests; this does not complete the separate measure-first kill gate or aos-nix mirrored-counter rows — **P1**, `C-9`; the phase-attribution data the measure-first gate consumes.
+- [x] `NIX_SHOW_STATS` / `NIX_SHOW_STATS_PATH` baseline capture (JSON, `jq`-queryable) on representative AOS workloads, parsed defensively against the single pinned Nix version (§4.1): `NixCli::instantiate_with_stats` sets `NIX_SHOW_STATS=1` plus a temporary `NIX_SHOW_STATS_PATH`, captures elapsed wall time, returns the raw stats JSON, prefers the stats file while falling back to stderr/stdout JSON extraction, accepts added fields by preserving the object and recognizing known stats keys, and fails loudly on missing/multiple stats objects. `aos nix-diff --oracle-stats` exposes the capture path for single attrs plus `--all`/`--systems`, JSON reports carry raw stats and elapsed time, and corpus reports aggregate captured count plus elapsed total/average. Covered by stats-file preference/fallback/parser rejection tests, non-UTF-8 stderr-with-file handling, single-report JSON tests, and corpus aggregation tests; this does not by itself complete the separate P1.5 characterization or aos-nix mirrored-counter rows — **P1**, `C-9`; the phase-attribution data the measure-first discipline consumes.
 - [x] aos-nix mirrored counters named to parallel `NIX_SHOW_STATS` (`thunks_forced`/`allocated`/`elided`, `inline_cache_hits`/`misses`, `shape_transitions`, `gc_bytes`/`gc_pause_us`, `tier_promotions`, `deopts`, `cache_hits`/`early_cutoffs`), surfaced through `tracing` (§4.2): `EvalStats` is returned on every owned tree-walk `EvalOutcome`, `TreeWalk::stats()` exposes live snapshots, successful public evaluation paths emit the same field names through the `aos_nix::eval::stats` tracing target, and the current P1 oracle increments thunk allocation/force/reuse counters plus parse-cache and `findFile` cache hit/miss counters while deriving heap chunk/reserved/used bytes from the bump arena. Later subsystem counters remain schema-stable zeroes until their subsystem lands (`early_cutoffs` **P2**, shape counters **P5**, tier counters **P6/P7**), so downstream diagnostics can diff the same field set from day one; `early_cutoffs` is the direct instrument for criterion **C4** ([24](24-observability-and-diagnostics.md) §7). Covered by `eval_outcome_reports_mirrored_stats`, `eval_stats_are_emitted_through_tracing`, and the full `aos-nix` crate test/source-size gates.
 
 ### Per-commit benchmarking — the defended budget (§5)
@@ -1047,8 +1050,8 @@ This document *is* the gate. The differential `.drv`-diff harness is a **P1** de
 
 ### The measure-first principle and the cutover gate (§6, §8)
 
-- [x] Opening measurement gate tooling for the **P1.5** kill/continue gate (§6.1) — phase-attribute wall-clock (`nix-instantiate` vs `nix-build`), `NIX_SHOW_STATS` breakdown, and cold-vs-warm capture with a proceed/stop decision. `aos nix-measure` reuses the real-workload portion of the benchmark corpus, captures cold and warm `nix-instantiate` samples with raw `NIX_SHOW_STATS`, times `nix-build --no-out-link` for the same workload, records eval/build fraction plus warm delta under ignored `.aos-benchmarks/nix-measure.jsonl`, emits an aggregate decision against `--min-eval-fraction` (default 0.50), can turn stop into a failing gate with `--fail-on-stop`, and excludes diagnostic fake-builder microbenchmarks from build-phase measurement — **P1.5** tooling, `S-18`/`M-1`/`M-2`/`M-3`.
-- [ ] The opening measurement baseline result: run the **P1.5** gate on representative real workloads and record the actual proceed/stop characterization — proceed with the ranked roadmap iff eval is dominant, else STOP/re-scope (§6.1). *Under the unlimited-budget mandate this is the one hard kill gate; the measure-first elsewhere selects winners, never descopes.* This remains unchecked until the selected real workloads realize cleanly enough for `nix-build --no-out-link` timings to complete.
+- [x] Opening measurement tooling for the **P1.5** characterization (§6.1) — phase-attribute wall-clock (`nix-instantiate` vs `nix-build`), `NIX_SHOW_STATS` breakdown, and cold-vs-warm capture with a recorded action field. `aos nix-measure` reuses the real-workload portion of the benchmark corpus, captures cold and warm `nix-instantiate` samples with raw `NIX_SHOW_STATS`, times `nix-build --no-out-link` for the same workload, records eval/build fraction plus warm delta under ignored `.aos-benchmarks/nix-measure.jsonl`, emits an aggregate decision against `--min-eval-fraction` (default 0.50), can turn stop into a failing local policy check with `--fail-on-stop`, and excludes diagnostic fake-builder microbenchmarks from build-phase measurement — **P1.5** tooling, `S-18`/`M-1`/`M-2`/`M-3`.
+- [x] The opening measurement baseline result: run the **P1.5** characterization on representative real workloads and record the actual eval/build/cold/warm breakdown. The committed record is `phase1-baseline.jsonl`; the written characterization is [phase1-baseline-characterization.md](phase1-baseline-characterization.md). Under the unlimited-budget mandate this result orders and parallelizes P2-P8; it does not decide whether those phases exist.
 - [x] Perf-PR admissibility gate tooling for the standing rule (§6.2): `aos nix-bench --require-perf-win` turns the benchmark report into a hard admission check that requires green byte `.drv` parity, no significant regressions, at least one non-diagnostic workload with a thresholded wall-clock improvement, and a non-empty `NIX_SHOW_STATS` delta breakdown for the improving workload before the run can be treated as a perf win. The JSON report carries the same `admissibility` decision block for CI consumption — every phase, criterion **C6** tooling.
 - [ ] The standing perf-PR admissibility rule wired into the repository CI runner: CI must invoke the perf-win gate on representative real workloads, and a missing green `.drv` gate (veto), real-workload wall-clock improvement (budget), or counter breakdown explaining the win (diagnosis) means the PR does not land as a perf win (§6.2) — every phase, criterion **C6**. This remains unchecked until the actual CI entry point exists in this repository and runs the gate, not just the local policy tooling.
 - [ ] The single falsifiable cutover gate (§8.1) — full-closure byte parity (zero divergent roots, incl. the toolchain ladder), conformance green with documented exclusions, a fuzzing budget at zero new divergence (clock resets on any evaluator change), a shadow-mode soak at zero divergence, the benchmark premise met, and `NixCli` retained permanently — every box a harness result, any one unchecked keeps the default off (§8, §8.1) — `C-18`; unlocks rollout **Phase D** default-on for `instantiate`.

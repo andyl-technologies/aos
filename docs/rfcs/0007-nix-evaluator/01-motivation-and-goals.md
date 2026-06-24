@@ -4,9 +4,8 @@ This document opens the RFC-0007 design set for **aos-nix**, a from-scratch,
 state-of-the-art Nix language evaluator written in Rust and shipped as a new
 crate (`crates/aos-nix`) inside the ANDYL OS (AOS) monorepo. It establishes
 *why* the project exists, what it is and is not allowed to do, the
-**measure-first gate** that must be cleared before a single line of optimizing
-compiler is written, and the concrete success criteria by which the whole
-effort will be judged.
+**measure-first discipline** that orders optimization work, and the concrete
+success criteria by which the whole effort will be judged.
 
 The remaining documents in the set develop the architecture in depth: the
 [compatibility constraints](02-compatibility-constraints.md) that bound every
@@ -75,9 +74,10 @@ the eval path:
 Real Nix still *builds* the `.drv` that aos-nix emits. We are not touching the
 build daemon, the sandbox, the substituter, or NAR/narinfo handling beyond what
 is needed to emit byte-identical derivations. This is precisely why the
-**measure-first gate** in §5 is mandatory: we must *prove* eval is the
-bottleneck on real AOS workloads before optimizing it, because optimizing the
-wrong phase is wasted engineering.
+**measure-first discipline** in §5 is mandatory: we must measure the eval/build
+split and the eval counter breakdown before choosing optimization priority,
+because optimizing the wrong phase first is wasted engineering even when the
+full technique stack is in scope.
 
 ### 1.1 Why this is worth a from-scratch evaluator
 
@@ -347,21 +347,21 @@ The canonical decision, recorded here and justified in
 
 ---
 
-## 5. The measure-first gate
+## 5. The measure-first characterization
 
-> **No optimizing-compiler work begins until we have *measured* that evaluation
-> — not building, not I/O — is the dominant cost on representative AOS
-> workloads.**
+> **No optimization work is prioritized without measuring where evaluation time
+> goes — separately from building and I/O — on representative AOS workloads.**
 
-This gate exists because the entire premise of aos-nix ("eval is a bottleneck")
-is an empirical claim, and the cost of being wrong is enormous: building a
-tiered JIT and a precise GC to accelerate a phase that turns out to be 5% of
-wall-clock is a catastrophic misallocation. The synthesis thesis is only worth
-pursuing if the measurement supports it.
+This checkpoint exists because the performance premise of aos-nix is empirical:
+different AOS workloads can be build-bound, eval-bound, or dominated by no-op
+and cache-hit overhead. Under the budget mandate in
+[roadmap and risks](17-roadmap-and-risks.md) §0, a low eval fraction does not
+cancel the project. It changes the order, staffing, and validation targets for
+the committed optimization stack.
 
 ### 5.1 What we measure, and how
 
-The gate is cleared by a measurement protocol, not a vibe:
+The characterization is produced by a measurement protocol, not a vibe:
 
 1. **Phase attribution on real workloads.** Time `nix-instantiate` (pure eval)
    separately from `nix-build` (eval + realise) across a representative slice of
@@ -377,37 +377,38 @@ The gate is cleared by a measurement protocol, not a vibe:
    for the G2 incremental-cache thesis; a small gap with high `NIX_SHOW_STATS`
    GC time points instead at G4.
 
-### 5.2 Gate outcomes
+### 5.2 Characterization outcomes
 
 ```text
-   measure eval share of wall-clock on AOS workloads
+   measure eval share and NIX_SHOW_STATS on AOS workloads
                  │
-        ┌────────┴─────────┐
-        │                  │
-   eval dominant       eval minor
-        │                  │
-   PROCEED with        STOP / re-scope:
-   the ranked          the bottleneck is build or I/O;
-   roadmap (G2 first)  an evaluator does not help
+        ┌────────┴──────────┐
+        │                   │
+   eval dominates       build/I/O dominates
+        │                   │
+   prioritize cache,    keep the full stack in scope,
+   heap, analyses       but validate against repeated/no-op
+   for short loops      eval and avoid false global claims
 ```
 
-The gate is not a one-time ceremony. Per-commit benchmarking (Windtunnel-style)
-and the `NIX_SHOW_STATS`/`AOS_NIX`-stats counters keep the measurement live, so
-that *each* optimization in the roadmap is justified by a measured delta before
-it lands, not by belief that it "should" be faster. The corollary mantra,
-carried throughout the set: **the fastest evaluator is the one that does not
-evaluate** — which is why G2 (the incremental cache) leads the roadmap even
-though it is "less interesting" than a JIT.
+The checkpoint is not a one-time ceremony. Per-commit benchmarking
+(Windtunnel-style) and the `NIX_SHOW_STATS`/`AOS_NIX`-stats counters keep the
+measurement live, so that *each* optimization in the roadmap is justified by a
+measured delta before it lands, not by belief that it "should" be faster. The
+corollary mantra, carried throughout the set: **the fastest evaluator is the one
+that does not evaluate** — which is why G2 (the incremental cache) leads the
+roadmap even though it is "less interesting" than a JIT.
 
-### 5.3 Build order implied by the gate
+### 5.3 Build order implied by characterization
 
-Because the gate demands a baseline number and a parity proof *before* any
-optimizing compiler, **phase 1 is fixed**: build the recursive-descent parser,
-scope resolution, the tree-walk oracle, and the differential `.drv` harness
-*first*. That phase simultaneously (a) yields the baseline eval-time number the
-gate needs, and (b) proves byte-identical parity is achievable on the AOS
-constructs that matter — *before* a single Cranelift instruction is emitted.
-The full ordering is in [roadmap](17-roadmap-and-risks.md).
+Because the characterization demands a baseline number and a parity proof before
+optimization work can be trusted, **phase 1 is fixed**: build the
+recursive-descent parser, scope resolution, the tree-walk oracle, and the
+differential `.drv` harness *first*. That phase simultaneously (a) yields the
+baseline eval-time number the characterization needs, and (b) proves
+byte-identical parity is achievable on the AOS constructs that matter —
+*before* a single Cranelift instruction is emitted. The full ordering is in
+[roadmap](17-roadmap-and-risks.md).
 
 ---
 
