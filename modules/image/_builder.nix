@@ -3,18 +3,18 @@
 ##! Produces a UEFI-bootable GPT disk image from an evaluated AOS system
 ##! configuration. The image contains:
 ##!
-##!   Partition 1 (ESP)    — vfat, 512 MiB
+##!   Partition 1 (ESP)    — vfat, sized to its contents x2 (A/B headroom)
 ##!                          EFI/BOOT/BOOTX64.EFI              (UEFI fallback)
 ##!                          EFI/systemd/systemd-bootx64.efi   (sd-boot canonical)
 ##!                          EFI/Linux/aos-<version>.efi       (UKI)
 ##!                          loader/loader.conf                (sd-boot config)
-##!   Partition 2 (root-a) — ext4, sized to fit the rootfs closure
+##!   Partition 2 (root-a) — rootFsType (erofs/ext4), sized to the rootfs image
 ##!
 ##! Ignition creates root-b, swap, and /var partitions on first boot
 ##! in the unallocated space after root-a.
 ##!
 ##! Build strategy (no losetup/mount — fully sandbox-compatible):
-##!   1. lib/build/rootfs.nix builds root.img (ext4, root-owned)
+##!   1. lib/build/rootfs.nix builds root.img (erofs or ext4, root-owned)
 ##!   2. aos-uki assembles vmlinuz + initrd + cmdline + os-release into a UKI
 ##!   3. Populate ESP tree (sd-boot + UKI + loader.conf)
 ##!   4. mkfs.vfat + mcopy → creates FAT32 ESP image
@@ -38,13 +38,11 @@
 
   version = system.config.aos.system.version;
 
-  # Fixed-size 512 MiB ESP. Accommodates one UKI plus sd-boot with
-  # plenty of headroom for a future sysupdate A/B flow (two UKIs
-  # simultaneously during upgrades).
-  espBytes = 512 * 1024 * 1024;
+  # The ESP is sized at build time to its actual contents (the UKI + sd-boot)
+  # times two — headroom for a sysupdate A/B flow that stages a second UKI
+  # during upgrades — plus FAT overhead, floored at 128 MiB. See the build
+  # script's "Create vfat ESP" step. Only the start sector is fixed here.
   espStartSector = 2048; # 1 MiB GPT + alignment
-  espSectors = espBytes / 512;
-  rootStartSector = espStartSector + espSectors;
 
   # UEFI ESP partition GUID.
   espGuid = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
@@ -191,8 +189,18 @@
           # mount needed. MTOOLS_SKIP_CHECK=1 is required because mcopy
           # otherwise refuses to write to a plain file with no
           # ~/.mtoolsrc entry.
-          echo "==> Creating vfat ESP image ($(( ${toString espBytes} / 1048576 )) MiB)"
-          truncate -s ${toString espBytes} esp.img
+          # Size the ESP to its contents (UKI + sd-boot) x2 — headroom for an
+          # A/B sysupdate staging a second UKI — plus 32 MiB FAT overhead,
+          # rounded up to MiB and floored at 128 MiB (FAT32 minimum comfort).
+          esp_content_kib=$(du -sk esp | cut -f1)
+          esp_mib=$(( (esp_content_kib * 2 + 32768) / 1024 + 1 ))
+          if [ "$esp_mib" -lt 128 ]; then esp_mib=128; fi
+          esp_bytes=$(( esp_mib * 1048576 ))
+          esp_sectors=$(( esp_bytes / 512 ))
+          root_start_sector=$(( ${toString espStartSector} + esp_sectors ))
+
+          echo "==> Creating vfat ESP image ($esp_mib MiB)"
+          truncate -s "$esp_bytes" esp.img
           mkfs.vfat -F 32 -n ESP esp.img
           export MTOOLS_SKIP_CHECK=1
           for entry in esp/*; do
@@ -203,7 +211,7 @@
           root_sectors=$(( root_bytes / 512 ))
           # 1 MiB (2048 sectors) at the start for GPT header + alignment,
           # plus 1 MiB at the end for the backup GPT header.
-          disk_sectors=$(( ${toString rootStartSector} + root_sectors + 2048 ))
+          disk_sectors=$(( root_start_sector + root_sectors + 2048 ))
           disk_bytes=$(( disk_sectors * 512 ))
           echo "==> Assembling $(( disk_bytes / 1048576 )) MiB GPT image"
           truncate -s "$disk_bytes" image.raw
@@ -213,16 +221,17 @@
           # the trailing unallocated space by ignition on first boot.
           sfdisk image.raw <<PTABLE
           label: gpt
-          size=${toString espSectors}, type=${espGuid}, name="ESP"
+          size=$esp_sectors, type=${espGuid}, name="ESP"
           size=$root_sectors, type=${linuxGuid}, name="root-a"
           PTABLE
 
           echo "    Writing ESP at sector ${toString espStartSector}"
           dd if=esp.img of=image.raw bs=512 seek=${toString espStartSector} conv=notrunc status=none
-          echo "    Writing root at sector ${toString rootStartSector}"
-          dd if=root.img of=image.raw bs=512 seek=${toString rootStartSector} conv=notrunc status=none
+          echo "    Writing root at sector $root_start_sector"
+          dd if=root.img of=image.raw bs=512 seek=$root_start_sector conv=notrunc status=none
 
           echo "$root_bytes" > root-size-bytes
+          echo "$esp_mib" > esp-size-mib
           echo "==> Image assembly complete"
         '';
       }
@@ -237,7 +246,7 @@
           root_size_mib=$(( root_size_bytes / 1048576 ))
           disk_size_bytes=$(stat -c %s "$out/aos-${name}.img")
           disk_size_mib=$(( disk_size_bytes / 1048576 ))
-          esp_size_mib=$(( ${toString espBytes} / 1048576 ))
+          esp_size_mib=$(cat esp-size-mib)
           cat > $out/image-info.json <<META
           {
             "name": "${name}",
