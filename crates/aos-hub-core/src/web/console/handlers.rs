@@ -195,7 +195,7 @@ fn require_sudo(session: &Session, headers: &HeaderMap) -> Result<(), Box<Respon
         &session.csrf(),
         &return_to,
         None,
-        std::time::Instant::now(),
+        crate::clock::Instant::now(),
     );
     Err(Box::new((StatusCode::FORBIDDEN, Html(page)).into_response()))
 }
