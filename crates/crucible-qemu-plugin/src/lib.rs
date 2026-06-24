@@ -7,13 +7,13 @@
 //! specified by its indexed RFC-0010 files. It is an unsafe-boundary crate
 //! because the plugin speaks QEMU's C ABI and may read guest memory.
 //!
-//! Module map: the crate root currently reserves the plugin ABI boundary;
-//! `args` owns fail-closed `-plugin` argument parsing; `deadline` owns exact
-//! virtual-clock deadline introspection; `registration` owns the fail-stop
-//! registration sequencer; `setup` owns descriptor mapping and setup
-//! acknowledgement; `time_control` owns clock ownership, authorized virtual-time
-//! advancement, and the time-control ordering contract. Future modules will add
-//! entry points, device callbacks, and QEMU-facing helpers.
+//! Module map: `abi` owns the raw QEMU plugin `cdylib` entry point and inert
+//! callback scaffold; `args` owns fail-closed `-plugin` argument parsing;
+//! `deadline` owns exact virtual-clock deadline introspection; `registration`
+//! owns the fail-stop registration sequencer; `setup` owns descriptor mapping
+//! and setup acknowledgement; `time_control` owns clock ownership, authorized
+//! virtual-time advancement, and the time-control ordering contract. Future
+//! modules will add live device callback behavior and QEMU-facing helpers.
 //!
 //! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
 //! pointers and delegate to safe Rust shims for time-control, callback
@@ -23,12 +23,23 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+pub mod abi;
 pub mod args;
 pub mod deadline;
 pub mod registration;
 pub mod setup;
 pub mod time_control;
 
+pub use abi::{
+    InertDeviceCallback, MIN_SUPPORTED_VCPU_COUNT, OWNED_DEVICE_CALLBACK_KINDS,
+    PluginDeviceCallbackKind, PluginLifecycleCore, PluginLifecyclePhase, PluginStatePartition,
+    QEMU_PLUGIN_API_VERSION, QEMU_PLUGIN_INSTALL_ERROR, QEMU_PLUGIN_INSTALL_OK,
+    QEMU_PLUGIN_INSTALL_SYMBOL, QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL, QEMU_PLUGIN_VERSION_SYMBOL,
+    QemuPluginAbiError, QemuPluginExecutionModel, QemuPluginId, QemuPluginInfo, QemuTcgThreading,
+    RegisteredDeviceCallbacks, execution_model_from_qemu_info, install_inert_scaffold,
+    install_inert_scaffold_from_qemu_info, qemu_plugin_install, qemu_plugin_version,
+    validate_install_boundary,
+};
 pub use args::{
     PLUGIN_ARG_COVERAGE, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD,
     PLUGIN_ARG_WHITEBOX, PluginArgs, PluginArgsParseError, PluginInheritedFds, PluginSwitch,

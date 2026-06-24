@@ -897,12 +897,14 @@ component that makes that purity true *inside* the QEMU process.
 > after the shmem ABI ([`13-shmem-abi.md`](13-shmem-abi.md)) and control protocol
 > ([`14-protocol.md`](14-protocol.md)) primitives the plugin depends on.
 
-- [ ] **T-PLUG-1** Scaffold the `crucible-qemu-plugin` `cdylib`: the QEMU
-  `Register`/callback entry points, the `-smp 1` single-vCPU assumption, and the
-  partition of state into a lifecycle core and never-mutated device-callback
-  pointers (re-entrancy-safe); make the plugin the sole owner of the node's device
-  and channel callbacks (net TX/RX, block/9p submit/poll, white-box doorbell trap)
-  so no host component injects/completes/stamps except through these paths. —
+- [x] **T-PLUG-1** Scaffold the `crucible-qemu-plugin` `cdylib`: the QEMU
+  `qemu_plugin_version` and `qemu_plugin_install` exports, inert callback entry
+  points, QEMU API/vCPU-count validation from `qemu_info_t`, the
+  single-threaded round-robin TCG precondition, and the partition of state into a
+  lifecycle core and never-mutated device-callback pointers (re-entrancy-safe);
+  make the plugin the sole owner of the node's device and channel callbacks (net
+  TX/RX, block/9p submit/poll, white-box doorbell trap) so no host component
+  injects/completes/stamps except through these paths. —
   satisfies [PLUG-2], [PLUG-3], [PLUG-4]; spec §12.1, §12.5, §12.6, §12.7.
 - [x] **T-PLUG-2** Implement plugin-argument parsing (`simfd`, `slot`,
   `shmemfd`/`wakefd`, `whitebox`, `coverage`) as a total, fail-closed parser that
