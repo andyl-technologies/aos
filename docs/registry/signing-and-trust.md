@@ -228,11 +228,13 @@ bootstrap. The on-disk shape and fields live in
         trust starts here                  trust EVOLVES here (rotate/revoke)
 ```
 
-**The trust model: ≥2 overlapping active keys.** There is no offline-root /
-operational two-tier and no TUF-style root role. The **git lineage** (signed tag →
-commit → parent chain), plus the continuity rule of §2.6, provides the continuity, so
-a separate root tier is unnecessary. `keys.toml` lists the **active signing key(s)** —
-`id` + `key`, with **no role field** and **no `root` entry** — plus a **revoked** list.
+**The trust model: signed git lineage plus AOS-TUF release metadata.** The
+out-of-band anchor and signed git lineage (signed tag → commit → parent chain),
+plus the continuity rule of §2.6, authenticate the first accepted registry
+commit and the `keys.toml` roster. Moving-ref release commits must also carry
+AOS-TUF metadata under `tuf/`; `root.json` names role keys and thresholds,
+`targets.json` hashes the non-`tuf/` catalog, `snapshot.json` binds root/targets
+metadata, and `timestamp.json` gives the signed expiry/freshness pointer.
 
 **Rotation (overlap window).** To roll a signing key forward, publish a `keys.toml`
 that lists **both** the old and the new key, in a commit **signed by a currently-
@@ -442,16 +444,21 @@ branch-head-equals-frontier model.
 
 ---
 
-## 4. Freshness — no in-band expiry
+## 4. Freshness
 
-Signed tags carry **no in-band expiry field**. There is no `valid_until` (nor any other
-structured payload) inside a tag object — a tag is a pure signed pointer (§2.2).
-Freshness is therefore enforced **out of band**, by three cooperating mechanisms:
+Signed tags carry no expiry field; a tag is a pure signed pointer (§2.2).
+Moving-ref syncs require AOS-TUF metadata and enforce freshness in band by
+checking `tuf/timestamp.json`, whose signed payload binds the accepted snapshot
+hash and expires after the publisher's timestamp window. Explicit commit, tag,
+and version pins verify TUF signatures, hashes, and metadata version floors when
+TUF exists, but can reproduce old immutable pre-TUF snapshots without failing
+solely on missing or expired timestamp metadata. Channel tracking also keeps the
+existing pointer-level defenses:
 
 | Mechanism | Where | What it bounds |
 |---|---|---|
 | **Low CDN TTL** on `/channels` (and `info/refs`, `objects/info`) | edge / CDN policy ([`http-layout.md`](http-layout.md)) | how long a stale rollout pointer can be served before the edge re-fetches the origin |
-| **Consumer max-staleness policy** | client-side registry config | how long *this consumer* will trust a previously-fetched pointer before it MUST re-fetch and re-validate |
+| **Consumer max-staleness policy** | client-side registry config | how long *this consumer* will trust a previously-fetched channel pointer before it MUST re-fetch and re-validate |
 | **Monotonic anti-rollback floor** | consumer (§5) | the lower bound on the accepted release, regardless of pointer age |
 
 For channel-tracked registries, `apm` records its local freshness timestamp in
@@ -471,14 +478,14 @@ long TTL. A consumer that cannot reach the origin to refresh a stale channel poi
 falls back to its anti-rollback floor (§5) and its own max-staleness policy rather than
 trusting a stale pointer indefinitely.
 
-> **Trade-off:** because there is no in-band signed expiry, this freshness model is
-> **weaker** than a signed `valid_until` against a **frozen-but-validly-signed mirror**.
-> A mirror that keeps serving an old, correctly-signed channel pointer cannot be caught
-> by the pointer's own contents; it is bounded only by the consumer's max-staleness
-> policy and the floor. An in-band expiry would let the producer assert "this pointer is
-> stale after T" inside the signed object itself. This is an accepted trade for keeping
-> tags as pure signed pointers; see
-> [`../plans/registry/open-questions.md`](../plans/registry/open-questions.md).
+> **Split authority:** release metadata now has signed expiry in
+> `tuf/timestamp.json`, enforced when a moving ref selects a release; channel
+> partition tags remain pure git tag objects, so pointer freshness is still
+> bounded by CDN TTL, max-staleness, and the floor. A frozen mirror serving an
+> old release commit through a moving ref is caught by TUF expiry once the
+> accepted timestamp ages out. An explicit immutable pin is operator-chosen and
+> remains reproducible, verifying signed metadata and catalog hashes when they
+> exist without expiring old pre-cutover snapshots.
 
 ---
 
@@ -580,7 +587,7 @@ bytes.
 | Which release does my bucket get? | signed `/channels/<name>/<bucket>` partition tag (hop 1) | yes |
 | Which commit is that release? | signed `refs/tags/<semver>` release tag (hop 2) | yes |
 | Is the frontier branch trustworthy? | `refs/heads/<channel>` — **unsigned pointer** | **no** (convenience only) |
-| Is this pointer fresh? | low CDN TTL on `/channels` + consumer max-staleness policy + monotonic floor (no in-band expiry) | freshness, not forgery |
+| Is this pointer fresh? | AOS-TUF `timestamp.json` for release metadata; low CDN TTL on `/channels` + consumer max-staleness policy + monotonic floor for rollout pointers | freshness, not forgery |
 | Could I be downgraded? | consumer **monotonic floor** (semver); abort = **fix-forward** | yes |
 | Are these NAR bytes the published bytes? | `store/` realisation graph in the signed tree: decompressed SHA-256 + size must match a blessed NAR; unmapped path = hard failure when the graph is published (RFC-0005) | yes - roots content at the tag signature |
 | NAR substitution from same origin? | `store/` realisation graph (above); narinfo `Sig:` reusing the **one** Ed25519 key remains for stock-Nix consumers | yes |

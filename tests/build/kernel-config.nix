@@ -17,8 +17,9 @@
 
   configFile = "${pkgs.linux}/boot/config-${pkgs.linux.version}";
 
-  # Symbols required to be enabled (CONFIG_<name>=y). Key-free, seed-free
-  # hardening common to all supported architectures.
+  # Symbols required to be enabled (CONFIG_<name>=y). Includes key-free,
+  # seed-free hardening plus container substrate features common to all
+  # supported architectures.
   enabledCommon = [
     "INIT_STACK_ALL_ZERO"
     "INIT_ON_ALLOC_DEFAULT_ON"
@@ -36,26 +37,81 @@
     "DEBUG_WX"
     "STRICT_DEVMEM"
     "IO_STRICT_DEVMEM"
+    "CGROUPS"
+    "NAMESPACES"
+    "UTS_NS"
+    "IPC_NS"
+    "USER_NS"
+    "PID_NS"
+    "NET_NS"
     "SECURITY_DMESG_RESTRICT"
+    "BPF"
+    "BPF_SYSCALL"
+    "BPF_JIT"
+    "BPF_EVENTS"
+    "CGROUP_BPF"
+    "BPF_LSM"
+    "SECURITY_LANDLOCK"
+    "DEBUG_KERNEL"
+    "DEBUG_INFO"
+    "DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT"
+    "DEBUG_INFO_COMPRESSED_NONE"
+    "DEBUG_INFO_BTF"
+    "DEBUG_INFO_BTF_MODULES"
+    "EFI"
+    "KEYS"
+    "ASYMMETRIC_KEY_TYPE"
+    "ASYMMETRIC_PUBLIC_KEY_SUBTYPE"
+    "X509_CERTIFICATE_PARSER"
+    "PKCS7_MESSAGE_PARSER"
+    "SYSTEM_DATA_VERIFICATION"
+    "SYSTEM_TRUSTED_KEYRING"
+    "SECONDARY_TRUSTED_KEYRING"
+    "SYSTEM_BLACKLIST_KEYRING"
+    "INTEGRITY_SIGNATURE"
+    "INTEGRITY_ASYMMETRIC_KEYS"
+    "INTEGRITY_PLATFORM_KEYRING"
+    "LOAD_UEFI_KEYS"
+    "DM_VERITY"
+    "DM_VERITY_VERIFY_ROOTHASH_SIG"
+    "DM_VERITY_VERIFY_ROOTHASH_SIG_PLATFORM_KEYRING"
   ];
 
   # Symbols required to hold a specific value (CONFIG_<name>=<value>).
   valueCommon = {
     DEFAULT_MMAP_MIN_ADDR = "65536";
+    LSM = "'\"landlock,yama,integrity,selinux,bpf\"'";
+    PAHOLE_VERSION = "131";
   };
+
+  # Functional symbols required by higher-level roles.
+  enabledFunctionalCommon = [
+    "NETFILTER_NETLINK_ACCT"
+    "NFT_COMPAT"
+  ];
 
   # Symbols that must not be enabled. SECURITY_LOCKDOWN_LSM pulls in module
   # signing, whose default key generation is incompatible with a reproducible
-  # public base; the rest expose kernel memory.
+  # public base; the memory symbols expose kernel memory. The wireless stack is
+  # intentionally absent from the server/cloud base profile until a Wi-Fi
+  # profile also ships regulatory.db in early boot.
   disabledCommon = [
-    "SECURITY_LOCKDOWN_LSM"
-    "SECURITY_LOCKDOWN_LSM_EARLY"
+    "CFG80211"
+    "COMPAT_BRK"
+    "DEBUG_INFO_REDUCED"
+    "DEBUG_INFO_SPLIT"
+    "DEVKMEM"
+    "DM_VERITY_VERIFY_ROOTHASH_SIG_SECONDARY_KEYRING"
+    "MAC80211"
     "MODULE_SIG"
     "MODULE_SIG_ALL"
     "MODULE_SIG_FORCE"
-    "DEVKMEM"
     "PROC_KCORE"
-    "COMPAT_BRK"
+    "RFKILL"
+    "SECURITY_LOCKDOWN_LSM"
+    "SECURITY_LOCKDOWN_LSM_EARLY"
+    "WIRELESS"
+    "WLAN"
   ];
 
   enabledX86 = [
@@ -75,6 +131,7 @@
 
   enabled =
     enabledCommon
+    ++ enabledFunctionalCommon
     ++ lib.optionals isX86 enabledX86
     ++ lib.optionals isAarch64 enabledAarch64;
 

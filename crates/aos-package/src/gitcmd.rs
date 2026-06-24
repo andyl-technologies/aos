@@ -13,6 +13,12 @@
 //! transport — push, pull, fetch — keeps the host environment
 //! ([`transport`]): credential helpers, proxies, and `url.<base>.insteadOf`
 //! rewrites are host concerns apm must honor.
+//!
+//! This module is **test-only** (gated by `#[cfg(test)]`): production registry operations
+//! moved to libgit2 ([`crate::registry::repo`], [`crate::registry::porcelain`])
+//! and never exec `git`. It survives to build hermetic git fixtures in tests,
+//! so not every builder here is exercised.
+#![allow(dead_code)]
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -37,6 +43,9 @@ pub(crate) fn hermetic() -> std::process::Command {
 }
 
 /// Async variant of [`hermetic`].
+// Unused once the apm fetch + pack paths moved to libgit2; retained while the
+// apr write-side (registry_ops, lib) still shells out to git.
+#[allow(dead_code)]
 pub(crate) fn hermetic_async() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("git");
     cmd.envs(HERMETIC_ENV);
@@ -65,6 +74,9 @@ pub(crate) fn transport() -> std::process::Command {
 }
 
 /// Async variant of [`transport`].
+// Retained while the apr write-side still shells out to git; the apm fetch
+// path now uses libgit2 (`registry::repo`), leaving this temporarily unused.
+#[allow(dead_code)]
 pub(crate) fn transport_async() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("git");
     if let Some(path) = transport_env_path() {

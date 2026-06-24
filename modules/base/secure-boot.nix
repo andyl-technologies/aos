@@ -300,6 +300,7 @@ in {
 
       # Ship the PCR public key into the initrd for first-boot sealing.
       aos.boot.initrd.extraPackages = [pcrKeyForInitrd];
+      environment.etc."aos/pcr-sign.pem".source = "${pcrKeyForInitrd}/pcr.pem";
 
       # First boot: LUKS2-format /var and enroll a TPM2 token sealed to
       # the signed PCR policy (PCR 11, signature-flexible) plus PCR 7

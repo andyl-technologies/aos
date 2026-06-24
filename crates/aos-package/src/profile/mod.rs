@@ -1,11 +1,11 @@
 //! Profile and generation management — apm's installed-state model.
 //!
-//! A *profile* (one per [`ProfileScope`]: system or per-user) is a directory
-//! of immutable, numbered *generations*. Every mutating command (install,
-//! remove, upgrade) creates a fresh `gen-N/` rather than editing in place;
-//! the `current` symlink names the active generation and is repointed
-//! atomically, which is what makes installs transactional and rollback a
-//! pure pointer switch.
+//! A *profile* (one per package-install scope: system packages or per-user) is
+//! a directory of immutable, numbered *generations*. Every mutating command
+//! (install, remove, upgrade) creates a fresh `gen-N/` rather than editing in
+//! place; the `current` symlink names the active generation and is repointed
+//! atomically, which is what makes installs transactional and rollback a pure
+//! pointer switch.
 //!
 //! Each generation holds:
 //!
@@ -34,7 +34,7 @@ use super::types::ProfileScope;
 // Profile — a system or per-user profile directory
 // ---------------------------------------------------------------------------
 
-/// A profile (system or per-user) that manages generations of installed packages.
+/// A profile (system-package or per-user) that manages installed packages.
 ///
 /// Directory layout:
 /// ```text
@@ -100,7 +100,7 @@ impl Profile {
     /// Returns an error if the directories or the initial `state.json`
     /// cannot be created (typically a permission failure).
     pub fn open(scope: ProfileScope) -> Result<Self> {
-        Self::open_at(scope.profile_path(), scope)
+        Self::open_at(scope.package_profile_path(), scope)
     }
 
     /// Reference an existing profile for read-only inspection without touching
@@ -130,7 +130,7 @@ impl Profile {
     /// ```
     pub fn open_readonly(scope: ProfileScope) -> Self {
         Self {
-            path: scope.profile_path(),
+            path: scope.package_profile_path(),
             scope,
         }
     }

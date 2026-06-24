@@ -58,6 +58,11 @@
   extraClosures ? [],
   symlinkFarmPkgs ? [],
   postPopulate ? "",
+  # Root filesystem type for the produced image. "ext4" (default) builds a
+  # writable image via `mkfs.ext4 -d` (used by VM tests that write to root).
+  # "erofs" builds a zstd-compressed, read-only image via `mkfs.erofs` —
+  # roughly a third the size — for the immutable production boot image.
+  fsType ? "ext4",
 }: let
   toplevel = system.config.system.build.toplevel;
   kernel = system.config.system.build.kernel;
@@ -117,6 +122,7 @@ in
       pkgs.e2fsprogs
       pkgs.fakeroot
       pkgs.util-linux
+      pkgs.erofs-utils
     ];
 
     exportReferencesGraph = closureGraph;
@@ -124,6 +130,7 @@ in
     TOPLEVEL = toString toplevel;
     KERNEL = toString kernel;
     REGINFO = toString regInfo;
+    SYSTEMD_PRESETS = toString system.config.system.build.systemdSystemPresets;
     SYSTEMD = toString pkgs.systemd;
     COREUTILS = toString pkgs.coreutils;
     # `$BASH` is a bash built-in pointing at the bash executable
@@ -158,6 +165,7 @@ in
           mkdir -p rootfs/nix.lower/store
           mkdir -p rootfs/nix
           mkdir -p rootfs/usr/bin rootfs/usr/lib
+          mkdir -p rootfs/usr/lib/systemd/system-preset
           ln -sfn bin rootfs/usr/sbin
           ln -sfn usr/bin rootfs/bin
           ln -sfn usr/bin rootfs/sbin
@@ -181,6 +189,13 @@ in
           # above — /boot would otherwise be missing in production.
           mkdir -p rootfs/boot
           mkdir -m 0700 rootfs/root
+          # Root-owned APM authoring config lives on the read-only rootfs,
+          # so create it here instead of asking tmpfiles to mutate /root at
+          # boot.
+          mkdir -p rootfs/root/.config/apm/registries.d
+          chmod 0700 rootfs/root/.config
+          chmod 0755 rootfs/root/.config/apm
+          chmod 0755 rootfs/root/.config/apm/registries.d
           mkdir -p rootfs/run/current-system
 
           # ── 2. Copy the closure into /nix/store ─────────────────────────
@@ -217,10 +232,13 @@ in
           # compat symlink. Many daemons still reference /var/run paths.
           ln -sfn /run rootfs/var/run
 
-          # ── 6. /run/current-system → toplevel ───────────────────────────
+          # ── 6. Systemd preset policy ────────────────────────────────────
+          cp -a "$SYSTEMD_PRESETS"/. rootfs/usr/lib/systemd/system-preset/
+
+          # ── 7. /run/current-system → toplevel ───────────────────────────
           ln -sfn "$TOPLEVEL" rootfs/run/current-system
 
-          # ── 7. /aos-toplevel seed pointer ──────────────────────────────
+          # ── 8. /aos-toplevel seed pointer ──────────────────────────────
           # First-boot bootstrap: aos-seed-profiles.service reads this
           # symlink to populate /var/lib/profiles/system/gen-1/toplevel
           # without referencing config.system.build.toplevel directly
@@ -230,7 +248,7 @@ in
           # edge. See spec v12 §6.1.
           ln -sfn "$TOPLEVEL" rootfs/aos-toplevel
 
-          # ── 8. /aos-registration Nix DB seed ───────────────────────────
+          # ── 9. /aos-registration Nix DB seed ───────────────────────────
           # Stage-2 loads this plain text `nix-store --load-db` stream to
           # register the image closure without canonicalising/chowning store
           # contents. Copy the bytes instead of symlinking the derivation.
@@ -244,61 +262,97 @@ in
           # file on the wrong side of the overlay (and on every
           # rebuild's $TOPLEVEL, defeating per-host persistence).
 
-          # ── 9. Symlink farm for caller-supplied packages ───────────────
+          # ── 10. Symlink farm for caller-supplied packages ───────────────
           ${symlinkFarmScript}
 
-          # ── 10. Caller-supplied postPopulate hook ──────────────────────
+          # ── 11. Caller-supplied postPopulate hook ──────────────────────
           ${postPopulate}
         '';
       }
       {
         name = "mkfs";
-        script = ''
-          set -eu
+        script =
+          if fsType == "erofs"
+          then ''
+            set -eu
 
-          # Measure the populated tree. `du --apparent-size` is what
-          # matters for mkfs.ext4 -d because it does NOT preserve
-          # hardlinks (each hardlinked file becomes a separate copy).
-          apparent_kb=$(du -sk --apparent-size rootfs | cut -f1)
-          apparent_mib=$(( apparent_kb / 1024 ))
-          echo "==> rootfs apparent size: ''${apparent_mib} MiB"
-
-          # Over-provision during mkfs to allow the ext4 journal, inode
-          # table, and tree metadata to land alongside the data.
-          initial_mib=$(( apparent_mib * 3 / 2 + 256 ))
-          if [ "$initial_mib" -lt ${toString minSizeMiB} ]; then
-            initial_mib=${toString minSizeMiB}
-          fi
-
-          # fakeroot makes every file in rootfs appear as uid/gid 0
-          # to mkfs.ext4, so the resulting image has root-owned files.
-          # Without this, daemons fail ownership checks (auditd refuses
-          # to start if /etc/audit/auditd.conf isn't owned by root).
-          fakeroot -- mkfs.ext4 -d rootfs -L ${label} -m 1 -q \
-            root.img "''${initial_mib}M"
-
-          ${lib.optionalString shrinkToFit ''
-            # Shrink to minimum, then grow by headroom + 1 MiB alignment.
-            e2fsck -f -y root.img >/dev/null
-            resize2fs -M root.img >/dev/null 2>&1
-            blk_size=$(dumpe2fs -h root.img 2>/dev/null \
-                         | awk '/Block size:/{print $3}')
-            min_blocks=$(dumpe2fs -h root.img 2>/dev/null \
-                           | awk '/Block count:/{print $3}')
-            headroom_blocks=$(( ${toString headroomMiB} * 1048576 / blk_size ))
-            final_blocks=$(( min_blocks + headroom_blocks ))
-            resize2fs root.img "$final_blocks" >/dev/null 2>&1
-            final_bytes=$(( final_blocks * blk_size ))
-            final_bytes=$(( ((final_bytes + 1048575) / 1048576) * 1048576 ))
-            truncate -s "$final_bytes" root.img
-            echo "==> root.img: $(( final_bytes / 1048576 )) MiB (shrunk+headroom)"
-          ''}
-          ${lib.optionalString (!shrinkToFit) ''
+            # Read-only, zstd-compressed root for the immutable production
+            # image. --all-root forces every file to uid/gid 0 (matching the
+            # ext4 path's fakeroot, so ownership-sensitive daemons start); the
+            # default xattr tolerance preserves SELinux labels; -T0 fixes
+            # timestamps and -U pins the UUID for a reproducible image. EROFS is
+            # content-sized, so there is no over-provisioning, journal, or
+            # shrink step.
+            #
+            # Compression tuning (measured on the server closure):
+            #   * -C262144 — 256 KiB compression cluster. The 4 KiB default is
+            #     far too small for zstd to find context; 256 KiB is the knee of
+            #     the size/read-amplification curve for a RAM-ample, read-mostly
+            #     server root (a cold page fault decompresses one 256 KiB cluster;
+            #     the hot path is served from the page cache regardless).
+            #   * -Efragments,ztailpacking — packs the many small-file tails the
+            #     /nix store is full of into shared fragment blocks / inode
+            #     metadata. The single biggest win (~18 MiB) and, unlike a bigger
+            #     cluster, it adds no read amplification.
+            # Together: ~200 MiB (plain zstd-19) -> ~160 MiB. (Block dedupe was
+            # measured at 0 bytes saved — nix store paths are content-addressed.)
+            mkfs.erofs --all-root -T0 \
+              -U bdfb6fc9-0000-4000-8000-000000000001 \
+              -z zstd,level=19 \
+              -C262144 \
+              -Efragments,ztailpacking \
+              -L ${label} root.img rootfs
+            fsck.erofs root.img >/dev/null
             final_bytes=$(stat -c %s root.img)
-            echo "==> root.img: $(( final_bytes / 1048576 )) MiB (unshrunk)"
-          ''}
-          echo "$final_bytes" > rootfs-size-bytes
-        '';
+            echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-19, 256K cluster, fragments)"
+            echo "$final_bytes" > rootfs-size-bytes
+          ''
+          else ''
+            set -eu
+
+            # Measure the populated tree. `du --apparent-size` is what
+            # matters for mkfs.ext4 -d because it does NOT preserve
+            # hardlinks (each hardlinked file becomes a separate copy).
+            apparent_kb=$(du -sk --apparent-size rootfs | cut -f1)
+            apparent_mib=$(( apparent_kb / 1024 ))
+            echo "==> rootfs apparent size: ''${apparent_mib} MiB"
+
+            # Over-provision during mkfs to allow the ext4 journal, inode
+            # table, and tree metadata to land alongside the data.
+            initial_mib=$(( apparent_mib * 3 / 2 + 256 ))
+            if [ "$initial_mib" -lt ${toString minSizeMiB} ]; then
+              initial_mib=${toString minSizeMiB}
+            fi
+
+            # fakeroot makes every file in rootfs appear as uid/gid 0
+            # to mkfs.ext4, so the resulting image has root-owned files.
+            # Without this, daemons fail ownership checks (auditd refuses
+            # to start if /etc/audit/auditd.conf isn't owned by root).
+            fakeroot -- mkfs.ext4 -d rootfs -L ${label} -m 1 -q \
+              root.img "''${initial_mib}M"
+
+            ${lib.optionalString shrinkToFit ''
+              # Shrink to minimum, then grow by headroom + 1 MiB alignment.
+              e2fsck -f -y root.img >/dev/null
+              resize2fs -M root.img >/dev/null 2>&1
+              blk_size=$(dumpe2fs -h root.img 2>/dev/null \
+                           | awk '/Block size:/{print $3}')
+              min_blocks=$(dumpe2fs -h root.img 2>/dev/null \
+                             | awk '/Block count:/{print $3}')
+              headroom_blocks=$(( ${toString headroomMiB} * 1048576 / blk_size ))
+              final_blocks=$(( min_blocks + headroom_blocks ))
+              resize2fs root.img "$final_blocks" >/dev/null 2>&1
+              final_bytes=$(( final_blocks * blk_size ))
+              final_bytes=$(( ((final_bytes + 1048575) / 1048576) * 1048576 ))
+              truncate -s "$final_bytes" root.img
+              echo "==> root.img: $(( final_bytes / 1048576 )) MiB (shrunk+headroom)"
+            ''}
+            ${lib.optionalString (!shrinkToFit) ''
+              final_bytes=$(stat -c %s root.img)
+              echo "==> root.img: $(( final_bytes / 1048576 )) MiB (unshrunk)"
+            ''}
+            echo "$final_bytes" > rootfs-size-bytes
+          '';
       }
       {
         name = "install";

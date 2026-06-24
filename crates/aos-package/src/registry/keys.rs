@@ -16,6 +16,8 @@
 //!
 //! [[revoked]]
 //! id = "release-2024"
+//! key = "aos-core:Ed25519:base64..."
+//! provenance-before-sequence = 42
 //! reason = "planned retirement"
 //! ```
 //!
@@ -38,9 +40,7 @@ use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_si
 // Re-exported here so `aos_package::registry::keys::{KeysToml, RosterKey,
 // RevokedKey, KEYS_TOML_SCHEMA}` paths are unchanged; the native load/validate/
 // pin helpers below layer on top.
-pub use aos_registry_surface::manifest::{
-    KeysToml, RevokedKey, RosterKey, KEYS_TOML_SCHEMA,
-};
+pub use aos_registry_surface::manifest::{KeysToml, RevokedKey, RosterKey, KEYS_TOML_SCHEMA};
 
 /// Load and validate `keys.toml` from a checked-out registry tree.
 ///
@@ -75,20 +75,12 @@ pub fn load_keys_toml(root: &Path) -> Result<Option<KeysToml>> {
 /// Returns an error if the git invocation fails for any reason other than
 /// the file being absent, or if the roster fails validation.
 pub fn load_keys_toml_at_commit(repo_dir: &Path, commit: &str) -> Result<Option<KeysToml>> {
-    let spec = format!("{commit}:keys.toml");
-    let output = crate::gitcmd::hermetic()
-        .args(["show", &spec])
-        .current_dir(repo_dir)
-        .output()
-        .with_context(|| format!("running git show {spec}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("does not exist") || stderr.contains("exists on disk, but not in") {
-            return Ok(None);
-        }
-        bail!("git show {spec} failed: {}", stderr.trim());
-    }
-    let content = String::from_utf8_lossy(&output.stdout);
+    let Some(bytes) = crate::registry::repo::read_blob_at_blocking(repo_dir, commit, "keys.toml")
+        .with_context(|| format!("reading {commit}:keys.toml"))?
+    else {
+        return Ok(None);
+    };
+    let content = String::from_utf8_lossy(&bytes);
     let roster: KeysToml =
         toml::from_str(&content).with_context(|| format!("parsing keys.toml at {commit}"))?;
     validate_roster(&roster)?;
@@ -197,6 +189,16 @@ fn validate_roster(roster: &KeysToml) -> Result<()> {
         if entry.id.is_empty() {
             bail!("revoked key id is empty");
         }
+        if entry.key.is_some() != entry.provenance_before_sequence.is_some() {
+            bail!(
+                "revoked key '{}' must declare key and provenance-before-sequence together",
+                entry.id
+            );
+        }
+        if let Some(key) = &entry.key {
+            parse_signing_key(key)
+                .with_context(|| format!("invalid revoked key '{}'", entry.id))?;
+        }
     }
     Ok(())
 }
@@ -225,6 +227,8 @@ mod tests {
             ],
             revoked: vec![RevokedKey {
                 id: "retired".into(),
+                key: Some(KEY1.into()),
+                provenance_before_sequence: Some(17),
                 reason: Some("planned retirement".into()),
             }],
             ..KeysToml::default()
@@ -280,6 +284,8 @@ schema = 2
             }],
             revoked: vec![RevokedKey {
                 id: "old".into(),
+                key: None,
+                provenance_before_sequence: None,
                 reason: None,
             }],
             ..KeysToml::default()
@@ -296,6 +302,8 @@ schema = 2
             }],
             revoked: vec![RevokedKey {
                 id: "old".into(),
+                key: None,
+                provenance_before_sequence: None,
                 reason: None,
             }],
             ..KeysToml::default()
@@ -312,6 +320,8 @@ schema = 2
             }],
             revoked: vec![RevokedKey {
                 id: "old".into(),
+                key: None,
+                provenance_before_sequence: None,
                 reason: None,
             }],
             ..KeysToml::default()

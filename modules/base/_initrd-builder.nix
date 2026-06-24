@@ -1,6 +1,6 @@
 ##! modules/base/_initrd-builder.nix — Tier-ii systemd initrd builder
 ##!
-##! Builds a gzip-compressed cpio initramfs from pure Nix-store paths —
+##! Builds a zstd-compressed cpio initramfs from pure Nix-store paths —
 ##! no VM, no losetup. The archive is assembled from a directory tree
 ##! populated from:
 ##!
@@ -11,7 +11,7 @@
 ##!   2. `/bin/<name>` symlinks into those closures so systemd units and
 ##!      ExecStart paths can reference short names when needed.
 ##!   3. The active kernel's module tree at /lib/modules/<ver>/.
-##!   4. `/etc/modules-load.d/initrd.conf` listing `aos.boot.initrd.modules`.
+##!   4. `/etc/modules-load.d/initrd.conf` listing `aos.boot.initrd.loadModules`.
 ##!   5. Empty `/etc/fstab` (root device comes from the kernel cmdline
 ##!      `root=` parameter; the fstab generator processes it).
 ##!   6. Minimal `/etc/{os-release,initrd-release,passwd,group,shadow}`.
@@ -27,7 +27,7 @@
 ##!   pkgs          — AOS package set
 ##!   lib           — AOS library
 ##!   kernel        — kernel derivation (provides /lib/modules/<ver>/)
-##!   kernelModules — list of module names for /etc/modules-load.d/initrd.conf
+##!   loadModules — list of module names for /etc/modules-load.d/initrd.conf
 ##!   initrdUnits   — derivation whose output is the rendered
 ##!                   /etc/systemd/system directory (from generateUnits)
 ##!   initrdNetworkDir — derivation whose output is a directory of rendered
@@ -35,17 +35,16 @@
 ##!                   `boot.initrd.systemd.network` tree); copied into
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
 ##!
-##! Output: $out/initrd.img (gzip-compressed newc cpio archive)
+##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
   pkgs,
   lib,
   kernel,
-  kernelModules,
+  loadModules,
   initrdUnits,
   initrdExtraPackages ? [],
   initrdNetworkDir ? null,
   maskedUnits ? [],
-  ignitionRoles,
 }: let
   inherit
     (pkgs)
@@ -63,9 +62,9 @@
     iproute2
     kmod
     less
-    pigz
     systemd
     util-linux
+    zstd
     ;
 
   # Packages whose full runtime closures are copied into the initrd's
@@ -357,7 +356,7 @@
     '')
     initrdGenerators;
 
-  modulesLoadConf = lib.concatStringsSep "\n" kernelModules;
+  modulesLoadConf = lib.concatStringsSep "\n" loadModules;
 
   interactivePath = lib.concatStringsSep ":" (
     (map (p: "${p}/bin") initrdPackages)
@@ -371,7 +370,7 @@ in
 
     buildDeps = [
       cpio
-      pigz
+      zstd
       coreutils
       findutils
     ];
@@ -393,8 +392,6 @@ in
       ++ [
         "closure-initrd-units"
         initrdUnits
-        "closure-ignition-roles"
-        ignitionRoles
       ];
 
     phases = [
@@ -493,6 +490,25 @@ in
 
           cat > root/etc/group <<'GROUP'
           root:x:0:
+          adm:x:4:
+          tty:x:5:
+          disk:x:6:
+          lp:x:7:
+          kmem:x:9:
+          wheel:x:10:
+          dialout:x:20:
+          utmp:x:22:
+          cdrom:x:24:
+          clock:x:25:
+          tape:x:26:
+          audio:x:29:
+          kvm:x:36:
+          video:x:44:
+          users:x:100:
+          input:x:104:
+          sgx:x:106:
+          render:x:107:
+          systemd-journal:x:190:
           systemd-network:x:192:
           nobody:x:65534:
           GROUP
@@ -550,15 +566,6 @@ in
           mkdir -p root/etc/systemd/system/network-online.target.wants
           ln -sfn /lib/systemd/system/systemd-networkd-wait-online.service \
             root/etc/systemd/system/network-online.target.wants/systemd-networkd-wait-online.service
-
-          # ── 7b. Ignition role bundle ───────────────────────────────────
-          # Stable initrd path /etc/aos/ignition-roles → bundle drv. Userdata
-          # uses `file:///etc/aos/ignition-roles/<role-name>` as the merge
-          # source for first-boot. The bundle's contents (one entry per role)
-          # are walked at runtime by ignition's resource fetcher; we only
-          # install the top-level symlink here.
-          mkdir -p root/etc/aos
-          ln -sfn ${ignitionRoles} root/etc/aos/ignition-roles
 
           # ── 8. Masked units ─────────────────────────────────────────────
           chmod u+w root/etc/systemd/system
@@ -741,18 +748,22 @@ in
           # device numbers. Sort the file list so the archive order is
           # deterministic across builds.
           #
-          # pigz -9 -n -p N is bit-identical to gzip -9n for the same input
-          # (pigz partitions input into 128 KiB blocks deterministically;
-          # thread count only affects scheduling), and emits a standard
-          # gzip stream the kernel's initramfs decompressor handles fine.
-          # $NIX_BUILD_CORES is set by the Nix daemon; fall back to 1 if
-          # a caller somehow cleared it.
+          # zstd -19 is the strongest level whose decompression window
+          # (8 MiB, windowLog 23) is universally accepted by the kernel's
+          # CONFIG_RD_ZSTD initramfs decompressor — the proven maximum used
+          # by dracut/mkinitcpio. (`--ultra -22` is ~1-3% smaller but uses a
+          # 128 MiB window; only adopt it with a boot test.) We run
+          # single-threaded on purpose: zstd is bit-reproducible only for a
+          # fixed thread count, and $NIX_BUILD_CORES varies between builders,
+          # so multithreading would break the deterministic-output guarantee
+          # that measured boot and the binary cache rely on. zstd writes no
+          # timestamps, so the stream is reproducible by default.
           (
             cd root \
               && find . -print0 \
               | LC_ALL=C sort -z \
               | cpio --quiet -o -H newc -R +0:+0 --reproducible --null \
-              | pigz -9 -n -p "''${NIX_BUILD_CORES:-1}" > $out/initrd.img
+              | zstd -19 -q -c > $out/initrd.img
           )
 
           echo "==> $(stat -c '%s bytes' $out/initrd.img) written to $out/initrd.img"
@@ -761,6 +772,6 @@ in
     ];
 
     meta = {
-      description = "AOS initrd (gzip-compressed cpio, systemd PID 1)";
+      description = "AOS initrd (zstd-compressed cpio, systemd PID 1)";
     };
   }

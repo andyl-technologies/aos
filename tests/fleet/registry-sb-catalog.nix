@@ -31,7 +31,7 @@
 #      upgrade --system` validates clean and switches to gen-2.
 #
 # Machines (lexicographic: registry=192.168.50.10, target=192.168.50.11):
-#   registry: aos-registry-server (gitd :9418) + test-http-server (:8000),
+#   registry: aos-registry-server (gitd :9418) + static-cache package (:8000),
 #             with the signed server-secureboot toplevel + its UKI staged in
 #             store (extraClosures) and the publish-time SB toolchain
 #             (sbsigntools/binutils/systemd) reachable by store path.
@@ -40,36 +40,51 @@
 #             enough for the NAR cache + imported store paths.
 {
   lib,
+  mkSystem,
   pkgs,
   systems,
 }: let
   sbTop = systems.server-secureboot.config.system.build.toplevel;
   sbUki = systems.server-secureboot.config.system.build.uki;
+
+  # server-test bundles the guest agent and the CLI tools the producer needs
+  # (it hand-seeds + pushes the registry with git) that image slimming dropped
+  # from the server profile. The registry additionally re-bundles its fixtures.
+  serverWithRegistry = mkSystem [
+    ../../systems/server-test.nix
+    {
+      aos.packages =
+        lib.genAttrs
+        ["aos-registry-server" "test-static-cache-server"]
+        (_: {bundle = true;});
+    }
+  ];
 in {
   name = "registry-sb-catalog";
-  # Two boots + role activation + full-closure static cache + one ~270 MiB
-  # cross-VM NAR transfer (the first refused upgrade still downloads) + two
-  # further validation passes over the cached closure + three catalog
-  # re-syncs. Budgeted like install-from-image.
+  # Two boots + registry/static-cache package activation + full-closure
+  # static cache + one ~270 MiB cross-VM NAR transfer (the first refused
+  # upgrade still downloads) + two further validation passes over the cached
+  # closure + three catalog re-syncs. Budgeted like install-from-image.
   timeout = 2700;
 
   machines = {
     registry = {
-      system = systems.server;
-      roles = ["aos-registry-server" "test-http-server"];
+      system = serverWithRegistry;
+      packages = ["aos-registry-server" "test-static-cache-server"];
       # The producer owns the signed toplevel AND the standalone UKI it
       # publishes as an image; both must resolve in the registry's store.
       extraClosures = [sbTop sbUki pkgs.sbsigntools pkgs.binutils pkgs.systemd];
       # `apr cache generate` writes a zstd static cache of the full
       # server-secureboot closure PLUS the standalone signed UKI image
-      # (~300 MiB nar of its own) under /var/lib — larger than the plain
+      # (~300 MiB nar of its own) under /var/lib/sysreg-cache — larger than the plain
       # server-2 fixture, so size /var generously.
       varSizeMiB = 4096;
     };
 
     target = {
-      system = systems.server;
-      roles = ["test-http-server"];
+      # server-test for the CLI tools the upgrade/verification steps run
+      # in-guest (image slimming dropped them from the plain server PATH).
+      system = systems.server-test;
       # The download lands twice on /var: the NAR cache under
       # /var/lib/apm/cache and the imported store paths (the /nix overlay
       # upper lives on the var partition) — the full sysroot closure.
@@ -83,16 +98,22 @@ in {
       import json
       import textwrap
 
-      # ════ 0. Both machines up; registry roles active ══════════════════
+      # ════ 0. Both machines up; registry packages active ═══════════════
       registry.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       target.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       registry.wait_for_unit("aos-registry-server-gitd.service", timeout=120)
-      registry.wait_for_unit("test-http-server.service", timeout=120)
+      registry.wait_for_unit("aos-pkg-aos-registry-server-firewall.service", timeout=120)
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-aos-registry-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-test-static-cache-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active test-static-cache-server.socket", timeout=120
+      )
       registry.wait_until_succeeds(
           "systemctl is-active aos-nix-db.service", timeout=120
-      )
-      target.wait_until_succeeds(
-          "systemctl is-active test-http-server.service", timeout=120
       )
 
       # Target precondition: fresh gen-1, the signed toplevel absent.
@@ -101,7 +122,12 @@ in {
           "readlink /var/lib/profiles/system/current"
       ).strip()
       assert gen_before == "gen-1", f"expected gen-1, got {gen_before!r}"
-      target.fail("${pkgs.nix}/bin/nix-store --check-validity '${sbTop}'")
+      # The miss is intentional; keep nix-store's expected error off the
+      # serial console so unexpected warnings remain visible.
+      target.fail(
+          "${pkgs.nix}/bin/nix-store --check-validity '${sbTop}' "
+          "> /tmp/sbtop-validity-precheck.out 2>&1"
+      )
 
       # ════ 1. PUBLISH the signed sysroot + UKI; derive SB facts ════════
       # `apr publish` shells out to sbverify (signer cert), objcopy (.sbat /
@@ -117,7 +143,7 @@ in {
           export NIX_CONF_DIR=/tmp/nix-conf
           export PATH="${pkgs.sbsigntools}/bin:${pkgs.binutils}/bin:${pkgs.systemd}/lib/systemd:$PATH"
           mkdir -p "$NIX_CONF_DIR"
-          printf 'experimental-features = nix-command\\nsandbox = false\\n' \\
+          printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
 
           ${pkgs.nix}/bin/nix-store --check-validity '${sbTop}'
@@ -141,6 +167,7 @@ in {
             --maintainer test \\
             --sysroot \\
             --image '${sbUki}' --image-format uki \\
+            --no-ca \\
             --registry sysreg \\
             --no-commit > /tmp/publish.json
           ${pkgs.aos}/bin/apr verify --registry sysreg

@@ -5,13 +5,15 @@
 #
 #   1. INSTALL  — boot the stock raw image under OVMF (UEFI → sd-boot →
 #                 UKI → initrd → ignition). The fw_cfg-delivered config
-#                 partitions the disk: grow root-a, create root-b, swap
-#                 and var (the A/B layout from docs/boot/qemu-uefi.md,
-#                 sized down for CI), format the filesystems.
-#   2. BOOT     — first boot reaches multi-user.target; the layout and
-#                 the aos-growfs filesystem growth are asserted. This is
-#                 the first CI exercise of the sd-boot/UKI path, the
-#                 qemu/fw_cfg ignition platform, and the disks stage.
+#                 partitions the disk: small A/B root slots (the root is a
+#                 read-only erofs base), swap, and var taking the rest (the
+#                 A/B layout from docs/boot/qemu-uefi.md, sized down for CI),
+#                 format the filesystems.
+#   2. BOOT     — first boot reaches multi-user.target; the layout is
+#                 asserted: the root is mounted read-only erofs (immutable,
+#                 not grown) and /var filled the disk. This is the first CI
+#                 exercise of the sd-boot/UKI path, the qemu/fw_cfg ignition
+#                 platform, and the disks stage.
 #   3. UPDATE   — `apm registry add` + `apm update` against a registry
 #                 peer over the fleet L2.
 #   4. INSTALL  — `apm install bc` downloads a package off the wire
@@ -22,9 +24,9 @@
 #                 the new generation.
 #
 # The target machine is the production server image plus the bundled
-# aos-test-agent role (modules/roles/aos-test-agent.nix) — the boot and
-# provisioning path is fully stock; only the package set carries the
-# test agent that lets the harness drive the machine.
+# aos-test-agent package — the boot and provisioning path is fully stock;
+# only the package set carries the test agent that lets the harness drive
+# the machine.
 #
 # Machines (lexicographic order: registry=192.168.50.10, target=.11):
 #   registry: kernel-boot peer publishing the registry + static cache
@@ -34,14 +36,38 @@
 #             config over fw_cfg with the FULL profile (storage.disks).
 {
   lib,
+  mkSystem,
   pkgs,
   systems,
 }: let
   server2Top = systems.server-2.config.system.build.toplevel;
 
-  # Partition sizes (MiB). The docs' production layout is 16 GiB per
-  # root; CI uses a smaller A/B layout — same shape, same labels.
-  rootSizeMiB = 6144;
+  # The server profile keeps the test fixtures and guest agent out of the
+  # production image (bundle = mkDefault false; modules/profiles/server.nix).
+  # Re-bundle per machine: the registry serves the fixtures, and the
+  # image-boot target needs the agent payload in its raw image so the
+  # harness can deliver it via ignition (lib/testing/fleet.nix).
+  # server-test bundles the guest agent and the registry-workflow CLI tools
+  # (git for the registry seed, curl/git for the target's clone + cache probe)
+  # that image slimming dropped from the server profile. The registry machine
+  # additionally re-bundles its fixtures; the image-boot target is plain
+  # server-test (systems.server-test).
+  serverWithRegistry = mkSystem [
+    ../../systems/server-test.nix
+    {
+      aos.packages =
+        lib.genAttrs
+        ["aos-registry-server" "test-static-cache-server"]
+        (_: {bundle = true;});
+    }
+  ];
+
+  # Partition sizes (MiB). The root is a read-only erofs image (~200 MiB),
+  # so the A/B root slots only need headroom for the base image — not the
+  # whole disk. The freed space goes to /var, which holds the writable Nix
+  # store overlay and all mutable state. CI uses a smaller A/B layout —
+  # same shape, same labels.
+  rootSizeMiB = 1024;
   swapSizeMiB = 1024;
   diskSizeMiB = 16384;
 in {
@@ -54,21 +80,29 @@ in {
 
   machines = {
     registry = {
-      system = systems.server;
-      roles = ["aos-registry-server" "test-http-server"];
+      system = serverWithRegistry;
+      packages = ["aos-registry-server" "test-static-cache-server"];
       extraClosures = [server2Top pkgs.bc];
-      # Static cache of the full closure lands under /var/lib. The server-2
-      # closure has grown past the old 1536 MiB margin (the zstd cache now
-      # overflows it mid-generation: "No space left on device"), so give
-      # /var more room.
-      varSizeMiB = 3072;
+      # Static cache of the full closure lands under /var/lib/sysreg-cache, and
+      # publish/cache generation stages rewritten store paths in the /nix
+      # overlay upper on /var. Keep this aligned with apm-registry-upgrade's
+      # producer headroom as the server closure grows.
+      varSizeMiB = 4096;
+      # `apr cache generate` zstd-compresses the full server-2 + bc closure
+      # (~1.5 GiB) while the image-boot target hammers the same host with UEFI
+      # partitioning/mkfs. At the 2 GiB default the producer's working set
+      # (closure + OS) thrashes page cache and the publish overruns the 1200 s
+      # agent deadline; 6 GiB keeps the closure resident. This is the one
+      # machine in the fleet that genuinely needs more than the default — every
+      # other VM runs at 2 GiB (see lib/testing/fleet-spec.nix `memoryMiB`).
+      memoryMiB = 6144;
     };
 
     target = {
-      system = systems.server;
+      system = systems.server-test;
       bootMode = "image";
       imageDiskMiB = diskSizeMiB;
-      roles = ["aos-test-agent"];
+      packages = ["aos-test-agent"];
       instanceMetadata = {
         format = "ignition";
         config = {
@@ -135,7 +169,7 @@ in {
       # handshake + system-ready gate ran against a machine that booted
       # the stock raw image via OVMF/sd-boot/UKI, whose ignition (qemu
       # platform, fw_cfg channel) partitioned and formatted the disk and
-      # merged the aos-test-agent role fragment at first boot.
+      # activated the aos-test-agent package at first boot.
       target.succeed("systemctl is-active multi-user.target")
 
       # The declared install layout exists.
@@ -149,24 +183,41 @@ in {
           f"root-a is {sectors} sectors, expected {expected}"
       )
 
-      # aos-growfs grew the root ext4 into the resized partition: the
-      # filesystem must report close to the partition size, far above
-      # the image's sized-to-fit original.
+      # The root is a read-only erofs image — the immutable base. It is NOT
+      # grown (aos-growfs is a no-op for non-ext4 roots); all mutable state
+      # lives on /var. Confirm it is mounted read-only erofs and stayed at
+      # the image's small sized-to-fit size, far below its 1 GiB partition.
+      import re
+
+      mounts = target.succeed("cat /proc/mounts")
+      assert re.search(r"^\S+ / erofs ro\b", mounts, re.M), (
+          f"root not mounted as read-only erofs:\n{mounts}"
+      )
       blocks, bsize = map(int, target.succeed(
           "stat -f -c '%b %S' /"
       ).split())
       fs_bytes = blocks * bsize
-      assert fs_bytes > ${toString (rootSizeMiB * 9 / 10)} * 1024 * 1024, (
-          f"root fs is {fs_bytes} bytes; aos-growfs did not grow it"
+      assert fs_bytes < ${toString rootSizeMiB} * 1024 * 1024, (
+          f"erofs root is {fs_bytes} bytes; expected the small immutable base"
       )
 
       # /var is the ignition-created partition, mounted by partlabel.
       var_dev = target.succeed(
           "readlink -f /dev/disk/by-partlabel/var"
       ).strip()
-      mounts = target.succeed("cat /proc/mounts")
       assert f"{var_dev} /var " in mounts, (
           f"/var not mounted from {var_dev}:\n{mounts}"
+      )
+
+      # /var took the rest of the disk: with a small immutable erofs root,
+      # the writable Nix store overlay + state get the freed space. The disk
+      # is ${toString diskSizeMiB} MiB; /var must be the bulk of it.
+      vblocks, vbsize = map(int, target.succeed(
+          "stat -f -c '%b %S' /var"
+      ).split())
+      var_bytes = vblocks * vbsize
+      assert var_bytes > 10 * 1024 * 1024 * 1024, (
+          f"/var is {var_bytes} bytes; expected it to fill the disk"
       )
 
       # First boot seeded the system profile at gen-1.
@@ -177,7 +228,16 @@ in {
       # Same producer block as apm-registry-upgrade.nix, plus a regular
       # (non-sysroot) bc package for the `apm install` leg.
       registry.wait_for_unit("aos-registry-server-gitd.service", timeout=120)
-      registry.wait_for_unit("test-http-server.service", timeout=120)
+      registry.wait_for_unit("aos-pkg-aos-registry-server-firewall.service", timeout=120)
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-aos-registry-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-test-static-cache-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active test-static-cache-server.socket", timeout=120
+      )
       registry.wait_until_succeeds(
           "systemctl is-active aos-nix-db.service", timeout=120
       )
@@ -328,7 +388,7 @@ in {
       # Reboot through the full UEFI path. The upgraded generation and
       # the user-installed package live on /var and must survive.
       target.reboot()
-      target.succeed("systemctl is-active multi-user.target")
+      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
 
       gen = target.succeed("readlink /var/lib/profiles/system/current").strip()
       assert gen == "gen-2", f"generation reverted across reboot: {gen!r}"
@@ -340,6 +400,16 @@ in {
           "/var/lib/profiles/per-user/root/current/bin/bc --version"
       )
       failed = target.succeed("systemctl --failed --no-legend").strip()
+      if failed:
+          print("--- failed units after reboot ---")
+          print(failed)
+          for line in failed.splitlines():
+              fields = line.split()
+              unit = fields[1] if fields and fields[0] == "*" else fields[0]
+              print(f"--- journalctl -u {unit} -b ---")
+              print(target.succeed(
+                  f"journalctl -u {unit} -b --no-pager -n 120 2>&1 || true"
+              ))
       assert not failed, f"failed units after reboot: {failed!r}"
     '';
 }
