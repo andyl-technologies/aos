@@ -10,10 +10,11 @@
 //! Module map: `launch` owns the deterministic Contract-A launch profile and
 //! canonical QEMU argument construction; `single_vm_fingerprint` owns the
 //! safe run-twice-and-diff hook consumed by `gate:single-vm-fingerprint`;
-//! `shutdown` owns the graceful QEMU child shutdown escalation ladder; and
+//! `shutdown` owns the graceful QEMU child shutdown escalation ladder;
 //! `setup_failure` owns setup-abort classification and teardown; `inertness`
-//! owns the sim-off/sim-on QEMU control-plane inertness assertion; and
-//! `crash_detection` owns typed crashed-node status classification.
+//! owns the sim-off/sim-on QEMU control-plane inertness assertion;
+//! `crash_detection` owns typed crashed-node status classification; and `qmp`
+//! owns the minimal typed QMP client.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
 //! details stay private; public callers use a safe host-driver API that
@@ -26,6 +27,7 @@
 mod crash_detection;
 mod inertness;
 mod launch;
+mod qmp;
 mod setup_failure;
 mod shutdown;
 mod single_vm_fingerprint;
@@ -45,6 +47,12 @@ pub use launch::{
     GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
     LaunchProfileCandidate, LaunchProfileError, MachineResetMode, NodeClockSkewDeclaration,
     NodeIcountShift,
+};
+pub use qmp::{
+    QMP_CAPABILITIES_COMMAND, QMP_JOB_QUERY_INTERVAL, QMP_JOB_QUERY_LIMIT, QMP_QUERY_JOBS_COMMAND,
+    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
+    QMP_SNAPSHOT_VMSTATE_DEVICE, QmpClient, QmpCommandComplete, QmpCommandKind, QmpError,
+    QmpGreeting, QmpJobPollPolicy, QmpSnapshotTag,
 };
 pub use setup_failure::{
     FailedQemuNodeSetup, QemuNodeSetup, QemuSchedulableNodeSetup, QemuSetupAbortError,

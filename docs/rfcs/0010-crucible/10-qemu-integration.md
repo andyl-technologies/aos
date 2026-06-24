@@ -764,7 +764,7 @@ determinism contract (04).
   three channels (plugin-IPC control, shmem hot path, QMP), exposing the
   synchronous scheduler node interface with the strict control/data split. —
   satisfies [QEMU-16], [QEMU-17], [QEMU-18]; spec §10.3.
-- [ ] **T-QEMU-4** Implement the typed minimal QMP client (greeting +
+- [x] **T-QEMU-4** Implement the typed minimal QMP client (greeting +
   `qmp_capabilities`, typed `savevm`/`loadvm`/`quit`, event-skipping,
   error-as-typed-Result), with snapshot tags derived from checkpoint content
   addresses. — satisfies [QEMU-19], [QEMU-20]; spec §10.4.

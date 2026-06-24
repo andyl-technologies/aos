@@ -1568,6 +1568,7 @@ dependencies = [
  "crucible-protocol",
  "crucible-shmem",
  "libc",
+ "serde_json",
  "thiserror",
 ]
 
