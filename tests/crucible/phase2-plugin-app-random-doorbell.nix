@@ -1,0 +1,364 @@
+{
+  pkgs,
+  lib,
+  attrPath ? "checks.crucible.phase2.qemuPluginAppRandomDoorbell",
+  taskIds ? ["T-PLUG-27"],
+}: let
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = pkgs.fetchCargoDeps {
+    src = crucibleSrc;
+    sourceRoot = "source/crates";
+    hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
+  };
+
+  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  ghcSpec = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
+  execSpec = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  defaultChecks = builtins.readFile ./default.nix;
+
+  taskList = builtins.concatStringsSep "," taskIds;
+
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
+
+  failuresFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (!(hasInfix requirement.needle content)) [
+          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  forbiddenCallbackApis = [
+    "Instant::now"
+    "SystemTime::now"
+    "std::time::Instant"
+    "std::time::SystemTime"
+    "thread::sleep"
+    "park_timeout"
+    "clock_gettime"
+    "gettimeofday"
+    "CLOCK_REALTIME"
+    "CLOCK_MONOTONIC"
+    "thread_rng"
+    "rand::random"
+    "Mutex"
+    "RwLock"
+    ".lock()"
+  ];
+
+  forbiddenCallbackFailures =
+    lib.concatMap (
+      api:
+        lib.optionals (hasInfix api pluginWhitebox) [
+          "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs: forbidden host-time, entropy, or lock API in app-random doorbell path: `${api}`"
+        ]
+    )
+    forbiddenCallbackApis;
+
+  failures =
+    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+      {
+        label = "T-PLUG-27 checklist complete";
+        needle = "- [x] **T-PLUG-27**";
+      }
+      {
+        label = "app-random task wording";
+        needle = "optional app-controlled randomness doorbell";
+      }
+      {
+        label = "seeded decision source requirement";
+        needle = "drawing from the seeded decision source";
+      }
+      {
+        label = "trap-icount injection contract";
+        needle = "replying at the trap icount under the injection contract";
+      }
+      {
+        label = "zero request requirement";
+        needle = "ensure the engine functions with zero requests";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" ghcSpec [
+      {
+        label = "random request kind table";
+        needle = "5    random_request";
+      }
+      {
+        label = "random request body";
+        needle = "request_id:u32, width:u8 (<=8), lp_str stream_tag";
+      }
+      {
+        label = "Decision::AppRandom requirement";
+        needle = "Decision::AppRandom";
+      }
+      {
+        label = "decode diagnostic and drop";
+        needle = "decode diagnostic and dropped";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" execSpec [
+      {
+        label = "app-random decision payload";
+        needle = "Decision::AppRandom { node, stream, request_id, width, value }";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+      {
+        label = "app-random handler exported";
+        needle = "handle_whitebox_app_random_callback";
+      }
+      {
+        label = "app-random decision source exported";
+        needle = "AppRandomDecisionSource";
+      }
+      {
+        label = "app-random request exported";
+        needle = "AppRandomDoorbellRequest";
+      }
+      {
+        label = "app-random decision record exported";
+        needle = "AppRandomDecisionRecord";
+      }
+      {
+        label = "app-random decode diagnostic exported";
+        needle = "AppRandomDecodeDiagnostic";
+      }
+      {
+        label = "app-random width constant exported";
+        needle = "WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+      {
+        label = "random request kind constant";
+        needle = "WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST";
+      }
+      {
+        label = "protocol version bump constant";
+        needle = "WHITEBOX_DOORBELL_PROTOCOL_VERSION";
+      }
+      {
+        label = "frame decoder";
+        needle = "pub fn decode(bytes: &[u8])";
+      }
+      {
+        label = "random request width bound";
+        needle = "width_bytes == 0 || width_bytes > WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES";
+      }
+      {
+        label = "little endian request id";
+        needle = "u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])";
+      }
+      {
+        label = "length-prefixed stream tag";
+        needle = "let stream_tag_len = u16::from_le_bytes([payload[5], payload[6]]) as usize;";
+      }
+      {
+        label = "utf8 stream tag validation";
+        needle = "InvalidUtf8StreamTag";
+      }
+      {
+        label = "decision source trait";
+        needle = "pub trait AppRandomDecisionSource";
+      }
+      {
+        label = "records Decision::AppRandom wording";
+        needle = "records `Decision::AppRandom`";
+      }
+      {
+        label = "reads through guest memory API";
+        needle = "read_guest_memory(";
+      }
+      {
+        label = "reply at trap icount";
+        needle = "request.trap_icount()";
+      }
+      {
+        label = "host-to-guest input reuse";
+        needle = "WhiteboxGuestInput::new(";
+      }
+      {
+        label = "writes through delivery gate";
+        needle = "inject_guest_input";
+      }
+      {
+        label = "malformed frames dropped";
+        needle = "AppRandomDoorbellOutcome::Dropped";
+      }
+      {
+        label = "unmasked decision rejected";
+        needle = "DecisionValueOutOfRange";
+      }
+      {
+        label = "request id mismatch rejected";
+        needle = "DecisionRequestIdMismatch";
+      }
+      {
+        label = "happy path exact test";
+        needle = "whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount";
+      }
+      {
+        label = "malformed drop exact test";
+        needle = "whitebox_app_random_drops_malformed_request_without_decision_or_reply";
+      }
+      {
+        label = "decode diagnostics exact test";
+        needle = "whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8";
+      }
+      {
+        label = "bad decision exact test";
+        needle = "whitebox_app_random_rejects_unmasked_decision_value_without_reply";
+      }
+      {
+        label = "request id mismatch exact test";
+        needle = "whitebox_app_random_rejects_request_id_mismatch_without_reply";
+      }
+      {
+        label = "zero request exact test";
+        needle = "whitebox_app_random_zero_requests_leave_no_decisions_or_replies";
+      }
+    ]
+    ++ failuresFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase2 exposes plugin app-random doorbell check";
+        needle = "qemuPluginAppRandomDoorbell = import ./phase2-plugin-app-random-doorbell.nix";
+      }
+    ]
+    ++ forbiddenCallbackFailures;
+in
+  if failures != []
+  then throw "crucible phase2 plugin app-random doorbell check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase2-plugin-app-random-doorbell";
+      version = "0";
+      src = crucibleSrc;
+
+      buildDeps = [
+        pkgs.rust
+        pkgs.sed
+      ];
+
+      phases = [
+        {
+          name = "unpack";
+          script = ''
+            cp -R "$src" source
+            chmod -R u+w source
+            cd source
+          '';
+        }
+        {
+          name = "configure";
+          script = ''
+            export CARGO_HOME="$TMPDIR/cargo"
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            mkdir -p "$CARGO_HOME" .cargo
+            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+                > .cargo/config.toml
+            else
+              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+                > .cargo/config.toml
+            fi
+          '';
+        }
+        {
+          name = "run-plugin-app-random-doorbell";
+          script = ''
+            set -eu
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+
+            run_exact_test() {
+              expected="$1"
+              filter="$2"
+              list_output=$(cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-plugin-app-random-doorbell-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-plugin \
+                "$filter" \
+                -- --list 2>&1)
+              exact_count=$(printf '%s\n' "$list_output" | grep -c "^$expected: test$" || true)
+              if [ "$exact_count" -ne 1 ]; then
+                printf '%s\n' "$list_output" >&2
+                echo "expected exactly one test named $expected, found $exact_count" >&2
+                exit 1
+              fi
+
+              test_output=$(cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-plugin-app-random-doorbell-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-plugin \
+                "$filter" \
+                -- --exact --nocapture 2>&1)
+              printf '%s\n' "$test_output"
+              if ! printf '%s\n' "$test_output" | grep -F "test result: ok. 1 passed;" >/dev/null; then
+                echo "exact test $expected did not report one passed test" >&2
+                exit 1
+              fi
+            }
+
+            run_exact_test \
+              whitebox_doorbell::tests::whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount \
+              whitebox_doorbell::tests::whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount
+            run_exact_test \
+              whitebox_doorbell::tests::whitebox_app_random_drops_malformed_request_without_decision_or_reply \
+              whitebox_doorbell::tests::whitebox_app_random_drops_malformed_request_without_decision_or_reply
+            run_exact_test \
+              whitebox_doorbell::tests::whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8 \
+              whitebox_doorbell::tests::whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8
+            run_exact_test \
+              whitebox_doorbell::tests::whitebox_app_random_rejects_unmasked_decision_value_without_reply \
+              whitebox_doorbell::tests::whitebox_app_random_rejects_unmasked_decision_value_without_reply
+            run_exact_test \
+              whitebox_doorbell::tests::whitebox_app_random_rejects_request_id_mismatch_without_reply \
+              whitebox_doorbell::tests::whitebox_app_random_rejects_request_id_mismatch_without_reply
+            run_exact_test \
+              whitebox_doorbell::tests::whitebox_app_random_zero_requests_leave_no_decisions_or_replies \
+              whitebox_doorbell::tests::whitebox_app_random_zero_requests_leave_no_decisions_or_replies
+          '';
+        }
+        {
+          name = "write-result";
+          script = ''
+            set -eu
+            mkdir -p "$out"
+            cat > "$out/result" <<'RESULT'
+            PASS
+            check=${attrPath}
+            tasks=${taskList}
+            doorbell_kind=random_request
+            decision=Decision::AppRandom
+            source=seeded-decision-source-trait
+            reply=trap-icount-host-to-guest-injection
+            malformed=decode-diagnostic-and-drop
+            zero_requests=no-decisions-no-replies
+            RESULT
+          '';
+        }
+      ];
+    }

@@ -29,7 +29,8 @@
 //! block submit/poll request routing through the reserved block executor;
 //! `ninep_io` owns raw 9p submit/poll/burst routing through the reserved 9p
 //! executor; `whitebox_doorbell` owns optional white-box trap planning, guest
-//! memory reads, marker stamping, and host-to-guest input delivery gates;
+//! memory reads, marker stamping, host-to-guest input delivery gates, and the
+//! optional app-controlled randomness request/reply path;
 //! `round_robin` owns fixed-quantum vCPU rotation and per-vCPU halt tracking;
 //! `preemption` owns scheduler-commanded vCPU switch and interrupt injection;
 //! `vcpu_introspection` owns side-effect-free per-vCPU register and RR cursor
@@ -192,13 +193,19 @@ pub use vcpu_introspection::{
     VcpuIntrospectionError, digest_register_file,
 };
 pub use whitebox_doorbell::{
+    AppRandomDecisionError, AppRandomDecisionRecord, AppRandomDecisionSource,
+    AppRandomDecodeDiagnostic, AppRandomDecodeDiagnosticKind, AppRandomDoorbellError,
+    AppRandomDoorbellOutcome, AppRandomDoorbellRequest, AppRandomDoorbellService,
     GuestMemoryAddressSpace, GuestMemoryRange, GuestMemoryReadError, GuestMemoryReader,
     PluginWhiteboxDoorbell, QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL,
     QEMU_PLUGIN_GUEST_MEMORY_WRITE_SYMBOL, QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL,
-    WhiteboxDoorbellCapabilities, WhiteboxDoorbellError, WhiteboxDoorbellRegistrationPlan,
-    WhiteboxDoorbellTrap, WhiteboxDoorbellTrapEvent, WhiteboxGuestInput,
-    WhiteboxGuestInputCapability, WhiteboxGuestInputInjection, WhiteboxGuestInputOutcome,
-    WhiteboxGuestInputWriteError, WhiteboxGuestInputWriter, WhiteboxMarker, WhiteboxMarkerSink,
-    WhiteboxMarkerSinkError, handle_whitebox_doorbell_callback,
+    WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES, WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
+    WHITEBOX_DOORBELL_FRAME_MAGIC, WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+    WHITEBOX_DOORBELL_PROTOCOL_VERSION, WhiteboxDoorbellCapabilities, WhiteboxDoorbellError,
+    WhiteboxDoorbellFrame, WhiteboxDoorbellRegistrationPlan, WhiteboxDoorbellTrap,
+    WhiteboxDoorbellTrapEvent, WhiteboxGuestInput, WhiteboxGuestInputCapability,
+    WhiteboxGuestInputInjection, WhiteboxGuestInputOutcome, WhiteboxGuestInputWriteError,
+    WhiteboxGuestInputWriter, WhiteboxMarker, WhiteboxMarkerSink, WhiteboxMarkerSinkError,
+    handle_whitebox_app_random_callback, handle_whitebox_doorbell_callback,
     handle_whitebox_guest_input_callback,
 };

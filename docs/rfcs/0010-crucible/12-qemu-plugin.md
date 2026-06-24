@@ -1009,7 +1009,7 @@ component that makes that purity true *inside* the QEMU process.
 - [x] **T-PLUG-26** Implement per-vCPU register-file + round-robin cursor reads
   (via 11/[PATCH-46]) feeding the N-vCPU fingerprint (10/[QEMU-34]),
   side-effect-free wrt `S`/`T`. — satisfies [PLUG-52]; spec §12.3.2.
-- [ ] **T-PLUG-27** Implement the optional app-controlled randomness doorbell:
+- [x] **T-PLUG-27** Implement the optional app-controlled randomness doorbell:
   serve a `random_request` by drawing from the seeded decision source and
   replying at the trap icount under the injection contract, record a
   `Decision::AppRandom`, keep it side-effect-free except the requested value, and

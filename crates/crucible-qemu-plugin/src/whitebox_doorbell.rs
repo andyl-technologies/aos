@@ -18,6 +18,16 @@ pub const QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL: &str = "qemu_plugin_registe
 pub const QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL: &str = "qemu_plugin_guest_memory_read";
 /// QEMU capability label for writing white-box replies into guest memory.
 pub const QEMU_PLUGIN_GUEST_MEMORY_WRITE_SYMBOL: &str = "qemu_plugin_guest_memory_write";
+/// Fixed little-endian doorbell frame magic (`CRBL`).
+pub const WHITEBOX_DOORBELL_FRAME_MAGIC: u32 = 0x4c42_5243;
+/// Doorbell protocol version after adding the `random_request` kind.
+pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = 2;
+/// Fixed byte length of the architecture-independent doorbell frame header.
+pub const WHITEBOX_DOORBELL_FRAME_HEADER_LEN: usize = 12;
+/// Closed marker-kind value for app-controlled randomness requests.
+pub const WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST: u16 = 5;
+/// Maximum random-request reply width in bytes.
+pub const WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES: u8 = 8;
 
 /// Registration-time-fixed white-box doorbell state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -309,6 +319,643 @@ where
     W: WhiteboxGuestInputWriter + ?Sized,
 {
     doorbell.inject_guest_input(capability, writer, current_icount, input)
+}
+
+/// Handles one app-controlled randomness doorbell callback body.
+///
+/// The request is read through the same trap-icount guest-memory API as ordinary
+/// white-box markers, decoded as a closed `random_request` frame, served through
+/// the provided decision source, and written back through the host-to-guest
+/// injection gate at the trap icount.
+///
+/// Malformed frames are returned as [`AppRandomDoorbellOutcome::Dropped`] so the
+/// caller can record a decode diagnostic without drawing from the decision
+/// source or writing into guest memory.
+///
+/// # Errors
+///
+/// Returns [`AppRandomDoorbellError`] when the white-box capability path fails,
+/// the decision source cannot record the draw, or the reply cannot be delivered
+/// at the trap icount.
+pub fn handle_whitebox_app_random_callback<R, D, W>(
+    doorbell: &PluginWhiteboxDoorbell,
+    capability: &WhiteboxGuestInputCapability,
+    reader: &mut R,
+    decision_source: &mut D,
+    writer: &mut W,
+    node_name: &str,
+    event: WhiteboxDoorbellTrapEvent,
+) -> Result<AppRandomDoorbellOutcome, AppRandomDoorbellError>
+where
+    R: GuestMemoryReader + ?Sized,
+    D: AppRandomDecisionSource + ?Sized,
+    W: WhiteboxGuestInputWriter + ?Sized,
+{
+    let payload =
+        read_doorbell_payload(doorbell, reader, event).map_err(AppRandomDoorbellError::Doorbell)?;
+    let frame = match WhiteboxDoorbellFrame::decode(&payload) {
+        Ok(frame) => frame,
+        Err(diagnostic) => return Ok(AppRandomDoorbellOutcome::Dropped { diagnostic }),
+    };
+    let request = match AppRandomDoorbellRequest::from_frame(node_name, event, frame) {
+        Ok(request) => request,
+        Err(diagnostic) => return Ok(AppRandomDoorbellOutcome::Dropped { diagnostic }),
+    };
+
+    let decision = decision_source
+        .serve_app_random(&request)
+        .map_err(|source| AppRandomDoorbellError::DecisionSource {
+            node_name: request.node_name().to_owned(),
+            stream_tag: request.stream_tag().to_owned(),
+            width_bits: request.width_bits(),
+            source,
+        })?;
+    validate_decision_record(&request, &decision)?;
+
+    let reply = WhiteboxGuestInput::new(
+        request.trap_icount(),
+        request.reply_range(),
+        app_random_reply_payload(decision.value(), request.width_bytes()),
+    );
+    let outcome = doorbell
+        .inject_guest_input(capability, writer, request.trap_icount(), &reply)
+        .map_err(AppRandomDoorbellError::Doorbell)?;
+    match outcome {
+        WhiteboxGuestInputOutcome::Delivered(injection) => {
+            Ok(AppRandomDoorbellOutcome::Served(AppRandomDoorbellService {
+                request,
+                decision,
+                injection,
+            }))
+        }
+        WhiteboxGuestInputOutcome::NotReady { delivery_icount } => {
+            Err(AppRandomDoorbellError::ReplyNotDelivered { delivery_icount })
+        }
+    }
+}
+
+fn read_doorbell_payload<R>(
+    doorbell: &PluginWhiteboxDoorbell,
+    reader: &mut R,
+    event: WhiteboxDoorbellTrapEvent,
+) -> Result<Vec<u8>, WhiteboxDoorbellError>
+where
+    R: GuestMemoryReader + ?Sized,
+{
+    if !doorbell.mode.is_on() {
+        return Err(WhiteboxDoorbellError::TrapWhileDisabled);
+    }
+    doorbell.validate_payload_range(event.payload_range())?;
+    let payload = reader
+        .read_guest_memory(
+            event.vcpu_index(),
+            event.current_icount(),
+            event.payload_range(),
+        )
+        .map_err(|source| WhiteboxDoorbellError::GuestMemoryRead {
+            range: event.payload_range(),
+            source,
+        })?;
+    if payload.len() != event.payload_range().len() {
+        return Err(WhiteboxDoorbellError::GuestMemoryReadLengthMismatch {
+            requested_len: event.payload_range().len(),
+            actual_len: payload.len(),
+        });
+    }
+    Ok(payload)
+}
+
+/// A decoded architecture-independent doorbell frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WhiteboxDoorbellFrame {
+    kind: u16,
+    payload: Vec<u8>,
+}
+
+impl WhiteboxDoorbellFrame {
+    /// Decodes one fixed-header little-endian doorbell frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppRandomDecodeDiagnostic`] when the frame has a bad magic,
+    /// unsupported version, unknown payload length, or truncated header.
+    pub fn decode(bytes: &[u8]) -> Result<Self, AppRandomDecodeDiagnostic> {
+        if bytes.len() < WHITEBOX_DOORBELL_FRAME_HEADER_LEN {
+            return Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::TruncatedFrame {
+                    len: bytes.len(),
+                    minimum_len: WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
+                },
+            ));
+        }
+
+        let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        if magic != WHITEBOX_DOORBELL_FRAME_MAGIC {
+            return Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::BadMagic {
+                    expected: WHITEBOX_DOORBELL_FRAME_MAGIC,
+                    actual: magic,
+                },
+            ));
+        }
+
+        let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+        if version != WHITEBOX_DOORBELL_PROTOCOL_VERSION {
+            return Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::UnsupportedVersion {
+                    expected: WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+                    actual: version,
+                },
+            ));
+        }
+
+        let kind = u16::from_le_bytes([bytes[6], bytes[7]]);
+        let payload_len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+        let actual_payload_len = bytes.len() - WHITEBOX_DOORBELL_FRAME_HEADER_LEN;
+        if payload_len != actual_payload_len {
+            return Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::PayloadLengthMismatch {
+                    declared_len: payload_len,
+                    actual_len: actual_payload_len,
+                },
+            ));
+        }
+
+        Ok(Self {
+            kind,
+            payload: bytes[WHITEBOX_DOORBELL_FRAME_HEADER_LEN..].to_vec(),
+        })
+    }
+
+    /// Returns the closed marker kind carried by the frame.
+    #[must_use]
+    pub const fn kind(&self) -> u16 {
+        self.kind
+    }
+
+    /// Returns the kind-specific payload bytes.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+
+/// One decoded app-controlled randomness request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppRandomDoorbellRequest {
+    node_name: String,
+    guest_request_id: u32,
+    trap_icount: u64,
+    width_bytes: u8,
+    stream_tag: String,
+    reply_range: GuestMemoryRange,
+}
+
+impl AppRandomDoorbellRequest {
+    fn from_frame(
+        node_name: &str,
+        event: WhiteboxDoorbellTrapEvent,
+        frame: WhiteboxDoorbellFrame,
+    ) -> Result<Self, AppRandomDecodeDiagnostic> {
+        if frame.kind() != WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST {
+            return Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::UnexpectedKind {
+                    expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+                    actual: frame.kind(),
+                },
+            ));
+        }
+
+        let payload = frame.payload();
+        if payload.len() < 7 {
+            return Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::TruncatedRandomRequest {
+                    len: payload.len(),
+                    minimum_len: 7,
+                },
+            ));
+        }
+
+        let guest_request_id = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        let width_bytes = payload[4];
+        if width_bytes == 0 || width_bytes > WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES {
+            return Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::InvalidRandomWidth {
+                    width_bytes,
+                    max_width_bytes: WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES,
+                },
+            ));
+        }
+
+        let stream_tag_len = u16::from_le_bytes([payload[5], payload[6]]) as usize;
+        let stream_tag_start = 7;
+        let stream_tag_end = stream_tag_start + stream_tag_len;
+        if stream_tag_end != payload.len() {
+            return Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::StreamTagLengthMismatch {
+                    declared_len: stream_tag_len,
+                    actual_len: payload.len() - stream_tag_start,
+                },
+            ));
+        }
+        let stream_tag =
+            std::str::from_utf8(&payload[stream_tag_start..stream_tag_end]).map_err(|_error| {
+                AppRandomDecodeDiagnostic::new(AppRandomDecodeDiagnosticKind::InvalidUtf8StreamTag)
+            })?;
+
+        Ok(Self {
+            node_name: node_name.to_owned(),
+            guest_request_id,
+            trap_icount: event.current_icount(),
+            width_bytes,
+            stream_tag: stream_tag.to_owned(),
+            reply_range: GuestMemoryRange::new(
+                event.payload_range().address_space(),
+                event.payload_range().guest_address(),
+                usize::from(width_bytes),
+            ),
+        })
+    }
+
+    /// Returns the canonical node name whose guest requested the draw.
+    #[must_use]
+    pub fn node_name(&self) -> &str {
+        &self.node_name
+    }
+
+    /// Returns the guest-supplied request identifier.
+    #[must_use]
+    pub const fn guest_request_id(&self) -> u32 {
+        self.guest_request_id
+    }
+
+    /// Returns the doorbell trap icount used as the reply delivery icount.
+    #[must_use]
+    pub const fn trap_icount(&self) -> u64 {
+        self.trap_icount
+    }
+
+    /// Returns the requested reply width in bytes.
+    #[must_use]
+    pub const fn width_bytes(&self) -> u8 {
+        self.width_bytes
+    }
+
+    /// Returns the requested decision width in bits.
+    #[must_use]
+    pub const fn width_bits(&self) -> u8 {
+        self.width_bytes * 8
+    }
+
+    /// Returns the guest-provided decision stream tag.
+    #[must_use]
+    pub fn stream_tag(&self) -> &str {
+        &self.stream_tag
+    }
+
+    /// Returns the guest-memory range used for the host-to-guest reply.
+    #[must_use]
+    pub const fn reply_range(&self) -> GuestMemoryRange {
+        self.reply_range
+    }
+}
+
+/// Decision metadata returned after recording `Decision::AppRandom`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppRandomDecisionRecord {
+    node_name: String,
+    stream_tag: String,
+    request_id: u64,
+    width_bits: u8,
+    value: u64,
+}
+
+impl AppRandomDecisionRecord {
+    /// Builds a decision record matching the engine's `Decision::AppRandom` data.
+    #[must_use]
+    pub fn new(
+        node_name: impl Into<String>,
+        stream_tag: impl Into<String>,
+        request_id: u64,
+        width_bits: u8,
+        value: u64,
+    ) -> Self {
+        Self {
+            node_name: node_name.into(),
+            stream_tag: stream_tag.into(),
+            request_id,
+            width_bits,
+            value,
+        }
+    }
+
+    /// Returns the node recorded in the decision.
+    #[must_use]
+    pub fn node_name(&self) -> &str {
+        &self.node_name
+    }
+
+    /// Returns the stream recorded in the decision.
+    #[must_use]
+    pub fn stream_tag(&self) -> &str {
+        &self.stream_tag
+    }
+
+    /// Returns the per-stream request id recorded in the decision.
+    #[must_use]
+    pub const fn request_id(&self) -> u64 {
+        self.request_id
+    }
+
+    /// Returns the recorded draw width in bits.
+    #[must_use]
+    pub const fn width_bits(&self) -> u8 {
+        self.width_bits
+    }
+
+    /// Returns the deterministic value served to the guest.
+    #[must_use]
+    pub const fn value(&self) -> u64 {
+        self.value
+    }
+}
+
+/// Source that records and serves app-controlled randomness decisions.
+pub trait AppRandomDecisionSource {
+    /// Draws from the seeded decision source and records `Decision::AppRandom`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppRandomDecisionError`] when the engine-side recorder cannot
+    /// serve the request.
+    fn serve_app_random(
+        &mut self,
+        request: &AppRandomDoorbellRequest,
+    ) -> Result<AppRandomDecisionRecord, AppRandomDecisionError>;
+}
+
+/// A failure from the engine-side app-random decision source.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[error("app-random decision source failed: {message}")]
+pub struct AppRandomDecisionError {
+    message: String,
+}
+
+impl AppRandomDecisionError {
+    /// Builds an app-random decision source failure.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// Returns the backend diagnostic.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+/// Result of handling one app-random doorbell request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppRandomDoorbellOutcome {
+    /// A valid request was recorded and replied to at the trap icount.
+    Served(AppRandomDoorbellService),
+    /// A malformed or non-random-request frame was diagnosed and dropped.
+    Dropped {
+        /// The decode diagnostic to record as observational output.
+        diagnostic: AppRandomDecodeDiagnostic,
+    },
+}
+
+/// Metadata for one served app-random request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppRandomDoorbellService {
+    request: AppRandomDoorbellRequest,
+    decision: AppRandomDecisionRecord,
+    injection: WhiteboxGuestInputInjection,
+}
+
+impl AppRandomDoorbellService {
+    /// Returns the decoded guest request.
+    #[must_use]
+    pub const fn request(&self) -> &AppRandomDoorbellRequest {
+        &self.request
+    }
+
+    /// Returns the recorded `Decision::AppRandom` metadata.
+    #[must_use]
+    pub const fn decision(&self) -> &AppRandomDecisionRecord {
+        &self.decision
+    }
+
+    /// Returns the exact host-to-guest injection metadata.
+    #[must_use]
+    pub const fn injection(&self) -> WhiteboxGuestInputInjection {
+        self.injection
+    }
+}
+
+/// Decode diagnostic for malformed app-random doorbell frames.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppRandomDecodeDiagnostic {
+    kind: AppRandomDecodeDiagnosticKind,
+}
+
+impl AppRandomDecodeDiagnostic {
+    /// Builds a decode diagnostic.
+    #[must_use]
+    pub const fn new(kind: AppRandomDecodeDiagnosticKind) -> Self {
+        Self { kind }
+    }
+
+    /// Returns the diagnostic kind.
+    #[must_use]
+    pub const fn kind(&self) -> &AppRandomDecodeDiagnosticKind {
+        &self.kind
+    }
+}
+
+/// Kind of app-random doorbell decode diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppRandomDecodeDiagnosticKind {
+    /// The frame was shorter than the fixed header.
+    TruncatedFrame {
+        /// Observed byte length.
+        len: usize,
+        /// Minimum valid byte length.
+        minimum_len: usize,
+    },
+    /// The fixed channel magic was not recognized.
+    BadMagic {
+        /// Expected fixed magic.
+        expected: u32,
+        /// Observed magic.
+        actual: u32,
+    },
+    /// The protocol version was not recognized.
+    UnsupportedVersion {
+        /// Expected protocol version.
+        expected: u16,
+        /// Observed protocol version.
+        actual: u16,
+    },
+    /// The header payload length did not match the received payload bytes.
+    PayloadLengthMismatch {
+        /// Header-declared payload length.
+        declared_len: usize,
+        /// Actual payload length after the header.
+        actual_len: usize,
+    },
+    /// The frame kind was not the random-request kind.
+    UnexpectedKind {
+        /// Expected random-request kind.
+        expected: u16,
+        /// Observed kind.
+        actual: u16,
+    },
+    /// The random-request body was shorter than its fixed fields.
+    TruncatedRandomRequest {
+        /// Observed body length.
+        len: usize,
+        /// Minimum valid body length.
+        minimum_len: usize,
+    },
+    /// The random-request width was outside `1..=8` bytes.
+    InvalidRandomWidth {
+        /// Observed byte width.
+        width_bytes: u8,
+        /// Maximum byte width.
+        max_width_bytes: u8,
+    },
+    /// The stream-tag length prefix did not match the remaining bytes.
+    StreamTagLengthMismatch {
+        /// Declared tag length.
+        declared_len: usize,
+        /// Remaining body bytes after the tag-length field.
+        actual_len: usize,
+    },
+    /// The stream tag was not UTF-8.
+    InvalidUtf8StreamTag,
+}
+
+/// An error while serving an app-random doorbell request.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum AppRandomDoorbellError {
+    /// The underlying white-box doorbell path failed.
+    #[error("white-box doorbell path failed while serving app-random: {0}")]
+    Doorbell(WhiteboxDoorbellError),
+    /// The decision source failed to draw or record `Decision::AppRandom`.
+    #[error(
+        "app-random decision source failed for node {node_name} stream {stream_tag} width {width_bits}: {source}"
+    )]
+    DecisionSource {
+        /// Node whose guest requested the draw.
+        node_name: String,
+        /// Requested stream tag.
+        stream_tag: String,
+        /// Requested decision width in bits.
+        width_bits: u8,
+        /// Engine-side decision source error.
+        source: AppRandomDecisionError,
+    },
+    /// The decision source returned metadata for the wrong node.
+    #[error("app-random decision node {actual} does not match request node {expected}")]
+    DecisionNodeMismatch {
+        /// Requested node name.
+        expected: String,
+        /// Recorded node name.
+        actual: String,
+    },
+    /// The decision source returned metadata for the wrong stream.
+    #[error("app-random decision stream {actual} does not match request stream {expected}")]
+    DecisionStreamMismatch {
+        /// Requested stream tag.
+        expected: String,
+        /// Recorded stream tag.
+        actual: String,
+    },
+    /// The decision source returned a value with an invalid width.
+    #[error("app-random decision width {actual_bits} does not match request width {expected_bits}")]
+    DecisionWidthMismatch {
+        /// Requested width in bits.
+        expected_bits: u8,
+        /// Recorded width in bits.
+        actual_bits: u8,
+    },
+    /// The decision source returned metadata for the wrong request id.
+    #[error("app-random decision request id {actual} does not match request id {expected}")]
+    DecisionRequestIdMismatch {
+        /// Guest-requested id.
+        expected: u64,
+        /// Recorded request id.
+        actual: u64,
+    },
+    /// The decision source returned a value with high bits set outside the width.
+    #[error("app-random decision value {value:#x} exceeds {width_bits} bits")]
+    DecisionValueOutOfRange {
+        /// Requested width in bits.
+        width_bits: u8,
+        /// Recorded value.
+        value: u64,
+    },
+    /// The host-to-guest delivery gate did not deliver at the trap icount.
+    #[error("app-random reply was not delivered at icount {delivery_icount}")]
+    ReplyNotDelivered {
+        /// Required reply delivery icount.
+        delivery_icount: u64,
+    },
+}
+
+fn validate_decision_record(
+    request: &AppRandomDoorbellRequest,
+    decision: &AppRandomDecisionRecord,
+) -> Result<(), AppRandomDoorbellError> {
+    if decision.node_name() != request.node_name() {
+        return Err(AppRandomDoorbellError::DecisionNodeMismatch {
+            expected: request.node_name().to_owned(),
+            actual: decision.node_name().to_owned(),
+        });
+    }
+    if decision.stream_tag() != request.stream_tag() {
+        return Err(AppRandomDoorbellError::DecisionStreamMismatch {
+            expected: request.stream_tag().to_owned(),
+            actual: decision.stream_tag().to_owned(),
+        });
+    }
+    if decision.width_bits() != request.width_bits() {
+        return Err(AppRandomDoorbellError::DecisionWidthMismatch {
+            expected_bits: request.width_bits(),
+            actual_bits: decision.width_bits(),
+        });
+    }
+    if decision.request_id() != u64::from(request.guest_request_id()) {
+        return Err(AppRandomDoorbellError::DecisionRequestIdMismatch {
+            expected: u64::from(request.guest_request_id()),
+            actual: decision.request_id(),
+        });
+    }
+    if !value_fits_width(decision.value(), decision.width_bits()) {
+        return Err(AppRandomDoorbellError::DecisionValueOutOfRange {
+            width_bits: decision.width_bits(),
+            value: decision.value(),
+        });
+    }
+    Ok(())
+}
+
+fn value_fits_width(value: u64, width_bits: u8) -> bool {
+    if width_bits == 64 {
+        true
+    } else {
+        value <= ((1_u64 << width_bits) - 1)
+    }
+}
+
+fn app_random_reply_payload(value: u64, width_bytes: u8) -> Vec<u8> {
+    let bytes = value.to_le_bytes();
+    bytes[..usize::from(width_bytes)].to_vec()
 }
 
 /// QEMU capabilities needed by the optional white-box channel.
@@ -1134,6 +1781,273 @@ mod tests {
         );
     }
 
+    #[test]
+    fn whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            128,
+        );
+        let capability = guest_input_capability(&doorbell);
+        let payload = random_request_frame(7, 2, "workload");
+        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, payload.len());
+        let event = WhiteboxDoorbellTrapEvent::new(1, 99, range);
+        let mut reader = RecordingGuestMemoryReader::with_payload(payload);
+        let record = AppRandomDecisionRecord::new("node-a", "workload", 7, 16, 0xbeef);
+        let mut decisions = RecordingAppRandomSource::with_record(record.clone());
+        let mut writer = RecordingGuestInputWriter::default();
+
+        let outcome = match handle_whitebox_app_random_callback(
+            &doorbell,
+            &capability,
+            &mut reader,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("app-random request should be served: {error}"),
+        };
+
+        let service = match outcome {
+            AppRandomDoorbellOutcome::Served(service) => service,
+            AppRandomDoorbellOutcome::Dropped { diagnostic } => {
+                panic!("valid app-random request should not drop: {diagnostic:?}")
+            }
+        };
+        assert_eq!(reader.calls, vec![(1, 99, range)]);
+        assert_eq!(decisions.requests.len(), 1);
+        assert_eq!(decisions.requests[0].node_name(), "node-a");
+        assert_eq!(decisions.requests[0].guest_request_id(), 7);
+        assert_eq!(decisions.requests[0].trap_icount(), 99);
+        assert_eq!(decisions.requests[0].width_bytes(), 2);
+        assert_eq!(decisions.requests[0].width_bits(), 16);
+        assert_eq!(decisions.requests[0].stream_tag(), "workload");
+        assert_eq!(service.request(), &decisions.requests[0]);
+        assert_eq!(service.decision(), &record);
+        assert_eq!(service.injection().delivery_icount(), 99);
+        assert_eq!(service.injection().payload_len(), 2);
+        assert_eq!(
+            writer.writes,
+            vec![(
+                99,
+                GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, 2),
+                vec![0xef, 0xbe],
+            )]
+        );
+    }
+
+    #[test]
+    fn whitebox_app_random_drops_malformed_request_without_decision_or_reply() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            128,
+        );
+        let capability = guest_input_capability(&doorbell);
+        let payload = random_request_frame(1, 9, "wide");
+        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, payload.len());
+        let event = WhiteboxDoorbellTrapEvent::new(0, 10, range);
+        let mut reader = RecordingGuestMemoryReader::with_payload(payload);
+        let mut decisions = RecordingAppRandomSource::with_record(AppRandomDecisionRecord::new(
+            "node-a", "wide", 0, 72, 0,
+        ));
+        let mut writer = RecordingGuestInputWriter::default();
+
+        let outcome = match handle_whitebox_app_random_callback(
+            &doorbell,
+            &capability,
+            &mut reader,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("malformed app-random request should drop, not fail: {error}"),
+        };
+
+        assert_eq!(
+            outcome,
+            AppRandomDoorbellOutcome::Dropped {
+                diagnostic: AppRandomDecodeDiagnostic::new(
+                    AppRandomDecodeDiagnosticKind::InvalidRandomWidth {
+                        width_bytes: 9,
+                        max_width_bytes: WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES,
+                    },
+                ),
+            }
+        );
+        assert_eq!(reader.calls, vec![(0, 10, range)]);
+        assert!(decisions.requests.is_empty());
+        assert!(writer.writes.is_empty());
+    }
+
+    #[test]
+    fn whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8() {
+        assert_eq!(
+            WhiteboxDoorbellFrame::decode(&[1, 2, 3]),
+            Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::TruncatedFrame {
+                    len: 3,
+                    minimum_len: WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
+                },
+            ))
+        );
+
+        let bad_magic = doorbell_frame_with_header(0, WHITEBOX_DOORBELL_PROTOCOL_VERSION, 5, &[]);
+        assert_eq!(
+            WhiteboxDoorbellFrame::decode(&bad_magic),
+            Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::BadMagic {
+                    expected: WHITEBOX_DOORBELL_FRAME_MAGIC,
+                    actual: 0,
+                },
+            ))
+        );
+
+        let bad_version = doorbell_frame_with_header(WHITEBOX_DOORBELL_FRAME_MAGIC, 1, 5, &[]);
+        assert_eq!(
+            WhiteboxDoorbellFrame::decode(&bad_version),
+            Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::UnsupportedVersion {
+                    expected: WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+                    actual: 1,
+                },
+            ))
+        );
+
+        let event = WhiteboxDoorbellTrapEvent::new(
+            0,
+            10,
+            GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, 32),
+        );
+        let wrong_kind = match WhiteboxDoorbellFrame::decode(&doorbell_frame(4, &[])) {
+            Ok(frame) => frame,
+            Err(error) => panic!("wrong-kind frame header should decode: {error:?}"),
+        };
+        assert_eq!(
+            AppRandomDoorbellRequest::from_frame("node-a", event, wrong_kind),
+            Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::UnexpectedKind {
+                    expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+                    actual: 4,
+                },
+            ))
+        );
+
+        let mut invalid_utf8_body = Vec::new();
+        invalid_utf8_body.extend_from_slice(&1_u32.to_le_bytes());
+        invalid_utf8_body.push(1);
+        invalid_utf8_body.extend_from_slice(&1_u16.to_le_bytes());
+        invalid_utf8_body.push(0xff);
+        let invalid_utf8 =
+            match WhiteboxDoorbellFrame::decode(&doorbell_frame(5, &invalid_utf8_body)) {
+                Ok(frame) => frame,
+                Err(error) => panic!("invalid-utf8 frame header should decode: {error:?}"),
+            };
+        assert_eq!(
+            AppRandomDoorbellRequest::from_frame("node-a", event, invalid_utf8),
+            Err(AppRandomDecodeDiagnostic::new(
+                AppRandomDecodeDiagnosticKind::InvalidUtf8StreamTag,
+            ))
+        );
+    }
+
+    #[test]
+    fn whitebox_app_random_rejects_unmasked_decision_value_without_reply() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            128,
+        );
+        let capability = guest_input_capability(&doorbell);
+        let payload = random_request_frame(3, 1, "byte");
+        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, payload.len());
+        let event = WhiteboxDoorbellTrapEvent::new(0, 10, range);
+        let mut reader = RecordingGuestMemoryReader::with_payload(payload);
+        let mut decisions = RecordingAppRandomSource::with_record(AppRandomDecisionRecord::new(
+            "node-a", "byte", 3, 8, 0x1ff,
+        ));
+        let mut writer = RecordingGuestInputWriter::default();
+
+        assert_eq!(
+            handle_whitebox_app_random_callback(
+                &doorbell,
+                &capability,
+                &mut reader,
+                &mut decisions,
+                &mut writer,
+                "node-a",
+                event,
+            ),
+            Err(AppRandomDoorbellError::DecisionValueOutOfRange {
+                width_bits: 8,
+                value: 0x1ff,
+            })
+        );
+        assert_eq!(decisions.requests.len(), 1);
+        assert!(writer.writes.is_empty());
+    }
+
+    #[test]
+    fn whitebox_app_random_rejects_request_id_mismatch_without_reply() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            128,
+        );
+        let capability = guest_input_capability(&doorbell);
+        let payload = random_request_frame(11, 1, "byte");
+        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, payload.len());
+        let event = WhiteboxDoorbellTrapEvent::new(0, 10, range);
+        let mut reader = RecordingGuestMemoryReader::with_payload(payload);
+        let mut decisions = RecordingAppRandomSource::with_record(AppRandomDecisionRecord::new(
+            "node-a", "byte", 12, 8, 0xff,
+        ));
+        let mut writer = RecordingGuestInputWriter::default();
+
+        assert_eq!(
+            handle_whitebox_app_random_callback(
+                &doorbell,
+                &capability,
+                &mut reader,
+                &mut decisions,
+                &mut writer,
+                "node-a",
+                event,
+            ),
+            Err(AppRandomDoorbellError::DecisionRequestIdMismatch {
+                expected: 11,
+                actual: 12,
+            })
+        );
+        assert_eq!(decisions.requests.len(), 1);
+        assert!(writer.writes.is_empty());
+    }
+
+    #[test]
+    fn whitebox_app_random_zero_requests_leave_no_decisions_or_replies() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::Off,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            128,
+        );
+        let plan = match doorbell.registration_plan(WhiteboxDoorbellCapabilities::none()) {
+            Ok(plan) => plan,
+            Err(error) => panic!("zero-request black-box plan should validate: {error}"),
+        };
+        let decisions = RecordingAppRandomSource::with_record(AppRandomDecisionRecord::new(
+            "node-a", "unused", 0, 8, 7,
+        ));
+        let writer = RecordingGuestInputWriter::default();
+
+        assert!(plan.black_box_remains_functional());
+        assert!(decisions.requests.is_empty());
+        assert!(writer.writes.is_empty());
+    }
+
     fn input_at(delivery_icount: u64, payload: &[u8]) -> WhiteboxGuestInput {
         WhiteboxGuestInput::new(
             delivery_icount,
@@ -1148,6 +2062,34 @@ mod tests {
             Ok(capability) => capability,
             Err(error) => panic!("bidirectional capability should be available: {error}"),
         }
+    }
+
+    fn random_request_frame(guest_request_id: u32, width_bytes: u8, stream_tag: &str) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&guest_request_id.to_le_bytes());
+        body.push(width_bytes);
+        body.extend_from_slice(&(stream_tag.len() as u16).to_le_bytes());
+        body.extend_from_slice(stream_tag.as_bytes());
+        doorbell_frame(WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, &body)
+    }
+
+    fn doorbell_frame(kind: u16, body: &[u8]) -> Vec<u8> {
+        doorbell_frame_with_header(
+            WHITEBOX_DOORBELL_FRAME_MAGIC,
+            WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+            kind,
+            body,
+        )
+    }
+
+    fn doorbell_frame_with_header(magic: u32, version: u16, kind: u16, body: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&magic.to_le_bytes());
+        frame.extend_from_slice(&version.to_le_bytes());
+        frame.extend_from_slice(&kind.to_le_bytes());
+        frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        frame.extend_from_slice(body);
+        frame
     }
 
     struct RecordingGuestMemoryReader {
@@ -1212,6 +2154,30 @@ mod tests {
         ) -> Result<(), WhiteboxGuestInputWriteError> {
             self.writes.push((delivery_icount, range, payload.to_vec()));
             Ok(())
+        }
+    }
+
+    struct RecordingAppRandomSource {
+        requests: Vec<AppRandomDoorbellRequest>,
+        result: Result<AppRandomDecisionRecord, AppRandomDecisionError>,
+    }
+
+    impl RecordingAppRandomSource {
+        fn with_record(record: AppRandomDecisionRecord) -> Self {
+            Self {
+                requests: Vec::new(),
+                result: Ok(record),
+            }
+        }
+    }
+
+    impl AppRandomDecisionSource for RecordingAppRandomSource {
+        fn serve_app_random(
+            &mut self,
+            request: &AppRandomDoorbellRequest,
+        ) -> Result<AppRandomDecisionRecord, AppRandomDecisionError> {
+            self.requests.push(request.clone());
+            self.result.clone()
         }
     }
 }
