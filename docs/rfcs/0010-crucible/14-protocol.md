@@ -465,7 +465,7 @@ The control channel is determinism-neutral by construction.
   SIGTERM → SIGKILL → reap with bounded per-rung waits, and prove no QEMU child
   is leaked under an unresponsive guest/plugin. — satisfies [PROTO-14],
   [PROTO-20]; spec §3.9, §5.3.
-- [ ] **T-PROTO-8** Implement clean failure handling for all setup failure modes
+- [x] **T-PROTO-8** Implement clean failure handling for all setup failure modes
   (no version overlap, ABI mismatch, bad slot, wrong fd count, short/invalid
   region, non-zero SetupAck, premature socket close): abort the node, escalate
   teardown, reap the child. — satisfies [PROTO-21]; spec §5.4.
