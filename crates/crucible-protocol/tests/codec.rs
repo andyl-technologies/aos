@@ -160,6 +160,15 @@ fn frame_stream_helpers_report_write_errors() {
             kind: ErrorKind::BrokenPipe,
         })
     );
+
+    let mut writer = FailingFlushWriter;
+    assert_eq!(
+        write_control_frame(&mut writer, &frame),
+        Err(FrameIoError::Io {
+            operation: "flush control frame",
+            kind: ErrorKind::ConnectionReset,
+        })
+    );
 }
 
 #[test]
@@ -202,5 +211,17 @@ impl Write for FailingWriter {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+struct FailingFlushWriter;
+
+impl Write for FailingFlushWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::from(ErrorKind::ConnectionReset))
     }
 }
