@@ -121,7 +121,8 @@ pub use registration::{
 };
 #[cfg(unix)]
 pub use setup::{
-    ArmedWakeFd, PluginSetupCompletion, PluginSetupError, WakeFdArmError, prepare_setup_completion,
+    ArmedWakeFd, PluginSetupCompletion, PluginSetupError, PluginSetupFailureStage, WakeFdArmError,
+    prepare_setup_completion, receive_and_prepare_setup_completion, receive_setup_with_descriptors,
     send_ready_setup_ack,
 };
 pub use time_control::{

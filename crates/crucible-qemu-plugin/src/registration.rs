@@ -9,8 +9,13 @@
 //! ```
 
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 
 use thiserror::Error;
+
+#[cfg(unix)]
+use crucible_protocol::ReceivedSetup;
 
 use crate::{
     CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, CoverageCallback, CoverageCapabilities,
@@ -19,6 +24,13 @@ use crate::{
     PluginRegistrationStep, QemuAdvanceVirtualTimeDirectFn, QemuClockDeadlineFn,
     SynchronousIdleAdvance, SynchronousIdleAdvanceError, TimeControlRegistrationPlan,
     perform_plugin_handshake,
+};
+#[cfg(unix)]
+use crate::{
+    PluginSetupCompletion, PluginSetupError, PluginSetupFailureStage,
+    prepare_setup_completion as plugin_prepare_setup_completion,
+    receive_setup_with_descriptors as plugin_receive_setup_with_descriptors,
+    send_ready_setup_ack as plugin_send_ready_setup_ack,
 };
 
 /// QEMU capabilities captured at callback registration.
@@ -33,7 +45,7 @@ pub struct PluginCallbackCapabilities {
 impl PluginCallbackCapabilities {
     /// Builds callback capabilities from required QEMU handles.
     #[must_use]
-    pub const fn new(
+    const fn new(
         exact_deadline_reader: ExactDeadlineReader,
         synchronous_idle_advance: SynchronousIdleAdvance,
         coverage_registration_plan: CoverageRegistrationPlan,
@@ -145,6 +157,84 @@ impl PluginRegistrationSequence {
             .map_err(|source| self.fail_control_handshake(source))?;
         self.record_step_unchecked(PluginRegistrationStep::ControlHandshake)?;
         Ok(handshake)
+    }
+
+    /// Receives and records the host `Setup` frame and its two descriptors.
+    ///
+    /// The sequence must already have acquired QEMU time control. The method
+    /// checks the registration step before reading the control socket, so an
+    /// out-of-order call cannot consume setup bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginRegistrationSequenceError`] when setup receive is out of
+    /// order, the socket closes, the frame is malformed, or the frame carries
+    /// anything other than exactly two `SCM_RIGHTS` descriptors.
+    #[cfg(unix)]
+    pub fn receive_setup_with_descriptors<S>(
+        &mut self,
+        stream: &mut S,
+    ) -> Result<ReceivedSetup, PluginRegistrationSequenceError>
+    where
+        S: AsRawFd + Write,
+    {
+        self.ensure_next_step(PluginRegistrationStep::ReceiveSetup)?;
+        let setup = plugin_receive_setup_with_descriptors(stream)
+            .map_err(|source| self.fail_setup_receive(source))?;
+        self.record_step_unchecked(PluginRegistrationStep::ReceiveSetup)?;
+        Ok(setup)
+    }
+
+    /// Maps shared memory, validates setup ABI state, and arms the wake fd.
+    ///
+    /// On success this records both [`PluginRegistrationStep::MapSharedMemory`]
+    /// and [`PluginRegistrationStep::ArmWakeFd`]. On failure it keeps the
+    /// failure attached to the setup milestone that actually failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginRegistrationSequenceError`] when setup preparation is
+    /// out of order, mapping or validation fails, the mapped header disagrees
+    /// with the negotiated handshake assignment, the wake fd cannot be armed, or
+    /// the nonzero failure `SetupAck` cannot be sent.
+    #[cfg(unix)]
+    pub fn prepare_setup_completion<W>(
+        &mut self,
+        writer: &mut W,
+        setup: ReceivedSetup,
+        handshake: PluginControlHandshake,
+    ) -> Result<PluginSetupCompletion, PluginRegistrationSequenceError>
+    where
+        W: Write,
+    {
+        self.ensure_next_step(PluginRegistrationStep::MapSharedMemory)?;
+        let completion = plugin_prepare_setup_completion(writer, setup, handshake)
+            .map_err(|source| self.fail_setup_preparation(source))?;
+        self.record_step_unchecked(PluginRegistrationStep::MapSharedMemory)?;
+        self.record_step_unchecked(PluginRegistrationStep::ArmWakeFd)?;
+        Ok(completion)
+    }
+
+    /// Sends ready `SetupAck(0)` only after callback registration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginRegistrationSequenceError`] when the sequence has not
+    /// reached the ready-ack step or when the acknowledgement cannot be written.
+    #[cfg(unix)]
+    pub fn send_ready_setup_ack<W>(
+        &mut self,
+        writer: &mut W,
+        completion: &PluginSetupCompletion,
+        callbacks: &PluginCallbackCapabilities,
+    ) -> Result<(), PluginRegistrationSequenceError>
+    where
+        W: Write,
+    {
+        self.ensure_next_step(PluginRegistrationStep::SendSetupAck)?;
+        plugin_send_ready_setup_ack(writer, completion, callbacks)
+            .map_err(|source| self.fail_ready_setup_ack(source))?;
+        self.record_step_unchecked(PluginRegistrationStep::SendSetupAck)
     }
 
     /// Records successful completion of one registration step.
@@ -368,6 +458,40 @@ impl PluginRegistrationSequence {
         )
     }
 
+    #[cfg(unix)]
+    fn fail_setup_receive(&mut self, source: PluginSetupError) -> PluginRegistrationSequenceError {
+        self.fail_step(
+            PluginRegistrationStep::ReceiveSetup,
+            format!("setup descriptor receive failed: {source}"),
+        )
+    }
+
+    #[cfg(unix)]
+    fn fail_setup_preparation(
+        &mut self,
+        source: PluginSetupError,
+    ) -> PluginRegistrationSequenceError {
+        let step = setup_error_registration_step(&source);
+        if step == PluginRegistrationStep::ArmWakeFd
+            && self.next_step() == Some(PluginRegistrationStep::MapSharedMemory)
+        {
+            self.completed_steps
+                .push(PluginRegistrationStep::MapSharedMemory);
+        }
+        self.fail_step(step, format!("setup completion failed: {source}"))
+    }
+
+    #[cfg(unix)]
+    fn fail_ready_setup_ack(
+        &mut self,
+        source: PluginSetupError,
+    ) -> PluginRegistrationSequenceError {
+        self.fail_step(
+            PluginRegistrationStep::SendSetupAck,
+            format!("ready setup acknowledgement failed: {source}"),
+        )
+    }
+
     fn fail_synchronous_idle_advance_capability(
         &mut self,
         source: SynchronousIdleAdvanceError,
@@ -398,6 +522,28 @@ impl PluginRegistrationSequence {
             diagnostic: format!("out-of-order registration step; expected {expected:?}"),
         });
         PluginRegistrationSequenceError::OutOfOrderStep { expected, actual }
+    }
+}
+
+#[cfg(unix)]
+const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegistrationStep {
+    match source {
+        PluginSetupError::ReceiveSetup { .. } => PluginRegistrationStep::ReceiveSetup,
+        PluginSetupError::MapRegion { .. }
+        | PluginSetupError::ValidateRegion { .. }
+        | PluginSetupError::NodeCountMismatch { .. }
+        | PluginSetupError::SlotOutsideRegionNodeCount { .. } => {
+            PluginRegistrationStep::MapSharedMemory
+        }
+        PluginSetupError::ArmWakeFd { .. } => PluginRegistrationStep::ArmWakeFd,
+        PluginSetupError::SendReadyAck { .. } => PluginRegistrationStep::SendSetupAck,
+        PluginSetupError::SendFailureAck { stage, .. } => match stage {
+            PluginSetupFailureStage::ReceiveSetup => PluginRegistrationStep::ReceiveSetup,
+            PluginSetupFailureStage::MapRegion
+            | PluginSetupFailureStage::ValidateRegion
+            | PluginSetupFailureStage::CrossCheckSlot => PluginRegistrationStep::MapSharedMemory,
+            PluginSetupFailureStage::ArmWakeFd => PluginRegistrationStep::ArmWakeFd,
+        },
     }
 }
 
