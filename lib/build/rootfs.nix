@@ -278,11 +278,12 @@ in
 
             # Read-only, zstd-compressed root for the immutable production
             # image. --all-root forces every file to uid/gid 0 (matching the
-            # ext4 path's fakeroot, so ownership-sensitive daemons start),
-            # -x1 preserves extended attributes, -T0 fixes timestamps and -U
-            # pins the UUID for a reproducible image. EROFS is content-sized,
-            # so there is no over-provisioning, journal, or shrink step.
-            mkfs.erofs --all-root -x1 -T0 \
+            # ext4 path's fakeroot, so ownership-sensitive daemons start); the
+            # default xattr tolerance preserves SELinux labels; -T0 fixes
+            # timestamps and -U pins the UUID for a reproducible image. EROFS is
+            # content-sized, so there is no over-provisioning, journal, or
+            # shrink step.
+            mkfs.erofs --all-root -T0 \
               -U bdfb6fc9-0000-4000-8000-000000000001 \
               -z zstd,level=19 \
               -L ${label} root.img rootfs
