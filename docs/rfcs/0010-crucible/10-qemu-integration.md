@@ -838,11 +838,21 @@ determinism contract (04).
   close, QMP disconnect) surfaced as a typed crashed-node status distinct from an
   intended crash fault, localized rather than retried on gated paths. —
   satisfies [QEMU-32]; spec §10.6.
-- [ ] **T-QEMU-10** Wire the determinism boundary: configure hermeticity entirely
+- [x] **T-QEMU-10** Wire the determinism boundary: configure hermeticity entirely
   via launch config + sim mode, expose the black-box execution-fingerprint hook
   (periodic icount + register/memory/device digest via the plugin), and add the
   per-elimination micro-tests + inertness checks. — satisfies [QEMU-33],
   [QEMU-35]; spec §10.7.
+  Completed as the `crucible-qemu` determinism-boundary validator: it accepts
+  only a deterministic launch profile plus sim-mode inertness evidence, defines
+  a content-addressed black-box plugin fingerprint definition with periodic
+  icount, architectural-register, guest-memory, and device-state components,
+  builds the digest consumed by the single-VM fingerprint hook, and requires a
+  per-elimination executable negative microtest matrix for TCG/icount, CPU
+  entropy, RTC, guest entropy, run seed, kernel randomization, input, CoW
+  backing, idle-warp, and sim-mode inertness. The full real-QEMU
+  `gate:qemu-inert` corpus remains tracked by [T-HARN-21], and N-vCPU
+  fingerprint expansion remains tracked by [T-QEMU-16].
 - [x] **T-QEMU-11** Implement the single-VM fingerprint hook for
   `gate:single-vm-fingerprint`: run-twice-and-diff under adversarial host
   conditions with first-mismatch icount-window localization and a fixed,

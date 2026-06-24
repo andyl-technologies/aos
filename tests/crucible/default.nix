@@ -194,6 +194,7 @@ in {
     qemuPluginPreemption = import ./phase2-plugin-preemption.nix {inherit pkgs lib;};
     qemuPluginVcpuIntrospection = import ./phase2-plugin-vcpu-introspection.nix {inherit pkgs lib;};
     qemuCrashDetection = import ./phase2-qemu-crash-detection.nix {inherit pkgs lib;};
+    qemuDeterminismBoundary = import ./phase2-qemu-determinism-boundary.nix {inherit pkgs lib;};
     qemuLaunchBuilder = import ./phase2-qemu-launch-builder.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuNodeWrapper = import ./phase2-qemu-node-wrapper.nix {inherit pkgs lib;};
