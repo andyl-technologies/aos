@@ -18,8 +18,9 @@ use std::os::raw::{c_char, c_int, c_uint, c_void};
 
 use crate::{
     ExactDeadlineError, ExactDeadlineReader, QemuAdvanceVirtualTimeDirectFn, QemuClockDeadlineFn,
-    SynchronousIdleAdvance, SynchronousIdleAdvanceError,
+    QemuInjectPreemptionFn, SynchronousIdleAdvance, SynchronousIdleAdvanceError,
 };
+use crate::{PluginPreemptionInjector, PreemptionError};
 
 /// QEMU plugin identifier type passed to the install entry point.
 pub type QemuPluginId = u64;
@@ -69,6 +70,7 @@ pub const MIN_SUPPORTED_VCPU_COUNT: u32 = 1;
 const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C: &[u8] = b"qemu_plugin_clock_deadline_ns\0";
 const QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL_C: &[u8] =
     b"qemu_plugin_advance_virtual_time_direct\0";
+const QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL_C: &[u8] = b"qemu_plugin_inject_preemption\0";
 
 #[cfg(test)]
 static TEST_CLOCK_DEADLINE_SYMBOL: std::sync::Mutex<Option<QemuClockDeadlineFn>> =
@@ -283,6 +285,7 @@ pub struct PluginStatePartition {
     device_callbacks: RegisteredDeviceCallbacks,
     exact_deadline_reader: Option<ExactDeadlineReader>,
     synchronous_idle_advance: Option<SynchronousIdleAdvance>,
+    preemption_injector: Option<PluginPreemptionInjector>,
 }
 
 impl PluginStatePartition {
@@ -294,6 +297,7 @@ impl PluginStatePartition {
             device_callbacks: RegisteredDeviceCallbacks::inert(),
             exact_deadline_reader: None,
             synchronous_idle_advance: None,
+            preemption_injector: None,
         }
     }
 
@@ -308,6 +312,7 @@ impl PluginStatePartition {
             device_callbacks: RegisteredDeviceCallbacks::inert(),
             exact_deadline_reader: Some(exact_deadline_reader),
             synchronous_idle_advance: None,
+            preemption_injector: None,
         }
     }
 
@@ -323,6 +328,24 @@ impl PluginStatePartition {
             device_callbacks: RegisteredDeviceCallbacks::inert(),
             exact_deadline_reader: Some(exact_deadline_reader),
             synchronous_idle_advance: Some(synchronous_idle_advance),
+            preemption_injector: None,
+        }
+    }
+
+    /// Builds scaffold state after requiring all RUN-time QEMU capabilities.
+    #[must_use]
+    pub const fn with_required_preemption_capabilities(
+        execution_model: QemuPluginExecutionModel,
+        exact_deadline_reader: ExactDeadlineReader,
+        synchronous_idle_advance: SynchronousIdleAdvance,
+        preemption_injector: PluginPreemptionInjector,
+    ) -> Self {
+        Self {
+            lifecycle_core: PluginLifecycleCore::installed_inert(execution_model),
+            device_callbacks: RegisteredDeviceCallbacks::inert(),
+            exact_deadline_reader: Some(exact_deadline_reader),
+            synchronous_idle_advance: Some(synchronous_idle_advance),
+            preemption_injector: Some(preemption_injector),
         }
     }
 
@@ -348,6 +371,12 @@ impl PluginStatePartition {
     #[must_use]
     pub const fn synchronous_idle_advance(&self) -> Option<&SynchronousIdleAdvance> {
         self.synchronous_idle_advance.as_ref()
+    }
+
+    /// Returns the commanded-preemption injector resolved during install, if present.
+    #[must_use]
+    pub const fn preemption_injector(&self) -> Option<&PluginPreemptionInjector> {
+        self.preemption_injector.as_ref()
     }
 }
 
@@ -396,6 +425,12 @@ pub enum QemuPluginAbiError {
     SynchronousIdleAdvanceCapability {
         /// Underlying synchronous idle-advance error.
         source: SynchronousIdleAdvanceError,
+    },
+    /// The required commanded preemption-injection capability is unavailable.
+    #[error("QEMU plugin preemption-injection capability failed")]
+    PreemptionInjectionCapability {
+        /// Underlying preemption injection error.
+        source: PreemptionError,
     },
 }
 
@@ -496,6 +531,36 @@ pub fn install_required_time_capability_scaffold(
     ))
 }
 
+/// Builds install scaffold state after requiring all preemption-time capabilities.
+///
+/// # Errors
+///
+/// Returns [`QemuPluginAbiError::ExactDeadlineCapability`] when the exact
+/// deadline export is unavailable,
+/// [`QemuPluginAbiError::SynchronousIdleAdvanceCapability`] when the direct
+/// advance/drain export is unavailable, or
+/// [`QemuPluginAbiError::PreemptionInjectionCapability`] when the commanded
+/// preemption-injection export is unavailable.
+pub fn install_required_preemption_scaffold(
+    execution_model: QemuPluginExecutionModel,
+    clock_deadline_ns: Option<QemuClockDeadlineFn>,
+    advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+    inject_preemption: Option<QemuInjectPreemptionFn>,
+) -> Result<PluginStatePartition, QemuPluginAbiError> {
+    let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ns)
+        .map_err(|source| QemuPluginAbiError::ExactDeadlineCapability { source })?;
+    let synchronous_idle_advance = SynchronousIdleAdvance::require(advance_virtual_time_direct)
+        .map_err(|source| QemuPluginAbiError::SynchronousIdleAdvanceCapability { source })?;
+    let preemption_injector = PluginPreemptionInjector::require(inject_preemption)
+        .map_err(|source| QemuPluginAbiError::PreemptionInjectionCapability { source })?;
+    Ok(PluginStatePartition::with_required_preemption_capabilities(
+        execution_model,
+        exact_deadline_reader,
+        synchronous_idle_advance,
+        preemption_injector,
+    ))
+}
+
 /// Builds the inert install scaffold from QEMU install information.
 ///
 /// # Errors
@@ -543,6 +608,29 @@ pub fn install_required_time_capability_scaffold_from_qemu_info(
         execution_model,
         clock_deadline_ns,
         advance_virtual_time_direct,
+    )
+}
+
+/// Builds required preemption capability scaffold state from QEMU install information.
+///
+/// # Errors
+///
+/// Returns [`QemuPluginAbiError`] when the execution model is unsupported, the
+/// exact-deadline symbol is unavailable, the synchronous direct-advance symbol
+/// is unavailable, or the commanded preemption-injection symbol is unavailable.
+pub fn install_required_preemption_scaffold_from_qemu_info(
+    info: &QemuPluginInfo,
+    threading: QemuTcgThreading,
+    clock_deadline_ns: Option<QemuClockDeadlineFn>,
+    advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+    inject_preemption: Option<QemuInjectPreemptionFn>,
+) -> Result<PluginStatePartition, QemuPluginAbiError> {
+    let execution_model = execution_model_from_qemu_info(info, threading)?;
+    install_required_preemption_scaffold(
+        execution_model,
+        clock_deadline_ns,
+        advance_virtual_time_direct,
+        inject_preemption,
     )
 }
 
@@ -616,6 +704,37 @@ pub const fn resolve_qemu_advance_virtual_time_direct_symbol()
     None
 }
 
+/// Resolves QEMU's required commanded-preemption export from the loaded process.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_inject_preemption_symbol() -> Option<QemuInjectPreemptionFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
+    // either null or a process symbol address. QEMU's patch defines this symbol
+    // with the exact `extern "C" fn(u64, c_uint, u32, u32, u32) -> c_int` ABI
+    // used by `QemuInjectPreemptionFn`; callers fail closed when absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: Non-null `symbol` was resolved for
+        // `qemu_plugin_inject_preemption`, whose patched QEMU declaration
+        // matches `QemuInjectPreemptionFn`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuInjectPreemptionFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's required commanded-preemption export from the loaded process.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_inject_preemption_symbol() -> Option<QemuInjectPreemptionFn> {
+    None
+}
+
 fn validate_qemu_plugin_api_range(info: &QemuPluginInfo) -> Result<(), QemuPluginAbiError> {
     if info.version.min > QEMU_PLUGIN_API_VERSION || info.version.cur < QEMU_PLUGIN_API_VERSION {
         return Err(QemuPluginAbiError::UnsupportedPluginApi {
@@ -638,11 +757,12 @@ fn install_required_deadline_scaffold_from_boundary(
     // Only scalar fields are copied before the pointer lifetime ends.
     let info = unsafe { &*info };
 
-    install_required_time_capability_scaffold_from_qemu_info(
+    install_required_preemption_scaffold_from_qemu_info(
         info,
         QemuTcgThreading::SingleThreadedRoundRobin,
         resolve_qemu_clock_deadline_symbol(),
         resolve_qemu_advance_virtual_time_direct_symbol(),
+        resolve_qemu_inject_preemption_symbol(),
     )
 }
 
@@ -653,9 +773,9 @@ pub static qemu_plugin_version: c_int = QEMU_PLUGIN_API_VERSION;
 /// QEMU `cdylib` install entry point.
 ///
 /// The install path validates the raw ABI shape and execution model, then fails
-/// closed unless QEMU exposes the required exact-deadline and synchronous
-/// direct-advance capabilities. Device callbacks remain inert until later tasks
-/// replace the callback bodies.
+/// closed unless QEMU exposes the required exact-deadline, synchronous
+/// direct-advance, and commanded-preemption capabilities. Device callbacks
+/// remain inert until later tasks replace the callback bodies.
 ///
 /// # Safety
 ///
@@ -926,6 +1046,45 @@ mod tests {
     }
 
     #[test]
+    fn abi_install_requires_preemption_injection_symbol() {
+        let valid_info = qemu_info_fixture(2, 1, QEMU_PLUGIN_API_VERSION);
+
+        assert!(resolve_qemu_inject_preemption_symbol().is_none());
+        assert_eq!(
+            install_required_preemption_scaffold_from_qemu_info(
+                &valid_info,
+                QemuTcgThreading::SingleThreadedRoundRobin,
+                Some(abi_test_deadline),
+                Some(abi_test_direct_advance),
+                Some(abi_test_inject_preemption),
+            )
+            .map(|state| {
+                (
+                    state.exact_deadline_reader().is_some(),
+                    state.synchronous_idle_advance().is_some(),
+                    state.preemption_injector().is_some(),
+                )
+            }),
+            Ok((true, true, true))
+        );
+        assert_eq!(
+            install_required_preemption_scaffold_from_qemu_info(
+                &valid_info,
+                QemuTcgThreading::SingleThreadedRoundRobin,
+                Some(abi_test_deadline),
+                Some(abi_test_direct_advance),
+                None,
+            )
+            .map(|_state| ()),
+            Err(QemuPluginAbiError::PreemptionInjectionCapability {
+                source: PreemptionError::CapabilityUnavailable {
+                    symbol: crate::QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL,
+                },
+            })
+        );
+    }
+
+    #[test]
     fn abi_execution_model_requires_single_threaded_tcg_not_single_vcpu_only() {
         let single =
             match QemuPluginExecutionModel::validate(1, QemuTcgThreading::SingleThreadedRoundRobin)
@@ -1017,6 +1176,7 @@ mod tests {
         assert_eq!(state.lifecycle_core().execution_model(), model);
         assert!(state.exact_deadline_reader().is_none());
         assert!(state.synchronous_idle_advance().is_none());
+        assert!(state.preemption_injector().is_none());
         for kind in OWNED_DEVICE_CALLBACK_KINDS {
             let callback = state.device_callbacks().callback_for(kind);
             callback(7, std::ptr::null_mut());
@@ -1028,6 +1188,16 @@ mod tests {
     }
 
     extern "C" fn abi_test_direct_advance(_target_virtual_ns: i64) {}
+
+    extern "C" fn abi_test_inject_preemption(
+        _at_icount: u64,
+        _raw_kind: c_uint,
+        _arg0: u32,
+        _arg1: u32,
+        _arg2: u32,
+    ) -> c_int {
+        0
+    }
 
     struct TestClockDeadlineSymbolGuard;
 

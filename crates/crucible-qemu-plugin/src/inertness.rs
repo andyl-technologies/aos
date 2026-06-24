@@ -33,6 +33,8 @@ pub struct PluginPatchCapabilityCalls {
     pub exact_deadline_reads: usize,
     /// Direct virtual-time advances through the idle advance capability.
     pub direct_virtual_time_advances: usize,
+    /// Commanded vCPU-switch or interrupt preemption injections.
+    pub preemption_injections: usize,
     /// Lossless guest network receive capacity queries.
     pub network_receive_capacity_queries: usize,
     /// Lossless guest network receive queue operations.
@@ -61,6 +63,7 @@ impl PluginPatchCapabilityCalls {
             virtual_clock_updates: 0,
             exact_deadline_reads: 0,
             direct_virtual_time_advances: 0,
+            preemption_injections: 0,
             network_receive_capacity_queries: 0,
             network_receive_queues: 0,
             network_receive_flushes: 0,
@@ -80,6 +83,7 @@ impl PluginPatchCapabilityCalls {
             + self.virtual_clock_updates
             + self.exact_deadline_reads
             + self.direct_virtual_time_advances
+            + self.preemption_injections
             + self.network_receive_capacity_queries
             + self.network_receive_queues
             + self.network_receive_flushes
@@ -347,6 +351,10 @@ mod tests {
                 ..PluginPatchCapabilityCalls::none()
             },
             PluginPatchCapabilityCalls {
+                preemption_injections: 1,
+                ..PluginPatchCapabilityCalls::none()
+            },
+            PluginPatchCapabilityCalls {
                 network_receive_capacity_queries: 1,
                 ..PluginPatchCapabilityCalls::none()
             },
@@ -399,6 +407,7 @@ mod tests {
             virtual_clock_updates: 1,
             exact_deadline_reads: 1,
             direct_virtual_time_advances: 1,
+            preemption_injections: 1,
             network_receive_capacity_queries: 1,
             network_receive_queues: 1,
             network_receive_flushes: 1,

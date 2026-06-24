@@ -128,6 +128,12 @@ impl RoundRobinRunState {
         self.current_vcpu
     }
 
+    /// Returns the configured vCPU count for this RUN cursor.
+    #[must_use]
+    pub const fn vcpu_count(self) -> u32 {
+        self.config.vcpu_count()
+    }
+
     /// Returns the node-icount ticks left before the next switch.
     #[must_use]
     pub const fn remaining_in_quantum(self) -> u64 {
@@ -178,6 +184,58 @@ impl RoundRobinRunState {
                 remaining_in_quantum: self.remaining_in_quantum,
             })
         }
+    }
+
+    /// Validates a scheduler-commanded vCPU switch against the current cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoundRobinError::WrongCurrentVcpu`] when `from_vcpu` is not the
+    /// current cursor, [`RoundRobinError::VcpuOutOfRange`] when `to_vcpu` is
+    /// outside `0..self.vcpu_count()`, or
+    /// [`RoundRobinError::DegenerateVcpuSwitch`] when the command would keep the
+    /// same vCPU running.
+    pub const fn validate_commanded_switch(
+        self,
+        from_vcpu: u32,
+        to_vcpu: u32,
+    ) -> Result<(), RoundRobinError> {
+        if from_vcpu != self.current_vcpu {
+            return Err(RoundRobinError::WrongCurrentVcpu {
+                expected_vcpu: self.current_vcpu,
+                observed_vcpu: from_vcpu,
+            });
+        }
+        if to_vcpu >= self.config.vcpu_count {
+            return Err(RoundRobinError::VcpuOutOfRange {
+                vcpu_id: to_vcpu,
+                vcpu_count: self.config.vcpu_count,
+            });
+        }
+        if from_vcpu == to_vcpu {
+            return Err(RoundRobinError::DegenerateVcpuSwitch { vcpu_id: from_vcpu });
+        }
+        Ok(())
+    }
+
+    /// Applies a scheduler-commanded vCPU switch and starts a fresh fixed quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as [`Self::validate_commanded_switch`].
+    pub fn force_commanded_switch(
+        &mut self,
+        from_vcpu: u32,
+        to_vcpu: u32,
+    ) -> Result<RoundRobinTurn, RoundRobinError> {
+        self.validate_commanded_switch(from_vcpu, to_vcpu)?;
+        self.current_vcpu = to_vcpu;
+        self.remaining_in_quantum = self.config.rr_switch_quantum;
+        Ok(RoundRobinTurn::Switch {
+            from_vcpu,
+            to_vcpu,
+            rr_switch_quantum: self.config.rr_switch_quantum,
+        })
     }
 
     /// Advances past a halted current vCPU to the next runnable vCPU.
@@ -424,6 +482,12 @@ pub enum RoundRobinError {
         config_vcpu_count: u32,
         /// vCPU count covered by the halt tracker.
         tracker_vcpu_count: u32,
+    },
+    /// A commanded switch would keep the same vCPU running.
+    #[error("round-robin commanded switch must change vCPUs, got vCPU {vcpu_id}")]
+    DegenerateVcpuSwitch {
+        /// Rejected source and destination vCPU.
+        vcpu_id: u32,
     },
     /// QEMU reported progress for a vCPU other than the current cursor.
     #[error("round-robin expected vCPU {expected_vcpu}, observed vCPU {observed_vcpu}")]

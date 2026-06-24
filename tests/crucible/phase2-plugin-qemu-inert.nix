@@ -137,6 +137,10 @@
         needle = "virtual_clock_updates";
       }
       {
+        label = "preemption injection effect";
+        needle = "preemption_injections";
+      }
+      {
         label = "network capacity query effect";
         needle = "network_receive_capacity_queries";
       }
