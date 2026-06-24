@@ -164,6 +164,7 @@ in {
     protocolShutdownEscalation = import ./phase2-protocol-shutdown-escalation.nix {inherit pkgs lib;};
     protocolSetupFailure = import ./phase2-protocol-setup-failure.nix {inherit pkgs lib;};
     protocolGoldenVectors = import ./phase2-protocol-golden-vectors.nix {inherit pkgs lib;};
+    protocolCodecFuzz = import ./phase2-protocol-codec-fuzz.nix {inherit pkgs lib;};
     shmemRegionLayout = import ./phase2-shmem-region-layout.nix {inherit pkgs lib;};
     shmemGeneratedHeader = import ./phase2-shmem-generated-header.nix {inherit pkgs lib;};
     shmemAbiConformance = import ./phase2-shmem-abi-conformance.nix {inherit pkgs lib;};
