@@ -166,6 +166,7 @@ in {
     protocolGoldenVectors = import ./phase2-protocol-golden-vectors.nix {inherit pkgs lib;};
     protocolCodecFuzz = import ./phase2-protocol-codec-fuzz.nix {inherit pkgs lib;};
     protocolInertness = import ./phase2-protocol-inertness.nix {inherit pkgs lib;};
+    qemuPluginAbiScaffold = import ./phase2-plugin-abi-scaffold.nix {inherit pkgs lib;};
     qemuPluginArgs = import ./phase2-plugin-args.nix {inherit pkgs lib;};
     qemuPluginRegistrationOrder = import ./phase2-plugin-registration-order.nix {inherit pkgs lib;};
     qemuPluginTimeControl = import ./phase2-plugin-time-control.nix {inherit pkgs lib;};
