@@ -160,6 +160,7 @@ in {
     protocolDescriptorHandover = import ./phase2-protocol-descriptor-handover.nix {inherit pkgs lib;};
     protocolHandshake = import ./phase2-protocol-handshake.nix {inherit pkgs lib;};
     protocolSetupCompletion = import ./phase2-protocol-setup-completion.nix {inherit pkgs lib;};
+    protocolLifecycle = import ./phase2-protocol-lifecycle.nix {inherit pkgs lib;};
     shmemRegionLayout = import ./phase2-shmem-region-layout.nix {inherit pkgs lib;};
     shmemGeneratedHeader = import ./phase2-shmem-generated-header.nix {inherit pkgs lib;};
     shmemAbiConformance = import ./phase2-shmem-abi-conformance.nix {inherit pkgs lib;};
