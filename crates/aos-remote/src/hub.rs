@@ -39,8 +39,10 @@ use aos_proto_types::{
     CreateBindingResponse, CreateOrgRequest, CreateOrgResponse, CreateProjectRequest,
     CreateProjectResponse, CreateRegistryRequest, CreateRegistryResponse, CreateWebhookRequest,
     CreateWebhookResponse,
-    DeleteWebhookRequest, GetChannelRequest, GetChannelResponse, GetPackageRequest,
+    DeleteWebhookRequest, GetChannelRequest, GetChannelResponse,
+    GetInstanceSettingsRequest, GetInstanceSettingsResponse, GetPackageRequest,
     GetPackageResponse, GetRegistryRequest, GetRegistryResponse, GitCommit, GitDiffRequest,
+    InstanceSettings, UpdateInstanceSettingsRequest, UpdateInstanceSettingsResponse,
     GitDiffResponse, GitLogRequest, GitLogResponse, ListAuditRequest, ListAuditResponse,
     ListBindingsRequest, ListBindingsResponse, ListChangeRequestsRequest,
     ListChangeRequestsResponse, ListChangesetsRequest, ListChangesetsResponse, ListChannelsRequest,
@@ -399,6 +401,55 @@ impl RegistryHubClient {
             .await
             .with_context(|| format!("listing audit entries for scope '{scope}'"))?;
         Ok(resp.entries)
+    }
+
+    /// Fetches the full editable instance-settings bundle.
+    ///
+    /// Requires an authenticated client with `iam.admin` at the instance root.
+    /// Calls `aos.registry.v1.InstanceService/GetInstanceSettings`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable, the caller is not an instance
+    /// admin, or the response omits the settings payload.
+    pub async fn get_instance_settings(&self) -> Result<InstanceSettings> {
+        let resp: GetInstanceSettingsResponse = self
+            .call(
+                "aos.registry.v1.InstanceService/GetInstanceSettings",
+                &GetInstanceSettingsRequest {},
+            )
+            .await
+            .context("fetching instance settings")?;
+        resp.settings
+            .context("hub returned no instance settings payload")
+    }
+
+    /// Applies a set of instance-settings changes and returns the updated bundle.
+    ///
+    /// Each `(key, value)` in `values` is set (a blank value clears the key to
+    /// its default); each key in `clear` is reset to its default. Requires an
+    /// authenticated client with `iam.admin` at the instance root. Calls
+    /// `aos.registry.v1.InstanceService/UpdateInstanceSettings`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable, the caller is not an instance
+    /// admin, a key is unknown, a value is invalid, or the response omits the
+    /// settings payload.
+    pub async fn update_instance_settings(
+        &self,
+        values: std::collections::HashMap<String, String>,
+        clear: Vec<String>,
+    ) -> Result<InstanceSettings> {
+        let resp: UpdateInstanceSettingsResponse = self
+            .call(
+                "aos.registry.v1.InstanceService/UpdateInstanceSettings",
+                &UpdateInstanceSettingsRequest { values, clear },
+            )
+            .await
+            .context("updating instance settings")?;
+        resp.settings
+            .context("hub returned no instance settings payload")
     }
 
     /// Lists configuration change-sets at a scope (the root scope `""` is

@@ -39,6 +39,6 @@ pub use aos_proto::aos::gc::v1::{EvictionCandidate, GcResponse};
 // (RFC-0004 Phase 5), so the `aos hub …` CLI consumes these from
 // `aos-proto-types` rather than the connectrpc `aos-proto` types.
 pub use aos_proto_types::{
-    AuditEntry, Binding, ChangeRequest, Changeset, Channel, GitCommit, Org, Package,
-    PackageSummary, Project, Registry, Release, Webhook,
+    AuditEntry, Binding, ChangeRequest, Changeset, Channel, GitCommit, InstanceSettings, Org,
+    Package, PackageSummary, Project, Registry, Release, Webhook,
 };
