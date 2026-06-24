@@ -477,7 +477,7 @@ The control channel is determinism-neutral by construction.
   adversarial frames; round-trip on well-formed inputs) to `gate:abi-conformance`
   and seed the regression corpus. — satisfies [PROTO-22], [PROTO-23]; spec §6,
   §24 §8.3.
-- [ ] **T-PROTO-11** Add the inertness assertion: with sim mode off, no control
+- [x] **T-PROTO-11** Add the inertness assertion: with sim mode off, no control
   socket is created and no frame is sent; with sim mode on, no timing-significant
   data crosses the channel and the channel is silent during the run. — satisfies
   [PROTO-18], [PROTO-24]; spec §7, §24 (`gate:qemu-inert`).
