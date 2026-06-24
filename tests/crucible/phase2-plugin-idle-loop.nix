@@ -132,7 +132,7 @@
       }
       {
         label = "global control action observation";
-        needle = "control_action";
+        needle = "PluginShmemOrdering::observe_control_action";
       }
       {
         label = "shutdown control branch";
@@ -144,7 +144,7 @@
       }
       {
         label = "shutdown marks node done";
-        needle = "mark_done";
+        needle = "PluginShmemOrdering::mark_done_after_shutdown";
       }
       {
         label = "scheduler release completion";
@@ -156,15 +156,15 @@
       }
       {
         label = "shared-memory idle publish";
-        needle = "publish_idle";
+        needle = "PluginShmemOrdering::publish_idle_wait";
       }
       {
         label = "shared-memory reached publish";
-        needle = "publish_reached_icount";
+        needle = "PluginShmemOrdering::publish_reached_icount";
       }
       {
         label = "non-private futex wait";
-        needle = "futex_wait_nonprivate";
+        needle = "PluginShmemOrdering::wait_on_wake_signal";
       }
       {
         label = "scheduler-authorized idle jump";

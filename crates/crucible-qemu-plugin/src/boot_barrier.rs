@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crucible_shmem::{FutexError, FutexWait, FutexWaitOutcome, NodeSlot, NodeSlotError};
 
-use crate::setup::PluginReadySetupAck;
+use crate::{setup::PluginReadySetupAck, shmem_ordering::PluginShmemOrdering};
 
 /// First aggregate icount reached after one guest instruction retires.
 pub const BOOT_BARRIER_FIRST_GUEST_ICOUNT: u64 = 1;
@@ -73,9 +73,13 @@ impl PluginBootBarrier {
         slot: &NodeSlot,
         icount_shift: u8,
     ) -> Result<BootBarrierWait, BootBarrierError> {
-        let futex_wait = slot
-            .publish_idle(0, BOOT_BARRIER_FIRST_GUEST_ICOUNT, icount_shift)
-            .map_err(|source| BootBarrierError::PublishIdle { source })?;
+        let futex_wait = PluginShmemOrdering::publish_idle_wait(
+            slot,
+            0,
+            BOOT_BARRIER_FIRST_GUEST_ICOUNT,
+            icount_shift,
+        )
+        .map_err(|source| BootBarrierError::PublishIdle { source })?;
         Ok(BootBarrierWait {
             _setup_ack: setup_ack,
             first_guest_icount: BOOT_BARRIER_FIRST_GUEST_ICOUNT,
@@ -96,30 +100,29 @@ impl PluginBootBarrier {
     ) -> Result<BootBarrierRelease, BootBarrierError> {
         let mut wait = request.futex_wait;
         loop {
-            let ceiling = slot.load_node_ceiling();
+            let ceiling = PluginShmemOrdering::load_scheduler_ceiling(slot);
             if ceiling >= request.first_guest_icount {
-                slot.mark_running();
+                PluginShmemOrdering::mark_running_after_wake(slot);
                 return Ok(BootBarrierRelease {
                     first_guest_icount: request.first_guest_icount,
                     released_ceiling: ceiling,
                 });
             }
 
-            match slot
-                .futex_wait_nonprivate(wait)
+            match PluginShmemOrdering::wait_on_wake_signal(slot, wait)
                 .map_err(|source| BootBarrierError::FutexWait { source })?
             {
                 FutexWaitOutcome::Noop => {
                     return Err(BootBarrierError::InitialCeilingStillBlocked {
                         first_guest_icount: request.first_guest_icount,
-                        ceiling_icount: slot.load_node_ceiling(),
+                        ceiling_icount: PluginShmemOrdering::load_scheduler_ceiling(slot),
                     });
                 }
                 FutexWaitOutcome::Runnable
                 | FutexWaitOutcome::ValueChanged
                 | FutexWaitOutcome::Interrupted
                 | FutexWaitOutcome::Woken => {
-                    wait = slot.prepare_futex_wait();
+                    wait = PluginShmemOrdering::prepare_futex_wait(slot);
                 }
             }
         }

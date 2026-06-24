@@ -13,6 +13,8 @@ use thiserror::Error;
 use crucible_protocol::{ControlLifecycleIoError, ControlLifecycleState, ControlLifecycleStream};
 use crucible_shmem::{NodeSlot, RegionHeader};
 
+use crate::shmem_ordering::PluginShmemOrdering;
+
 /// Shutdown trigger accepted by the plugin teardown path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginTeardownTrigger {
@@ -36,7 +38,7 @@ impl PluginShutdownRequested {
     /// Returns [`PluginTeardownError::ShutdownNotRequested`] when the header has
     /// not yet requested shutdown.
     pub fn from_region_header(header: &RegionHeader) -> Result<Self, PluginTeardownError> {
-        if header.shutdown_requested() {
+        if PluginShmemOrdering::observe_shutdown_requested(header) {
             Ok(Self { _private: () })
         } else {
             Err(PluginTeardownError::ShutdownNotRequested)
@@ -228,7 +230,7 @@ impl PluginTeardown {
             });
         }
 
-        slot.mark_done();
+        PluginShmemOrdering::mark_done_after_shutdown(slot);
         self.completed = Some(trigger);
         shutdown
             .initiate_orderly_qemu_shutdown()

@@ -16,7 +16,7 @@ use crucible_shmem::{
 
 use crate::{
     DeviceIoBurstState, DeviceIoFreezeError, DeviceIoRequestRelease, DeviceIoRequestToken,
-    PluginDeviceIoFreeze,
+    PluginDeviceIoFreeze, shmem_ordering::PluginShmemOrdering,
 };
 
 const NINEP_IO_SLOT_U32: u32 = SLOT_9P_IO as u32;
@@ -164,7 +164,11 @@ impl PluginNinePIo {
             NinePIoError::DeviceIoFreeze { source }
         })?;
 
-        if let Err(source) = outbound_ring.header.enqueue(outbound_ring.entries, &frame) {
+        if let Err(source) = PluginShmemOrdering::enqueue_outbound_frame(
+            outbound_ring.header,
+            outbound_ring.entries,
+            &frame,
+        ) {
             let release = freeze
                 .fail_request(slot, device_token)
                 .map_err(|source| NinePIoError::DeviceIoFreeze { source })?;
@@ -260,13 +264,11 @@ impl PluginNinePIo {
         self.pending_request_ids.remove(request_id)?;
 
         let Some(dequeued) =
-            inbound_ring
-                .header
-                .dequeue(inbound_ring.entries)
+            PluginShmemOrdering::dequeue_inbound_frame(inbound_ring.header, inbound_ring.entries)
                 .map_err(|source| NinePIoError::RingDequeue {
-                    ring_index: self.inbound_ring_index,
-                    source,
-                })?
+                ring_index: self.inbound_ring_index,
+                source,
+            })?
         else {
             return Err(NinePIoError::DequeuedUnexpectedFrame {
                 ring_index: self.inbound_ring_index,
@@ -854,16 +856,17 @@ pub enum NinePIoError {
 
 fn peek_head_frame(ring: &NinePInboundRing<'_>) -> Result<Option<FrameEntry>, NinePIoError> {
     let Some(delivery_icount) =
-        ring.header
-            .peek_delivery_icount(ring.entries)
-            .map_err(|source| NinePIoError::RingDequeue {
+        PluginShmemOrdering::peek_inbound_delivery_icount(ring.header, ring.entries).map_err(
+            |source| NinePIoError::RingDequeue {
                 ring_index: ring.ring_index,
                 source,
-            })?
+            },
+        )?
     else {
         return Ok(None);
     };
-    let slot = (ring.header.read_index() & (ring.entries.len() as u64 - 1)) as usize;
+    let slot = (PluginShmemOrdering::consumer_read_index(ring.header)
+        & (ring.entries.len() as u64 - 1)) as usize;
     let frame = ring.entries[slot].clone();
     if frame.delivery_icount != delivery_icount {
         return Err(NinePIoError::DequeuedUnexpectedFrame {
@@ -1475,7 +1478,7 @@ mod tests {
     }
 
     fn enqueue(header: &RingHeader, entries: &mut [FrameEntry], frame: FrameEntry) {
-        if let Err(error) = header.enqueue(entries, &frame) {
+        if let Err(error) = PluginShmemOrdering::enqueue_outbound_frame(header, entries, &frame) {
             panic!("test frame should enqueue: {error}");
         }
     }

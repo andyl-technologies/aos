@@ -24,7 +24,9 @@ use crucible_shmem::{
 };
 
 #[cfg(unix)]
-use crate::{PluginCallbackCapabilities, PluginControlHandshake};
+use crate::{
+    PluginCallbackCapabilities, PluginControlHandshake, shmem_ordering::PluginShmemOrdering,
+};
 
 /// An eventfd descriptor armed for setup-complete wake handling.
 #[cfg(unix)]
@@ -180,8 +182,8 @@ where
         }
     };
 
-    let header_snapshot = mapped_region.header_snapshot();
-    let validated_region = match mapped_region.validate_header() {
+    let header_snapshot = PluginShmemOrdering::setup_header_snapshot(&mapped_region);
+    let validated_region = match PluginShmemOrdering::validate_setup_header(&mapped_region) {
         Ok(validated_region) => validated_region,
         Err(source) => {
             send_setup_failure_ack(writer, PluginSetupFailureStage::ValidateRegion)?;

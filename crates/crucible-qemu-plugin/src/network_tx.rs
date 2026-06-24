@@ -11,6 +11,8 @@ use thiserror::Error;
 
 use crucible_shmem::{DirectedRing, FrameEntry, RingHeader, SLOT_NET_ROUTER, SpscRingError};
 
+use crate::shmem_ordering::PluginShmemOrdering;
+
 const NET_ROUTER_SLOT_U32: u32 = SLOT_NET_ROUTER as u32;
 
 /// Registration-time-fixed network TX enqueue state.
@@ -113,12 +115,12 @@ impl PluginNetworkTx {
             next_seq: seq,
         })?;
 
-        ring.header
-            .enqueue(ring.entries, &frame)
-            .map_err(|source| NetworkTxError::RingOperation {
+        PluginShmemOrdering::enqueue_outbound_frame(ring.header, ring.entries, &frame).map_err(
+            |source| NetworkTxError::RingOperation {
                 ring_index: self.ring_index,
                 source,
-            })?;
+            },
+        )?;
         self.next_seq.set(next_seq);
 
         Ok(NetworkTxEnqueue {

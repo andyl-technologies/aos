@@ -173,7 +173,7 @@
       }
       {
         label = "validates mapped header";
-        needle = "mapped_region.validate_header()";
+        needle = "PluginShmemOrdering::validate_setup_header";
       }
       {
         label = "setup slot cross-check helper";

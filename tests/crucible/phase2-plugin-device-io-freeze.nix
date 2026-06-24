@@ -148,7 +148,7 @@
       }
       {
         label = "active flag set on submit";
-        needle = "slot.mark_device_io_active()";
+        needle = "PluginShmemOrdering::publish_device_io_active";
       }
       {
         label = "completion path";
@@ -176,11 +176,11 @@
       }
       {
         label = "active flag clear";
-        needle = "slot.clear_device_io_active()";
+        needle = "PluginShmemOrdering::clear_device_io_active";
       }
       {
         label = "release wakes idle waiters";
-        needle = "slot.wake_for_device_io_release()";
+        needle = "PluginShmemOrdering::wake_for_device_io_release";
       }
       {
         label = "foreign token rejection";
@@ -226,7 +226,7 @@
       }
       {
         label = "idle path reads shmem flag";
-        needle = "slot.load_device_io_active()";
+        needle = "PluginShmemOrdering::device_io_active(slot)";
       }
       {
         label = "idle path reads freeze counter";

@@ -150,7 +150,7 @@
       }
       {
         label = "SPSC enqueue";
-        needle = ".enqueue(ring.entries, &frame)";
+        needle = "PluginShmemOrdering::enqueue_outbound_frame";
       }
       {
         label = "ring operation error";

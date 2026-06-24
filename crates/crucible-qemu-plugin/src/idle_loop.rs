@@ -19,6 +19,7 @@ use crate::{
     PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze, PluginInboundFrames,
     PluginNetworkRx, PluginVirtualClock, SchedulerCeiling, SynchronousIdleAdvance,
     SynchronousIdleAdvanceError, SynchronousIdleDrain, handle_network_rx_idle_callback,
+    shmem_ordering::PluginShmemOrdering,
 };
 
 /// The source that determined the node's next idle wake.
@@ -248,7 +249,7 @@ impl PluginIdleHotLoop {
         device_io_freeze: Option<&PluginDeviceIoFreeze>,
     ) -> Result<IdleParkRequest, IdleHotLoopError> {
         let current_icount = clock.current_icount();
-        let ceiling_icount = slot.load_node_ceiling();
+        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(slot);
         if ceiling_icount < current_icount {
             return Err(IdleHotLoopError::CeilingBehindCurrent {
                 current_icount,
@@ -257,11 +258,11 @@ impl PluginIdleHotLoop {
         }
         reject_passed_inbound_delivery(current_icount, next_inbound_delivery_icount)?;
         let device_io_holding_ticks = device_io_freeze.map_or_else(
-            || slot.load_device_io_active(),
+            || PluginShmemOrdering::device_io_active(slot),
             |freeze| freeze.is_tick_hold_active(slot),
         );
 
-        slot.publish_reached_icount(current_icount, clock.icount_shift())
+        PluginShmemOrdering::publish_reached_icount(slot, current_icount, clock.icount_shift())
             .map_err(|source| IdleHotLoopError::PublishReached { source })?;
 
         let plan = compute_idle_wake_plan(
@@ -272,13 +273,13 @@ impl PluginIdleHotLoop {
             SchedulerCeiling::new(ceiling_icount),
             device_io_holding_ticks,
         )?;
-        let futex_wait = slot
-            .publish_idle(
-                current_icount,
-                plan.desired_wake_icount,
-                clock.icount_shift(),
-            )
-            .map_err(|source| IdleHotLoopError::PublishIdle { source })?;
+        let futex_wait = PluginShmemOrdering::publish_idle_wait(
+            slot,
+            current_icount,
+            plan.desired_wake_icount,
+            clock.icount_shift(),
+        )
+        .map_err(|source| IdleHotLoopError::PublishIdle { source })?;
 
         Ok(IdleParkRequest { plan, futex_wait })
     }
@@ -301,37 +302,42 @@ impl PluginIdleHotLoop {
     ) -> Result<IdleWaitOutcome, IdleHotLoopError> {
         let mut wait = request.futex_wait;
         loop {
-            if header.control_action() == RegionControlAction::Shutdown {
-                slot.mark_done();
+            if PluginShmemOrdering::observe_control_action(header) == RegionControlAction::Shutdown
+            {
+                PluginShmemOrdering::mark_done_after_shutdown(slot);
                 return Ok(IdleWaitOutcome::ShutdownRequested);
             }
-            if slot.load_node_ceiling() >= request.plan.desired_wake_icount {
-                if header.control_action() == RegionControlAction::Shutdown {
-                    slot.mark_done();
+            if PluginShmemOrdering::load_scheduler_ceiling(slot) >= request.plan.desired_wake_icount
+            {
+                if PluginShmemOrdering::observe_control_action(header)
+                    == RegionControlAction::Shutdown
+                {
+                    PluginShmemOrdering::mark_done_after_shutdown(slot);
                     return Ok(IdleWaitOutcome::ShutdownRequested);
                 }
                 return Ok(IdleWaitOutcome::SchedulerReleased);
             }
 
-            match slot
-                .futex_wait_nonprivate(wait)
+            match PluginShmemOrdering::wait_on_wake_signal(slot, wait)
                 .map_err(|source| IdleHotLoopError::FutexWait { source })?
             {
                 FutexWaitOutcome::Noop => {
-                    if header.control_action() == RegionControlAction::Shutdown {
-                        slot.mark_done();
+                    if PluginShmemOrdering::observe_control_action(header)
+                        == RegionControlAction::Shutdown
+                    {
+                        PluginShmemOrdering::mark_done_after_shutdown(slot);
                         return Ok(IdleWaitOutcome::ShutdownRequested);
                     }
                     return Err(IdleHotLoopError::WakeStillBlocked {
                         desired_wake_icount: request.plan.desired_wake_icount,
-                        ceiling_icount: slot.load_node_ceiling(),
+                        ceiling_icount: PluginShmemOrdering::load_scheduler_ceiling(slot),
                     });
                 }
                 FutexWaitOutcome::Runnable
                 | FutexWaitOutcome::ValueChanged
                 | FutexWaitOutcome::Interrupted
                 | FutexWaitOutcome::Woken => {
-                    wait = slot.prepare_futex_wait();
+                    wait = PluginShmemOrdering::prepare_futex_wait(slot);
                 }
             }
         }
@@ -505,7 +511,7 @@ impl PluginIdleHotLoop {
         synchronous_idle_advance: &SynchronousIdleAdvance,
         request: &IdleParkRequest,
     ) -> Result<(PluginClockAdvance, SynchronousIdleDrain), IdleHotLoopError> {
-        let ceiling_icount = slot.load_node_ceiling();
+        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(slot);
         if ceiling_icount < request.plan.desired_wake_icount {
             return Err(IdleHotLoopError::WakeNotAuthorized {
                 desired_wake_icount: request.plan.desired_wake_icount,
@@ -540,8 +546,12 @@ impl PluginIdleHotLoop {
         injected_frames: Vec<FrameEntry>,
         network_rx_injection: Option<NetworkRxInjection>,
     ) -> Result<IdleHotLoopResult, IdleHotLoopError> {
-        slot.publish_reached_icount(clock.current_icount(), clock.icount_shift())
-            .map_err(|source| IdleHotLoopError::PublishReached { source })?;
+        PluginShmemOrdering::publish_reached_icount(
+            slot,
+            clock.current_icount(),
+            clock.icount_shift(),
+        )
+        .map_err(|source| IdleHotLoopError::PublishReached { source })?;
 
         Ok(IdleHotLoopResult {
             wake_plan: request.plan,
@@ -565,8 +575,12 @@ impl PluginIdleHotLoop {
         slot: &NodeSlot,
         clock: &PluginVirtualClock,
     ) -> Result<(), IdleHotLoopError> {
-        slot.publish_reached_icount(clock.current_icount(), clock.icount_shift())
-            .map_err(|source| IdleHotLoopError::PublishReached { source })
+        PluginShmemOrdering::publish_reached_icount(
+            slot,
+            clock.current_icount(),
+            clock.icount_shift(),
+        )
+        .map_err(|source| IdleHotLoopError::PublishReached { source })
     }
 }
 
@@ -905,8 +919,8 @@ mod tests {
             Ok(token) => token,
             Err(error) => panic!("device I/O submit should activate freeze: {error}"),
         };
-        slot.clear_device_io_active();
-        assert!(!slot.load_device_io_active());
+        PluginShmemOrdering::clear_device_io_active(&slot);
+        assert!(!PluginShmemOrdering::device_io_active(&slot));
         assert!(freeze.pending_requests() != 0);
 
         let request = match PluginIdleHotLoop::begin_idle(
@@ -1725,7 +1739,7 @@ mod tests {
     }
 
     fn enqueue(header: &RingHeader, entries: &mut [FrameEntry], frame: FrameEntry) {
-        if let Err(error) = header.enqueue(entries, &frame) {
+        if let Err(error) = PluginShmemOrdering::enqueue_outbound_frame(header, entries, &frame) {
             panic!("test frame should enqueue: {error}");
         }
     }

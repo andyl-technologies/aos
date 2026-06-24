@@ -163,7 +163,7 @@
       }
       {
         label = "publish initial idle precondition";
-        needle = "publish_idle(0, BOOT_BARRIER_FIRST_GUEST_ICOUNT, icount_shift)";
+        needle = "PluginShmemOrdering::publish_idle_wait";
       }
       {
         label = "barrier requires ready ack token";
@@ -171,7 +171,7 @@
       }
       {
         label = "waits on non-private futex";
-        needle = "futex_wait_nonprivate(wait)";
+        needle = "PluginShmemOrdering::wait_on_wake_signal";
       }
       {
         label = "no-op shim cannot pass blocked barrier";
@@ -183,7 +183,7 @@
       }
       {
         label = "marks running after release";
-        needle = "slot.mark_running()";
+        needle = "PluginShmemOrdering::mark_running_after_wake";
       }
       {
         label = "prepublished ceiling test";
