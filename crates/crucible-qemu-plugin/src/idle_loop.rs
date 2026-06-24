@@ -1,0 +1,775 @@
+//! Idle callback hot-loop state machine.
+//!
+//! QEMU enters this path when the guest node is idle. The module keeps the
+//! deterministic core in safe Rust: publish the current clock, compute the next
+//! idle wake from exact virtual deadlines and inbound delivery, prepare the
+//! cross-process futex wait, consume a scheduler-authorized idle jump, expose due
+//! frames in deterministic injection order, and republish the node as running.
+
+use thiserror::Error;
+
+use crucible_shmem::{
+    FrameEntry, FutexError, FutexWait, FutexWaitOutcome, NodeSlot, NodeSlotError,
+    RegionControlAction, RegionHeader,
+};
+
+use crate::{
+    ExactDeadlineReport, PluginClockAdvance, PluginClockError, PluginVirtualClock, SchedulerCeiling,
+};
+
+/// The source that determined the node's next idle wake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdleWakeCause {
+    /// The earliest exact guest virtual-timer deadline woke the node.
+    TimerDeadline,
+    /// The head inbound frame delivery icount woke the node.
+    InboundFrame,
+    /// No local timer or inbound input was pending, so the scheduler ceiling was the bound.
+    SchedulerCeiling,
+}
+
+/// The computed idle wake before the plugin parks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IdleWakePlan {
+    current_icount: u64,
+    desired_wake_icount: u64,
+    ceiling_icount: u64,
+    timer_deadline_icount: Option<u64>,
+    inbound_delivery_icount: Option<u64>,
+    cause: IdleWakeCause,
+}
+
+impl IdleWakePlan {
+    /// Returns the node icount observed at the idle transition.
+    #[must_use]
+    pub const fn current_icount(&self) -> u64 {
+        self.current_icount
+    }
+
+    /// Returns the local wake target published in `idle_wake_icount`.
+    #[must_use]
+    pub const fn desired_wake_icount(&self) -> u64 {
+        self.desired_wake_icount
+    }
+
+    /// Returns the scheduler ceiling observed while publishing idle.
+    #[must_use]
+    pub const fn ceiling_icount(&self) -> u64 {
+        self.ceiling_icount
+    }
+
+    /// Returns the exact timer deadline converted to icount, if one exists.
+    #[must_use]
+    pub const fn timer_deadline_icount(&self) -> Option<u64> {
+        self.timer_deadline_icount
+    }
+
+    /// Returns the next inbound delivery icount, if one was peeked.
+    #[must_use]
+    pub const fn inbound_delivery_icount(&self) -> Option<u64> {
+        self.inbound_delivery_icount
+    }
+
+    /// Returns the source that selected [`Self::desired_wake_icount`].
+    #[must_use]
+    pub const fn cause(&self) -> IdleWakeCause {
+        self.cause
+    }
+
+    /// Returns whether the current ceiling is still below the desired wake.
+    #[must_use]
+    pub const fn requires_scheduler_wait(&self) -> bool {
+        self.ceiling_icount < self.desired_wake_icount
+    }
+}
+
+/// A prepared idle park operation after publishing the node slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IdleParkRequest {
+    plan: IdleWakePlan,
+    futex_wait: FutexWait,
+}
+
+impl IdleParkRequest {
+    /// Returns the wake plan associated with this park request.
+    #[must_use]
+    pub const fn plan(&self) -> IdleWakePlan {
+        self.plan
+    }
+
+    /// Returns the race-free futex wait decision from the shared-memory slot.
+    #[must_use]
+    pub const fn futex_wait(&self) -> FutexWait {
+        self.futex_wait
+    }
+}
+
+/// The reason an idle wait stopped blocking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdleWaitOutcome {
+    /// The scheduler raised the node ceiling to the desired wake icount.
+    SchedulerReleased,
+    /// The global control plane requested shutdown and the node marked itself done.
+    ShutdownRequested,
+}
+
+/// The result of one completed idle hot-loop turn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdleHotLoopResult {
+    wake_plan: IdleWakePlan,
+    advance: PluginClockAdvance,
+    injected_frames: Vec<FrameEntry>,
+}
+
+impl IdleHotLoopResult {
+    /// Returns the wake plan that drove the completed loop.
+    #[must_use]
+    pub const fn wake_plan(&self) -> IdleWakePlan {
+        self.wake_plan
+    }
+
+    /// Returns the virtual-clock advance performed after scheduler release.
+    #[must_use]
+    pub const fn advance(&self) -> PluginClockAdvance {
+        self.advance
+    }
+
+    /// Returns due inbound frames in deterministic injection order.
+    #[must_use]
+    pub fn injected_frames(&self) -> &[FrameEntry] {
+        &self.injected_frames
+    }
+}
+
+/// Deterministic idle hot-loop operations.
+#[derive(Debug)]
+pub struct PluginIdleHotLoop;
+
+impl PluginIdleHotLoop {
+    /// Publishes idle state and prepares the futex wait precondition.
+    ///
+    /// The caller supplies the already-peeked head inbound delivery icount. This
+    /// keeps ring ownership outside the hot-loop core while preserving the
+    /// non-consuming `peek_delivery_icount` contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdleHotLoopError`] when timer conversion, slot publication, or
+    /// ceiling validation fails.
+    pub fn begin_idle(
+        slot: &NodeSlot,
+        clock: &PluginVirtualClock,
+        exact_deadline: ExactDeadlineReport,
+        next_inbound_delivery_icount: Option<u64>,
+    ) -> Result<IdleParkRequest, IdleHotLoopError> {
+        let current_icount = clock.current_icount();
+        let ceiling_icount = slot.load_node_ceiling();
+        if ceiling_icount < current_icount {
+            return Err(IdleHotLoopError::CeilingBehindCurrent {
+                current_icount,
+                ceiling_icount,
+            });
+        }
+
+        slot.publish_reached_icount(current_icount, clock.icount_shift())
+            .map_err(|source| IdleHotLoopError::PublishReached { source })?;
+
+        let plan = compute_idle_wake_plan(
+            current_icount,
+            clock.icount_shift(),
+            exact_deadline,
+            next_inbound_delivery_icount,
+            SchedulerCeiling::new(ceiling_icount),
+        )?;
+        let futex_wait = slot
+            .publish_idle(
+                current_icount,
+                plan.desired_wake_icount,
+                clock.icount_shift(),
+            )
+            .map_err(|source| IdleHotLoopError::PublishIdle { source })?;
+
+        Ok(IdleParkRequest { plan, futex_wait })
+    }
+
+    /// Parks on the non-private futex until the scheduler authorizes the wake.
+    ///
+    /// This loop has no wall-clock timeout and does not sleep for a duration. It
+    /// rechecks the acquire-loaded control action and ceiling after each futex
+    /// return so shutdown and scheduler release wakes are both observed without a
+    /// lost-wake window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdleHotLoopError`] when the futex syscall fails, or when the
+    /// non-Linux no-op futex shim cannot prove a scheduler release or shutdown.
+    pub fn wait_for_scheduler_release(
+        header: &RegionHeader,
+        slot: &NodeSlot,
+        request: &IdleParkRequest,
+    ) -> Result<IdleWaitOutcome, IdleHotLoopError> {
+        let mut wait = request.futex_wait;
+        loop {
+            if header.control_action() == RegionControlAction::Shutdown {
+                slot.mark_done();
+                return Ok(IdleWaitOutcome::ShutdownRequested);
+            }
+            if slot.load_node_ceiling() >= request.plan.desired_wake_icount {
+                if header.control_action() == RegionControlAction::Shutdown {
+                    slot.mark_done();
+                    return Ok(IdleWaitOutcome::ShutdownRequested);
+                }
+                return Ok(IdleWaitOutcome::SchedulerReleased);
+            }
+
+            match slot
+                .futex_wait_nonprivate(wait)
+                .map_err(|source| IdleHotLoopError::FutexWait { source })?
+            {
+                FutexWaitOutcome::Noop => {
+                    if header.control_action() == RegionControlAction::Shutdown {
+                        slot.mark_done();
+                        return Ok(IdleWaitOutcome::ShutdownRequested);
+                    }
+                    return Err(IdleHotLoopError::WakeStillBlocked {
+                        desired_wake_icount: request.plan.desired_wake_icount,
+                        ceiling_icount: slot.load_node_ceiling(),
+                    });
+                }
+                FutexWaitOutcome::Runnable
+                | FutexWaitOutcome::ValueChanged
+                | FutexWaitOutcome::Interrupted
+                | FutexWaitOutcome::Woken => {
+                    wait = slot.prepare_futex_wait();
+                }
+            }
+        }
+    }
+
+    /// Completes the idle jump after the scheduler authorizes the wake.
+    ///
+    /// `candidate_frames` are frames visible to this node after the wake. The
+    /// function returns only those due at the new current icount, sorted by
+    /// `(delivery_icount, src_node, seq)`, which is the order the QEMU callback
+    /// must inject.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdleHotLoopError`] when the scheduler has not authorized the
+    /// desired wake, the virtual-clock jump fails, or running-state publication
+    /// fails.
+    pub fn complete_after_scheduler_wake(
+        slot: &NodeSlot,
+        clock: &mut PluginVirtualClock,
+        request: IdleParkRequest,
+        candidate_frames: impl IntoIterator<Item = FrameEntry>,
+    ) -> Result<IdleHotLoopResult, IdleHotLoopError> {
+        let ceiling_icount = slot.load_node_ceiling();
+        if ceiling_icount < request.plan.desired_wake_icount {
+            return Err(IdleHotLoopError::WakeNotAuthorized {
+                desired_wake_icount: request.plan.desired_wake_icount,
+                ceiling_icount,
+            });
+        }
+
+        let authorization = clock
+            .authorize_idle_jump(
+                request.plan.desired_wake_icount,
+                SchedulerCeiling::new(ceiling_icount),
+            )
+            .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
+        let advance = clock
+            .advance_authorized_idle_jump(authorization)
+            .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
+
+        let mut injected_frames = candidate_frames
+            .into_iter()
+            .filter(|frame| frame.is_deliverable_at(clock.current_icount()))
+            .collect::<Vec<_>>();
+        injected_frames.sort_by_key(FrameEntry::delivery_key);
+
+        slot.publish_reached_icount(clock.current_icount(), clock.icount_shift())
+            .map_err(|source| IdleHotLoopError::PublishReached { source })?;
+
+        Ok(IdleHotLoopResult {
+            wake_plan: request.plan,
+            advance,
+            injected_frames,
+        })
+    }
+
+    /// Republishes running state when QEMU reports that a vCPU resumed.
+    ///
+    /// Resume is a boundary marker only: it does not block and does not advance
+    /// virtual time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdleHotLoopError`] when publishing the current clock to the node
+    /// slot fails.
+    pub fn publish_resume_boundary(
+        slot: &NodeSlot,
+        clock: &PluginVirtualClock,
+    ) -> Result<(), IdleHotLoopError> {
+        slot.publish_reached_icount(clock.current_icount(), clock.icount_shift())
+            .map_err(|source| IdleHotLoopError::PublishReached { source })
+    }
+}
+
+/// Computes the idle wake target from virtual timers, inbound delivery, and ceiling.
+///
+/// # Errors
+///
+/// Returns [`IdleHotLoopError`] when the timer deadline cannot be converted to
+/// an aggregate icount or the observed ceiling is behind the current icount.
+pub fn compute_idle_wake_plan(
+    current_icount: u64,
+    icount_shift: u8,
+    exact_deadline: ExactDeadlineReport,
+    next_inbound_delivery_icount: Option<u64>,
+    ceiling: SchedulerCeiling,
+) -> Result<IdleWakePlan, IdleHotLoopError> {
+    if ceiling.icount() < current_icount {
+        return Err(IdleHotLoopError::CeilingBehindCurrent {
+            current_icount,
+            ceiling_icount: ceiling.icount(),
+        });
+    }
+
+    let timer_deadline_icount = timer_deadline_icount(exact_deadline, icount_shift)?
+        .map(|deadline| deadline.max(current_icount));
+    let inbound_delivery_icount =
+        next_inbound_delivery_icount.map(|delivery| delivery.max(current_icount));
+
+    let (desired_wake_icount, cause) = match (timer_deadline_icount, inbound_delivery_icount) {
+        (Some(timer), Some(inbound)) if inbound < timer => (inbound, IdleWakeCause::InboundFrame),
+        (Some(timer), Some(_inbound)) => (timer, IdleWakeCause::TimerDeadline),
+        (Some(timer), None) => (timer, IdleWakeCause::TimerDeadline),
+        (None, Some(inbound)) => (inbound, IdleWakeCause::InboundFrame),
+        (None, None) => (ceiling.icount(), IdleWakeCause::SchedulerCeiling),
+    };
+
+    Ok(IdleWakePlan {
+        current_icount,
+        desired_wake_icount,
+        ceiling_icount: ceiling.icount(),
+        timer_deadline_icount,
+        inbound_delivery_icount,
+        cause,
+    })
+}
+
+/// Converts an exact virtual-clock timer report into aggregate icount units.
+///
+/// # Errors
+///
+/// Returns [`IdleHotLoopError::InvalidIcountShift`] if `icount_shift >= 64`, or
+/// [`IdleHotLoopError::TimerDeadlineOverflow`] when the ceiling conversion would
+/// overflow.
+pub fn timer_deadline_icount(
+    report: ExactDeadlineReport,
+    icount_shift: u8,
+) -> Result<Option<u64>, IdleHotLoopError> {
+    let ExactDeadlineReport::Armed { deadline_ns } = report else {
+        return Ok(None);
+    };
+    if icount_shift >= 64 {
+        return Err(IdleHotLoopError::InvalidIcountShift { icount_shift });
+    }
+
+    let base = deadline_ns >> icount_shift;
+    let remainder_mask = if icount_shift == 0 {
+        0
+    } else {
+        (1_u64 << icount_shift) - 1
+    };
+    if deadline_ns & remainder_mask == 0 {
+        Ok(Some(base))
+    } else {
+        base.checked_add(1)
+            .map(Some)
+            .ok_or(IdleHotLoopError::TimerDeadlineOverflow {
+                deadline_ns,
+                icount_shift,
+            })
+    }
+}
+
+/// An error produced while executing the idle hot-loop state machine.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum IdleHotLoopError {
+    /// The scheduler ceiling was behind the node's current icount.
+    #[error("scheduler ceiling {ceiling_icount} is behind current icount {current_icount}")]
+    CeilingBehindCurrent {
+        /// The node's current icount.
+        current_icount: u64,
+        /// The stale scheduler ceiling.
+        ceiling_icount: u64,
+    },
+    /// The timer deadline conversion used an unrepresentable fixed icount shift.
+    #[error("idle deadline conversion cannot represent icount shift {icount_shift}")]
+    InvalidIcountShift {
+        /// The rejected fixed icount shift.
+        icount_shift: u8,
+    },
+    /// The timer deadline conversion overflowed aggregate icount units.
+    #[error("timer deadline {deadline_ns}ns overflows icount conversion at shift {icount_shift}")]
+    TimerDeadlineOverflow {
+        /// The exact virtual nanosecond deadline.
+        deadline_ns: u64,
+        /// The fixed icount shift.
+        icount_shift: u8,
+    },
+    /// Publishing the running/reached clock failed.
+    #[error("publishing reached icount failed: {source}")]
+    PublishReached {
+        /// The shared-memory slot publication error.
+        source: NodeSlotError,
+    },
+    /// Publishing idle state failed.
+    #[error("publishing idle state failed: {source}")]
+    PublishIdle {
+        /// The shared-memory slot publication error.
+        source: NodeSlotError,
+    },
+    /// The futex wait operation failed.
+    #[error("idle futex wait failed: {source}")]
+    FutexWait {
+        /// The futex syscall error.
+        source: FutexError,
+    },
+    /// The no-op futex shim could not prove a scheduler release.
+    #[error("idle wake {desired_wake_icount} is still blocked by ceiling {ceiling_icount}")]
+    WakeStillBlocked {
+        /// The desired wake icount.
+        desired_wake_icount: u64,
+        /// The currently observed scheduler ceiling.
+        ceiling_icount: u64,
+    },
+    /// The scheduler has not raised the ceiling to the desired wake.
+    #[error("idle wake {desired_wake_icount} was not authorized by ceiling {ceiling_icount}")]
+    WakeNotAuthorized {
+        /// The desired wake icount.
+        desired_wake_icount: u64,
+        /// The currently observed scheduler ceiling.
+        ceiling_icount: u64,
+    },
+    /// Advancing the plugin virtual clock failed.
+    #[error("idle virtual-clock advance failed: {source}")]
+    AdvanceClock {
+        /// The plugin clock error.
+        source: PluginClockError,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crucible_shmem::{
+        AdvanceCeiling, KIND_VM, RegionConfig, RegionHeader, RegionLayout, STATUS_DONE,
+        STATUS_IDLE, STATUS_RUNNING, authorize_advance_ceiling,
+    };
+
+    use crate::{
+        CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, PluginRegistrationSequence,
+        PluginTimeControlOwnership,
+    };
+
+    #[test]
+    fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {
+        let timer_wins = match compute_idle_wake_plan(
+            10,
+            1,
+            ExactDeadlineReport::Armed { deadline_ns: 40 },
+            Some(30),
+            SchedulerCeiling::new(50),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => panic!("timer wake plan should compute: {error}"),
+        };
+        assert_eq!(timer_wins.timer_deadline_icount(), Some(20));
+        assert_eq!(timer_wins.inbound_delivery_icount(), Some(30));
+        assert_eq!(timer_wins.desired_wake_icount(), 20);
+        assert_eq!(timer_wins.cause(), IdleWakeCause::TimerDeadline);
+        assert!(!timer_wins.requires_scheduler_wait());
+
+        let inbound_wins = match compute_idle_wake_plan(
+            10,
+            1,
+            ExactDeadlineReport::Armed { deadline_ns: 80 },
+            Some(30),
+            SchedulerCeiling::new(20),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => panic!("inbound wake plan should compute: {error}"),
+        };
+        assert_eq!(inbound_wins.desired_wake_icount(), 30);
+        assert_eq!(inbound_wins.cause(), IdleWakeCause::InboundFrame);
+        assert!(inbound_wins.requires_scheduler_wait());
+
+        let ceiling_wins = match compute_idle_wake_plan(
+            10,
+            1,
+            ExactDeadlineReport::NoArmedTimer,
+            None,
+            SchedulerCeiling::new(64),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => panic!("ceiling wake plan should compute: {error}"),
+        };
+        assert_eq!(ceiling_wins.desired_wake_icount(), 64);
+        assert_eq!(ceiling_wins.cause(), IdleWakeCause::SchedulerCeiling);
+    }
+
+    #[test]
+    fn idle_loop_publishes_current_then_idle_and_prepares_futex_wait() {
+        let slot = NodeSlot::new(KIND_VM);
+        let clock = owned_clock(10, 0);
+        publish_ceiling(&slot, ceiling(0, 10));
+
+        let request = match PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            ExactDeadlineReport::Armed { deadline_ns: 20 },
+            None,
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("idle publish should succeed: {error}"),
+        };
+
+        assert_eq!(request.plan().current_icount(), 10);
+        assert_eq!(request.plan().desired_wake_icount(), 20);
+        assert_eq!(request.plan().cause(), IdleWakeCause::TimerDeadline);
+        assert_eq!(request.futex_wait(), FutexWait::Wait { expected: 1 });
+
+        let snapshot = slot.snapshot();
+        assert_eq!(snapshot.current_icount, 10);
+        assert_eq!(snapshot.current_ns, 10);
+        assert_eq!(snapshot.idle_wake_icount, 20);
+        assert_eq!(snapshot.status, STATUS_IDLE);
+        assert!(slot.futex_wait_still_valid(1));
+    }
+
+    #[test]
+    fn idle_loop_wait_uses_futex_release_without_wall_clock_timeout() {
+        let slot = NodeSlot::new(KIND_VM);
+        publish_ceiling(&slot, ceiling(0, 10));
+        let clock = owned_clock(10, 0);
+        let request = match PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            ExactDeadlineReport::Armed { deadline_ns: 10 },
+            None,
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("idle publish should be immediately runnable: {error}"),
+        };
+
+        assert_eq!(request.futex_wait(), FutexWait::Runnable);
+        assert_eq!(
+            PluginIdleHotLoop::wait_for_scheduler_release(&header(), &slot, &request),
+            Ok(IdleWaitOutcome::SchedulerReleased)
+        );
+    }
+
+    #[test]
+    fn idle_loop_shutdown_wake_marks_done_and_returns_teardown_outcome() {
+        let header = header();
+        let slot = NodeSlot::new(KIND_VM);
+        publish_ceiling(&slot, ceiling(0, 10));
+        let clock = owned_clock(10, 0);
+        let request = match PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            ExactDeadlineReport::Armed { deadline_ns: 20 },
+            None,
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("idle publish should park for future timer: {error}"),
+        };
+
+        if let Err(error) = header.request_shutdown([&slot]) {
+            panic!("shutdown should wake idle slot: {error}");
+        }
+        assert_eq!(
+            PluginIdleHotLoop::wait_for_scheduler_release(&header, &slot, &request),
+            Ok(IdleWaitOutcome::ShutdownRequested)
+        );
+
+        let snapshot = slot.snapshot();
+        assert_eq!(snapshot.current_icount, 10);
+        assert_eq!(snapshot.current_ns, 10);
+        assert_eq!(snapshot.status, STATUS_DONE);
+        assert_eq!(clock.current_icount(), 10);
+    }
+
+    #[test]
+    fn idle_loop_release_advances_injects_due_frames_and_republishes_running() {
+        let slot = NodeSlot::new(KIND_VM);
+        let clock = owned_clock(10, 1);
+        publish_ceiling(&slot, ceiling(0, 10));
+        let request = match PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            ExactDeadlineReport::Armed { deadline_ns: 40 },
+            Some(40),
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("idle begin should succeed: {error}"),
+        };
+        assert!(request.plan().requires_scheduler_wait());
+
+        publish_ceiling(&slot, ceiling(10, 20));
+        let mut clock = clock;
+        let result = match PluginIdleHotLoop::complete_after_scheduler_wake(
+            &slot,
+            &mut clock,
+            request,
+            [
+                frame(20, 9, 4, b"late-by-key"),
+                frame(20, 1, 7, b"first"),
+                frame(21, 1, 8, b"future"),
+                frame(19, 5, 1, b"earliest"),
+            ],
+        ) {
+            Ok(result) => result,
+            Err(error) => panic!("idle completion should succeed: {error}"),
+        };
+
+        assert_eq!(result.advance().from_icount(), 10);
+        assert_eq!(result.advance().to_icount(), 20);
+        assert_eq!(result.advance().virtual_ns(), 40);
+        assert_eq!(clock.current_icount(), 20);
+        assert_eq!(
+            result
+                .injected_frames()
+                .iter()
+                .map(FrameEntry::delivery_key)
+                .collect::<Vec<_>>(),
+            vec![
+                frame(19, 5, 1, b"earliest").delivery_key(),
+                frame(20, 1, 7, b"first").delivery_key(),
+                frame(20, 9, 4, b"late-by-key").delivery_key(),
+            ]
+        );
+
+        let snapshot = slot.snapshot();
+        assert_eq!(snapshot.current_icount, 20);
+        assert_eq!(snapshot.current_ns, 40);
+        assert_eq!(snapshot.status, STATUS_RUNNING);
+    }
+
+    #[test]
+    fn idle_loop_rejects_release_before_scheduler_authorizes_wake() {
+        let slot = NodeSlot::new(KIND_VM);
+        let clock = owned_clock(10, 0);
+        publish_ceiling(&slot, ceiling(0, 10));
+        let request = match PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            ExactDeadlineReport::Armed { deadline_ns: 20 },
+            None,
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("idle begin should succeed: {error}"),
+        };
+        let mut clock = clock;
+
+        assert_eq!(
+            PluginIdleHotLoop::complete_after_scheduler_wake(&slot, &mut clock, request, []),
+            Err(IdleHotLoopError::WakeNotAuthorized {
+                desired_wake_icount: 20,
+                ceiling_icount: 10,
+            })
+        );
+    }
+
+    #[test]
+    fn idle_resume_boundary_republishes_running_without_advancing_time() {
+        let slot = NodeSlot::new(KIND_VM);
+        let clock = owned_clock(32, 2);
+        publish_ceiling(&slot, ceiling(0, 32));
+
+        if let Err(error) = PluginIdleHotLoop::publish_resume_boundary(&slot, &clock) {
+            panic!("resume boundary should publish: {error}");
+        }
+
+        let snapshot = slot.snapshot();
+        assert_eq!(snapshot.current_icount, 32);
+        assert_eq!(snapshot.current_ns, 128);
+        assert_eq!(snapshot.status, STATUS_RUNNING);
+        assert_eq!(clock.current_icount(), 32);
+    }
+
+    #[test]
+    fn idle_timer_deadline_conversion_ceils_to_icount() {
+        assert_eq!(
+            timer_deadline_icount(ExactDeadlineReport::Armed { deadline_ns: 41 }, 3),
+            Ok(Some(6))
+        );
+        assert_eq!(
+            timer_deadline_icount(ExactDeadlineReport::NoArmedTimer, 3),
+            Ok(None)
+        );
+        assert_eq!(
+            timer_deadline_icount(ExactDeadlineReport::Armed { deadline_ns: 1 }, 64),
+            Err(IdleHotLoopError::InvalidIcountShift { icount_shift: 64 })
+        );
+    }
+
+    fn owned_clock(initial_icount: u64, icount_shift: u8) -> PluginVirtualClock {
+        match PluginVirtualClock::new(initial_icount, icount_shift, ownership()) {
+            Ok(clock) => clock,
+            Err(error) => panic!("test clock should construct: {error}"),
+        }
+    }
+
+    fn ownership() -> PluginTimeControlOwnership {
+        PluginTimeControlOwnership::acquired_after_registration(registration_ready())
+    }
+
+    fn registration_ready() -> crate::PluginRegistrationReady {
+        let mut sequence = PluginRegistrationSequence::new();
+        for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
+            if let Err(error) = sequence.record_step(step) {
+                panic!("test registration step should record: {error}");
+            }
+        }
+        match sequence.finish() {
+            Ok(ready) => ready,
+            Err(error) => panic!("test registration should finish: {error}"),
+        }
+    }
+
+    fn ceiling(current_icount: u64, max_advance_icount: u64) -> AdvanceCeiling {
+        match authorize_advance_ceiling(current_icount, max_advance_icount, None) {
+            Ok(ceiling) => ceiling,
+            Err(error) => panic!("test ceiling should authorize: {error}"),
+        }
+    }
+
+    fn publish_ceiling(slot: &NodeSlot, ceiling: AdvanceCeiling) {
+        if let Err(error) = slot.publish_scheduler_ceiling(ceiling) {
+            panic!("test ceiling should publish: {error}");
+        }
+    }
+
+    fn header() -> RegionHeader {
+        RegionHeader::new(layout())
+    }
+
+    fn layout() -> RegionLayout {
+        match RegionLayout::for_config(RegionConfig::new(2, 8, 0)) {
+            Ok(layout) => layout,
+            Err(error) => panic!("test region layout should be valid: {error}"),
+        }
+    }
+
+    fn frame(delivery_icount: u64, src_node: u32, seq: u32, payload: &[u8]) -> FrameEntry {
+        match FrameEntry::new(delivery_icount, src_node, seq, payload) {
+            Ok(frame) => frame,
+            Err(error) => panic!("test frame should construct: {error}"),
+        }
+    }
+}
