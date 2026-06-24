@@ -616,7 +616,15 @@ impl TreeWalk {
         {
             let mut options = git2::SubmoduleUpdateOptions::new();
             options.checkout(Self::fetch_git_checkout_builder());
-            options.fetch(Self::fetch_git_fetch_options(args.shallow));
+            // Submodules pin a SPECIFIC recorded commit (the gitlink), which is
+            // usually not the tip of any branch. A shallow (`depth(1)`) fetch only
+            // retrieves branch tips, so the pinned commit is missing and
+            // `submodule.update` fails with "object not found" (e.g. edk2 with
+            // `submodules = true; shallow = true;`). Always fetch submodule history
+            // in full so the recorded commit is available. This does not affect
+            // the `.drv` output: the checked-out tree (and thus its NAR hash and
+            // store path) is determined by the recorded commit, not the fetch depth.
+            options.fetch(Self::fetch_git_fetch_options(false));
             submodule
                 .update(true, Some(&mut options))
                 .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
