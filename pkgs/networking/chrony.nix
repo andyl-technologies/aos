@@ -86,9 +86,6 @@ in
         name = "cross-cutting-chrony-config-validity";
         rootfsDeps = [self];
         testScript = ''
-          export PATH="${self}/bin:${self}/sbin:$PATH"
-          export LD_LIBRARY_PATH="${self}/lib:$LD_LIBRARY_PATH"
-
           echo "==> Testing chronyd config parsing"
           cat > /tmp/chrony.conf << 'CHRONYCFG'
           pool pool.ntp.org iburst
