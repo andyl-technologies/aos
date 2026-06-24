@@ -97,6 +97,7 @@ header.masthead .brand {
   letter-spacing: 0.05em;
   color: var(--ink);
 }
+header.masthead .tagline { color: var(--dim); margin-left: 0.5rem; font-size: 0.85rem; }
 header.masthead .crumbs { color: var(--dim); }
 header.masthead .crumbs a { color: var(--ink); }
 /* Push the session indicator (which doubles as the primary nav when
@@ -188,6 +189,22 @@ pre {
  * confirmation-gated removal reads as a deliberate, distinct action. */
 h2.danger { color: var(--bad); }
 button.danger { color: var(--bad); border-color: var(--bad); }
+
+/* The instance-wide announcement banner (set under instance → branding): a
+ * full-width strip above the content on every page. Warm/clay accent so it
+ * reads as a notice without alarming. */
+.announce {
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--paper));
+  color: var(--ink);
+  padding: 0.5rem 1rem;
+  margin: 0 0 1.4rem;
+  border-radius: 2px;
+}
+/* Configured legal/contact links in the footer, beside the statline. */
+.footer-links { margin-left: 0.6rem; }
+.footer-links a { color: var(--dim); }
+.footer-links a:hover { color: var(--ink); }
 
 /* Unified settings layout: a left sidebar nav beside the content, shared by the
  * registry, org, and instance settings scopes so the management IA is identical

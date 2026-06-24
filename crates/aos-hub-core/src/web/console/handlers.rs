@@ -3449,28 +3449,74 @@ async fn render_instance_settings(
     notice: Option<&str>,
     started: Instant,
 ) -> Response {
+    render_instance(deps, session, "general", notice, started).await
+}
+
+/// Renders one instance-settings tab (`general` / `branding` / `serving` /
+/// `storage`), instance-admin gated. All but storage load and render the
+/// editable [`InstanceSettings`](crate::db::InstanceSettings) bundle.
+async fn render_instance(
+    deps: &ConsoleDeps,
+    session: &Session,
+    active: &str,
+    notice: Option<&str>,
+    started: Instant,
+) -> Response {
     if !session
         .allows(&deps.db, Permission::IamAdmin, &Scope::parse(""))
         .await
     {
         return (StatusCode::FORBIDDEN, "instance admin required").into_response();
     }
-    let policy = match deps.db.signup_policy().await {
-        Ok(p) => p,
+    if active == "storage" {
+        return Html(console::instance_storage_page(
+            &session.email,
+            deps.default_storage_location.as_deref(),
+            started,
+        ))
+        .into_response();
+    }
+    let settings = match deps.db.instance_settings().await {
+        Ok(s) => s,
         Err(err) => return internal(err),
     };
-    Html(console::instance_settings_page(
-        &session.email,
-        &session.csrf(),
-        policy,
-        notice,
-        started,
-    ))
-    .into_response()
+    let csrf = session.csrf();
+    let html = match active {
+        "branding" => {
+            console::instance_branding_page(&session.email, &csrf, &settings, notice, started)
+        }
+        "serving" => {
+            console::instance_serving_page(&session.email, &csrf, &settings, notice, started)
+        }
+        _ => console::instance_settings_page(&session.email, &csrf, &settings, notice, started),
+    };
+    Html(html).into_response()
 }
 
-/// `GET /-/instance/storage` — the instance default-storage page (instance
-/// admins only). Read-only: shows the deployment's default storage backend.
+/// Resolve the instance-admin session for an instance-settings mutation,
+/// CSRF-checked. Returns the session, or the response to short-circuit with.
+async fn require_instance_admin(
+    deps: &ConsoleDeps,
+    headers: &HeaderMap,
+    csrf: &str,
+) -> Result<Session, Response> {
+    let session = match require_session(deps, headers).await {
+        Ok(s) => s,
+        Err(resp) => return Err(*resp),
+    };
+    if let Err(resp) = check_csrf(&session, csrf) {
+        return Err(*resp);
+    }
+    if !session
+        .allows(&deps.db, Permission::IamAdmin, &Scope::parse(""))
+        .await
+    {
+        return Err((StatusCode::FORBIDDEN, "instance admin required").into_response());
+    }
+    Ok(session)
+}
+
+/// `GET /-/instance/storage` — the instance default-storage page (read-only).
 pub(crate) async fn instance_storage(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -3480,70 +3526,228 @@ pub(crate) async fn instance_storage(
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    if !session
-        .allows(&deps.db, Permission::IamAdmin, &Scope::parse(""))
-        .await
-    {
-        return (StatusCode::FORBIDDEN, "instance admin required").into_response();
-    }
-    Html(console::instance_storage_page(
-        &session.email,
-        deps.default_storage_location.as_deref(),
-        started,
-    ))
-    .into_response()
+    render_instance(&deps, &session, "storage", None, started).await
 }
 
-/// `POST /-/instance` form: the instance signup policy.
+/// `GET /-/instance/branding` — the branding tab (instance admins only).
+pub(crate) async fn instance_branding(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    render_instance(&deps, &session, "branding", None, started).await
+}
+
+/// `GET /-/instance/serving` — the serving-defaults tab (instance admins only).
+pub(crate) async fn instance_serving(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    render_instance(&deps, &session, "serving", None, started).await
+}
+
+/// `POST /-/instance` form: signup + identity policy.
 #[derive(serde::Deserialize)]
 pub(crate) struct InstanceSettingsForm {
     #[serde(default)]
     csrf: String,
+    #[serde(default)]
     signup_policy: String,
+    #[serde(default)]
+    signup_domains: String,
+    #[serde(default)]
+    password_login: Option<String>,
+    #[serde(default)]
+    session_lifetime_secs: String,
 }
 
-/// `POST /-/instance` — update the instance signup policy (instance admins).
+/// `POST /-/instance` — update signup + identity policy (instance admins).
 pub(crate) async fn instance_settings_action(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
     Form(form): Form<InstanceSettingsForm>,
 ) -> Response {
-    let session = match require_session(&deps, &headers).await {
+    let session = match require_instance_admin(&deps, &headers, &form.csrf).await {
         Ok(s) => s,
-        Err(resp) => return *resp,
+        Err(resp) => return resp,
     };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    if !session
-        .allows(&deps.db, Permission::IamAdmin, &Scope::parse(""))
-        .await
-    {
-        return (StatusCode::FORBIDDEN, "instance admin required").into_response();
-    }
     let policy = crate::db::SignupPolicy::parse(&form.signup_policy);
-    if let Err(err) = deps.db.set_signup_policy(policy).await {
+    let result = async {
+        deps.db.set_signup_policy(policy).await?;
+        // Normalize the allowlist to lowercased, comma-joined domains.
+        let domains: Vec<String> = form
+            .signup_domains
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_lowercase())
+            .collect();
+        deps.db
+            .set_instance_config("signup_domains", Some(&domains.join(",")))
+            .await?;
+        deps.db
+            .set_instance_config(
+                "password_login",
+                Some(if form.password_login.is_some() {
+                    "on"
+                } else {
+                    "off"
+                }),
+            )
+            .await?;
+        deps.db
+            .set_instance_config("session_lifetime_secs", Some(&form.session_lifetime_secs))
+            .await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    if let Err(err) = result {
         return internal(err);
     }
+    audit_instance(&deps, &session, "instance.signup_policy", policy.as_str()).await;
+    render_instance(&deps, &session, "general", Some("Signup &amp; identity saved."), started).await
+}
+
+/// `POST /-/instance/branding` form: site title, tagline, banner, footer links.
+#[derive(serde::Deserialize)]
+pub(crate) struct InstanceBrandingForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    site_title: String,
+    #[serde(default)]
+    tagline: String,
+    #[serde(default)]
+    announcement: String,
+    #[serde(default)]
+    tos_url: String,
+    #[serde(default)]
+    privacy_url: String,
+    #[serde(default)]
+    support_url: String,
+}
+
+/// `POST /-/instance/branding` — update branding + footer (instance admins).
+pub(crate) async fn instance_branding_action(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Form(form): Form<InstanceBrandingForm>,
+) -> Response {
+    let session = match require_instance_admin(&deps, &headers, &form.csrf).await {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let result = async {
+        for (key, value) in [
+            ("site_title", &form.site_title),
+            ("tagline", &form.tagline),
+            ("announcement", &form.announcement),
+            ("tos_url", &form.tos_url),
+            ("privacy_url", &form.privacy_url),
+            ("support_url", &form.support_url),
+        ] {
+            deps.db.set_instance_config(key, Some(value)).await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    if let Err(err) = result {
+        return internal(err);
+    }
+    // Refresh the process chrome so the new title/banner/footer take effect for
+    // this shell immediately (other Worker isolates pick it up as they recycle).
+    crate::web::console_render::set_site_chrome(
+        opt(&form.site_title),
+        opt(&form.tagline),
+        opt(&form.announcement),
+        opt(&form.tos_url),
+        opt(&form.privacy_url),
+        opt(&form.support_url),
+    );
+    audit_instance(&deps, &session, "instance.branding", &form.site_title).await;
+    render_instance(&deps, &session, "branding", Some("Branding saved."), started).await
+}
+
+/// `POST /-/instance/serving` form: default crawl policy and max upload size.
+#[derive(serde::Deserialize)]
+pub(crate) struct InstanceServingForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    default_crawl_policy: String,
+    #[serde(default)]
+    max_upload_bytes: String,
+}
+
+/// `POST /-/instance/serving` — update serving defaults (instance admins).
+pub(crate) async fn instance_serving_action(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Form(form): Form<InstanceServingForm>,
+) -> Response {
+    let session = match require_instance_admin(&deps, &headers, &form.csrf).await {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    // Validate the crawl policy through the same parser the registry uses.
+    let policy = crate::crawl::CrawlPolicy::parse_or_default(&form.default_crawl_policy);
+    let result = async {
+        deps.db
+            .set_instance_config("default_crawl_policy", Some(policy.as_str()))
+            .await?;
+        deps.db
+            .set_instance_config("max_upload_bytes", Some(&form.max_upload_bytes))
+            .await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    if let Err(err) = result {
+        return internal(err);
+    }
+    audit_instance(&deps, &session, "instance.serving", policy.as_str()).await;
+    render_instance(&deps, &session, "serving", Some("Serving defaults saved."), started).await
+}
+
+/// Trim a form field to `Option`, mapping blank to `None`.
+fn opt(s: &str) -> Option<&str> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t)
+    }
+}
+
+/// Best-effort audit row for an instance-settings mutation (non-fatal).
+async fn audit_instance(deps: &ConsoleDeps, session: &Session, action: &str, detail: &str) {
     if let Err(err) = deps
         .db
         .record_audit(
             "user",
             Some(session.auth.user_id),
             &session.email,
-            "instance.signup_policy",
+            action,
             "",
             None,
             None,
             None,
-            Some(policy.as_str()),
+            Some(detail),
         )
         .await
     {
-        return internal(err);
+        tracing::warn!(error = %format!("{err:#}"), "recording {action} audit");
     }
-    render_instance_settings(&deps, &session, Some("Signup policy saved."), started).await
 }
 
 // -- registry resolution for console pages ----------------------------------
