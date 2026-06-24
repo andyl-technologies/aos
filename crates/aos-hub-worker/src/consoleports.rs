@@ -91,8 +91,13 @@ pub fn sealer_from_secret(secret: &str) -> Result<Arc<dyn SecretSealer>> {
 /// 1. **Cloudflare Email Service** — when the `EMAIL` `[[send_email]]` binding is
 ///    present *and* a `HUB_EMAIL_FROM` sender address is set, it calls the
 ///    binding's JS API `EMAIL.send({ from, to, subject, html, text })` over
-///    wasm-bindgen interop (workers-rs 0.4 has no typed wrapper for this binding).
-///    The sender domain must be onboarded in the Cloudflare dashboard first.
+///    wasm-bindgen interop. workers-rs 0.8's typed `worker::SendEmail` binding is
+///    *not* a fit here: it wraps the `cloudflare:email` (Email Routing) product,
+///    whose `EmailMessage::new(from, to, raw)` takes a full raw-MIME message,
+///    whereas this binding is the structured Email Sending API
+///    (`send({subject, html, text})`) — a different shape — so the raw interop is
+///    retained deliberately. The sender domain must be onboarded in the
+///    Cloudflare dashboard first.
 /// 2. **HTTP relay** — else when `HUB_EMAIL_API_URL` is set, it `POST`s
 ///    `{from,to,subject,html,text}` JSON to it (optional `Bearer` token from
 ///    `HUB_EMAIL_API_TOKEN`) over the Workers Fetch API, for an operator who
@@ -192,7 +197,7 @@ impl WorkerMailer {
             "text": content.text,
         })
         .to_string();
-        let mut headers = Headers::new();
+        let headers = Headers::new();
         headers
             .set("Content-Type", "application/json")
             .map_err(|err| anyhow::anyhow!("email relay: set header: {err}"))?;
@@ -311,7 +316,7 @@ impl HttpClient for WorkerHttpClient {
         let body = form_urlencoded::Serializer::new(String::new())
             .extend_pairs(form.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .finish();
-        let mut headers = Headers::new();
+        let headers = Headers::new();
         headers
             .set("Content-Type", "application/x-www-form-urlencoded")
             .map_err(|err| anyhow::anyhow!("POST {url}: set header: {err}"))?;
