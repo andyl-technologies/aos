@@ -839,13 +839,24 @@ mod tests {
     fn registration_ready() -> crate::PluginRegistrationReady {
         let mut sequence = crate::PluginRegistrationSequence::new();
         for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
-            if let Err(error) = sequence.record_step(step) {
-                panic!("canonical registration step should record: {error}");
+            let result = if step == PluginRegistrationStep::RegisterCallbacks {
+                sequence
+                    .register_callbacks_with_exact_deadline(Some(time_control_test_deadline))
+                    .map(|_reader| ())
+            } else {
+                sequence.record_step(step)
+            };
+            if let Err(error) = result {
+                panic!("canonical registration step {step:?} should record: {error}");
             }
         }
         match sequence.finish() {
             Ok(ready) => ready,
             Err(error) => panic!("canonical registration should finish: {error}"),
         }
+    }
+
+    extern "C" fn time_control_test_deadline() -> i64 {
+        1
     }
 }

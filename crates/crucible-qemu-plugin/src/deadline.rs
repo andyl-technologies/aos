@@ -10,6 +10,13 @@ use thiserror::Error;
 /// The required QEMU plugin extension symbol for exact timer deadlines.
 pub const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL: &str = "qemu_plugin_clock_deadline_ns";
 
+/// QEMU's exact virtual-clock deadline function.
+///
+/// The patched QEMU plugin API exports this symbol as a no-argument function
+/// returning either the absolute `QEMU_CLOCK_VIRTUAL` deadline in nanoseconds or
+/// a negative sentinel when no virtual-clock timer is armed.
+pub type QemuClockDeadlineFn = extern "C" fn() -> i64;
+
 /// The QEMU clock source used for a deadline query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClockDeadlineSource {
@@ -40,6 +47,45 @@ pub enum ExactDeadlineReport {
         /// The exact virtual nanosecond deadline from `QEMU_CLOCK_VIRTUAL`.
         deadline_ns: u64,
     },
+}
+
+/// Required plugin-side handle for exact virtual-clock deadline introspection.
+#[derive(Clone, Copy, Debug)]
+pub struct ExactDeadlineReader {
+    clock_deadline_ns: QemuClockDeadlineFn,
+}
+
+impl ExactDeadlineReader {
+    /// Requires the patched QEMU deadline export and returns a reader for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExactDeadlineError::CapabilityUnavailable`] when the
+    /// `qemu_plugin_clock_deadline_ns` export was not resolved. This is the
+    /// fail-closed registration path for [PLUG-15].
+    pub fn require(
+        clock_deadline_ns: Option<QemuClockDeadlineFn>,
+    ) -> Result<Self, ExactDeadlineError> {
+        let Some(clock_deadline_ns) = clock_deadline_ns else {
+            return Err(ExactDeadlineError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
+            });
+        };
+
+        ExactDeadlineIntrospection::required().validate()?;
+        Ok(Self { clock_deadline_ns })
+    }
+
+    /// Reads the next exact virtual-clock deadline from QEMU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExactDeadlineError`] if the required exact-deadline policy is
+    /// invalid. The reader is constructed only by [`Self::require`], so this path
+    /// cannot silently degrade to overshoot-and-correct.
+    pub fn read_next_deadline(&self) -> Result<ExactDeadlineReport, ExactDeadlineError> {
+        ExactDeadlineIntrospection::required().report((self.clock_deadline_ns)())
+    }
 }
 
 /// One vCPU's plugin-internal exact-deadline observation.
@@ -265,6 +311,41 @@ mod tests {
     }
 
     #[test]
+    fn exact_deadline_reader_requires_qemu_clock_deadline_symbol() {
+        let Err(error) = ExactDeadlineReader::require(None) else {
+            panic!("missing deadline symbol should fail closed");
+        };
+
+        assert_eq!(
+            error,
+            ExactDeadlineError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
+            }
+        );
+    }
+
+    #[test]
+    fn exact_deadline_reader_reads_virtual_deadline_without_fallback() {
+        let reader = match ExactDeadlineReader::require(Some(test_armed_deadline)) {
+            Ok(reader) => reader,
+            Err(error) => panic!("deadline reader should require resolved symbol: {error}"),
+        };
+        assert_eq!(
+            reader.read_next_deadline(),
+            Ok(ExactDeadlineReport::Armed { deadline_ns: 2048 })
+        );
+
+        let no_timer_reader = match ExactDeadlineReader::require(Some(test_no_armed_deadline)) {
+            Ok(reader) => reader,
+            Err(error) => panic!("deadline reader should accept no-timer symbol: {error}"),
+        };
+        assert_eq!(
+            no_timer_reader.read_next_deadline(),
+            Ok(ExactDeadlineReport::NoArmedTimer)
+        );
+    }
+
+    #[test]
     fn exact_deadline_fails_when_capability_is_missing() {
         let introspection = ExactDeadlineIntrospection::new(
             false,
@@ -402,5 +483,13 @@ mod tests {
             aggregate_multi_vcpu_deadline(4, &reports),
             Err(ExactDeadlineError::MissingVcpuDeadline { vcpu_id: 2 })
         );
+    }
+
+    extern "C" fn test_armed_deadline() -> i64 {
+        2048
+    }
+
+    extern "C" fn test_no_armed_deadline() -> i64 {
+        -1
     }
 }

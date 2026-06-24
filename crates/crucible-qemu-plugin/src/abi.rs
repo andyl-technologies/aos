@@ -14,6 +14,8 @@
 
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
+use crate::{ExactDeadlineError, ExactDeadlineReader, QemuClockDeadlineFn};
+
 /// QEMU plugin identifier type passed to the install entry point.
 pub type QemuPluginId = u64;
 
@@ -59,6 +61,7 @@ pub const QEMU_PLUGIN_VERSION_SYMBOL: &str = "qemu_plugin_version";
 pub const QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL: &str = QEMU_PLUGIN_INSTALL_SYMBOL;
 /// Minimum supported vCPU count under single-threaded round-robin TCG.
 pub const MIN_SUPPORTED_VCPU_COUNT: u32 = 1;
+const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C: &[u8] = b"qemu_plugin_clock_deadline_ns\0";
 
 /// The TCG threading mode relevant to plugin callback serialization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,6 +249,7 @@ impl RegisteredDeviceCallbacks {
 pub struct PluginStatePartition {
     lifecycle_core: PluginLifecycleCore,
     device_callbacks: RegisteredDeviceCallbacks,
+    exact_deadline_reader: Option<ExactDeadlineReader>,
 }
 
 impl PluginStatePartition {
@@ -255,6 +259,20 @@ impl PluginStatePartition {
         Self {
             lifecycle_core: PluginLifecycleCore::installed_inert(execution_model),
             device_callbacks: RegisteredDeviceCallbacks::inert(),
+            exact_deadline_reader: None,
+        }
+    }
+
+    /// Builds scaffold state after requiring exact virtual-clock deadline support.
+    #[must_use]
+    pub const fn with_required_deadline(
+        execution_model: QemuPluginExecutionModel,
+        exact_deadline_reader: ExactDeadlineReader,
+    ) -> Self {
+        Self {
+            lifecycle_core: PluginLifecycleCore::installed_inert(execution_model),
+            device_callbacks: RegisteredDeviceCallbacks::inert(),
+            exact_deadline_reader: Some(exact_deadline_reader),
         }
     }
 
@@ -268,6 +286,12 @@ impl PluginStatePartition {
     #[must_use]
     pub const fn device_callbacks(&self) -> &RegisteredDeviceCallbacks {
         &self.device_callbacks
+    }
+
+    /// Returns the required exact deadline reader resolved during install, if present.
+    #[must_use]
+    pub const fn exact_deadline_reader(&self) -> Option<&ExactDeadlineReader> {
+        self.exact_deadline_reader.as_ref()
     }
 }
 
@@ -305,6 +329,12 @@ pub enum QemuPluginAbiError {
     /// QEMU is using multi-threaded TCG, which can re-enter plugin state concurrently.
     #[error("QEMU plugin requires single-threaded round-robin TCG, not MTTCG")]
     MultiThreadedTcg,
+    /// The required exact deadline capability is unavailable.
+    #[error("QEMU plugin exact deadline capability failed")]
+    ExactDeadlineCapability {
+        /// Underlying exact deadline error.
+        source: ExactDeadlineError,
+    },
 }
 
 /// Validates raw install arguments without dereferencing them.
@@ -362,6 +392,24 @@ pub const fn install_inert_scaffold(
     Ok(PluginStatePartition::inert(execution_model))
 }
 
+/// Builds install scaffold state after requiring exact-deadline introspection.
+///
+/// # Errors
+///
+/// Returns [`QemuPluginAbiError::ExactDeadlineCapability`] when the required
+/// `qemu_plugin_clock_deadline_ns` symbol is unavailable.
+pub fn install_required_deadline_scaffold(
+    execution_model: QemuPluginExecutionModel,
+    clock_deadline_ns: Option<QemuClockDeadlineFn>,
+) -> Result<PluginStatePartition, QemuPluginAbiError> {
+    let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ns)
+        .map_err(|source| QemuPluginAbiError::ExactDeadlineCapability { source })?;
+    Ok(PluginStatePartition::with_required_deadline(
+        execution_model,
+        exact_deadline_reader,
+    ))
+}
+
 /// Builds the inert install scaffold from QEMU install information.
 ///
 /// # Errors
@@ -376,6 +424,52 @@ pub fn install_inert_scaffold_from_qemu_info(
     install_inert_scaffold(execution_model)
 }
 
+/// Builds required-deadline install scaffold state from QEMU install information.
+///
+/// # Errors
+///
+/// Returns [`QemuPluginAbiError`] when the execution model is unsupported or the
+/// required exact-deadline symbol is unavailable.
+pub fn install_required_deadline_scaffold_from_qemu_info(
+    info: &QemuPluginInfo,
+    threading: QemuTcgThreading,
+    clock_deadline_ns: Option<QemuClockDeadlineFn>,
+) -> Result<PluginStatePartition, QemuPluginAbiError> {
+    let execution_model = execution_model_from_qemu_info(info, threading)?;
+    install_required_deadline_scaffold(execution_model, clock_deadline_ns)
+}
+
+/// Resolves QEMU's required exact-deadline export from the loaded process.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_clock_deadline_symbol() -> Option<QemuClockDeadlineFn> {
+    // SAFETY: The symbol name is a static NUL-terminated byte string. `dlsym`
+    // returns either null or a process symbol address. QEMU's patch defines this
+    // symbol with the exact `extern "C" fn() -> i64` ABI used by
+    // `QemuClockDeadlineFn`; callers fail closed when the symbol is absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: Non-null `symbol` was resolved for
+        // `qemu_plugin_clock_deadline_ns`, whose patched QEMU declaration is
+        // `int64_t qemu_plugin_clock_deadline_ns(void)`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuClockDeadlineFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's required exact-deadline export from the loaded process.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_clock_deadline_symbol() -> Option<QemuClockDeadlineFn> {
+    None
+}
+
 fn validate_qemu_plugin_api_range(info: &QemuPluginInfo) -> Result<(), QemuPluginAbiError> {
     if info.version.min > QEMU_PLUGIN_API_VERSION || info.version.cur < QEMU_PLUGIN_API_VERSION {
         return Err(QemuPluginAbiError::UnsupportedPluginApi {
@@ -387,7 +481,7 @@ fn validate_qemu_plugin_api_range(info: &QemuPluginInfo) -> Result<(), QemuPlugi
     Ok(())
 }
 
-unsafe fn install_inert_scaffold_from_boundary(
+unsafe fn install_required_deadline_scaffold_from_boundary(
     info: *const QemuPluginInfo,
     argc: c_int,
     argv: *mut *mut c_char,
@@ -397,11 +491,11 @@ unsafe fn install_inert_scaffold_from_boundary(
     // guarantees `info` points at a live `qemu_info_t` for this install call.
     let info = unsafe { &*info };
 
-    // QEMU 9.2.4 exposes vCPU count and plugin API range here, but not the TCG
-    // threading flag. The launch crate rejects `thread=multi` before QEMU
-    // starts, so the QEMU-facing entry point applies that precondition while
-    // still routing through the same validator that rejects MTTCG when supplied.
-    install_inert_scaffold_from_qemu_info(info, QemuTcgThreading::SingleThreadedRoundRobin)
+    install_required_deadline_scaffold_from_qemu_info(
+        info,
+        QemuTcgThreading::SingleThreadedRoundRobin,
+        resolve_qemu_clock_deadline_symbol(),
+    )
 }
 
 /// QEMU plugin API version exported for QEMU's loader compatibility check.
@@ -410,10 +504,9 @@ pub static qemu_plugin_version: c_int = QEMU_PLUGIN_API_VERSION;
 
 /// QEMU `cdylib` install entry point.
 ///
-/// The initial scaffold is intentionally inert: it validates the raw ABI shape,
-/// validates the execution model, and returns success without registering device
-/// callbacks. Full registration is wired by later tasks through the safe parser,
-/// setup, and time-control modules.
+/// The install path validates the raw ABI shape and execution model, then fails
+/// closed unless QEMU exposes the required exact-deadline capability. Device
+/// callbacks remain inert until later tasks replace the callback bodies.
 ///
 /// # Safety
 ///
@@ -431,7 +524,7 @@ pub unsafe extern "C" fn qemu_plugin_install(
     // SAFETY: this exported C ABI function is called by QEMU with `info` live
     // for the duration of the call. The helper validates null and scalar
     // boundary fields before copying from that pointer.
-    match unsafe { install_inert_scaffold_from_boundary(info, argc, argv) } {
+    match unsafe { install_required_deadline_scaffold_from_boundary(info, argc, argv) } {
         Ok(_state) => QEMU_PLUGIN_INSTALL_OK,
         Err(_error) => QEMU_PLUGIN_INSTALL_ERROR,
     }
@@ -538,7 +631,14 @@ mod tests {
         );
         assert_eq!(
             call_qemu_plugin_install(&valid_info, 0, std::ptr::null_mut()),
-            QEMU_PLUGIN_INSTALL_OK
+            QEMU_PLUGIN_INSTALL_ERROR
+        );
+        assert!(
+            install_inert_scaffold_from_qemu_info(
+                &valid_info,
+                QemuTcgThreading::SingleThreadedRoundRobin
+            )
+            .is_ok()
         );
         assert_eq!(
             call_qemu_plugin_install(std::ptr::null(), 0, std::ptr::null_mut()),
@@ -563,20 +663,68 @@ mod tests {
             qemu_info_fixture(1, QEMU_PLUGIN_API_VERSION + 1, QEMU_PLUGIN_API_VERSION + 1);
 
         assert_eq!(
-            call_qemu_plugin_install(&single_vcpu, 0, std::ptr::null_mut()),
-            QEMU_PLUGIN_INSTALL_OK
+            install_required_deadline_scaffold_from_qemu_info(
+                &single_vcpu,
+                QemuTcgThreading::SingleThreadedRoundRobin,
+                Some(abi_test_deadline),
+            )
+            .map(|state| state.exact_deadline_reader().is_some()),
+            Ok(true)
         );
         assert_eq!(
-            call_qemu_plugin_install(&multi_vcpu, 0, std::ptr::null_mut()),
-            QEMU_PLUGIN_INSTALL_OK
+            install_required_deadline_scaffold_from_qemu_info(
+                &multi_vcpu,
+                QemuTcgThreading::SingleThreadedRoundRobin,
+                Some(abi_test_deadline),
+            )
+            .map(|state| state.lifecycle_core().execution_model().smp_vcpus()),
+            Ok(4)
         );
         assert_eq!(
-            call_qemu_plugin_install(&no_vcpu, 0, std::ptr::null_mut()),
+            install_required_deadline_scaffold_from_qemu_info(
+                &no_vcpu,
+                QemuTcgThreading::SingleThreadedRoundRobin,
+                Some(abi_test_deadline),
+            )
+            .map(|_state| ()),
+            Err(QemuPluginAbiError::NoVcpus)
+        );
+        assert_eq!(
+            install_required_deadline_scaffold_from_qemu_info(
+                &unsupported_api,
+                QemuTcgThreading::SingleThreadedRoundRobin,
+                Some(abi_test_deadline),
+            )
+            .map(|_state| ()),
+            Err(QemuPluginAbiError::UnsupportedPluginApi {
+                min: QEMU_PLUGIN_API_VERSION + 1,
+                cur: QEMU_PLUGIN_API_VERSION + 1,
+                required: QEMU_PLUGIN_API_VERSION,
+            })
+        );
+    }
+
+    #[test]
+    fn abi_install_entrypoint_fails_closed_without_exact_deadline_symbol() {
+        let valid_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
+
+        assert!(resolve_qemu_clock_deadline_symbol().is_none());
+        assert_eq!(
+            call_qemu_plugin_install(&valid_info, 0, std::ptr::null_mut()),
             QEMU_PLUGIN_INSTALL_ERROR
         );
         assert_eq!(
-            call_qemu_plugin_install(&unsupported_api, 0, std::ptr::null_mut()),
-            QEMU_PLUGIN_INSTALL_ERROR
+            install_required_deadline_scaffold_from_qemu_info(
+                &valid_info,
+                QemuTcgThreading::SingleThreadedRoundRobin,
+                None,
+            )
+            .map(|_state| ()),
+            Err(QemuPluginAbiError::ExactDeadlineCapability {
+                source: ExactDeadlineError::CapabilityUnavailable {
+                    symbol: crate::QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
+                },
+            })
         );
     }
 
@@ -670,9 +818,14 @@ mod tests {
             PluginLifecyclePhase::InstalledInert
         );
         assert_eq!(state.lifecycle_core().execution_model(), model);
+        assert!(state.exact_deadline_reader().is_none());
         for kind in OWNED_DEVICE_CALLBACK_KINDS {
             let callback = state.device_callbacks().callback_for(kind);
             callback(7, std::ptr::null_mut());
         }
+    }
+
+    extern "C" fn abi_test_deadline() -> i64 {
+        4096
     }
 }
