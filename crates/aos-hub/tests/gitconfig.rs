@@ -169,6 +169,7 @@ async fn propose_writes_signed_draft_commit_ref_and_records() {
         Some(7),
         "alice@acme.com",
         1_770_000_100,
+        gitwrite::ProposeMeta::default(),
     )
     .await
     .unwrap();
@@ -292,6 +293,8 @@ async fn indexer_trailer_marks_known_change_request_applied() {
         Some("edit registry.toml"),
         &format!("refs/hub/changes/{change_id}"),
         "draftoid",
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -357,6 +360,8 @@ async fn indexer_ignores_change_id_scoped_to_another_registry() {
         Some("edit a different registry"),
         &format!("refs/hub/changes/{change_id}"),
         "draftoid",
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -468,6 +473,7 @@ async fn git_service_log_diff_and_change_requests() {
         Some(7),
         "alice@acme.com",
         1_770_000_100,
+        gitwrite::ProposeMeta::default(),
     )
     .await
     .unwrap();
@@ -521,14 +527,9 @@ async fn git_service_log_diff_and_change_requests() {
 
     // With audit.read (intersected with a live Owner grant), it lists the draft.
     let user = db.create_user("alice@acme.com", None).await.unwrap();
-    db.grant_membership(
-        "user",
-        user,
-        "acme",
-        aos_hub::domain::Role::Owner.as_str(),
-    )
-    .await
-    .unwrap();
+    db.grant_membership("user", user, "acme", aos_hub::domain::Role::Owner.as_str())
+        .await
+        .unwrap();
     let token = bearer(Principal::user(user), "acme/cdn", &[Permission::AuditRead]);
     let (status, value) = rpc(
         &app,

@@ -874,3 +874,156 @@ form.console label > .hint { grid-column: 2; justify-self: start; }
   border-top: 1px solid var(--rule-faint);
 }
 .help-seg b { color: var(--ink); }
+
+/* ── Change-request review surface (RFC-0004 web change requests) ──────────
+ * A GitHub pull-request-style surface in the paper idiom: flat, ruled,
+ * semantic color, monospace. Everything below works with no JavaScript. */
+
+/* An anchor styled as a button (the global rule styles the <button> element;
+ * the "Propose a change" link and the copy button reuse this look). */
+a.button,
+.button {
+  display: inline-block;
+  font: inherit;
+  padding: 0.25rem 0.9rem;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  text-decoration: none;
+  line-height: 1.2;
+  cursor: pointer;
+}
+a.button:hover,
+.button:hover { background: color-mix(in srgb, var(--ink) 8%, var(--paper)); }
+/* A lower-emphasis action (close/reopen): ruled, not inked. */
+.button-quiet { border-color: var(--rule-strong); color: var(--dim); }
+
+/* Status badge — glyph + word carry the state (monochrome-safe); color is
+ * only reinforcement. Flat bordered, never a pill. */
+.badge {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border: 1px solid currentColor;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+.badge-open { color: var(--ok); }
+.badge-merged { color: var(--accent); }
+.badge-closed { color: var(--dim); }
+.badge-reverted { color: var(--bad); }
+
+/* The Open/Closed/All and Conversation/Diff/Checks tab strips. Mirrors the
+ * settings-nav active treatment: an accent underline, no color fills. */
+.change-tabs {
+  display: flex;
+  gap: 1.2rem;
+  margin: 0.8rem 0 1.1rem;
+  border-bottom: 1px solid var(--rule);
+}
+.change-tabs .tab {
+  padding: 0.3rem 0.1rem;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  text-decoration: none;
+  color: var(--ink);
+}
+.change-tabs .tab:hover { border-bottom-color: var(--rule-strong); }
+.change-tabs .tab.active { border-bottom-color: var(--accent); font-weight: 700; }
+
+/* List page: header row (counts + action) and the dense change table. */
+.change-list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.change-list-head p { margin: 0; }
+.change-table { width: 100%; border-collapse: collapse; }
+.change-table td {
+  padding: 0.5rem 0.4rem;
+  border-bottom: 1px solid var(--rule-faint);
+  vertical-align: top;
+}
+.change-table .change-status { width: 1%; white-space: nowrap; }
+.change-table .change-title a { font-weight: 700; }
+
+/* Detail page header. */
+.change-head { margin-bottom: 0.6rem; }
+.change-h1 { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.change-head p { margin: 0.2rem 0 0; }
+.change-body {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--ink) 3%, var(--paper));
+}
+
+/* The conversation timeline: a left rail of events. */
+.timeline { list-style: none; margin: 0 0 1.2rem; padding: 0; }
+.timeline .tl-item {
+  padding: 0.35rem 0 0.35rem 0.4rem;
+  border-left: 2px solid var(--rule);
+  margin-left: 0.4rem;
+}
+.tl-item.tl-approve { border-left-color: var(--ok); }
+.tl-item.tl-reject { border-left-color: var(--warn); }
+.tl-item.tl-merged { border-left-color: var(--accent); }
+.tl-item.tl-reverted { border-left-color: var(--bad); }
+.tl-glyph { display: inline-block; width: 1.3rem; color: var(--dim); }
+.tl-item.tl-approve .tl-glyph { color: var(--ok); }
+.tl-item.tl-reject .tl-glyph { color: var(--warn); }
+.tl-item.tl-merged .tl-glyph { color: var(--accent); }
+.tl-note {
+  margin: 0.3rem 0 0 1.7rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--rule-faint);
+  background: color-mix(in srgb, var(--ink) 3%, var(--paper));
+  white-space: pre-wrap;
+}
+
+/* The merge box: promotion is CLI-only, so this is a copy-paste command. */
+.merge-box {
+  margin: 1rem 0;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--rule);
+}
+.merge-box.merged { border-color: var(--ok); }
+.merge-box p { margin: 0 0 0.5rem; }
+.copy-row { display: flex; align-items: stretch; gap: 0.5rem; }
+.merge-cmd { flex: 1; margin: 0; }
+.copy-btn { align-self: stretch; }
+
+/* The per-page action forms (comment, review, close). */
+.change-action { margin: 1rem 0; }
+.change-action textarea { width: 100%; }
+label.inline {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  margin-right: 1rem;
+}
+
+/* The recomputed checks list. */
+.checks { list-style: none; margin: 0 0 1rem; padding: 0; }
+.checks li { padding: 0.25rem 0; }
+.checks .ok { color: var(--ok); font-weight: 700; }
+.checks .bad { color: var(--bad); font-weight: 700; }
+
+/* The syntax-highlighted, no-JS diff: each line is a full-width block with a
+ * +/-/space marker and TOML token coloring (the t-* classes, shared with the
+ * live editor). Selectable and copy-pasteable as a real unified diff. */
+.diff {
+  margin: 0.3rem 0 1rem;
+  border: 1px solid var(--rule);
+  overflow-x: auto;
+}
+.diff .dl {
+  display: block;
+  white-space: pre;
+  padding: 0 0.5rem;
+}
+.diff .dl-add { background: color-mix(in srgb, var(--ok) 12%, var(--paper)); }
+.diff .dl-del { background: color-mix(in srgb, var(--bad) 12%, var(--paper)); }
+.diff .dl-meta { color: var(--dim); }
+.diff-file { margin: 1rem 0 0.2rem; }

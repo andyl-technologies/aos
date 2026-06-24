@@ -61,6 +61,22 @@ const HUB_IDENT_NAME: &str = "AOS Hub";
 /// The author/committer email stamped on hub-authored draft commits.
 const HUB_IDENT_EMAIL: &str = "hub@aos";
 
+/// Human-authored metadata for a change request — the title and description a
+/// proposer types when opening it from the console.
+///
+/// Kept separate from the git commit message (which stays the deterministic
+/// `config: edit <file> in <slug>` summary so signing is reproducible): the
+/// title/body live only in the `config_changesets` row and drive the review
+/// surface's headings. [`ProposeMeta::default`] (both `None`) is used by
+/// non-interactive callers such as the cache-toggle path.
+#[derive(Debug, Clone, Default)]
+pub struct ProposeMeta {
+    /// Short PR-style title, or `None` to fall back to the commit summary.
+    pub title: Option<String>,
+    /// Optional free-text description.
+    pub body: Option<String>,
+}
+
 /// A proposed git-backed change request the hub has written to a surface.
 #[derive(Debug, Clone)]
 pub struct ProposedChange {
@@ -159,6 +175,7 @@ pub async fn propose_config_change(
     actor_id: Option<i64>,
     actor_label: &str,
     when: i64,
+    meta: ProposeMeta,
 ) -> Result<ProposedChange> {
     if file_path.contains('/') {
         bail!("only top-level committed files may be edited as change requests, got '{file_path}'");
@@ -235,6 +252,8 @@ pub async fn propose_config_change(
         Some(&summary),
         &git_ref,
         &commit_oid.to_hex(),
+        meta.title.as_deref(),
+        meta.body.as_deref(),
     )
     .await?;
     db.add_revision(
@@ -353,6 +372,7 @@ pub async fn propose_cache_advertisement(
         actor_id,
         actor_label,
         when,
+        ProposeMeta::default(),
     )
     .await?;
     Ok(Some(proposed))

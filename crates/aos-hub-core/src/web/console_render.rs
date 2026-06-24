@@ -24,10 +24,10 @@
 //! [`crate::web::render`] and are re-used here so the console and the shared
 //! browse surface render byte-identically.
 
-use std::fmt::Write as _;
-use std::sync::{OnceLock, RwLock};
 use crate::binding::RuntimeKind;
 use crate::clock::Instant;
+use std::fmt::Write as _;
+use std::sync::{OnceLock, RwLock};
 
 use crate::db::{
     AuditRow, Cache, CacheUsage, ChangesetRow, ChannelSummary, FrontendRecord, HostedKeyRecord,
@@ -385,7 +385,11 @@ pub fn page_with_session(
     // A configured tagline rides beside the brand as a dim subtitle.
     let tagline = site_tagline();
     if !brand_span.is_empty() && !tagline.is_empty() {
-        let _ = write!(brand_span, "<span class=\"tagline\">{}</span>", escape(&tagline));
+        let _ = write!(
+            brand_span,
+            "<span class=\"tagline\">{}</span>",
+            escape(&tagline)
+        );
     }
     let page_title = page_title(&brand, title);
     // The announcement banner (when set) sits above the content on every page;
@@ -630,7 +634,9 @@ pub fn ago(unix: i64) -> String {
 const GRID_GLYPHS: [char; 6] = ['■', '▣', '▥', '▤', '▧', '▢'];
 
 /// Assign a stable glyph index to each release in a channel, frontier-first.
-fn release_glyphs(channel: &ChannelSummary) -> (Vec<String>, std::collections::BTreeMap<String, usize>) {
+fn release_glyphs(
+    channel: &ChannelSummary,
+) -> (Vec<String>, std::collections::BTreeMap<String, usize>) {
     let mut release_order: Vec<String> = Vec::new();
     if let Some(frontier) = &channel.frontier {
         release_order.push(frontier.clone());
@@ -1496,8 +1502,7 @@ pub fn org_dashboard(
         if can_configure {
             // A cache uses the deployment's default storage unless a custom
             // binding is selected — the first option, mirroring registry create.
-            let mut binding_options =
-                String::from("<option value=\"\">default storage</option>");
+            let mut binding_options = String::from("<option value=\"\">default storage</option>");
             for b in bindings {
                 let _ = write!(
                     binding_options,
@@ -1538,38 +1543,38 @@ pub fn org_dashboard(
 
     // -- Projects ------------------------------------------------------------
     if active == "projects" {
-    body.push_str("<h2>Projects</h2>\n");
-    if projects.is_empty() {
-        body.push_str("<p class=\"dim\">No projects.</p>\n");
-    } else {
-        let rows: Vec<Vec<String>> = projects
-            .iter()
-            .map(|p| {
-                let action = if can_configure {
-                    format!(
-                        "<form class=\"console\" method=\"post\" \
+        body.push_str("<h2>Projects</h2>\n");
+        if projects.is_empty() {
+            body.push_str("<p class=\"dim\">No projects.</p>\n");
+        } else {
+            let rows: Vec<Vec<String>> = projects
+                .iter()
+                .map(|p| {
+                    let action = if can_configure {
+                        format!(
+                            "<form class=\"console\" method=\"post\" \
                          action=\"/-/org/{org}/projects/delete\" style=\"display:inline\">{csrf}\
                          <input type=\"hidden\" name=\"id\" value=\"{id}\">\
                          <button class=\"danger\">delete</button></form>",
-                        org = escape(slug),
-                        csrf = csrf_field(csrf),
-                        id = p.id,
-                    )
-                } else {
-                    String::new()
-                };
-                vec![
-                    escape(if p.path.is_empty() { "(root)" } else { &p.path }),
-                    escape(&p.name),
-                    action,
-                ]
-            })
-            .collect();
-        body.push_str(&table(&["path", "name", ""], &rows));
-    }
-    if can_configure {
-        body.push_str("<h4>Create a project</h4>\n");
-        let _ = write!(
+                            org = escape(slug),
+                            csrf = csrf_field(csrf),
+                            id = p.id,
+                        )
+                    } else {
+                        String::new()
+                    };
+                    vec![
+                        escape(if p.path.is_empty() { "(root)" } else { &p.path }),
+                        escape(&p.name),
+                        action,
+                    ]
+                })
+                .collect();
+            body.push_str(&table(&["path", "name", ""], &rows));
+        }
+        if can_configure {
+            body.push_str("<h4>Create a project</h4>\n");
+            let _ = write!(
             body,
             "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/projects\">\n{csrf}\
              <label>path <input type=\"text\" name=\"path\" placeholder=\"infra/prod\"> \
@@ -1579,79 +1584,79 @@ pub fn org_dashboard(
             org = escape(slug),
             csrf = csrf_field(csrf),
         );
-    }
+        }
     }
 
     // -- Storage -------------------------------------------------------------
     if active == "storage" {
-    body.push_str("<h2>Storage</h2>\n");
-    // The deployment's default storage is always present and is what new
-    // registries use with no binding at all. Render it as the first row — a
-    // `default` chip, no delete — so it is *apparent* that storage already works
-    // and any custom binding is purely additive (no prose needed to say so). Its
-    // concrete location is a deployment-global setting shown on instance
-    // settings, so the location cell links there rather than repeating it.
-    let mut rows: Vec<Vec<String>> = vec![vec![
-        "<span class=\"chip\">default</span>".to_string(),
-        escape(RuntimeKind::current().default_storage_kind()),
-        "<a href=\"/-/instance/storage\">deployment default →</a>".to_string(),
-        String::new(),
-    ]];
-    rows.extend(bindings.iter().map(|b| {
-        let action = if can_configure {
-            format!(
-                "<form class=\"console\" method=\"post\" \
+        body.push_str("<h2>Storage</h2>\n");
+        // The deployment's default storage is always present and is what new
+        // registries use with no binding at all. Render it as the first row — a
+        // `default` chip, no delete — so it is *apparent* that storage already works
+        // and any custom binding is purely additive (no prose needed to say so). Its
+        // concrete location is a deployment-global setting shown on instance
+        // settings, so the location cell links there rather than repeating it.
+        let mut rows: Vec<Vec<String>> = vec![vec![
+            "<span class=\"chip\">default</span>".to_string(),
+            escape(RuntimeKind::current().default_storage_kind()),
+            "<a href=\"/-/instance/storage\">deployment default →</a>".to_string(),
+            String::new(),
+        ]];
+        rows.extend(bindings.iter().map(|b| {
+            let action = if can_configure {
+                format!(
+                    "<form class=\"console\" method=\"post\" \
                  action=\"/-/org/{org}/bindings/delete\" style=\"display:inline\">{csrf}\
                  <input type=\"hidden\" name=\"id\" value=\"{id}\">\
                  <button class=\"danger\">delete</button></form>",
-                org = escape(slug),
-                csrf = csrf_field(csrf),
-                id = b.id,
-            )
-        } else {
-            String::new()
-        };
-        let location = if b.kind == "local_fs" {
-            format!("<code>{}</code>", escape(&b.root))
-        } else {
-            // Object store: show endpoint + bucket + access mode, never the
-            // sealed credential.
-            let endpoint = b.public_base_url.as_deref().unwrap_or("");
-            format!(
-                "<code>{endpoint}/{bucket}</code> · {access}",
-                endpoint = escape(endpoint.trim_end_matches('/')),
-                bucket = escape(&b.root),
-                access = escape(&b.access),
-            )
-        };
-        // The name links to the binding's serving page (public access +
-        // frontends) for those who can configure it (RFC-0004 §12).
-        let name_cell = if can_configure {
-            format!(
-                "<a href=\"/-/org/{org}/bindings/{id}\">{name}</a>",
-                org = escape(slug),
-                id = b.id,
-                name = escape(&b.name),
-            )
-        } else {
-            escape(&b.name)
-        };
-        vec![name_cell, escape(&b.kind), location, action]
-    }));
-    body.push_str(&table(&["name", "kind", "location", ""], &rows));
-    if can_configure {
-        let creatable = RuntimeKind::current().creatable_binding_kinds();
-        body.push_str("<h4>Add a storage binding</h4>\n");
-        let mut kind_options = String::new();
-        for kind in &creatable {
+                    org = escape(slug),
+                    csrf = csrf_field(csrf),
+                    id = b.id,
+                )
+            } else {
+                String::new()
+            };
+            let location = if b.kind == "local_fs" {
+                format!("<code>{}</code>", escape(&b.root))
+            } else {
+                // Object store: show endpoint + bucket + access mode, never the
+                // sealed credential.
+                let endpoint = b.public_base_url.as_deref().unwrap_or("");
+                format!(
+                    "<code>{endpoint}/{bucket}</code> · {access}",
+                    endpoint = escape(endpoint.trim_end_matches('/')),
+                    bucket = escape(&b.root),
+                    access = escape(&b.access),
+                )
+            };
+            // The name links to the binding's serving page (public access +
+            // frontends) for those who can configure it (RFC-0004 §12).
+            let name_cell = if can_configure {
+                format!(
+                    "<a href=\"/-/org/{org}/bindings/{id}\">{name}</a>",
+                    org = escape(slug),
+                    id = b.id,
+                    name = escape(&b.name),
+                )
+            } else {
+                escape(&b.name)
+            };
+            vec![name_cell, escape(&b.kind), location, action]
+        }));
+        body.push_str(&table(&["name", "kind", "location", ""], &rows));
+        if can_configure {
+            let creatable = RuntimeKind::current().creatable_binding_kinds();
+            body.push_str("<h4>Add a storage binding</h4>\n");
+            let mut kind_options = String::new();
+            for kind in &creatable {
+                let _ = write!(
+                    kind_options,
+                    "<option value=\"{value}\">{label}</option>",
+                    value = escape(kind.as_str()),
+                    label = escape(kind.label()),
+                );
+            }
             let _ = write!(
-                kind_options,
-                "<option value=\"{value}\">{label}</option>",
-                value = escape(kind.as_str()),
-                label = escape(kind.label()),
-            );
-        }
-        let _ = write!(
             body,
             "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/bindings\" \
              data-binding-kind>\n{csrf}\
@@ -1680,67 +1685,67 @@ pub fn org_dashboard(
             endpoint_help = help::marker("binding.endpoint"),
             region_help = help::marker("binding.region"),
         );
-    }
+        }
     }
 
     // -- Members -------------------------------------------------------------
     if active == "members" {
-    body.push_str("<h2>Members</h2>\n");
-    let rows: Vec<Vec<String>> = mem_pager
-        .slice(members)
-        .iter()
-        .map(|m| {
-            let mut action = String::new();
-            if can_manage_members {
-                // A role-change form: a select of the five roles (current one
-                // pre-selected). Demoting the last owner is blocked server-side.
-                let mut options = String::new();
-                for role in ["owner", "admin", "maintainer", "developer", "viewer"] {
-                    let sel = if role == m.role { " selected" } else { "" };
-                    let _ = write!(options, "<option value=\"{role}\"{sel}>{role}</option>");
-                }
-                let _ = write!(
-                    action,
-                    "<form class=\"console\" method=\"post\" \
+        body.push_str("<h2>Members</h2>\n");
+        let rows: Vec<Vec<String>> = mem_pager
+            .slice(members)
+            .iter()
+            .map(|m| {
+                let mut action = String::new();
+                if can_manage_members {
+                    // A role-change form: a select of the five roles (current one
+                    // pre-selected). Demoting the last owner is blocked server-side.
+                    let mut options = String::new();
+                    for role in ["owner", "admin", "maintainer", "developer", "viewer"] {
+                        let sel = if role == m.role { " selected" } else { "" };
+                        let _ = write!(options, "<option value=\"{role}\"{sel}>{role}</option>");
+                    }
+                    let _ = write!(
+                        action,
+                        "<form class=\"console\" method=\"post\" \
                      action=\"/-/org/{org}/members/role\" style=\"display:inline\">{csrf}\
                      <input type=\"hidden\" name=\"principal_kind\" value=\"{kind}\">\
                      <input type=\"hidden\" name=\"principal_id\" value=\"{id}\">\
                      <select name=\"role\">{options}</select> <button>set role</button></form> ",
-                    org = escape(&org.slug),
-                    csrf = csrf_field(csrf),
-                    kind = escape(&m.kind),
-                    id = m.id,
-                );
-                // The remove form, unless this is the final owner.
-                let is_last_owner = m.role == "owner" && owner_count <= 1;
-                if is_last_owner {
-                    action.push_str("<span class=\"dim\">last owner</span>");
-                } else {
-                    let _ = write!(
-                        action,
-                        "<form class=\"console\" method=\"post\" \
+                        org = escape(&org.slug),
+                        csrf = csrf_field(csrf),
+                        kind = escape(&m.kind),
+                        id = m.id,
+                    );
+                    // The remove form, unless this is the final owner.
+                    let is_last_owner = m.role == "owner" && owner_count <= 1;
+                    if is_last_owner {
+                        action.push_str("<span class=\"dim\">last owner</span>");
+                    } else {
+                        let _ = write!(
+                            action,
+                            "<form class=\"console\" method=\"post\" \
                          action=\"/-/org/{}/members/remove\" style=\"display:inline\">{}\
                          <input type=\"hidden\" name=\"principal_kind\" value=\"{}\">\
                          <input type=\"hidden\" name=\"principal_id\" value=\"{}\">\
                          <button class=\"danger\">remove</button></form>",
-                        escape(&org.slug),
-                        csrf_field(csrf),
-                        escape(&m.kind),
-                        m.id,
-                    );
+                            escape(&org.slug),
+                            csrf_field(csrf),
+                            escape(&m.kind),
+                            m.id,
+                        );
+                    }
                 }
-            }
-            vec![escape(&m.label), escape(&m.role), action]
-        })
-        .collect();
-    body.push_str(&table(&["member", "role", ""], &rows));
-    body.push_str(&mem_pager.nav_with(&format!("/-/org/{slug}"), &mem_keep, "members_page"));
+                vec![escape(&m.label), escape(&m.role), action]
+            })
+            .collect();
+        body.push_str(&table(&["member", "role", ""], &rows));
+        body.push_str(&mem_pager.nav_with(&format!("/-/org/{slug}"), &mem_keep, "members_page"));
 
-    if can_manage_members {
-        body.push_str("<h4>Invite a member</h4>\n");
-        let _ = write!(
-            body,
-            "<form class=\"console\" method=\"post\" action=\"/-/org/{}/members\">\n{}\
+        if can_manage_members {
+            body.push_str("<h4>Invite a member</h4>\n");
+            let _ = write!(
+                body,
+                "<form class=\"console\" method=\"post\" action=\"/-/org/{}/members\">\n{}\
              <label>email <input type=\"email\" name=\"email\" required></label>\n\
              <label>role <select name=\"role\">\
              <option value=\"viewer\">viewer</option>\
@@ -1749,17 +1754,17 @@ pub fn org_dashboard(
              <option value=\"admin\">admin</option>\
              <option value=\"owner\">owner</option></select></label>\n\
              <button>send invitation</button>\n</form>\n",
-            escape(&org.slug),
-            csrf_field(csrf),
-        );
-    }
+                escape(&org.slug),
+                csrf_field(csrf),
+            );
+        }
     }
 
     // -- Danger zone: delete the org -----------------------------------------
     if active == "danger" {
-    if can_delete {
-        body.push_str("<h2 class=\"danger\">Delete organization</h2>\n");
-        let _ = write!(
+        if can_delete {
+            body.push_str("<h2 class=\"danger\">Delete organization</h2>\n");
+            let _ = write!(
             body,
             "<p class=\"dim\">Soft-deletes the org and everything it owns, opening a 30-day grace \
              window before permanent purge. The org stops serving immediately. Type the slug \
@@ -1771,11 +1776,11 @@ pub fn org_dashboard(
             slug = escape(slug),
             csrf = csrf_field(csrf),
         );
-    } else {
-        body.push_str(
-            "<p class=\"dim\">You do not have permission to delete this organization.</p>\n",
-        );
-    }
+        } else {
+            body.push_str(
+                "<p class=\"dim\">You do not have permission to delete this organization.</p>\n",
+            );
+        }
     }
 
     org_settings_chrome(email, slug, active, &body, started)
@@ -1888,7 +1893,11 @@ pub fn cache_page(
             org = escape(org_slug),
             slug = escape(&cache.slug),
             csrf = csrf_field(csrf),
-            checked = if advertise_storage_frontend { " checked" } else { "" },
+            checked = if advertise_storage_frontend {
+                " checked"
+            } else {
+                ""
+            },
         );
     }
 
@@ -1899,7 +1908,11 @@ pub fn cache_page(
             let sel = if value == current { " selected" } else { "" };
             format!("<option value=\"{value}\"{sel}>{label}</option>")
         };
-        let mass = if cache.want_mass_query { " checked" } else { "" };
+        let mass = if cache.want_mass_query {
+            " checked"
+        } else {
+            ""
+        };
         let _ = write!(
             body,
             "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}\">{csrf}\
@@ -2254,7 +2267,9 @@ fn settings_layout(tabs: &[SettingsTab], content: &str) -> String {
         );
     }
     nav.push_str("</nav>\n");
-    format!("<div class=\"settings\">\n{nav}<div class=\"settings-body\">\n{content}</div>\n</div>\n")
+    format!(
+        "<div class=\"settings\">\n{nav}<div class=\"settings-body\">\n{content}</div>\n</div>\n"
+    )
 }
 
 /// The registry-scope settings sidebar (one of the management pages active).
@@ -2463,23 +2478,23 @@ pub fn registry_settings_page(
 
     // -- General: visibility + crawl policy ----------------------------------
     if active == "general" {
-    // Visibility: the one in-place edit on this page.
-    body.push_str("<h2>Visibility</h2>\n");
-    let _ = writeln!(
-        body,
-        "<p>current <strong>{}</strong></p>",
-        escape(&registry.visibility),
-    );
-    let mut options = String::new();
-    for v in ["public", "internal", "private"] {
-        let selected = if v == registry.visibility {
-            " selected"
-        } else {
-            ""
-        };
-        let _ = write!(options, "<option value=\"{v}\"{selected}>{v}</option>");
-    }
-    let _ = write!(
+        // Visibility: the one in-place edit on this page.
+        body.push_str("<h2>Visibility</h2>\n");
+        let _ = writeln!(
+            body,
+            "<p>current <strong>{}</strong></p>",
+            escape(&registry.visibility),
+        );
+        let mut options = String::new();
+        for v in ["public", "internal", "private"] {
+            let selected = if v == registry.visibility {
+                " selected"
+            } else {
+                ""
+            };
+            let _ = write!(options, "<option value=\"{v}\"{selected}>{v}</option>");
+        }
+        let _ = write!(
         body,
         "<form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/visibility\">\n{csrf}\
          <label>visibility <select name=\"visibility\">{options}</select></label>\n\
@@ -2488,29 +2503,32 @@ pub fn registry_settings_page(
         csrf = csrf_field(csrf),
         options = options,
     );
-    body.push_str(
-        "<p class=\"dim\">A confirmation-gated change-set, recorded in the audit feed. \
+        body.push_str(
+            "<p class=\"dim\">A confirmation-gated change-set, recorded in the audit feed. \
          <strong>public</strong> exposes every package and channel to anonymous consumers; \
          <strong>private</strong> breaks anonymous reads (consumers need a read token).</p>\n",
-    );
+        );
 
-    // Crawl policy: the generated robots.txt posture for this registry.
-    body.push_str("<h2>Crawl policy</h2>\n");
-    let _ = writeln!(
-        body,
-        "<p>current <strong>{}</strong></p>",
-        escape(&registry.crawl_policy),
-    );
-    let mut crawl_options = String::new();
-    for p in ["allow_all", "allow_no_ai", "deny_all"] {
-        let selected = if p == registry.crawl_policy {
-            " selected"
-        } else {
-            ""
-        };
-        let _ = write!(crawl_options, "<option value=\"{p}\"{selected}>{p}</option>");
-    }
-    let _ = write!(
+        // Crawl policy: the generated robots.txt posture for this registry.
+        body.push_str("<h2>Crawl policy</h2>\n");
+        let _ = writeln!(
+            body,
+            "<p>current <strong>{}</strong></p>",
+            escape(&registry.crawl_policy),
+        );
+        let mut crawl_options = String::new();
+        for p in ["allow_all", "allow_no_ai", "deny_all"] {
+            let selected = if p == registry.crawl_policy {
+                " selected"
+            } else {
+                ""
+            };
+            let _ = write!(
+                crawl_options,
+                "<option value=\"{p}\"{selected}>{p}</option>"
+            );
+        }
+        let _ = write!(
         body,
         "<form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/crawl\">\n{csrf}\
          <label><span class=\"lbl\">policy{policy_help}</span> <select name=\"policy\">{crawl_options}</select></label>\n\
@@ -2524,59 +2542,59 @@ pub fn registry_settings_page(
 
     // -- Storage: current backend + change storage ---------------------------
     if active == "storage" {
-    // Storage (read-only). Three cases: a custom binding, the deployment's
-    // default storage (a managed registry with no binding), or a phase-1
-    // source-URL mirror (read-only upstream, no writable surface here).
-    body.push_str("<h2>Storage</h2>\n");
-    match binding {
-        Some((name, root, prefix)) => {
-            let _ = writeln!(
+        // Storage (read-only). Three cases: a custom binding, the deployment's
+        // default storage (a managed registry with no binding), or a phase-1
+        // source-URL mirror (read-only upstream, no writable surface here).
+        body.push_str("<h2>Storage</h2>\n");
+        match binding {
+            Some((name, root, prefix)) => {
+                let _ = writeln!(
                 body,
                 "<p>binding <code>{}</code> · root <code>{}</code> · prefix <code>{}</code></p>",
                 escape(name),
                 escape(root),
                 escape(if prefix.is_empty() { "(none)" } else { prefix }),
             );
-        }
-        None if !registry.source_url.is_empty() => {
-            let _ = writeln!(
-                body,
-                "<p><span class=\"chip\">source mirror</span> serves a read-only upstream \
+            }
+            None if !registry.source_url.is_empty() => {
+                let _ = writeln!(
+                    body,
+                    "<p><span class=\"chip\">source mirror</span> serves a read-only upstream \
                  surface · <code>{}</code></p>",
-                escape(&registry.source_url),
-            );
-        }
-        None => {
-            let prefix = if registry.prefix.is_empty() {
-                registry.slug.as_str()
-            } else {
-                registry.prefix.as_str()
-            };
-            let _ = writeln!(
-                body,
-                "<p><span class=\"chip\">default storage</span> · prefix <code>{}</code> · \
+                    escape(&registry.source_url),
+                );
+            }
+            None => {
+                let prefix = if registry.prefix.is_empty() {
+                    registry.slug.as_str()
+                } else {
+                    registry.prefix.as_str()
+                };
+                let _ = writeln!(
+                    body,
+                    "<p><span class=\"chip\">default storage</span> · prefix <code>{}</code> · \
                  <a href=\"/-/instance/storage\">deployment default →</a></p>",
-                escape(prefix),
-            );
-        }
-    }
-    // Change storage — only for a managed registry (a source-mirror has no
-    // writable surface here). Lists every target other than the current one
-    // (default storage, plus each org binding); moving copies every object to
-    // the new backend, then re-points.
-    if registry.source_url.is_empty() {
-        let current = binding.map(|(name, _, _)| name);
-        let mut options = String::new();
-        if current.is_some() {
-            options.push_str("<option value=\"\">default storage</option>");
-        }
-        for b in bindings {
-            if Some(b.as_str()) != current {
-                let _ = write!(options, "<option value=\"{b}\">{b}</option>", b = escape(b));
+                    escape(prefix),
+                );
             }
         }
-        if !options.is_empty() {
-            let _ = write!(
+        // Change storage — only for a managed registry (a source-mirror has no
+        // writable surface here). Lists every target other than the current one
+        // (default storage, plus each org binding); moving copies every object to
+        // the new backend, then re-points.
+        if registry.source_url.is_empty() {
+            let current = binding.map(|(name, _, _)| name);
+            let mut options = String::new();
+            if current.is_some() {
+                options.push_str("<option value=\"\">default storage</option>");
+            }
+            for b in bindings {
+                if Some(b.as_str()) != current {
+                    let _ = write!(options, "<option value=\"{b}\">{b}</option>", b = escape(b));
+                }
+            }
+            if !options.is_empty() {
+                let _ = write!(
                 body,
                 "<h3>Change storage{help}</h3>\n\
                  <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/storage\">{csrf}\
@@ -2587,13 +2605,13 @@ pub fn registry_settings_page(
                 csrf = csrf_field(csrf),
                 options = options,
             );
+            }
         }
-    }
 
-    // Advertise the inherited storage-binding frontend (RFC-0004 §12): when its
-    // bucket is public and has a direct frontend, this registry's setup snippets
-    // point clients straight at the bucket. Un-check to keep it hub-served.
-    let _ = write!(
+        // Advertise the inherited storage-binding frontend (RFC-0004 §12): when its
+        // bucket is public and has a direct frontend, this registry's setup snippets
+        // point clients straight at the bucket. Un-check to keep it hub-served.
+        let _ = write!(
         body,
         "<h3>Bucket-direct serving</h3>\n\
          <p class=\"dim\">When this registry's storage bucket is public and has a direct \
@@ -2606,53 +2624,52 @@ pub fn registry_settings_page(
         csrf = csrf_field(csrf),
         checked = if advertise_storage_frontend { " checked" } else { "" },
     );
-
     }
 
     // -- Binary caches serving this registry ---------------------------------
     if active == "caches" {
-    // Binary caches serving this registry (the reverse of a cache's
-    // linked-registries list) — managed here from the registry side, and
-    // equivalently from each cache's own page. Both routes share the same
-    // upsert, so editing a link's flags works from either.
-    body.push_str("<h2>Binary caches</h2>\n");
-    if caches.is_empty() {
-        body.push_str("<p class=\"dim\">No binary caches serve this registry yet.</p>\n");
-    } else {
-        // An aligned table of linked caches. Each row is a single form (laid out
-        // across the shared grid via `display:contents`): toggle the link's flags
-        // and `save` (an upsert), or `unlink` (the same form re-submitted to the
-        // unlink route via `formaction`). The `?` help sits once in the header.
-        body.push_str("<div class=\"linktable\">\n");
-        let _ = write!(
-            body,
-            "<span class=\"linktable-h\">cache</span>\
+        // Binary caches serving this registry (the reverse of a cache's
+        // linked-registries list) — managed here from the registry side, and
+        // equivalently from each cache's own page. Both routes share the same
+        // upsert, so editing a link's flags works from either.
+        body.push_str("<h2>Binary caches</h2>\n");
+        if caches.is_empty() {
+            body.push_str("<p class=\"dim\">No binary caches serve this registry yet.</p>\n");
+        } else {
+            // An aligned table of linked caches. Each row is a single form (laid out
+            // across the shared grid via `display:contents`): toggle the link's flags
+            // and `save` (an upsert), or `unlink` (the same form re-submitted to the
+            // unlink route via `formaction`). The `?` help sits once in the header.
+            body.push_str("<div class=\"linktable\">\n");
+            let _ = write!(
+                body,
+                "<span class=\"linktable-h\">cache</span>\
              <span class=\"linktable-h\">advertised{adv_help}</span>\
              <span class=\"linktable-h\">gc roots{roots_help}</span>\
              <span class=\"linktable-h\"></span>\n",
-            adv_help = help::marker("link.advertised"),
-            roots_help = help::marker("link.roots_packages"),
-        );
-        for c in caches {
-            let label = if org_slug.is_empty() {
-                escape(&c.cache_slug)
-            } else {
-                format!(
-                    "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
-                    org = escape(org_slug),
-                    slug = escape(&c.cache_slug),
-                )
-            };
-            let adv = if c.advertised { " checked" } else { "" };
-            let roots = if c.roots_packages { " checked" } else { "" };
-            // A cache less visible than the registry can't be advertised — grey
-            // out (disable) that toggle, with the reason on hover.
-            let adv_disabled = if c.can_advertise {
-                ""
-            } else {
-                " disabled title=\"a less-visible cache can't be advertised on this registry — its consumers couldn't read it\""
-            };
-            let _ = write!(
+                adv_help = help::marker("link.advertised"),
+                roots_help = help::marker("link.roots_packages"),
+            );
+            for c in caches {
+                let label = if org_slug.is_empty() {
+                    escape(&c.cache_slug)
+                } else {
+                    format!(
+                        "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
+                        org = escape(org_slug),
+                        slug = escape(&c.cache_slug),
+                    )
+                };
+                let adv = if c.advertised { " checked" } else { "" };
+                let roots = if c.roots_packages { " checked" } else { "" };
+                // A cache less visible than the registry can't be advertised — grey
+                // out (disable) that toggle, with the reason on hover.
+                let adv_disabled = if c.can_advertise {
+                    ""
+                } else {
+                    " disabled title=\"a less-visible cache can't be advertised on this registry — its consumers couldn't read it\""
+                };
+                let _ = write!(
                 body,
                 "<form class=\"linkrow\" method=\"post\" action=\"/{slug}/-/settings/cache-link\">{csrf}\
                  <input type=\"hidden\" name=\"cache\" value=\"{cache}\">\
@@ -2670,26 +2687,26 @@ pub fn registry_settings_page(
                 adv_disabled = adv_disabled,
                 roots = roots,
             );
+            }
+            body.push_str("</div>\n");
         }
-        body.push_str("</div>\n");
-    }
-    // Link another of the org's caches to this registry. Each option carries its
-    // cache's visibility, and the form the registry's, so the JS greys out the
-    // advertise toggle when the chosen cache is less visible than the registry
-    // (it can't be advertised) — the same rule the rows and the server enforce.
-    if !linkable_caches.is_empty() {
-        let mut options = String::new();
-        for (slug, vis) in linkable_caches {
+        // Link another of the org's caches to this registry. Each option carries its
+        // cache's visibility, and the form the registry's, so the JS greys out the
+        // advertise toggle when the chosen cache is less visible than the registry
+        // (it can't be advertised) — the same rule the rows and the server enforce.
+        if !linkable_caches.is_empty() {
+            let mut options = String::new();
+            for (slug, vis) in linkable_caches {
+                let _ = write!(
+                    options,
+                    "<option value=\"{s}\" data-visibility=\"{v}\">{s} · {v}</option>",
+                    s = escape(slug),
+                    v = escape(vis),
+                );
+            }
             let _ = write!(
-                options,
-                "<option value=\"{s}\" data-visibility=\"{v}\">{s} · {v}</option>",
-                s = escape(slug),
-                v = escape(vis),
-            );
-        }
-        let _ = write!(
-            body,
-            "<h3>Link a cache</h3>\n\
+                body,
+                "<h3>Link a cache</h3>\n\
              <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/cache-link\" \
              data-cache-link data-registry-visibility=\"{regvis}\">{csrf}\
              <label>cache <select name=\"cache\">{options}</select></label>\n\
@@ -2698,37 +2715,37 @@ pub fn registry_settings_page(
              <label><span class=\"lbl\">pin GC roots from its packages{roots_help}</span> \
              <input type=\"checkbox\" name=\"roots_packages\" value=\"1\" checked></label>\n\
              <button>link</button>\n</form>\n",
-            slug = escape(slug),
-            regvis = escape(&registry.visibility),
-            csrf = csrf_field(csrf),
-            options = options,
-            adv_help = help::marker("link.advertised"),
-            roots_help = help::marker("link.roots_packages"),
-        );
-    }
+                slug = escape(slug),
+                regvis = escape(&registry.visibility),
+                csrf = csrf_field(csrf),
+                options = options,
+                adv_help = help::marker("link.advertised"),
+                roots_help = help::marker("link.roots_packages"),
+            );
+        }
     }
 
     // -- Danger zone: remove the registry ------------------------------------
     if active == "danger" {
-    if can_delete {
-        body.push_str("<h2 class=\"danger\">Remove registry</h2>\n");
-        let _ = write!(
-            body,
-            "<p class=\"dim\">Unregisters this registry and drops its rebuildable index. The \
+        if can_delete {
+            body.push_str("<h2 class=\"danger\">Remove registry</h2>\n");
+            let _ = write!(
+                body,
+                "<p class=\"dim\">Unregisters this registry and drops its rebuildable index. The \
              surface content on the storage binding is left in place. Type the registry name \
              <code>{slug}</code> to confirm.</p>\n\
              <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/delete\">\n{csrf}\
              <label>confirm name <input type=\"text\" name=\"confirm\" required \
              placeholder=\"{slug}\"></label>\n\
              <button class=\"danger\">remove registry</button>\n</form>\n",
-            slug = escape(slug),
-            csrf = csrf_field(csrf),
-        );
-    } else {
-        body.push_str(
-            "<p class=\"dim\">You do not have permission to remove this registry.</p>\n",
-        );
-    }
+                slug = escape(slug),
+                csrf = csrf_field(csrf),
+            );
+        } else {
+            body.push_str(
+                "<p class=\"dim\">You do not have permission to remove this registry.</p>\n",
+            );
+        }
     }
 
     registry_settings_chrome(email, slug, active, &body, started)
@@ -3542,7 +3559,11 @@ pub fn instance_settings_page(
     } else {
         ""
     };
-    let pw = if settings.password_login { " checked" } else { "" };
+    let pw = if settings.password_login {
+        " checked"
+    } else {
+        ""
+    };
     let lifetime = settings
         .session_lifetime_secs
         .map(|s| s.to_string())
@@ -3823,7 +3844,10 @@ pub fn storage_binding_serving_section(
                 ]
             })
             .collect();
-        body.push_str(&table(&["domain", "mode", "serves", "advertised", ""], &rows));
+        body.push_str(&table(
+            &["domain", "mode", "serves", "advertised", ""],
+            &rows,
+        ));
     }
     let _ = write!(
         body,
@@ -4325,6 +4349,11 @@ pub fn config_edit_page(
              <pre class=\"code-highlight\" aria-hidden=\"true\"><code></code></pre>\
              <textarea name=\"contents\" rows=\"18\" spellcheck=\"false\" required>{}</textarea>\
              </div>\n\
+             <label>title <input type=\"text\" name=\"cr_title\" \
+             placeholder=\"summarize this change\"></label>\n\
+             <label><span class=\"lbl\">description</span> \
+             <textarea name=\"cr_body\" rows=\"3\"></textarea> \
+             <span class=\"dim\">optional</span></label>\n\
              <button>submit change request</button>\n</form>\n",
             escape(slug),
             csrf_field(csrf),
@@ -4450,6 +4479,11 @@ pub fn registry_config_form_page(
          <div class=\"cache-rows\" data-cache-rows>\n{cache_rows}</div>\n\
          <button type=\"button\" class=\"row-add\" data-add-cache>+ add cache</button>\n\
          {cache_stack_note}\
+         <label>title <input type=\"text\" name=\"cr_title\" \
+         placeholder=\"summarize this change\"></label>\n\
+         <label><span class=\"lbl\">description</span> \
+         <textarea name=\"cr_body\" rows=\"3\"></textarea> \
+         <span class=\"dim\">optional</span></label>\n\
          <button>submit change request</button>\n</form>\n\
          <p class=\"dim\">Submitting rebuilds <code>registry.toml</code> from these \
          fields; comments in the committed file are not preserved.</p>\n",
@@ -4459,7 +4493,11 @@ pub fn registry_config_form_page(
         readme = escape(&model.readme),
         readme_help = help::marker("registry.readme"),
         ca_help = help::marker("registry.content_addressed"),
-        ca = if model.content_addressed { " checked" } else { "" },
+        ca = if model.content_addressed {
+            " checked"
+        } else {
+            ""
+        },
         caches_help = help::marker("registry.caches"),
         cache_rows = cache_rows,
         cache_stack_note = cache_stack_note,
@@ -4468,77 +4506,533 @@ pub fn registry_config_form_page(
     registry_settings_chrome(email, slug, "config", &body, started)
 }
 
-/// The change-requests list page for a registry (RFC-0004 "Configuration
-/// management" git-backed path).
+/// Which slice of a registry's change requests the list page shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangesFilter {
+    /// Open drafts (`status = draft` and not closed).
+    Open,
+    /// Everything terminal or withdrawn (merged, reverted, or closed).
+    Closed,
+    /// Every change request, regardless of state.
+    All,
+}
+
+impl ChangesFilter {
+    /// Parses the `?state=` query value, defaulting to [`ChangesFilter::Open`].
+    #[must_use]
+    pub fn parse(raw: Option<&str>) -> Self {
+        match raw {
+            Some("closed") => Self::Closed,
+            Some("all") => Self::All,
+            _ => Self::Open,
+        }
+    }
+
+    /// The `?state=` value naming this filter.
+    fn slug(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::All => "all",
+        }
+    }
+}
+
+/// Whether a change request reads as "open" (an active draft) for the list/badge
+/// split: `status = draft` and not withdrawn.
+#[must_use]
+pub fn change_is_open(status: &str, closed: bool) -> bool {
+    status == "draft" && !closed
+}
+
+/// The PR-style lifecycle label (glyph + word) and CSS badge class for a change.
 ///
-/// Lists the registry's git-backed change requests (drafts with a `refs/hub`
-/// commit, plus their applied/reverted history) with each edited file's
-/// unified diff and the `apr change merge` command that promotes a draft.
+/// Color is reinforcement only — the glyph and word carry the state on their
+/// own (monochrome-safe). A terminal `status` (merged/reverted) wins over the
+/// orthogonal closed flag.
+#[must_use]
+pub fn change_badge(status: &str, closed: bool) -> (&'static str, &'static str) {
+    match status {
+        "applied" => ("\u{2713} Merged", "badge-merged"),
+        "reverted" => ("\u{21a9} Reverted", "badge-reverted"),
+        _ if closed => ("\u{2298} Closed", "badge-closed"),
+        _ => ("\u{25cf} Open", "badge-open"),
+    }
+}
+
+/// A single row on the change-request list page.
+pub struct ChangeListRow {
+    /// The change-set id (also the detail-page path suffix).
+    pub change_id: String,
+    /// Display heading: the proposer's title, or the auto summary as fallback.
+    pub title: String,
+    /// Lifecycle status: `draft` | `applied` | `reverted`.
+    pub status: String,
+    /// Whether an open draft has been withdrawn (`closed_at` set).
+    pub closed: bool,
+    /// Human label of the actor that opened it.
+    pub actor_label: String,
+    /// Unix time the change was opened.
+    pub created_at: i64,
+    /// Number of discussion comments accrued.
+    pub comment_count: usize,
+}
+
+/// The change-requests list page for a registry: GitHub-style Open/Closed/All
+/// tabs with counts, status badges, and a dense bordered table linking to each
+/// change's detail page (RFC-0004 web change requests).
 #[must_use]
 pub fn changes_page(
     email: &str,
     registry: &RegistryRecord,
-    requests: &[ChangeRequestView],
+    rows: &[ChangeListRow],
+    filter: ChangesFilter,
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    // No page-title <h1>: the selected "Change requests" tab + crumbs say it.
+    let open_count = rows
+        .iter()
+        .filter(|r| change_is_open(&r.status, r.closed))
+        .count();
+    let closed_count = rows.len() - open_count;
+
     let mut body = String::new();
-    body.push_str(&format!(
-        "<p><a href=\"/{}/-/settings/config\">propose a config change</a></p>\n",
-        escape(slug),
-    ));
-    if requests.is_empty() {
-        body.push_str("<p class=\"dim\">No change requests yet.</p>\n");
-    }
-    for req in requests {
+    // Header line + the "open a change request" action, in the paper idiom.
+    let _ = write!(
+        body,
+        "<div class=\"change-list-head\">\
+         <p class=\"dim\">{open} open \u{b7} {closed} closed</p>\
+         <a class=\"button\" href=\"/{slug}/-/settings/config\">Propose a change</a></div>\n",
+        open = open_count,
+        closed = closed_count,
+        slug = escape(slug),
+    );
+
+    // The Open / Closed / All tab strip (server-rendered `?state=` links).
+    body.push_str("<nav class=\"change-tabs\" aria-label=\"change request state\">\n");
+    for (f, label, count) in [
+        (ChangesFilter::Open, "Open", open_count),
+        (ChangesFilter::Closed, "Closed", closed_count),
+        (ChangesFilter::All, "All", rows.len()),
+    ] {
+        let active = if f == filter { " active" } else { "" };
+        let current = if f == filter {
+            " aria-current=\"page\""
+        } else {
+            ""
+        };
         let _ = write!(
             body,
-            "<section class=\"change\">\n<h2><code>{}</code> <span class=\"dim\">{}</span></h2>\n\
-             <p>{}</p>\n<p class=\"dim\">by {} · commit <code>{}</code></p>\n",
-            escape(&req.change_id),
-            escape(&req.status),
-            escape(&req.summary),
-            escape(&req.actor_label),
-            escape(&req.git_commit),
+            "<a class=\"tab{active}\"{current} href=\"/{slug}/-/changes?state={state}\">{label} \
+             <span class=\"dim\">{count}</span></a>\n",
+            slug = escape(slug),
+            state = f.slug(),
         );
-        for (path, diff) in &req.file_diffs {
+    }
+    body.push_str("</nav>\n");
+
+    let shown: Vec<&ChangeListRow> = rows
+        .iter()
+        .filter(|r| match filter {
+            ChangesFilter::Open => change_is_open(&r.status, r.closed),
+            ChangesFilter::Closed => !change_is_open(&r.status, r.closed),
+            ChangesFilter::All => true,
+        })
+        .collect();
+
+    if shown.is_empty() {
+        body.push_str("<p class=\"dim\">No change requests here.</p>\n");
+    } else {
+        body.push_str("<table class=\"change-table\">\n<tbody>\n");
+        for r in shown {
+            let (badge_label, badge_class) = change_badge(&r.status, r.closed);
+            let short = &r.change_id[..r.change_id.len().min(8)];
+            let comments = if r.comment_count > 0 {
+                format!(" <span class=\"dim\">\u{1f4ac} {}</span>", r.comment_count)
+            } else {
+                String::new()
+            };
             let _ = write!(
                 body,
-                "<h3>{}</h3>\n<pre class=\"diff\">{}</pre>\n",
-                escape(path),
-                escape(diff),
+                "<tr>\
+                 <td class=\"change-status\"><span class=\"badge {badge_class}\">{badge_label}</span></td>\
+                 <td class=\"change-title\">\
+                 <a href=\"/{slug}/-/changes/{id}\">{title}</a>{comments}<br>\
+                 <span class=\"dim\">#{short} \u{b7} opened by {actor} {age}</span></td>\
+                 </tr>\n",
+                slug = escape(slug),
+                id = escape(&r.change_id),
+                title = escape(&r.title),
+                short = escape(short),
+                actor = escape(&r.actor_label),
+                age = escape(&ago(r.created_at)),
             );
         }
-        if req.status == "draft" {
-            let _ = write!(
-                body,
-                "<p class=\"dim\">promote with:</p>\n<pre>{}</pre>\n",
-                escape(&req.merge_command),
-            );
-        }
-        body.push_str("</section>\n");
+        body.push_str("</tbody>\n</table>\n");
     }
 
     registry_settings_chrome(email, slug, "changes", &body, started)
 }
 
-/// A rendered change request for [`changes_page`].
-pub struct ChangeRequestView {
+/// Which panel of the change-request detail page is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailTab {
+    /// The description, event timeline, comment/review forms, and merge box.
+    Conversation,
+    /// The per-file syntax-highlighted diff.
+    Diff,
+    /// The recomputed validation checks.
+    Checks,
+}
+
+impl DetailTab {
+    /// Parses the `?view=` query value, defaulting to
+    /// [`DetailTab::Conversation`].
+    #[must_use]
+    pub fn parse(raw: Option<&str>) -> Self {
+        match raw {
+            Some("diff") => Self::Diff,
+            Some("checks") => Self::Checks,
+            _ => Self::Conversation,
+        }
+    }
+
+    fn slug(self) -> &'static str {
+        match self {
+            Self::Conversation => "conversation",
+            Self::Diff => "diff",
+            Self::Checks => "checks",
+        }
+    }
+}
+
+/// One recomputed validation check shown on the Checks panel.
+pub struct CheckRow {
+    /// Whether the check passed.
+    pub ok: bool,
+    /// Short check name (e.g. `schema valid`).
+    pub label: String,
+    /// Optional detail (an error message, or the observed value).
+    pub note: String,
+}
+
+/// A synthesized conversation-timeline event kind.
+pub enum TimelineKind {
+    /// The change was opened.
+    Opened,
+    /// A discussion comment.
+    Comment,
+    /// An approving review.
+    Approved,
+    /// A change-requesting review.
+    RequestedChanges,
+    /// The draft was withdrawn (closed).
+    Closed,
+    /// The roster-signed commit landed and the change merged.
+    Merged,
+    /// A later change reverted this one.
+    Reverted,
+}
+
+/// One event on the conversation timeline.
+pub struct TimelineItem {
+    /// What happened.
+    pub kind: TimelineKind,
+    /// Human label of the actor.
+    pub actor: String,
+    /// Unix time of the event.
+    pub when: i64,
+    /// Free-text body (a comment or review note); empty for lifecycle events.
+    pub body: String,
+}
+
+/// Everything the change-request detail page renders.
+pub struct ChangeDetailView {
     /// The change-set id.
     pub change_id: String,
-    /// Lifecycle status: draft | applied | reverted.
+    /// Display heading (proposer's title, or the auto summary).
+    pub title: String,
+    /// The proposer's description (may be empty).
+    pub body: String,
+    /// Lifecycle status: `draft` | `applied` | `reverted`.
     pub status: String,
-    /// One-line summary.
-    pub summary: String,
+    /// Whether the draft is withdrawn (`closed_at` set).
+    pub closed: bool,
     /// Human label of the actor that opened it.
     pub actor_label: String,
-    /// The signed draft-commit oid.
+    /// Unix time the change was opened.
+    pub created_at: i64,
+    /// The draft (or, once merged, the promoting) commit oid.
     pub git_commit: String,
-    /// Per-edited-file `(path, unified diff)`.
+    /// The tracked branch the change targets (display only).
+    pub base_branch: String,
+    /// Per-edited-file `(path, raw unified diff)`; highlighted at render time.
     pub file_diffs: Vec<(String, String)>,
-    /// The `apr change merge` command that promotes a draft.
+    /// The recomputed validation checks.
+    pub checks: Vec<CheckRow>,
+    /// The synthesized, time-ordered event timeline.
+    pub timeline: Vec<TimelineItem>,
+    /// The `apr change merge` command that promotes the draft.
     pub merge_command: String,
+    /// Which panel to render.
+    pub view: DetailTab,
+    /// Whether the viewer may comment/review (audit.read).
+    pub can_review: bool,
+    /// Whether the viewer may close/reopen (registry.configure).
+    pub can_close: bool,
+    /// The session CSRF token for the action forms.
+    pub csrf: String,
+}
+
+/// The change-request detail page — a GitHub pull-request-style review surface
+/// rendered in the paper idiom, no-JS-complete (RFC-0004 web change requests).
+#[must_use]
+pub fn change_detail_page(
+    email: &str,
+    registry: &RegistryRecord,
+    view: &ChangeDetailView,
+    started: Instant,
+) -> String {
+    let slug = &registry.slug;
+    let short = &view.change_id[..view.change_id.len().min(8)];
+    let (badge_label, badge_class) = change_badge(&view.status, view.closed);
+    let short_commit = &view.git_commit[..view.git_commit.len().min(10)];
+
+    let mut body = String::new();
+
+    // Header: "#id  title" + status badge, then a dim submeta line.
+    let _ = write!(
+        body,
+        "<div class=\"change-head\">\
+         <h1 class=\"change-h1\"><span class=\"dim\">#{short}</span> {title} \
+         <span class=\"badge {badge_class}\">{badge_label}</span></h1>\
+         <p class=\"dim\">opened by {actor} {age} \u{b7} base <code>{base}</code> \
+         \u{b7} commit <code>{commit}</code></p></div>\n",
+        short = escape(short),
+        title = escape(&view.title),
+        actor = escape(&view.actor_label),
+        age = escape(&ago(view.created_at)),
+        base = escape(&view.base_branch),
+        commit = escape(short_commit),
+    );
+
+    // Tab strip: Conversation / Diff / Checks (server-rendered `?view=` links).
+    body.push_str("<nav class=\"change-tabs\" aria-label=\"change request views\">\n");
+    let check_fails = view.checks.iter().filter(|c| !c.ok).count();
+    for (tab, label, count) in [
+        (DetailTab::Conversation, "Conversation", view.timeline.len()),
+        (DetailTab::Diff, "Diff", view.file_diffs.len()),
+        (DetailTab::Checks, "Checks", view.checks.len()),
+    ] {
+        let active = if tab == view.view { " active" } else { "" };
+        let current = if tab == view.view {
+            " aria-current=\"page\""
+        } else {
+            ""
+        };
+        // The Checks tab flags failures with a danger dot.
+        let badge = if matches!(tab, DetailTab::Checks) && check_fails > 0 {
+            format!(" <span class=\"bad\">\u{2717}{check_fails}</span>")
+        } else {
+            format!(" <span class=\"dim\">{count}</span>")
+        };
+        let _ = write!(
+            body,
+            "<a class=\"tab{active}\"{current} \
+             href=\"/{slug}/-/changes/{id}?view={view_slug}\">{label}{badge}</a>\n",
+            slug = escape(slug),
+            id = escape(&view.change_id),
+            view_slug = tab.slug(),
+        );
+    }
+    body.push_str("</nav>\n");
+
+    match view.view {
+        DetailTab::Conversation => render_conversation(&mut body, slug, view),
+        DetailTab::Diff => render_diff_panel(&mut body, view),
+        DetailTab::Checks => render_checks_panel(&mut body, view),
+    }
+
+    registry_settings_chrome(email, slug, "changes", &body, started)
+}
+
+/// Renders the Conversation panel: description, timeline, merge box, and the
+/// comment/review/close action forms (all gated by permission).
+fn render_conversation(body: &mut String, slug: &str, view: &ChangeDetailView) {
+    if !view.body.trim().is_empty() {
+        let _ = write!(
+            body,
+            "<section class=\"change-body\"><p>{}</p></section>\n",
+            escape(&view.body).replace('\n', "<br>"),
+        );
+    }
+
+    // The event timeline.
+    body.push_str("<ul class=\"timeline\">\n");
+    for item in &view.timeline {
+        let (glyph, verb, cls) = match item.kind {
+            TimelineKind::Opened => ("\u{25cf}", "opened this change", "tl-open"),
+            TimelineKind::Comment => ("\u{1f4ac}", "commented", "tl-comment"),
+            TimelineKind::Approved => ("\u{2713}", "approved", "tl-approve"),
+            TimelineKind::RequestedChanges => ("\u{2717}", "requested changes", "tl-reject"),
+            TimelineKind::Closed => ("\u{2298}", "closed this change", "tl-closed"),
+            TimelineKind::Merged => ("\u{2713}", "merged \u{2014} commit landed", "tl-merged"),
+            TimelineKind::Reverted => ("\u{21a9}", "reverted this change", "tl-reverted"),
+        };
+        let note = if item.body.trim().is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<div class=\"tl-note\">{}</div>",
+                escape(&item.body).replace('\n', "<br>")
+            )
+        };
+        // Lifecycle events (merged/closed/reverted) carry no recorded actor; the
+        // verb stands alone then.
+        let who = if item.actor.trim().is_empty() {
+            String::new()
+        } else {
+            format!("<strong>{}</strong> ", escape(&item.actor))
+        };
+        let _ = write!(
+            body,
+            "<li class=\"tl-item {cls}\"><span class=\"tl-glyph\">{glyph}</span> \
+             <span class=\"tl-head\">{who}{verb} \
+             <span class=\"dim\">{age}</span></span>{note}</li>\n",
+            age = escape(&ago(item.when)),
+        );
+    }
+    body.push_str("</ul>\n");
+
+    // The merge box: promotion is CLI-only, so this is the copy-paste command.
+    let mergeable = view.status == "draft";
+    if mergeable {
+        let closed_note = if view.closed {
+            "<p class=\"dim\">This change is closed. Reopen it to surface it as \
+             open again; the draft ref still exists and can be promoted.</p>"
+        } else {
+            ""
+        };
+        let _ = write!(
+            body,
+            "<section class=\"merge-box\">\
+             <p class=\"dim\">Promotion is by the CLI \u{2014} a maintainer re-signs the \
+             draft with a roster key and pushes it. Status flips to <strong>Merged</strong> \
+             automatically once the commit lands.</p>{closed_note}\
+             <div class=\"copy-row\"><pre class=\"merge-cmd\" id=\"merge-cmd\">{cmd}</pre>\
+             <button type=\"button\" class=\"button copy-btn\" data-copy-target=\"merge-cmd\" \
+             hidden>copy</button></div></section>\n",
+            cmd = escape(&view.merge_command),
+        );
+    } else if view.status == "applied" {
+        body.push_str(
+            "<section class=\"merge-box merged\"><p class=\"ok\">\u{2713} Merged \u{2014} the \
+             roster-signed commit has landed on the tracked branch.</p></section>\n",
+        );
+    } else if view.status == "reverted" {
+        body.push_str(
+            "<section class=\"merge-box\"><p class=\"dim\">This change was reverted by a \
+             later change.</p></section>\n",
+        );
+    }
+
+    // The action forms (comment, review, close/reopen), gated by permission.
+    if view.can_review {
+        let _ = write!(
+            body,
+            "<form class=\"console change-action\" method=\"post\" \
+             action=\"/{slug}/-/changes/{id}/comment\">{csrf}\
+             <span class=\"field-label\">Comment</span>\
+             <textarea name=\"body\" rows=\"3\" required \
+             placeholder=\"Leave a comment\u{2026}\"></textarea>\
+             <button>Comment</button></form>\n",
+            slug = escape(slug),
+            id = escape(&view.change_id),
+            csrf = csrf_field(&view.csrf),
+        );
+        // Reviews are advisory in a CLI-promotion model; say so plainly.
+        let _ = write!(
+            body,
+            "<form class=\"console change-action\" method=\"post\" \
+             action=\"/{slug}/-/changes/{id}/review\">{csrf}\
+             <span class=\"field-label\">Review <span class=\"dim\">(advisory \u{2014} \
+             promotion is via the CLI)</span></span>\
+             <label class=\"inline\"><input type=\"radio\" name=\"verdict\" value=\"approve\" \
+             checked> approve</label>\
+             <label class=\"inline\"><input type=\"radio\" name=\"verdict\" \
+             value=\"request_changes\"> request changes</label>\
+             <textarea name=\"body\" rows=\"2\" placeholder=\"Optional note\u{2026}\"></textarea>\
+             <button>Submit review</button></form>\n",
+            slug = escape(slug),
+            id = escape(&view.change_id),
+            csrf = csrf_field(&view.csrf),
+        );
+    }
+    if view.can_close && view.status == "draft" {
+        let (action, label) = if view.closed {
+            ("reopen", "Reopen change")
+        } else {
+            ("close", "Close change")
+        };
+        let _ = write!(
+            body,
+            "<form class=\"console change-action\" method=\"post\" \
+             action=\"/{slug}/-/changes/{id}/{action}\">{csrf}\
+             <button class=\"button-quiet\">{label}</button></form>\n",
+            slug = escape(slug),
+            id = escape(&view.change_id),
+            csrf = csrf_field(&view.csrf),
+        );
+    }
+}
+
+/// Renders the Diff panel: each edited file's TOML-aware highlighted diff.
+fn render_diff_panel(body: &mut String, view: &ChangeDetailView) {
+    if view.file_diffs.is_empty() {
+        body.push_str("<p class=\"dim\">No file changes.</p>\n");
+        return;
+    }
+    for (path, diff) in &view.file_diffs {
+        let _ = write!(
+            body,
+            "<h3 class=\"diff-file\">{}</h3>\n{}\n",
+            escape(path),
+            crate::web::toml_highlight::render_toml_diff(diff),
+        );
+    }
+}
+
+/// Renders the Checks panel: recomputed validation plus the honest
+/// draft-signature note (never claimed as roster-verified).
+fn render_checks_panel(body: &mut String, view: &ChangeDetailView) {
+    body.push_str("<ul class=\"checks\">\n");
+    for check in &view.checks {
+        let (glyph, cls) = if check.ok {
+            ("\u{2713}", "ok")
+        } else {
+            ("\u{2717}", "bad")
+        };
+        let note = if check.note.is_empty() {
+            String::new()
+        } else {
+            format!(" <span class=\"dim\">{}</span>", escape(&check.note))
+        };
+        let _ = write!(
+            body,
+            "<li><span class=\"{cls}\">{glyph}</span> {label}{note}</li>\n",
+            label = escape(&check.label),
+        );
+    }
+    body.push_str("</ul>\n");
+    let short_commit = &view.git_commit[..view.git_commit.len().min(10)];
+    let _ = write!(
+        body,
+        "<p class=\"dim\">Draft commit <code>{}</code> is signed by the hub's \
+         <strong>draft</strong> key, which is not in the roster \u{2014} it is not \
+         consumption-trusted. A roster signature is applied when a maintainer runs \
+         <code>apr change merge</code>.</p>\n",
+        escape(short_commit),
+    );
 }
 
 /// Breadcrumbs for a per-registry console page: the registry home plus the

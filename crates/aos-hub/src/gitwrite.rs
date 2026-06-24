@@ -24,7 +24,7 @@ use aos_hub_core::binding::BindingKind;
 use aos_hub_core::db::{Database, RegistryRecord};
 
 // The git-backed change-request write flow (relocated to core over the ports).
-pub use aos_hub_core::gitwrite::{propose_config_change, ProposedChange};
+pub use aos_hub_core::gitwrite::{propose_config_change, ProposeMeta, ProposedChange};
 
 // The read side of the git-backed config/change-request flow (relocated to
 // core's `git` module); re-exported so `crate::gitwrite::…` call sites in the
