@@ -1226,6 +1226,10 @@ pub fn org_dashboard(
     owner_count: usize,
     registries_page: usize,
     members_page: usize,
+    // Which org section to render: `registries` (default), `caches`, or
+    // `settings`. The overview was one dense page; it is now split across these
+    // sidebar tabs so each view is focused.
+    active: &str,
     started: Instant,
 ) -> String {
     // The registries and members lists each paginate independently; each
@@ -1239,125 +1243,150 @@ pub fn org_dashboard(
         .then(|| format!("registries_page={}", reg_pager.page()))
         .unwrap_or_default();
     let slug = &org.slug;
-    // The org's management sub-pages (hosted keys, webhooks, SSO, audit) now
-    // live in the shared left sidebar — see `org_settings_chrome` — so the page
-    // body is just the org name plus its overview sections.
-    let mut body = format!("<h1>{}</h1>\n", escape(&org.name));
+    // The org's dense overview is now split across sidebar tabs: registries
+    // (default), binary caches, and settings (projects/storage/members/danger).
+    let section_label = match active {
+        "caches" => "binary caches",
+        "settings" => "settings",
+        _ => "registries",
+    };
+    let mut body = format!(
+        "<h1>{} · {}</h1>\n",
+        escape(&org.name),
+        escape(section_label)
+    );
     let _ = writeln!(body, "<p class=\"dim\"><code>{}</code></p>", escape(slug));
 
-    // Publishing — the two things an org actually serves to consumers: the
-    // package catalogs (registries) and the prebuilt binaries (caches). Settings
-    // (members, projects, storage) follow below.
-    body.push_str("<h2>Publishing</h2>\n");
-    body.push_str("<h3>Registries</h3>\n");
-    if registries.is_empty() {
-        body.push_str("<p class=\"dim\">No registries.</p>\n");
-    } else {
-        let rows: Vec<Vec<String>> = reg_pager
-            .slice(registries)
-            .iter()
-            .map(|reg| {
-                let manage = if can_configure {
-                    format!("<a href=\"/{}/-/settings\">manage →</a>", escape(&reg.slug))
-                } else {
-                    String::new()
-                };
-                vec![
-                    format!("<a href=\"/{0}/\">{0}</a>", escape(&reg.slug)),
-                    escape(&reg.visibility),
-                    manage,
-                ]
-            })
-            .collect();
-        body.push_str(&table(&["registry", "visibility", ""], &rows));
-        body.push_str(&reg_pager.nav_with(&format!("/-/org/{slug}"), &reg_keep, "registries_page"));
-    }
-    if can_configure {
-        let _ = writeln!(
-            body,
-            "<p><a href=\"/-/org/{}/registries/new\">+ create a registry</a></p>",
-            escape(slug),
-        );
-    }
-
-    // -- Binary caches (the second Publishing product) -----------------------
-    body.push_str("<h3>Binary caches</h3>\n");
-    if caches.is_empty() {
-        body.push_str("<p class=\"dim\">No binary caches.</p>\n");
-    } else {
-        let rows: Vec<Vec<String>> = caches
-            .iter()
-            .map(|c| {
-                let signed = if c.signed {
-                    "<span class=\"chip\">signed</span>".to_string()
-                } else {
-                    String::new()
-                };
-                vec![
-                    format!(
-                        "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
-                        org = escape(slug),
-                        slug = escape(&c.slug),
-                    ),
-                    escape(&c.visibility),
-                    signed,
-                    c.priority.to_string(),
-                    c.object_count.to_string(),
-                    human_size(c.used_bytes.max(0) as u64),
-                ]
-            })
-            .collect();
-        body.push_str(&table(
-            &["cache", "visibility", "", "priority", "objects", "size"],
-            &rows,
-        ));
-    }
-    if can_configure {
-        // A cache uses the deployment's default storage unless a custom binding
-        // is selected — the first option, mirroring the registry create form.
-        let mut binding_options = String::from("<option value=\"\">default storage</option>");
-        for b in bindings {
-            let _ = write!(
-                binding_options,
-                "<option value=\"{name}\">{name}</option>",
-                name = escape(&b.name),
+    // -- Registries (the default tab) ----------------------------------------
+    if active == "registries" {
+        body.push_str("<h2>Registries</h2>\n");
+        if registries.is_empty() {
+            body.push_str("<p class=\"dim\">No registries.</p>\n");
+        } else {
+            let rows: Vec<Vec<String>> = reg_pager
+                .slice(registries)
+                .iter()
+                .map(|reg| {
+                    let s = escape(&reg.slug);
+                    // The name links to management (the row's primary action);
+                    // the right column carries an explicit View → (public home)
+                    // and, for a configurer, Manage →. A non-configurer can't
+                    // manage, so the name falls back to the home and only View →
+                    // shows.
+                    let (name, actions) = if can_configure {
+                        (
+                            format!("<a href=\"/{s}/-/settings\">{s}</a>"),
+                            format!(
+                                "<a href=\"/{s}/\">View →</a> · \
+                                 <a href=\"/{s}/-/settings\">Manage →</a>"
+                            ),
+                        )
+                    } else {
+                        (
+                            format!("<a href=\"/{s}/\">{s}</a>"),
+                            format!("<a href=\"/{s}/\">View →</a>"),
+                        )
+                    };
+                    vec![name, escape(&reg.visibility), actions]
+                })
+                .collect();
+            body.push_str(&table(&["registry", "visibility", ""], &rows));
+            body.push_str(&reg_pager.nav_with(
+                &format!("/-/org/{slug}"),
+                &reg_keep,
+                "registries_page",
+            ));
+        }
+        if can_configure {
+            let _ = writeln!(
+                body,
+                "<p><a href=\"/-/org/{}/registries/new\">+ create a registry</a></p>",
+                escape(slug),
             );
         }
-        body.push_str("<h4>Create a binary cache</h4>\n");
-        let _ = write!(
-            body,
-            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches\">\n{csrf}\
-             <label>slug <input type=\"text\" name=\"slug\" required placeholder=\"cache\"></label>\n\
-             <label>name <input type=\"text\" name=\"name\" placeholder=\"Build cache\"> \
-             <span class=\"dim\">optional</span></label>\n\
-             <label>storage binding <select name=\"binding\">{bindings}</select></label>\n\
-             <label><span class=\"lbl\">visibility{vis}</span> <select name=\"visibility\">\
-             <option value=\"private\">private</option>\
-             <option value=\"internal\">internal</option>\
-             <option value=\"public\">public</option></select></label>\n\
-             <label><span class=\"lbl\">priority{prio}</span> <input type=\"number\" name=\"priority\" value=\"40\"></label>\n\
-             <label><span class=\"lbl\">compression{comp}</span> <select name=\"compression\">\
-             <option value=\"zstd\">zstd</option>\
-             <option value=\"xz\">xz</option>\
-             <option value=\"none\">none</option></select></label>\n\
-             <label><span class=\"lbl\">advertise mass-query{mq}</span> \
-             <input type=\"checkbox\" name=\"want_mass_query\" value=\"1\" checked></label>\n\
-             <button>create cache</button>\n</form>\n",
-            org = escape(slug),
-            csrf = csrf_field(csrf),
-            bindings = binding_options,
-            vis = help::marker("cache.visibility"),
-            prio = help::marker("cache.priority"),
-            comp = help::marker("cache.compression"),
-            mq = help::marker("cache.mass_query"),
-        );
     }
 
-    // Settings — the supporting cast: who's a member, how registries are
-    // organized (projects), and where bytes physically live (storage). The
-    // hosted-keys / webhooks / SSO links live in the header line above.
-    body.push_str("<h2>Settings</h2>\n");
-    body.push_str("<h3>Projects</h3>\n");
+    // -- Binary caches -------------------------------------------------------
+    if active == "caches" {
+        body.push_str("<h2>Binary caches</h2>\n");
+        if caches.is_empty() {
+            body.push_str("<p class=\"dim\">No binary caches.</p>\n");
+        } else {
+            let rows: Vec<Vec<String>> = caches
+                .iter()
+                .map(|c| {
+                    let signed = if c.signed {
+                        "<span class=\"chip\">signed</span>".to_string()
+                    } else {
+                        String::new()
+                    };
+                    vec![
+                        format!(
+                            "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
+                            org = escape(slug),
+                            slug = escape(&c.slug),
+                        ),
+                        escape(&c.visibility),
+                        signed,
+                        c.priority.to_string(),
+                        c.object_count.to_string(),
+                        human_size(c.used_bytes.max(0) as u64),
+                    ]
+                })
+                .collect();
+            body.push_str(&table(
+                &["cache", "visibility", "", "priority", "objects", "size"],
+                &rows,
+            ));
+        }
+        if can_configure {
+            // A cache uses the deployment's default storage unless a custom
+            // binding is selected — the first option, mirroring registry create.
+            let mut binding_options =
+                String::from("<option value=\"\">default storage</option>");
+            for b in bindings {
+                let _ = write!(
+                    binding_options,
+                    "<option value=\"{name}\">{name}</option>",
+                    name = escape(&b.name),
+                );
+            }
+            body.push_str("<h4>Create a binary cache</h4>\n");
+            let _ = write!(
+                body,
+                "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches\">\n{csrf}\
+                 <label>slug <input type=\"text\" name=\"slug\" required placeholder=\"cache\"></label>\n\
+                 <label>name <input type=\"text\" name=\"name\" placeholder=\"Build cache\"> \
+                 <span class=\"dim\">optional</span></label>\n\
+                 <label>storage binding <select name=\"binding\">{bindings}</select></label>\n\
+                 <label><span class=\"lbl\">visibility{vis}</span> <select name=\"visibility\">\
+                 <option value=\"private\">private</option>\
+                 <option value=\"internal\">internal</option>\
+                 <option value=\"public\">public</option></select></label>\n\
+                 <label><span class=\"lbl\">priority{prio}</span> <input type=\"number\" name=\"priority\" value=\"40\"></label>\n\
+                 <label><span class=\"lbl\">compression{comp}</span> <select name=\"compression\">\
+                 <option value=\"zstd\">zstd</option>\
+                 <option value=\"xz\">xz</option>\
+                 <option value=\"none\">none</option></select></label>\n\
+                 <label><span class=\"lbl\">advertise mass-query{mq}</span> \
+                 <input type=\"checkbox\" name=\"want_mass_query\" value=\"1\" checked></label>\n\
+                 <button>create cache</button>\n</form>\n",
+                org = escape(slug),
+                csrf = csrf_field(csrf),
+                bindings = binding_options,
+                vis = help::marker("cache.visibility"),
+                prio = help::marker("cache.priority"),
+                comp = help::marker("cache.compression"),
+                mq = help::marker("cache.mass_query"),
+            );
+        }
+    }
+
+    // -- Settings: projects, storage, members, and the danger zone -----------
+    if active != "settings" {
+        return org_settings_chrome(email, slug, active, &body, started);
+    }
+    body.push_str("<h2>Projects</h2>\n");
     if projects.is_empty() {
         body.push_str("<p class=\"dim\">No projects.</p>\n");
     } else {
@@ -1400,7 +1429,7 @@ pub fn org_dashboard(
         );
     }
 
-    body.push_str("<h3>Storage</h3>\n");
+    body.push_str("<h2>Storage</h2>\n");
     // The deployment's default storage is always present and is what new
     // registries use with no binding at all. Render it as the first row — a
     // `default` chip, no delete — so it is *apparent* that storage already works
@@ -1484,7 +1513,7 @@ pub fn org_dashboard(
         );
     }
 
-    body.push_str("<h3>Members</h3>\n");
+    body.push_str("<h2>Members</h2>\n");
     let rows: Vec<Vec<String>> = mem_pager
         .slice(members)
         .iter()
@@ -1569,7 +1598,7 @@ pub fn org_dashboard(
         );
     }
 
-    org_settings_chrome(email, slug, "overview", &body, started)
+    org_settings_chrome(email, slug, active, &body, started)
 }
 
 /// A managed binary cache's detail page: configuration, usage, linked
@@ -2063,7 +2092,6 @@ fn registry_settings_tabs(slug: &str, active: &str) -> Vec<SettingsTab> {
             format!("/{slug}/-/publishes"),
             active,
         ),
-        SettingsTab::new("health", "Health", format!("/{slug}/-/health"), active),
     ]
 }
 
@@ -2078,8 +2106,9 @@ pub fn registry_settings_chrome(
     content: &str,
     started: Instant,
 ) -> String {
-    let inner = format!("<h1>Manage · {}</h1>\n{content}", escape(slug));
-    let body = settings_layout(&registry_settings_tabs(slug, active), &inner);
+    // Each page supplies its own section `<h1>` (e.g. "Tokens · {slug}"); the
+    // chrome adds only the sidebar, so no scope title is repeated across tabs.
+    let body = settings_layout(&registry_settings_tabs(slug, active), content);
     page_with_session(
         &format!("manage · {slug}"),
         &registry_crumbs(slug),
@@ -2091,11 +2120,28 @@ pub fn registry_settings_chrome(
 
 /// The org-scope settings sidebar (one of the org management pages active).
 ///
-/// `active` is the key of the current page (`overview`, `keys`, `webhooks`,
-/// `sso`, `audit`).
+/// `active` is the key of the current page (`registries`, `caches`, `settings`,
+/// `keys`, `webhooks`, `sso`, `audit`).
 fn org_settings_tabs(org_slug: &str, active: &str) -> Vec<SettingsTab> {
     vec![
-        SettingsTab::new("overview", "Overview", format!("/-/org/{org_slug}"), active),
+        SettingsTab::new(
+            "registries",
+            "Registries",
+            format!("/-/org/{org_slug}"),
+            active,
+        ),
+        SettingsTab::new(
+            "caches",
+            "Binary caches",
+            format!("/-/org/{org_slug}/caches"),
+            active,
+        ),
+        SettingsTab::new(
+            "settings",
+            "Settings",
+            format!("/-/org/{org_slug}/settings"),
+            active,
+        ),
         SettingsTab::new(
             "keys",
             "Hosted keys",
@@ -2151,7 +2197,7 @@ pub fn registry_settings_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = String::new();
+    let mut body = format!("<h1>Settings · {}</h1>\n", escape(slug));
 
     if let Some(change_id) = result {
         let _ = writeln!(
@@ -3132,7 +3178,34 @@ pub fn org_sso_page(
     org_settings_chrome(email, org_slug, "sso", &body, started)
 }
 
-/// The instance-settings page (instance admins only): the signup policy.
+/// The instance-scope settings sidebar (`general` or `storage` active).
+fn instance_settings_tabs(active: &str) -> Vec<SettingsTab> {
+    vec![
+        SettingsTab::new("general", "General", "/-/instance".to_string(), active),
+        SettingsTab::new(
+            "storage",
+            "Storage",
+            "/-/instance/storage".to_string(),
+            active,
+        ),
+    ]
+}
+
+/// Renders an instance settings page: the shared sidebar beside `content`
+/// (which carries its own `<h1>`), in the standard chrome.
+fn instance_settings_chrome(email: &str, active: &str, content: &str, started: Instant) -> String {
+    let body = settings_layout(&instance_settings_tabs(active), content);
+    page_with_session(
+        "instance settings",
+        &[(String::new(), "instance settings".into())],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// The instance-settings "General" page (instance admins only): the signup
+/// policy.
 ///
 /// The masthead brand is intentionally not editable here — it is fixed at
 /// server start (a process-wide value), so it stays a `--brand`/CLI setting.
@@ -3141,17 +3214,16 @@ pub fn instance_settings_page(
     email: &str,
     csrf: &str,
     policy: SignupPolicy,
-    default_storage_location: Option<&str>,
     notice: Option<&str>,
     started: Instant,
 ) -> String {
-    let mut body = String::from("<h1>Instance settings</h1>\n");
+    let mut body = String::from("<h1>Instance · general</h1>\n");
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
     }
     let _ = write!(
         body,
-        "<h2 id=\"general\">Signup policy{help}</h2>\n",
+        "<h2>Signup policy{help}</h2>\n",
         help = help::marker("instance.signup_policy"),
     );
     let open_sel = if matches!(policy, SignupPolicy::Open) {
@@ -3174,14 +3246,26 @@ pub fn instance_settings_page(
          <button>save</button>\n</form>\n",
         csrf = csrf_field(csrf),
     );
+    instance_settings_chrome(email, "general", &body, started)
+}
 
-    // Default storage — the deployment-wide store a registry/cache with no
-    // explicit binding pushes to. Global, read-only here (it is set when the
-    // hub is deployed), and the natural home for "where does this push?".
-    body.push_str("<h2 id=\"storage\">Default storage</h2>\n");
+/// The instance-settings "Storage" page (instance admins only): the
+/// deployment's default storage backend.
+///
+/// Read-only: the default store is the Worker's R2 bucket binding (or the
+/// native hub's storage root), fixed when the hub is deployed and not
+/// runtime-editable from the web. The actionable lever — pushing a registry or
+/// cache elsewhere — is an org-scoped storage binding, linked from here.
+#[must_use]
+pub fn instance_storage_page(
+    email: &str,
+    default_storage_location: Option<&str>,
+    started: Instant,
+) -> String {
+    let mut body = String::from("<h1>Instance · storage</h1>\n");
     body.push_str(
         "<p>Registries and caches with no explicit storage binding push to the \
-         deployment's own storage.</p>\n",
+         deployment's own default storage.</p>\n",
     );
     let kind = RuntimeKind::current().default_storage_kind();
     let location = match default_storage_location {
@@ -3196,31 +3280,13 @@ pub fn instance_settings_page(
     );
     body.push_str(
         "<p class=\"dim\">The default store is fixed at deploy time — the Worker's R2 \
-         bucket binding, or the native hub's storage root — and is not editable here. \
-         To push elsewhere, add an org-scoped storage binding and point a registry or \
-         cache at it.</p>\n",
+         bucket binding, or the native hub's storage root — so it is not editable here. \
+         Changing it means redeploying the hub against a different bucket. To send a \
+         specific registry or cache elsewhere instead, add an org-scoped storage binding \
+         (under an org's <strong>Settings</strong>) and point the registry or cache at \
+         it.</p>\n",
     );
-
-    let tabs = [
-        SettingsTab {
-            href: "#general".into(),
-            label: "General".into(),
-            active: true,
-        },
-        SettingsTab {
-            href: "#storage".into(),
-            label: "Storage".into(),
-            active: false,
-        },
-    ];
-    let layout = settings_layout(&tabs, &body);
-    page_with_session(
-        "instance settings",
-        &[(String::new(), "instance settings".into())],
-        &layout,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    instance_settings_chrome(email, "storage", &body, started)
 }
 
 /// The registry "serving & mirror" page: the serving frontends (domains) and
@@ -3485,8 +3551,7 @@ pub fn publishes_page(
         },
         None => StateLine::timed(started),
     };
-    let inner = format!("<h1>Manage · {}</h1>\n{body}", escape(slug));
-    let content = settings_layout(&registry_settings_tabs(slug, "publishes"), &inner);
+    let content = settings_layout(&registry_settings_tabs(slug, "publishes"), &body);
     page_with_session(
         &format!("manage · {slug}"),
         &registry_crumbs(slug),

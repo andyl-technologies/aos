@@ -303,8 +303,17 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/-/org/{org}/caches",
-            post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, q: Query<_>| {
+                send_bridge(handlers::org_caches(from_state(s), h, r, p, q))
+            })
+            .post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
                 send_bridge(handlers::org_create_cache(from_state(s), h, p, f))
+            }),
+        )
+        .route(
+            "/-/org/{org}/settings",
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, q: Query<_>| {
+                send_bridge(handlers::org_settings(from_state(s), h, r, p, q))
             }),
         )
         .route(
@@ -398,6 +407,12 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             })
             .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, f: axum::extract::Form<_>| {
                 send_bridge(handlers::instance_settings_action(from_state(s), h, r, f))
+            }),
+        )
+        .route(
+            "/-/instance/storage",
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart| {
+                send_bridge(handlers::instance_storage(from_state(s), h, r))
             }),
         )
         .route(

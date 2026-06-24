@@ -1472,9 +1472,46 @@ async fn may_create_org(db: &Database, session: &Session) -> anyhow::Result<bool
 pub(crate) async fn org_dashboard(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    started: RequestStart,
+    path: Path<String>,
+    pages: Query<DashboardPages>,
+) -> Response {
+    org_view(deps, headers, started, path, pages, "registries").await
+}
+
+/// `GET /-/org/{org}/caches` — the org's binary-caches tab.
+pub(crate) async fn org_caches(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    path: Path<String>,
+    pages: Query<DashboardPages>,
+) -> Response {
+    org_view(deps, headers, started, path, pages, "caches").await
+}
+
+/// `GET /-/org/{org}/settings` — the org's settings tab (projects, storage,
+/// members, danger zone).
+pub(crate) async fn org_settings(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    path: Path<String>,
+    pages: Query<DashboardPages>,
+) -> Response {
+    org_view(deps, headers, started, path, pages, "settings").await
+}
+
+/// Renders one org section (`registries` / `caches` / `settings`) — the split
+/// of the former single dense dashboard. All three load the same org data and
+/// differ only in which section `org_dashboard` renders.
+async fn org_view(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
     RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
     Query(pages): Query<DashboardPages>,
+    active: &str,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
@@ -1539,6 +1576,7 @@ pub(crate) async fn org_dashboard(
             owner_count,
             pages.registries(),
             pages.members(),
+            active,
             started,
         )))
     }
@@ -3425,8 +3463,32 @@ async fn render_instance_settings(
         &session.email,
         &session.csrf(),
         policy,
-        deps.default_storage_location.as_deref(),
         notice,
+        started,
+    ))
+    .into_response()
+}
+
+/// `GET /-/instance/storage` — the instance default-storage page (instance
+/// admins only). Read-only: shows the deployment's default storage backend.
+pub(crate) async fn instance_storage(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if !session
+        .allows(&deps.db, Permission::IamAdmin, &Scope::parse(""))
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "instance admin required").into_response();
+    }
+    Html(console::instance_storage_page(
+        &session.email,
+        deps.default_storage_location.as_deref(),
         started,
     ))
     .into_response()
