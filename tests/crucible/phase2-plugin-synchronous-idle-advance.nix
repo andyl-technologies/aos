@@ -235,7 +235,7 @@
       }
       {
         label = "idle direct advance test assertion";
-        needle = "LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst)";
+        needle = "last_direct_advance_ns()";
       }
       {
         label = "idle range failure test";

@@ -11,8 +11,9 @@
 use thiserror::Error;
 
 use crate::{
-    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, ExactDeadlineError, ExactDeadlineReader, PluginArgs,
-    PluginArgsParseError, PluginRegistrationStep, QemuAdvanceVirtualTimeDirectFn,
+    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, CoverageCallback, CoverageCapabilities,
+    CoverageError, CoverageRegistrationPlan, ExactDeadlineError, ExactDeadlineReader, PluginArgs,
+    PluginArgsParseError, PluginCoverage, PluginRegistrationStep, QemuAdvanceVirtualTimeDirectFn,
     QemuClockDeadlineFn, SynchronousIdleAdvance, SynchronousIdleAdvanceError,
     TimeControlRegistrationPlan,
 };
@@ -22,6 +23,8 @@ use crate::{
 pub struct PluginCallbackCapabilities {
     exact_deadline_reader: ExactDeadlineReader,
     synchronous_idle_advance: SynchronousIdleAdvance,
+    coverage_registration_plan: CoverageRegistrationPlan,
+    coverage_callback: Option<CoverageCallback>,
 }
 
 impl PluginCallbackCapabilities {
@@ -30,10 +33,14 @@ impl PluginCallbackCapabilities {
     pub const fn new(
         exact_deadline_reader: ExactDeadlineReader,
         synchronous_idle_advance: SynchronousIdleAdvance,
+        coverage_registration_plan: CoverageRegistrationPlan,
+        coverage_callback: Option<CoverageCallback>,
     ) -> Self {
         Self {
             exact_deadline_reader,
             synchronous_idle_advance,
+            coverage_registration_plan,
+            coverage_callback,
         }
     }
 
@@ -47,6 +54,18 @@ impl PluginCallbackCapabilities {
     #[must_use]
     pub const fn synchronous_idle_advance(&self) -> &SynchronousIdleAdvance {
         &self.synchronous_idle_advance
+    }
+
+    /// Returns the registration-time coverage decision.
+    #[must_use]
+    pub const fn coverage_registration_plan(&self) -> CoverageRegistrationPlan {
+        self.coverage_registration_plan
+    }
+
+    /// Returns the coverage callback token when coverage was enabled.
+    #[must_use]
+    pub const fn coverage_callback(&self) -> Option<CoverageCallback> {
+        self.coverage_callback
     }
 }
 
@@ -112,7 +131,7 @@ impl PluginRegistrationSequence {
         if step == PluginRegistrationStep::RegisterCallbacks {
             return Err(self.fail_step(
                 PluginRegistrationStep::RegisterCallbacks,
-                "exact deadline and synchronous idle-advance capabilities must be required before registering callbacks",
+                "exact deadline and synchronous idle-advance capabilities, plus optional coverage callback planning, must be required before registering callbacks",
             ));
         }
 
@@ -148,21 +167,38 @@ impl PluginRegistrationSequence {
     ///
     /// Returns [`PluginRegistrationSequenceError`] when
     /// `qemu_plugin_clock_deadline_ns` or
-    /// `qemu_plugin_advance_virtual_time_direct` is unavailable, when the
-    /// registration order is wrong, or when registration has already failed.
+    /// `qemu_plugin_advance_virtual_time_direct` is unavailable, when
+    /// `coverage=on` but QEMU's TCG-exec callback export is unavailable, when
+    /// the registration order is wrong, or when registration has already
+    /// failed.
     pub fn register_callbacks_with_exact_deadline(
         &mut self,
+        args: &PluginArgs,
         clock_deadline_ns: Option<QemuClockDeadlineFn>,
         advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+        coverage_capabilities: CoverageCapabilities,
     ) -> Result<PluginCallbackCapabilities, PluginRegistrationSequenceError> {
         let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ns)
             .map_err(|source| self.fail_exact_deadline_capability(source))?;
         let synchronous_idle_advance = SynchronousIdleAdvance::require(advance_virtual_time_direct)
             .map_err(|source| self.fail_synchronous_idle_advance_capability(source))?;
+        let coverage_registration_plan = PluginCoverage::with_default_map(args.coverage())
+            .registration_plan(coverage_capabilities)
+            .map_err(|source| self.fail_coverage_capability(source))?;
+        let coverage_callback = match coverage_registration_plan {
+            CoverageRegistrationPlan::Disabled => None,
+            CoverageRegistrationPlan::Install { .. } => Some(
+                coverage_registration_plan
+                    .require_callback()
+                    .map_err(|source| self.fail_coverage_capability(source))?,
+            ),
+        };
         self.record_step_unchecked(PluginRegistrationStep::RegisterCallbacks)?;
         Ok(PluginCallbackCapabilities::new(
             exact_deadline_reader,
             synchronous_idle_advance,
+            coverage_registration_plan,
+            coverage_callback,
         ))
     }
 
@@ -291,6 +327,16 @@ impl PluginRegistrationSequence {
         self.fail_step(
             PluginRegistrationStep::RegisterCallbacks,
             format!("synchronous idle advance failed: {source}"),
+        )
+    }
+
+    fn fail_coverage_capability(
+        &mut self,
+        source: CoverageError,
+    ) -> PluginRegistrationSequenceError {
+        self.fail_step(
+            PluginRegistrationStep::RegisterCallbacks,
+            format!("coverage callback registration failed: {source}"),
         )
     }
 
@@ -553,10 +599,13 @@ mod tests {
     fn registration_order_records_callbacks_after_exact_deadline_capability_check() {
         let mut sequence = PluginRegistrationSequence::new();
         record_steps_through_wake_fd(&mut sequence);
+        let args = registration_args("simfd=3,slot=0");
 
         let capabilities = match sequence.register_callbacks_with_exact_deadline(
+            &args,
             Some(registration_test_deadline),
             Some(registration_test_direct_advance),
+            CoverageCapabilities::none(),
         ) {
             Ok(capabilities) => capabilities,
             Err(error) => panic!("exact deadline capability should register callbacks: {error}"),
@@ -566,6 +615,11 @@ mod tests {
             capabilities.exact_deadline_reader().read_next_deadline(),
             Ok(crate::ExactDeadlineReport::Armed { deadline_ns: 777 })
         );
+        assert_eq!(
+            capabilities.coverage_registration_plan(),
+            CoverageRegistrationPlan::Disabled
+        );
+        assert_eq!(capabilities.coverage_callback(), None);
         assert_eq!(
             sequence.completed_steps(),
             &[
@@ -584,9 +638,15 @@ mod tests {
     fn registration_order_fails_loud_when_exact_deadline_capability_missing() {
         let mut sequence = PluginRegistrationSequence::new();
         record_steps_through_wake_fd(&mut sequence);
+        let args = registration_args("simfd=3,slot=0");
 
         let error = sequence
-            .register_callbacks_with_exact_deadline(None, Some(registration_test_direct_advance))
+            .register_callbacks_with_exact_deadline(
+                &args,
+                None,
+                Some(registration_test_direct_advance),
+                CoverageCapabilities::none(),
+            )
             .err()
             .unwrap_or_else(|| panic!("missing exact deadline capability should fail"));
         let PluginRegistrationSequenceError::StepFailed { failure } = error else {
@@ -612,9 +672,15 @@ mod tests {
     fn registration_order_fails_loud_when_synchronous_idle_advance_missing() {
         let mut sequence = PluginRegistrationSequence::new();
         record_steps_through_wake_fd(&mut sequence);
+        let args = registration_args("simfd=3,slot=0");
 
         let error = sequence
-            .register_callbacks_with_exact_deadline(Some(registration_test_deadline), None)
+            .register_callbacks_with_exact_deadline(
+                &args,
+                Some(registration_test_deadline),
+                None,
+                CoverageCapabilities::none(),
+            )
             .err()
             .unwrap_or_else(|| panic!("missing synchronous idle advance should fail"));
         let PluginRegistrationSequenceError::StepFailed { failure } = error else {
@@ -636,6 +702,101 @@ mod tests {
         );
     }
 
+    #[test]
+    fn registration_coverage_off_installs_no_callback_without_capability() {
+        let mut sequence = PluginRegistrationSequence::new();
+        record_steps_through_wake_fd(&mut sequence);
+        let args = registration_args("simfd=3,slot=0,coverage=off");
+
+        let capabilities = sequence
+            .register_callbacks_with_exact_deadline(
+                &args,
+                Some(registration_test_deadline),
+                Some(registration_test_direct_advance),
+                CoverageCapabilities::none(),
+            )
+            .unwrap_or_else(|error| panic!("coverage off should not need TCG exec: {error}"));
+
+        assert_eq!(
+            capabilities.coverage_registration_plan(),
+            CoverageRegistrationPlan::Disabled
+        );
+        assert!(
+            !capabilities
+                .coverage_registration_plan()
+                .installs_callback()
+        );
+        assert_eq!(capabilities.coverage_callback(), None);
+    }
+
+    #[test]
+    fn registration_coverage_on_requires_tcg_exec_callback_capability() {
+        let mut sequence = PluginRegistrationSequence::new();
+        record_steps_through_wake_fd(&mut sequence);
+        let args = registration_args("simfd=3,slot=0,coverage=on");
+
+        let error = sequence
+            .register_callbacks_with_exact_deadline(
+                &args,
+                Some(registration_test_deadline),
+                Some(registration_test_direct_advance),
+                CoverageCapabilities::none(),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("coverage on without TCG exec should fail"));
+        let PluginRegistrationSequenceError::StepFailed { failure } = error else {
+            panic!("expected registration step failure, got {error:?}");
+        };
+
+        assert_eq!(failure.step(), PluginRegistrationStep::RegisterCallbacks);
+        assert!(
+            failure
+                .diagnostic()
+                .contains(crate::QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL)
+        );
+        assert_eq!(
+            sequence.record_step(PluginRegistrationStep::SendSetupAck),
+            Err(PluginRegistrationSequenceError::AfterFailure {
+                failed_step: PluginRegistrationStep::RegisterCallbacks,
+                blocked_step: PluginRegistrationStep::SendSetupAck,
+            })
+        );
+    }
+
+    #[test]
+    fn registration_coverage_on_installs_tcg_exec_callback_token() {
+        let mut sequence = PluginRegistrationSequence::new();
+        record_steps_through_wake_fd(&mut sequence);
+        let args = registration_args("simfd=3,slot=0,coverage=on");
+
+        let capabilities = sequence
+            .register_callbacks_with_exact_deadline(
+                &args,
+                Some(registration_test_deadline),
+                Some(registration_test_direct_advance),
+                CoverageCapabilities::tcg_exec(),
+            )
+            .unwrap_or_else(|error| panic!("coverage on should register TCG exec: {error}"));
+
+        assert_eq!(
+            capabilities.coverage_registration_plan(),
+            CoverageRegistrationPlan::Install {
+                map_entries: crate::DEFAULT_COVERAGE_MAP_ENTRIES,
+            }
+        );
+        assert!(
+            capabilities
+                .coverage_registration_plan()
+                .installs_callback()
+        );
+        assert_eq!(
+            capabilities
+                .coverage_callback()
+                .map(CoverageCallback::map_entries),
+            Some(crate::DEFAULT_COVERAGE_MAP_ENTRIES)
+        );
+    }
+
     fn record_steps_through_wake_fd(sequence: &mut PluginRegistrationSequence) {
         for step in [
             PluginRegistrationStep::ParseArguments,
@@ -653,9 +814,12 @@ mod tests {
 
     fn record_steps_through_setup_ack(sequence: &mut PluginRegistrationSequence) {
         record_steps_through_wake_fd(sequence);
+        let args = registration_args("simfd=3,slot=0");
         if let Err(error) = sequence.register_callbacks_with_exact_deadline(
+            &args,
             Some(registration_test_deadline),
             Some(registration_test_direct_advance),
+            CoverageCapabilities::none(),
         ) {
             panic!("exact deadline capability should register callbacks: {error}");
         }
@@ -681,4 +845,8 @@ mod tests {
     }
 
     extern "C" fn registration_test_direct_advance(_target_virtual_ns: i64) {}
+
+    fn registration_args(raw: &str) -> PluginArgs {
+        PluginArgs::parse(raw).unwrap_or_else(|error| panic!("test args should parse: {error}"))
+    }
 }
