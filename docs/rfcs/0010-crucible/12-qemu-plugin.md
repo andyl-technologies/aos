@@ -908,7 +908,7 @@ component that makes that purity true *inside* the QEMU process.
   `shmemfd`/`wakefd`, `whitebox`, `coverage`) as a total, fail-closed parser that
   aborts registration on any malformed or missing required key. — satisfies
   [PLUG-5], [PLUG-6]; spec §12.2.1.
-- [ ] **T-PLUG-3** Implement the fixed registration order — parse → handshake →
+- [x] **T-PLUG-3** Implement the fixed registration order — parse → handshake →
   acquire time control before the first instruction → map+validate shmem → arm
   wake fd → register callbacks → `SetupAck` → wait boot barrier — failing
   loudly at each step. — satisfies [PLUG-7], [PLUG-8]; spec §12.2.2.

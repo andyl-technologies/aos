@@ -9,8 +9,9 @@
 //!
 //! Module map: the crate root currently reserves the plugin ABI boundary;
 //! `args` owns fail-closed `-plugin` argument parsing; `deadline` owns exact
-//! virtual-clock deadline introspection; `setup` owns descriptor mapping and
-//! setup acknowledgement; `time_control` owns the registration-order contract.
+//! virtual-clock deadline introspection; `registration` owns the fail-stop
+//! registration sequencer; `setup` owns descriptor mapping and setup
+//! acknowledgement; `time_control` owns the time-control ordering contract.
 //! Future modules will add entry points, device callbacks, and QEMU-facing
 //! helpers.
 //!
@@ -24,6 +25,7 @@
 
 pub mod args;
 pub mod deadline;
+pub mod registration;
 pub mod setup;
 pub mod time_control;
 
@@ -35,6 +37,10 @@ pub use deadline::{
     ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,
     ExactDeadlineReport, PerVcpuDeadlineReport, QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
     aggregate_multi_vcpu_deadline,
+};
+pub use registration::{
+    PluginRegistrationFailure, PluginRegistrationReady, PluginRegistrationSequence,
+    PluginRegistrationSequenceError,
 };
 #[cfg(unix)]
 pub use setup::{
