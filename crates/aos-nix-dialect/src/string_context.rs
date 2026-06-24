@@ -14,6 +14,7 @@
 
 use std::cmp::Ordering;
 use std::hash::Hash;
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -120,17 +121,25 @@ impl ContextElement {
 }
 
 /// An immutable Nix string context.
+///
+/// The canonical element set is the sorted, deduplicated vector of
+/// [`ContextElement`]s, held behind an [`Arc`] so the pervasive cloning of
+/// strings during evaluation shares the context structurally (copy-on-write):
+/// [`Clone`] is an O(1) reference-count bump, and the constructors that change
+/// the set ([`StringContext::new`], [`StringContext::union`], …) allocate a
+/// fresh `Arc` rather than mutating shared storage. Equality, ordering, and
+/// hashing remain content-based (they deref through the `Arc`), so this is a
+/// representation change only — the observable canonical element set and the
+/// propagation rules are unchanged.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct StringContext {
-    elements: Vec<ContextElement>,
+    elements: Arc<[ContextElement]>,
 }
 
 impl StringContext {
     /// Creates an empty string context.
-    pub const fn empty() -> Self {
-        Self {
-            elements: Vec::new(),
-        }
+    pub fn empty() -> Self {
+        Self::default()
     }
 
     /// Creates a string context from unsorted elements.
@@ -141,7 +150,9 @@ impl StringContext {
     pub fn new(mut elements: Vec<ContextElement>) -> Self {
         elements.sort_unstable();
         elements.dedup();
-        Self { elements }
+        Self {
+            elements: elements.into(),
+        }
     }
 
     /// Creates a context containing one element.
@@ -156,7 +167,9 @@ impl StringContext {
             .try_reserve_exact(1)
             .map_err(|_| NixStringError::ContextAllocationFailed { len: 1 })?;
         elements.push(element);
-        Ok(Self { elements })
+        Ok(Self {
+            elements: elements.into(),
+        })
     }
 
     /// Returns the number of context elements.
@@ -232,27 +245,24 @@ impl StringContext {
             elements.push(element.try_clone_element()?);
         }
 
-        Ok(Self { elements })
+        Ok(Self {
+            elements: elements.into(),
+        })
     }
 
-    /// Returns a fallible deep clone of this context.
+    /// Returns a clone of this context.
+    ///
+    /// The context is immutable and stored behind an [`Arc`], so this shares the
+    /// canonical element set (an O(1) reference-count bump) rather than
+    /// reallocating it — observationally identical to a deep copy. The fallible
+    /// signature is retained for source compatibility with the pre-copy-on-write
+    /// representation; it never returns `Err`.
     ///
     /// # Errors
     ///
-    /// Returns [`NixStringError::ContextAllocationFailed`] or
-    /// [`NixStringError::ByteAllocationFailed`] if the clone cannot reserve its
-    /// storage.
+    /// Never returns an error in the copy-on-write representation.
     pub fn try_clone_context(&self) -> Result<Self, NixStringError> {
-        let mut elements = Vec::new();
-        elements
-            .try_reserve_exact(self.elements.len())
-            .map_err(|_| NixStringError::ContextAllocationFailed {
-                len: self.elements.len(),
-            })?;
-        for element in &self.elements {
-            elements.push(element.try_clone_element()?);
-        }
-        Ok(Self { elements })
+        Ok(self.clone())
     }
 }
 
