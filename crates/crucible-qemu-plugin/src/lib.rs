@@ -30,6 +30,7 @@
 //! `ninep_io` owns raw 9p submit/poll/burst routing through the reserved 9p
 //! executor; `whitebox_doorbell` owns optional white-box trap planning, guest
 //! memory reads, marker stamping, and host-to-guest input delivery gates;
+//! `round_robin` owns fixed-quantum vCPU rotation and per-vCPU halt tracking;
 //! `coverage` owns optional TCG-exec coverage planning and observational
 //! basic-block map updates. Future modules will add live device callback behavior
 //! and QEMU-facing helpers.
@@ -59,6 +60,7 @@ pub mod network_rx;
 pub mod network_tx;
 pub mod ninep_io;
 pub mod registration;
+pub mod round_robin;
 pub mod setup;
 pub mod shmem_ordering;
 pub mod teardown;
@@ -138,6 +140,10 @@ pub use ninep_io::{
 pub use registration::{
     PluginCallbackCapabilities, PluginRegistrationFailure, PluginRegistrationReady,
     PluginRegistrationSequence, PluginRegistrationSequenceError,
+};
+pub use round_robin::{
+    RoundRobinConfig, RoundRobinError, RoundRobinRunState, RoundRobinTurn, VcpuHaltTracker,
+    compute_all_halted_idle_wake_plan,
 };
 pub use setup::PluginReadySetupAck;
 #[cfg(unix)]

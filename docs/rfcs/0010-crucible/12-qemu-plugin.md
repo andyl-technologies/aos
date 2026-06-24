@@ -995,7 +995,7 @@ component that makes that purity true *inside* the QEMU process.
   mode off the plugin is not loaded and has zero effect on QEMU behavior. This
   contributes plugin-half evidence for [PLUG-49]; the full real-QEMU corpus stays
   with T-HARN-21. — spec §12.10.4.
-- [ ] **T-PLUG-24** Implement the deterministic round-robin sub-division within a
+- [x] **T-PLUG-24** Implement the deterministic round-robin sub-division within a
   RUN (fixed `rr_switch_quantum`, fixed ascending vCPU rotation), per-vCPU halt
   tracking, and the all-vCPUs-halted node-idle predicate with
   `idle_wake_icount = min` over vCPUs of the next armed deadline. — satisfies
