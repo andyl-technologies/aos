@@ -1351,6 +1351,48 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX frontends_cache_idx ON frontends (cache_id);
     CREATE INDEX frontends_storage_idx ON frontends (storage_binding_id);
     ",
+    // v30: the instance default storage becomes a real, editable binding row
+    // (RFC-0004 §12). `org_id` becomes nullable (an instance-level binding has
+    // no owning org) and a new `is_instance_default` flag marks the singleton
+    // row that registries/caches with `storage_binding_id IS NULL` inherit
+    // frontends from — so the default bucket can carry a `public_base_url` +
+    // frontends and be edited through the same form as custom bindings.
+    // Surface-root resolution is UNCHANGED: a NULL `storage_binding_id` still
+    // means "default storage via the runtime port"; this row only anchors the
+    // default's frontends and editable settings. SQLite cannot relax
+    // `org_id NOT NULL` in place, so the table is rebuilt exactly as v27 rebuilt
+    // `caches` (FK enforcement is off in this connection, so the child tables
+    // referencing storage_bindings(id) re-resolve to the renamed table by name;
+    // ids are preserved). The seeded row's `kind`/`root` are placeholders the
+    // deploy and the settings UI correct to the runtime's actual default
+    // storage; it is seeded `private` so it is never Direct-eligible until an
+    // operator explicitly publishes it.
+    "
+    CREATE TABLE storage_bindings_new (
+        id              INTEGER PRIMARY KEY,
+        org_id          INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
+        name            TEXT NOT NULL,
+        kind            TEXT NOT NULL,
+        root            TEXT NOT NULL,
+        access          TEXT NOT NULL DEFAULT 'public',
+        public_base_url TEXT,
+        credential_ref  TEXT,
+        is_instance_default INTEGER NOT NULL DEFAULT 0,
+        created_at      INTEGER NOT NULL,
+        UNIQUE (org_id, name)
+    );
+    INSERT INTO storage_bindings_new
+        (id, org_id, name, kind, root, access, public_base_url, credential_ref,
+         is_instance_default, created_at)
+        SELECT id, org_id, name, kind, root, access, public_base_url, credential_ref,
+               0, created_at
+        FROM storage_bindings;
+    DROP TABLE storage_bindings;
+    ALTER TABLE storage_bindings_new RENAME TO storage_bindings;
+    INSERT INTO storage_bindings
+        (org_id, name, kind, root, access, public_base_url, is_instance_default, created_at)
+        VALUES (NULL, 'default', 'r2', '', 'private', NULL, 1, 0);
+    ",
 ];
 
 /// Returns every migration's individual SQL statements, in order.
@@ -1442,8 +1484,9 @@ pub struct RegistryRecord {
 pub struct StorageBindingRecord {
     /// Database id.
     pub id: i64,
-    /// Owning org id.
-    pub org_id: i64,
+    /// Owning org id, or `None` for the instance-level default binding
+    /// ([`is_instance_default`](Self::is_instance_default)).
+    pub org_id: Option<i64>,
     /// Binding name, unique within the org.
     pub name: String,
     /// Backend kind: `local_fs` (a host directory), or `s3`/`r2` (an external
@@ -1461,6 +1504,11 @@ pub struct StorageBindingRecord {
     /// For a `private` binding, the sealed credential reference the hub uses to
     /// sign authenticated-origin reads; `None` when unset.
     pub credential_ref: Option<String>,
+    /// Whether this is the singleton instance-level default storage binding —
+    /// the anchor for the default bucket's frontends and public settings, which
+    /// registries/caches with `storage_binding_id IS NULL` inherit (RFC-0004
+    /// §12). Exactly one row carries this; it has a `None` `org_id`.
+    pub is_instance_default: bool,
     /// Unix time the binding was created.
     pub created_at: i64,
 }
@@ -6510,7 +6558,7 @@ impl Database {
         self.backend
             .query_opt(
                 "SELECT id, org_id, name, kind, root, access, public_base_url,
-                 credential_ref, created_at
+                 credential_ref, is_instance_default, created_at
                  FROM storage_bindings WHERE id = ?1",
                 &vals![id],
             )
@@ -6518,6 +6566,60 @@ impl Database {
             .context("loading storage binding by id")?
             .map(|row| row_to_storage_binding(&row))
             .transpose()
+    }
+
+    /// The singleton instance-level default storage binding (RFC-0004 §12) — the
+    /// anchor for the default bucket's frontends and public settings that
+    /// registries/caches with `storage_binding_id IS NULL` inherit. `None` only
+    /// on a database predating migration v30.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn instance_default_binding(&self) -> Result<Option<StorageBindingRecord>> {
+        self.backend
+            .query_opt(
+                "SELECT id, org_id, name, kind, root, access, public_base_url,
+                 credential_ref, is_instance_default, created_at
+                 FROM storage_bindings WHERE is_instance_default = 1 LIMIT 1",
+                &[],
+            )
+            .await
+            .context("loading instance default storage binding")?
+            .map(|row| row_to_storage_binding(&row))
+            .transpose()
+    }
+
+    /// Update a storage binding's public-serving settings — its `access` mode
+    /// (`public`/`private`) and, for a public binding, the `public_base_url` its
+    /// objects are reachable at (the origin a Direct frontend hands consumers).
+    /// Returns `false` when no binding has `id`.
+    ///
+    /// Setting `access = "private"` clears the binding's Direct eligibility;
+    /// existing Direct frontends over it then no longer resolve to an advertised
+    /// URL (the resolver re-checks `access == "public"`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn set_binding_public(
+        &self,
+        id: i64,
+        access: &str,
+        public_base_url: Option<&str>,
+    ) -> Result<bool> {
+        let access = match access {
+            "public" | "private" => access,
+            other => bail!("unknown storage access mode '{other}' (expected public or private)"),
+        };
+        let n = self
+            .backend
+            .execute(
+                "UPDATE storage_bindings SET access = ?2, public_base_url = ?3 WHERE id = ?1",
+                &vals![id, access, public_base_url],
+            )
+            .await?;
+        Ok(n > 0)
     }
 
     /// Look up a storage binding by `(org_id, name)`.
@@ -6533,7 +6635,7 @@ impl Database {
         self.backend
             .query_opt(
                 "SELECT id, org_id, name, kind, root, access, public_base_url,
-                 credential_ref, created_at
+                 credential_ref, is_instance_default, created_at
                  FROM storage_bindings WHERE org_id = ?1 AND name = ?2",
                 &vals![org_id, name],
             )
@@ -6553,7 +6655,7 @@ impl Database {
             .backend
             .query(
                 "SELECT id, org_id, name, kind, root, access, public_base_url,
-                 credential_ref, created_at
+                 credential_ref, is_instance_default, created_at
              FROM storage_bindings WHERE org_id = ?1 ORDER BY name",
                 &vals![org_id],
             )
@@ -10824,7 +10926,8 @@ fn row_to_storage_binding(row: &Row) -> Result<StorageBindingRecord> {
         access: row.get(5)?,
         public_base_url: row.get(6)?,
         credential_ref: row.get(7)?,
-        created_at: row.get(8)?,
+        is_instance_default: row.get(8)?,
+        created_at: row.get(9)?,
     })
 }
 
@@ -12517,7 +12620,21 @@ mod tests {
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(count, 0, "storage_bindings should start empty");
+        // v30 seeds exactly one row — the instance-default binding (RFC-0004
+        // §12); no *user* bindings are created by the migration.
+        assert_eq!(count, 1, "only the seeded instance-default binding exists");
+        let defaults: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM storage_bindings WHERE is_instance_default = 1",
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(defaults, 1, "exactly one instance-default binding is seeded");
         let row = db
             .backend
             .query_opt(

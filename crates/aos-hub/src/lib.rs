@@ -78,7 +78,6 @@ pub mod compat;
 /// Config change-set staging/revert, re-exported from
 /// [`aos_hub_core::config`] (RFC-0004 Phase 5); keeps `crate::config::…` stable.
 pub use aos_hub_core::config;
-pub mod console;
 /// The crawl-policy value type, re-exported from [`aos_hub_core::crawl`]; keeps
 /// `crate::crawl::…` stable for the CLI.
 pub use aos_hub_core::crawl;

@@ -394,38 +394,19 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // port, and the native surface read/write and reindex ports (over which the
     // shared `signing::advance_channel` runs a hosted-key channel advance).
     // It carries its own `ConsoleDeps` state, so — like `rpc_router` — it is
-    // merged after `with_state` below. The hub's own `console::router()`
-    // registers only the native-only routes (pre-auth login/activation, OIDC,
-    // git-backed config/changes), so the two never register the same path.
-    let console_deps = aos_hub_core::web::console::ConsoleDeps {
-        db: Arc::clone(&state.db),
-        jwt_keys: state.auth.jwt_keys.clone(),
-        external_url: state.external_url.clone(),
-        dev: state.dev,
-        ratelimit: Arc::clone(&state.ratelimit)
-            as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
-        mailer: Arc::clone(&state.mailer),
-        sealer: Arc::clone(&state.sealer),
-        http: Arc::new(crate::coreports::HubHttpClient::new(state.http.clone())),
-        surface: Arc::new(
-            crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
-                .with_sealer(Arc::clone(&state.sealer)),
-        ),
-        surface_write: Arc::new(
-            crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
-                .with_sealer(Arc::clone(&state.sealer)),
-        ),
-        reindexer: Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
-        // The native hub's default store is its DB-recorded storage root; surface
-        // it so instance settings shows where unbound surfaces live (falls back
-        // to "configured at deploy time" when unset).
-        default_storage_location: state
-            .db
-            .default_storage_root()
-            .await
-            .ok()
-            .flatten(),
-    };
+    // merged after `with_state` below. Nested-canonical registry console pages
+    // (slugs with slashes, which the flat `/{slug}/-/…` routes can't capture)
+    // are served by the same shared dispatcher from the catch-all — see
+    // [`console_deps`] and `dispatch_nested` — so there is a single console
+    // routing table for both flat and nested slugs.
+    let mut console_deps = console_deps(&state);
+    // The native hub's default store is its DB-recorded storage root; surface it
+    // so instance settings shows where unbound surfaces live (falls back to
+    // "configured at deploy time" when unset). Only the flat console router (which
+    // serves the instance-settings page) needs it, so it is set here rather than
+    // in the shared `console_deps` builder used by the nested dispatcher.
+    console_deps.default_storage_location =
+        state.db.default_storage_root().await.ok().flatten();
     // Seed the editable site chrome (title/banner/footer) from D1 at startup so
     // the masthead reflects persisted branding; a branding save refreshes it
     // live via `set_site_chrome`.
@@ -444,10 +425,6 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // `with_state` moves `state` into the router.
     let ip_state = Arc::clone(&state);
     let app = router
-        // The native-only producer-console routes (pre-auth login/activation,
-        // OIDC, git-backed config/changes). Its static prefixes win over the
-        // registry catch-all by static-over-dynamic precedence.
-        .merge(crate::console::router())
         .merge(oauth2)
         // Resolve the request's session once and put the user's email in a
         // task-local, so every page's masthead reflects the login + shows
@@ -470,10 +447,9 @@ pub async fn router(state: Arc<AppState>) -> Router {
         // state, so — like `rpc_router` — it is merged after `with_state`. Its
         // static console paths (/account, /-/org…, /{slug}/-/settings…) win over
         // the hub's `/{slug}/{*path}` facade wildcard by static-over-dynamic
-        // precedence, and it shares no path with the native `console::router()`
-        // above, so neither merge collides. The outer layers below (body cap,
-        // panic catcher, security headers) wrap its responses too, so a console
-        // handler that sets its own CSP (the passkey pages) is still honored.
+        // precedence. The outer layers below (body cap, panic catcher, security
+        // headers) wrap its responses too, so a console handler that sets its own
+        // CSP (the passkey pages) is still honored.
         .merge(console_router)
         // Router-wide inbound body cap. The RPC surface is already bounded to
         // the smaller `RPC_MAX_BODY_BYTES` by its own sub-router layer above
@@ -1066,6 +1042,40 @@ async fn resolve_package_closure(
     Ok(closure)
 }
 
+/// Build the shared [`ConsoleDeps`](aos_hub_core::web::console::ConsoleDeps) from
+/// the hub's [`AppState`].
+///
+/// The native hub serves a nested-canonical registry's console pages through the
+/// **shared** `aos_hub_core` console dispatcher (the single source of truth for
+/// the console routing table), which needs these deps. The catch-all route
+/// handlers carry only `state`, so this reconstructs the deps — all cheap `Arc`
+/// clones over thin port wrappers — per call.
+///
+/// `default_storage_location` is `None` here: the nested dispatcher only serves
+/// registry console pages, which never read it (it backs the instance-settings
+/// page, served by the flat console router, where [`serve`] sets it explicitly).
+fn console_deps(state: &Arc<AppState>) -> aos_hub_core::web::console::ConsoleDeps {
+    aos_hub_core::web::console::ConsoleDeps {
+        db: Arc::clone(&state.db),
+        jwt_keys: state.auth.jwt_keys.clone(),
+        external_url: state.external_url.clone(),
+        dev: state.dev,
+        ratelimit: Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
+        mailer: Arc::clone(&state.mailer),
+        sealer: Arc::clone(&state.sealer),
+        http: Arc::new(crate::coreports::HubHttpClient::new(state.http.clone())),
+        surface: Arc::new(
+            crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
+                .with_sealer(Arc::clone(&state.sealer)),
+        ),
+        surface_write: Arc::new(
+            crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
+                .with_sealer(Arc::clone(&state.sealer)),
+        ),
+        reindexer: Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
+        default_storage_location: None,
+    }
+}
 
 /// The `/{slug}/{*path}` route: a flat phase-1 machine path, or — when the
 /// single-segment slug names no registry — the entry point to nested
@@ -1094,11 +1104,11 @@ async fn machine_path(
         // page (its flat console routes capture only a single-segment slug),
         // else a nested machine/browse path.
         Ok(None) => {
-            if let Some(response) = crate::console::dispatch_nested(
-                &state,
-                &axum::http::Method::GET,
-                &uri,
-                &headers,
+            if let Some(response) = aos_hub_core::web::console::dispatch_nested(
+                console_deps(&state),
+                axum::http::Method::GET,
+                uri.clone(),
+                headers.clone(),
                 axum::body::Bytes::new(),
             )
             .await
@@ -1168,7 +1178,8 @@ async fn machine_path(
 ///
 /// A flat single-segment slug's console POSTs are served by the explicit
 /// console routes; a nested registry's slug spans `/`, so its POSTs land
-/// here and are dispatched to [`crate::console::dispatch_nested`]. Anything
+/// here and are dispatched to the shared
+/// [`dispatch_nested`](aos_hub_core::web::console::dispatch_nested). Anything
 /// that is not a recognized console path is a `404`.
 async fn post_machine_path(
     State(state): State<Arc<AppState>>,
@@ -1177,8 +1188,14 @@ async fn post_machine_path(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    match crate::console::dispatch_nested(&state, &axum::http::Method::POST, &uri, &headers, body)
-        .await
+    match aos_hub_core::web::console::dispatch_nested(
+        console_deps(&state),
+        axum::http::Method::POST,
+        uri,
+        headers,
+        body,
+    )
+    .await
     {
         Some(response) => response,
         None => StatusCode::NOT_FOUND.into_response(),
@@ -1416,8 +1433,14 @@ async fn nested_catch_all(
             resolve_nested_write(&state, &method, &uri, &headers, body).await
         }
         axum::http::Method::GET | axum::http::Method::POST => {
-            if let Some(response) =
-                crate::console::dispatch_nested(&state, &method, &uri, &headers, body).await
+            if let Some(response) = aos_hub_core::web::console::dispatch_nested(
+                console_deps(&state),
+                method.clone(),
+                uri.clone(),
+                headers.clone(),
+                body,
+            )
+            .await
             {
                 return response;
             }
