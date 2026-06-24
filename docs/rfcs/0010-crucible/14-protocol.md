@@ -435,7 +435,7 @@ The control channel is determinism-neutral by construction.
 > primary area is this file are tracked here by [PLAN-3]; the master plan
 > is the source of truth for ordering.
 
-- [ ] **T-PROTO-1** Define the frame format (`[u32 BE length][u8 tag][payload]`),
+- [x] **T-PROTO-1** Define the frame format (`[u32 BE length][u8 tag][payload]`),
   the `MAX_FRAME_SIZE = 64` bound, and the closed tag registry (Hello `0xF0`,
   HelloAck `0xF1`, Setup `0x01`, SetupAck `0x02`, Quit `0x12`) in
   `crucible-protocol`. — satisfies [PROTO-5], [PROTO-6], [PROTO-7]; spec §3.

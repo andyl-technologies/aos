@@ -155,6 +155,7 @@ in {
     };
   };
   phase2 = {
+    protocolFrameFormat = import ./phase2-protocol-frame-format.nix {inherit pkgs lib;};
     shmemRegionLayout = import ./phase2-shmem-region-layout.nix {inherit pkgs lib;};
     shmemGeneratedHeader = import ./phase2-shmem-generated-header.nix {inherit pkgs lib;};
     shmemAbiConformance = import ./phase2-shmem-abi-conformance.nix {inherit pkgs lib;};
