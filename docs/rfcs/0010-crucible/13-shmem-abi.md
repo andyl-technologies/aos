@@ -911,7 +911,7 @@ by when the producer's store landed in shared memory.
 - [ ] **T-SHM-12** Implement the logical-node → physical-slot allocator, with the
   reserved executor slots, and assert no `MAX_NODES` reference escapes this layer.
   — satisfies [SHM-16], [SHM-17], [SHM-18]; spec §13.5.
-- [ ] **T-SHM-13** Implement deliverability (`delivery_icount <= current_icount`)
+- [x] **T-SHM-13** Implement deliverability (`delivery_icount <= current_icount`)
   and the `(delivery_icount, src_node, seq)` total order on the consumer side. —
   satisfies [SHM-33], [SHM-34], [SHM-35]; spec §13.9.
 - [ ] **T-SHM-14** Wire `gate:abi-conformance`: generated-header diff +
