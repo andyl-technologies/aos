@@ -168,6 +168,7 @@ in {
     protocolInertness = import ./phase2-protocol-inertness.nix {inherit pkgs lib;};
     qemuPluginArgs = import ./phase2-plugin-args.nix {inherit pkgs lib;};
     qemuPluginRegistrationOrder = import ./phase2-plugin-registration-order.nix {inherit pkgs lib;};
+    qemuPluginTimeControl = import ./phase2-plugin-time-control.nix {inherit pkgs lib;};
     qemuCrashDetection = import ./phase2-qemu-crash-detection.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuQmpClient = import ./phase2-qemu-qmp-client.nix {inherit pkgs lib;};
