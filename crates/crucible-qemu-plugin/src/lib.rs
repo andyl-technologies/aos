@@ -31,6 +31,7 @@
 //! executor; `whitebox_doorbell` owns optional white-box trap planning, guest
 //! memory reads, marker stamping, and host-to-guest input delivery gates;
 //! `round_robin` owns fixed-quantum vCPU rotation and per-vCPU halt tracking;
+//! `preemption` owns scheduler-commanded vCPU switch and interrupt injection;
 //! `coverage` owns optional TCG-exec coverage planning and observational
 //! basic-block map updates. Future modules will add live device callback behavior
 //! and QEMU-facing helpers.
@@ -59,6 +60,7 @@ pub mod inertness;
 pub mod network_rx;
 pub mod network_tx;
 pub mod ninep_io;
+pub mod preemption;
 pub mod registration;
 pub mod round_robin;
 pub mod setup;
@@ -75,10 +77,12 @@ pub use abi::{
     QemuPluginAbiError, QemuPluginExecutionModel, QemuPluginId, QemuPluginInfo, QemuTcgThreading,
     RegisteredDeviceCallbacks, execution_model_from_qemu_info, install_inert_scaffold,
     install_inert_scaffold_from_qemu_info, install_required_deadline_scaffold,
-    install_required_deadline_scaffold_from_qemu_info, install_required_time_capability_scaffold,
+    install_required_deadline_scaffold_from_qemu_info, install_required_preemption_scaffold,
+    install_required_preemption_scaffold_from_qemu_info, install_required_time_capability_scaffold,
     install_required_time_capability_scaffold_from_qemu_info, qemu_plugin_install,
     qemu_plugin_version, resolve_qemu_advance_virtual_time_direct_symbol,
-    resolve_qemu_clock_deadline_symbol, validate_install_boundary,
+    resolve_qemu_clock_deadline_symbol, resolve_qemu_inject_preemption_symbol,
+    validate_install_boundary,
 };
 pub use args::{
     PLUGIN_ARG_COVERAGE, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD,
@@ -136,6 +140,12 @@ pub use ninep_io::{
     NinePOutboundRing, NinePPoll, NinePRequest, NinePRequestToken, NinePResponse, NinePSubmit,
     PluginNinePIo, handle_9p_burst_done_callback, handle_9p_burst_start_callback,
     handle_9p_poll_callback, handle_9p_submit_callback,
+};
+pub use preemption::{
+    PluginPreemptionApplication, PluginPreemptionDecision, PluginPreemptionInjector,
+    PluginPreemptionKind, PreemptionError, PreemptionWindow, QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL,
+    QEMU_PREEMPTION_KIND_INTERRUPT_AT, QEMU_PREEMPTION_KIND_VCPU_SWITCH,
+    QEMU_PREEMPTION_UNUSED_ARG, QemuInjectPreemptionFn, QemuPreemptionCommand,
 };
 pub use registration::{
     PluginCallbackCapabilities, PluginRegistrationFailure, PluginRegistrationReady,

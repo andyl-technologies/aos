@@ -1001,7 +1001,7 @@ component that makes that purity true *inside* the QEMU process.
   `idle_wake_icount = min` over vCPUs of the next armed deadline. — satisfies
   [PLUG-3], [PLUG-10], [PLUG-50], [PLUG-52]; spec §12.1.2, §12.3.2,
   §12.3.6.
-- [ ] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
+- [x] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
   vCPU switch / deliver the interrupt at the commanded node-icount via the
   preemption-injection capability (11/[PATCH-47]), failing loud and localizing an
   out-of-`[deadline, ceiling]` command rather than clamping or deferring. —
