@@ -460,6 +460,118 @@ fn project_message(org_slug: String, path: String, name: String) -> pb::Project 
     }
 }
 
+/// The canonical instance-settings keys editable over the API/CLI.
+///
+/// This is the wire/CLI surface — the same keys the `/-/instance` console
+/// writes. `default_storage_root` is deliberately excluded: storage is the
+/// deployment default and is read-only in the console.
+const INSTANCE_KEYS: &[&str] = &[
+    "site_title",
+    "tagline",
+    "announcement",
+    "tos_url",
+    "privacy_url",
+    "support_url",
+    "signup_policy",
+    "signup_domains",
+    "password_login",
+    "session_lifetime_secs",
+    "default_crawl_policy",
+    "max_upload_bytes",
+];
+
+/// Whether `key` is a recognized instance-settings key.
+fn is_instance_key(key: &str) -> bool {
+    INSTANCE_KEYS.contains(&key)
+}
+
+/// Validate and normalize an instance-settings value for `key`, returning the
+/// stored form (or `None` to clear the key when the value is blank).
+///
+/// Free-text keys pass through trimmed; the enum and numeric keys are checked so
+/// an invalid value is rejected before any write.
+///
+/// # Errors
+///
+/// Returns [`RpcError::InvalidArgument`] for an unknown key or a value that does
+/// not satisfy that key's constraint.
+fn normalize_instance_value(key: &str, value: &str) -> Result<Option<String>, RpcError> {
+    if !is_instance_key(key) {
+        return Err(RpcError::invalid(format!("unknown instance setting: {key}")));
+    }
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match key {
+        "signup_policy" => {
+            // Round-trip through the parser so only the two canonical strings
+            // store; anything else is a client error rather than a silent
+            // fail-closed to invite_only.
+            if trimmed != "open" && trimmed != "invite_only" {
+                return Err(RpcError::invalid(
+                    "signup_policy must be 'open' or 'invite_only'",
+                ));
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+        "default_crawl_policy" => {
+            let policy = crate::crawl::CrawlPolicy::parse(trimmed)
+                .map_err(|e| RpcError::invalid(e.to_string()))?;
+            Ok(Some(policy.as_str().to_string()))
+        }
+        "password_login" => {
+            // Normalize the various truthy/falsy spellings to on/off.
+            let on = !matches!(trimmed, "off" | "false" | "0" | "no");
+            Ok(Some(if on { "on" } else { "off" }.to_string()))
+        }
+        "signup_domains" => {
+            // Normalize to a lowercased, comma-joined allowlist.
+            let domains: Vec<String> = trimmed
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .filter(|s| !s.is_empty())
+                .map(str::to_lowercase)
+                .collect();
+            if domains.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(domains.join(",")))
+            }
+        }
+        "session_lifetime_secs" | "max_upload_bytes" => {
+            let n: i64 = trimmed
+                .parse()
+                .map_err(|_| RpcError::invalid(format!("{key} must be a non-negative integer")))?;
+            if n < 0 {
+                return Err(RpcError::invalid(format!("{key} must be non-negative")));
+            }
+            Ok(Some(n.to_string()))
+        }
+        _ => Ok(Some(trimmed.to_string())),
+    }
+}
+
+/// Build the wire [`pb::InstanceSettings`] from the loaded settings bundle.
+///
+/// Unset optionals (`session_lifetime_secs`/`max_upload_bytes`) map to `0`,
+/// which the wire contract documents as "use the built-in default".
+fn instance_settings_to_pb(s: &crate::db::InstanceSettings) -> pb::InstanceSettings {
+    pb::InstanceSettings {
+        site_title: s.site_title.clone().unwrap_or_default(),
+        tagline: s.tagline.clone().unwrap_or_default(),
+        announcement: s.announcement.clone().unwrap_or_default(),
+        tos_url: s.tos_url.clone().unwrap_or_default(),
+        privacy_url: s.privacy_url.clone().unwrap_or_default(),
+        support_url: s.support_url.clone().unwrap_or_default(),
+        signup_policy: s.signup_policy.as_str().to_string(),
+        signup_domains: s.signup_domains.clone(),
+        password_login: s.password_login,
+        session_lifetime_secs: s.session_lifetime_secs.unwrap_or(0),
+        default_crawl_policy: s.default_crawl_policy.clone(),
+        max_upload_bytes: s.max_upload_bytes.unwrap_or(0),
+    }
+}
+
 /// Build the wire [`pb::Binding`] for a storage binding under `org_slug`.
 ///
 /// `expose_root` gates the admin-only `root`/`endpoint` detail (the hub's
@@ -1545,6 +1657,118 @@ impl RpcService {
         Ok(pb::ListAuditResponse {
             entries,
             next_page_token,
+        })
+    }
+
+    /// `InstanceService.GetInstanceSettings` — the full editable instance
+    /// settings bundle (branding, footer, identity policy, serving defaults).
+    ///
+    /// The machine mirror of the `/-/instance` console: every field carries its
+    /// effective value (a stored override or the documented default). Requires
+    /// [`Permission::IamAdmin`] at the instance root, the same authority the
+    /// console enforces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::PermissionDenied`] when the caller is not an instance admin,
+    /// and [`RpcError::Internal`] on database failure.
+    pub async fn get_instance_settings(
+        &self,
+        auth: Option<&str>,
+        _req: pb::GetInstanceSettingsRequest,
+    ) -> Result<pb::GetInstanceSettingsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::root())
+            .await?;
+        let settings = self.db.instance_settings().await.map_err(RpcError::internal)?;
+        Ok(pb::GetInstanceSettingsResponse {
+            settings: Some(instance_settings_to_pb(&settings)),
+        })
+    }
+
+    /// `InstanceService.UpdateInstanceSettings` — set and/or clear instance
+    /// settings keys, then return the updated bundle.
+    ///
+    /// Each entry in `values` is validated per key (an unknown key, or a value
+    /// outside the allowed set for `signup_policy`/`default_crawl_policy`/the
+    /// numeric keys, is rejected before any write) and then applied through
+    /// [`Database::set_instance_config`] — a blank value, or any key listed in
+    /// `clear`, resets that key to its default. The whole update is audited at
+    /// the instance root and the resulting bundle is returned. Requires
+    /// [`Permission::IamAdmin`] at the instance root.
+    ///
+    /// Note that branding/footer changes are seeded into each shell's page
+    /// chrome at startup (and refreshed live by the console on save); a change
+    /// made over this RPC takes effect on the next chrome refresh for already
+    /// running shells.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::PermissionDenied`] when the caller is not an instance admin,
+    /// [`RpcError::InvalidArgument`] for an unknown key or an invalid value, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn update_instance_settings(
+        &self,
+        auth: Option<&str>,
+        req: pb::UpdateInstanceSettingsRequest,
+    ) -> Result<pb::UpdateInstanceSettingsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::root())
+            .await?;
+
+        // Validate every key/value before writing anything, so a bad entry never
+        // leaves a partially applied update.
+        let mut writes: Vec<(String, Option<String>)> = Vec::new();
+        for (key, value) in &req.values {
+            let normalized = normalize_instance_value(key, value)?;
+            writes.push((key.clone(), normalized));
+        }
+        for key in &req.clear {
+            if !is_instance_key(key) {
+                return Err(RpcError::invalid(format!("unknown instance setting: {key}")));
+            }
+            writes.push((key.clone(), None));
+        }
+
+        for (key, value) in &writes {
+            self.db
+                .set_instance_config(key, value.as_deref())
+                .await
+                .map_err(RpcError::internal)?;
+        }
+
+        // Audit the change at the instance root, listing the touched keys.
+        let principal = claims_principal(&claims);
+        let actor_id = principal.as_ref().map(|p| p.id);
+        let actor_kind = claims.owner_kind.clone();
+        let actor_label = claims.sub.clone();
+        let mut touched: Vec<&str> = writes.iter().map(|(k, _)| k.as_str()).collect();
+        touched.sort_unstable();
+        touched.dedup();
+        let detail = touched.join(", ");
+        if let Err(err) = self
+            .db
+            .record_audit(
+                &actor_kind,
+                actor_id,
+                &actor_label,
+                "instance.settings",
+                "",
+                None,
+                None,
+                None,
+                Some(&detail),
+            )
+            .await
+        {
+            tracing::warn!(error = %format!("{err:#}"), "recording instance.settings audit");
+        }
+
+        let settings = self.db.instance_settings().await.map_err(RpcError::internal)?;
+        Ok(pb::UpdateInstanceSettingsResponse {
+            settings: Some(instance_settings_to_pb(&settings)),
         })
     }
 

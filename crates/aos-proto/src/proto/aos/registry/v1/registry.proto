@@ -61,6 +61,22 @@ service AuditService {
   rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
 }
 
+// Deployment-wide instance settings (RFC-0004 "Instance administration"):
+// branding, footer/legal links, identity policy, and serving defaults. The
+// same key/value surface the `/-/instance` console edits and the `aos hub
+// instance` CLI drives. Reads require iam.admin at the instance root; updates
+// likewise.
+service InstanceService {
+  // Read the full editable instance-settings bundle. Requires iam.admin at the
+  // instance root.
+  rpc GetInstanceSettings(GetInstanceSettingsRequest)
+      returns (GetInstanceSettingsResponse);
+  // Set and/or clear instance-settings keys, then return the updated bundle.
+  // Requires iam.admin at the instance root.
+  rpc UpdateInstanceSettings(UpdateInstanceSettingsRequest)
+      returns (UpdateInstanceSettingsResponse);
+}
+
 // SQL-backed configuration change-sets (RFC-0004 "Configuration
 // management"): the append-only revision log over orgs, projects, members,
 // roles, tokens, visibility, and bindings. Reads require audit.read on the
@@ -457,6 +473,62 @@ message SetCrawlPolicyRequest {
 message SetCrawlPolicyResponse {
   // The applied crawl policy (echoed back).
   string policy = 1;
+}
+
+// The full editable instance-settings bundle. Every field carries its
+// effective value (a stored override or the documented default), so a client
+// reads exactly what the serving path uses. Unset optionals (the numeric
+// `*_secs`/`*_bytes`) are conveyed as 0, meaning "use the built-in default".
+message InstanceSettings {
+  // Site title shown in the masthead and page titles; empty falls back to the
+  // deploy brand.
+  string site_title = 1;
+  // Short tagline shown beside the brand.
+  string tagline = 2;
+  // Global announcement banner rendered on every console page; empty for none.
+  string announcement = 3;
+  // Terms-of-service URL for the footer.
+  string tos_url = 4;
+  // Privacy-policy URL for the footer.
+  string privacy_url = 5;
+  // Support/contact URL for the footer.
+  string support_url = 6;
+  // Who may create organizations: open | invite_only.
+  string signup_policy = 7;
+  // Lowercased email-domain allowlist for signup; empty allows any domain.
+  repeated string signup_domains = 8;
+  // Whether local password login is offered (else SSO/magic-link only).
+  bool password_login = 9;
+  // Session absolute lifetime in seconds; 0 = the built-in default.
+  int64 session_lifetime_secs = 10;
+  // Default robots.txt crawl policy new registries inherit:
+  // allow_all | allow_no_ai | deny_all.
+  string default_crawl_policy = 11;
+  // Maximum surface upload size in bytes; 0 = the built-in default.
+  int64 max_upload_bytes = 12;
+}
+
+message GetInstanceSettingsRequest {}
+
+message GetInstanceSettingsResponse {
+  // The full effective settings bundle.
+  InstanceSettings settings = 1;
+}
+
+message UpdateInstanceSettingsRequest {
+  // Keys to set, by their canonical name (e.g. `site_title`, `signup_policy`,
+  // `signup_domains`). A blank value clears the key to its default; values are
+  // validated per key (`signup_policy`, `default_crawl_policy`, and the numeric
+  // keys are checked) and an unknown key is rejected.
+  map<string, string> values = 1;
+  // Keys to explicitly reset to their default (equivalent to setting them
+  // blank). Same key namespace as `values`.
+  repeated string clear = 2;
+}
+
+message UpdateInstanceSettingsResponse {
+  // The settings bundle after applying the update.
+  InstanceSettings settings = 1;
 }
 message ChangeRegistryStorageRequest {
   // Canonical registry path or flat slug.
