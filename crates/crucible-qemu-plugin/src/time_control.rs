@@ -675,9 +675,11 @@ fn project_virtual_ns(icount: u64, icount_shift: u8) -> Result<u64, PluginClockE
 mod tests {
     use super::*;
 
-    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::cell::Cell;
 
-    static LAST_DIRECT_ADVANCE_NS: AtomicI64 = AtomicI64::new(-1);
+    thread_local! {
+        static LAST_DIRECT_ADVANCE_NS: Cell<i64> = const { Cell::new(-1) };
+    }
 
     #[test]
     fn time_control_registration_order_requests_control_before_first_instruction() {
@@ -904,7 +906,7 @@ mod tests {
 
     #[test]
     fn synchronous_idle_advance_calls_qemu_and_reports_bottom_half_drain() {
-        LAST_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        set_last_direct_advance_ns(-1);
         let advance = match SynchronousIdleAdvance::require(Some(test_direct_advance)) {
             Ok(advance) => advance,
             Err(error) => panic!("direct advance symbol should be accepted: {error}"),
@@ -915,14 +917,14 @@ mod tests {
             Err(error) => panic!("direct advance should accept signed target: {error}"),
         };
 
-        assert_eq!(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), 4096);
+        assert_eq!(last_direct_advance_ns(), 4096);
         assert_eq!(drain.target_virtual_ns(), 4096);
         assert!(drain.drained_bottom_halves());
     }
 
     #[test]
     fn synchronous_idle_advance_rejects_targets_outside_qemu_signed_range() {
-        LAST_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        set_last_direct_advance_ns(-1);
         let advance = match SynchronousIdleAdvance::require(Some(test_direct_advance)) {
             Ok(advance) => advance,
             Err(error) => panic!("direct advance symbol should be accepted: {error}"),
@@ -934,7 +936,7 @@ mod tests {
                 target_virtual_ns: i64::MAX as u64 + 1,
             })
         );
-        assert_eq!(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), -1);
+        assert_eq!(last_direct_advance_ns(), -1);
     }
 
     #[test]
@@ -1022,6 +1024,14 @@ mod tests {
     extern "C" fn time_control_test_direct_advance(_target_virtual_ns: i64) {}
 
     extern "C" fn test_direct_advance(target_virtual_ns: i64) {
-        LAST_DIRECT_ADVANCE_NS.store(target_virtual_ns, Ordering::SeqCst);
+        set_last_direct_advance_ns(target_virtual_ns);
+    }
+
+    fn set_last_direct_advance_ns(value: i64) {
+        LAST_DIRECT_ADVANCE_NS.with(|cell| cell.set(value));
+    }
+
+    fn last_direct_advance_ns() -> i64 {
+        LAST_DIRECT_ADVANCE_NS.with(|cell| cell.get())
     }
 }
