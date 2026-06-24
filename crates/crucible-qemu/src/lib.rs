@@ -13,8 +13,9 @@
 //! `shutdown` owns the graceful QEMU child shutdown escalation ladder;
 //! `setup_failure` owns setup-abort classification and teardown; `inertness`
 //! owns the sim-off/sim-on QEMU control-plane inertness assertion;
-//! `crash_detection` owns typed crashed-node status classification; `qmp` owns
-//! the minimal typed QMP client; and `savevm_policy` owns the conservative
+//! `crash_detection` owns typed crashed-node status classification; `node` owns
+//! the scheduler-facing one-child/three-channel QEMU wrapper; `qmp` owns the
+//! minimal typed QMP client; and `savevm_policy` owns the conservative
 //! thin-replay fallback for incomplete QEMU `savevm`/`loadvm` coverage.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
@@ -28,6 +29,7 @@
 mod crash_detection;
 mod inertness;
 mod launch;
+mod node;
 mod qmp;
 mod savevm_policy;
 mod setup_failure;
@@ -52,6 +54,11 @@ pub use launch::{
     QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
     QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig,
     validate_pre_spawn_qemu_launch_args,
+};
+pub use node::{
+    QemuNode, QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeChannels, QemuNodeChild,
+    QemuNodeEmittedFrame, QemuNodeError, QemuNodeIdleState, QemuNodeLifecycleState,
+    QemuPluginIpcControlChannel, QemuQmpMachineControlChannel, QemuShmemHotPathChannel,
 };
 pub use qmp::{
     QMP_CAPABILITIES_COMMAND, QMP_JOB_QUERY_INTERVAL, QMP_JOB_QUERY_LIMIT, QMP_QUERY_JOBS_COMMAND,

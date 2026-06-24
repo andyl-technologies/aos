@@ -773,10 +773,20 @@ determinism contract (04).
   Completed as a pre-spawn argv validator layered over the deterministic launch
   profile; the full launch builder/spawn path remains tracked by [T-QEMU-1],
   [T-QEMU-3], and [T-QEMU-7].
-- [ ] **T-QEMU-3** Implement the `QemuNode` host wrapper owning one child and its
+- [x] **T-QEMU-3** Implement the `QemuNode` host wrapper owning one child and its
   three channels (plugin-IPC control, shmem hot path, QMP), exposing the
   synchronous scheduler node interface with the strict control/data split. —
   satisfies [QEMU-16], [QEMU-17], [QEMU-18]; spec §10.3.
+  Completed as the `QemuNode` one-child/three-channel wrapper in
+  `crucible-qemu`: it owns a private `std::process::Child` handle through
+  `QemuNodeChild` plus a `QemuNodeChannels` bundle, exposes the synchronous
+  `crucible::Backend` boundary, routes current icount/advance/frame/idle/
+  fingerprint operations only through the shmem hot path, routes snapshot/
+  restore through QMP, and runs scheduler shutdown through the existing
+  plugin-Quit → QMP-quit → signal → reap ladder using the owned child. Spawn,
+  fd passing, and die-with-host behavior remain tracked by [T-QEMU-7]; the
+  concrete per-quantum shmem implementation remains tracked by [T-QEMU-12] and
+  [T-QEMU-13]; async socket/QMP/process bridging remains tracked by [T-QEMU-14].
 - [x] **T-QEMU-4** Implement the typed minimal QMP client (greeting +
   `qmp_capabilities`, typed `savevm`/`loadvm`/`quit`, event-skipping,
   error-as-typed-Result), with snapshot tags derived from checkpoint content
