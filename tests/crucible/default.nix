@@ -181,6 +181,7 @@ in {
     qemuPluginNinePIo = import ./phase2-plugin-9p-io.nix {inherit pkgs lib;};
     qemuPluginWhiteboxDoorbell = import ./phase2-plugin-whitebox-doorbell.nix {inherit pkgs lib;};
     qemuPluginCoverage = import ./phase2-plugin-coverage.nix {inherit pkgs lib;};
+    qemuPluginHandshake = import ./phase2-plugin-handshake.nix {inherit pkgs lib;};
     qemuCrashDetection = import ./phase2-qemu-crash-detection.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuQmpClient = import ./phase2-qemu-qmp-client.nix {inherit pkgs lib;};
