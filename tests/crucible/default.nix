@@ -166,6 +166,7 @@ in {
     protocolGoldenVectors = import ./phase2-protocol-golden-vectors.nix {inherit pkgs lib;};
     protocolCodecFuzz = import ./phase2-protocol-codec-fuzz.nix {inherit pkgs lib;};
     protocolInertness = import ./phase2-protocol-inertness.nix {inherit pkgs lib;};
+    qemuCrashDetection = import ./phase2-qemu-crash-detection.nix {inherit pkgs lib;};
     qemuShutdownEscalation = import ./phase2-qemu-shutdown-escalation.nix {inherit pkgs lib;};
     qemuSingleVmFingerprint = import ./phase2-qemu-single-vm-fingerprint.nix {inherit pkgs lib;};
     shmemRegionLayout = import ./phase2-shmem-region-layout.nix {inherit pkgs lib;};
