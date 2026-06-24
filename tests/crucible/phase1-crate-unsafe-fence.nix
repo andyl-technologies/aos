@@ -4,6 +4,8 @@
 }: let
   cratesDir = ../../crates;
   crateUnsafeFenceRust = builtins.readFile ../../crates/crucible-harness/tests/crate_unsafe_fence.rs;
+  crateUnsafeFenceSupport = builtins.readFile ../../crates/crucible-harness/tests/support/crate_unsafe_fence.rs;
+  crateUnsafeFenceHarness = crateUnsafeFenceRust + "\n" + crateUnsafeFenceSupport;
   safeFence = "#![forbid(unsafe_code)]";
   unsafeFence = "#![deny(unsafe_op_in_unsafe_fn)]";
 
@@ -296,8 +298,12 @@
     {
       package = "crucible-protocol";
       root = "src/lib.rs";
-      unsafeBoundary = false;
-      safeWrapperContract = [];
+      unsafeBoundary = true;
+      safeWrapperContract = [
+        "Unsafe boundary discipline:"
+        "public callers use safe setup descriptor handover wrappers"
+        "validate the fixed two-fd order and descriptor count"
+      ];
     }
     {
       package = "crucible-device";
@@ -466,7 +472,7 @@
   in
     lib.concatMap (
       required:
-        lib.optionals (!(hasInfix required crateUnsafeFenceRust)) [
+        lib.optionals (!(hasInfix required crateUnsafeFenceHarness)) [
           "crates/crucible-harness/tests/crate_unsafe_fence.rs: missing unsafe-fence scanner wiring `${required}`"
         ]
     )
@@ -563,8 +569,8 @@ in
             check=checks.crucible.phase1.crateUnsafeFence
             gate=gate:harness-lint
             tasks=T-CRATE-2,T-STD-7
-            runtime_safe_crates=9
-            runtime_unsafe_boundary_crates=4
+            runtime_safe_crates=8
+            runtime_unsafe_boundary_crates=5
             test_only_safe_crates=1
             unsafe_policy=root-fences,no-fifth-unsafe-crate,immediate-safety-invariants,no-unsafe-callable-items,no-public-unsafe-api,safe-wrapper-contracts
             RESULT

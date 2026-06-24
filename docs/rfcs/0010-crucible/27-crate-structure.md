@@ -164,7 +164,7 @@ discipline of [`28-engineering-standards.md`](28-engineering-standards.md).
 | `crucible-sim` | **SAFE** `#![forbid(unsafe_code)]` | Pure deterministic primitives; no FFI, no raw memory. |
 | `crucible-assert` | **SAFE** | Plain data types + serde; no FFI. |
 | `crucible-shmem` | **UNSAFE** `#![deny(unsafe_op_in_unsafe_fn)]` | `mmap` of the shared region, `#[repr(C)]` field access across the boundary, lock-free SPSC atomics. |
-| `crucible-protocol` | **SAFE** | Byte (de)serialization over owned buffers; no raw pointers. |
+| `crucible-protocol` | **UNSAFE** | Byte (de)serialization is pure, but `Setup` descriptor handover uses Unix `sendmsg`/`recvmsg` and `SCM_RIGHTS` ancillary buffers. |
 | `crucible-device` | **SAFE** | Pure I/O-sub-node models over owned buffers / CoW page maps. |
 | `crucible-qemu` | **UNSAFE** | Host-side process control may touch FFI for QMP/monitor and shared-memory file descriptors; reads raw VM memory via the plugin transport. |
 | `crucible-qemu-plugin` | **UNSAFE** | The `cdylib` is the QEMU TCG plugin C ABI: `extern "C"` entry points, raw QEMU/guest memory, time-control FFI. |
@@ -175,22 +175,23 @@ discipline of [`28-engineering-standards.md`](28-engineering-standards.md).
 | `crucible-daemon` | **SAFE** | Host process; transport via safe libraries. |
 | `crucible-cli` | **SAFE** | Thin client. |
 
-So: **four UNSAFE crates** (`crucible-shmem`, `crucible-qemu`,
-`crucible-qemu-plugin`, `crucible-guest`) — exactly the crates that touch raw
-QEMU/guest memory, the mmap/atomics ABI, or FFI — and **nine SAFE crates**,
+So: **five UNSAFE crates** (`crucible-shmem`, `crucible-protocol`,
+`crucible-qemu`, `crucible-qemu-plugin`, `crucible-guest`) — exactly the crates
+that touch raw QEMU/guest memory, the mmap/atomics ABI, Unix descriptor
+handover, or FFI — and **eight SAFE crates**,
 including the entire engine and the entire control plane. The unsafe surface is
 small, named, and confined to L1/L2.
 
 - **[CRATE-4]** Every SAFE crate (`crucible-sim`, `crucible-assert`,
-  `crucible-protocol`, `crucible-device`, `crucible`, `crucible-session`,
-  `crucible-api`, `crucible-daemon`, `crucible-cli`) MUST carry
+  `crucible-device`, `crucible`, `crucible-session`, `crucible-api`,
+  `crucible-daemon`, `crucible-cli`) MUST carry
   `#![forbid(unsafe_code)]` at its crate root. A CI lint asserts the attribute is
   present. *Gate:* `gate:harness-lint`. *Spec:* §2.
-- **[CRATE-5]** Every UNSAFE crate (`crucible-shmem`, `crucible-qemu`,
-  `crucible-qemu-plugin`, `crucible-guest`) MUST carry
+- **[CRATE-5]** Every UNSAFE crate (`crucible-shmem`, `crucible-protocol`,
+  `crucible-qemu`, `crucible-qemu-plugin`, `crucible-guest`) MUST carry
   `#![deny(unsafe_op_in_unsafe_fn)]` at its crate root, and every `unsafe` block
   MUST be preceded by a `// SAFETY:` comment stating the upheld invariant. There
-  MUST be no fifth UNSAFE crate: any new use of `unsafe` outside these four is a
+  MUST be no sixth UNSAFE crate: any new use of `unsafe` outside these five is a
   build error. *Gate:* `gate:harness-lint`. *Satisfies* `INV-9`. *Spec:* §2.
 
 ## 3. Crate boundaries — what each owns, and what it does NOT
@@ -230,11 +231,12 @@ vectors). *Not in it:* any message *semantics* or framing (that is
 
 **`crucible-protocol`** owns the IPC **wire protocol**
 ([`14-protocol.md`](14-protocol.md)): message kinds, framing, the explicit
-version field, encode/decode, and the golden-vector corpus. It is a SAFE crate
-operating over owned byte buffers; it depends on `crucible-shmem` only for the
-shared layout constants it must agree with. *Not in it:* the transport mechanism
-(mmap vs socket — that's `crucible-shmem`/`crucible-qemu`), the meaning of a
-delivered frame to the scheduler (L3).
+version field, encode/decode, setup descriptor handover, and the golden-vector
+corpus. It is an unsafe-boundary crate only for the Unix `SCM_RIGHTS`
+`sendmsg`/`recvmsg` edge; the frame codec itself remains pure and operates over
+owned byte buffers. *Not in it:* shmem mapping (that is `crucible-shmem`), QEMU
+process control (that is `crucible-qemu`), or the meaning of a delivered frame
+to the scheduler (L3).
 
 **`crucible-device`** owns the **I/O sub-nodes**
 ([`15-io-subnodes.md`](15-io-subnodes.md)): the disk model (CoW overlay over a
@@ -619,7 +621,7 @@ Crucible needs and marks the seam.
   doc naming its owning RFC file(s). — satisfies [CRATE-1], [CRATE-13],
   [CRATE-14]; spec §1, §6, §7.
 - [x] **T-CRATE-2** Apply the crate-level safe/unsafe fence: `#![forbid(unsafe_code)]`
-  on the nine SAFE crates, `#![deny(unsafe_op_in_unsafe_fn)]` on the four UNSAFE
+  on the eight SAFE crates, `#![deny(unsafe_op_in_unsafe_fn)]` on the five UNSAFE
   crates, with a CI lint asserting the attribute on every crate root. — satisfies
   [CRATE-4], [CRATE-5]; spec §2.
 - [x] **T-CRATE-3** Implement the layer-dependency + acyclicity lint that reads

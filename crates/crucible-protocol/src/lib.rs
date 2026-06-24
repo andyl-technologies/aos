@@ -4,13 +4,18 @@
 //!
 //! This L1 crate owns the framed IPC message constants, version fields,
 //! encode/decode routines, and golden vectors specified by its indexed RFC-0010
-//! file. It operates over owned buffers and does not own the shared-memory
-//! transport or scheduler semantics.
+//! file. Its pure codec operates over owned buffers; its Unix descriptor
+//! handover attaches the shared-memory and wake descriptors to the setup frame.
 //!
 //! Module map: the crate root owns the frame-format constants, closed tag
-//! registry, message bodies, pure codec, frame I/O helpers, and control/data
-//! split contract. Future modules will split descriptor passing, handshake
-//! orchestration, and golden vectors.
+//! registry, message bodies, pure codec, frame I/O helpers, setup descriptor
+//! passing, and control/data split contract. Future modules will split
+//! handshake orchestration and golden vectors.
+//!
+//! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
+//! details stay private; public callers use safe setup descriptor handover wrappers.
+//! These validate the fixed two-fd order and descriptor count before exposing
+//! owned close-on-exec descriptors.
 //!
 //! Wire-format:
 //!
@@ -21,11 +26,13 @@
 //! 5       N     payload bytes, tag-specific and big-endian for integers
 //! ```
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
 use std::io::{ErrorKind, Read, Write};
+#[cfg(unix)]
+use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 
 use thiserror::Error;
 
@@ -44,6 +51,39 @@ pub const MAX_PAYLOAD_SIZE: u32 = MAX_FRAME_SIZE - FRAME_TAG_SIZE as u32;
 pub const FRAME_LENGTH_INCLUDES_TAG: bool = true;
 /// Whether all multi-byte integers in frame payloads use big-endian order.
 pub const FRAME_INTEGERS_ARE_BIG_ENDIAN: bool = true;
+
+#[cfg(unix)]
+const SETUP_DESCRIPTOR_RECV_CAPACITY: usize = SETUP_DESCRIPTOR_COUNT + 1;
+#[cfg(unix)]
+const ANCILLARY_STORAGE_HEADERS: usize = 8;
+#[cfg(all(
+    unix,
+    any(
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "ios",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "tvos",
+        target_os = "watchos"
+    )
+))]
+type MsgControlLen = libc::socklen_t;
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "ios",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "tvos",
+        target_os = "watchos"
+    ))
+))]
+type MsgControlLen = usize;
 
 /// Direction in which a control-frame tag may appear.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,6 +211,40 @@ pub enum HostMsg {
     Quit,
 }
 
+/// Number of file descriptors attached to a `Setup` frame.
+#[cfg(unix)]
+pub const SETUP_DESCRIPTOR_COUNT: usize = 2;
+
+/// Borrowed descriptors attached to an outbound `Setup` frame.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetupDescriptorFds {
+    /// Shared-memory region descriptor, sent first in the `SCM_RIGHTS` list.
+    pub shmem_fd: RawFd,
+    /// Wake descriptor, sent second in the `SCM_RIGHTS` list.
+    pub wake_fd: RawFd,
+}
+
+/// Owned descriptors received from an inbound `Setup` frame.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct ReceivedSetupDescriptors {
+    /// Shared-memory region descriptor received first in the `SCM_RIGHTS` list.
+    pub shmem_fd: OwnedFd,
+    /// Wake descriptor received second in the `SCM_RIGHTS` list.
+    pub wake_fd: OwnedFd,
+}
+
+/// A decoded `Setup` frame plus its attached descriptors.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct ReceivedSetup {
+    /// Total byte length of the shared-memory region to map.
+    pub region_len: u64,
+    /// Fixed-order descriptors attached to the setup frame.
+    pub descriptors: ReceivedSetupDescriptors,
+}
+
 /// Typed errors returned by pure control-frame decoding.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FrameDecodeError {
@@ -279,6 +353,61 @@ pub enum FrameIoError {
         operation: &'static str,
         /// Error kind returned by the stream.
         kind: ErrorKind,
+    },
+}
+
+/// Typed errors returned by Unix setup descriptor handover.
+#[cfg(unix)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum DescriptorHandoverError {
+    /// A syscall returned an OS error.
+    #[error("{operation} failed with errno {errno}")]
+    Io {
+        /// Operation being attempted.
+        operation: &'static str,
+        /// Raw `errno` value reported by the OS.
+        errno: i32,
+    },
+    /// The peer closed the socket before a complete setup frame arrived.
+    #[error("{operation} ended before setup completed")]
+    PeerClosed {
+        /// Operation being attempted.
+        operation: &'static str,
+    },
+    /// `sendmsg` accepted fewer bytes than the complete setup frame.
+    #[error("setup sendmsg wrote {actual} bytes, expected {expected}")]
+    ShortWrite {
+        /// Complete setup frame byte length.
+        expected: usize,
+        /// Bytes reported by `sendmsg`.
+        actual: usize,
+    },
+    /// The received setup frame failed byte-level decoding.
+    #[error("setup frame decode failed")]
+    Decode {
+        /// Underlying frame decode error.
+        source: FrameDecodeError,
+    },
+    /// The frame decoded successfully but was not a `Setup` message.
+    #[error("expected Setup frame, received {message:?}")]
+    UnexpectedMessage {
+        /// Decoded host-to-plugin message.
+        message: HostMsg,
+    },
+    /// The setup frame carried the wrong descriptor count.
+    #[error("setup frame carried {count} descriptors, expected 2")]
+    WrongDescriptorCount {
+        /// Number of descriptors received with the setup frame.
+        count: usize,
+    },
+    /// The ancillary data was truncated by the kernel.
+    #[error("setup SCM_RIGHTS ancillary data was truncated")]
+    AncillaryTruncated,
+    /// The ancillary data could not be parsed as whole file descriptors.
+    #[error("setup SCM_RIGHTS ancillary data is malformed: {reason}")]
+    MalformedAncillary {
+        /// Short reason for the parse failure.
+        reason: &'static str,
     },
 }
 
@@ -444,6 +573,78 @@ where
     })
 }
 
+/// Sends a `Setup` frame and its fixed-order descriptors over a Unix socket.
+///
+/// The descriptors are attached as `SCM_RIGHTS` ancillary data using
+/// `sendmsg`, in the RFC-defined order `[shmem_fd, wake_fd]`.
+///
+/// # Errors
+///
+/// Returns [`DescriptorHandoverError::Io`] when `sendmsg` fails,
+/// [`DescriptorHandoverError::ShortWrite`] if the stream accepts only part of
+/// the frame, or [`DescriptorHandoverError::MalformedAncillary`] if the local
+/// ancillary buffer cannot represent the fixed descriptor list.
+#[cfg(unix)]
+pub fn send_setup_with_descriptors(
+    socket_fd: RawFd,
+    region_len: u64,
+    descriptors: SetupDescriptorFds,
+) -> Result<(), DescriptorHandoverError> {
+    let frame = control_encode_host_msg(&HostMsg::Setup { region_len });
+    let fds = [descriptors.shmem_fd, descriptors.wake_fd];
+    send_frame_with_fds(socket_fd, &frame, &fds)
+}
+
+/// Receives a `Setup` frame and its fixed-order descriptors from a Unix socket.
+///
+/// The frame must carry exactly two `SCM_RIGHTS` descriptors. The returned
+/// descriptors are owned, marked close-on-exec, and returned in the RFC-defined
+/// order: shmem first, wake second.
+///
+/// # Errors
+///
+/// Returns [`DescriptorHandoverError`] when the socket closes early, the
+/// ancillary data is truncated or malformed, the descriptor count is not
+/// exactly two, or the frame does not decode to [`HostMsg::Setup`].
+#[cfg(unix)]
+pub fn recv_setup_with_descriptors(
+    socket_fd: RawFd,
+) -> Result<ReceivedSetup, DescriptorHandoverError> {
+    let mut length_prefix = [0; FRAME_LENGTH_PREFIX_SIZE];
+    let raw_fds = recv_setup_prefix_and_fds(socket_fd, &mut length_prefix)?;
+    let descriptors = setup_descriptors_from_raw_fds(raw_fds)?;
+
+    let length = u32::from_be_bytes(length_prefix);
+    if length > MAX_FRAME_SIZE {
+        return Err(DescriptorHandoverError::Decode {
+            source: FrameDecodeError::LengthExceedsMax {
+                length,
+                max: MAX_FRAME_SIZE,
+            },
+        });
+    }
+
+    let payload_len = length as usize;
+    let mut frame = Vec::with_capacity(FRAME_LENGTH_PREFIX_SIZE + payload_len);
+    frame.extend_from_slice(&length_prefix);
+    frame.resize(FRAME_LENGTH_PREFIX_SIZE + payload_len, 0);
+    recv_exact_fd(
+        socket_fd,
+        &mut frame[FRAME_LENGTH_PREFIX_SIZE..],
+        "receive setup frame payload",
+    )?;
+
+    match control_decode_host_msg(&frame)
+        .map_err(|source| DescriptorHandoverError::Decode { source })?
+    {
+        HostMsg::Setup { region_len } => Ok(ReceivedSetup {
+            region_len,
+            descriptors,
+        }),
+        message => Err(DescriptorHandoverError::UnexpectedMessage { message }),
+    }
+}
+
 /// The runtime data plane used after protocol setup completes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeDataPlane {
@@ -471,6 +672,514 @@ pub const RUNTIME_DATA_PLANE_CONTRACT: RuntimeDataPlaneContract = RuntimeDataPla
     control_channel_carries_delivery_icounts: false,
     control_channel_silent_between_setup_ack_and_quit: true,
 };
+
+#[cfg(unix)]
+struct AncillaryBuffer {
+    storage: [libc::cmsghdr; ANCILLARY_STORAGE_HEADERS],
+    len: usize,
+}
+
+#[cfg(unix)]
+impl AncillaryBuffer {
+    fn for_single_cmsg_fd_capacity(fd_capacity: usize) -> Result<Self, DescriptorHandoverError> {
+        let payload_len = fd_capacity
+            .checked_mul(std::mem::size_of::<RawFd>())
+            .ok_or(DescriptorHandoverError::MalformedAncillary {
+                reason: "descriptor payload length overflow",
+            })?;
+        let len = cmsg_space(payload_len)?;
+        Self::with_len(len)
+    }
+
+    fn for_split_cmsg_fd_capacity(fd_capacity: usize) -> Result<Self, DescriptorHandoverError> {
+        let fd_size = std::mem::size_of::<RawFd>();
+        let packed_payload_len = fd_capacity.checked_mul(fd_size).ok_or(
+            DescriptorHandoverError::MalformedAncillary {
+                reason: "descriptor payload length overflow",
+            },
+        )?;
+        let packed_len = cmsg_space(packed_payload_len)?;
+        let split_len = fd_capacity.checked_mul(cmsg_space(fd_size)?).ok_or(
+            DescriptorHandoverError::MalformedAncillary {
+                reason: "ancillary split-header length overflow",
+            },
+        )?;
+
+        Self::with_len(packed_len.max(split_len))
+    }
+
+    fn with_len(len: usize) -> Result<Self, DescriptorHandoverError> {
+        let byte_capacity = ANCILLARY_STORAGE_HEADERS
+            .checked_mul(std::mem::size_of::<libc::cmsghdr>())
+            .ok_or(DescriptorHandoverError::MalformedAncillary {
+                reason: "ancillary storage length overflow",
+            })?;
+        if len > byte_capacity {
+            return Err(DescriptorHandoverError::MalformedAncillary {
+                reason: "ancillary storage too small",
+            });
+        }
+
+        Ok(Self {
+            storage: std::array::from_fn(|_| empty_cmsghdr()),
+            len,
+        })
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut libc::c_void {
+        self.storage.as_mut_ptr().cast::<libc::c_void>()
+    }
+}
+
+#[cfg(unix)]
+fn empty_cmsghdr() -> libc::cmsghdr {
+    libc::cmsghdr {
+        cmsg_len: 0,
+        cmsg_level: 0,
+        cmsg_type: 0,
+    }
+}
+
+#[cfg(unix)]
+fn send_frame_with_fds(
+    socket_fd: RawFd,
+    frame: &[u8],
+    fds: &[RawFd; SETUP_DESCRIPTOR_COUNT],
+) -> Result<(), DescriptorHandoverError> {
+    let mut iov = libc::iovec {
+        iov_base: frame.as_ptr().cast::<libc::c_void>().cast_mut(),
+        iov_len: frame.len(),
+    };
+    let mut control = AncillaryBuffer::for_single_cmsg_fd_capacity(fds.len())?;
+    let mut message = libc::msghdr {
+        msg_name: std::ptr::null_mut(),
+        msg_namelen: 0,
+        msg_iov: &mut iov,
+        msg_iovlen: 1,
+        msg_control: control.as_mut_ptr(),
+        msg_controllen: msg_control_len(control.len)?,
+        msg_flags: 0,
+    };
+
+    // SAFETY: `message` contains a live ancillary buffer and a valid controllen.
+    let cmsg = unsafe { libc::CMSG_FIRSTHDR(&message) };
+    if cmsg.is_null() {
+        return Err(DescriptorHandoverError::MalformedAncillary {
+            reason: "missing first control-message header",
+        });
+    }
+
+    let payload_len = fds.len() * std::mem::size_of::<RawFd>();
+    let cmsg_len = cmsg_len(payload_len)?;
+    // SAFETY: `cmsg` points into live aligned `control` storage, and `payload_len` exactly covers `fds`.
+    unsafe {
+        (*cmsg).cmsg_level = libc::SOL_SOCKET;
+        (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+        (*cmsg).cmsg_len = cmsg_len as _;
+        std::ptr::copy_nonoverlapping(
+            fds.as_ptr(),
+            libc::CMSG_DATA(cmsg).cast::<RawFd>(),
+            fds.len(),
+        );
+    }
+
+    message.msg_controllen = msg_control_len(cmsg_space(payload_len)?)?;
+    let sent = loop {
+        // SAFETY: `message` references live frame and ancillary buffers for this syscall.
+        let result = unsafe { libc::sendmsg(socket_fd, &message, send_flags()) };
+        if result < 0 {
+            let errno = last_errno_value();
+            if errno == libc::EINTR {
+                continue;
+            }
+            return Err(DescriptorHandoverError::Io {
+                operation: "send setup frame with descriptors",
+                errno,
+            });
+        }
+        break result;
+    };
+
+    let actual =
+        usize::try_from(sent).map_err(|_| DescriptorHandoverError::MalformedAncillary {
+            reason: "negative send length after success",
+        })?;
+    if actual != frame.len() {
+        return Err(DescriptorHandoverError::ShortWrite {
+            expected: frame.len(),
+            actual,
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn recv_setup_prefix_and_fds(
+    socket_fd: RawFd,
+    length_prefix: &mut [u8; FRAME_LENGTH_PREFIX_SIZE],
+) -> Result<Vec<RawFd>, DescriptorHandoverError> {
+    let mut iov = libc::iovec {
+        iov_base: length_prefix.as_mut_ptr().cast::<libc::c_void>(),
+        iov_len: length_prefix.len(),
+    };
+    let mut control = AncillaryBuffer::for_split_cmsg_fd_capacity(SETUP_DESCRIPTOR_RECV_CAPACITY)?;
+    let mut message = libc::msghdr {
+        msg_name: std::ptr::null_mut(),
+        msg_namelen: 0,
+        msg_iov: &mut iov,
+        msg_iovlen: 1,
+        msg_control: control.as_mut_ptr(),
+        msg_controllen: msg_control_len(control.len)?,
+        msg_flags: 0,
+    };
+
+    let received = loop {
+        // SAFETY: `message` references live prefix and ancillary buffers for this syscall.
+        let result = unsafe { libc::recvmsg(socket_fd, &mut message, 0) };
+        if result < 0 {
+            let errno = last_errno_value();
+            if errno == libc::EINTR {
+                continue;
+            }
+            return Err(DescriptorHandoverError::Io {
+                operation: "receive setup length prefix and descriptors",
+                errno,
+            });
+        }
+        break result;
+    };
+
+    if received == 0 {
+        return Err(DescriptorHandoverError::PeerClosed {
+            operation: "receive setup length prefix and descriptors",
+        });
+    }
+
+    let received =
+        usize::try_from(received).map_err(|_| DescriptorHandoverError::MalformedAncillary {
+            reason: "negative receive length after success",
+        })?;
+    let fds = parse_scm_rights_fds(&message)?;
+    if received < length_prefix.len()
+        && let Err(error) = recv_exact_fd(
+            socket_fd,
+            &mut length_prefix[received..],
+            "receive setup length prefix remainder",
+        )
+    {
+        close_raw_fds(fds);
+        return Err(error);
+    }
+
+    Ok(fds)
+}
+
+#[cfg(unix)]
+fn recv_exact_fd(
+    socket_fd: RawFd,
+    mut buffer: &mut [u8],
+    operation: &'static str,
+) -> Result<(), DescriptorHandoverError> {
+    while !buffer.is_empty() {
+        // SAFETY: `buffer` is a live writable byte slice for this syscall.
+        let received = unsafe {
+            libc::recv(
+                socket_fd,
+                buffer.as_mut_ptr().cast::<libc::c_void>(),
+                buffer.len(),
+                0,
+            )
+        };
+        if received < 0 {
+            let errno = last_errno_value();
+            if errno == libc::EINTR {
+                continue;
+            }
+            return Err(DescriptorHandoverError::Io { operation, errno });
+        }
+        if received == 0 {
+            return Err(DescriptorHandoverError::PeerClosed { operation });
+        }
+
+        let received =
+            usize::try_from(received).map_err(|_| DescriptorHandoverError::MalformedAncillary {
+                reason: "negative receive length after success",
+            })?;
+        let remaining =
+            buffer
+                .get_mut(received..)
+                .ok_or(DescriptorHandoverError::MalformedAncillary {
+                    reason: "receive length exceeded requested buffer",
+                })?;
+        buffer = remaining;
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn parse_scm_rights_fds(message: &libc::msghdr) -> Result<Vec<RawFd>, DescriptorHandoverError> {
+    let mut fds = Vec::new();
+    let truncated = message.msg_flags & libc::MSG_CTRUNC != 0;
+    // SAFETY: `message` contains the live ancillary buffer filled by `recvmsg`.
+    let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(message) };
+    while !cmsg.is_null() {
+        // SAFETY: `cmsg` was returned by `CMSG_FIRSTHDR`/`CMSG_NXTHDR` for `message`.
+        let header = unsafe { &*cmsg };
+        if header.cmsg_level == libc::SOL_SOCKET
+            && header.cmsg_type == libc::SCM_RIGHTS
+            && let Err(error) = append_rights_fds(header, cmsg, &mut fds)
+        {
+            close_raw_fds(fds);
+            return Err(error);
+        }
+        // SAFETY: `cmsg` is the current header for `message`.
+        cmsg = unsafe { libc::CMSG_NXTHDR(message, cmsg) };
+    }
+
+    if truncated {
+        close_raw_fds(fds);
+        return Err(DescriptorHandoverError::AncillaryTruncated);
+    }
+
+    Ok(fds)
+}
+
+#[cfg(unix)]
+fn append_rights_fds(
+    header: &libc::cmsghdr,
+    cmsg: *mut libc::cmsghdr,
+    fds: &mut Vec<RawFd>,
+) -> Result<(), DescriptorHandoverError> {
+    let header_len = cmsg_len(0)?;
+    let cmsg_len = cmsghdr_len(header)?;
+    if cmsg_len < header_len {
+        return Err(DescriptorHandoverError::MalformedAncillary {
+            reason: "control-message length shorter than header",
+        });
+    }
+
+    let data_len = cmsg_len - header_len;
+    let fd_size = std::mem::size_of::<RawFd>();
+    if !data_len.is_multiple_of(fd_size) {
+        return Err(DescriptorHandoverError::MalformedAncillary {
+            reason: "descriptor payload is not fd-aligned",
+        });
+    }
+
+    let count = data_len / fd_size;
+    // SAFETY: `cmsg` is a valid `SCM_RIGHTS` header for this message.
+    let data = unsafe { libc::CMSG_DATA(cmsg).cast::<RawFd>() };
+    for index in 0..count {
+        // SAFETY: `data_len` is a whole number of `RawFd` elements, and `index` is in bounds.
+        let fd = unsafe { *data.add(index) };
+        fds.push(fd);
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn setup_descriptors_from_raw_fds(
+    fds: Vec<RawFd>,
+) -> Result<ReceivedSetupDescriptors, DescriptorHandoverError> {
+    let [shmem_fd, wake_fd] = match <[RawFd; SETUP_DESCRIPTOR_COUNT]>::try_from(fds) {
+        Ok(fds) => fds,
+        Err(fds) => {
+            let count = fds.len();
+            close_raw_fds(fds);
+            return Err(DescriptorHandoverError::WrongDescriptorCount { count });
+        }
+    };
+
+    if let Err(error) = set_cloexec_on_raw_fd(shmem_fd) {
+        close_raw_fds(vec![shmem_fd, wake_fd]);
+        return Err(error);
+    }
+    if let Err(error) = set_cloexec_on_raw_fd(wake_fd) {
+        close_raw_fds(vec![shmem_fd, wake_fd]);
+        return Err(error);
+    }
+
+    // SAFETY: the descriptors came from `SCM_RIGHTS` and are uniquely wrapped here.
+    let descriptors = unsafe {
+        ReceivedSetupDescriptors {
+            shmem_fd: OwnedFd::from_raw_fd(shmem_fd),
+            wake_fd: OwnedFd::from_raw_fd(wake_fd),
+        }
+    };
+    Ok(descriptors)
+}
+
+#[cfg(unix)]
+fn close_raw_fds(fds: Vec<RawFd>) {
+    for fd in fds {
+        // SAFETY: each descriptor came from `SCM_RIGHTS` and is uniquely owned on this error path.
+        unsafe {
+            drop(OwnedFd::from_raw_fd(fd));
+        }
+    }
+}
+
+#[cfg(unix)]
+fn set_cloexec_on_raw_fd(fd: RawFd) -> Result<(), DescriptorHandoverError> {
+    // SAFETY: `fcntl(F_GETFD)` reads descriptor flags for a live raw fd.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(DescriptorHandoverError::Io {
+            operation: "read setup descriptor flags",
+            errno: last_errno_value(),
+        });
+    }
+
+    // SAFETY: `fcntl(F_SETFD)` updates descriptor flags for a live raw fd.
+    let result = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+    if result < 0 {
+        return Err(DescriptorHandoverError::Io {
+            operation: "mark setup descriptor close-on-exec",
+            errno: last_errno_value(),
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn cmsg_space(payload_len: usize) -> Result<usize, DescriptorHandoverError> {
+    let payload_len =
+        u32::try_from(payload_len).map_err(|_| DescriptorHandoverError::MalformedAncillary {
+            reason: "control-message payload length exceeds c_uint",
+        })?;
+    // SAFETY: `payload_len` is a byte count converted to the libc CMSG width.
+    Ok(unsafe { libc::CMSG_SPACE(payload_len) as usize })
+}
+
+#[cfg(unix)]
+fn cmsg_len(payload_len: usize) -> Result<usize, DescriptorHandoverError> {
+    let payload_len =
+        u32::try_from(payload_len).map_err(|_| DescriptorHandoverError::MalformedAncillary {
+            reason: "control-message payload length exceeds c_uint",
+        })?;
+    // SAFETY: `payload_len` is a byte count converted to the libc CMSG width.
+    Ok(unsafe { libc::CMSG_LEN(payload_len) as usize })
+}
+
+#[cfg(all(
+    unix,
+    any(
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "ios",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "tvos",
+        target_os = "watchos"
+    )
+))]
+fn msg_control_len(len: usize) -> Result<MsgControlLen, DescriptorHandoverError> {
+    len.try_into()
+        .map_err(|_| DescriptorHandoverError::MalformedAncillary {
+            reason: "ancillary length exceeds msg_controllen",
+        })
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "ios",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "tvos",
+        target_os = "watchos"
+    ))
+))]
+fn msg_control_len(len: usize) -> Result<MsgControlLen, DescriptorHandoverError> {
+    Ok(len)
+}
+
+#[cfg(all(
+    unix,
+    any(
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "ios",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "tvos",
+        target_os = "watchos"
+    )
+))]
+fn cmsghdr_len(header: &libc::cmsghdr) -> Result<usize, DescriptorHandoverError> {
+    Ok(header.cmsg_len as usize)
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "ios",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "tvos",
+        target_os = "watchos"
+    ))
+))]
+fn cmsghdr_len(header: &libc::cmsghdr) -> Result<usize, DescriptorHandoverError> {
+    Ok(header.cmsg_len)
+}
+
+#[cfg(all(
+    unix,
+    any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "tvos",
+        target_os = "watchos"
+    )
+))]
+fn send_flags() -> libc::c_int {
+    libc::MSG_NOSIGNAL
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "tvos",
+        target_os = "watchos"
+    ))
+))]
+fn send_flags() -> libc::c_int {
+    0
+}
+
+#[cfg(unix)]
+fn last_errno_value() -> i32 {
+    std::io::Error::last_os_error()
+        .raw_os_error()
+        .map_or(0, |errno| errno)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DecodedFrame<'a> {

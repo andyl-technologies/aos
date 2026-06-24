@@ -443,7 +443,7 @@ The control channel is determinism-neutral by construction.
   and `HostMsg` with typed errors (empty, unknown tag, short/long payload,
   oversize length) and the frame read/write helpers (truncated prefix/payload
   rejected). — satisfies [PROTO-5], [PROTO-6], [PROTO-22]; spec §6.
-- [ ] **T-PROTO-3** Implement the `SCM_RIGHTS` descriptor handover on `Setup`:
+- [x] **T-PROTO-3** Implement the `SCM_RIGHTS` descriptor handover on `Setup`:
   host attaches `[shmem_fd, wake_fd]` in fixed order; plugin reads exactly two
   fds and fails setup on any other count. — satisfies [PROTO-8], [PROTO-9],
   [PROTO-12]; spec §3.4, §3.7.
