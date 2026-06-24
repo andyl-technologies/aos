@@ -1006,7 +1006,7 @@ component that makes that purity true *inside* the QEMU process.
   preemption-injection capability (11/[PATCH-47]), failing loud and localizing an
   out-of-`[deadline, ceiling]` command rather than clamping or deferring. —
   satisfies [PLUG-50]; spec §12.3.6.
-- [ ] **T-PLUG-26** Implement per-vCPU register-file + round-robin cursor reads
+- [x] **T-PLUG-26** Implement per-vCPU register-file + round-robin cursor reads
   (via 11/[PATCH-46]) feeding the N-vCPU fingerprint (10/[QEMU-34]),
   side-effect-free wrt `S`/`T`. — satisfies [PLUG-52]; spec §12.3.2.
 - [ ] **T-PLUG-27** Implement the optional app-controlled randomness doorbell:

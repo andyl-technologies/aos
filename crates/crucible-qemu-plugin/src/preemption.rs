@@ -429,11 +429,19 @@ fn validate_vcpu(vcpu_id: u32, vcpu_count: u32) -> Result<(), PreemptionError> {
 mod tests {
     use super::*;
 
-    use std::sync::Mutex;
+    use std::sync::{Mutex, MutexGuard};
 
     use crate::RoundRobinConfig;
 
     static TEST_PREEMPTION_CALLS: Mutex<Vec<QemuPreemptionCommand>> = Mutex::new(Vec::new());
+    static TEST_PREEMPTION_SERIAL: Mutex<()> = Mutex::new(());
+
+    fn preemption_test_guard() -> MutexGuard<'static, ()> {
+        match TEST_PREEMPTION_SERIAL.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
 
     fn reset_calls() {
         match TEST_PREEMPTION_CALLS.lock() {
@@ -528,6 +536,7 @@ mod tests {
 
     #[test]
     fn preemption_injector_dispatches_vcpu_switch_at_commanded_icount() {
+        let _guard = preemption_test_guard();
         reset_calls();
         let injector = PluginPreemptionInjector::require(Some(accept_preemption))
             .unwrap_or_else(|error| panic!("preemption injector should validate: {error}"));
@@ -575,6 +584,7 @@ mod tests {
 
     #[test]
     fn preemption_injector_dispatches_interrupt_without_round_robin_switch() {
+        let _guard = preemption_test_guard();
         reset_calls();
         let injector = PluginPreemptionInjector::require(Some(accept_preemption))
             .unwrap_or_else(|error| panic!("preemption injector should validate: {error}"));
@@ -608,6 +618,7 @@ mod tests {
 
     #[test]
     fn preemption_injector_rejects_out_of_window_without_clamping_or_calling_qemu() {
+        let _guard = preemption_test_guard();
         reset_calls();
         let injector = PluginPreemptionInjector::require(Some(accept_preemption))
             .unwrap_or_else(|error| panic!("preemption injector should validate: {error}"));
@@ -646,6 +657,7 @@ mod tests {
 
     #[test]
     fn preemption_injector_localizes_malformed_or_rejected_commands() {
+        let _guard = preemption_test_guard();
         reset_calls();
         let injector = PluginPreemptionInjector::require(Some(reject_preemption))
             .unwrap_or_else(|error| panic!("preemption injector should validate: {error}"));

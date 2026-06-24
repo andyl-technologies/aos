@@ -32,6 +32,8 @@
 //! memory reads, marker stamping, and host-to-guest input delivery gates;
 //! `round_robin` owns fixed-quantum vCPU rotation and per-vCPU halt tracking;
 //! `preemption` owns scheduler-commanded vCPU switch and interrupt injection;
+//! `vcpu_introspection` owns side-effect-free per-vCPU register and RR cursor
+//! reads for N-vCPU fingerprinting;
 //! `coverage` owns optional TCG-exec coverage planning and observational
 //! basic-block map updates. Future modules will add live device callback behavior
 //! and QEMU-facing helpers.
@@ -67,6 +69,7 @@ pub mod setup;
 pub mod shmem_ordering;
 pub mod teardown;
 pub mod time_control;
+pub mod vcpu_introspection;
 pub mod whitebox_doorbell;
 
 pub use abi::{
@@ -79,10 +82,12 @@ pub use abi::{
     install_inert_scaffold_from_qemu_info, install_required_deadline_scaffold,
     install_required_deadline_scaffold_from_qemu_info, install_required_preemption_scaffold,
     install_required_preemption_scaffold_from_qemu_info, install_required_time_capability_scaffold,
-    install_required_time_capability_scaffold_from_qemu_info, qemu_plugin_install,
+    install_required_time_capability_scaffold_from_qemu_info,
+    install_required_vcpu_introspection_scaffold,
+    install_required_vcpu_introspection_scaffold_from_qemu_info, qemu_plugin_install,
     qemu_plugin_version, resolve_qemu_advance_virtual_time_direct_symbol,
     resolve_qemu_clock_deadline_symbol, resolve_qemu_inject_preemption_symbol,
-    validate_install_boundary,
+    resolve_qemu_read_vcpu_regs_symbol, resolve_qemu_rr_cursor_symbol, validate_install_boundary,
 };
 pub use args::{
     PLUGIN_ARG_COVERAGE, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD,
@@ -176,6 +181,15 @@ pub use time_control::{
     QEMU_PLUGIN_UPDATE_NS_SYMBOL, QemuAdvanceVirtualTimeDirectFn, SchedulerAuthorizedIdleJump,
     SchedulerCeiling, SynchronousIdleAdvance, SynchronousIdleAdvanceError, SynchronousIdleDrain,
     TimeControlRegistrationError, TimeControlRegistrationPlan,
+};
+pub use vcpu_introspection::{
+    MAX_VCPU_REGISTER_FILE_BYTES, PLUGIN_REGISTER_DIGEST_BYTES, PluginNvcpuFingerprintInputs,
+    PluginRoundRobinCursor, PluginVcpuIntrospector, PluginVcpuRegisterDigest,
+    QEMU_PLUGIN_CRUCIBLE_GET_VCPU_REGISTERS_SYMBOL, QEMU_PLUGIN_CRUCIBLE_READ_VCPU_REGISTER_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_RR_CURRENT_VCPU_SYMBOL, QEMU_PLUGIN_CRUCIBLE_RR_CURSOR_POSITION_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_RR_SWITCH_QUANTUM_SYMBOL, QEMU_PLUGIN_READ_VCPU_REGS_SYMBOL,
+    QEMU_PLUGIN_RR_CURSOR_SYMBOL, QemuReadRrCursorFn, QemuReadVcpuRegsFn, QemuRoundRobinCursor,
+    VcpuIntrospectionError, digest_register_file,
 };
 pub use whitebox_doorbell::{
     GuestMemoryAddressSpace, GuestMemoryRange, GuestMemoryReadError, GuestMemoryReader,
