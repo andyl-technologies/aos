@@ -2245,9 +2245,14 @@ pub(crate) async fn cache_link(
             .await?;
         // Write-through: reconcile the registry's committed [[caches]] with the
         // advertise flag (same change-request flow as the registry-side route).
-        // The change lands on the registry's /-/changes for promotion.
-        propose_cache_advertise(&deps, &session, &registry, &cache.slug, form.advertised.is_some())
-            .await?;
+        // Best-effort/non-fatal: the link is already saved, so a proposal failure
+        // (e.g. the registry isn't published/indexed yet) is logged, not a 500.
+        if let Err(e) =
+            propose_cache_advertise(&deps, &session, &registry, &cache.slug, form.advertised.is_some())
+                .await
+        {
+            tracing::warn!(error = %format!("{e:#}"), "cache-advertise write-through (org link) failed; link saved");
+        }
         Ok::<_, anyhow::Error>(None)
     }
     .await;
@@ -2390,7 +2395,12 @@ pub(crate) async fn cache_unlink(
         if let Some(registry) = deps.db.registry_by_slug(form.registry.trim()).await? {
             deps.db.unlink_cache(cache.id, registry.id).await?;
             // Remove any committed [[caches]] entry advertising this cache.
-            propose_cache_advertise(&deps, &session, &registry, &cache.slug, false).await?;
+            // Best-effort/non-fatal (the unlink is already saved).
+            if let Err(e) =
+                propose_cache_advertise(&deps, &session, &registry, &cache.slug, false).await
+            {
+                tracing::warn!(error = %format!("{e:#}"), "cache de-advertise write-through (org unlink) failed; unlink saved");
+            }
         }
         Ok::<_, anyhow::Error>(())
     }
@@ -4657,16 +4667,28 @@ pub(crate) async fn registry_cache_link(
             .link_cache(cache.id, registry.id, roots_packages, advertised)
             .await?;
         // Write-through: reconcile the committed [[caches]] with the advertise
-        // flag (add when advertised, remove otherwise) as a change request.
-        let proposed = propose_cache_advertise(&deps, &session, &registry, &cache.slug, advertised).await?;
-        Ok::<Result<Option<crate::gitwrite::ProposedChange>, String>, anyhow::Error>(Ok(proposed))
+        // flag (add when advertised, remove otherwise) as a change request. This
+        // is best-effort and NON-FATAL: the link itself is already saved, so a
+        // proposal failure (most commonly: the registry has no published/indexed
+        // config to branch a change from) becomes an explanatory notice rather
+        // than a 500 that hides the successful link.
+        let notice = match propose_cache_advertise(&deps, &session, &registry, &cache.slug, advertised)
+            .await
+        {
+            Ok(proposed) => cache_advertise_notice(&deps, &registry, proposed.as_ref())
+                .unwrap_or_else(|| "Cache link saved.".to_string()),
+            Err(e) => format!(
+                "Cache link saved, but the registry.toml advertise change could not be \
+                 proposed: {e:#}. Publish or index the registry first, then re-save to \
+                 advertise the cache to consumers."
+            ),
+        };
+        Ok::<Result<String, String>, anyhow::Error>(Ok(notice))
     }
     .await;
     match outcome {
-        Ok(Ok(proposed)) => {
-            let notice = cache_advertise_notice(&deps, &registry, proposed.as_ref());
-            registry_settings_view(&deps, &session, &registry, notice.as_deref(), "caches", started)
-                .await
+        Ok(Ok(notice)) => {
+            registry_settings_view(&deps, &session, &registry, Some(&notice), "caches", started).await
         }
         Ok(Err(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(err) => internal(err),
@@ -4711,20 +4733,31 @@ pub(crate) async fn registry_cache_unlink(
         return *deny;
     }
     let outcome = async {
-        let mut proposed = None;
+        let mut notice = "Cache unlinked.".to_string();
         if let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? {
             deps.db.unlink_cache(cache.id, registry.id).await?;
-            // Remove any committed [[caches]] entry advertising this cache.
-            proposed = propose_cache_advertise(&deps, &session, &registry, &cache.slug, false).await?;
+            // Remove any committed [[caches]] entry advertising this cache. Like
+            // the link path, this write-through is best-effort: the unlink is
+            // already saved, so a proposal failure becomes a notice, not a 500.
+            match propose_cache_advertise(&deps, &session, &registry, &cache.slug, false).await {
+                Ok(proposed) => {
+                    notice = cache_advertise_notice(&deps, &registry, proposed.as_ref())
+                        .unwrap_or(notice);
+                }
+                Err(e) => {
+                    notice = format!(
+                        "Cache unlinked, but the registry.toml de-advertise change could not \
+                         be proposed: {e:#}."
+                    );
+                }
+            }
         }
-        Ok::<Option<crate::gitwrite::ProposedChange>, anyhow::Error>(proposed)
+        Ok::<String, anyhow::Error>(notice)
     }
     .await;
     match outcome {
-        Ok(proposed) => {
-            let notice = cache_advertise_notice(&deps, &registry, proposed.as_ref());
-            registry_settings_view(&deps, &session, &registry, notice.as_deref(), "caches", started)
-                .await
+        Ok(notice) => {
+            registry_settings_view(&deps, &session, &registry, Some(&notice), "caches", started).await
         }
         Err(err) => internal(err),
     }
