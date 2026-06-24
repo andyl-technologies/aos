@@ -986,7 +986,7 @@ component that makes that purity true *inside* the QEMU process.
   comment (single-vCPU serialization, mmap lifetime, descriptor validity,
   vCPU-thread callback contract); read guest memory only via the plugin API; bounds-
   check all payload copies. — satisfies [PLUG-46], [PLUG-47]; spec §12.10.2.
-- [ ] **T-PLUG-22** Implement fail-loud handling for every determinism-critical
+- [x] **T-PLUG-22** Implement fail-loud handling for every determinism-critical
   failure (broken IPC, missing capability, ABI mismatch, full ring, passed
   delivery icount) with a distinct diagnosable error that the divergence bisector
   can localize; never a wall-clock-dependent fallback. — satisfies [PLUG-48];
