@@ -97,10 +97,6 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "__overrides validation gap",
     },
     LangCaseExclusion {
-        name: "eval-fail-toJSON-non-utf-8",
-        reason: "toJSON non-UTF-8 rejection gap",
-    },
-    LangCaseExclusion {
         name: "eval-okay-attrs6",
         reason: "attrset override merge semantics gap",
     },
@@ -153,8 +149,8 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "symlink directory resolution gap",
     },
 ];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 192;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 17;
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 193;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 16;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",
@@ -1288,6 +1284,22 @@ fn eval_fail_dup_dynamic_attrs_rejects_runtime_duplicates() {
     );
     assert!(
         format!("{error:?}").contains("duplicate attribute key"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn eval_fail_to_json_non_utf8_rejects_invalid_strings() {
+    let source = b"builtins.toJSON \"_invalid UTF-8: \xff_\"";
+
+    let error = eval_strict_case(source, TreeWalkOptions::default())
+        .expect_err("toJSON should reject non-UTF-8 strings like the upstream lang fixture");
+    assert!(
+        error.to_string().contains("evaluating strict expression"),
+        "{error:?}"
+    );
+    assert!(
+        format!("{error:?}").contains("non-UTF-8 string"),
         "{error:?}"
     );
 }

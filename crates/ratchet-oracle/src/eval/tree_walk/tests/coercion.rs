@@ -345,6 +345,20 @@ fn to_json_primop_serializes_scalars_and_containers() {
 }
 
 #[test]
+fn to_json_primop_rejects_non_utf8_strings() {
+    let ir = lower_bytes(b"builtins.toJSON \"_invalid UTF-8: \xff_\"");
+    let error = eval_whnf_owned(&ir).expect_err("toJSON rejects non-UTF-8 strings");
+
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::JsonInvalidUtf8 {
+            bytes,
+            ..
+        } if bytes == b"_invalid UTF-8: \xff_"
+    ));
+}
+
+#[test]
 fn to_json_primop_formats_floats_like_cpp_nix_json() {
     assert_eq!(eval_string_bytes("builtins.toJSON 1.0"), b"1.0");
     assert_eq!(eval_string_bytes("builtins.toJSON 1.50"), b"1.5");

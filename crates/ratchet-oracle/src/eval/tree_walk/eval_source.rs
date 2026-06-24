@@ -748,6 +748,16 @@ impl TreeWalk {
         bytes: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<(), TreeWalkError> {
+        std::str::from_utf8(bytes).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::JsonInvalidUtf8 {
+                    id,
+                    bytes: bytes.to_vec(),
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })?;
         Self::extend_bytes_for_node(id, span, out, b"\"")?;
         for byte in bytes {
             match *byte {

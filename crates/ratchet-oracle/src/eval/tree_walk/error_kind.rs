@@ -1017,6 +1017,16 @@ pub enum TreeWalkErrorKind {
         /// The unsupported runtime tag.
         actual: ValueTag,
     },
+    /// A Nix string cannot be represented as JSON UTF-8.
+    #[error("cannot convert non-UTF-8 string at node {id:?} to JSON: {bytes:?}: {message}")]
+    JsonInvalidUtf8 {
+        /// The string-valued node that could not be converted.
+        id: IrId,
+        /// The rejected raw bytes.
+        bytes: Vec<u8>,
+        /// The UTF-8 diagnostic.
+        message: String,
+    },
     /// A TOML string failed to parse.
     #[error("TOML parse failed at node {id:?}: {message}")]
     TomlParse {
