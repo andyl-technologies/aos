@@ -156,6 +156,7 @@ in {
   };
   phase2 = {
     shmemRegionLayout = import ./phase2-shmem-region-layout.nix {inherit pkgs lib;};
+    shmemGeneratedHeader = import ./phase2-shmem-generated-header.nix {inherit pkgs lib;};
     spscConcurrency = import ./phase2-spsc-concurrency.nix {inherit pkgs lib;};
     shmemSnapshotRestore = import ./phase2-shmem-snapshot-restore.nix {inherit pkgs lib;};
     shmemHandoffFutex = import ./phase2-shmem-handoff-futex.nix {inherit pkgs lib;};
