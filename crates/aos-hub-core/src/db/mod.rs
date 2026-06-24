@@ -1285,6 +1285,24 @@ pub const MIGRATIONS: &[&str] = &[
     DROP TABLE caches;
     ALTER TABLE caches_v27 RENAME TO caches;
     ",
+    // v28: the rate-limiter fixed-window counter table (RFC-0004 abuse
+    // throttling). The Cloudflare Worker previously created this lazily on every
+    // request (a `CREATE TABLE IF NOT EXISTS` D1 round-trip per request, even on
+    // read-only browse pages that never meter); owning it in the schema lets a
+    // freshly `init`-ed deployment skip that DDL entirely. `IF NOT EXISTS` keeps
+    // the migration idempotent over a deployment whose Worker already created the
+    // table before this migration shipped (the Worker still self-heals an
+    // older D1 via its isolate-guarded lazy create). See the `aos-hub-worker`
+    // `workerlimit` module for the column semantics.
+    "
+    CREATE TABLE IF NOT EXISTS rate_limits (
+        class  TEXT    NOT NULL,
+        key    TEXT    NOT NULL,
+        window INTEGER NOT NULL,
+        count  INTEGER NOT NULL,
+        PRIMARY KEY (class, key, window)
+    );
+    ",
 ];
 
 /// Returns every migration's individual SQL statements, in order.
