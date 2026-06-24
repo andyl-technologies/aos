@@ -473,7 +473,13 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
     let caches = caches.unwrap_or_default();
     let roster = roster.unwrap_or_default();
     let validations = validations.unwrap_or_default();
-    let external = format!("{}/{slug}", svc.external_url.trim_end_matches('/'));
+    // Prefer a direct frontend (the registry's own, or inherited from its
+    // storage binding) so the setup snippets point clients straight at the
+    // bucket; fall back to the hub URL (RFC-0004 §12).
+    let external = svc
+        .registry_consumer_url(&registry)
+        .await
+        .unwrap_or_else(|_| format!("{}/{slug}", svc.external_url.trim_end_matches('/')));
     Rendered::Html(pages::registry_home(
         &registry,
         status.as_ref(),

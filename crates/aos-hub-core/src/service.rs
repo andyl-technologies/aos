@@ -2586,13 +2586,85 @@ impl RpcService {
             .list_cache_frontends(cache.id)
             .await
             .map_err(RpcError::internal)?;
-        if let Some(f) = pick_direct_cache_frontend(&own) {
-            return Ok(frontend_base_url(&f.domain, &f.base_path, ""));
+        match self
+            .direct_consumer_url(
+                &own,
+                cache.storage_binding_id,
+                &cache.prefix,
+                FrontendSurface::Cache,
+            )
+            .await?
+        {
+            Some(url) => Ok(url),
+            None => Ok(self.cache_advertise_url(&cache.slug)),
         }
-        // Inherit from the cache's storage binding — its own, or the singleton
-        // instance-default binding when the cache is binding-less (default
-        // storage) — over a `public` binding only.
-        let binding = match cache.storage_binding_id {
+    }
+
+    /// The consumer-facing base URL for a registry's git surface.
+    ///
+    /// Prefers a **direct, advertised** git frontend the registry is reachable
+    /// at — its own (an operator override), else one **inherited from its
+    /// storage binding** (the bucket's public CDN origin, with the registry's
+    /// `prefix` appended) — so clients fetch the git wire surface straight from
+    /// the bucket (RFC-0004 §12). Falls back to the hub-served
+    /// `{external_url}/{slug}` when no such frontend exists. Surfaced in the
+    /// browse UI's setup snippets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn registry_consumer_url(
+        &self,
+        registry: &RegistryRecord,
+    ) -> Result<String, RpcError> {
+        let own = self
+            .db
+            .list_frontends(registry.id)
+            .await
+            .map_err(RpcError::internal)?;
+        match self
+            .direct_consumer_url(
+                &own,
+                registry.storage_binding_id,
+                &registry.prefix,
+                FrontendSurface::Git,
+            )
+            .await?
+        {
+            Some(url) => Ok(url),
+            None => Ok(format!(
+                "{}/{}",
+                self.external_url.trim_end_matches('/'),
+                registry.slug
+            )),
+        }
+    }
+
+    /// Resolve a direct, advertised frontend a surface is reachable at, deriving
+    /// its consumer-facing base URL — its own `own_frontends` (an operator
+    /// override), else one inherited from its storage binding (or the
+    /// singleton instance-default binding when `storage_binding_id` is `None`,
+    /// i.e. the consumer uses default storage), with `prefix` appended.
+    ///
+    /// An inherited frontend is honored only over a `public` binding (the create
+    /// gate already forbids a Direct frontend over a private one; this re-checks
+    /// defensively). Returns `None` when no direct frontend serves `surface`, so
+    /// the caller falls back to its hub-served URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    async fn direct_consumer_url(
+        &self,
+        own_frontends: &[FrontendRecord],
+        storage_binding_id: Option<i64>,
+        prefix: &str,
+        surface: FrontendSurface,
+    ) -> Result<Option<String>, RpcError> {
+        if let Some(f) = pick_direct_frontend(own_frontends, surface) {
+            return Ok(Some(frontend_base_url(&f.domain, &f.base_path, "")));
+        }
+        let binding = match storage_binding_id {
             Some(id) => self.db.storage_binding(id).await.map_err(RpcError::internal)?,
             None => self
                 .db
@@ -2607,12 +2679,12 @@ impl RpcService {
                     .list_storage_frontends(binding.id)
                     .await
                     .map_err(RpcError::internal)?;
-                if let Some(f) = pick_direct_cache_frontend(&inherited) {
-                    return Ok(frontend_base_url(&f.domain, &f.base_path, &cache.prefix));
+                if let Some(f) = pick_direct_frontend(&inherited, surface) {
+                    return Ok(Some(frontend_base_url(&f.domain, &f.base_path, prefix)));
                 }
             }
         }
-        Ok(self.cache_advertise_url(&cache.slug))
+        Ok(None)
     }
 
     /// Reconcile a registry's committed `[[caches]]` with a cache's advertise
@@ -4924,17 +4996,40 @@ async fn apply_revert_revision(
     Ok(())
 }
 
-/// Pick the highest-priority `direct`, advertised, cache-serving frontend in
-/// `frontends`, if any.
+/// A surface a frontend may serve, for [`pick_direct_frontend`] eligibility.
+#[derive(Clone, Copy)]
+enum FrontendSurface {
+    /// The dumb-HTTP git wire surface (a registry's clone/fetch endpoint).
+    Git,
+    /// The Nix binary-cache surface (`narinfo`/`nar`).
+    Cache,
+}
+
+impl FrontendSurface {
+    /// Whether `f` advertises this surface.
+    fn served_by(self, f: &FrontendRecord) -> bool {
+        match self {
+            Self::Git => f.serves_git,
+            Self::Cache => f.serves_cache,
+        }
+    }
+}
+
+/// Pick the highest-priority `direct`, advertised frontend in `frontends` that
+/// serves `surface`, if any.
 ///
 /// The `list_*` queries return frontends ordered by `consumer_priority DESC`,
 /// so an explicit `is_primary` wins and otherwise the first (highest-priority)
-/// eligible row does. Used by [`RpcService::cache_consumer_url`] to advertise a
-/// bucket-direct URL when one exists (RFC-0004 §12).
-fn pick_direct_cache_frontend(frontends: &[FrontendRecord]) -> Option<&FrontendRecord> {
+/// eligible row does. Used by [`RpcService::cache_consumer_url`] and
+/// [`RpcService::registry_consumer_url`] to advertise a bucket-direct URL when
+/// one exists (RFC-0004 §12).
+fn pick_direct_frontend(
+    frontends: &[FrontendRecord],
+    surface: FrontendSurface,
+) -> Option<&FrontendRecord> {
     let eligible: Vec<&FrontendRecord> = frontends
         .iter()
-        .filter(|f| f.mode == "direct" && f.advertised && f.serves_cache)
+        .filter(|f| f.mode == "direct" && f.advertised && surface.served_by(f))
         .collect();
     eligible
         .iter()
@@ -5076,8 +5171,11 @@ mod cache_facade_tests {
 
 #[cfg(test)]
 mod frontend_url_tests {
-    use super::{frontend_base_url, pick_direct_cache_frontend};
+    use super::{frontend_base_url, pick_direct_frontend, FrontendSurface};
     use crate::db::FrontendRecord;
+
+    /// The cache surface, the subject of these tests.
+    const CACHE: FrontendSurface = FrontendSurface::Cache;
 
     fn frontend(mode: &str, advertised: bool, serves_cache: bool) -> FrontendRecord {
         FrontendRecord {
@@ -5116,10 +5214,15 @@ mod frontend_url_tests {
     #[test]
     fn pick_requires_direct_advertised_and_serving() {
         // Proxied, unadvertised, or non-cache-serving frontends are ineligible.
-        assert!(pick_direct_cache_frontend(&[frontend("proxied", true, true)]).is_none());
-        assert!(pick_direct_cache_frontend(&[frontend("direct", false, true)]).is_none());
-        assert!(pick_direct_cache_frontend(&[frontend("direct", true, false)]).is_none());
-        assert!(pick_direct_cache_frontend(&[frontend("direct", true, true)]).is_some());
+        assert!(pick_direct_frontend(&[frontend("proxied", true, true)], CACHE).is_none());
+        assert!(pick_direct_frontend(&[frontend("direct", false, true)], CACHE).is_none());
+        assert!(pick_direct_frontend(&[frontend("direct", true, false)], CACHE).is_none());
+        assert!(pick_direct_frontend(&[frontend("direct", true, true)], CACHE).is_some());
+        // The same row serves the git surface (serves_git is true in the fixture).
+        assert!(
+            pick_direct_frontend(&[frontend("direct", true, false)], FrontendSurface::Git)
+                .is_some()
+        );
     }
 
     #[test]
@@ -5132,13 +5235,13 @@ mod frontend_url_tests {
         // `is_primary` wins regardless of list position.
         let list = [first.clone(), primary.clone()];
         assert_eq!(
-            pick_direct_cache_frontend(&list).unwrap().domain,
+            pick_direct_frontend(&list, CACHE).unwrap().domain,
             "primary.example.com"
         );
         // Without a primary, the first (highest-priority) eligible row wins.
         let list = [first, frontend("direct", true, true)];
         assert_eq!(
-            pick_direct_cache_frontend(&list).unwrap().domain,
+            pick_direct_frontend(&list, CACHE).unwrap().domain,
             "first.example.com"
         );
     }
