@@ -225,12 +225,21 @@ proxied/private path is unchanged.
       permits it, frontends scope to the binding, the seeded default is org-less
       and private). The create-time gate + resolve-time public re-check are in;
       pure selection/URL logic is unit-tested.
+- [x] Per-consumer advertise toggle (migration v31 `advertise_storage_frontend`,
+      default on): a registry/cache can opt out of advertising its *inherited*
+      storage frontend (its own frontends still apply). The resolver
+      (`direct_consumer_url`) gates only the inherited path on it; getter/setter
+      + a default/update test; a "Bucket-direct serving" checkbox on the registry
+      storage tab (`POST /{slug}/-/settings/advertise-frontend`). A DB column, not
+      committed config, so caches (no `registry.toml`) share the mechanism.
 - [~] `worker deploy` default-bucket `public_base_url` seeding — **not built;
       unnecessary.** The migration seeds the row and operators set
       `public_base_url` in the WebUI; the deploy has no operator CDN domain to
       auto-seed, so there is nothing to pre-populate.
 
-**Status: implemented.** All §12 work landed and is green (347 core tests +
-wasm). Remaining polish only: a registry-config advertise *toggle* (today
-advertising follows the frontend's `advertised` flag), and pointing `apr`/git
-clients at an advertised git frontend (the open questions above).
+**Status: implemented.** All §12 work landed and is green (348 core tests +
+wasm). Remaining is minor: the advertise checkbox is on the registry storage
+tab (the cache side is symmetric via the same resolver and DB toggle, UI not yet
+added), and pointing `apr`/git clients at an advertised git frontend is an
+`apr`-CLI change in a separate crate (the browse setup snippets already show the
+bucket-direct URL).
