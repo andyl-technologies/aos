@@ -962,6 +962,17 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     r = rpc_route!(r, "/aos.registry.v1.ChannelService/GetChannel", get_channel);
     // AuditService
     r = rpc_route!(r, "/aos.registry.v1.AuditService/ListAudit", list_audit);
+    // InstanceService
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.InstanceService/GetInstanceSettings",
+        get_instance_settings
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.InstanceService/UpdateInstanceSettings",
+        update_instance_settings
+    );
     // ConfigService
     r = rpc_route!(r, "/aos.registry.v1.ConfigService/ListChangesets", list_changesets);
     r = rpc_route!(r, "/aos.registry.v1.ConfigService/GetChangeset", get_changeset);
