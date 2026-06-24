@@ -109,15 +109,90 @@ fn is_transient_r2(message: &str) -> bool {
 ///
 /// Returns an error if a non-transient error occurs or every attempt fails (the
 /// last error is reported, prefixed with the key).
-async fn r2_get(bucket: &Bucket, key: &str) -> Result<Option<worker::Object>> {
+async fn r2_get(bucket: &Bucket, key: &str) -> Result<Option<wasm_bindgen::JsValue>> {
+    // Call the R2 binding's `get` method directly with *only* the key, rather
+    // than via worker-rs `Bucket::get(key).execute()`. The 0.8 `GetOptionsBuilder`
+    // always serializes an options object whose `onlyIf`/`range` keys are present
+    // and set to JS `undefined` even when unset (`js_object!` does an
+    // unconditional `Reflect::set`), and the current workerd/R2 rejects those
+    // present-but-`undefined` option keys by failing the GET with a *persistent*
+    // `10001` "internal error" — the same class of 0.8 R2 option-serialization
+    // bug worked around in [`R2SurfaceFetch::list`] (unset `cursor`) and the
+    // ranged read in [`R2SurfaceFetch::fetch_stream`] (`suffix: undefined`).
+    // Passing no options object at all avoids it; the returned value is the raw
+    // R2 object (or `null`/`undefined` for a miss), read via `js_sys` since
+    // worker-rs `Object` has no public constructor from a `JsValue`.
+    use js_sys::{Function, Promise, Reflect};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    let jsbucket: &JsValue = bucket.as_ref();
+    let get_fn: Function = Reflect::get(jsbucket, &JsValue::from_str("get"))
+        .map_err(|e| anyhow::anyhow!("R2 get {key}: get method: {e:?}"))?
+        .dyn_into()
+        .map_err(|e| anyhow::anyhow!("R2 get {key}: get is not a function: {e:?}"))?;
     let mut attempt = 0u32;
     loop {
-        match bucket.get(key).execute().await {
-            Ok(object) => return Ok(object),
-            Err(err) if attempt < 2 && is_transient_r2(&err.to_string()) => attempt += 1,
-            Err(err) => return Err(anyhow::anyhow!("R2 get {key}: {err}")),
+        let promise: Promise = get_fn
+            .call1(jsbucket, &JsValue::from_str(key))
+            .map_err(|e| anyhow::anyhow!("R2 get {key}: call: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| anyhow::anyhow!("R2 get {key}: get did not return a promise: {e:?}"))?;
+        match JsFuture::from(promise).await {
+            Ok(v) if v.is_null() || v.is_undefined() => return Ok(None),
+            Ok(v) => return Ok(Some(v)),
+            Err(e) if attempt < 2 && is_transient_r2(&format!("{e:?}")) => attempt += 1,
+            Err(e) => return Err(anyhow::anyhow!("R2 get {key}: {e:?}")),
         }
     }
+}
+
+/// Adapt an R2 object's `body` ([`web_sys::ReadableStream`]-shaped `JsValue`)
+/// into a byte-chunk stream by driving its default reader.
+///
+/// Mirrors what worker-rs `ByteStream` does internally, but over the raw
+/// `JsValue` body of the object [`r2_get`] returns (worker-rs `ObjectBody` is
+/// only reachable from a `worker::Object`, which has no public constructor). Each
+/// `reader.read()` yields `{ done, value: Uint8Array }`; `done` ends the stream.
+fn r2_body_stream(
+    body: wasm_bindgen::JsValue,
+) -> impl futures_util::Stream<Item = std::result::Result<Vec<u8>, std::io::Error>> {
+    use js_sys::{Function, Promise, Reflect, Uint8Array};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    let reader = Reflect::get(&body, &JsValue::from_str("getReader"))
+        .ok()
+        .and_then(|f| f.dyn_into::<Function>().ok())
+        .and_then(|f| f.call0(&body).ok());
+    futures_util::stream::try_unfold(reader, move |reader| async move {
+        let Some(reader) = reader else {
+            return Err(std::io::Error::other("R2 body: getReader unavailable"));
+        };
+        let read_fn: Function = Reflect::get(&reader, &JsValue::from_str("read"))
+            .map_err(|e| std::io::Error::other(format!("R2 read method: {e:?}")))?
+            .dyn_into()
+            .map_err(|e| std::io::Error::other(format!("R2 read not a function: {e:?}")))?;
+        let promise: Promise = read_fn
+            .call0(&reader)
+            .map_err(|e| std::io::Error::other(format!("R2 read call: {e:?}")))?
+            .dyn_into()
+            .map_err(|e| std::io::Error::other(format!("R2 read not a promise: {e:?}")))?;
+        let result = JsFuture::from(promise)
+            .await
+            .map_err(|e| std::io::Error::other(format!("R2 read: {e:?}")))?;
+        let done = Reflect::get(&result, &JsValue::from_str("done"))
+            .ok()
+            .and_then(|d| d.as_bool())
+            .unwrap_or(true);
+        if done {
+            return Ok(None);
+        }
+        let value = Reflect::get(&result, &JsValue::from_str("value"))
+            .map_err(|e| std::io::Error::other(format!("R2 read value: {e:?}")))?;
+        let chunk = value.unchecked_into::<Uint8Array>().to_vec();
+        Ok(Some((chunk, Some(reader))))
+    })
 }
 
 /// A [`SurfaceProvider`] that serves every registry from one R2 bucket, or from
@@ -191,21 +266,30 @@ struct R2SurfaceFetch {
 #[async_trait(?Send)]
 impl SurfaceFetch for R2SurfaceFetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        use js_sys::{Function, Promise, Reflect, Uint8Array};
+        use wasm_bindgen::{JsCast, JsValue};
+        use wasm_bindgen_futures::JsFuture;
+
         let key = keymap::r2_key(&self.prefix, path);
-        let object = r2_get(&self.bucket, &key).await?;
-        let Some(object) = object else {
+        let Some(object) = r2_get(&self.bucket, &key).await? else {
             return Ok(None);
         };
-        // A zero-length object (legal for some pointers) has no body stream;
-        // treat it as present-but-empty rather than a miss.
-        let Some(body) = object.body() else {
-            return Ok(Some(Vec::new()));
-        };
-        let bytes = body
-            .bytes()
+        // Read the whole object via the R2 object's `arrayBuffer()`. A zero-length
+        // object yields an empty buffer (present-but-empty, not a miss), so legal
+        // empty pointers still resolve to `Some(vec![])`.
+        let array_buffer: Function = Reflect::get(&object, &JsValue::from_str("arrayBuffer"))
+            .map_err(|e| anyhow::anyhow!("R2 get {key}: arrayBuffer method: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| anyhow::anyhow!("R2 get {key}: arrayBuffer not a function: {e:?}"))?;
+        let promise: Promise = array_buffer
+            .call0(&object)
+            .map_err(|e| anyhow::anyhow!("R2 read body {key}: arrayBuffer call: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| anyhow::anyhow!("R2 read body {key}: not a promise: {e:?}"))?;
+        let buffer = JsFuture::from(promise)
             .await
-            .map_err(|err| anyhow::anyhow!("R2 read body {key}: {err}"))?;
-        Ok(Some(bytes))
+            .map_err(|e| anyhow::anyhow!("R2 read body {key}: {e:?}"))?;
+        Ok(Some(Uint8Array::new(&buffer).to_vec()))
     }
 
     async fn list(&self) -> Result<Vec<String>> {
@@ -295,7 +379,7 @@ impl SurfaceFetch for R2SurfaceFetch {
         path: &str,
         range: Option<(u64, u64)>,
     ) -> Result<Option<aos_hub_core::fetch::StreamedRead>> {
-        use futures_util::{StreamExt as _, TryStreamExt as _};
+        use futures_util::StreamExt as _;
 
         let key = keymap::r2_key(&self.prefix, path);
         // NOTE: we deliberately do *not* push the byte range into the R2 `get`
@@ -311,18 +395,24 @@ impl SurfaceFetch for R2SurfaceFetch {
         // range end), so the memory-safety property the streaming path guarantees
         // is preserved; only the discarded pre-`start` bytes cross R2→isolate
         // (nil for the whole-object and prefix reads nix actually issues).
-        let object = r2_get(&self.bucket, &key).await?;
-        let Some(object) = object else {
+        let Some(object) = r2_get(&self.bucket, &key).await? else {
             return Ok(None);
         };
-        let total = object.size();
+        // Read `size` and `body` off the raw R2 object via `js_sys` (worker-rs
+        // `Object` is unreachable here — see `r2_get`).
+        let total = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("size"))
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as u64;
         // The inclusive range actually served (clamped to the object), or `None`
         // for a whole-object read.
         let served = match range {
             Some((start, end)) if start < total => Some((start, end.min(total.saturating_sub(1)))),
             _ => None,
         };
-        let Some(body) = object.body() else {
+        let body_js = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("body"))
+            .unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
+        if body_js.is_null() || body_js.is_undefined() {
             // A bodyless R2 object is zero-length, so there is nothing to range
             // over — serve a whole-object empty body (`range: None`) regardless of
             // what was requested, so `cache_serve` emits `Content-Length: 0`
@@ -332,11 +422,8 @@ impl SurfaceFetch for R2SurfaceFetch {
                 total,
                 range: None,
             }));
-        };
-        let stream = body
-            .stream()
-            .map_err(|err| anyhow::anyhow!("R2 stream {key}: {err}"))?
-            .map_err(|err| std::io::Error::other(err.to_string()));
+        }
+        let stream = r2_body_stream(body_js);
         // Trim the whole-object stream to the served byte range without buffering:
         // `skip` leading bytes are dropped (splitting a straddling chunk) and at
         // most `remaining` bytes are emitted (truncating the final chunk, then
