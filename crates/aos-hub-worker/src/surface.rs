@@ -213,31 +213,77 @@ impl SurfaceFetch for R2SurfaceFetch {
         // cursor, and re-home each to a surface-relative path so the migration
         // copy and the cache re-scan speak the same logical paths the rest of the
         // ports do.
+        //
+        // We call the R2 binding's `list` directly rather than via
+        // `worker::Bucket::list()`: the worker-rs 0.8 `ListOptionsBuilder` always
+        // serializes the unset `cursor` as JS `null`, and the current workerd
+        // rejects a non-string `cursor` on `R2ListOptions` ("Incorrect type for
+        // the 'cursor' field … not of type 'string'"), so every list 500s. Here
+        // we build the options object ourselves and OMIT `cursor` until we have a
+        // real one.
+        use js_sys::{Array, Function, Object, Promise, Reflect};
+        use wasm_bindgen::{JsCast, JsValue};
+        use wasm_bindgen_futures::JsFuture;
+
+        let jserr = |ctx: &str, e: JsValue| anyhow::anyhow!("R2 list: {ctx}: {e:?}");
         let listing_prefix = keymap::r2_key(&self.prefix, "");
+        let bucket: &JsValue = self.bucket.as_ref();
+        let list_fn: Function = Reflect::get(bucket, &JsValue::from_str("list"))
+            .map_err(|e| jserr("get list method", e))?
+            .dyn_into()
+            .map_err(|e| jserr("list is not a function", e))?;
+
         let mut keys = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
-            let mut list = self.bucket.list().prefix(listing_prefix.clone());
+            let opts = Object::new();
+            Reflect::set(
+                &opts,
+                &JsValue::from_str("prefix"),
+                &JsValue::from_str(&listing_prefix),
+            )
+            .map_err(|e| jserr("set prefix", e))?;
+            Reflect::set(&opts, &JsValue::from_str("limit"), &JsValue::from_f64(1000.0))
+                .map_err(|e| jserr("set limit", e))?;
             if let Some(c) = &cursor {
-                list = list.cursor(c.clone());
+                Reflect::set(&opts, &JsValue::from_str("cursor"), &JsValue::from_str(c))
+                    .map_err(|e| jserr("set cursor", e))?;
             }
-            let page = list
-                .execute()
+            let promise: Promise = list_fn
+                .call1(bucket, &opts)
+                .map_err(|e| jserr(&format!("calling list({listing_prefix})"), e))?
+                .dyn_into()
+                .map_err(|e| jserr("list did not return a promise", e))?;
+            let result = JsFuture::from(promise)
                 .await
-                .map_err(|err| anyhow::anyhow!("R2 list {listing_prefix}: {err}"))?;
-            for object in page.objects() {
-                if let Some(rel) = keymap::relative_key(&self.prefix, &object.key()) {
+                .map_err(|e| jserr(&format!("awaiting list({listing_prefix})"), e))?;
+
+            let objects: Array = Reflect::get(&result, &JsValue::from_str("objects"))
+                .map_err(|e| jserr("get objects", e))?
+                .dyn_into()
+                .map_err(|e| jserr("objects is not an array", e))?;
+            for object in objects.iter() {
+                let key = Reflect::get(&object, &JsValue::from_str("key"))
+                    .ok()
+                    .and_then(|k| k.as_string())
+                    .unwrap_or_default();
+                if let Some(rel) = keymap::relative_key(&self.prefix, &key) {
                     if !rel.is_empty() {
                         keys.push(rel);
                     }
                 }
             }
-            if page.truncated() {
-                cursor = page.cursor();
-                if cursor.is_none() {
-                    break;
-                }
-            } else {
+            let truncated = Reflect::get(&result, &JsValue::from_str("truncated"))
+                .ok()
+                .and_then(|t| t.as_bool())
+                .unwrap_or(false);
+            if !truncated {
+                break;
+            }
+            cursor = Reflect::get(&result, &JsValue::from_str("cursor"))
+                .ok()
+                .and_then(|c| c.as_string());
+            if cursor.is_none() {
                 break;
             }
         }
