@@ -439,7 +439,7 @@ The control channel is determinism-neutral by construction.
   the `MAX_FRAME_SIZE = 64` bound, and the closed tag registry (Hello `0xF0`,
   HelloAck `0xF1`, Setup `0x01`, SetupAck `0x02`, Quit `0x12`) in
   `crucible-protocol`. — satisfies [PROTO-5], [PROTO-6], [PROTO-7]; spec §3.
-- [ ] **T-PROTO-2** Implement the pure `encode`/`decode` codec for `PluginMsg`
+- [x] **T-PROTO-2** Implement the pure `encode`/`decode` codec for `PluginMsg`
   and `HostMsg` with typed errors (empty, unknown tag, short/long payload,
   oversize length) and the frame read/write helpers (truncated prefix/payload
   rejected). — satisfies [PROTO-5], [PROTO-6], [PROTO-22]; spec §6.
