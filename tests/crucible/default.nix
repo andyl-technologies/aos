@@ -180,6 +180,7 @@ in {
     qemuPluginBlockIo = import ./phase2-plugin-block-io.nix {inherit pkgs lib;};
     qemuPluginNinePIo = import ./phase2-plugin-9p-io.nix {inherit pkgs lib;};
     qemuPluginWhiteboxDoorbell = import ./phase2-plugin-whitebox-doorbell.nix {inherit pkgs lib;};
+    qemuPluginAppRandomDoorbell = import ./phase2-plugin-app-random-doorbell.nix {inherit pkgs lib;};
     qemuPluginCoverage = import ./phase2-plugin-coverage.nix {inherit pkgs lib;};
     qemuPluginHandshake = import ./phase2-plugin-handshake.nix {inherit pkgs lib;};
     qemuPluginSetupCompletion = import ./phase2-plugin-setup-completion.nix {inherit pkgs lib;};
