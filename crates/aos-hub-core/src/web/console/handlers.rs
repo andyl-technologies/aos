@@ -1957,6 +1957,7 @@ async fn render_cache_detail(
             .filter(|r| !linked.contains(&r.id))
             .map(|r| (r.slug.clone(), r.visibility.clone()))
             .collect();
+        let advertise_frontend = deps.db.cache_advertises_storage_frontend(cache.id).await?;
         Ok::<_, anyhow::Error>(console::cache_page(
             &session.email,
             &org.slug,
@@ -1968,6 +1969,7 @@ async fn render_cache_detail(
             &link_rows,
             &linkable,
             can_admin,
+            advertise_frontend,
             notice,
             started,
         ))
@@ -2315,6 +2317,50 @@ pub(crate) async fn cache_change_storage(
         Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(err) => internal(err),
     }
+}
+
+/// `POST /-/org/{org}/caches/{slug}/advertise-frontend` form: the checkbox.
+#[derive(serde::Deserialize)]
+pub(crate) struct CacheAdvertiseFrontendForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    advertise: Option<String>,
+}
+
+/// `POST /-/org/{org}/caches/{slug}/advertise-frontend` — toggle whether the
+/// cache advertises its inherited storage-binding frontend (RFC-0004 §12).
+pub(crate) async fn cache_set_advertise_frontend(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<CacheAdvertiseFrontendForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let (_org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    if let Err(err) = deps
+        .db
+        .set_cache_advertise_storage_frontend(cache.id, form.advertise.is_some())
+        .await
+    {
+        return internal(err);
+    }
+    Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response()
 }
 
 /// `POST /-/org/{org}/caches/{slug}/unlink` — remove a cache⇄registry link.

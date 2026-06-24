@@ -1799,6 +1799,9 @@ pub fn cache_page(
     links: &[CacheLinkRow],
     linkable: &[(String, String)],
     can_admin: bool,
+    // Whether this cache advertises its inherited storage-binding frontend
+    // (RFC-0004 §12) — the storage section's opt-out checkbox.
+    advertise_storage_frontend: bool,
     notice: Option<&str>,
     started: Instant,
 ) -> String {
@@ -1866,6 +1869,25 @@ pub fn cache_page(
                 options = options,
             );
         }
+        // Advertise the inherited storage-binding frontend (RFC-0004 §12): when
+        // the bucket is public with a direct frontend, this cache's advertised
+        // URL points consumers straight at the bucket.
+        let _ = write!(
+            body,
+            "<h3>Bucket-direct serving</h3>\n\
+             <p class=\"dim\">When this cache's storage bucket is public and has a direct \
+             frontend, advertise it so the cache's URL points consumers straight at the \
+             bucket.</p>\n\
+             <form class=\"console\" method=\"post\" \
+             action=\"/-/org/{org}/caches/{slug}/advertise-frontend\">{csrf}\
+             <label><span class=\"lbl\">advertise the inherited bucket frontend</span> \
+             <input type=\"checkbox\" name=\"advertise\" value=\"1\"{checked}></label>\n\
+             <button>save</button>\n</form>\n",
+            org = escape(org_slug),
+            slug = escape(&cache.slug),
+            csrf = csrf_field(csrf),
+            checked = if advertise_storage_frontend { " checked" } else { "" },
+        );
     }
 
     if can_admin {
@@ -4464,6 +4486,7 @@ mod cache_render_tests {
             &[],
             &[("cdn".to_string(), "public".to_string())],
             true,
+            true,
             None,
             Instant::now(),
         );
@@ -4493,6 +4516,7 @@ mod cache_render_tests {
             &[],
             &[("cdn".to_string(), "public".to_string())],
             false,
+            true,
             None,
             Instant::now(),
         );
@@ -4515,6 +4539,7 @@ mod cache_render_tests {
             &usage(),
             &[],
             &[],
+            true,
             true,
             Some("Collected 5 objects, reclaimed 1.0 MiB (3 retained)."),
             Instant::now(),
