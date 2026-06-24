@@ -733,7 +733,7 @@ impl RingHeader {
         let mut frames = Vec::with_capacity(live as usize);
         for offset in 0..live {
             let slot = ((head.wrapping_add(offset)) & (capacity - 1)) as usize;
-            frames.push(entries[slot].clone());
+            frames.push(entries[slot].canonicalized_for_snapshot()?);
         }
 
         Ok(SpscRingSnapshot { frames })
@@ -799,6 +799,41 @@ impl Default for RingHeader {
 pub struct SpscRingSnapshot {
     /// Live frames in `read_idx..write_idx` FIFO order.
     pub frames: Vec<FrameEntry>,
+}
+
+impl SpscRingSnapshot {
+    /// Serializes the live frames into padding-independent canonical bytes.
+    ///
+    /// The encoding is little-endian and contains the frame count followed by
+    /// each frame's delivery icount, source node, sequence, payload length, and
+    /// valid payload bytes. Frame padding and unused payload capacity are excluded
+    /// so equivalent logical snapshots content-address identically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError::InvalidFrameLength`] when any frame advertises a
+    /// payload length larger than [`MAX_FRAME_DATA`], or
+    /// [`SpscRingError::SnapshotLengthOverflow`] when the frame count cannot fit
+    /// in the canonical encoding.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, SpscRingError> {
+        let frame_count = u64::try_from(self.frames.len()).map_err(|_| {
+            SpscRingError::SnapshotLengthOverflow {
+                len: self.frames.len(),
+            }
+        })?;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&frame_count.to_le_bytes());
+        for frame in &self.frames {
+            let canonical = frame.canonicalized_for_snapshot()?;
+            let payload_len = usize::from(canonical.len);
+            bytes.extend_from_slice(&canonical.delivery_icount.to_le_bytes());
+            bytes.extend_from_slice(&canonical.src_node.to_le_bytes());
+            bytes.extend_from_slice(&canonical.seq.to_le_bytes());
+            bytes.extend_from_slice(&canonical.len.to_le_bytes());
+            bytes.extend_from_slice(&canonical.data[..payload_len]);
+        }
+        Ok(bytes)
+    }
 }
 
 /// A shared-memory frame whose delivery time is carried in band.
@@ -1485,6 +1520,21 @@ impl FrameEntry {
     pub fn padding_bytes_are_zero(&self) -> bool {
         self._pad.iter().all(|byte| *byte == 0)
     }
+
+    fn canonicalized_for_snapshot(&self) -> Result<Self, SpscRingError> {
+        let len = usize::from(self.len);
+        if len > MAX_FRAME_DATA {
+            return Err(SpscRingError::InvalidFrameLength {
+                len,
+                capacity: MAX_FRAME_DATA,
+            });
+        }
+
+        let mut canonical = self.clone();
+        canonical._pad = [0; 6];
+        canonical.data[len..].fill(0);
+        Ok(canonical)
+    }
 }
 
 impl Default for FrameEntry {
@@ -1690,6 +1740,20 @@ pub enum SpscRingError {
         len: usize,
         /// The ring capacity in frame entries.
         capacity: u64,
+    },
+    /// A frame in the ring or snapshot advertises an impossible payload length.
+    #[error("SPSC frame payload length {len} exceeds capacity {capacity}")]
+    InvalidFrameLength {
+        /// The invalid frame payload length.
+        len: usize,
+        /// The maximum payload capacity in bytes.
+        capacity: usize,
+    },
+    /// The snapshot frame count cannot fit in the canonical byte encoding.
+    #[error("SPSC snapshot length {len} cannot be encoded as u64")]
+    SnapshotLengthOverflow {
+        /// The number of frames in the snapshot.
+        len: usize,
     },
 }
 
