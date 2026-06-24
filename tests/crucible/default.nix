@@ -175,6 +175,7 @@ in {
     qemuPluginSynchronousIdleAdvance = import ./phase2-plugin-synchronous-idle-advance.nix {inherit pkgs lib;};
     qemuPluginInboundFrames = import ./phase2-plugin-inbound-frames.nix {inherit pkgs lib;};
     qemuPluginDeviceIoFreeze = import ./phase2-plugin-device-io-freeze.nix {inherit pkgs lib;};
+    qemuPluginNetworkTx = import ./phase2-plugin-network-tx.nix {inherit pkgs lib;};
     qemuCrashDetection = import ./phase2-qemu-crash-detection.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuQmpClient = import ./phase2-qemu-qmp-client.nix {inherit pkgs lib;};

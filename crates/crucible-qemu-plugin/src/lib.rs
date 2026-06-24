@@ -12,7 +12,8 @@
 //! `deadline` owns exact virtual-clock deadline introspection; `device_io` owns
 //! the virtual-time hold for in-flight device I/O; `idle_loop` owns the idle
 //! callback hot-loop state machine; `inbound` owns inbound frame polling and
-//! deterministic injection ordering; `registration` owns the fail-stop
+//! deterministic injection ordering; `network_tx` owns guest network transmit
+//! interception and outbound ring enqueueing; `registration` owns the fail-stop
 //! registration sequencer; `setup` owns descriptor mapping and setup
 //! acknowledgement; `time_control` owns clock ownership, authorized virtual-time
 //! advancement, and the time-control ordering contract. Future modules will add
@@ -32,6 +33,7 @@ pub mod deadline;
 pub mod device_io;
 pub mod idle_loop;
 pub mod inbound;
+pub mod network_tx;
 pub mod registration;
 pub mod setup;
 pub mod time_control;
@@ -67,6 +69,9 @@ pub use idle_loop::{
     IdleWakePlan, PluginIdleHotLoop, compute_idle_wake_plan, timer_deadline_icount,
 };
 pub use inbound::{InboundFrameBatch, InboundFrameError, InboundFrameRing, PluginInboundFrames};
+pub use network_tx::{
+    NetworkTxEnqueue, NetworkTxError, NetworkTxRing, PluginNetworkTx, handle_network_tx_callback,
+};
 pub use registration::{
     PluginCallbackCapabilities, PluginRegistrationFailure, PluginRegistrationReady,
     PluginRegistrationSequence, PluginRegistrationSequenceError,
