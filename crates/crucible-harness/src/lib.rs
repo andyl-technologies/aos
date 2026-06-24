@@ -198,7 +198,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:patch-microtests",
         phase: GatePhase::Phase2,
         owner: "crucible-qemu-plugin",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:adversarial-determinism",

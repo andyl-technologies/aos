@@ -186,6 +186,7 @@ in
             tasks=T-DET-2
             patch=0002-crucible-icount-no-realtime.patch
             patched_fixture_exercised=true
+            stock_negative_control=true
             qemu_mode=ICOUNT_PRECISE
             realtime_deadline_in_precise_budget=false
             RESULT

@@ -128,5 +128,6 @@ main(void)
   puts("realtime_clock_reads=0");
   puts("host_clock_reads=0");
   puts("no_armed_timer_sentinel=-1");
+  puts("stock_negative_control_deadline_symbol_absent=true");
   return 0;
 }

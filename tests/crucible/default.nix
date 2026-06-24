@@ -80,6 +80,7 @@ in {
     lookaheadGate = import ./phase1-lookahead-gate.nix {inherit pkgs lib;};
     noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
     qemuDeterministicEntropy = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;};
+    rrFingerprintHelpers = import ./phase1-rr-fingerprint-helpers.nix {inherit pkgs lib;};
     phaseGateWiring = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};
     rfcConsistency = import ./phase1-rfc-consistency.nix {inherit pkgs lib;};
     rustdocBar = import ./phase1-rustdoc-bar.nix {inherit pkgs lib;};
@@ -171,13 +172,10 @@ in {
         taskIds = ["T-PLAN-3" "T-HARN-21"];
         reason = "QEMU inertness gate is intentionally pending";
       };
-      patchMicrotests = redGate {
+      patchMicrotests = import ./phase2-patch-microtests.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.patchMicrotests";
-        gateName = "gate:patch-microtests";
-        owner = "crucible-qemu-plugin";
-        phase = "phase2";
         taskIds = ["T-PLAN-3" "T-HARN-20"];
-        reason = "QEMU patch micro-test gate is intentionally pending";
       };
       singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {
         inherit pkgs lib;

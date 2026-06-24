@@ -909,7 +909,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   spec §8.2.
 - [ ] **T-HARN-19** Implement the protocol-codec and 9p/blk wire fuzzers with the
   round-trip property and a regression corpus. — satisfies [HARN-34]; spec §8.3.
-- [ ] **T-HARN-20** Implement the per-patch QEMU micro-test framework and
+- [x] **T-HARN-20** Implement the per-patch QEMU micro-test framework and
   `gate:patch-microtests` (each patch has a focused test absent on stock QEMU). —
   satisfies [HARN-20]; spec §10.
 - [ ] **T-HARN-21** Implement `gate:qemu-inert` (sim-off patched QEMU behaviorally

@@ -195,7 +195,7 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible-qemu-plugin",
         test_target: "gate_patch_microtests",
         required_features: &[],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:divergence-bisect",

@@ -186,7 +186,7 @@ fn linux_non_private_futex_syscalls_are_available() {
     };
     assert_eq!(wake.waiters_woken, 0);
     assert!(!wake.futex_private);
-    assert!(!crucible_shmem::FUTEX_PRIVATE);
+    const { assert!(!crucible_shmem::FUTEX_PRIVATE) };
 
     let wait = match slot.futex_wait_word_nonprivate(99) {
         Ok(wait) => wait,
