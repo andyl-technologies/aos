@@ -1465,18 +1465,59 @@ pub struct OrgUsage {
     pub updated_at: i64,
 }
 
+/// The editable instance-wide settings bundle (RFC-0004 console).
+///
+/// Every field is persisted in the `instance_config` key/value table and is
+/// configurable via the WebUI, the API, and the CLI; the deploy seeds initial
+/// values but never owns them thereafter. Optional fields are `None`/empty when
+/// unset and fall back to a documented default. Loaded by
+/// [`Database::instance_settings`].
+#[derive(Debug, Clone, Default)]
+pub struct InstanceSettings {
+    /// Operator-chosen site title shown in the masthead and page titles; `None`
+    /// falls back to the deploy `--brand` (or empty).
+    pub site_title: Option<String>,
+    /// Short tagline shown under the brand on the home page.
+    pub tagline: Option<String>,
+    /// A global announcement banner rendered on every console page; `None` for
+    /// no banner.
+    pub announcement: Option<String>,
+    /// Terms-of-service URL for the footer.
+    pub tos_url: Option<String>,
+    /// Privacy-policy URL for the footer.
+    pub privacy_url: Option<String>,
+    /// Support/contact URL for the footer.
+    pub support_url: Option<String>,
+    /// Who may create organizations (also exposed standalone as
+    /// [`Database::signup_policy`]).
+    pub signup_policy: SignupPolicy,
+    /// Lowercased email-domain allowlist for signup; empty allows any domain.
+    pub signup_domains: Vec<String>,
+    /// Whether local password login is offered (else SSO/magic-link only).
+    /// Defaults to `true`.
+    pub password_login: bool,
+    /// Session absolute lifetime in seconds; `None` uses the built-in default.
+    pub session_lifetime_secs: Option<i64>,
+    /// Default `robots.txt` crawl policy new registries inherit
+    /// (`allow_all`/`allow_no_ai`/`deny_all`). Defaults to `allow_all`.
+    pub default_crawl_policy: String,
+    /// Maximum surface upload size in bytes; `None` uses the built-in default.
+    pub max_upload_bytes: Option<i64>,
+}
+
 /// The instance-wide policy gating who may create organizations.
 ///
 /// Stored in `instance_config` under the key `signup_policy`; see
 /// [`Database::signup_policy`]. The default is [`SignupPolicy::InviteOnly`]
 /// (the hosted-instance posture: free hub-managed storage behind open signup
 /// is an abuse magnet).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SignupPolicy {
     /// Any authenticated principal may create an org.
     Open,
     /// Org creation requires an invitation or an existing membership (or an
-    /// instance admin).
+    /// instance admin). The safe default.
+    #[default]
     InviteOnly,
 }
 
@@ -7144,6 +7185,82 @@ impl Database {
     /// Returns an error on database failure.
     pub async fn set_default_storage_root(&self, root: &str) -> Result<()> {
         self.instance_config_set("default_storage_root", root).await
+    }
+
+    /// Deletes an `instance_config` key (clearing an optional setting back to
+    /// its default), a no-op when the key is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn instance_config_clear(&self, key: &str) -> Result<()> {
+        self.backend
+            .execute(
+                "DELETE FROM instance_config WHERE config_key = ?1",
+                &vals![key],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Loads the full editable instance-settings bundle from `instance_config`.
+    ///
+    /// Every field falls back to a documented default when its key is unset, so
+    /// a fresh deployment reads as sensible defaults until an admin (or the
+    /// deploy-time seed) overrides them. Read by the instance-settings console
+    /// and the API/CLI; the branding/footer subset is also seeded into the page
+    /// chrome at startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn instance_settings(&self) -> Result<InstanceSettings> {
+        let get = |k: &'static str| self.instance_config_get(k);
+        Ok(InstanceSettings {
+            site_title: get("site_title").await?,
+            tagline: get("tagline").await?,
+            announcement: get("announcement").await?,
+            tos_url: get("tos_url").await?,
+            privacy_url: get("privacy_url").await?,
+            support_url: get("support_url").await?,
+            signup_policy: self.signup_policy().await?,
+            signup_domains: get("signup_domains")
+                .await?
+                .map(|v| {
+                    v.split(|c: char| c == ',' || c.is_whitespace())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_lowercase())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            password_login: get("password_login")
+                .await?
+                .map(|v| v != "off" && v != "false" && v != "0")
+                .unwrap_or(true),
+            session_lifetime_secs: get("session_lifetime_secs")
+                .await?
+                .and_then(|v| v.parse().ok()),
+            default_crawl_policy: get("default_crawl_policy")
+                .await?
+                .unwrap_or_else(|| "allow_all".to_string()),
+            max_upload_bytes: get("max_upload_bytes").await?.and_then(|v| v.parse().ok()),
+        })
+    }
+
+    /// Upserts a single instance-config key, or clears it when `value` is
+    /// `None`/blank (resetting to the default).
+    ///
+    /// The typed front door the console/API/CLI setters share, so an empty form
+    /// field consistently means "reset" rather than "store an empty string".
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn set_instance_config(&self, key: &str, value: Option<&str>) -> Result<()> {
+        match value.map(str::trim).filter(|v| !v.is_empty()) {
+            Some(v) => self.instance_config_set(key, v).await,
+            None => self.instance_config_clear(key).await,
+        }
     }
 
     /// The number of active (non-revoked) tokens owned by any principal in an

@@ -338,6 +338,28 @@ mod entry {
             .with_origin_fetch(Arc::new(crate::surface::WorkerOriginFetch)),
         );
 
+        // Seed the editable site chrome (title/banner/footer) from D1 once per
+        // isolate, so a fresh isolate reflects persisted branding. A branding
+        // save updates the live chrome via `set_site_chrome`; other isolates
+        // pick it up on recycle. Guarded so the hot path reads D1 at most once
+        // per isolate.
+        {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static SEEDED: AtomicBool = AtomicBool::new(false);
+            if !SEEDED.swap(true, Ordering::Relaxed) {
+                if let Ok(s) = db.instance_settings().await {
+                    aos_hub_core::web::console_render::set_site_chrome(
+                        s.site_title.as_deref(),
+                        s.tagline.as_deref(),
+                        s.announcement.as_deref(),
+                        s.tos_url.as_deref(),
+                        s.privacy_url.as_deref(),
+                        s.support_url.as_deref(),
+                    );
+                }
+            }
+        }
+
         let console_deps = ConsoleDeps {
             db,
             jwt_keys,

@@ -426,6 +426,19 @@ pub async fn router(state: Arc<AppState>) -> Router {
             .ok()
             .flatten(),
     };
+    // Seed the editable site chrome (title/banner/footer) from D1 at startup so
+    // the masthead reflects persisted branding; a branding save refreshes it
+    // live via `set_site_chrome`.
+    if let Ok(s) = state.db.instance_settings().await {
+        aos_hub_core::web::console_render::set_site_chrome(
+            s.site_title.as_deref(),
+            s.tagline.as_deref(),
+            s.announcement.as_deref(),
+            s.tos_url.as_deref(),
+            s.privacy_url.as_deref(),
+            s.support_url.as_deref(),
+        );
+    }
     let console_router = aos_hub_core::web::console::console_router(console_deps);
     // Kept for the outermost client-IP injection layer below, which runs after
     // `with_state` moves `state` into the router.

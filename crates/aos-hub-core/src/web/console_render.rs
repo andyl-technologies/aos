@@ -25,7 +25,7 @@
 //! browse surface render byte-identically.
 
 use std::fmt::Write as _;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 use crate::binding::RuntimeKind;
 use crate::clock::Instant;
 
@@ -71,6 +71,107 @@ pub fn set_brand(name: impl Into<String>) {
 #[must_use]
 pub fn brand() -> &'static str {
     BRAND.get().map(String::as_str).unwrap_or("")
+}
+
+/// The editable, D1-backed site chrome overlaid on the deploy brand: the site
+/// title (overrides [`brand`] in the masthead), the global announcement banner,
+/// and the footer legal/contact links.
+///
+/// Unlike [`BRAND`] (a write-once deploy default), this is a mutable cell so an
+/// instance admin's edit takes effect immediately for the serving process. Each
+/// shell seeds it from `instance_config` at startup (native) or isolate init
+/// (Worker); a save updates both D1 and this cell.
+#[derive(Default)]
+struct SiteChrome {
+    title: Option<String>,
+    tagline: Option<String>,
+    announcement: Option<String>,
+    tos_url: Option<String>,
+    privacy_url: Option<String>,
+    support_url: Option<String>,
+}
+
+static SITE_CHROME: RwLock<SiteChrome> = RwLock::new(SiteChrome {
+    title: None,
+    tagline: None,
+    announcement: None,
+    tos_url: None,
+    privacy_url: None,
+    support_url: None,
+});
+
+/// Sets the editable site chrome (title, tagline, announcement, footer links).
+///
+/// Called at startup to seed from `instance_config`, and on a branding save so
+/// the change is live without a restart. A poisoned lock is recovered (the
+/// chrome is advisory presentation state, never a correctness invariant).
+pub fn set_site_chrome(
+    title: Option<&str>,
+    tagline: Option<&str>,
+    announcement: Option<&str>,
+    tos_url: Option<&str>,
+    privacy_url: Option<&str>,
+    support_url: Option<&str>,
+) {
+    let mut chrome = SITE_CHROME.write().unwrap_or_else(|e| e.into_inner());
+    *chrome = SiteChrome {
+        title: title.map(str::to_string),
+        tagline: tagline.map(str::to_string),
+        announcement: announcement.map(str::to_string),
+        tos_url: tos_url.map(str::to_string),
+        privacy_url: privacy_url.map(str::to_string),
+        support_url: support_url.map(str::to_string),
+    };
+}
+
+/// The configured tagline (empty when unset) — a short dim subtitle beside the
+/// masthead brand.
+fn site_tagline() -> String {
+    let chrome = SITE_CHROME.read().unwrap_or_else(|e| e.into_inner());
+    chrome.tagline.clone().unwrap_or_default()
+}
+
+/// The effective masthead brand: the editable site title if set, else the
+/// deploy [`brand`].
+fn effective_brand() -> String {
+    let chrome = SITE_CHROME.read().unwrap_or_else(|e| e.into_inner());
+    match &chrome.title {
+        Some(t) if !t.is_empty() => t.clone(),
+        _ => brand().to_string(),
+    }
+}
+
+/// The announcement-banner HTML (empty when no banner is set).
+fn announcement_html() -> String {
+    let chrome = SITE_CHROME.read().unwrap_or_else(|e| e.into_inner());
+    match &chrome.announcement {
+        Some(a) if !a.is_empty() => {
+            format!("<div class=\"announce\">{}</div>\n", escape(a))
+        }
+        _ => String::new(),
+    }
+}
+
+/// The footer legal/contact links HTML (empty when none are set).
+fn footer_links_html() -> String {
+    let chrome = SITE_CHROME.read().unwrap_or_else(|e| e.into_inner());
+    let mut links = Vec::new();
+    for (label, url) in [
+        ("terms", &chrome.tos_url),
+        ("privacy", &chrome.privacy_url),
+        ("support", &chrome.support_url),
+    ] {
+        if let Some(u) = url {
+            if !u.is_empty() {
+                links.push(format!("<a href=\"{}\">{}</a>", escape(u), label));
+            }
+        }
+    }
+    if links.is_empty() {
+        String::new()
+    } else {
+        format!("<span class=\"footer-links\">{}</span>", links.join(" · "))
+    }
 }
 
 /// Set the footer application label once, at startup.
@@ -277,10 +378,20 @@ pub fn page_with_session(
         }
     }
 
-    // The brand is operator-configurable (default empty): when set it
-    // leads the masthead and titles every page; when empty the crumbs lead.
-    let brand_span = brand_span(brand());
-    let page_title = page_title(brand(), title);
+    // The brand is operator-configurable: the editable site title (when set)
+    // overrides the deploy brand, leading the masthead and titling every page.
+    let brand = effective_brand();
+    let mut brand_span = brand_span(&brand);
+    // A configured tagline rides beside the brand as a dim subtitle.
+    let tagline = site_tagline();
+    if !brand_span.is_empty() && !tagline.is_empty() {
+        let _ = write!(brand_span, "<span class=\"tagline\">{}</span>", escape(&tagline));
+    }
+    let page_title = page_title(&brand, title);
+    // The announcement banner (when set) sits above the content on every page;
+    // the footer carries the configured legal/contact links beside the statline.
+    let announcement = announcement_html();
+    let footer_links = footer_links_html();
 
     format!(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
@@ -290,8 +401,9 @@ pub fn page_with_session(
          <script src=\"/_assets/app.js?v={ver}\" defer></script>\n</head>\n<body>\n\
          <header class=\"masthead\">{brand_span}\
          <span class=\"crumbs\">{crumb_html}</span>{session}</header>\n\
+         {announcement}\
          <main>\n{body}\n</main>\n\
-         <footer class=\"statline\">{statline}</footer>\n</body>\n</html>\n",
+         <footer class=\"statline\">{statline}{footer_links}</footer>\n</body>\n</html>\n",
         session = session.render(),
         ver = crate::web::assets::asset_version(),
     )
@@ -3178,10 +3290,23 @@ pub fn org_sso_page(
     org_settings_chrome(email, org_slug, "sso", &body, started)
 }
 
-/// The instance-scope settings sidebar (`general` or `storage` active).
+/// The instance-scope settings sidebar (`general`, `branding`, `serving`, or
+/// `storage` active).
 fn instance_settings_tabs(active: &str) -> Vec<SettingsTab> {
     vec![
         SettingsTab::new("general", "General", "/-/instance".to_string(), active),
+        SettingsTab::new(
+            "branding",
+            "Branding",
+            "/-/instance/branding".to_string(),
+            active,
+        ),
+        SettingsTab::new(
+            "serving",
+            "Serving",
+            "/-/instance/serving".to_string(),
+            active,
+        ),
         SettingsTab::new(
             "storage",
             "Storage",
@@ -3204,16 +3329,14 @@ fn instance_settings_chrome(email: &str, active: &str, content: &str, started: I
     )
 }
 
-/// The instance-settings "General" page (instance admins only): the signup
-/// policy.
-///
-/// The masthead brand is intentionally not editable here — it is fixed at
-/// server start (a process-wide value), so it stays a `--brand`/CLI setting.
+/// The instance-settings "General" page (instance admins only): signup and
+/// identity policy — who may create orgs, the signup email-domain allowlist,
+/// whether local password login is offered, and the session lifetime.
 #[must_use]
 pub fn instance_settings_page(
     email: &str,
     csrf: &str,
-    policy: SignupPolicy,
+    settings: &crate::db::InstanceSettings,
     notice: Option<&str>,
     started: Instant,
 ) -> String {
@@ -3221,32 +3344,137 @@ pub fn instance_settings_page(
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
     }
-    let _ = write!(
-        body,
-        "<h2>Signup policy{help}</h2>\n",
-        help = help::marker("instance.signup_policy"),
-    );
-    let open_sel = if matches!(policy, SignupPolicy::Open) {
+    let open_sel = if matches!(settings.signup_policy, SignupPolicy::Open) {
         " checked"
     } else {
         ""
     };
-    let invite_sel = if matches!(policy, SignupPolicy::InviteOnly) {
+    let invite_sel = if matches!(settings.signup_policy, SignupPolicy::InviteOnly) {
         " checked"
     } else {
         ""
     };
+    let pw = if settings.password_login { " checked" } else { "" };
+    let lifetime = settings
+        .session_lifetime_secs
+        .map(|s| s.to_string())
+        .unwrap_or_default();
     let _ = write!(
         body,
-        "<form class=\"console\" method=\"post\" action=\"/-/instance\">{csrf}\
-         <label><input type=\"radio\" name=\"signup_policy\" value=\"invite_only\"{invite_sel}> \
-         invite only</label>\n\
-         <label><input type=\"radio\" name=\"signup_policy\" value=\"open\"{open_sel}> \
-         open</label>\n\
+        "<h2>Signup &amp; identity</h2>\n\
+         <form class=\"console\" method=\"post\" action=\"/-/instance\">{csrf}\
+         <label><span class=\"lbl\">org signup{help}</span> <select name=\"signup_policy\">\
+         <option value=\"invite_only\"{invite_sel}>invite only</option>\
+         <option value=\"open\"{open_sel}>open</option></select></label>\n\
+         <label><span class=\"lbl\">signup domain allowlist</span> \
+         <input type=\"text\" name=\"signup_domains\" value=\"{domains}\" \
+         placeholder=\"acme.com, example.org\"> \
+         <span class=\"dim\">comma-separated; empty allows any domain</span></label>\n\
+         <label><span class=\"lbl\">offer password login</span> \
+         <input type=\"checkbox\" name=\"password_login\" value=\"1\"{pw}></label>\n\
+         <label><span class=\"lbl\">session lifetime (seconds)</span> \
+         <input type=\"number\" name=\"session_lifetime_secs\" value=\"{lifetime}\" min=\"0\"> \
+         <span class=\"dim\">empty uses the built-in default</span></label>\n\
          <button>save</button>\n</form>\n",
         csrf = csrf_field(csrf),
+        help = help::marker("instance.signup_policy"),
+        domains = escape(&settings.signup_domains.join(", ")),
     );
     instance_settings_chrome(email, "general", &body, started)
+}
+
+/// The instance-settings "Branding" page (instance admins only): the site
+/// title, tagline, announcement banner, and footer legal/contact links.
+///
+/// All are D1-backed and editable here; the deploy only seeds initial values.
+/// An empty field resets to the default (the title falls back to the deploy
+/// `--brand`).
+#[must_use]
+pub fn instance_branding_page(
+    email: &str,
+    csrf: &str,
+    settings: &crate::db::InstanceSettings,
+    notice: Option<&str>,
+    started: Instant,
+) -> String {
+    let mut body = String::from("<h1>Instance · branding</h1>\n");
+    if let Some(notice) = notice {
+        let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
+    }
+    let val = |o: &Option<String>| escape(o.as_deref().unwrap_or(""));
+    let _ = write!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"/-/instance/branding\">{csrf}\
+         <label><span class=\"lbl\">site title</span> \
+         <input type=\"text\" name=\"site_title\" value=\"{title}\" placeholder=\"AOS Hub\"> \
+         <span class=\"dim\">shown in the masthead; empty uses the deploy brand</span></label>\n\
+         <label><span class=\"lbl\">tagline</span> \
+         <input type=\"text\" name=\"tagline\" value=\"{tagline}\"></label>\n\
+         <label><span class=\"lbl\">announcement banner</span> \
+         <textarea name=\"announcement\" rows=\"2\" cols=\"60\">{announce}</textarea> \
+         <span class=\"dim\">shown on every page; empty for none</span></label>\n\
+         <h2>Footer links</h2>\n\
+         <label><span class=\"lbl\">terms of service URL</span> \
+         <input type=\"text\" name=\"tos_url\" value=\"{tos}\"></label>\n\
+         <label><span class=\"lbl\">privacy policy URL</span> \
+         <input type=\"text\" name=\"privacy_url\" value=\"{privacy}\"></label>\n\
+         <label><span class=\"lbl\">support URL</span> \
+         <input type=\"text\" name=\"support_url\" value=\"{support}\"></label>\n\
+         <button>save</button>\n</form>\n",
+        csrf = csrf_field(csrf),
+        title = val(&settings.site_title),
+        tagline = val(&settings.tagline),
+        announce = val(&settings.announcement),
+        tos = val(&settings.tos_url),
+        privacy = val(&settings.privacy_url),
+        support = val(&settings.support_url),
+    );
+    instance_settings_chrome(email, "branding", &body, started)
+}
+
+/// The instance-settings "Serving" page (instance admins only): the
+/// instance-wide defaults new registries/caches inherit — the default crawl
+/// policy and the maximum surface upload size.
+#[must_use]
+pub fn instance_serving_page(
+    email: &str,
+    csrf: &str,
+    settings: &crate::db::InstanceSettings,
+    notice: Option<&str>,
+    started: Instant,
+) -> String {
+    let mut body = String::from("<h1>Instance · serving</h1>\n");
+    if let Some(notice) = notice {
+        let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
+    }
+    let mut crawl_options = String::new();
+    for p in ["allow_all", "allow_no_ai", "deny_all"] {
+        let sel = if p == settings.default_crawl_policy {
+            " selected"
+        } else {
+            ""
+        };
+        let _ = write!(crawl_options, "<option value=\"{p}\"{sel}>{p}</option>");
+    }
+    let max_upload = settings
+        .max_upload_bytes
+        .map(|b| b.to_string())
+        .unwrap_or_default();
+    let _ = write!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"/-/instance/serving\">{csrf}\
+         <label><span class=\"lbl\">default crawl policy{help}</span> \
+         <select name=\"default_crawl_policy\">{crawl}</select> \
+         <span class=\"dim\">new registries inherit this robots.txt posture</span></label>\n\
+         <label><span class=\"lbl\">max upload (bytes)</span> \
+         <input type=\"number\" name=\"max_upload_bytes\" value=\"{max_upload}\" min=\"0\"> \
+         <span class=\"dim\">empty uses the built-in default</span></label>\n\
+         <button>save</button>\n</form>\n",
+        csrf = csrf_field(csrf),
+        help = help::marker("registry.crawl_policy"),
+        crawl = crawl_options,
+    );
+    instance_settings_chrome(email, "serving", &body, started)
 }
 
 /// The instance-settings "Storage" page (instance admins only): the

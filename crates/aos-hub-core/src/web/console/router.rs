@@ -416,6 +416,24 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             }),
         )
         .route(
+            "/-/instance/branding",
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart| {
+                send_bridge(handlers::instance_branding(from_state(s), h, r))
+            })
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, f: axum::extract::Form<_>| {
+                send_bridge(handlers::instance_branding_action(from_state(s), h, r, f))
+            }),
+        )
+        .route(
+            "/-/instance/serving",
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart| {
+                send_bridge(handlers::instance_serving(from_state(s), h, r))
+            })
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, f: axum::extract::Form<_>| {
+                send_bridge(handlers::instance_serving_action(from_state(s), h, r, f))
+            }),
+        )
+        .route(
             "/{slug}/-/settings",
             get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
                 send_bridge(handlers::registry_settings(from_state(s), h, r, u, p))
