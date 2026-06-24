@@ -991,9 +991,10 @@ component that makes that purity true *inside* the QEMU process.
   delivery icount) with a distinct diagnosable error that the divergence bisector
   can localize; never a wall-clock-dependent fallback. — satisfies [PLUG-48];
   spec §12.10.3.
-- [ ] **T-PLUG-23** Add the plugin half of `gate:qemu-inert`: prove that with sim
-  mode off the plugin is not loaded and has zero effect on QEMU behavior. —
-  satisfies [PLUG-49]; spec §12.10.4.
+- [x] **T-PLUG-23** Add the plugin half of `gate:qemu-inert`: prove that with sim
+  mode off the plugin is not loaded and has zero effect on QEMU behavior. This
+  contributes plugin-half evidence for [PLUG-49]; the full real-QEMU corpus stays
+  with T-HARN-21. — spec §12.10.4.
 - [ ] **T-PLUG-24** Implement the deterministic round-robin sub-division within a
   RUN (fixed `rr_switch_quantum`, fixed ascending vCPU rotation), per-vCPU halt
   tracking, and the all-vCPUs-halted node-idle predicate with

@@ -13,6 +13,7 @@
 //! guest instruction;
 //! `handshake` owns plugin-side control-protocol version negotiation and slot
 //! cross-checking;
+//! `inertness` owns plugin-side sim-off load and effect assertions;
 //! `deadline` owns exact virtual-clock deadline introspection; `device_io` owns
 //! the virtual-time hold for in-flight device I/O; `idle_loop` owns the idle
 //! callback hot-loop state machine; `inbound` owns inbound frame polling and
@@ -53,6 +54,7 @@ pub mod device_io;
 pub mod handshake;
 pub mod idle_loop;
 pub mod inbound;
+pub mod inertness;
 pub mod network_rx;
 pub mod network_tx;
 pub mod ninep_io;
@@ -114,6 +116,10 @@ pub use idle_loop::{
     IdleWakePlan, PluginIdleHotLoop, compute_idle_wake_plan, timer_deadline_icount,
 };
 pub use inbound::{InboundFrameBatch, InboundFrameError, InboundFrameRing, PluginInboundFrames};
+pub use inertness::{
+    PluginInertnessError, PluginInertnessObservation, PluginInertnessReport,
+    PluginPatchCapabilityCalls, PluginSimulationMode, assert_plugin_inert,
+};
 pub use network_rx::{
     LosslessNetworkRxQueue, NetworkRxError, NetworkRxInjection, NetworkRxQueueError,
     NetworkRxQueueOperation, PluginNetworkRx, QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL,

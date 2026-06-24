@@ -188,6 +188,7 @@ in {
     qemuPluginShmemOrdering = import ./phase2-plugin-shmem-ordering.nix {inherit pkgs lib;};
     qemuPluginUnsafeBoundary = import ./phase2-plugin-unsafe-boundary.nix {inherit pkgs lib;};
     qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
+    qemuPluginQemuInert = import ./phase2-plugin-qemu-inert.nix {inherit pkgs lib;};
     qemuCrashDetection = import ./phase2-qemu-crash-detection.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuQmpClient = import ./phase2-qemu-qmp-client.nix {inherit pkgs lib;};
