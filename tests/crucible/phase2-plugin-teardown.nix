@@ -164,7 +164,7 @@
       }
       {
         label = "shutdown flag acquire check";
-        needle = "header.shutdown_requested()";
+        needle = "PluginShmemOrdering::observe_shutdown_requested";
       }
       {
         label = "host Quit proof";
@@ -184,7 +184,7 @@
       }
       {
         label = "done status publication";
-        needle = "slot.mark_done();";
+        needle = "PluginShmemOrdering::mark_done_after_shutdown";
       }
       {
         label = "orderly QEMU shutdown hook";

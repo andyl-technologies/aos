@@ -190,7 +190,7 @@
       }
       {
         label = "SPSC enqueue";
-        needle = ".enqueue(outbound_ring.entries, &frame)";
+        needle = "PluginShmemOrdering::enqueue_outbound_frame";
       }
       {
         label = "enqueue failure releases token";
@@ -202,7 +202,7 @@
       }
       {
         label = "delivery icount preview";
-        needle = "peek_delivery_icount";
+        needle = "PluginShmemOrdering::peek_inbound_delivery_icount";
       }
       {
         label = "future delivery gate";

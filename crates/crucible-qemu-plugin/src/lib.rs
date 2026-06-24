@@ -20,9 +20,11 @@
 //! receive injection through QEMU's lossless queue; `network_tx` owns guest
 //! network transmit interception and outbound ring enqueueing; `registration` owns
 //! the fail-stop registration sequencer; `setup` owns descriptor mapping and setup
-//! acknowledgement; `teardown` owns shutdown trigger proofs and post-trigger
-//! shmem sealing; `time_control` owns clock ownership, authorized virtual-time
-//! advancement, and the time-control ordering contract; `block_io` owns guest
+//! acknowledgement; `shmem_ordering` owns the plugin-side shared-memory access
+//! funnel and cross-process atomic ordering contract; `teardown` owns shutdown
+//! trigger proofs and post-trigger shmem sealing; `time_control` owns clock
+//! ownership, authorized virtual-time advancement, and the time-control ordering
+//! contract; `block_io` owns guest
 //! block submit/poll request routing through the reserved block executor;
 //! `ninep_io` owns raw 9p submit/poll/burst routing through the reserved 9p
 //! executor; `whitebox_doorbell` owns optional white-box trap planning, guest
@@ -54,6 +56,7 @@ pub mod network_tx;
 pub mod ninep_io;
 pub mod registration;
 pub mod setup;
+pub mod shmem_ordering;
 pub mod teardown;
 pub mod time_control;
 pub mod whitebox_doorbell;
@@ -135,6 +138,7 @@ pub use setup::{
     prepare_setup_completion, receive_and_prepare_setup_completion, receive_setup_with_descriptors,
     send_ready_setup_ack,
 };
+pub use shmem_ordering::PluginShmemOrdering;
 pub use teardown::{
     PluginHostQuit, PluginQemuShutdown, PluginQemuShutdownError, PluginShmemAccess,
     PluginShutdownRequested, PluginTeardown, PluginTeardownComplete, PluginTeardownError,

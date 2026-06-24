@@ -210,7 +210,7 @@
       }
       {
         label = "SPSC enqueue";
-        needle = ".enqueue(outbound_ring.entries, &frame)";
+        needle = "PluginShmemOrdering::enqueue_outbound_frame";
       }
       {
         label = "enqueue failure releases freeze token";
@@ -226,7 +226,7 @@
       }
       {
         label = "delivery icount preview";
-        needle = "peek_delivery_icount";
+        needle = "PluginShmemOrdering::peek_inbound_delivery_icount";
       }
       {
         label = "future delivery gate";
@@ -250,7 +250,7 @@
       }
       {
         label = "SPSC dequeue after validation";
-        needle = ".dequeue(inbound_ring.entries)";
+        needle = "PluginShmemOrdering::dequeue_inbound_frame";
       }
       {
         label = "guest completion";

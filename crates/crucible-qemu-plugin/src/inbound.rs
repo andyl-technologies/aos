@@ -10,6 +10,8 @@ use thiserror::Error;
 
 use crucible_shmem::{FrameDeliveryKey, FrameEntry, RingHeader, SpscRingError};
 
+use crate::shmem_ordering::PluginShmemOrdering;
+
 /// A plugin-owned view of one inbound SPSC ring.
 #[derive(Clone, Copy)]
 pub struct InboundFrameRing<'a> {
@@ -93,10 +95,9 @@ impl PluginInboundFrames {
     ) -> Result<Option<u64>, InboundFrameError> {
         let mut next_delivery: Option<u64> = None;
         for ring in rings {
-            let delivery = ring
-                .header
-                .peek_delivery_icount(ring.entries)
-                .map_err(|source| map_ring_error(ring, source))?;
+            let delivery =
+                PluginShmemOrdering::peek_inbound_delivery_icount(ring.header, ring.entries)
+                    .map_err(|source| map_ring_error(ring, source))?;
             if let Some(delivery) = delivery {
                 next_delivery = Some(match next_delivery {
                     Some(current) => current.min(delivery),
@@ -230,10 +231,9 @@ impl PluginInboundFrames {
                 passed_delivery_floor_icount,
             )?;
             for expected in due_frames {
-                let Some(frame) = ring
-                    .header
-                    .dequeue(ring.entries)
-                    .map_err(|source| map_ring_error(ring, source))?
+                let Some(frame) =
+                    PluginShmemOrdering::dequeue_inbound_frame(ring.header, ring.entries)
+                        .map_err(|source| map_ring_error(ring, source))?
                 else {
                     return Err(InboundFrameError::DequeuedUnexpectedDelivery {
                         ring_index: ring.ring_index,
@@ -381,15 +381,15 @@ fn map_ring_error(ring: InboundFrameRing<'_>, source: SpscRingError) -> InboundF
 }
 
 fn peek_head_frame(ring: InboundFrameRing<'_>) -> Result<Option<FrameEntry>, InboundFrameError> {
-    let Some(delivery_icount) = ring
-        .header
-        .peek_delivery_icount(ring.entries)
-        .map_err(|source| map_ring_error(ring, source))?
+    let Some(delivery_icount) =
+        PluginShmemOrdering::peek_inbound_delivery_icount(ring.header, ring.entries)
+            .map_err(|source| map_ring_error(ring, source))?
     else {
         return Ok(None);
     };
 
-    let slot = (ring.header.read_index() & (ring.entries.len() as u64 - 1)) as usize;
+    let slot = (PluginShmemOrdering::consumer_read_index(ring.header)
+        & (ring.entries.len() as u64 - 1)) as usize;
     let frame = ring.entries[slot].clone();
     if frame.delivery_icount != delivery_icount {
         return Err(InboundFrameError::DequeuedUnexpectedDelivery {
@@ -411,8 +411,8 @@ fn collect_ring_deliverable_since(
     passed_delivery_floor_icount: u64,
 ) -> Result<Vec<FrameEntry>, InboundFrameError> {
     let capacity = inbound_ring_capacity(ring)?;
-    let read_idx = ring.header.read_index();
-    let write_idx = ring.header.write_index();
+    let read_idx = PluginShmemOrdering::consumer_read_index(ring.header);
+    let write_idx = PluginShmemOrdering::producer_write_index(ring.header);
     let live = inbound_live_count(ring, read_idx, write_idx, capacity)?;
     let mut frames = Vec::new();
 
@@ -683,7 +683,7 @@ mod tests {
     }
 
     fn enqueue(header: &RingHeader, entries: &mut [FrameEntry], frame: FrameEntry) {
-        if let Err(error) = header.enqueue(entries, &frame) {
+        if let Err(error) = PluginShmemOrdering::enqueue_outbound_frame(header, entries, &frame) {
             panic!("test frame should enqueue: {error}");
         }
     }

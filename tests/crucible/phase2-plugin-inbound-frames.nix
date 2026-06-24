@@ -131,7 +131,7 @@
       }
       {
         label = "uses SPSC peek";
-        needle = "peek_delivery_icount";
+        needle = "PluginShmemOrdering::peek_inbound_delivery_icount";
       }
       {
         label = "due-frame drain helper";
@@ -139,7 +139,7 @@
       }
       {
         label = "uses SPSC dequeue";
-        needle = ".dequeue";
+        needle = "PluginShmemOrdering::dequeue_inbound_frame";
       }
       {
         label = "strict late-head check";

@@ -13,6 +13,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_shmem::{FutexError, NodeSlot, WakeAction};
 
+use crate::shmem_ordering::PluginShmemOrdering;
+
 static NEXT_FREEZE_OWNER_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Plugin-owned state for suppressing spurious HZ ticks across device I/O.
@@ -29,6 +31,10 @@ impl PluginDeviceIoFreeze {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            // This counter is plugin-local diagnostic state, not shared memory.
+            // Relaxed ordering is enough for unique token ownership IDs because
+            // it does not publish data to another process or order guest-visible
+            // behavior.
             owner_id: NEXT_FREEZE_OWNER_ID.fetch_add(1, Ordering::Relaxed),
             pending_requests: 0,
             burst_active: false,
@@ -57,7 +63,9 @@ impl PluginDeviceIoFreeze {
     /// Returns whether the idle path must suppress guest timer deadlines.
     #[must_use]
     pub fn is_tick_hold_active(&self, slot: &NodeSlot) -> bool {
-        self.pending_requests != 0 || self.burst_active || slot.load_device_io_active()
+        self.pending_requests != 0
+            || self.burst_active
+            || PluginShmemOrdering::device_io_active(slot)
     }
 
     /// Starts a multi-request device burst and marks device I/O active.
@@ -76,7 +84,7 @@ impl PluginDeviceIoFreeze {
             });
         }
 
-        slot.mark_device_io_active();
+        PluginShmemOrdering::publish_device_io_active(slot);
         self.burst_active = true;
         Ok(self.burst_state(slot))
     }
@@ -110,7 +118,7 @@ impl PluginDeviceIoFreeze {
             },
         )?;
 
-        slot.mark_device_io_active();
+        PluginShmemOrdering::publish_device_io_active(slot);
         self.pending_requests += 1;
         Ok(DeviceIoRequestToken {
             owner_id: self.owner_id,
@@ -168,9 +176,8 @@ impl PluginDeviceIoFreeze {
         }
 
         self.burst_active = false;
-        slot.clear_device_io_active();
-        let release_wake = slot
-            .wake_for_device_io_release()
+        PluginShmemOrdering::clear_device_io_active(slot);
+        let release_wake = PluginShmemOrdering::wake_for_device_io_release(slot)
             .map_err(|source| DeviceIoFreezeError::DeviceIoReleaseWake { source })?;
         Ok(DeviceIoBurstState {
             release_wake: Some(release_wake),
@@ -204,9 +211,9 @@ impl PluginDeviceIoFreeze {
         self.pending_requests -= 1;
         let mut release_wake = None;
         if self.pending_requests == 0 && !self.burst_active {
-            slot.clear_device_io_active();
+            PluginShmemOrdering::clear_device_io_active(slot);
             release_wake = Some(
-                slot.wake_for_device_io_release()
+                PluginShmemOrdering::wake_for_device_io_release(slot)
                     .map_err(|source| DeviceIoFreezeError::DeviceIoReleaseWake { source })?,
             );
         }
@@ -217,7 +224,7 @@ impl PluginDeviceIoFreeze {
             submit_icount: token.submit_icount,
             pending_requests: self.pending_requests,
             burst_active: self.burst_active,
-            device_io_active: slot.load_device_io_active(),
+            device_io_active: PluginShmemOrdering::device_io_active(slot),
             release_wake,
             outcome,
         })
@@ -227,7 +234,7 @@ impl PluginDeviceIoFreeze {
         DeviceIoBurstState {
             pending_requests: self.pending_requests,
             burst_active: self.burst_active,
-            device_io_active: slot.load_device_io_active(),
+            device_io_active: PluginShmemOrdering::device_io_active(slot),
             release_wake: None,
         }
     }

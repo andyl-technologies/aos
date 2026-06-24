@@ -978,9 +978,10 @@ component that makes that purity true *inside* the QEMU process.
 - [x] **T-PLUG-19** Implement teardown on `shutdown_requested` / `Quit`: wake,
   mark done, stop touching shmem, initiate orderly QEMU shutdown so no child
   leaks. — satisfies [PLUG-43]; spec §12.9.4.
-- [ ] **T-PLUG-20** Enforce the cross-process atomic-ordering rules on every shmem
+- [x] **T-PLUG-20** Enforce the cross-process atomic-ordering rules on every shmem
   access (acquire loads / release stores matching the ABI) despite the
-  single-threaded plugin side. — satisfies [PLUG-45]; spec §12.10.1.
+  single-threaded plugin side, and document that relaxed is only used for
+  self-owned counters outside shmem. — satisfies [PLUG-45]; spec §12.10.1.
 - [ ] **T-PLUG-21** Audit and minimize every `unsafe` block with a `// SAFETY:`
   comment (single-vCPU serialization, mmap lifetime, descriptor validity,
   vCPU-thread callback contract); read guest memory only via the plugin API; bounds-
