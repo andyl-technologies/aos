@@ -319,15 +319,6 @@ pub fn card(key: &str) -> Option<HelpCard> {
                 ("Lower = preferred", "when several frontends are advertised, the lowest number is offered first."),
             ],
         ),
-        "binding.public_base_url" => c(
-            "Public base URL",
-            "storage",
-            "The bucket's own stable public origin (a full URL with scheme).",
-            &[
-                ("Set", "e.g. https://cdn.example.com — the origin a direct frontend reads from and presigned/public object URLs are built against."),
-                ("Empty", "no public origin; the binding can only be hub-served (proxied/presigned)."),
-            ],
-        ),
         "binding.endpoint" => c(
             "Endpoint",
             "storage",

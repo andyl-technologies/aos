@@ -18,7 +18,7 @@
 //! kind            = "s3" | "r2"
 //! root            = bucket name, optionally "bucket/sub-prefix"
 //! access          = "private" | "public"
-//! public_base_url = endpoint origin, e.g.
+//! endpoint        = S3/R2 API endpoint the hub writes/presigns against, e.g.
 //!                     https://<account>.r2.cloudflarestorage.com   (R2)
 //!                     https://s3.us-east-1.amazonaws.com            (S3)
 //! credential_ref  = sealed "access_key:secret_key:region"  (private only)
@@ -122,7 +122,7 @@ impl S3Surface {
     /// # Errors
     ///
     /// Returns an error when an `s3`/`r2` binding is missing its
-    /// `public_base_url`, when a `private` binding is missing or has a malformed
+    /// `endpoint`, when a `private` binding is missing or has a malformed
     /// `credential_ref`, or when unsealing fails. A binding kind that is not an
     /// object store yields `Ok(None)`, not an error.
     pub fn from_binding(
@@ -135,12 +135,12 @@ impl S3Surface {
             _ => return Ok(None),
         }
         let endpoint = binding
-            .public_base_url
+            .endpoint
             .as_deref()
             .filter(|u| !u.is_empty())
             .with_context(|| {
                 format!(
-                    "storage binding '{}' (kind {}) has no endpoint (public_base_url)",
+                    "storage binding '{}' (kind {}) has no endpoint",
                     binding.name, binding.kind
                 )
             })?;
@@ -384,7 +384,7 @@ mod tests {
             kind: kind.into(),
             root: "my-bucket".into(),
             access: access.into(),
-            public_base_url: endpoint.map(str::to_string),
+            endpoint: endpoint.map(str::to_string),
             credential_ref: cred.map(str::to_string),
             is_instance_default: false,
             created_at: 0,

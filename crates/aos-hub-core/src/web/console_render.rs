@@ -1621,7 +1621,7 @@ pub fn org_dashboard(
             } else {
                 // Object store: show endpoint + bucket + access mode, never the
                 // sealed credential.
-                let endpoint = b.public_base_url.as_deref().unwrap_or("");
+                let endpoint = b.endpoint.as_deref().unwrap_or("");
                 format!(
                     "<code>{endpoint}/{bucket}</code> · {access}",
                     endpoint = escape(endpoint.trim_end_matches('/')),
@@ -3760,13 +3760,17 @@ pub fn storage_binding_serving_section(
     let mut body = String::new();
     let action = escape(post_action);
 
-    // --- Public access ---
-    body.push_str("<h2>Public access</h2>\n");
+    // --- Access & endpoint ---
+    body.push_str("<h2>Access &amp; endpoint</h2>\n");
     body.push_str(
-        "<p class=\"dim\">A <code>public</code> binding is reachable at a stable origin URL (a \
-         public bucket / CDN), so it can carry a <code>direct</code> frontend consumers fetch \
-         from straight, bypassing the hub. A <code>private</code> binding is hub-only (proxied \
-         or presigned) and can never be Direct.</p>\n",
+        "<p class=\"dim\">The <strong>endpoint</strong> is the S3/R2 API the hub writes objects \
+         through and presigns reads against (e.g. \
+         <code>https://&lt;account&gt;.r2.cloudflarestorage.com</code>) — the bucket's \
+         origin, <em>not</em> a consumer-facing URL. Where consumers read from is a \
+         <strong>serving frontend</strong> below. A <code>public</code> binding may carry a \
+         <code>direct</code> frontend consumers fetch from straight, bypassing the hub; a \
+         <code>private</code> binding is hub-only (proxied or presigned) and can never be \
+         Direct.</p>\n",
     );
     let sel = |v: &str| if binding.access == v { " selected" } else { "" };
     let _ = write!(
@@ -3776,17 +3780,17 @@ pub fn storage_binding_serving_section(
          <label><span class=\"lbl\">access{access_help}</span> <select name=\"access\">\
          <option value=\"private\"{psel}>private</option>\
          <option value=\"public\"{usel}>public</option></select></label>\n\
-         <label><span class=\"lbl\">public base URL{base_help}</span> \
-         <input type=\"text\" name=\"public_base_url\" value=\"{base}\" \
-         placeholder=\"https://cdn.example.com\"></label>\n\
-         <button>save access</button>\n</form>\n",
+         <label><span class=\"lbl\">endpoint{base_help}</span> \
+         <input type=\"text\" name=\"endpoint\" value=\"{base}\" \
+         placeholder=\"https://&lt;account&gt;.r2.cloudflarestorage.com\"></label>\n\
+         <button>save</button>\n</form>\n",
         action = action,
         csrf = csrf_field(csrf),
         access_help = help::marker("binding.access"),
-        base_help = help::marker("binding.public_base_url"),
+        base_help = help::marker("binding.endpoint"),
         psel = sel("private"),
         usel = sel("public"),
-        base = escape(binding.public_base_url.as_deref().unwrap_or("")),
+        base = escape(binding.endpoint.as_deref().unwrap_or("")),
     );
 
     // --- Frontends (inherited by every registry/cache stored here) ---

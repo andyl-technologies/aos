@@ -11,6 +11,23 @@
   [`11-caches.md`](11-caches.md) (managed caches share the same storage +
   frontend machinery as registries).
 
+> **Follow-up (migration v33) — `public_base_url` renamed to `endpoint`.**
+> The body below (history) calls the bucket-origin column `public_base_url` and
+> describes it as "the origin a Direct frontend rewrites/reads from." That
+> framing was wrong and a footgun: the column is *only* the **S3/R2 API
+> endpoint** the hub writes objects through and presigns reads against
+> (`s3surface`); nothing ever read it as a consumer-facing read origin. The
+> consumer-facing read URL is, and always was, a **frontend** (`direct_consumer_url`
+> builds from `frontend.domain`, never this column). Yet two forms wrote the
+> same column under two labels — the create form's "endpoint" and the serving
+> page's "public base URL" (placeholder `cdn.example.com`) — so an operator who
+> "corrected" the serving-page value to their CDN domain silently broke the
+> write/presign path. v33 renames the column to `endpoint`, both forms now label
+> it "endpoint" with the API-endpoint help/placeholder, the misleading
+> `binding.public_base_url` help is removed, and the CLI flag is `--endpoint`.
+> The model: **`endpoint` = the bucket's origin (hub I/O); frontends = where
+> consumers read.** Wherever the history says `public_base_url`, read `endpoint`.
+
 ## The problem
 
 The hub is read-heavy, and the read path's *bulk* — Nix `nar/**` and the git

@@ -3457,7 +3457,7 @@ pub(crate) async fn org_binding_action(
     }
     let outcome: Result<&str, String> = match field("op") {
         "set-public" => {
-            let url = field("public_base_url").trim();
+            let url = field("endpoint").trim();
             let url = (!url.is_empty()).then_some(url);
             deps.db
                 .set_binding_public(binding_id, field("access"), url)
@@ -4187,7 +4187,7 @@ pub(crate) async fn instance_serving_action(
 
 /// `POST /-/instance/storage` — manage the instance default storage binding's
 /// public access and frontends (instance admins; RFC-0004 §12). Dispatches the
-/// `op` field: `set-public` (access + `public_base_url`), `add-frontend`,
+/// `op` field: `set-public` (access + `endpoint`), `add-frontend`,
 /// `delete-frontend`.
 pub(crate) async fn instance_storage_action(
     deps: ConsoleDeps,
@@ -4210,7 +4210,7 @@ pub(crate) async fn instance_storage_action(
     let op = field("op").to_string();
     let outcome: Result<&str, String> = match op.as_str() {
         "set-public" => {
-            let url = field("public_base_url").trim();
+            let url = field("endpoint").trim();
             let url = (!url.is_empty()).then_some(url);
             deps.db
                 .set_binding_public(binding.id, field("access"), url)

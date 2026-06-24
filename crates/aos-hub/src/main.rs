@@ -787,9 +787,9 @@ enum BindingCommand {
         /// Access mode: public (Direct-eligible) or private (proxied/presigned).
         #[arg(long)]
         access: String,
-        /// Public read origin URL for a public binding.
+        /// S3/R2 API endpoint the hub writes objects through and presigns against.
         #[arg(long)]
-        public_base_url: Option<String>,
+        endpoint: Option<String>,
         /// Sealed credential reference for a private binding's signed reads.
         #[arg(long)]
         credential_ref: Option<String>,
@@ -1666,7 +1666,7 @@ async fn main() -> Result<()> {
                     org,
                     name,
                     access,
-                    public_base_url,
+                    endpoint,
                     credential_ref,
                 } => {
                     let org_record = db
@@ -1680,7 +1680,7 @@ async fn main() -> Result<()> {
                     db.set_storage_binding_access(
                         binding.id,
                         &access,
-                        public_base_url.as_deref(),
+                        endpoint.as_deref(),
                         credential_ref.as_deref(),
                     )
                     .await?;

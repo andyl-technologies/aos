@@ -596,7 +596,7 @@ fn binding_message(
             b.access.clone()
         },
         endpoint: if expose_root {
-            b.public_base_url.clone().unwrap_or_default()
+            b.endpoint.clone().unwrap_or_default()
         } else {
             String::new()
         },
@@ -4026,7 +4026,7 @@ impl RpcService {
     /// origin, or `Ok(None)` when the cache is not presign-configured.
     ///
     /// A cache is presign-configured when its storage binding is `access =
-    /// private` with both a `public_base_url` (the origin endpoint) and a sealed
+    /// private` with both an `endpoint` (the S3/R2 API origin) and a sealed
     /// `credential_ref` (the SigV4 credentials). The sealed plaintext is
     /// `access_key:secret_key:region` (the secret may itself contain `:`; only
     /// the first and last separators are split on). The signed object key is
@@ -4088,7 +4088,7 @@ impl RpcService {
             return Ok(None);
         }
         let (Some(base_url), Some(credential_ref)) =
-            (binding.public_base_url.as_deref(), binding.credential_ref.as_deref())
+            (binding.endpoint.as_deref(), binding.credential_ref.as_deref())
         else {
             return Ok(None);
         };
@@ -4112,7 +4112,7 @@ impl RpcService {
             .context("credential_ref must be access_key:secret_key:region")?;
 
         // Origin scheme + host from the base URL. The scheme follows the operator's
-        // configured `public_base_url` (real S3/R2 is `https`; a plaintext origin
+        // configured `endpoint` (real S3/R2 is `https`; a plaintext origin
         // — e.g. a local dev/test endpoint — stays `http`); it is not signed, so
         // it never affects the signature.
         let scheme = if base_url.starts_with("http://") {
