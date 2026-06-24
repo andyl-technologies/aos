@@ -197,15 +197,26 @@ proxied/private path is unchanged.
       inherits binding frontends, derives URL from `prefix`, applies own-frontend
       precedence + the public-binding gate; `advertise_cache_change` repointed at
       the derived URL. Pure helpers unit-tested.
+- [x] Migration v30: the instance default storage is a real, editable
+      `storage_bindings` row (`org_id` nullable + `is_instance_default`, seeded
+      singleton); `instance_default_binding()` + `set_binding_public()`.
+      Surface-root resolution is intentionally unchanged — `storage_binding_id IS
+      NULL` still resolves via the runtime port; the row only anchors the
+      default's frontends + public settings, which the resolver inherits.
+- [x] Resolver inherits the **instance-default** binding for binding-less caches
+      (`cache_consumer_url`), so default-bucket caches advertise bucket-direct too.
+- [x] WebUI: the instance default storage page (`/-/instance/storage`) edits the
+      default binding's public access (`set-public`) and frontends
+      (`add-frontend`/`delete-frontend`) via the shared
+      `storage_binding_serving_section` — the same form custom bindings will use.
+- [ ] Apply the shared `storage_binding_serving_section` to the **org
+      custom-binding** page (`/-/org/{org}/storage`) so custom + default share one
+      interface — the section + handler exist; only the org page wiring + an
+      org-scoped action handler/route remain.
 - [ ] Registry-side resolver (git/web surfaces) — the cache path landed first.
-- [ ] Migration: seed the instance-default `storage_bindings` row; resolve
-      `storage_binding_id IS NULL` to it; replace the `binding.rs` synthetic row.
-      **Central to the common case (most content is on the default bucket), but
-      the most invasive — touches the load-bearing surface-root resolution.**
-- [ ] `StorageService` frontend-on-binding CRUD + the shared frontends sub-form
-      (default + custom bindings, same shape) — operator-facing create/edit.
-- [ ] `worker deploy`: record default bucket `public_base_url` + optional
-      default `direct` frontend.
+- [ ] `worker deploy`: optionally pre-set the default bucket `public_base_url`
+      (operators can already set it in the WebUI above; deploy seeding is now a
+      convenience, not a prerequisite).
 - [ ] End-to-end security test: a private binding/consumer is never advertised
       or direct; a public consumer on a public binding resolves to the bucket URL.
       (The create-time Direct-over-private gate and the resolver's public-binding
