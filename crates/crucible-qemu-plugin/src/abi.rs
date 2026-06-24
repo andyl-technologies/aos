@@ -10,7 +10,9 @@
 //! This module keeps that raw ABI boundary narrow. The current scaffold records
 //! the entry point, validates the execution-model assumptions in safe Rust, and
 //! owns inert callback function pointers for every device/channel family that
-//! later tasks wire to real behavior.
+//! later tasks wire to real behavior. Under the required single-threaded
+//! round-robin TCG model, QEMU serializes registered vCPU-thread callbacks so
+//! plugin callback state is not accessed concurrently.
 
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
@@ -221,13 +223,18 @@ pub const OWNED_DEVICE_CALLBACK_KINDS: [PluginDeviceCallbackKind; 7] = [
 ];
 
 /// Common inert C callback signature for the initial scaffold.
+///
+/// Registered callbacks are invoked under QEMU's enforced vCPU-thread
+/// callback contract: single-threaded round-robin TCG serializes all vCPU and
+/// device callback execution in this process.
 pub type InertDeviceCallback = extern "C" fn(QemuPluginId, *mut c_void);
 
 /// Registration-time-initialized callback pointer table.
 ///
 /// The table is immutable after construction. Re-entrant device paths can read
 /// these pointers without taking a lifecycle lock, satisfying the self-deadlock
-/// avoidance rule in RFC-0010 [PLUG-4].
+/// avoidance rule in RFC-0010 [PLUG-4]. Soundness depends on rejecting MTTCG so
+/// process-local callback state remains serialized on the vCPU thread.
 #[derive(Clone, Copy, Debug)]
 pub struct RegisteredDeviceCallbacks {
     network_tx: InertDeviceCallback,
@@ -579,11 +586,10 @@ pub const fn resolve_qemu_clock_deadline_symbol() -> Option<QemuClockDeadlineFn>
 #[cfg(unix)]
 #[must_use]
 pub fn resolve_qemu_advance_virtual_time_direct_symbol() -> Option<QemuAdvanceVirtualTimeDirectFn> {
-    // SAFETY: The symbol name is a static NUL-terminated byte string. `dlsym`
-    // returns either null or a process symbol address. QEMU's patch defines this
-    // symbol with the exact `extern "C" fn(i64)` ABI used by
-    // `QemuAdvanceVirtualTimeDirectFn`; callers fail closed when the symbol is
-    // absent.
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
+    // either null or a process symbol address. QEMU's patch defines this symbol
+    // with the exact `extern "C" fn(i64)` ABI used by
+    // `QemuAdvanceVirtualTimeDirectFn`; callers fail closed when absent.
     let symbol = unsafe {
         libc::dlsym(
             libc::RTLD_DEFAULT,
@@ -621,7 +627,7 @@ fn validate_qemu_plugin_api_range(info: &QemuPluginInfo) -> Result<(), QemuPlugi
     Ok(())
 }
 
-unsafe fn install_required_deadline_scaffold_from_boundary(
+fn install_required_deadline_scaffold_from_boundary(
     info: *const QemuPluginInfo,
     argc: c_int,
     argv: *mut *mut c_char,
@@ -629,6 +635,7 @@ unsafe fn install_required_deadline_scaffold_from_boundary(
     validate_install_boundary(info, argc, argv)?;
     // SAFETY: `validate_install_boundary` rejected null, and QEMU's plugin ABI
     // guarantees `info` points at a live `qemu_info_t` for this install call.
+    // Only scalar fields are copied before the pointer lifetime ends.
     let info = unsafe { &*info };
 
     install_required_time_capability_scaffold_from_qemu_info(
@@ -663,10 +670,7 @@ pub unsafe extern "C" fn qemu_plugin_install(
     argc: c_int,
     argv: *mut *mut c_char,
 ) -> c_int {
-    // SAFETY: this exported C ABI function is called by QEMU with `info` live
-    // for the duration of the call. The helper validates null and scalar
-    // boundary fields before copying from that pointer.
-    match unsafe { install_required_deadline_scaffold_from_boundary(info, argc, argv) } {
+    match install_required_deadline_scaffold_from_boundary(info, argc, argv) {
         Ok(_state) => QEMU_PLUGIN_INSTALL_OK,
         Err(_error) => QEMU_PLUGIN_INSTALL_ERROR,
     }
