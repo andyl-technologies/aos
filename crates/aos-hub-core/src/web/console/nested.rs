@@ -81,11 +81,13 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
         "settings/tokens/revoke" | "settings/tokens/rotate" => is_post,
         // The config-edit page is GET (form) + POST (submit).
         "settings/config" => true,
-        // The settings landing page is GET-only; visibility, crawl, and delete
-        // are POST-only mutations.
-        "settings" => !is_post,
+        // The settings tabs (general landing, binary caches, danger) are
+        // GET-only; visibility, crawl, and delete are POST-only mutations.
+        "settings" | "settings/caches" | "settings/danger" => !is_post,
+        // Storage is GET (view) + POST (change storage).
+        "settings/storage" => true,
         "settings/visibility" | "settings/crawl" | "settings/delete" => is_post,
-        "settings/cache-link" | "settings/cache-unlink" | "settings/storage" => is_post,
+        "settings/cache-link" | "settings/cache-unlink" => is_post,
         // The serving & mirror page is GET (view) + POST (mutate).
         "settings/serving" => true,
         "changes" => !is_post,
@@ -204,6 +206,15 @@ pub async fn dispatch_nested(
         // -- settings landing & mutations ------------------------------------
         ("settings", false) => {
             handlers::registry_settings(deps, headers, started, uri, Path(slug)).await
+        }
+        ("settings/storage", false) => {
+            handlers::registry_storage(deps, headers, started, uri, Path(slug)).await
+        }
+        ("settings/caches", false) => {
+            handlers::registry_caches(deps, headers, started, uri, Path(slug)).await
+        }
+        ("settings/danger", false) => {
+            handlers::registry_danger(deps, headers, started, uri, Path(slug)).await
         }
         ("settings/visibility", true) => {
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
