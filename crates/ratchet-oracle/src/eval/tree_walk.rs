@@ -756,6 +756,7 @@ mod eval_source;
 mod eval_stats;
 mod eval_trace;
 mod fetch_git_clone;
+mod fetch_git_store;
 mod fetch_git_tree;
 mod fetch_tree_access;
 mod fetch_tree_args;
