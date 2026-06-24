@@ -9,6 +9,8 @@
 //!
 //! Module map: `abi` owns the raw QEMU plugin `cdylib` entry point and inert
 //! callback scaffold; `args` owns fail-closed `-plugin` argument parsing;
+//! `boot_barrier` owns the initial scheduler-ceiling futex wait before first
+//! guest instruction;
 //! `handshake` owns plugin-side control-protocol version negotiation and slot
 //! cross-checking;
 //! `deadline` owns exact virtual-clock deadline introspection; `device_io` owns
@@ -39,6 +41,7 @@
 pub mod abi;
 pub mod args;
 pub mod block_io;
+pub mod boot_barrier;
 pub mod coverage;
 pub mod deadline;
 pub mod device_io;
@@ -75,6 +78,10 @@ pub use block_io::{
     BlockOperation, BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestToken, BlockResponse,
     BlockResponseStatus, BlockSubmit, BlockWireError, PluginBlockIo, handle_block_poll_callback,
     handle_block_submit_callback,
+};
+pub use boot_barrier::{
+    BOOT_BARRIER_FIRST_GUEST_ICOUNT, BootBarrierError, BootBarrierRelease, BootBarrierWait,
+    PluginBootBarrier,
 };
 pub use coverage::{
     CoverageBlockEvent, CoverageCallback, CoverageCapabilities, CoverageError, CoverageMap,
@@ -119,6 +126,7 @@ pub use registration::{
     PluginCallbackCapabilities, PluginRegistrationFailure, PluginRegistrationReady,
     PluginRegistrationSequence, PluginRegistrationSequenceError,
 };
+pub use setup::PluginReadySetupAck;
 #[cfg(unix)]
 pub use setup::{
     ArmedWakeFd, PluginSetupCompletion, PluginSetupError, PluginSetupFailureStage, WakeFdArmError,

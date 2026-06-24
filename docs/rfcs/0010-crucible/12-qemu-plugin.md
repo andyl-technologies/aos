@@ -972,7 +972,7 @@ component that makes that purity true *inside* the QEMU process.
   `mmap` and validate the region header/ABI, arm the wake fd, and reply
   `SetupAck`; refuse to participate on non-zero status. — satisfies [PLUG-40],
   [PLUG-41]; spec §12.9.2.
-- [ ] **T-PLUG-18** Implement the boot barrier: block on the initial-ceiling
+- [x] **T-PLUG-18** Implement the boot barrier: block on the initial-ceiling
   publish before the first instruction, using the wake fd/futex (never a
   wall-clock sleep as the gate). — satisfies [PLUG-42]; spec §12.9.3.
 - [ ] **T-PLUG-19** Implement teardown on `shutdown_requested` / `Quit`: wake,
