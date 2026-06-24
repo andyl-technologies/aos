@@ -1,10 +1,136 @@
 //! Unit tests for the Nix parser: grammar coverage, precedence, string
 //! decoding, and binding normalization.
 
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
 use super::*;
+
+const SOURCE_SEED_PREFIX: &str = "# aos-nix-fuzz-source\n";
 
 fn parse(source: &str) -> ParsedAst {
     parse_str(source).expect("source parses")
+}
+
+fn parse_acceptance(source: &str) -> Result<(), String> {
+    parse_str(source)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn rnix_acceptance(source: &str) -> Result<(), String> {
+    let parsed = rnix::parse(source);
+    let errors = parsed.errors();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; "))
+    }
+}
+
+fn assert_rnix_acceptance_matches(source: &str) {
+    assert_rnix_acceptance_matches_named(source, source);
+}
+
+fn assert_rnix_acceptance_matches_named(name: &str, source: &str) {
+    let aos = parse_acceptance(source);
+    let rnix = rnix_acceptance(source);
+    assert_eq!(
+        aos.is_ok(),
+        rnix.is_ok(),
+        "parser acceptance diverged for {name}:\n{source}\n\
+         aos-nix: {aos:?}\nrnix: {rnix:?}"
+    );
+}
+
+#[derive(Debug)]
+struct ParserOracleCase {
+    name: String,
+    source: String,
+}
+
+fn local_parser_oracle_cases() -> Vec<ParserOracleCase> {
+    let root = workspace_root();
+    let mut cases = Vec::new();
+    collect_nix_fixture_cases(
+        &root.join("crates/aos-nix/tests/fixtures/lang"),
+        &root,
+        &mut cases,
+    );
+    collect_source_seed_cases(&root.join("fuzz/corpus"), &root, &mut cases);
+    cases.sort_by(|left, right| left.name.cmp(&right.name));
+    cases
+}
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("aos-nix-syntax crate lives under workspace/crates")
+        .to_path_buf()
+}
+
+fn collect_nix_fixture_cases(dir: &Path, root: &Path, cases: &mut Vec<ParserOracleCase>) {
+    for path in recursively_list_files(dir) {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("nix") {
+            continue;
+        }
+        cases.push(ParserOracleCase {
+            name: relative_display(root, &path),
+            source: fs::read_to_string(&path).expect("Nix fixture is UTF-8"),
+        });
+    }
+}
+
+fn collect_source_seed_cases(dir: &Path, root: &Path, cases: &mut Vec<ParserOracleCase>) {
+    for path in recursively_list_files(dir) {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("seed") {
+            continue;
+        }
+        let seed = fs::read_to_string(&path).expect("fuzz seed is UTF-8");
+        let Some(source) = seed.strip_prefix(SOURCE_SEED_PREFIX) else {
+            continue;
+        };
+        cases.push(ParserOracleCase {
+            name: relative_display(root, &path),
+            source: source.trim().to_owned(),
+        });
+    }
+}
+
+fn recursively_list_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_files(dir, &mut files);
+    files.sort();
+    files
+}
+
+fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).expect("oracle corpus directory exists") {
+        let entry = entry.expect("oracle corpus entry is readable");
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .expect("oracle corpus file type is readable");
+        if file_type.is_dir() {
+            collect_files(&path, files);
+        } else if file_type.is_file() {
+            files.push(path);
+        }
+    }
+}
+
+fn relative_display(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 fn node(ast: &ParsedAst, id: NodeId) -> &super::super::Node {
@@ -104,6 +230,67 @@ fn parser_can_thread_shared_symbol_table_across_files() {
         isolated.symbols.resolve(Symbol::new(0)),
         Some(b"beta".as_slice())
     );
+}
+
+#[test]
+fn parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus() {
+    for source in [
+        "1",
+        "let x = 1; y = 2; in x + y",
+        "rec { x = 1; y = x; }",
+        "{ inherit (rec { x = 1; }) x; nested.value = 2; }",
+        "{ ${\"dynamic\"} = 1; plain = 2; }",
+        "({ a = 1; }).a or 2",
+        "pkg ? meta.name",
+        "with { x = 1; }; x",
+        "assert true; 1",
+        "if true then [ 1 \"two\" ] else []",
+        "({ x, y ? 2, ... }@args: x + y) { x = 1; }",
+        "args@{ x, y ? 2, ... }: x",
+        "''\n  hello ${\"world\"}\n''",
+    ] {
+        assert_rnix_acceptance_matches(source);
+    }
+
+    for source in [
+        "let x = ; in x",
+        "if true then 1",
+        "{ a = 1; ",
+        "with; 1",
+        "assert; 1",
+        "(1",
+        "[ 1 2",
+        "x:",
+        "{ x, x }: x",
+    ] {
+        assert_rnix_acceptance_matches(source);
+    }
+}
+
+#[test]
+fn parser_acceptance_matches_rnix_oracle_on_local_fixtures_and_fuzz_seeds() {
+    let cases = local_parser_oracle_cases();
+    assert!(
+        cases.len() >= 30,
+        "expected local fixtures plus source seeds, got {} cases",
+        cases.len()
+    );
+    assert!(
+        cases
+            .iter()
+            .any(|case| case.name.starts_with("crates/aos-nix/tests/fixtures/lang/")),
+        "expected local lang fixtures in rnix oracle corpus"
+    );
+    assert!(
+        cases
+            .iter()
+            .any(|case| case.name.starts_with("fuzz/corpus/")),
+        "expected source-seed fuzz cases in rnix oracle corpus"
+    );
+
+    for case in cases {
+        assert_rnix_acceptance_matches_named(&case.name, &case.source);
+    }
 }
 
 #[test]

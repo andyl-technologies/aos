@@ -37,6 +37,9 @@ name = "aos-nix"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-nix-compat",
+ "aos-nix-dialect",
+ "aos-nix-syntax",
  "base64",
  "blake3",
  "bzip2",
@@ -44,7 +47,9 @@ dependencies = [
  "git2",
  "md-5",
  "miette",
- "nix-compat",
+ "ratchet-core",
+ "ratchet-oracle",
+ "ratchet-value",
  "regex",
  "reqwest",
  "serde_json",
@@ -61,6 +66,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-nix-compat"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "thiserror",
+]
+
+[[package]]
+name = "aos-nix-dialect"
+version = "0.1.0"
+dependencies = [
+ "ratchet-core",
+ "ratchet-dialect",
+ "thiserror",
+]
+
+[[package]]
 name = "aos-nix-fuzz"
 version = "0.0.0"
 dependencies = [
@@ -68,6 +90,13 @@ dependencies = [
  "aos-nix",
  "arbitrary",
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "aos-nix-syntax"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]
@@ -1267,6 +1296,62 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
+]
+
+[[package]]
+name = "ratchet-core"
+version = "0.1.0"
+dependencies = [
+ "aos-nix-syntax",
+ "thiserror",
+]
+
+[[package]]
+name = "ratchet-dialect"
+version = "0.1.0"
+dependencies = [
+ "ratchet-core",
+]
+
+[[package]]
+name = "ratchet-oracle"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-nix-compat",
+ "aos-nix-dialect",
+ "aos-nix-syntax",
+ "base64",
+ "blake3",
+ "bzip2",
+ "flate2",
+ "git2",
+ "md-5",
+ "miette",
+ "nix-compat",
+ "ratchet-core",
+ "ratchet-value",
+ "regex",
+ "reqwest",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "tar",
+ "thiserror",
+ "toml",
+ "tracing",
+ "url",
+ "xxhash-rust",
+ "xz2",
+ "zstd",
+]
+
+[[package]]
+name = "ratchet-value"
+version = "0.1.0"
+dependencies = [
+ "aos-nix-syntax",
+ "thiserror",
 ]
 
 [[package]]

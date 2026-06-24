@@ -588,10 +588,13 @@ AOS package set. Build it in this order.
       for `internal_diff_raw` and `parity_json`, source-seed passthrough,
       structure-aware valid-expression generation, the configured C++ Nix lang
       corpus runner, and `proptest` invariant coverage are in place.
-- [ ] Parser/fuzz hardening still open: the rnix parser differential oracle
-      remains open unless superseded by a later RFC/doc decision; full
-      parity-fuzzer budget/quiescence, automatic fuzz-corpus population from the
-      full §2.7 corpus, and full conformance diff-green remain acceptance gates.
+- [ ] Parser/fuzz hardening still open: the rnix parser acceptance differential
+      oracle now runs as `aos-nix-syntax`'s test-only
+      `parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus` plus
+      automatically enumerated local language fixtures and source-seed fuzz
+      corpora; full parity-fuzzer budget/quiescence, automatic fuzz-corpus
+      population from the full §2.7 corpus, and full conformance diff-green
+      remain acceptance gates.
 
 **Phase-1 exit criteria.** The `.drv`-diff harness is byte-green on the full AOS
 closure under the tree-walk oracle; the baseline eval-time and `NIX_SHOW_STATS`

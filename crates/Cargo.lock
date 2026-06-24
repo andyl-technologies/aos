@@ -313,6 +313,7 @@ dependencies = [
 name = "aos-nix-syntax"
 version = "0.1.0"
 dependencies = [
+ "rnix",
  "thiserror",
 ]
 

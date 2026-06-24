@@ -223,11 +223,13 @@ hold invariant.
       (`aos nix-diff --all`: 0 divergences / 0 eval-failures across all 546
       packages), and the representative eval-time + `NIX_SHOW_STATS` baseline is
       committed (`docs/rfcs/0007-nix-evaluator/phase1-baseline.jsonl`).
-- [ ] Standing harness robustness remains: rnix parser differential oracle
-      (unless superseded by a later RFC/doc decision), automatic fuzz-corpus
-      population, and full parity-fuzzer budget/quiescence. These are
-      standing-harness robustness items, not the falsifiable byte-green gate,
-      which is met.
+- [ ] Standing harness robustness remains: rnix parser acceptance differential
+      coverage is now present in `aos-nix-syntax`'s test-only
+      `parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus` plus
+      automatically enumerated local language fixtures and source-seed fuzz
+      corpora; automatic fuzz-corpus population from the full §2.7 corpus and
+      full parity-fuzzer budget/quiescence remain. These are standing-harness
+      robustness items, not the falsifiable byte-green gate, which is met.
 
 **Conformance — FULL parity is a Phase-1 requirement.**
 
