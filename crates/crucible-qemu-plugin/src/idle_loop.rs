@@ -15,9 +15,9 @@ use crucible_shmem::{
 
 use crate::{
     ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport, InboundFrameError,
-    InboundFrameRing, PluginClockAdvance, PluginClockError, PluginInboundFrames,
-    PluginVirtualClock, SchedulerCeiling, SynchronousIdleAdvance, SynchronousIdleAdvanceError,
-    SynchronousIdleDrain,
+    InboundFrameRing, PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze,
+    PluginInboundFrames, PluginVirtualClock, SchedulerCeiling, SynchronousIdleAdvance,
+    SynchronousIdleAdvanceError, SynchronousIdleDrain,
 };
 
 /// The source that determined the node's next idle wake.
@@ -27,6 +27,8 @@ pub enum IdleWakeCause {
     TimerDeadline,
     /// The head inbound frame delivery icount woke the node.
     InboundFrame,
+    /// Device I/O is in flight, so guest timer deadlines are held.
+    DeviceIoFreeze,
     /// No local timer or inbound input was pending, so the scheduler ceiling was the bound.
     SchedulerCeiling,
 }
@@ -39,6 +41,7 @@ pub struct IdleWakePlan {
     ceiling_icount: u64,
     timer_deadline_icount: Option<u64>,
     inbound_delivery_icount: Option<u64>,
+    device_io_holding_ticks: bool,
     cause: IdleWakeCause,
 }
 
@@ -71,6 +74,12 @@ impl IdleWakePlan {
     #[must_use]
     pub const fn inbound_delivery_icount(&self) -> Option<u64> {
         self.inbound_delivery_icount
+    }
+
+    /// Returns whether device I/O suppressed guest timer deadlines.
+    #[must_use]
+    pub const fn device_io_holding_ticks(&self) -> bool {
+        self.device_io_holding_ticks
     }
 
     /// Returns the source that selected [`Self::desired_wake_icount`].
@@ -162,6 +171,10 @@ impl PluginIdleHotLoop {
     /// keeps ring ownership outside the hot-loop core while preserving the
     /// non-consuming `peek_delivery_icount` contract.
     ///
+    /// When a device callback owns a [`PluginDeviceIoFreeze`], it must pass that
+    /// state so the local pending counter can suppress timer deadlines even if
+    /// the shared-memory flag has not yet been observed.
+    ///
     /// # Errors
     ///
     /// Returns [`IdleHotLoopError`] when timer conversion, slot publication, or
@@ -171,14 +184,24 @@ impl PluginIdleHotLoop {
         clock: &PluginVirtualClock,
         exact_deadline_reader: &ExactDeadlineReader,
         next_inbound_delivery_icount: Option<u64>,
+        device_io_freeze: Option<&PluginDeviceIoFreeze>,
     ) -> Result<IdleParkRequest, IdleHotLoopError> {
         let exact_deadline = exact_deadline_reader
             .read_next_deadline()
             .map_err(|source| IdleHotLoopError::ReadExactDeadline { source })?;
-        Self::begin_idle_from_report(slot, clock, exact_deadline, next_inbound_delivery_icount)
+        Self::begin_idle_from_report(
+            slot,
+            clock,
+            exact_deadline,
+            next_inbound_delivery_icount,
+            device_io_freeze,
+        )
     }
 
     /// Peeks inbound rings, reads QEMU's exact deadline, and prepares the idle wait.
+    ///
+    /// The optional device-I/O freeze state has the same pending-counter
+    /// semantics as [`Self::begin_idle`].
     ///
     /// # Errors
     ///
@@ -189,6 +212,7 @@ impl PluginIdleHotLoop {
         clock: &PluginVirtualClock,
         exact_deadline_reader: &ExactDeadlineReader,
         inbound_rings: impl IntoIterator<Item = InboundFrameRing<'a>>,
+        device_io_freeze: Option<&PluginDeviceIoFreeze>,
     ) -> Result<IdleParkRequest, IdleHotLoopError> {
         let inbound_rings = inbound_rings.into_iter().collect::<Vec<_>>();
         PluginInboundFrames::reject_already_passed_ring_heads(
@@ -204,6 +228,7 @@ impl PluginIdleHotLoop {
             clock,
             exact_deadline_reader,
             next_inbound_delivery_icount,
+            device_io_freeze,
         )
     }
 
@@ -212,6 +237,7 @@ impl PluginIdleHotLoop {
         clock: &PluginVirtualClock,
         exact_deadline: ExactDeadlineReport,
         next_inbound_delivery_icount: Option<u64>,
+        device_io_freeze: Option<&PluginDeviceIoFreeze>,
     ) -> Result<IdleParkRequest, IdleHotLoopError> {
         let current_icount = clock.current_icount();
         let ceiling_icount = slot.load_node_ceiling();
@@ -222,6 +248,10 @@ impl PluginIdleHotLoop {
             });
         }
         reject_passed_inbound_delivery(current_icount, next_inbound_delivery_icount)?;
+        let device_io_holding_ticks = device_io_freeze.map_or_else(
+            || slot.load_device_io_active(),
+            |freeze| freeze.is_tick_hold_active(slot),
+        );
 
         slot.publish_reached_icount(current_icount, clock.icount_shift())
             .map_err(|source| IdleHotLoopError::PublishReached { source })?;
@@ -232,6 +262,7 @@ impl PluginIdleHotLoop {
             exact_deadline,
             next_inbound_delivery_icount,
             SchedulerCeiling::new(ceiling_icount),
+            device_io_holding_ticks,
         )?;
         let futex_wait = slot
             .publish_idle(
@@ -446,6 +477,9 @@ impl PluginIdleHotLoop {
 
 /// Computes the idle wake target from virtual timers, inbound delivery, and ceiling.
 ///
+/// When `device_io_holding_ticks` is true, the exact timer deadline is still
+/// recorded in the returned plan, but it cannot select the wake target.
+///
 /// # Errors
 ///
 /// Returns [`IdleHotLoopError`] when the timer deadline cannot be converted to
@@ -456,6 +490,7 @@ pub fn compute_idle_wake_plan(
     exact_deadline: ExactDeadlineReport,
     next_inbound_delivery_icount: Option<u64>,
     ceiling: SchedulerCeiling,
+    device_io_holding_ticks: bool,
 ) -> Result<IdleWakePlan, IdleHotLoopError> {
     if ceiling.icount() < current_icount {
         return Err(IdleHotLoopError::CeilingBehindCurrent {
@@ -466,15 +501,26 @@ pub fn compute_idle_wake_plan(
 
     let timer_deadline_icount = timer_deadline_icount(exact_deadline, icount_shift)?
         .map(|deadline| deadline.max(current_icount));
+    let effective_timer_deadline_icount = if device_io_holding_ticks {
+        None
+    } else {
+        timer_deadline_icount
+    };
     let inbound_delivery_icount = next_inbound_delivery_icount;
 
-    let (desired_wake_icount, cause) = match (timer_deadline_icount, inbound_delivery_icount) {
-        (Some(timer), Some(inbound)) if inbound < timer => (inbound, IdleWakeCause::InboundFrame),
-        (Some(timer), Some(_inbound)) => (timer, IdleWakeCause::TimerDeadline),
-        (Some(timer), None) => (timer, IdleWakeCause::TimerDeadline),
-        (None, Some(inbound)) => (inbound, IdleWakeCause::InboundFrame),
-        (None, None) => (ceiling.icount(), IdleWakeCause::SchedulerCeiling),
-    };
+    let (desired_wake_icount, cause) =
+        match (effective_timer_deadline_icount, inbound_delivery_icount) {
+            (Some(timer), Some(inbound)) if inbound < timer => {
+                (inbound, IdleWakeCause::InboundFrame)
+            }
+            (Some(timer), Some(_inbound)) => (timer, IdleWakeCause::TimerDeadline),
+            (Some(timer), None) => (timer, IdleWakeCause::TimerDeadline),
+            (None, Some(inbound)) => (inbound, IdleWakeCause::InboundFrame),
+            (None, None) if device_io_holding_ticks => {
+                (ceiling.icount(), IdleWakeCause::DeviceIoFreeze)
+            }
+            (None, None) => (ceiling.icount(), IdleWakeCause::SchedulerCeiling),
+        };
 
     Ok(IdleWakePlan {
         current_icount,
@@ -482,6 +528,7 @@ pub fn compute_idle_wake_plan(
         ceiling_icount: ceiling.icount(),
         timer_deadline_icount,
         inbound_delivery_icount,
+        device_io_holding_ticks,
         cause,
     })
 }
@@ -660,8 +707,8 @@ mod tests {
     };
 
     use crate::{
-        CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, PluginRegistrationSequence,
-        PluginTimeControlOwnership,
+        CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, PluginDeviceIoFreeze,
+        PluginRegistrationSequence, PluginTimeControlOwnership,
     };
 
     static LAST_DIRECT_ADVANCE_NS: AtomicI64 = AtomicI64::new(-1);
@@ -675,6 +722,7 @@ mod tests {
             ExactDeadlineReport::Armed { deadline_ns: 40 },
             Some(30),
             SchedulerCeiling::new(50),
+            false,
         ) {
             Ok(plan) => plan,
             Err(error) => panic!("timer wake plan should compute: {error}"),
@@ -691,6 +739,7 @@ mod tests {
             ExactDeadlineReport::Armed { deadline_ns: 80 },
             Some(30),
             SchedulerCeiling::new(20),
+            false,
         ) {
             Ok(plan) => plan,
             Err(error) => panic!("inbound wake plan should compute: {error}"),
@@ -705,6 +754,7 @@ mod tests {
             ExactDeadlineReport::NoArmedTimer,
             None,
             SchedulerCeiling::new(64),
+            false,
         ) {
             Ok(plan) => plan,
             Err(error) => panic!("ceiling wake plan should compute: {error}"),
@@ -714,17 +764,81 @@ mod tests {
     }
 
     #[test]
+    fn idle_loop_device_io_freeze_suppresses_timer_deadline_until_scheduler_wake() {
+        let slot = NodeSlot::new(KIND_VM);
+        let clock = owned_clock(10, 0);
+        publish_ceiling(&slot, ceiling(0, 50));
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let _token = match freeze.begin_submit(&slot, clock.current_icount()) {
+            Ok(token) => token,
+            Err(error) => panic!("device I/O submit should activate freeze: {error}"),
+        };
+
+        let request = match PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            &deadline_reader(deadline_20),
+            None,
+            Some(&freeze),
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("device-I/O idle publish should succeed: {error}"),
+        };
+
+        assert_eq!(request.plan().timer_deadline_icount(), Some(20));
+        assert!(request.plan().device_io_holding_ticks());
+        assert_eq!(request.plan().desired_wake_icount(), 50);
+        assert_eq!(request.plan().cause(), IdleWakeCause::DeviceIoFreeze);
+        assert_eq!(slot.snapshot().idle_wake_icount, 50);
+    }
+
+    #[test]
+    fn idle_loop_device_io_freeze_uses_pending_counter_when_flag_is_stale() {
+        let slot = NodeSlot::new(KIND_VM);
+        let clock = owned_clock(10, 0);
+        publish_ceiling(&slot, ceiling(0, 50));
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let _token = match freeze.begin_submit(&slot, clock.current_icount()) {
+            Ok(token) => token,
+            Err(error) => panic!("device I/O submit should activate freeze: {error}"),
+        };
+        slot.clear_device_io_active();
+        assert!(!slot.load_device_io_active());
+        assert!(freeze.pending_requests() != 0);
+
+        let request = match PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            &deadline_reader(deadline_20),
+            None,
+            Some(&freeze),
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("pending-only freeze should suppress timer: {error}"),
+        };
+
+        assert_eq!(request.plan().timer_deadline_icount(), Some(20));
+        assert!(request.plan().device_io_holding_ticks());
+        assert_eq!(request.plan().desired_wake_icount(), 50);
+        assert_eq!(request.plan().cause(), IdleWakeCause::DeviceIoFreeze);
+    }
+
+    #[test]
     fn idle_loop_publishes_current_then_idle_and_prepares_futex_wait() {
         let slot = NodeSlot::new(KIND_VM);
         let clock = owned_clock(10, 0);
         publish_ceiling(&slot, ceiling(0, 10));
 
-        let request =
-            match PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_20), None)
-            {
-                Ok(request) => request,
-                Err(error) => panic!("idle publish should succeed: {error}"),
-            };
+        let request = match PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            &deadline_reader(deadline_20),
+            None,
+            None,
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("idle publish should succeed: {error}"),
+        };
 
         assert_eq!(request.plan().current_icount(), 10);
         assert_eq!(request.plan().desired_wake_icount(), 20);
@@ -744,12 +858,16 @@ mod tests {
         let slot = NodeSlot::new(KIND_VM);
         publish_ceiling(&slot, ceiling(0, 10));
         let clock = owned_clock(10, 0);
-        let request =
-            match PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_10), None)
-            {
-                Ok(request) => request,
-                Err(error) => panic!("idle publish should be immediately runnable: {error}"),
-            };
+        let request = match PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            &deadline_reader(deadline_10),
+            None,
+            None,
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("idle publish should be immediately runnable: {error}"),
+        };
 
         assert_eq!(request.futex_wait(), FutexWait::Runnable);
         assert_eq!(
@@ -764,12 +882,16 @@ mod tests {
         let slot = NodeSlot::new(KIND_VM);
         publish_ceiling(&slot, ceiling(0, 10));
         let clock = owned_clock(10, 0);
-        let request =
-            match PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_20), None)
-            {
-                Ok(request) => request,
-                Err(error) => panic!("idle publish should park for future timer: {error}"),
-            };
+        let request = match PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            &deadline_reader(deadline_20),
+            None,
+            None,
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("idle publish should park for future timer: {error}"),
+        };
 
         if let Err(error) = header.request_shutdown([&slot]) {
             panic!("shutdown should wake idle slot: {error}");
@@ -796,6 +918,7 @@ mod tests {
             &clock,
             &deadline_reader(deadline_40),
             Some(40),
+            None,
         ) {
             Ok(request) => request,
             Err(error) => panic!("idle begin should succeed: {error}"),
@@ -868,6 +991,7 @@ mod tests {
                 InboundFrameRing::new(0, &ring_a, &entries_a),
                 InboundFrameRing::new(1, &ring_b, &entries_b),
             ],
+            None,
         ) {
             Ok(request) => request,
             Err(error) => panic!("idle begin should peek inbound rings: {error}"),
@@ -929,6 +1053,7 @@ mod tests {
                 ceiling_icount: 20,
                 timer_deadline_icount: None,
                 inbound_delivery_icount: Some(19),
+                device_io_holding_ticks: false,
                 cause: IdleWakeCause::InboundFrame,
             },
             futex_wait: FutexWait::Runnable,
@@ -971,6 +1096,7 @@ mod tests {
                 ceiling_icount: 20,
                 timer_deadline_icount: None,
                 inbound_delivery_icount: Some(19),
+                device_io_holding_ticks: false,
                 cause: IdleWakeCause::InboundFrame,
             },
             futex_wait: FutexWait::Runnable,
@@ -1015,7 +1141,8 @@ mod tests {
                 &slot,
                 &clock,
                 &deadline_reader(deadline_80),
-                [InboundFrameRing::new(6, &ring, &entries)]
+                [InboundFrameRing::new(6, &ring, &entries)],
+                None
             ),
             Err(IdleHotLoopError::InboundFrames {
                 source: InboundFrameError::DeliveryAlreadyPassed {
@@ -1039,7 +1166,13 @@ mod tests {
         let before = slot.snapshot();
 
         assert_eq!(
-            PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_80), Some(9)),
+            PluginIdleHotLoop::begin_idle(
+                &slot,
+                &clock,
+                &deadline_reader(deadline_80),
+                Some(9),
+                None
+            ),
             Err(IdleHotLoopError::InboundFrames {
                 source: InboundFrameError::DeliveryAlreadyPassed {
                     ring_index: None,
@@ -1062,12 +1195,16 @@ mod tests {
         let slot = NodeSlot::new(KIND_VM);
         let clock = owned_clock(10, 0);
         publish_ceiling(&slot, ceiling(0, 10));
-        let request =
-            match PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_20), None)
-            {
-                Ok(request) => request,
-                Err(error) => panic!("idle begin should succeed: {error}"),
-            };
+        let request = match PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            &deadline_reader(deadline_20),
+            None,
+            None,
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("idle begin should succeed: {error}"),
+        };
         let mut clock = clock;
 
         assert_eq!(
@@ -1099,6 +1236,7 @@ mod tests {
                 ceiling_icount: 1,
                 timer_deadline_icount: Some(1),
                 inbound_delivery_icount: None,
+                device_io_holding_ticks: false,
                 cause: IdleWakeCause::TimerDeadline,
             },
             futex_wait: FutexWait::Runnable,
