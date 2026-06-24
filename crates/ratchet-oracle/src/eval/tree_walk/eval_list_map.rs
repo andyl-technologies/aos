@@ -550,10 +550,22 @@ impl TreeWalk {
             return Ok(None);
         }
 
-        // Pinned C++ Nix reports attribute positions with line fixed at 1 and
-        // column as a one-based byte offset into the file.
-        let column = i64::from(position.span.start) + 1;
-        Ok(Some((source.name.clone(), 1, column)))
+        let Some((line, column)) = line_column_at_offset(&source.bytes, start) else {
+            return Ok(None);
+        };
+        Ok(Some((source.name.clone(), line, column)))
+    }
+
+    pub(super) fn eval_current_position(
+        &mut self,
+        id: IrId,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        let position = AttrPosition::new(self.current_module.as_u32(), span);
+        let Some((file, line, column)) = self.attr_position_fields(position, span)? else {
+            return Ok(Value::null());
+        };
+        self.alloc_attr_position_attrs(id, span, &file, line, column)
     }
 
     pub(super) fn alloc_attr_position_attrs(
@@ -907,4 +919,22 @@ impl TreeWalk {
             entries,
         )
     }
+}
+
+fn line_column_at_offset(source: &[u8], offset: usize) -> Option<(i64, i64)> {
+    if offset > source.len() {
+        return None;
+    }
+    let prefix = &source[..offset];
+    let line = prefix
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        .checked_add(1)?;
+    let line_start = prefix
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index.saturating_add(1));
+    let column = offset.checked_sub(line_start)?.checked_add(1)?;
+    Some((i64::try_from(line).ok()?, i64::try_from(column).ok()?))
 }

@@ -221,7 +221,35 @@ pub fn eval_raw_bytes_with_options(
     ir: &Ir,
     options: TreeWalkOptions,
 ) -> Result<Vec<u8>, TreeWalkError> {
-    let mut evaluator = TreeWalk::with_options(ir, options);
+    eval_raw_bytes_with_evaluator(ir, TreeWalk::with_options(ir, options))
+}
+
+/// Evaluates an IR root with source provenance and renders raw strict output.
+///
+/// Use this for file-backed root modules so source-position builtins such as
+/// `__curPos` and `builtins.unsafeGetAttrPos` can report the original path,
+/// line, and column.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] if root evaluation, nested forcing, or value
+/// rendering fails.
+pub fn eval_raw_bytes_with_options_source(
+    ir: &Ir,
+    options: TreeWalkOptions,
+    source_name: impl Into<Vec<u8>>,
+    source: impl Into<Vec<u8>>,
+) -> Result<Vec<u8>, TreeWalkError> {
+    eval_raw_bytes_with_evaluator(
+        ir,
+        TreeWalk::with_options_and_source(ir, options, source_name, source),
+    )
+}
+
+fn eval_raw_bytes_with_evaluator(
+    ir: &Ir,
+    mut evaluator: TreeWalk,
+) -> Result<Vec<u8>, TreeWalkError> {
     let value = evaluator.eval_root()?;
     let span = evaluator.node(ir.root)?.span;
     let mut out = Vec::new();

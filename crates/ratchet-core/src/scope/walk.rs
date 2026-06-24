@@ -6,6 +6,8 @@
 
 use super::*;
 
+const CUR_POS_NAME: &[u8] = b"__curPos";
+
 impl ResolverState {
     pub(super) fn resolve_node(&mut self, id: NodeId) -> Result<(), ScopeError> {
         let node = self.node(id)?;
@@ -49,6 +51,9 @@ impl ResolverState {
 
     fn resolve_identifier(&mut self, id: NodeId, node: Node) -> Result<(), ScopeError> {
         let symbol = self.symbol_payload(node)?;
+        if self.symbols.resolve(symbol) == Some(CUR_POS_NAME) {
+            return self.replace_node(id, NodeKind::GlobalVar, NodeData::Symbol(symbol));
+        }
         if let Some((depth, slot, binding_frame)) = self.lookup_symbol(symbol) {
             self.record_captures(binding_frame, slot, node.span)?;
             let data = if depth == 0 {

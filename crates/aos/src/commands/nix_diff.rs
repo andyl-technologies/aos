@@ -159,11 +159,7 @@ const CONFORMANCE_CORPUS_ATTRSET: &str = "conformance";
 const CONFORMANCE_CORPUS_BUILDER: &str =
     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-nix-conformance-builder";
 const LANG_CASE_EXCLUSION_NAMES: &[&str] = &[
-    "eval-okay-curpos",
     "eval-okay-eq-derivations",
-    "eval-okay-getattrpos",
-    "eval-okay-getattrpos-functionargs",
-    "eval-okay-inherit-attr-pos",
     "eval-okay-inherit-from",
     "eval-okay-print",
     "eval-okay-redefine-builtin",

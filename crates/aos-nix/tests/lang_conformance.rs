@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use aos_nix::compile::{lower, resolve};
-use aos_nix::eval::{TreeWalkOptions, eval_raw_bytes_with_options, eval_whnf_owned_with_options};
+use aos_nix::eval::{
+    TreeWalkOptions, eval_raw_bytes_with_options, eval_raw_bytes_with_options_source,
+    eval_whnf_owned_with_options,
+};
 use aos_nix::syntax::parse_bytes;
 use aos_nix::{NativeEvalError, NixNative};
 
@@ -93,24 +96,8 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "native evaluator stack-safety gap for infinite lambda recursion",
     },
     LangCaseExclusion {
-        name: "eval-okay-curpos",
-        reason: "__curPos builtin scope gap",
-    },
-    LangCaseExclusion {
         name: "eval-okay-eq-derivations",
         reason: "native evaluator stack-safety gap in derivation equality",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-getattrpos",
-        reason: "attr position metadata gap",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-getattrpos-functionargs",
-        reason: "function-argument position metadata gap",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-inherit-attr-pos",
-        reason: "inherit source-position metadata gap",
     },
     LangCaseExclusion {
         name: "eval-okay-inherit-from",
@@ -133,8 +120,8 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "symlink directory resolution gap",
     },
 ];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 197;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 12;
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 201;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 8;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",
@@ -553,8 +540,14 @@ fn run_lang_case_with_exclusions(
                 eval_xml_case(&source, config.options.clone())
                     .with_context(|| format!("{} should evaluate as XML", case.name))?
             } else {
-                eval_raw_case(&source, lang_dir, &config, &case.flags)
-                    .with_context(|| format!("{} should evaluate as a raw value", case.name))?
+                eval_raw_case(
+                    &source,
+                    case.source.as_os_str().as_bytes(),
+                    lang_dir,
+                    &config,
+                    &case.flags,
+                )
+                .with_context(|| format!("{} should evaluate as a raw value", case.name))?
             };
             normalize_lang_pwd_paths(&mut actual, lang_dir);
             apply_lang_postprocess(&mut actual, LangOutput::Out, postprocess);
@@ -1005,6 +998,7 @@ fn run_non_eval_fail_bad_drv_path(lang_dir: &Path) -> Result<CaseOutcome> {
 
 fn eval_raw_case(
     source: &[u8],
+    source_name: &[u8],
     lang_dir: &Path,
     config: &LangEvalConfig,
     flags: &[String],
@@ -1019,8 +1013,13 @@ fn eval_raw_case(
     let parsed = parse_bytes(&source).context("parsing expression")?;
     let resolved = resolve(parsed).context("resolving expression")?;
     let ir = lower(resolved).context("lowering expression")?;
-    let mut bytes =
-        eval_raw_bytes_with_options(&ir, config.options.clone()).context("evaluating raw value")?;
+    let mut bytes = eval_raw_bytes_with_options_source(
+        &ir,
+        config.options.clone(),
+        source_name.to_vec(),
+        source.clone(),
+    )
+    .context("evaluating raw value")?;
     bytes.push(b'\n');
     Ok(bytes)
 }
@@ -1240,7 +1239,13 @@ fn eval_fail_detection_allows_successful_non_numeric_values() -> Result<()> {
     let config = LangEvalConfig::from_options(TreeWalkOptions::default());
     assert!(eval_strict_case(b"x: x", TreeWalkOptions::default()).is_ok());
     assert_eq!(
-        eval_raw_case(b"x: x", &fixture_lang_dir(), &config, &flags)?,
+        eval_raw_case(
+            b"x: x",
+            b"/pwd/lang/eval-okay-lambda.nix",
+            &fixture_lang_dir(),
+            &config,
+            &flags,
+        )?,
         b"<LAMBDA>\n"
     );
 
@@ -1359,6 +1364,86 @@ fn eval_okay_attrs6_applies_overrides_before_dynamic_attrs() {
     assert_eq!(
         output,
         br#"{ __overrides = { bar = "qux"; }; bar = "qux"; foo = "bar"; }"#
+    );
+}
+
+fn eval_raw_fixture(source_name: &[u8], source: &[u8]) -> Vec<u8> {
+    let parsed = parse_bytes(source).expect("source parses");
+    let resolved = resolve(parsed).expect("source resolves");
+    let ir = lower(resolved).expect("source lowers");
+    eval_raw_bytes_with_options_source(
+        &ir,
+        TreeWalkOptions::default(),
+        source_name.to_vec(),
+        source.to_vec(),
+    )
+    .expect("source evaluates")
+}
+
+#[test]
+fn eval_okay_curpos_reports_current_source_locations() {
+    let source = br#"# Bla
+let
+  x = __curPos;
+    y = __curPos;
+in [ x.line x.column y.line y.column ]
+"#;
+
+    assert_eq!(
+        eval_raw_fixture(b"/pwd/lang/eval-okay-curpos.nix", source),
+        b"[ 3 7 4 9 ]"
+    );
+}
+
+#[test]
+fn eval_okay_getattrpos_reports_attr_source_location() {
+    let source = br#"let
+  as = {
+    foo = "bar";
+  };
+  pos = builtins.unsafeGetAttrPos "foo" as;
+in { inherit (pos) column line; file = baseNameOf pos.file; }
+"#;
+
+    assert_eq!(
+        eval_raw_fixture(b"/pwd/lang/eval-okay-getattrpos.nix", source),
+        br#"{ column = 5; file = "eval-okay-getattrpos.nix"; line = 3; }"#
+    );
+}
+
+#[test]
+fn eval_okay_getattrpos_functionargs_reports_formal_location() {
+    let source = br#"let
+  fun = { foo }: {};
+  pos = builtins.unsafeGetAttrPos "foo" (builtins.functionArgs fun);
+in { inherit (pos) column line; file = baseNameOf pos.file; }
+"#;
+
+    assert_eq!(
+        eval_raw_fixture(b"/pwd/lang/eval-okay-getattrpos-functionargs.nix", source),
+        br#"{ column = 11; file = "eval-okay-getattrpos-functionargs.nix"; line = 2; }"#
+    );
+}
+
+#[test]
+fn eval_okay_inherit_attr_pos_reports_inherit_target_locations() {
+    let source = br#"let
+  d = 0;
+  x = 1;
+  y = { inherit d x; };
+  z = { inherit (y) d x; };
+in
+  [
+    (builtins.unsafeGetAttrPos "d" y)
+    (builtins.unsafeGetAttrPos "x" y)
+    (builtins.unsafeGetAttrPos "d" z)
+    (builtins.unsafeGetAttrPos "x" z)
+  ]
+"#;
+
+    assert_eq!(
+        eval_raw_fixture(b"/pwd/lang/eval-okay-inherit-attr-pos.nix", source),
+        br#"[ { column = 17; file = "/pwd/lang/eval-okay-inherit-attr-pos.nix"; line = 4; } { column = 19; file = "/pwd/lang/eval-okay-inherit-attr-pos.nix"; line = 4; } { column = 21; file = "/pwd/lang/eval-okay-inherit-attr-pos.nix"; line = 5; } { column = 23; file = "/pwd/lang/eval-okay-inherit-attr-pos.nix"; line = 5; } ]"#
     );
 }
 

@@ -121,6 +121,7 @@ const KEY_ATTR: &[u8] = b"key";
 const FILE_ATTR: &[u8] = b"file";
 const LINE_ATTR: &[u8] = b"line";
 const COLUMN_ATTR: &[u8] = b"column";
+const CUR_POS_ATTR: &[u8] = b"__curPos";
 const OPERATOR_ATTR: &[u8] = b"operator";
 const START_SET_ATTR: &[u8] = b"startSet";
 const HASH_ATTR: &[u8] = b"hash";
@@ -257,9 +258,9 @@ pub(crate) use api::{
 pub use api::{
     eval_instantiation_attr_path_owned_with_options_and_realizer,
     eval_instantiation_attr_path_owned_with_options_source_and_realizer, eval_number_raw_bytes,
-    eval_number_raw_bytes_with_options, eval_raw_bytes, eval_raw_bytes_with_options, eval_whnf,
-    eval_whnf_owned, eval_whnf_owned_with_options, eval_whnf_owned_with_options_and_realizer,
-    eval_whnf_with_options,
+    eval_number_raw_bytes_with_options, eval_raw_bytes, eval_raw_bytes_with_options,
+    eval_raw_bytes_with_options_source, eval_whnf, eval_whnf_owned, eval_whnf_owned_with_options,
+    eval_whnf_owned_with_options_and_realizer, eval_whnf_with_options,
 };
 pub use error_kind::TreeWalkErrorKind;
 pub(crate) use errors::ArithmeticOp;

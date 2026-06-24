@@ -347,14 +347,76 @@ fn get_attr_primop_type_checks_arguments_in_order() {
     assert_eq!(error.span(), attrs_span);
 }
 
+fn source_line_column(source: &str, needle: &str) -> (usize, usize) {
+    let offset = source.find(needle).expect("needle exists in source");
+    let prefix = &source[..offset];
+    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+    let line_start = prefix
+        .bytes()
+        .rposition(|byte| byte == b'\n')
+        .map_or(0, |index| index + 1);
+    (line, offset - line_start + 1)
+}
+
+#[test]
+fn cur_pos_reports_source_position() {
+    let source = "# Bla\nlet\n  x = __curPos;\n    y = __curPos;\nin builtins.toJSON [ x.line x.column y.line y.column ]";
+
+    assert_eq!(
+        eval_string_bytes_with_source(b"/source.nix", source),
+        b"[3,7,4,9]"
+    );
+}
+
+#[test]
+fn cur_pos_ignores_lexical_shadowing() {
+    let source = "let __curPos = { line = 99; column = 100; }; in builtins.toJSON [ __curPos.line __curPos.column ]";
+    let (line, column) = source_line_column(source, "__curPos.column");
+    let expected = format!("[{},{}]", line, column);
+
+    assert_eq!(
+        eval_string_bytes_with_source(b"/source.nix", source),
+        expected.as_bytes()
+    );
+}
+
+#[test]
+fn cur_pos_ignores_with_shadowing() {
+    let source = "with { __curPos = { line = 99; column = 100; }; }; builtins.toJSON [ __curPos.line __curPos.column ]";
+    let (line, column) = source_line_column(source, "__curPos.column");
+    let expected = format!("[{},{}]", line, column);
+
+    assert_eq!(
+        eval_string_bytes_with_source(b"/source.nix", source),
+        expected.as_bytes()
+    );
+}
+
+#[test]
+fn unsafe_get_attr_pos_reports_function_args_positions() {
+    let source = r#"builtins.toJSON (
+  let
+    fun = { foo }: {};
+    pos = builtins.unsafeGetAttrPos "foo" (builtins.functionArgs fun);
+  in [ pos.file pos.line pos.column ]
+)"#;
+    let (line, column) = source_line_column(source, "foo");
+    let expected = format!(r#"["/source.nix",{},{}]"#, line, column);
+
+    assert_eq!(
+        eval_string_bytes_with_source(b"/source.nix", source),
+        expected.as_bytes()
+    );
+}
+
 #[test]
 fn unsafe_get_attr_pos_reports_static_binding_positions() {
     let source = r#"builtins.toJSON (
   let p = builtins.unsafeGetAttrPos "a" { a = 1; };
   in [ p.file p.line p.column ]
 )"#;
-    let column = source.find("a = 1").expect("binding exists") + 1;
-    let expected = format!(r#"["/source.nix",1,{}]"#, column);
+    let (line, column) = source_line_column(source, "a = 1");
+    let expected = format!(r#"["/source.nix",{},{}]"#, line, column);
 
     assert_eq!(
         eval_string_bytes_with_source(b"/source.nix", source),
@@ -368,7 +430,7 @@ fn unsafe_get_attr_pos_reports_dynamic_binding_positions() {
   let p = builtins.unsafeGetAttrPos "a" { ${"a"} = 1; };
   in [ p.column ]
 )"#;
-    let column = source.find(r#"${"a"}"#).expect("dynamic binding exists") + 1;
+    let (_, column) = source_line_column(source, r#"${"a"}"#);
     let expected = format!("[{}]", column);
 
     assert_eq!(
@@ -411,8 +473,8 @@ fn unsafe_get_attr_pos_preserves_update_winner_positions() {
     pb = builtins.unsafeGetAttrPos "b" merged;
   in [ pa.column pb.column ]
 )"#;
-    let a_column = source.find("a = 1").expect("a binding exists") + 1;
-    let b_column = source.find("b = 2").expect("b binding exists") + 1;
+    let (_, a_column) = source_line_column(source, "a = 1");
+    let (_, b_column) = source_line_column(source, "b = 2");
     let expected = format!("[{},{}]", a_column, b_column);
 
     assert_eq!(
@@ -441,7 +503,7 @@ fn unsafe_get_attr_pos_tracks_list_to_attrs_name_binding() {
     p = builtins.unsafeGetAttrPos "a" attrs;
   in [ p.column ]
 )"#;
-    let name_column = source.find("name =").expect("name binding exists") + 1;
+    let (_, name_column) = source_line_column(source, "name =");
     let expected = format!("[{}]", name_column);
 
     assert_eq!(
@@ -458,7 +520,7 @@ fn unsafe_get_attr_pos_supports_first_class_application() {
     p = f "a" { a = 1; };
   in [ p.file p.column ]
 )"#;
-    let column = source.find("a = 1").expect("binding exists") + 1;
+    let (_, column) = source_line_column(source, "a = 1");
     let expected = format!(r#"["/source.nix",{}]"#, column);
 
     assert_eq!(
@@ -484,7 +546,7 @@ fn unsafe_get_attr_pos_reports_imported_file_path() {
 )"#;
     let actual = eval_string_bytes_with_options(source, options);
     let expected = format!(
-        r#"["{}",1,5]"#,
+        r#"["{}",2,3]"#,
         imported.to_str().expect("import path is UTF-8")
     );
 

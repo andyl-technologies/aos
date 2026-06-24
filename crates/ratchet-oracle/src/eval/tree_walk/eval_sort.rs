@@ -778,7 +778,11 @@ impl TreeWalk {
                             formal_node.span,
                         ));
                     }
-                    entries.push(AttrEntry::new(name, Value::bool(default.is_some())));
+                    entries.push(AttrEntry::with_position(
+                        name,
+                        Value::bool(default.is_some()),
+                        AttrPosition::new(self.current_module.as_u32(), formal_node.span),
+                    ));
                 }
                 Ok(entries)
             }
