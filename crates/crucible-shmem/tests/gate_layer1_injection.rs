@@ -19,6 +19,8 @@ enum SpscProperty {
     NoLostFrame,
     NoDuplicatedFrame,
     FifoOrder,
+    NoTornFrame,
+    NoEarlyRead,
     FullEmpty,
     Wraparound,
 }
@@ -80,6 +82,8 @@ fn gate_layer1_injection_checks_spsc_ring_concurrency_properties() {
         SpscProperty::NoLostFrame,
         SpscProperty::NoDuplicatedFrame,
         SpscProperty::FifoOrder,
+        SpscProperty::NoTornFrame,
+        SpscProperty::NoEarlyRead,
     ]);
     assert_spsc_ring_proptest_properties(&[
         SpscProperty::NoLostFrame,
@@ -103,6 +107,8 @@ fn assert_spsc_ring_loom_model(required: &[SpscProperty]) {
     assert!(required.contains(&SpscProperty::NoLostFrame));
     assert!(required.contains(&SpscProperty::NoDuplicatedFrame));
     assert!(required.contains(&SpscProperty::FifoOrder));
+    assert!(required.contains(&SpscProperty::NoTornFrame));
+    assert!(required.contains(&SpscProperty::NoEarlyRead));
 
     let rfc_orderings = RingOrderings::rfc_13_6();
     let failures = model_check_publish_before_read(rfc_orderings);
@@ -332,6 +338,7 @@ fn assert_ring_header_source_uses_rfc_13_6_orderings() {
         &[
             "let head = self.read_idx.load(Ordering::Relaxed);",
             "let tail = self.write_idx.load(Ordering::Acquire);",
+            "if live_count(head, tail, capacity)? == 0",
             "Ok(Some(entries[slot].delivery_icount))",
         ],
         "peek_delivery_icount must acquire write_idx before reading delivery_icount",
@@ -341,10 +348,11 @@ fn assert_ring_header_source_uses_rfc_13_6_orderings() {
         &[
             "let head = self.read_idx.load(Ordering::Relaxed);",
             "let tail = self.write_idx.load(Ordering::Acquire);",
+            "if live_count(head, tail, capacity)? == 0",
             "let frame = entries[slot].clone();",
             "self.read_idx.store(head.wrapping_add(1), Ordering::Release);",
         ],
-        "dequeue must acquire write_idx before reading and release-free read_idx",
+        "dequeue must acquire write_idx and reject empty before reading, then release-free read_idx",
     );
 }
 
