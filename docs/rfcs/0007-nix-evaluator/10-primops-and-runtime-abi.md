@@ -552,7 +552,7 @@ Realpath is recorded only as diagnostic metadata for this durable artifact, so
 byte-identical modules can share the same persisted resolved AST and IR even
 when they are reached through different paths. The evaluator remaps the cached
 file-local IR at each import site so module-relative path bases still come from
-the importing realpath. The lower-level `FileParseMemo` helper also exposes an
+the requested import target path before symlink canonicalization. The lower-level `FileParseMemo` helper also exposes an
 in-process `(canonical realpath, BLAKE3(file bytes))` memo for path-backed
 frontends, but ordinary tree-walk import currently talks directly to the
 durable content-addressed cache.

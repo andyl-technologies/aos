@@ -796,7 +796,8 @@ impl TreeWalk {
                 )
             });
         }
-        let realpath = self.import_realpath(argument, argument_span, &path)?;
+        let (target_path, realpath) = self.import_paths(argument, argument_span, &path)?;
+        let path_literal_base = Self::import_path_literal_base(&target_path);
         let realpath_bytes = realpath.as_os_str().as_bytes().to_vec();
         let import_path = realpath.clone();
         self.load_cached_import(argument, argument_span, realpath, realpath_bytes, |eval| {
@@ -806,6 +807,7 @@ impl TreeWalk {
                 argument,
                 argument_span,
                 &import_path,
+                &path_literal_base,
                 ImportGlobalScope::Fresh,
             )
         })
@@ -848,27 +850,29 @@ impl TreeWalk {
                 ImportGlobalScope::Scoped(scope_value),
             );
         }
-        let realpath = self.import_realpath(argument, argument_span, &path)?;
+        let (target_path, realpath) = self.import_paths(argument, argument_span, &path)?;
+        let path_literal_base = Self::import_path_literal_base(&target_path);
         self.load_and_eval_import(
             id,
             span,
             argument,
             argument_span,
             &realpath,
+            &path_literal_base,
             ImportGlobalScope::Scoped(scope_value),
         )
     }
 
-    pub(super) fn import_realpath(
+    pub(super) fn import_paths(
         &self,
         argument: IrId,
         argument_span: Span,
         path: &[u8],
-    ) -> Result<PathBuf, TreeWalkError> {
+    ) -> Result<(PathBuf, PathBuf), TreeWalkError> {
         self.check_filesystem_path_access(argument, argument_span, path)?;
         let target = self.import_target_path(argument, argument_span, path)?;
         self.check_filesystem_path_access(argument, argument_span, target.as_os_str().as_bytes())?;
-        fs::canonicalize(&target).map_err(|source| {
+        let realpath = fs::canonicalize(&target).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::FileRead {
                     id: argument,
@@ -877,7 +881,17 @@ impl TreeWalk {
                 },
                 argument_span,
             )
-        })
+        })?;
+        Ok((target, realpath))
+    }
+
+    pub(super) fn import_path_literal_base(target: &Path) -> Vec<u8> {
+        target
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .as_os_str()
+            .as_bytes()
+            .to_vec()
     }
 
     pub(super) fn import_target_path(
@@ -910,6 +924,7 @@ impl TreeWalk {
         argument: IrId,
         argument_span: Span,
         realpath: &Path,
+        path_literal_base: &[u8],
         global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
         let path = realpath.as_os_str().as_bytes().to_vec();
@@ -923,12 +938,6 @@ impl TreeWalk {
                 argument_span,
             )
         })?;
-        let base = realpath
-            .parent()
-            .unwrap_or_else(|| Path::new("/"))
-            .as_os_str()
-            .as_bytes()
-            .to_vec();
         self.record_impure_input_result(ImpureInputFingerprint::import(&path, &source));
         if let Some(cached) = self.load_parse_cached_import(
             argument,
@@ -945,7 +954,15 @@ impl TreeWalk {
             }
 
             let ir = self.remap_cached_import_ir(argument, argument_span, &path, cached.ir)?;
-            return self.load_and_eval_import_ir(id, span, &path, &base, &source, ir, global_scope);
+            return self.load_and_eval_import_ir(
+                id,
+                span,
+                &path,
+                path_literal_base,
+                &source,
+                ir,
+                global_scope,
+            );
         }
         self.load_and_eval_import_bytes(
             id,
@@ -953,7 +970,7 @@ impl TreeWalk {
             argument,
             argument_span,
             &path,
-            &base,
+            path_literal_base,
             &source,
             global_scope,
         )

@@ -103,13 +103,9 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         name: "eval-okay-search-path",
         reason: "implicit C++ Nix corepkgs search path is not modeled",
     },
-    LangCaseExclusion {
-        name: "eval-okay-symlink-resolution",
-        reason: "symlink directory resolution gap",
-    },
 ];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 204;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 5;
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 205;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 4;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",
@@ -1136,6 +1132,19 @@ fn fixture_lang_dir() -> PathBuf {
         .join("lang")
 }
 
+fn unique_temp_lang_dir(label: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time is after epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "aos-nix-lang-{label}-{}-{nanos}",
+        std::process::id()
+    ));
+    fs::create_dir(&path).expect("temp lang dir creates");
+    path
+}
+
 #[test]
 fn discovers_lang_sh_categories_flags_and_disabled_cases() -> Result<()> {
     let cases = discover_lang_cases(&fixture_lang_dir())?;
@@ -1218,6 +1227,51 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
         ]
     );
 
+    Ok(())
+}
+
+#[test]
+fn eval_okay_symlink_resolution_uses_requested_import_base() -> Result<()> {
+    let lang_dir = unique_temp_lang_dir("symlink-resolution");
+    let fixture = lang_dir.join("symlink-resolution");
+    let foo = fixture.join("foo");
+    let overlays = fixture.join("overlays");
+    fs::create_dir(&fixture).expect("fixture dir creates");
+    fs::create_dir(&foo).expect("foo dir creates");
+    fs::create_dir_all(foo.join("lib")).expect("lib dir creates");
+    fs::create_dir(&overlays).expect("overlays dir creates");
+    std::os::unix::fs::symlink("../overlays", foo.join("overlays"))
+        .expect("overlays symlink creates");
+    fs::write(foo.join("lib/default.nix"), br#""test""#).expect("lib default writes");
+    fs::write(overlays.join("overlay.nix"), b"import ../lib").expect("overlay writes");
+
+    let source_path = lang_dir.join("eval-okay-symlink-resolution.nix");
+    let expected_path = lang_dir.join("eval-okay-symlink-resolution.exp");
+    fs::write(
+        &source_path,
+        b"import symlink-resolution/foo/overlays/overlay.nix",
+    )
+    .expect("source writes");
+    fs::write(
+        &expected_path,
+        br#""test"
+"#,
+    )
+    .expect("expected output writes");
+
+    let case = LangCase {
+        name: "eval-okay-symlink-resolution".to_owned(),
+        category: LangCategory::EvalOkay,
+        source: source_path,
+        expected: Some(expected_path),
+        expected_xml: None,
+        postprocess: None,
+        flags: Vec::new(),
+        disabled: false,
+    };
+    let outcome = run_lang_case(&case);
+    fs::remove_dir_all(&lang_dir).expect("temp lang dir removes");
+    assert_eq!(outcome?, CaseOutcome::Passed);
     Ok(())
 }
 

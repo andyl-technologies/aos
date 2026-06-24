@@ -150,6 +150,38 @@ fn import_evaluates_files_directories_and_escaping_values_in_one_heap() {
 }
 
 #[test]
+fn import_via_symlinked_directory_keeps_requested_relative_base() {
+    let root = fs::canonicalize(unique_temp_dir("import-symlink-base"))
+        .expect("temp directory canonicalizes");
+    let fixture = root.join("symlink-resolution");
+    let foo = fixture.join("foo");
+    let overlays = fixture.join("overlays");
+    fs::create_dir(&fixture).expect("fixture dir creates");
+    fs::create_dir(&foo).expect("foo dir creates");
+    fs::create_dir_all(foo.join("lib")).expect("lib dir creates");
+    fs::create_dir(&overlays).expect("overlays dir creates");
+    std::os::unix::fs::symlink("../overlays", foo.join("overlays"))
+        .expect("overlays symlink creates");
+    fs::write(foo.join("lib/default.nix"), br#""test""#).expect("lib default writes");
+    fs::write(overlays.join("overlay.nix"), b"import ../lib").expect("overlay writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+
+    assert_eq!(
+        eval_string_bytes_with_options(
+            "import ./symlink-resolution/foo/overlays/overlay.nix",
+            options,
+        ),
+        b"test"
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
 fn import_uses_fresh_scope_and_shared_result_cache() {
     let root = fs::canonicalize(unique_temp_dir("import-scope-cache"))
         .expect("temp directory canonicalizes");
@@ -458,6 +490,51 @@ fn parse_cached_imports_keep_module_relative_path_bases() {
     );
     assert_eq!(string.bytes(), expected.as_bytes());
     assert_eq!(evaluator.import_parse_cache_stats(), (1, 1));
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn parse_cached_imports_keep_symlinked_requested_path_bases() {
+    let root = fs::canonicalize(unique_temp_dir("import-parse-cache-symlink-base"))
+        .expect("temp directory canonicalizes");
+    let cache_root = root.join("cache");
+    let fixture = root.join("symlink-resolution");
+    let foo = fixture.join("foo");
+    let overlays = fixture.join("overlays");
+    fs::create_dir(&fixture).expect("fixture dir creates");
+    fs::create_dir(&foo).expect("foo dir creates");
+    fs::create_dir_all(foo.join("lib")).expect("lib dir creates");
+    fs::create_dir(&overlays).expect("overlays dir creates");
+    std::os::unix::fs::symlink("../overlays", foo.join("overlays"))
+        .expect("overlays symlink creates");
+    fs::write(foo.join("lib/default.nix"), br#""test""#).expect("lib default writes");
+    fs::write(overlays.join("overlay.nix"), b"import ../lib").expect("overlay writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&cache_root);
+    let ir = lower("import ./symlink-resolution/foo/overlays/overlay.nix");
+
+    let mut first = TreeWalk::with_options(&ir, options.clone());
+    let first_value = first.eval_root().expect("first import evaluates");
+    let first_string = first
+        .heap()
+        .get_string(first_value)
+        .expect("first result is a string");
+    assert_eq!(first_string.bytes(), b"test");
+    assert_eq!(first.import_parse_cache_stats(), (0, 2));
+
+    let mut second = TreeWalk::with_options(&ir, options);
+    let second_value = second.eval_root().expect("cached import evaluates");
+    let second_string = second
+        .heap()
+        .get_string(second_value)
+        .expect("cached result is a string");
+    assert_eq!(second_string.bytes(), b"test");
+    assert_eq!(second.import_parse_cache_stats(), (2, 0));
 
     fs::remove_dir_all(root).expect("temp directory removes");
 }
