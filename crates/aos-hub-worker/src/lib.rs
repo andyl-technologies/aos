@@ -139,10 +139,13 @@ mod entry {
     //! browse UI + JSON read API ([`aos_hub_core::web`]), all single-sourced
     //! with the native hub.
 
+    use std::rc::Rc;
     use std::sync::Arc;
 
     use wasm_bindgen::JsCast;
-    use worker::{Context, Env, Request, Response, Result, ScheduleContext, ScheduledEvent};
+    use worker::{
+        Context, Env, Method, Request, Response, Result, ScheduleContext, ScheduledEvent,
+    };
 
     use aos_hub_core::auth::jwt::JwtKeys;
     use aos_hub_core::db::Database;
@@ -223,9 +226,15 @@ mod entry {
     async fn router_from(
         env: &Env,
         request_origin: &str,
+        session: &Rc<worker::D1DatabaseSession>,
     ) -> Result<(Router, Arc<RpcService>, ConsoleDeps)> {
+        // Every D1 backend this request builds — the read path, the rate limiter,
+        // and the publish lease — shares the one per-request session, so the whole
+        // request reads against a single consistency floor (and a publish's
+        // writes advance the same bookmark the response threads back). See the
+        // `fetch` handler and `crate::d1backend::open_session`.
         let db = Arc::new(Database::attach(Box::new(crate::d1backend::D1Backend::new(
-            env.d1(crate::handlers::bindings::D1)?,
+            Rc::clone(session),
         ))));
 
         let secret = env.secret(HUB_JWT_SECRET)?.to_string();
@@ -259,8 +268,10 @@ mod entry {
         //  1. the Cloudflare Email Service `EMAIL` binding + `HUB_EMAIL_FROM`,
         //  2. the `HUB_EMAIL_API_URL` HTTP relay (+ optional bearer),
         //  3. logging (dev/unconfigured).
-        // The `EMAIL` binding has no workers-rs wrapper, so it is read as a raw
-        // JS object via Reflect and handed to the mailer for the JS interop call.
+        // The `EMAIL` binding is the structured Email Sending API, which has no
+        // matching workers-rs wrapper (0.8's typed `SendEmail` is the raw-MIME
+        // Email Routing product — see `WorkerMailer`), so it is read as a raw JS
+        // object via Reflect and handed to the mailer for the JS interop call.
         let email_binding = js_sys::Reflect::get(
             env.as_ref(),
             &wasm_bindgen::JsValue::from_str(EMAIL_BINDING),
@@ -272,11 +283,12 @@ mod entry {
         let email_api_url = env.var(HUB_EMAIL_API_URL).ok().map(|v| v.to_string());
         let email_api_token = env.secret(HUB_EMAIL_API_TOKEN).ok().map(|s| s.to_string());
 
-        // The limiter drives its own D1 counter table over a second D1 backend
-        // handle (the binding is cheap to re-resolve and D1 handles are owned).
+        // The limiter drives its own D1 counter table over the shared session;
+        // its upserts are writes, so they always route to the primary regardless
+        // of the session's read seed.
         let ratelimit: Arc<dyn RateLimiter> = Arc::new(
             crate::workerlimit::D1RateLimiter::create(crate::d1backend::D1Backend::new(
-                env.d1(crate::handlers::bindings::D1)?,
+                Rc::clone(session),
             ))
             .await
             .map_err(|err| worker::Error::RustError(format!("rate limiter init: {err:#}")))?,
@@ -303,7 +315,7 @@ mod entry {
         // `*/15` Cron remains the backstop for non-publish surface changes.
         let lease: Arc<dyn aos_hub_core::lease::PublishLease> =
             Arc::new(crate::workerlease::D1PublishLease::new(
-                crate::d1backend::D1Backend::new(env.d1(crate::handlers::bindings::D1)?),
+                crate::d1backend::D1Backend::new(Rc::clone(session)),
             ));
         let reindexer: Arc<dyn aos_hub_core::reindex::Reindexer> = Arc::new(WorkerReindexer::new(
             env.bucket(crate::handlers::bindings::R2)?,
@@ -364,6 +376,65 @@ mod entry {
         Ok((router, service, console_deps))
     }
 
+    /// The cookie carrying a client's D1 read-replication session bookmark.
+    ///
+    /// Threads each client's consistency floor across requests so a session
+    /// reads data at least as fresh as its previous read or write —
+    /// read-your-writes after a console publish, and monotonic reads while
+    /// browsing. Set only on responses a shared cache will not store (see
+    /// [`is_publicly_cacheable`]), so the cacheable machine facade stays
+    /// cookie-free and edge-cacheable.
+    const D1_BOOKMARK_COOKIE: &str = "aos_d1b";
+
+    /// D1 session seed for a write-bearing request with no prior bookmark: route
+    /// the first query to the primary. Mirrors `D1SessionConstraint::FirstPrimary`.
+    const D1_SEED_PRIMARY: &str = "first-primary";
+
+    /// D1 session seed for a read request with no prior bookmark: the first read
+    /// may be served by any replica. Mirrors
+    /// `D1SessionConstraint::FirstUnconstrained`.
+    const D1_SEED_UNCONSTRAINED: &str = "first-unconstrained";
+
+    /// Extracts the D1 session bookmark from the request's `Cookie` header.
+    fn bookmark_cookie(req: &Request) -> Option<String> {
+        let cookie = req.headers().get("cookie").ok().flatten()?;
+        cookie
+            .split(';')
+            .filter_map(|kv| kv.split_once('='))
+            .find_map(|(name, value)| {
+                (name.trim() == D1_BOOKMARK_COOKIE).then(|| value.trim().to_string())
+            })
+            .filter(|v| !v.is_empty())
+    }
+
+    /// The D1 session seed for `req`: a prior bookmark when the client carries
+    /// one, else a constraint chosen by method — reads (`GET`/`HEAD`: the browse
+    /// UI and the cacheable machine facade) may start at a nearby replica, while
+    /// the write/RPC surface starts at the primary.
+    fn session_seed(req: &Request) -> String {
+        if let Some(bookmark) = bookmark_cookie(req) {
+            return bookmark;
+        }
+        match req.method() {
+            Method::Get | Method::Head => D1_SEED_UNCONSTRAINED.to_string(),
+            _ => D1_SEED_PRIMARY.to_string(),
+        }
+    }
+
+    /// Whether `resp` may be stored by a shared (edge) cache — its
+    /// `Cache-Control` contains `public`.
+    ///
+    /// Such responses (the machine facade's NAR/narinfo, the generated
+    /// `robots.txt`/`llms.txt`) must not carry a `Set-Cookie`, which would make
+    /// them uncacheable, so the bookmark cookie is set only on the rest.
+    fn is_publicly_cacheable(resp: &Response) -> bool {
+        resp.headers()
+            .get("cache-control")
+            .ok()
+            .flatten()
+            .is_some_and(|cc| cc.to_ascii_lowercase().contains("public"))
+    }
+
     /// The HTTP entry point: bridge every request to the shared router.
     ///
     /// The shared router ([`aos_hub_core::connect::router`]) owns the
@@ -396,8 +467,35 @@ mod entry {
                 }
             })
             .unwrap_or_default();
-        let (router, service, console_deps) = router_from(&env, &request_origin).await?;
-        crate::bridge::dispatch(router, &service, console_deps, req).await
+
+        // Open one D1 read-replication session for the whole request, seeded by
+        // the client's prior bookmark (or a method-based constraint). Every D1
+        // backend the request builds shares it (see `router_from`), so the
+        // request reads against a single consistency floor and a publish's writes
+        // advance the same bookmark threaded back below.
+        let session = crate::d1backend::open_session(
+            &env.d1(crate::handlers::bindings::D1)?,
+            &session_seed(&req),
+        )
+        .map_err(|err| worker::Error::RustError(format!("D1 session: {err:#}")))?;
+
+        let (router, service, console_deps) =
+            router_from(&env, &request_origin, &session).await?;
+        let mut resp = crate::bridge::dispatch(router, &service, console_deps, req).await?;
+
+        // Thread the session's resulting bookmark back so the client's next
+        // request reads at least as fresh — but never on a publicly-cacheable
+        // response, where a `Set-Cookie` would defeat edge caching of the facade.
+        if !is_publicly_cacheable(&resp) {
+            if let Ok(Some(bookmark)) = session.get_bookmark() {
+                let cookie = format!(
+                    "{D1_BOOKMARK_COOKIE}={bookmark}; Path=/; Max-Age=600; \
+                     HttpOnly; Secure; SameSite=Lax"
+                );
+                resp.headers_mut().append("set-cookie", &cookie)?;
+            }
+        }
+        Ok(resp)
     }
 
     /// The Cron-triggered indexer: re-walk every public registry's R2 surface
@@ -440,8 +538,16 @@ mod entry {
         };
         // Drive the indexer's D1 access through the shared D1Backend (f64 binds,
         // NULL-tolerant reads), the same engine the read path uses; the surface
-        // read goes through the R2-backed SurfaceProvider.
-        let backend = crate::d1backend::D1Backend::new(db);
+        // read goes through the R2-backed SurfaceProvider. The Cron path opens a
+        // `first-primary` session: it reads the current index state and writes
+        // back, so it must not be served by a lagging replica.
+        let backend = match crate::d1backend::open_session(&db, D1_SEED_PRIMARY) {
+            Ok(session) => crate::d1backend::D1Backend::new(session),
+            Err(err) => {
+                worker::console_error!("scheduled: D1 session failed: {err:#}");
+                return;
+            }
+        };
         if let Err(err) =
             crate::indexer::index_all(backend, bucket, Arc::clone(&sealer)).await
         {
@@ -456,11 +562,18 @@ mod entry {
             env.d1(crate::handlers::bindings::D1),
             env.bucket(crate::handlers::bindings::R2),
         ) {
-            let rs_backend = crate::d1backend::D1Backend::new(rs_db);
-            if let Err(err) =
-                crate::indexer::rescan_all(rs_backend, rs_bucket, Arc::clone(&sealer)).await
-            {
-                worker::console_error!("scheduled cache rescan failed: {err:#}");
+            match crate::d1backend::open_session(&rs_db, D1_SEED_PRIMARY) {
+                Ok(session) => {
+                    let rs_backend = crate::d1backend::D1Backend::new(session);
+                    if let Err(err) =
+                        crate::indexer::rescan_all(rs_backend, rs_bucket, Arc::clone(&sealer)).await
+                    {
+                        worker::console_error!("scheduled cache rescan failed: {err:#}");
+                    }
+                }
+                Err(err) => {
+                    worker::console_error!("scheduled rescan: D1 session failed: {err:#}")
+                }
             }
         } else {
             worker::console_error!("scheduled rescan: D1/R2 binding missing");
@@ -478,7 +591,13 @@ mod entry {
             return;
         };
         let now = (worker::Date::now().as_millis() / 1000) as i64;
-        let gc_backend = crate::d1backend::D1Backend::new(gc_db);
+        let gc_backend = match crate::d1backend::open_session(&gc_db, D1_SEED_PRIMARY) {
+            Ok(session) => crate::d1backend::D1Backend::new(session),
+            Err(err) => {
+                worker::console_error!("scheduled gc: D1 session failed: {err:#}");
+                return;
+            }
+        };
         if let Err(err) = crate::indexer::gc_all(gc_backend, gc_bucket, now, sealer).await {
             worker::console_error!("scheduled cache gc failed: {err:#}");
         }

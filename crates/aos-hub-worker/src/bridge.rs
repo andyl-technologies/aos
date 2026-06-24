@@ -9,7 +9,7 @@
 //! [`http`] request/response the router speaks.
 //!
 //! There is deliberately no `axum-cloudflare-adapter` dependency: no published
-//! release of that adapter supports the `worker` 0.4.x pin this crate uses, and
+//! release of that adapter tracks the `worker` version this crate pins, and
 //! the conversion is small enough to own. The bridge buffers both bodies fully
 //! (the registry RPC payloads are small JSON messages), so it never needs a
 //! streaming body type across the boundary.
@@ -98,7 +98,7 @@ pub async fn to_worker(resp: http::Response<Body>) -> Result<Response> {
 
     let (parts, body) = resp.into_parts();
 
-    let mut headers = Headers::new();
+    let headers = Headers::new();
     for (name, value) in parts.headers.iter() {
         let value = value
             .to_str()

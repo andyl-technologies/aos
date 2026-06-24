@@ -30,6 +30,13 @@ compatibility_date = "2024-09-23"
 [build]
 command = "worker-build --release"
 
+# Run at the edge near each client (never smart placement): the hub is
+# read-heavy and D1 is read-replicated (RFC-0004), so the Worker should read
+# from the nearest replica, not be pinned to the primary's region. Hardcoded
+# `off` so a dashboard toggle to `smart` is reverted on the next deploy.
+[placement]
+mode = "off"
+
 # The D1 (sqlite) database. The binding name must match
 # `handlers::bindings::D1` (REGISTRY_DB). Apply the schema after deploy with
 # `aos-hub init --target d1:<name>`, which runs the exact `MIGRATIONS`

@@ -253,10 +253,12 @@ impl SurfaceFetch for R2SurfaceFetch {
 
         let key = keymap::r2_key(&self.prefix, path);
         // NOTE: we deliberately do *not* push the byte range into the R2 `get`
-        // (`GetOptionsBuilder::range`). workers-rs 0.4.x serializes every `Range`
-        // variant with an explicit `suffix: undefined` property, and the runtime's
-        // R2 binding rejects the *presence* of the `suffix` key alongside `offset`
-        // ("Suffix is incompatible with offset"), so a pushed-down range errors on
+        // (`GetOptionsBuilder::range`). workers-rs serializes every `Range`
+        // variant with an explicit `suffix: undefined` property (still true in
+        // 0.8.5 — `r2::builder::Range`'s `OffsetWithLength` arm emits
+        // `"suffix" => JsValue::UNDEFINED`), and the runtime's R2 binding rejects
+        // the *presence* of the `suffix` key alongside `offset` ("Suffix is
+        // incompatible with offset"), so a pushed-down range errors on
         // workerd. Instead we open the whole-object stream and trim it chunk by
         // chunk below — the isolate still never holds the whole object in memory
         // (it streams through, dropping pre-`start` bytes and stopping at the
@@ -457,7 +459,7 @@ impl SurfaceFetch for S3SurfaceFetch {
         // The presigned URL signs only the Host header, so a `Range` request
         // header travels unsigned and the origin honors it as a normal byte
         // range — the served range/total are re-derived from the response.
-        let mut headers = Headers::new();
+        let headers = Headers::new();
         if let Some((start, end)) = range {
             let spec = if end == u64::MAX {
                 format!("bytes={start}-")
@@ -583,7 +585,7 @@ impl OriginFetch for WorkerOriginFetch {
         use futures_util::TryStreamExt as _;
         use worker::{Fetch, Headers, Method, Request, RequestInit};
 
-        let mut headers = Headers::new();
+        let headers = Headers::new();
         if let Some((start, end)) = range {
             let spec = if end == u64::MAX {
                 format!("bytes={start}-")
