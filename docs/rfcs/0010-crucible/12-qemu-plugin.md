@@ -930,9 +930,10 @@ component that makes that purity true *inside* the QEMU process.
   icount) and ban the overshoot-and-correct fallback; fail loudly during callback
   registration if the capability is missing. —
   satisfies [PLUG-14], [PLUG-15]; spec §12.3.4.
-- [ ] **T-PLUG-7** Implement synchronous idle-jump advancement that fires due
-  timers inline and drains bottom-halves from the idle context, so the wake-point
-  architectural state is bit-identical regardless of host timing. — satisfies
+- [x] **T-PLUG-7** Implement synchronous idle-jump advancement through the
+  required direct-advance export that fires due timers inline and drains
+  bottom-halves from the idle context, so the wake-point architectural state is
+  bit-identical regardless of host timing. — satisfies
   [PLUG-16]; spec §12.3.5.
 - [ ] **T-PLUG-8** Implement inbound-frame polling/injection: peek delivery
   icount, deliver iff `delivery_icount <= current_icount`, order injections by

@@ -40,7 +40,9 @@ pub use abi::{
     QemuPluginAbiError, QemuPluginExecutionModel, QemuPluginId, QemuPluginInfo, QemuTcgThreading,
     RegisteredDeviceCallbacks, execution_model_from_qemu_info, install_inert_scaffold,
     install_inert_scaffold_from_qemu_info, install_required_deadline_scaffold,
-    install_required_deadline_scaffold_from_qemu_info, qemu_plugin_install, qemu_plugin_version,
+    install_required_deadline_scaffold_from_qemu_info, install_required_time_capability_scaffold,
+    install_required_time_capability_scaffold_from_qemu_info, qemu_plugin_install,
+    qemu_plugin_version, resolve_qemu_advance_virtual_time_direct_symbol,
     resolve_qemu_clock_deadline_symbol, validate_install_boundary,
 };
 pub use args::{
@@ -57,8 +59,8 @@ pub use idle_loop::{
     IdleWakePlan, PluginIdleHotLoop, compute_idle_wake_plan, timer_deadline_icount,
 };
 pub use registration::{
-    PluginRegistrationFailure, PluginRegistrationReady, PluginRegistrationSequence,
-    PluginRegistrationSequenceError,
+    PluginCallbackCapabilities, PluginRegistrationFailure, PluginRegistrationReady,
+    PluginRegistrationSequence, PluginRegistrationSequenceError,
 };
 #[cfg(unix)]
 pub use setup::{
@@ -70,6 +72,7 @@ pub use time_control::{
     PluginClockAdvanceSource, PluginClockError, PluginRegistrationStep, PluginTimeControlOwnership,
     PluginVirtualClock, QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL,
     QEMU_PLUGIN_HAS_TIME_CONTROL_SYMBOL, QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL,
-    QEMU_PLUGIN_UPDATE_NS_SYMBOL, SchedulerAuthorizedIdleJump, SchedulerCeiling,
+    QEMU_PLUGIN_UPDATE_NS_SYMBOL, QemuAdvanceVirtualTimeDirectFn, SchedulerAuthorizedIdleJump,
+    SchedulerCeiling, SynchronousIdleAdvance, SynchronousIdleAdvanceError, SynchronousIdleDrain,
     TimeControlRegistrationError, TimeControlRegistrationPlan,
 };

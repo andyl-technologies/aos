@@ -14,7 +14,10 @@
 
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
-use crate::{ExactDeadlineError, ExactDeadlineReader, QemuClockDeadlineFn};
+use crate::{
+    ExactDeadlineError, ExactDeadlineReader, QemuAdvanceVirtualTimeDirectFn, QemuClockDeadlineFn,
+    SynchronousIdleAdvance, SynchronousIdleAdvanceError,
+};
 
 /// QEMU plugin identifier type passed to the install entry point.
 pub type QemuPluginId = u64;
@@ -62,6 +65,28 @@ pub const QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL: &str = QEMU_PLUGIN_INSTALL_SYM
 /// Minimum supported vCPU count under single-threaded round-robin TCG.
 pub const MIN_SUPPORTED_VCPU_COUNT: u32 = 1;
 const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C: &[u8] = b"qemu_plugin_clock_deadline_ns\0";
+const QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL_C: &[u8] =
+    b"qemu_plugin_advance_virtual_time_direct\0";
+
+#[cfg(test)]
+static TEST_CLOCK_DEADLINE_SYMBOL: std::sync::Mutex<Option<QemuClockDeadlineFn>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn test_clock_deadline_symbol_override() -> Option<QemuClockDeadlineFn> {
+    match TEST_CLOCK_DEADLINE_SYMBOL.lock() {
+        Ok(guard) => *guard,
+        Err(poisoned) => *poisoned.into_inner(),
+    }
+}
+
+#[cfg(test)]
+fn set_test_clock_deadline_symbol(symbol: Option<QemuClockDeadlineFn>) {
+    match TEST_CLOCK_DEADLINE_SYMBOL.lock() {
+        Ok(mut guard) => *guard = symbol,
+        Err(poisoned) => *poisoned.into_inner() = symbol,
+    }
+}
 
 /// The TCG threading mode relevant to plugin callback serialization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,6 +275,7 @@ pub struct PluginStatePartition {
     lifecycle_core: PluginLifecycleCore,
     device_callbacks: RegisteredDeviceCallbacks,
     exact_deadline_reader: Option<ExactDeadlineReader>,
+    synchronous_idle_advance: Option<SynchronousIdleAdvance>,
 }
 
 impl PluginStatePartition {
@@ -260,6 +286,7 @@ impl PluginStatePartition {
             lifecycle_core: PluginLifecycleCore::installed_inert(execution_model),
             device_callbacks: RegisteredDeviceCallbacks::inert(),
             exact_deadline_reader: None,
+            synchronous_idle_advance: None,
         }
     }
 
@@ -273,6 +300,22 @@ impl PluginStatePartition {
             lifecycle_core: PluginLifecycleCore::installed_inert(execution_model),
             device_callbacks: RegisteredDeviceCallbacks::inert(),
             exact_deadline_reader: Some(exact_deadline_reader),
+            synchronous_idle_advance: None,
+        }
+    }
+
+    /// Builds scaffold state after requiring all idle-time QEMU capabilities.
+    #[must_use]
+    pub const fn with_required_time_capabilities(
+        execution_model: QemuPluginExecutionModel,
+        exact_deadline_reader: ExactDeadlineReader,
+        synchronous_idle_advance: SynchronousIdleAdvance,
+    ) -> Self {
+        Self {
+            lifecycle_core: PluginLifecycleCore::installed_inert(execution_model),
+            device_callbacks: RegisteredDeviceCallbacks::inert(),
+            exact_deadline_reader: Some(exact_deadline_reader),
+            synchronous_idle_advance: Some(synchronous_idle_advance),
         }
     }
 
@@ -292,6 +335,12 @@ impl PluginStatePartition {
     #[must_use]
     pub const fn exact_deadline_reader(&self) -> Option<&ExactDeadlineReader> {
         self.exact_deadline_reader.as_ref()
+    }
+
+    /// Returns the synchronous direct-advance handle resolved during install, if present.
+    #[must_use]
+    pub const fn synchronous_idle_advance(&self) -> Option<&SynchronousIdleAdvance> {
+        self.synchronous_idle_advance.as_ref()
     }
 }
 
@@ -334,6 +383,12 @@ pub enum QemuPluginAbiError {
     ExactDeadlineCapability {
         /// Underlying exact deadline error.
         source: ExactDeadlineError,
+    },
+    /// The required synchronous idle-advance capability is unavailable.
+    #[error("QEMU plugin synchronous idle-advance capability failed")]
+    SynchronousIdleAdvanceCapability {
+        /// Underlying synchronous idle-advance error.
+        source: SynchronousIdleAdvanceError,
     },
 }
 
@@ -410,6 +465,30 @@ pub fn install_required_deadline_scaffold(
     ))
 }
 
+/// Builds install scaffold state after requiring all idle-time QEMU capabilities.
+///
+/// # Errors
+///
+/// Returns [`QemuPluginAbiError::ExactDeadlineCapability`] when the exact
+/// deadline export is unavailable, or
+/// [`QemuPluginAbiError::SynchronousIdleAdvanceCapability`] when the direct
+/// advance/drain export is unavailable.
+pub fn install_required_time_capability_scaffold(
+    execution_model: QemuPluginExecutionModel,
+    clock_deadline_ns: Option<QemuClockDeadlineFn>,
+    advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+) -> Result<PluginStatePartition, QemuPluginAbiError> {
+    let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ns)
+        .map_err(|source| QemuPluginAbiError::ExactDeadlineCapability { source })?;
+    let synchronous_idle_advance = SynchronousIdleAdvance::require(advance_virtual_time_direct)
+        .map_err(|source| QemuPluginAbiError::SynchronousIdleAdvanceCapability { source })?;
+    Ok(PluginStatePartition::with_required_time_capabilities(
+        execution_model,
+        exact_deadline_reader,
+        synchronous_idle_advance,
+    ))
+}
+
 /// Builds the inert install scaffold from QEMU install information.
 ///
 /// # Errors
@@ -439,10 +518,36 @@ pub fn install_required_deadline_scaffold_from_qemu_info(
     install_required_deadline_scaffold(execution_model, clock_deadline_ns)
 }
 
+/// Builds required idle-time capability scaffold state from QEMU install information.
+///
+/// # Errors
+///
+/// Returns [`QemuPluginAbiError`] when the execution model is unsupported, the
+/// exact-deadline symbol is unavailable, or the synchronous direct-advance
+/// symbol is unavailable.
+pub fn install_required_time_capability_scaffold_from_qemu_info(
+    info: &QemuPluginInfo,
+    threading: QemuTcgThreading,
+    clock_deadline_ns: Option<QemuClockDeadlineFn>,
+    advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+) -> Result<PluginStatePartition, QemuPluginAbiError> {
+    let execution_model = execution_model_from_qemu_info(info, threading)?;
+    install_required_time_capability_scaffold(
+        execution_model,
+        clock_deadline_ns,
+        advance_virtual_time_direct,
+    )
+}
+
 /// Resolves QEMU's required exact-deadline export from the loaded process.
 #[cfg(unix)]
 #[must_use]
 pub fn resolve_qemu_clock_deadline_symbol() -> Option<QemuClockDeadlineFn> {
+    #[cfg(test)]
+    if let Some(symbol) = test_clock_deadline_symbol_override() {
+        return Some(symbol);
+    }
+
     // SAFETY: The symbol name is a static NUL-terminated byte string. `dlsym`
     // returns either null or a process symbol address. QEMU's patch defines this
     // symbol with the exact `extern "C" fn() -> i64` ABI used by
@@ -470,6 +575,41 @@ pub const fn resolve_qemu_clock_deadline_symbol() -> Option<QemuClockDeadlineFn>
     None
 }
 
+/// Resolves QEMU's required synchronous direct-advance export from the loaded process.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_advance_virtual_time_direct_symbol() -> Option<QemuAdvanceVirtualTimeDirectFn> {
+    // SAFETY: The symbol name is a static NUL-terminated byte string. `dlsym`
+    // returns either null or a process symbol address. QEMU's patch defines this
+    // symbol with the exact `extern "C" fn(i64)` ABI used by
+    // `QemuAdvanceVirtualTimeDirectFn`; callers fail closed when the symbol is
+    // absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL_C
+                .as_ptr()
+                .cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: Non-null `symbol` was resolved for
+        // `qemu_plugin_advance_virtual_time_direct`, whose patched QEMU
+        // declaration is `void qemu_plugin_advance_virtual_time_direct(int64_t)`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuAdvanceVirtualTimeDirectFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's required synchronous direct-advance export from the loaded process.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_advance_virtual_time_direct_symbol()
+-> Option<QemuAdvanceVirtualTimeDirectFn> {
+    None
+}
+
 fn validate_qemu_plugin_api_range(info: &QemuPluginInfo) -> Result<(), QemuPluginAbiError> {
     if info.version.min > QEMU_PLUGIN_API_VERSION || info.version.cur < QEMU_PLUGIN_API_VERSION {
         return Err(QemuPluginAbiError::UnsupportedPluginApi {
@@ -491,10 +631,11 @@ unsafe fn install_required_deadline_scaffold_from_boundary(
     // guarantees `info` points at a live `qemu_info_t` for this install call.
     let info = unsafe { &*info };
 
-    install_required_deadline_scaffold_from_qemu_info(
+    install_required_time_capability_scaffold_from_qemu_info(
         info,
         QemuTcgThreading::SingleThreadedRoundRobin,
         resolve_qemu_clock_deadline_symbol(),
+        resolve_qemu_advance_virtual_time_direct_symbol(),
     )
 }
 
@@ -505,8 +646,9 @@ pub static qemu_plugin_version: c_int = QEMU_PLUGIN_API_VERSION;
 /// QEMU `cdylib` install entry point.
 ///
 /// The install path validates the raw ABI shape and execution model, then fails
-/// closed unless QEMU exposes the required exact-deadline capability. Device
-/// callbacks remain inert until later tasks replace the callback bodies.
+/// closed unless QEMU exposes the required exact-deadline and synchronous
+/// direct-advance capabilities. Device callbacks remain inert until later tasks
+/// replace the callback bodies.
 ///
 /// # Safety
 ///
@@ -705,10 +847,10 @@ mod tests {
     }
 
     #[test]
-    fn abi_install_entrypoint_fails_closed_without_exact_deadline_symbol() {
+    fn abi_install_entrypoint_fails_closed_without_exact_deadline_or_direct_advance_symbols() {
         let valid_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
 
-        assert!(resolve_qemu_clock_deadline_symbol().is_none());
+        assert!(resolve_qemu_advance_virtual_time_direct_symbol().is_none());
         assert_eq!(
             call_qemu_plugin_install(&valid_info, 0, std::ptr::null_mut()),
             QEMU_PLUGIN_INSTALL_ERROR
@@ -723,6 +865,57 @@ mod tests {
             Err(QemuPluginAbiError::ExactDeadlineCapability {
                 source: ExactDeadlineError::CapabilityUnavailable {
                     symbol: crate::QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn abi_install_entrypoint_requires_direct_advance_after_deadline_resolution() {
+        let valid_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
+        let _deadline_guard = TestClockDeadlineSymbolGuard::install(abi_test_deadline);
+        let Some(deadline) = resolve_qemu_clock_deadline_symbol() else {
+            panic!("test exported exact-deadline symbol should resolve");
+        };
+
+        assert_eq!(deadline(), 4096);
+        assert!(resolve_qemu_advance_virtual_time_direct_symbol().is_none());
+        assert_eq!(
+            call_qemu_plugin_install(&valid_info, 0, std::ptr::null_mut()),
+            QEMU_PLUGIN_INSTALL_ERROR
+        );
+    }
+
+    #[test]
+    fn abi_install_requires_synchronous_idle_advance_symbol() {
+        let valid_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
+
+        assert_eq!(
+            install_required_time_capability_scaffold_from_qemu_info(
+                &valid_info,
+                QemuTcgThreading::SingleThreadedRoundRobin,
+                Some(abi_test_deadline),
+                Some(abi_test_direct_advance),
+            )
+            .map(|state| {
+                (
+                    state.exact_deadline_reader().is_some(),
+                    state.synchronous_idle_advance().is_some(),
+                )
+            }),
+            Ok((true, true))
+        );
+        assert_eq!(
+            install_required_time_capability_scaffold_from_qemu_info(
+                &valid_info,
+                QemuTcgThreading::SingleThreadedRoundRobin,
+                Some(abi_test_deadline),
+                None,
+            )
+            .map(|_state| ()),
+            Err(QemuPluginAbiError::SynchronousIdleAdvanceCapability {
+                source: SynchronousIdleAdvanceError::CapabilityUnavailable {
+                    symbol: crate::QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL,
                 },
             })
         );
@@ -819,6 +1012,7 @@ mod tests {
         );
         assert_eq!(state.lifecycle_core().execution_model(), model);
         assert!(state.exact_deadline_reader().is_none());
+        assert!(state.synchronous_idle_advance().is_none());
         for kind in OWNED_DEVICE_CALLBACK_KINDS {
             let callback = state.device_callbacks().callback_for(kind);
             callback(7, std::ptr::null_mut());
@@ -827,5 +1021,22 @@ mod tests {
 
     extern "C" fn abi_test_deadline() -> i64 {
         4096
+    }
+
+    extern "C" fn abi_test_direct_advance(_target_virtual_ns: i64) {}
+
+    struct TestClockDeadlineSymbolGuard;
+
+    impl TestClockDeadlineSymbolGuard {
+        fn install(symbol: QemuClockDeadlineFn) -> Self {
+            set_test_clock_deadline_symbol(Some(symbol));
+            Self
+        }
+    }
+
+    impl Drop for TestClockDeadlineSymbolGuard {
+        fn drop(&mut self) {
+            set_test_clock_deadline_symbol(None);
+        }
     }
 }

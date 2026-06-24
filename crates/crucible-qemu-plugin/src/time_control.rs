@@ -21,6 +21,13 @@ pub const QEMU_PLUGIN_UPDATE_NS_SYMBOL: &str = "qemu_plugin_update_ns";
 /// Largest `-icount shift=N` value representable by a `u64` nanosecond scale.
 pub const MAX_PLUGIN_ICOUNT_SHIFT: u8 = 63;
 
+/// QEMU's synchronous virtual-time advance function.
+///
+/// The patched QEMU plugin API exports this symbol as a no-handle function that
+/// advances `QEMU_CLOCK_VIRTUAL` to an absolute nanosecond target, runs due
+/// virtual-clock timers inline, and drains bottom halves before returning.
+pub type QemuAdvanceVirtualTimeDirectFn = extern "C" fn(i64);
+
 /// The canonical registration steps that protect virtual time before guest code runs.
 pub const CANONICAL_TIME_CONTROL_REGISTRATION_ORDER: [PluginRegistrationStep; 10] = [
     PluginRegistrationStep::ParseArguments,
@@ -127,6 +134,16 @@ impl SchedulerAuthorizedIdleJump {
     pub const fn ceiling_icount(self) -> u64 {
         self.ceiling_icount
     }
+
+    /// Projects the authorized target into virtual nanoseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginClockError`] when the target cannot be represented with
+    /// the fixed icount shift.
+    pub fn target_virtual_ns(self, icount_shift: u8) -> Result<u64, PluginClockError> {
+        project_virtual_ns(self.target_icount, icount_shift)
+    }
 }
 
 /// The only accepted sources of virtual-clock movement.
@@ -170,6 +187,75 @@ impl PluginClockAdvance {
     #[must_use]
     pub const fn virtual_ns(self) -> u64 {
         self.virtual_ns
+    }
+}
+
+/// Required handle for synchronous idle jumps through QEMU.
+#[derive(Clone, Copy, Debug)]
+pub struct SynchronousIdleAdvance {
+    advance_virtual_time_direct: QemuAdvanceVirtualTimeDirectFn,
+}
+
+impl SynchronousIdleAdvance {
+    /// Requires QEMU's synchronous direct-advance export.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SynchronousIdleAdvanceError::CapabilityUnavailable`] when the
+    /// `qemu_plugin_advance_virtual_time_direct` export was not resolved.
+    pub fn require(
+        advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+    ) -> Result<Self, SynchronousIdleAdvanceError> {
+        let Some(advance_virtual_time_direct) = advance_virtual_time_direct else {
+            return Err(SynchronousIdleAdvanceError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL,
+            });
+        };
+
+        Ok(Self {
+            advance_virtual_time_direct,
+        })
+    }
+
+    /// Advances QEMU virtual time synchronously and drains timer-produced BH work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SynchronousIdleAdvanceError::VirtualTimeOutOfRange`] when the
+    /// target cannot be passed through QEMU's signed nanosecond ABI.
+    pub fn advance_and_drain(
+        &self,
+        target_virtual_ns: u64,
+    ) -> Result<SynchronousIdleDrain, SynchronousIdleAdvanceError> {
+        let qemu_target_ns = i64::try_from(target_virtual_ns).map_err(|_error| {
+            SynchronousIdleAdvanceError::VirtualTimeOutOfRange { target_virtual_ns }
+        })?;
+        (self.advance_virtual_time_direct)(qemu_target_ns);
+        Ok(SynchronousIdleDrain {
+            target_virtual_ns,
+            drained_bottom_halves: true,
+        })
+    }
+}
+
+/// Evidence that one synchronous idle advance returned after draining.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SynchronousIdleDrain {
+    target_virtual_ns: u64,
+    drained_bottom_halves: bool,
+}
+
+impl SynchronousIdleDrain {
+    /// Returns the absolute QEMU virtual nanosecond target that was advanced to.
+    #[must_use]
+    pub const fn target_virtual_ns(self) -> u64 {
+        self.target_virtual_ns
+    }
+
+    /// Returns whether the patched direct-advance path drained bottom halves.
+    #[must_use]
+    pub const fn drained_bottom_halves(self) -> bool {
+        self.drained_bottom_halves
     }
 }
 
@@ -531,6 +617,23 @@ pub enum PluginClockError {
     },
 }
 
+/// An error produced while requiring or using QEMU's synchronous idle advance.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum SynchronousIdleAdvanceError {
+    /// QEMU does not expose the required direct-advance symbol.
+    #[error("required QEMU plugin synchronous idle-advance symbol {symbol} is unavailable")]
+    CapabilityUnavailable {
+        /// Missing QEMU plugin symbol.
+        symbol: &'static str,
+    },
+    /// The target virtual time cannot pass through QEMU's signed nanosecond ABI.
+    #[error("synchronous idle advance target {target_virtual_ns}ns exceeds QEMU int64 range")]
+    VirtualTimeOutOfRange {
+        /// Rejected absolute virtual-time target.
+        target_virtual_ns: u64,
+    },
+}
+
 fn validate_target(
     current_icount: u64,
     target_icount: u64,
@@ -571,6 +674,10 @@ fn project_virtual_ns(icount: u64, icount_shift: u8) -> Result<u64, PluginClockE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    static LAST_DIRECT_ADVANCE_NS: AtomicI64 = AtomicI64::new(-1);
 
     #[test]
     fn time_control_registration_order_requests_control_before_first_instruction() {
@@ -782,6 +889,55 @@ mod tests {
     }
 
     #[test]
+    fn synchronous_idle_advance_requires_qemu_direct_advance_symbol() {
+        let Err(error) = SynchronousIdleAdvance::require(None) else {
+            panic!("missing direct advance symbol should fail closed");
+        };
+
+        assert_eq!(
+            error,
+            SynchronousIdleAdvanceError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL,
+            }
+        );
+    }
+
+    #[test]
+    fn synchronous_idle_advance_calls_qemu_and_reports_bottom_half_drain() {
+        LAST_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        let advance = match SynchronousIdleAdvance::require(Some(test_direct_advance)) {
+            Ok(advance) => advance,
+            Err(error) => panic!("direct advance symbol should be accepted: {error}"),
+        };
+
+        let drain = match advance.advance_and_drain(4096) {
+            Ok(drain) => drain,
+            Err(error) => panic!("direct advance should accept signed target: {error}"),
+        };
+
+        assert_eq!(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), 4096);
+        assert_eq!(drain.target_virtual_ns(), 4096);
+        assert!(drain.drained_bottom_halves());
+    }
+
+    #[test]
+    fn synchronous_idle_advance_rejects_targets_outside_qemu_signed_range() {
+        LAST_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        let advance = match SynchronousIdleAdvance::require(Some(test_direct_advance)) {
+            Ok(advance) => advance,
+            Err(error) => panic!("direct advance symbol should be accepted: {error}"),
+        };
+
+        assert_eq!(
+            advance.advance_and_drain(i64::MAX as u64 + 1),
+            Err(SynchronousIdleAdvanceError::VirtualTimeOutOfRange {
+                target_virtual_ns: i64::MAX as u64 + 1,
+            })
+        );
+        assert_eq!(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), -1);
+    }
+
+    #[test]
     fn time_control_clock_rejects_stale_idle_jump_authorization() {
         let mut clock = owned_clock(20, 0);
         let authorization = match clock.authorize_idle_jump(25, SchedulerCeiling::new(30)) {
@@ -841,8 +997,11 @@ mod tests {
         for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
             let result = if step == PluginRegistrationStep::RegisterCallbacks {
                 sequence
-                    .register_callbacks_with_exact_deadline(Some(time_control_test_deadline))
-                    .map(|_reader| ())
+                    .register_callbacks_with_exact_deadline(
+                        Some(time_control_test_deadline),
+                        Some(time_control_test_direct_advance),
+                    )
+                    .map(|_capabilities| ())
             } else {
                 sequence.record_step(step)
             };
@@ -858,5 +1017,11 @@ mod tests {
 
     extern "C" fn time_control_test_deadline() -> i64 {
         1
+    }
+
+    extern "C" fn time_control_test_direct_advance(_target_virtual_ns: i64) {}
+
+    extern "C" fn test_direct_advance(target_virtual_ns: i64) {
+        LAST_DIRECT_ADVANCE_NS.store(target_virtual_ns, Ordering::SeqCst);
     }
 }
