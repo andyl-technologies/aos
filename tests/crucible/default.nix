@@ -178,6 +178,7 @@ in {
     qemuPluginNetworkTx = import ./phase2-plugin-network-tx.nix {inherit pkgs lib;};
     qemuPluginNetworkRx = import ./phase2-plugin-network-rx.nix {inherit pkgs lib;};
     qemuPluginBlockIo = import ./phase2-plugin-block-io.nix {inherit pkgs lib;};
+    qemuPluginNinePIo = import ./phase2-plugin-9p-io.nix {inherit pkgs lib;};
     qemuCrashDetection = import ./phase2-qemu-crash-detection.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuQmpClient = import ./phase2-qemu-qmp-client.nix {inherit pkgs lib;};
