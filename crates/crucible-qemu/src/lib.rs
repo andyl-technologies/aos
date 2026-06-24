@@ -10,7 +10,8 @@
 //! Module map: `launch` owns the deterministic Contract-A launch profile and
 //! canonical QEMU argument construction; `single_vm_fingerprint` owns the
 //! safe run-twice-and-diff hook consumed by `gate:single-vm-fingerprint`;
-//! `shutdown` owns the graceful QEMU child shutdown escalation ladder.
+//! `shutdown` owns the graceful QEMU child shutdown escalation ladder; and
+//! `setup_failure` owns setup-abort classification and teardown.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
 //! details stay private; public callers use a safe host-driver API that
@@ -21,6 +22,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod launch;
+mod setup_failure;
 mod shutdown;
 mod single_vm_fingerprint;
 
@@ -29,6 +31,11 @@ pub use launch::{
     GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
     LaunchProfileCandidate, LaunchProfileError, MachineResetMode, NodeClockSkewDeclaration,
     NodeIcountShift,
+};
+pub use setup_failure::{
+    FailedQemuNodeSetup, QemuNodeSetup, QemuSchedulableNodeSetup, QemuSetupAbortError,
+    QemuSetupDriver, QemuSetupFailureKind, QemuSetupFailureSource, abort_qemu_setup_failure,
+    complete_qemu_node_setup, validate_qemu_setup_region_header,
 };
 pub use shutdown::{
     QEMU_SHUTDOWN_ESCALATION_ORDER, QMP_QUIT_COMMAND, QemuChildWait, QemuReap, QemuShutdownAttempt,
