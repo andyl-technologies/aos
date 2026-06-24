@@ -237,7 +237,7 @@
       package = "crucible-shmem";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:abi-conformance";

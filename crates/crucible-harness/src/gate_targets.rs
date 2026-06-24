@@ -90,7 +90,7 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible-shmem",
         test_target: "gate_layer1_injection",
         required_features: &[],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:abi-conformance",
