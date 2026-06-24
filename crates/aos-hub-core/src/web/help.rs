@@ -220,6 +220,205 @@ pub fn card(key: &str) -> Option<HelpCard> {
                 ("open", "any signed-in user can create an org."),
             ],
         ),
+        "instance.signup_domains" => c(
+            "Signup domain allowlist",
+            "instance",
+            "Restrict signups to specific email domains.",
+            &[
+                ("Set", "only users whose email domain is on the list may create their first org; existing members and admins are exempt."),
+                ("Empty", "any email domain may sign up (subject to the signup policy)."),
+            ],
+        ),
+        "instance.password_login" => c(
+            "Password login",
+            "instance",
+            "Whether local email + password sign-in is offered.",
+            &[
+                ("On", "users can sign in with a password (and via SSO / magic link)."),
+                ("Off", "password sign-in is refused; only SSO and magic-link remain."),
+            ],
+        ),
+        "instance.session_lifetime" => c(
+            "Session lifetime",
+            "instance",
+            "Absolute lifetime of a console session, in seconds.",
+            &[
+                ("Set", "sessions expire this many seconds after sign-in, forcing re-authentication."),
+                ("Empty", "uses the built-in default lifetime."),
+            ],
+        ),
+        "instance.max_upload" => c(
+            "Max upload",
+            "instance",
+            "Largest single surface upload the hub accepts, in bytes.",
+            &[
+                ("Set", "an upload whose body exceeds this is rejected with 413."),
+                ("Empty", "uses the built-in default cap."),
+            ],
+        ),
+        "instance.announcement" => c(
+            "Announcement banner",
+            "instance",
+            "A short notice shown on every console page.",
+            &[
+                ("Set", "the text renders in a banner above every page (HTML-escaped)."),
+                ("Empty", "no banner is shown."),
+            ],
+        ),
+        // -- serving frontends ----------------------------------------------
+        "frontend.serves_git" => c(
+            "Serves git",
+            "frontend",
+            "Serve the git index surface (apm fetches) on this domain.",
+            &[
+                ("On", "apm's dumb-HTTP git reads (info/refs, packs) for this registry are served here."),
+                ("Off", "git reads are not served on this domain."),
+            ],
+        ),
+        "frontend.serves_cache" => c(
+            "Serves cache",
+            "frontend",
+            "Serve the Nix binary-cache surface (narinfo / .nar) on this domain.",
+            &[
+                ("On", "consumers substitute store paths (narinfo and .nar objects) from this domain."),
+                ("Off", "the binary-cache surface is not served on this domain."),
+            ],
+        ),
+        "frontend.serves_web" => c(
+            "Serves web",
+            "frontend",
+            "Serve the human browse UI on this domain.",
+            &[
+                ("On", "the web pages (registry/package browse) render on this domain."),
+                ("Off", "browser requests are not served on this domain."),
+            ],
+        ),
+        "frontend.mode" => c(
+            "Mode",
+            "frontend",
+            "Whether consumers fetch straight from the bucket or through the hub.",
+            &[
+                ("direct", "consumers fetch straight from the bucket/CDN; the hub is not in the request path. Requires a public binding."),
+                ("proxied", "the hub's facade serves the surface on this domain (it stays in the path)."),
+            ],
+        ),
+        "frontend.advertised" => c(
+            "Advertise to consumers",
+            "frontend",
+            "Hand consumers this frontend's URL at serve time.",
+            &[
+                ("On", "the served setup snippets and advertised cache stack point consumers at this frontend (a direct frontend offloads the hub). Computed at serve time — it does not rewrite any registry's committed config."),
+                ("Off", "the frontend still serves, but consumers are not steered to it automatically."),
+            ],
+        ),
+        "frontend.priority" => c(
+            "Consumer priority",
+            "frontend",
+            "Ordering among advertised frontends — lower is preferred.",
+            &[
+                ("Lower = preferred", "when several frontends are advertised, the lowest number is offered first."),
+            ],
+        ),
+        "binding.public_base_url" => c(
+            "Public base URL",
+            "storage",
+            "The bucket's own stable public origin (a full URL with scheme).",
+            &[
+                ("Set", "e.g. https://cdn.example.com — the origin a direct frontend reads from and presigned/public object URLs are built against."),
+                ("Empty", "no public origin; the binding can only be hub-served (proxied/presigned)."),
+            ],
+        ),
+        "binding.endpoint" => c(
+            "Endpoint",
+            "storage",
+            "The S3/R2 API endpoint URL (with scheme).",
+            &[
+                ("S3/R2", "e.g. https://<account>.r2.cloudflarestorage.com — the API the hub writes objects through."),
+            ],
+        ),
+        "binding.region" => c(
+            "Region",
+            "storage",
+            "The S3 region for this binding.",
+            &[
+                ("auto", "use `auto` for Cloudflare R2."),
+                ("region", "for S3, the bucket's region (e.g. us-east-1)."),
+            ],
+        ),
+        "cache.prefix" => c(
+            "Prefix",
+            "cache",
+            "Path prefix within the storage binding where this cache's objects live.",
+            &[
+                ("Set", "the cache's narinfo/.nar objects are stored under this sub-path."),
+                ("Empty", "defaults to the cache slug on the deployment's default storage."),
+            ],
+        ),
+        "registry.prefix" => c(
+            "Prefix",
+            "registry",
+            "Path prefix within the storage binding for this registry's surface.",
+            &[
+                ("Set", "the registry's git/index surface lives under this sub-path of the binding."),
+                ("Empty", "defaults to the registry slug."),
+            ],
+        ),
+        // -- upstream mirror -------------------------------------------------
+        "mirror.mode" => c(
+            "Mirror mode",
+            "registry",
+            "How an upstream registry is mirrored.",
+            &[
+                ("full", "a scheduled full copy of the upstream surface."),
+                ("pullthrough", "fetch objects from the upstream on demand (on cache miss)."),
+            ],
+        ),
+        "mirror.verify" => c(
+            "Verify upstream signatures",
+            "registry",
+            "Require valid upstream signatures before indexing mirrored content.",
+            &[
+                ("On", "content that fails signature verification against the upstream's trust anchors is rejected."),
+                ("Off", "mirrored content is indexed without verifying upstream signatures."),
+            ],
+        ),
+        // -- webhooks / SSO --------------------------------------------------
+        "webhook.secret" => c(
+            "Signing secret",
+            "webhook",
+            "HMAC key used to sign webhook payloads.",
+            &[
+                ("Set", "deliveries carry an HMAC signature computed with this secret so the receiver can verify authenticity."),
+                ("Empty", "a secret is generated for you."),
+            ],
+        ),
+        "sso.endpoints" => c(
+            "OIDC endpoints",
+            "sso",
+            "Discovery values from your identity provider (full https URLs).",
+            &[
+                ("issuer", "the IdP's issuer identifier."),
+                ("authorization / token / JWKS", "the OAuth2/OIDC endpoints the hub redirects to and validates tokens against."),
+            ],
+        ),
+        "sso.jit" => c(
+            "Just-in-time provisioning",
+            "sso",
+            "Auto-create accounts for unknown SSO users on first login.",
+            &[
+                ("On", "a successful SSO login for an unknown email creates an account (with the default role)."),
+                ("Off", "only pre-existing members may sign in via SSO."),
+            ],
+        ),
+        "sso.enforce" => c(
+            "Force SSO",
+            "sso",
+            "Require org members to authenticate through SSO.",
+            &[
+                ("On", "members must use the IdP; password/magic-link is refused for them."),
+                ("Off", "SSO is offered but not required."),
+            ],
+        ),
         _ => return None,
     })
 }
