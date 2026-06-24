@@ -939,7 +939,7 @@ component that makes that purity true *inside* the QEMU process.
   icount, deliver iff `delivery_icount <= current_icount`, order injections by
   `(delivery_icount, src_node, seq)`, and fail loudly on an already-passed
   delivery icount. — satisfies [PLUG-18], [PLUG-19], [PLUG-20]; spec §12.4.2.
-- [ ] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
+- [x] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
   `device_io_active`/pending-counter, paired one-to-one with submit/completion and
   cleared on burst-done. — satisfies [PLUG-21], [PLUG-22]; spec §12.4.3.
 - [ ] **T-PLUG-10** Implement the network TX interception callback: enqueue guest

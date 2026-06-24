@@ -61,6 +61,28 @@ fn one_node_slot_carries_aggregate_multi_vcpu_clock_and_idle_deadline() {
 }
 
 #[test]
+fn node_slot_publishes_device_io_active_flag() {
+    let slot = NodeSlot::new(KIND_VM);
+
+    assert!(!slot.load_device_io_active());
+
+    slot.mark_device_io_active();
+    let active = slot.snapshot();
+    assert_eq!(active.device_io_active, 1);
+    assert!(slot.load_device_io_active());
+
+    slot.clear_device_io_active();
+    if let Err(error) = slot.wake_for_device_io_release() {
+        panic!("device-I/O release wake should succeed: {error}");
+    }
+    let inactive = slot.snapshot();
+    assert_eq!(inactive.device_io_active, 0);
+    assert_eq!(inactive.wake_signal, active.wake_signal.wrapping_add(1));
+    assert!(!slot.load_device_io_active());
+    assert!(inactive.publish_gen > active.publish_gen);
+}
+
+#[test]
 fn shmem_abi_has_no_per_vcpu_fields_or_slots() {
     for forbidden in [
         "per_vcpu",

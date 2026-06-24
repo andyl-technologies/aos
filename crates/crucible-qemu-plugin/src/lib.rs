@@ -9,9 +9,10 @@
 //!
 //! Module map: `abi` owns the raw QEMU plugin `cdylib` entry point and inert
 //! callback scaffold; `args` owns fail-closed `-plugin` argument parsing;
-//! `deadline` owns exact virtual-clock deadline introspection; `idle_loop` owns
-//! the idle callback hot-loop state machine; `inbound` owns inbound frame polling
-//! and deterministic injection ordering; `registration` owns the fail-stop
+//! `deadline` owns exact virtual-clock deadline introspection; `device_io` owns
+//! the virtual-time hold for in-flight device I/O; `idle_loop` owns the idle
+//! callback hot-loop state machine; `inbound` owns inbound frame polling and
+//! deterministic injection ordering; `registration` owns the fail-stop
 //! registration sequencer; `setup` owns descriptor mapping and setup
 //! acknowledgement; `time_control` owns clock ownership, authorized virtual-time
 //! advancement, and the time-control ordering contract. Future modules will add
@@ -28,6 +29,7 @@
 pub mod abi;
 pub mod args;
 pub mod deadline;
+pub mod device_io;
 pub mod idle_loop;
 pub mod inbound;
 pub mod registration;
@@ -55,6 +57,10 @@ pub use deadline::{
     ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,
     ExactDeadlineReader, ExactDeadlineReport, PerVcpuDeadlineReport,
     QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL, QemuClockDeadlineFn, aggregate_multi_vcpu_deadline,
+};
+pub use device_io::{
+    DeviceIoBurstState, DeviceIoFreezeError, DeviceIoRequestOutcome, DeviceIoRequestRelease,
+    DeviceIoRequestToken, PluginDeviceIoFreeze,
 };
 pub use idle_loop::{
     IdleHotLoopError, IdleHotLoopResult, IdleParkRequest, IdleWaitOutcome, IdleWakeCause,

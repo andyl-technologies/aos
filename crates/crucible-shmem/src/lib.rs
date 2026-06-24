@@ -1371,6 +1371,22 @@ impl NodeSlot {
         self.max_advance_icount.load(Ordering::Acquire)
     }
 
+    /// Publishes that this node has plugin-submitted device I/O in flight.
+    pub fn mark_device_io_active(&self) {
+        self.publish_device_io_active(true);
+    }
+
+    /// Publishes that this node no longer has plugin-submitted device I/O in flight.
+    pub fn clear_device_io_active(&self) {
+        self.publish_device_io_active(false);
+    }
+
+    /// Returns whether plugin-submitted device I/O is currently active.
+    #[must_use]
+    pub fn load_device_io_active(&self) -> bool {
+        self.device_io_active.load(Ordering::Acquire) != 0
+    }
+
     /// Checks whether a node may advance to `next_icount` under the current ceiling.
     ///
     /// # Errors
@@ -1501,6 +1517,17 @@ impl NodeSlot {
         self.wake_after_signal_increment()
     }
 
+    /// Wakes a node because an in-flight device-I/O hold was released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FutexError`] when the Linux futex wake syscall fails for an
+    /// unexpected reason. Non-Linux developer-tooling builds return a no-op
+    /// success with zero woken waiters.
+    pub fn wake_for_device_io_release(&self) -> Result<WakeAction, FutexError> {
+        self.wake_after_signal_increment()
+    }
+
     /// Issues a non-private futex wake on this node's wake-signal word.
     ///
     /// # Errors
@@ -1597,6 +1624,13 @@ impl NodeSlot {
                 .store(idle_wake_icount, Ordering::Release);
         }
         self.status.store(status, Ordering::Release);
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn publish_device_io_active(&self, active: bool) {
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.device_io_active
+            .store(u8::from(active), Ordering::Release);
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
     }
 
