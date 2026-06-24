@@ -8,8 +8,9 @@ use std::io::{self, Cursor, Read, Write};
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QmpClient,
-    QmpCommandKind, QmpError, QmpGreeting, QmpJobPollPolicy, QmpSnapshotTag,
+    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE,
+    QemuSavevmCompletenessPolicy, QmpClient, QmpCommandKind, QmpError, QmpGreeting,
+    QmpJobPollPolicy, QmpSnapshotTag,
 };
 use serde_json::Value;
 
@@ -95,7 +96,10 @@ fn loadvm_and_quit_are_typed_qmp_commands() -> Result<(), Box<dyn Error>> {
     ]))?;
     let tag = QmpSnapshotTag::from_checkpoint_content_address(content_hash_with_byte(0xcd));
 
-    assert_eq!(client.loadvm(&tag)?.command, QmpCommandKind::LoadVm);
+    assert_eq!(
+        client.loadvm(&tag, loadvm_probe_authorization())?.command,
+        QmpCommandKind::LoadVm
+    );
     assert_eq!(client.quit()?.command, QmpCommandKind::Quit);
 
     let stream = client.into_inner();
@@ -230,7 +234,7 @@ fn qmp_error_response_is_typed_result_error() -> Result<(), Box<dyn Error>> {
     ]))?;
     let tag = QmpSnapshotTag::from_checkpoint_content_address(content_hash_with_byte(0xef));
 
-    match client.loadvm(&tag) {
+    match client.loadvm(&tag, loadvm_probe_authorization()) {
         Ok(_) => panic!("expected typed QMP error"),
         Err(QmpError::Command {
             command,
@@ -295,6 +299,10 @@ fn snapshot_tags_are_derived_from_checkpoint_content_hash() {
         QmpSnapshotTag::from_checkpoint(&checkpoint).as_str(),
         HASH_AB_TAG
     );
+}
+
+fn loadvm_probe_authorization() -> crucible_qemu::QemuLoadvmCommandAuthorization {
+    QemuSavevmCompletenessPolicy::phase0_fallback().authorize_loadvm_probe()
 }
 
 fn scripted_qmp<const N: usize>(lines: [&str; N]) -> ScriptedQmpStream {

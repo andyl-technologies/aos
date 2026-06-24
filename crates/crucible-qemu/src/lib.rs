@@ -13,8 +13,9 @@
 //! `shutdown` owns the graceful QEMU child shutdown escalation ladder;
 //! `setup_failure` owns setup-abort classification and teardown; `inertness`
 //! owns the sim-off/sim-on QEMU control-plane inertness assertion;
-//! `crash_detection` owns typed crashed-node status classification; and `qmp`
-//! owns the minimal typed QMP client.
+//! `crash_detection` owns typed crashed-node status classification; `qmp` owns
+//! the minimal typed QMP client; and `savevm_policy` owns the conservative
+//! thin-replay fallback for incomplete QEMU `savevm`/`loadvm` coverage.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
 //! details stay private; public callers use a safe host-driver API that
@@ -28,6 +29,7 @@ mod crash_detection;
 mod inertness;
 mod launch;
 mod qmp;
+mod savevm_policy;
 mod setup_failure;
 mod shutdown;
 mod single_vm_fingerprint;
@@ -53,6 +55,12 @@ pub use qmp::{
     QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
     QMP_SNAPSHOT_VMSTATE_DEVICE, QmpClient, QmpCommandComplete, QmpCommandKind, QmpError,
     QmpGreeting, QmpJobPollPolicy, QmpSnapshotTag,
+};
+pub use savevm_policy::{
+    QEMU_SAVEVM_FALLBACK_MARKER, QEMU_SAVEVM_PHASE0_S3_CHECK, QemuLoadvmCommandAuthorization,
+    QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission, QemuReplayOracleValidation,
+    QemuSavevmCompletenessPolicy, QemuSavevmCompletenessStatus, QemuSavevmFallback,
+    QemuSavevmPolicyError, QemuVmRealizationBranch, validate_loadvm_realized_runtime,
 };
 pub use setup_failure::{
     FailedQemuNodeSetup, QemuNodeSetup, QemuSchedulableNodeSetup, QemuSetupAbortError,
