@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import IO, Any, ClassVar, override
 
 from .agent import Driver
+from .fs import clone_or_copy
 from .machine import Machine
 
 
@@ -101,13 +102,36 @@ class FirecrackerMachine(Machine):
     # ------------------------------------------------------------------
     @override
     def start(self) -> None:
+        self._start(copy_disk=True)
+
+    def _start(self, *, copy_disk: bool) -> None:
         log.info("==> Starting machine: %s (firecracker)", self.name)
 
-        shutil.copyfile(self.disk_src, self.disk_copy)
-        os.chmod(self.disk_copy, 0o644)
-        if self.metadata_copy is not None and self.metadata_src is not None:
-            shutil.copyfile(self.metadata_src, self.metadata_copy)
-            os.chmod(self.metadata_copy, 0o644)
+        # Per-machine writable copy; reflinked on a CoW filesystem (free
+        # until written), full copy otherwise. See clone_or_copy in fs.py.
+        #
+        # Only (re)create the copy on the initial boot. A reboot must reuse
+        # the *same* per-VM disk so writes from the previous boot survive —
+        # re-cloning from the pristine `disk_src` here would reset the disk
+        # (including the /var partition) to its build-time baked state,
+        # silently discarding everything the guest persisted. This mirrors
+        # the QEMU driver, whose reboot() relaunches against the same disk
+        # without re-running the copy, and matches real-hardware reboot
+        # semantics. See _start(copy_disk=False) in reboot().
+        if copy_disk:
+            reflinked = clone_or_copy(self.disk_src, self.disk_copy)
+            os.chmod(self.disk_copy, 0o644)
+            copy_method = "reflink" if reflinked else "copy"
+            if self.metadata_copy is not None and self.metadata_src is not None:
+                shutil.copyfile(self.metadata_src, self.metadata_copy)
+                os.chmod(self.metadata_copy, 0o644)
+        else:
+            copy_method = "reused"
+        for stale in (self.agent.socket_path, self.fc_stdin_fifo):
+            try:
+                os.unlink(stale)
+            except FileNotFoundError:
+                pass
 
         vmlinux = self._find_kernel()
         initrd = str(Path(self.initrd_path))
@@ -173,7 +197,7 @@ class FirecrackerMachine(Machine):
         log.info("  Driver: firecracker")
         log.info("  Kernel: %s", vmlinux)
         log.info("  Initrd: %s", initrd)
-        log.info("  Disk:   %s", self.disk_copy)
+        log.info("  Disk:   %s (%s)", self.disk_copy, copy_method)
         log.info("  CID:    %d", guest_cid)
         log.info("  Vsock:  %s", self.agent.socket_path)
 
@@ -190,8 +214,9 @@ class FirecrackerMachine(Machine):
         )
 
         self._fc_stdin_fd = open(self.fc_stdin_fifo, "rb")
-        self._serial_fd = open(self.serial_log_path, "wb")
-        self._fc_err_fd = open(self.fc_log, "wb")
+        log_mode = "wb" if copy_disk else "ab"
+        self._serial_fd = open(self.serial_log_path, log_mode)
+        self._fc_err_fd = open(self.fc_log, log_mode)
 
         self.fc_proc = subprocess.Popen(
             ["firecracker", "--no-api", "--config-file", self.fc_cfg],
@@ -236,6 +261,37 @@ class FirecrackerMachine(Machine):
                 except OSError:
                     pass
         self._fc_stdin_fd = self._serial_fd = self._fc_err_fd = None
+        self.fc_proc = None
+        self.stdin_proc = None
+
+    def reboot(self, timeout: float = 600.0) -> None:
+        """Reboot the guest and wait for the agent to return."""
+        self.execute("(sleep 1; reboot -f) >/dev/null 2>&1 &", timeout=30)
+        self.agent.close()
+
+        if self.fc_proc is None:
+            raise RuntimeError(f"[{self.name}] reboot before start()")
+        deadline = time.monotonic() + timeout
+        try:
+            self.fc_proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"[{self.name}] guest did not exit Firecracker within 60s of reboot"
+            ) from None
+
+        log.info(
+            "==> Rebooting machine: %s (Firecracker exited %s)",
+            self.name,
+            self.fc_proc.returncode,
+        )
+        self.stop()
+        self._start(copy_disk=False)
+        log.info(
+            "[%s] relaunched Firecracker (pid %s); waiting for agent",
+            self.name,
+            self.fc_proc.pid if self.fc_proc else "?",
+        )
+        self.agent.wait_ready(deadline)
 
     def _dump_logs(self) -> None:
         for fd in (self._serial_fd, self._fc_err_fd):

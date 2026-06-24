@@ -160,8 +160,6 @@ in {
       ];
     };
 
-    environment.systemPackages = [pkgs.audit];
-
     # /etc/audit/audit.rules — audit rule definitions.
     # Loaded by auditd on startup via auditctl.
     environment.etc."audit/audit.rules" = {

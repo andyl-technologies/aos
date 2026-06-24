@@ -60,6 +60,10 @@ fn signed_image(
         sb_signer_cert_sha256: Some(signer.into()),
         sbat: sbat(sbat_pairs),
         expected_pcr11: pcr11.map(str::to_string),
+        root_image: None,
+        root_verity: None,
+        root_hash: None,
+        root_hash_sig: None,
     }
 }
 

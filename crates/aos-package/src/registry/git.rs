@@ -19,18 +19,21 @@
 //! roster pinned into the writable trusted-key store (in-band key
 //! rotation). See [`sync_git`] for the full sequence.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
 use crate::download::join_cache_url;
-use crate::gitcmd;
-use crate::registry::{channel, fetch, keys, verify};
-use crate::security::{self, KeyStore, KeySyncReport, TrustedKey, key_fingerprint};
-use crate::types::{RegistryConfig, RegistryState, TrackingMode};
+use crate::provenance::{self, PACKAGE_PROVENANCE_TRANSPARENCY_LOG};
+use crate::registry::{channel, fetch, keys, repo, tuf, verify};
+use crate::security::{self, KeyStore, TrustedKey, key_fingerprint};
+use crate::types::{
+    RegistryConfig, RegistryState, TrackingMode, validate_attestation_provenance_ref,
+};
 use aos_core::output::Printer;
 
 // ---------------------------------------------------------------------------
@@ -59,30 +62,9 @@ struct ResolvedHead {
     release_tag: Option<String>,
 }
 
-/// Oldest git release with reliable sha256 object-format support.
-const MIN_SHA256_GIT_VERSION: GitVersion = GitVersion {
-    major: 2,
-    minor: 42,
-    patch: 0,
-};
-
 /// Default freshness window (14 days) for channel-tracked registries when
 /// `max_staleness_seconds` is not configured.
 const DEFAULT_CHANNEL_MAX_STALENESS_SECONDS: u64 = 14 * 24 * 60 * 60;
-
-/// Parsed `major.minor.patch` triple from `git --version`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct GitVersion {
-    major: u32,
-    minor: u32,
-    patch: u32,
-}
-
-impl std::fmt::Display for GitVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Main sync flow
@@ -149,11 +131,11 @@ pub async fn sync_git(
             config.name,
         );
     }
-    ensure_sha256_capable_git().await?;
     if is_plain_http_url(&config.url) {
         preflight_git_native_http_origin(&git_url).await?;
     }
     ensure_repo(&repo_dir, &git_url).await?;
+    let previous_selected_commit = state.last_commit.clone();
     let previous_floor = state.floor.clone();
     let mut retained_before = fetch::parse_retained(&state.retained)?;
     if let Some(floor) = state.floor.as_deref() {
@@ -219,6 +201,7 @@ pub async fn sync_git(
     // anti-rollback state because selected release commits can remain fixed
     // under tag/version/channel tracking.
     let mut post_pin_trusted_keys = trusted_keys.clone();
+    let mut pending_roster = None;
     if enforcing {
         verify_head_commit(&repo_dir, &roster_commit, &trusted_keys)?;
         let previous_roster_commit = state
@@ -228,15 +211,9 @@ pub async fn sync_git(
         if let Some(old_commit) = previous_roster_commit {
             enforce_fast_forward(&repo_dir, old_commit, &roster_commit).await?;
         }
-        if let Some(report) = apply_roster(&key_store, config, &repo_dir, &roster_commit)? {
-            if !report.is_noop() {
-                printer.info(&format!(
-                    "Registry '{}': trust roster updated ({} pinned, {} unpinned, {} masked)",
-                    config.name, report.pinned, report.unpinned, report.masked,
-                ));
-            }
-            post_pin_trusted_keys = assemble_trusted_set(&key_store, config);
-        }
+        let roster = load_verified_roster(config, &repo_dir, &roster_commit)?;
+        post_pin_trusted_keys = trusted_keys_from_roster(config, &roster)?;
+        pending_roster = Some(roster);
     }
 
     // Step 5: Determine the selected release commit.
@@ -317,12 +294,29 @@ pub async fn sync_git(
         verify_release_tag(&repo_dir, release_tag, &post_pin_trusted_keys)?;
     }
 
+    let verified_tuf = if enforcing {
+        let enforce_tuf_expiry = !tracking_mode_is_immutable_pin(tracking_mode);
+        tuf::verify_commit_metadata(
+            &repo_dir,
+            &config.name,
+            &new_commit,
+            previous_selected_commit.as_deref(),
+            &post_pin_trusted_keys,
+            state,
+            unix_now_secs(),
+            enforce_tuf_expiry,
+        )?
+    } else {
+        None
+    };
+
     // Step 7: Extract authenticated tree files used by consumers.
     let registry_cache_dir = cache_dir.join(&config.name);
     let packages_dir = registry_cache_dir.join("packages");
     let old_packages = count_toml_files(&packages_dir).await;
     extract_packages(&repo_dir, &new_commit, &packages_dir).await?;
     extract_store(&repo_dir, &new_commit, &registry_cache_dir.join("store")).await?;
+    extract_provenance(&repo_dir, &new_commit, &packages_dir, &registry_cache_dir).await?;
     let new_packages = count_toml_files(&packages_dir).await;
 
     // Step 7b: Materialise root registry files so resolve_mirror and trust
@@ -360,12 +354,27 @@ pub async fn sync_git(
             .collect();
     }
     prune_unretained_release_dirs(&repo_dir, &state.retained).await?;
+    if let Some(roster) = pending_roster.as_ref() {
+        let report = keys::pin_rotated_keys(&key_store, &config.name, roster)?;
+        if !report.is_noop() {
+            printer.info(&format!(
+                "Registry '{}': trust roster updated ({} pinned, {} unpinned, {} masked)",
+                config.name, report.pinned, report.unpinned, report.masked,
+            ));
+        }
+    }
     state.last_commit = Some(new_commit.clone());
     if enforcing {
         state.last_roster_commit = Some(roster_commit);
     }
     if record_successful_freshness {
         state.last_update = Some(chrono_now());
+    }
+    if let Some(verified_tuf) = verified_tuf {
+        state.tuf_root_version = Some(verified_tuf.root_version);
+        state.tuf_targets_version = Some(verified_tuf.targets_version);
+        state.tuf_snapshot_version = Some(verified_tuf.snapshot_version);
+        state.tuf_timestamp_version = Some(verified_tuf.timestamp_version);
     }
 
     printer.info(&format!(
@@ -464,18 +473,16 @@ fn verify_release_tag(repo_dir: &Path, tag: &str, trusted_keys: &[String]) -> Re
     Ok(())
 }
 
-/// Pin the trust roster committed at the verified head into the writable
-/// trusted-key store.
+/// Load and validate the trust roster committed at the verified head.
 ///
-/// Returns the sync report, or an error when the verified head has no
-/// usable roster: under enforcement a missing or empty `keys.toml` is a
-/// misconfigured registry, not a pass.
-fn apply_roster(
-    store: &KeyStore,
+/// Returns an error when the verified head has no usable roster: under
+/// enforcement a missing or empty `keys.toml` is a misconfigured registry, not
+/// a pass.
+fn load_verified_roster(
     config: &RegistryConfig,
     repo_dir: &Path,
     commit: &str,
-) -> Result<Option<KeySyncReport>> {
+) -> Result<keys::KeysToml> {
     let Some(roster) = keys::load_keys_toml_at_commit(repo_dir, commit)? else {
         bail!(
             "registry '{}' requires signed metadata but commit {commit} has no keys.toml \
@@ -492,7 +499,47 @@ fn apply_roster(
             config.name,
         );
     }
-    keys::pin_rotated_keys(store, &config.name, &roster).map(Some)
+    trusted_keys_from_roster(config, &roster)?;
+    Ok(roster)
+}
+
+fn trusted_keys_from_roster(
+    config: &RegistryConfig,
+    roster: &keys::KeysToml,
+) -> Result<Vec<String>> {
+    let mut trusted = Vec::with_capacity(roster.active.len());
+    for entry in &roster.active {
+        let (registry, _algorithm, _public_key) = security::parse_signing_key(&entry.key)
+            .with_context(|| format!("invalid active key '{}'", entry.id))?;
+        if registry != config.name {
+            bail!(
+                "active key '{}' belongs to registry '{}', expected '{}'",
+                entry.id,
+                registry,
+                config.name,
+            );
+        }
+        trusted.push(entry.key.clone());
+    }
+    Ok(trusted)
+}
+
+fn tracking_mode_is_immutable_pin(tracking_mode: &TrackingMode) -> bool {
+    match tracking_mode {
+        TrackingMode::Commit(_) | TrackingMode::Tag(_) => true,
+        TrackingMode::Version(req) => version_req_is_exact(req),
+        TrackingMode::Default | TrackingMode::Branch(_) | TrackingMode::Channel(_) => false,
+    }
+}
+
+fn version_req_is_exact(req: &semver::VersionReq) -> bool {
+    matches!(
+        req.comparators.as_slice(),
+        [comparator]
+            if matches!(comparator.op, semver::Op::Exact)
+                && comparator.minor.is_some()
+                && comparator.patch.is_some()
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -573,166 +620,44 @@ async fn probe_static_http_status(
     Ok(response.status())
 }
 
-/// Verify the local git is new enough for sha256 repositories, both by
-/// version number and by actually probing `git init --object-format=sha256`.
-async fn ensure_sha256_capable_git() -> Result<()> {
-    let version_output = gitcmd::hermetic_async()
-        .arg("--version")
-        .output()
-        .await
-        .context("running git --version")?;
-    if !version_output.status.success() {
-        bail!(
-            "this registry requires a sha256-capable git {MIN_SHA256_GIT_VERSION} or newer; \
-             git --version failed: {}",
-            String::from_utf8_lossy(&version_output.stderr).trim(),
-        );
-    }
-
-    let version_text = String::from_utf8_lossy(&version_output.stdout);
-    let version = parse_git_version(&version_text).ok_or_else(|| {
-        anyhow::anyhow!(
-            "this registry requires a sha256-capable git {MIN_SHA256_GIT_VERSION} or newer; \
-             could not parse `git --version` output '{}'",
-            version_text.trim(),
-        )
-    })?;
-    if version < MIN_SHA256_GIT_VERSION {
-        bail!(
-            "this registry requires a sha256-capable git {MIN_SHA256_GIT_VERSION} or newer; \
-             found {} from `git --version`. Upgrade git before syncing sha256 dumb-HTTP registries.",
-            version_text.trim(),
-        );
-    }
-
-    let tmp = tempfile::TempDir::new().context("creating temporary git capability probe repo")?;
-    let output = gitcmd::hermetic_async()
-        .args(["init", "--bare", "--object-format=sha256"])
-        .arg(tmp.path())
-        .output()
-        .await
-        .context("running git sha256 capability probe")?;
-    if !output.status.success() {
-        bail!(
-            "this registry requires a sha256-capable git {MIN_SHA256_GIT_VERSION} or newer; \
-             {} cannot run `git init --bare --object-format=sha256`: {}",
-            version_text.trim(),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    Ok(())
-}
-
-/// Parse `git --version` output (e.g. `git version 2.42.0`).
-fn parse_git_version(output: &str) -> Option<GitVersion> {
-    let token = output
-        .trim()
-        .strip_prefix("git version ")?
-        .split_whitespace()
-        .next()?;
-    let mut parts = token.split('.');
-    let major = parse_leading_u32(parts.next()?)?;
-    let minor = parts.next().and_then(parse_leading_u32).unwrap_or(0);
-    let patch = parts.next().and_then(parse_leading_u32).unwrap_or(0);
-    Some(GitVersion {
-        major,
-        minor,
-        patch,
-    })
-}
-
-/// Parse the leading digits of a version component (`0-rc1` -> `0`).
-fn parse_leading_u32(part: &str) -> Option<u32> {
-    let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        None
-    } else {
-        digits.parse().ok()
-    }
-}
-
 /// Initialize a bare git repo at `repo_dir` if it does not already exist.
 async fn ensure_repo(repo_dir: &Path, _url: &str) -> Result<()> {
-    if repo_dir.join("HEAD").exists() {
-        return Ok(());
-    }
-
-    tokio::fs::create_dir_all(repo_dir)
-        .await
-        .with_context(|| format!("creating {}", repo_dir.display()))?;
-
-    let output = gitcmd::hermetic_async()
-        .args(["init", "--bare", "--object-format=sha256"])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .context("running git init --bare --object-format=sha256")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "git init --bare --object-format=sha256 failed: {}",
-            stderr.trim()
-        );
-    }
-
-    Ok(())
+    repo::init_bare_sha256(repo_dir).await
 }
 
-/// Run `git fetch` with the appropriate refspec based on tracking mode.
+/// Fetch the refs selected by `tracking_mode` from `url`.
+///
+/// Builds force (`+`) refspecs and dispatches through [`repo::fetch`], which
+/// uses libgit2's smart transport for `git://`/`ssh://` and the pure-Rust
+/// dumb-HTTP reader for `http(s)://`. Returns whether the remote roster HEAD
+/// was additionally fetched.
 async fn fetch_refs(
     repo_dir: &Path,
     url: &str,
     tracking_mode: &TrackingMode,
     fetch_roster_head: bool,
 ) -> Result<bool> {
-    let mut args = vec!["fetch".to_string(), url.to_string()];
-
-    match tracking_mode {
-        TrackingMode::Commit(hash) => {
-            // Fetch the specific commit.
-            args.push(hash.clone());
-        }
+    let refspecs: Vec<String> = match tracking_mode {
+        // Fetch the specific commit by object id (no local ref).
+        TrackingMode::Commit(hash) => vec![hash.clone()],
         TrackingMode::Branch(branch) => {
-            // Fetch the branch.
-            args.push(format!("refs/heads/{branch}:refs/remotes/origin/{branch}"));
+            vec![format!("+refs/heads/{branch}:refs/remotes/origin/{branch}")]
         }
-        TrackingMode::Channel(channel) => {
-            args.push(format!(
-                "refs/heads/{channel}:refs/remotes/origin/{channel}"
-            ));
-            args.push("refs/tags/*:refs/tags/*".to_string());
-        }
-        TrackingMode::Tag(tag) => {
-            // Fetch the specific tag.
-            args.push(format!("refs/tags/{tag}:refs/tags/{tag}"));
-        }
-        TrackingMode::Version(_) => {
-            // Need all tags to do semver matching.
-            args.push("refs/tags/*:refs/tags/*".to_string());
-        }
-        TrackingMode::Default => {
-            // Follow the remote's default branch HEAD when no explicit
-            // tracking selector is configured.
-            args.push("HEAD:refs/remotes/origin/HEAD".to_string());
-        }
-    }
+        TrackingMode::Channel(channel) => vec![
+            format!("+refs/heads/{channel}:refs/remotes/origin/{channel}"),
+            "+refs/tags/*:refs/tags/*".to_string(),
+        ],
+        TrackingMode::Tag(tag) => vec![format!("+refs/tags/{tag}:refs/tags/{tag}")],
+        // Need all tags to do semver matching.
+        TrackingMode::Version(_) => vec!["+refs/tags/*:refs/tags/*".to_string()],
+        // Follow the remote's default branch HEAD when no explicit selector
+        // is configured.
+        TrackingMode::Default => vec!["+HEAD:refs/remotes/origin/HEAD".to_string()],
+    };
 
-    // Add --force to allow tag updates.
-    args.push("--force".to_string());
-
-    let output = gitcmd::transport_async()
-        .args(&args)
-        .current_dir(repo_dir)
-        .output()
+    repo::fetch(repo_dir, url, &refspecs)
         .await
-        .with_context(|| format!("running git fetch against {url}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git fetch failed: {}", stderr.trim());
-    }
+        .with_context(|| format!("fetching from {url}"))?;
 
     if fetch_roster_head {
         fetch_origin_head(repo_dir, url).await
@@ -741,26 +666,33 @@ async fn fetch_refs(
     }
 }
 
+/// Fetch the remote default `HEAD` into `refs/remotes/origin/HEAD`.
+///
+/// Returns `Ok(false)` when the origin advertises no `HEAD` (the historical
+/// "couldn't find remote ref HEAD" case), so channel/tag/version tracking can
+/// fall back to the selected ref.
 async fn fetch_origin_head(repo_dir: &Path, url: &str) -> Result<bool> {
-    let output = gitcmd::transport_async()
-        .args(["fetch", url, "HEAD:refs/remotes/origin/HEAD", "--force"])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("fetching remote roster head from {url}"))?;
-
-    if output.status.success() {
-        return Ok(true);
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("couldn't find remote ref HEAD")
-        || stderr.contains("couldn't find remote ref")
-        || stderr.contains("could not find remote ref HEAD")
+    match repo::fetch(
+        repo_dir,
+        url,
+        &["+HEAD:refs/remotes/origin/HEAD".to_string()],
+    )
+    .await
     {
-        return Ok(false);
+        Ok(()) => Ok(true),
+        Err(err) => {
+            let message = err.to_string().to_lowercase();
+            if message.contains("head")
+                || message.contains("not found")
+                || message.contains("couldn't find")
+                || message.contains("does not advertise")
+            {
+                Ok(false)
+            } else {
+                Err(err).with_context(|| format!("fetching remote roster head from {url}"))
+            }
+        }
     }
-    bail!("git fetch remote HEAD failed: {}", stderr.trim());
 }
 
 fn uses_remote_head_roster(tracking_mode: &TrackingMode) -> bool {
@@ -771,21 +703,9 @@ fn uses_remote_head_roster(tracking_mode: &TrackingMode) -> bool {
 }
 
 async fn resolve_origin_head(repo_dir: &Path) -> Result<String> {
-    let output = gitcmd::hermetic_async()
-        .args(["rev-parse", "refs/remotes/origin/HEAD"])
-        .current_dir(repo_dir)
-        .output()
+    repo::rev_parse(repo_dir, "refs/remotes/origin/HEAD")
         .await
-        .context("resolving remote roster head")?;
-
-    if !output.status.success() {
-        bail!(
-            "git rev-parse refs/remotes/origin/HEAD failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .context("resolving remote roster head")
 }
 
 /// Resolve the authenticated commit to use after fetching.
@@ -814,42 +734,18 @@ async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Re
         TrackingMode::Default => "refs/remotes/origin/HEAD".to_string(),
     };
 
-    let output = gitcmd::hermetic_async()
-        .args(["rev-parse", &ref_to_resolve])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("resolving ref {ref_to_resolve}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git rev-parse {} failed: {}", ref_to_resolve, stderr.trim());
-    }
-
     Ok(ResolvedHead {
-        commit: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        commit: repo::rev_parse(repo_dir, &ref_to_resolve)
+            .await
+            .with_context(|| format!("resolving ref {ref_to_resolve}"))?,
         release_tag: None,
     })
 }
 
 async fn resolve_ref_to_commit(repo_dir: &Path, ref_to_resolve: &str) -> Result<String> {
-    let output = gitcmd::hermetic_async()
-        .args(["rev-parse", &format!("{ref_to_resolve}^{{commit}}")])
-        .current_dir(repo_dir)
-        .output()
+    repo::rev_parse_commit(repo_dir, ref_to_resolve)
         .await
-        .with_context(|| format!("resolving ref {ref_to_resolve} to commit"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "git rev-parse {}^{{commit}} failed: {}",
-            ref_to_resolve,
-            stderr.trim(),
-        );
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .with_context(|| format!("resolving ref {ref_to_resolve} to commit"))
 }
 
 /// Resolve a channel partition to a verified release.
@@ -958,7 +854,9 @@ async fn fetch_and_verify_partition(
         return Ok(None);
     };
 
-    let channel_oid = hash_tag_object(repo_dir, &bytes)?;
+    let channel_oid = repo::hash_tag_object(repo_dir, &bytes)
+        .await
+        .context("hashing channel partition tag object")?;
     verify::verify_tag_chain(
         repo_dir,
         &channel_oid,
@@ -969,77 +867,11 @@ async fn fetch_and_verify_partition(
     .map(|release| Some((release, channel_oid)))
 }
 
-/// Write raw tag-object bytes into the repo with `git hash-object -w -t tag`
-/// and return the resulting object id.
-fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
-    let mut child = gitcmd::hermetic()
-        .args(["hash-object", "-w", "-t", "tag", "--stdin"])
-        .current_dir(repo_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("running git hash-object for channel tag")?;
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin was piped")
-        .write_all(bytes)
-        .context("writing channel tag to git hash-object")?;
-    let output = child
-        .wait_with_output()
-        .context("waiting for git hash-object")?;
-    if !output.status.success() {
-        bail!(
-            "git hash-object failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 /// Map every semver-named tag's *tag object id* to its parsed version.
 async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semver::Version>> {
-    let output = gitcmd::hermetic_async()
-        .args(["tag", "-l"])
-        .current_dir(repo_dir)
-        .output()
+    repo::semver_tag_object_map(repo_dir)
         .await
-        .context("listing tags for channel resolution")?;
-    if !output.status.success() {
-        bail!(
-            "git tag -l failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    let mut map = BTreeMap::new();
-    for tag in String::from_utf8_lossy(&output.stdout).lines() {
-        let tag = tag.trim();
-        let Ok(version) = semver::Version::parse(tag) else {
-            continue;
-        };
-        let oid = resolve_tag_object(repo_dir, tag).await?;
-        map.insert(oid, version);
-    }
-    Ok(map)
-}
-
-/// Resolve a tag ref to its tag *object* id (not the peeled commit).
-async fn resolve_tag_object(repo_dir: &Path, tag: &str) -> Result<String> {
-    let output = gitcmd::hermetic_async()
-        .args(["rev-parse", &format!("{tag}^{{tag}}")])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("resolving tag object for {tag}"))?;
-    if !output.status.success() {
-        bail!(
-            "git rev-parse {tag}^{{tag}} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .context("listing tags for channel resolution")
 }
 
 /// Delete `releases/<X>/<Y>/<Z>` directories for releases the client no
@@ -1092,22 +924,13 @@ async fn resolve_best_version_tag(
     repo_dir: &Path,
     req: &semver::VersionReq,
 ) -> Result<ResolvedHead> {
-    let output = gitcmd::hermetic_async()
-        .args(["tag", "-l"])
-        .current_dir(repo_dir)
-        .output()
+    let tags = repo::tag_names(repo_dir)
         .await
         .context("listing tags for version matching")?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git tag -l failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let mut best: Option<(semver::Version, String)> = None;
 
-    for tag in stdout.lines() {
+    for tag in &tags {
         let tag = tag.trim();
         if tag.is_empty() {
             continue;
@@ -1167,23 +990,16 @@ fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
 }
 
 /// Enforce that `new_commit` is a descendant of `old_commit` (fast-forward).
-///
-/// Uses `git merge-base --is-ancestor` to check the relationship.
 async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &str) -> Result<()> {
     if old_commit == new_commit {
         return Ok(());
     }
 
-    let output = gitcmd::hermetic_async()
-        .args(["merge-base", "--is-ancestor", old_commit, new_commit])
-        .current_dir(repo_dir)
-        .output()
+    let is_descendant = repo::is_ancestor(repo_dir, old_commit, new_commit)
         .await
-        .with_context(|| {
-            format!("running git merge-base --is-ancestor {old_commit} {new_commit}")
-        })?;
+        .with_context(|| format!("checking ancestry of {old_commit}..{new_commit}"))?;
 
-    if !output.status.success() {
+    if !is_descendant {
         bail!(
             "registry downgrade detected: commit {new_commit} is not a \
              descendant of previously verified commit {old_commit}.\n\n\
@@ -1215,6 +1031,362 @@ async fn extract_store(repo_dir: &Path, commit: &str, output_dir: &Path) -> Resu
     extract_tree_dir(repo_dir, commit, "store", output_dir, false).await
 }
 
+/// Extract registry-hosted package provenance statements from a git tree.
+///
+/// Generated statements live under the conventional `provenance/` tree, but
+/// older and manually-authored package metadata may point at any safe relative
+/// `*.jsonl` artifact path. Sync materializes both forms under the registry
+/// cache root so install-time verification can read the declared path without
+/// network access.
+async fn extract_provenance(
+    repo_dir: &Path,
+    commit: &str,
+    packages_dir: &Path,
+    registry_cache_dir: &Path,
+) -> Result<()> {
+    extract_provenance_tree(repo_dir, commit, &registry_cache_dir.join("provenance")).await?;
+
+    let declared_refs = collect_declared_provenance_refs(packages_dir).await?;
+    prune_cached_extra_provenance_artifacts(registry_cache_dir, &declared_refs).await?;
+    if !declared_refs.is_empty() {
+        extract_required_registry_blob(
+            repo_dir,
+            commit,
+            PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+            registry_cache_dir,
+        )
+        .await?;
+        let log =
+            tokio::fs::read_to_string(registry_cache_dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG))
+                .await
+                .with_context(|| {
+                    format!(
+                        "reading extracted package transparency log {}",
+                        registry_cache_dir
+                            .join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG)
+                            .display()
+                    )
+                })?;
+        provenance::validate_transparency_log(&log)
+            .context("validating package transparency log")?;
+    }
+    for provenance_ref in &declared_refs {
+        clear_declared_registry_artifact_target(provenance_ref, registry_cache_dir).await?;
+    }
+    for provenance_ref in declared_refs {
+        extract_required_registry_blob(repo_dir, commit, &provenance_ref, registry_cache_dir)
+            .await?;
+    }
+
+    Ok(())
+}
+
+/// Extract the generated `provenance/` tree from a registry commit.
+///
+/// Presence semantics match `store/`: a registry without a committed
+/// `provenance/` tree must yield no local directory, and dropping the tree
+/// upstream must remove stale local statements.
+async fn extract_provenance_tree(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
+    extract_tree_dir(repo_dir, commit, "provenance", output_dir, false).await
+}
+
+/// Collect provenance references declared by package TOML files.
+async fn collect_declared_provenance_refs(packages_dir: &Path) -> Result<BTreeSet<String>> {
+    let mut refs = BTreeSet::new();
+    let mut buckets = match tokio::fs::read_dir(packages_dir).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(refs),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("reading packages directory {}", packages_dir.display()));
+        }
+    };
+
+    while let Some(bucket) = buckets
+        .next_entry()
+        .await
+        .with_context(|| format!("reading packages directory {}", packages_dir.display()))?
+    {
+        let bucket_type = bucket
+            .file_type()
+            .await
+            .with_context(|| format!("reading package bucket {}", bucket.path().display()))?;
+        if !bucket_type.is_dir() {
+            continue;
+        }
+
+        let bucket_path = bucket.path();
+        let mut packages = tokio::fs::read_dir(&bucket_path)
+            .await
+            .with_context(|| format!("reading package bucket {}", bucket_path.display()))?;
+        while let Some(package) = packages
+            .next_entry()
+            .await
+            .with_context(|| format!("reading package bucket {}", bucket_path.display()))?
+        {
+            let path = package.path();
+            let package_type = package
+                .file_type()
+                .await
+                .with_context(|| format!("reading package metadata {}", path.display()))?;
+            if !package_type.is_file()
+                || path.extension().and_then(|ext| ext.to_str()) != Some("toml")
+            {
+                continue;
+            }
+            let content = tokio::fs::read_to_string(&path)
+                .await
+                .with_context(|| format!("reading package metadata {}", path.display()))?;
+            refs.extend(collect_provenance_refs_from_toml(&content, &path)?);
+        }
+    }
+
+    Ok(refs)
+}
+
+/// Collect provenance references from one package TOML document.
+fn collect_provenance_refs_from_toml(content: &str, source: &Path) -> Result<BTreeSet<String>> {
+    let value = content
+        .parse::<toml::Value>()
+        .with_context(|| format!("parsing package metadata {}", source.display()))?;
+    let mut refs = BTreeSet::new();
+
+    let Some(versions) = value.get("versions").and_then(toml::Value::as_array) else {
+        return Ok(refs);
+    };
+
+    for version in versions {
+        let Some(platforms) = version.get("platforms").and_then(toml::Value::as_table) else {
+            continue;
+        };
+        for (platform, entry) in platforms {
+            let Some(provenance) = entry.get("provenance") else {
+                continue;
+            };
+            let Some(provenance_ref) = provenance.as_str() else {
+                bail!(
+                    "attestation provenance in {} for platform '{}' must be a string",
+                    source.display(),
+                    platform,
+                );
+            };
+            validate_attestation_provenance_ref(provenance_ref).with_context(|| {
+                format!(
+                    "validating attestation provenance in {} for platform '{}'",
+                    source.display(),
+                    platform,
+                )
+            })?;
+            refs.insert(provenance_ref.to_string());
+        }
+    }
+
+    Ok(refs)
+}
+
+/// Remove stale non-generated provenance JSONL artifacts from the cache.
+async fn prune_cached_extra_provenance_artifacts(
+    registry_cache_dir: &Path,
+    declared_refs: &BTreeSet<String>,
+) -> Result<()> {
+    let mut stack = vec![registry_cache_dir.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let mut entries = match tokio::fs::read_dir(&dir).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("reading registry cache {}", dir.display()));
+            }
+        };
+
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .with_context(|| format!("reading registry cache {}", dir.display()))?
+        {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .await
+                .with_context(|| format!("reading cached artifact {}", path.display()))?;
+            let Some(relative_ref) = registry_cache_relative_ref(registry_cache_dir, &path) else {
+                continue;
+            };
+            if cache_tree_is_owned_elsewhere(&relative_ref) {
+                continue;
+            }
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !relative_ref.ends_with(".jsonl") || declared_refs.contains(&relative_ref) {
+                continue;
+            }
+            tokio::fs::remove_file(&path).await.with_context(|| {
+                format!("removing stale provenance artifact {}", path.display())
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Clear one currently-declared artifact path before reading new commit blobs.
+async fn clear_declared_registry_artifact_target(
+    tree_path: &str,
+    registry_cache_dir: &Path,
+) -> Result<()> {
+    validate_attestation_provenance_ref(tree_path)?;
+    let output_path = registry_cache_dir.join(Path::new(tree_path));
+    ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
+    remove_cached_registry_artifact_target(&output_path).await
+}
+
+/// Copy one declared registry artifact blob from `commit` into the cache root.
+async fn extract_required_registry_blob(
+    repo_dir: &Path,
+    commit: &str,
+    tree_path: &str,
+    registry_cache_dir: &Path,
+) -> Result<()> {
+    validate_extractable_registry_blob_ref(tree_path)?;
+    let output_path = registry_cache_dir.join(Path::new(tree_path));
+    ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
+    remove_cached_registry_artifact_target(&output_path).await?;
+
+    let kind = repo::path_object_kind(repo_dir, commit, tree_path)
+        .await
+        .with_context(|| format!("checking registry artifact {tree_path}"))?;
+    match kind {
+        None => bail!(
+            "registry artifact '{}' declared by package metadata is missing from commit {}",
+            tree_path,
+            commit,
+        ),
+        Some(git2::ObjectType::Blob) => {}
+        Some(other) => bail!(
+            "registry artifact '{}' declared by package metadata is a {}, not a file",
+            tree_path,
+            other,
+        ),
+    }
+
+    let content = repo::read_blob_at(repo_dir, commit, tree_path)
+        .await
+        .with_context(|| format!("reading registry artifact {tree_path}"))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "registry artifact '{tree_path}' vanished from commit {commit} during read"
+            )
+        })?;
+
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&output_path)
+        .with_context(|| format!("opening registry artifact {}", output_path.display()))?;
+    output
+        .write_all(&content)
+        .with_context(|| format!("writing registry artifact {}", output_path.display()))?;
+    Ok(())
+}
+
+fn validate_extractable_registry_blob_ref(tree_path: &str) -> Result<()> {
+    if tree_path == PACKAGE_PROVENANCE_TRANSPARENCY_LOG {
+        return Ok(());
+    }
+    validate_attestation_provenance_ref(tree_path)
+}
+
+/// Ensure the parent directories for a cached registry artifact are real dirs.
+async fn ensure_registry_artifact_parent(registry_cache_dir: &Path, tree_path: &str) -> Result<()> {
+    let mut current = registry_cache_dir.to_path_buf();
+    let Some(parent) = Path::new(tree_path).parent() else {
+        return Ok(());
+    };
+    for component in parent.components() {
+        let Component::Normal(part) = component else {
+            bail!("registry artifact path '{tree_path}' must not contain '.', '..', or prefixes");
+        };
+        current.push(part);
+        match tokio::fs::symlink_metadata(&current).await {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                bail!(
+                    "cached registry artifact parent '{}' must not be a symlink",
+                    current.display()
+                );
+            }
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                bail!(
+                    "cached registry artifact parent '{}' must be a directory",
+                    current.display()
+                );
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                tokio::fs::create_dir(&current)
+                    .await
+                    .with_context(|| format!("creating {}", current.display()))?;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("reading cached artifact parent {}", current.display())
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Remove a stale cached artifact target before validating the new commit blob.
+async fn remove_cached_registry_artifact_target(output_path: &Path) -> Result<()> {
+    match tokio::fs::symlink_metadata(output_path).await {
+        Ok(meta) if meta.is_dir() => {
+            bail!(
+                "cached registry artifact '{}' must be a file",
+                output_path.display()
+            );
+        }
+        Ok(_) => {
+            tokio::fs::remove_file(output_path).await.with_context(|| {
+                format!("removing stale registry artifact {}", output_path.display())
+            })?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("reading cached registry artifact {}", output_path.display())
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Convert a cache path back to a slash-separated registry artifact ref.
+fn registry_cache_relative_ref(registry_cache_dir: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(registry_cache_dir).ok()?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            return None;
+        };
+        parts.push(part.to_str()?.to_string());
+    }
+    Some(parts.join("/"))
+}
+
+/// `true` when a cache subtree is managed by another extraction step.
+fn cache_tree_is_owned_elsewhere(relative_ref: &str) -> bool {
+    matches!(
+        relative_ref.split('/').next(),
+        Some("packages" | "store" | "provenance" | "repo.git" | "transparency")
+    )
+}
+
 /// Replace `output_dir` with the contents of `commit:tree_path/`.
 ///
 /// The existing directory is removed first so deletions in the registry
@@ -1235,66 +1407,19 @@ async fn extract_tree_dir(
             .with_context(|| format!("cleaning {}", output_dir.display()))?;
     }
 
-    if !tree_path_exists(repo_dir, commit, tree_path).await? {
-        if create_empty_when_absent {
-            tokio::fs::create_dir_all(output_dir)
-                .await
-                .with_context(|| format!("creating {}", output_dir.display()))?;
-        }
-        return Ok(());
-    }
-
-    tokio::fs::create_dir_all(output_dir)
-        .await
-        .with_context(|| format!("creating {}", output_dir.display()))?;
-
-    let tarball = tempfile::NamedTempFile::new().context("creating temporary git archive")?;
-    let archive = gitcmd::hermetic_async()
-        .args(["archive", "--format=tar", "-o"])
-        .arg(tarball.path())
-        .arg(commit)
-        .arg(format!("{tree_path}/"))
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("running git archive {commit} {tree_path}/"))?;
-    if !archive.status.success() {
-        bail!(
-            "git archive {commit} {tree_path}/ failed: {}",
-            String::from_utf8_lossy(&archive.stderr).trim(),
-        );
-    }
-
-    let tar = std::process::Command::new("tar")
-        .arg("-x")
-        .arg("--strip-components=1")
-        .arg("-f")
-        .arg(tarball.path())
-        .arg("-C")
-        .arg(output_dir)
-        .output()
-        .with_context(|| format!("running tar to extract {tree_path}"))?;
-
-    if !tar.status.success() {
-        let stderr = String::from_utf8_lossy(&tar.stderr);
-        bail!(
-            "failed to extract {tree_path} from commit {commit}: {}",
-            stderr.trim(),
-        );
-    }
-
-    Ok(())
-}
-
-/// `true` when `commit:tree_path` exists (`git cat-file -e`).
-async fn tree_path_exists(repo_dir: &Path, commit: &str, tree_path: &str) -> Result<bool> {
-    let output = gitcmd::hermetic_async()
-        .args(["cat-file", "-e", &format!("{commit}:{tree_path}")])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("checking tree path {commit}:{tree_path}"))?;
-    Ok(output.status.success())
+    // libgit2 tree walk replaces `git archive <commit> <tree_path>/ | tar -x
+    // --strip-components=1`: it materializes `commit:tree_path/` directly,
+    // preserving file modes and symlinks, and handles the absent-path case via
+    // `create_empty_when_absent`.
+    repo::extract_tree_dir(
+        repo_dir,
+        commit,
+        tree_path,
+        output_dir,
+        create_empty_when_absent,
+    )
+    .await
+    .with_context(|| format!("extracting {tree_path} from commit {commit}"))
 }
 
 /// Extract repo-root support files into `target_dir`.
@@ -1334,39 +1459,25 @@ async fn extract_optional_root_file(
     target_dir: &Path,
     file: &str,
 ) -> Result<()> {
-    let output = gitcmd::hermetic_async()
-        .args(["show", &format!("{commit}:{file}")])
-        .current_dir(repo_dir)
-        .output()
+    let dest = target_dir.join(file);
+    match repo::read_blob_at(repo_dir, commit, file)
         .await
-        .with_context(|| format!("running git show {commit}:{file}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if is_missing_tree_path(&stderr, file) {
-            let dest = target_dir.join(file);
+        .with_context(|| format!("reading {commit}:{file}"))?
+    {
+        Some(content) => {
+            tokio::fs::write(&dest, &content)
+                .await
+                .with_context(|| format!("writing {}", dest.display()))?;
+        }
+        None => {
             if dest.exists() {
                 tokio::fs::remove_file(&dest)
                     .await
                     .with_context(|| format!("removing stale {}", dest.display()))?;
             }
-            return Ok(());
         }
-        bail!("git show {commit}:{file} failed: {}", stderr.trim(),);
     }
-
-    let dest = target_dir.join(file);
-    tokio::fs::write(&dest, &output.stdout)
-        .await
-        .with_context(|| format!("writing {}", dest.display()))?;
     Ok(())
-}
-
-/// Heuristically classify `git show` stderr as "path absent from commit".
-fn is_missing_tree_path(stderr: &str, file: &str) -> bool {
-    stderr.contains("does not exist")
-        || stderr.contains("exists on disk, but not in")
-        || stderr.contains(&format!("path '{file}'"))
 }
 
 /// Decide whether a successful channel resolution counts as a fresh
@@ -1713,6 +1824,26 @@ mod tests {
     }
 
     #[test]
+    fn only_exact_version_requirements_are_immutable_pins() {
+        let exact = semver::VersionReq::parse("=1.2.3").unwrap();
+        let caret = semver::VersionReq::parse("^1.2").unwrap();
+        let range = semver::VersionReq::parse(">=1.2, <2.0").unwrap();
+
+        assert!(version_req_is_exact(&exact));
+        assert!(tracking_mode_is_immutable_pin(&TrackingMode::Version(
+            exact
+        )));
+        assert!(!version_req_is_exact(&caret));
+        assert!(!tracking_mode_is_immutable_pin(&TrackingMode::Version(
+            caret
+        )));
+        assert!(!version_req_is_exact(&range));
+        assert!(!tracking_mode_is_immutable_pin(&TrackingMode::Version(
+            range
+        )));
+    }
+
+    #[test]
     fn channel_refresh_error_reports_first_sync_without_observation() {
         let err = channel_refresh_error_at(
             &channel_config(Some(60)),
@@ -1865,51 +1996,6 @@ mod tests {
             normalize_git_url("git://github.com/andyl/registry.git"),
             "git://github.com/andyl/registry.git"
         );
-    }
-
-    #[test]
-    fn parse_git_version_handles_common_formats() {
-        assert_eq!(
-            parse_git_version("git version 2.42.0\n"),
-            Some(GitVersion {
-                major: 2,
-                minor: 42,
-                patch: 0,
-            })
-        );
-        assert_eq!(
-            parse_git_version("git version 2.43.1 (Apple Git-155)\n"),
-            Some(GitVersion {
-                major: 2,
-                minor: 43,
-                patch: 1,
-            })
-        );
-        assert_eq!(
-            parse_git_version("git version 2.42.0.windows.1\n"),
-            Some(GitVersion {
-                major: 2,
-                minor: 42,
-                patch: 0,
-            })
-        );
-    }
-
-    #[test]
-    fn sha256_git_floor_is_git_2_42_0() {
-        let below = parse_git_version("git version 2.41.3").unwrap();
-        let floor = parse_git_version("git version 2.42.0").unwrap();
-        let above = parse_git_version("git version 2.43.0").unwrap();
-
-        assert!(below < MIN_SHA256_GIT_VERSION);
-        assert_eq!(floor, MIN_SHA256_GIT_VERSION);
-        assert!(above > MIN_SHA256_GIT_VERSION);
-    }
-
-    #[test]
-    fn parse_git_version_rejects_unexpected_output() {
-        assert_eq!(parse_git_version("not git"), None);
-        assert_eq!(parse_git_version("git version vendor-build"), None);
     }
 
     #[test]
@@ -2207,6 +2293,14 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
+    async fn write_empty_transparency_log(dir: &Path) {
+        let log = dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG);
+        tokio::fs::create_dir_all(log.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(log, "").await.unwrap();
+    }
+
     #[tokio::test]
     async fn extract_store_preserves_presence_semantics() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -2267,6 +2361,305 @@ mod tests {
         assert!(
             !store_dir.exists(),
             "dropping store/ upstream must remove the stale local directory"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_provenance_preserves_presence_semantics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        init_repo(&work_dir).await;
+
+        // Commit 1: a legacy registry WITHOUT a provenance/ tree.
+        tokio::fs::create_dir_all(work_dir.join("packages").join("w"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            work_dir.join("packages").join("w").join("web.toml"),
+            "[package]\nname = \"web\"\n",
+        )
+        .await
+        .unwrap();
+        let legacy_commit = commit_all(&work_dir, "legacy").await;
+
+        // Commit 2: add a generated provenance statement.
+        let statement_dir = work_dir
+            .join("provenance")
+            .join("w")
+            .join("web")
+            .join("x86_64-linux");
+        tokio::fs::create_dir_all(&statement_dir).await.unwrap();
+        tokio::fs::write(statement_dir.join("abc.intoto.jsonl"), "statement v1\n")
+            .await
+            .unwrap();
+        let provenance_commit = commit_all(&work_dir, "add provenance").await;
+
+        // Commit 3: remove the provenance/ tree again.
+        tokio::fs::remove_dir_all(work_dir.join("provenance"))
+            .await
+            .unwrap();
+        let removed_commit = commit_all(&work_dir, "drop provenance").await;
+
+        let provenance_dir = tmp.path().join("out-provenance");
+        let extracted_statement = provenance_dir
+            .join("w")
+            .join("web")
+            .join("x86_64-linux")
+            .join("abc.intoto.jsonl");
+
+        extract_provenance_tree(&work_dir, &legacy_commit, &provenance_dir)
+            .await
+            .unwrap();
+        assert!(
+            !provenance_dir.exists(),
+            "absent provenance/ must leave no directory"
+        );
+
+        extract_provenance_tree(&work_dir, &provenance_commit, &provenance_dir)
+            .await
+            .unwrap();
+        assert!(
+            extracted_statement.exists(),
+            "present provenance/ must be extracted"
+        );
+        let content = tokio::fs::read_to_string(&extracted_statement)
+            .await
+            .unwrap();
+        assert_eq!(content, "statement v1\n");
+
+        extract_provenance_tree(&work_dir, &removed_commit, &provenance_dir)
+            .await
+            .unwrap();
+        assert!(
+            !provenance_dir.exists(),
+            "dropping provenance/ upstream must remove stale local statements"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_provenance_materializes_declared_artifacts_at_cache_paths() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        init_repo(&work_dir).await;
+
+        let package_toml = |provenance: &str| {
+            format!(
+                r#"[package]
+name = "web"
+description = "web"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/hash-web"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+provenance = "{provenance}"
+"#
+            )
+        };
+
+        let package_dir = work_dir.join("packages").join("w");
+        tokio::fs::create_dir_all(&package_dir).await.unwrap();
+        let package_path = package_dir.join("web.toml");
+        let custom_ref = "attestation/web.provenance.jsonl";
+        tokio::fs::write(&package_path, package_toml(custom_ref))
+            .await
+            .unwrap();
+        let custom_path = work_dir.join(custom_ref);
+        tokio::fs::create_dir_all(custom_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&custom_path, "custom statement\n")
+            .await
+            .unwrap();
+        write_empty_transparency_log(&work_dir).await;
+        let custom_commit = commit_all(&work_dir, "custom provenance").await;
+
+        let registry_cache_dir = tmp.path().join("cache").join("test-reg");
+        let packages_dir = registry_cache_dir.join("packages");
+        extract_packages(&work_dir, &custom_commit, &packages_dir)
+            .await
+            .unwrap();
+        extract_provenance(
+            &work_dir,
+            &custom_commit,
+            &packages_dir,
+            &registry_cache_dir,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(registry_cache_dir.join(custom_ref))
+                .await
+                .unwrap(),
+            "custom statement\n",
+        );
+
+        let generated_ref = "provenance/w/web/x86_64-linux/abc.intoto.jsonl";
+        tokio::fs::write(&package_path, package_toml(generated_ref))
+            .await
+            .unwrap();
+        tokio::fs::remove_dir_all(work_dir.join("attestation"))
+            .await
+            .unwrap();
+        let generated_path = work_dir.join(generated_ref);
+        tokio::fs::create_dir_all(generated_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&generated_path, "generated statement\n")
+            .await
+            .unwrap();
+        write_empty_transparency_log(&work_dir).await;
+        let generated_commit = commit_all(&work_dir, "generated provenance").await;
+
+        extract_packages(&work_dir, &generated_commit, &packages_dir)
+            .await
+            .unwrap();
+        extract_provenance(
+            &work_dir,
+            &generated_commit,
+            &packages_dir,
+            &registry_cache_dir,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !registry_cache_dir.join(custom_ref).exists(),
+            "dropping a custom provenance ref must remove the stale cached artifact"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(registry_cache_dir.join(generated_ref))
+                .await
+                .unwrap(),
+            "generated statement\n",
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_provenance_rejects_missing_declared_artifact() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        init_repo(&work_dir).await;
+
+        let missing_ref = "attestation/a-missing.jsonl";
+        let later_ref = "attestation/z-stale.jsonl";
+        let package_dir = work_dir.join("packages").join("w");
+        tokio::fs::create_dir_all(&package_dir).await.unwrap();
+        tokio::fs::write(
+            package_dir.join("web.toml"),
+            format!(
+                r#"[package]
+name = "web"
+description = "web"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/hash-web"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+provenance = "{missing_ref}"
+
+[versions.platforms.aarch64-linux]
+store_path = "/var/lib/store/hash-web-aarch64"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+provenance = "{later_ref}"
+"#
+            ),
+        )
+        .await
+        .unwrap();
+        write_empty_transparency_log(&work_dir).await;
+        let commit = commit_all(&work_dir, "missing provenance").await;
+
+        let registry_cache_dir = tmp.path().join("cache").join("test-reg");
+        let packages_dir = registry_cache_dir.join("packages");
+        let stale_path = registry_cache_dir.join(missing_ref);
+        let later_stale_path = registry_cache_dir.join(later_ref);
+        tokio::fs::create_dir_all(stale_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&stale_path, "stale statement\n")
+            .await
+            .unwrap();
+        tokio::fs::write(&later_stale_path, "later stale statement\n")
+            .await
+            .unwrap();
+        extract_packages(&work_dir, &commit, &packages_dir)
+            .await
+            .unwrap();
+        let err = extract_provenance(&work_dir, &commit, &packages_dir, &registry_cache_dir)
+            .await
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("declared by package metadata is missing"),
+            "{err:#}",
+        );
+        assert!(
+            !stale_path.exists(),
+            "missing declared provenance must remove stale bytes at the same cache path"
+        );
+        assert!(
+            !later_stale_path.exists(),
+            "a failed earlier provenance ref must still remove stale bytes for later declared refs"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_provenance_rejects_cache_owned_declared_artifact() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        init_repo(&work_dir).await;
+
+        let package_dir = work_dir.join("packages").join("w");
+        tokio::fs::create_dir_all(&package_dir).await.unwrap();
+        tokio::fs::write(
+            package_dir.join("web.toml"),
+            r#"[package]
+name = "web"
+description = "web"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/hash-web"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+provenance = "store/aa/bad.jsonl"
+"#,
+        )
+        .await
+        .unwrap();
+        let commit = commit_all(&work_dir, "owned provenance target").await;
+
+        let registry_cache_dir = tmp.path().join("cache").join("test-reg");
+        let packages_dir = registry_cache_dir.join("packages");
+        extract_packages(&work_dir, &commit, &packages_dir)
+            .await
+            .unwrap();
+        let err = extract_provenance(&work_dir, &commit, &packages_dir, &registry_cache_dir)
+            .await
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("must not target a cache-owned subtree"),
+            "{err:#}",
         );
     }
 

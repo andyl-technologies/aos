@@ -122,6 +122,16 @@ pub trait Service {
     /// Exit status (or signal number) of the service's main process.
     #[zbus(property)]
     fn exec_main_status(&self) -> zbus::Result<i32>;
+    /// `RestartSec` — the delay systemd waits before each automatic restart,
+    /// in microseconds. Named explicitly because the D-Bus property is
+    /// `RestartUSec`, which the default snake-to-Pascal mapping would render
+    /// `RestartUsec`.
+    #[zbus(property, name = "RestartUSec")]
+    fn restart_usec(&self) -> zbus::Result<u64>;
+    /// `NRestarts` — count of automatic restarts systemd has performed for
+    /// this service since it was last reset.
+    #[zbus(property)]
+    fn n_restarts(&self) -> zbus::Result<u32>;
 }
 
 /// One entry returned by `Manager.ListUnitsByPatterns` — D-Bus signature

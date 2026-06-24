@@ -41,12 +41,25 @@
 
 pub mod clean;
 pub mod config;
+pub(crate) mod config_artifact;
+pub(crate) mod credential;
+pub(crate) mod credential_artifact;
 pub mod deps;
+pub mod desired;
 pub mod download;
+pub(crate) mod ebpf_lsm;
+pub(crate) mod exposed_units;
+/// Test-only helpers that shell out to the host `git` to set up fixtures; the
+/// production registry paths use libgit2 ([`registry::repo`],
+/// [`registry::porcelain`]) and never exec `git`.
+#[cfg(test)]
 pub(crate) mod gitcmd;
 pub mod hold;
 pub mod install;
+pub(crate) mod package_attestation;
+pub mod policy;
 pub mod profile;
+pub(crate) mod provenance;
 pub mod query;
 pub mod registry;
 pub mod registry_ops;
@@ -70,11 +83,11 @@ pub mod verify;
 pub(crate) mod testutil;
 
 use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
@@ -83,6 +96,8 @@ use types::{
     ProfileScope, RegistryUploadAuthConfig, validate_branch_name, validate_channel_name,
     validate_commit_hash, validate_git_ref_name, validate_registry_name,
 };
+
+const PACKAGE_ATTESTATION_SEED_CATALOG: &str = "/etc/aos/package-attestation-catalog.json";
 
 /// Environment-variable documentation appended to `apm`/`apr` long help.
 pub const ENVIRONMENT_HELP: &str = "Environment:
@@ -103,6 +118,9 @@ pub enum PackageCommand {
     Install {
         /// Package names to install
         packages: Vec<String>,
+        /// Reconcile packages from a desired-package TOML file
+        #[arg(long = "from")]
+        from: Option<PathBuf>,
         /// Install from a specific registry
         #[arg(long)]
         registry: Option<String>,
@@ -223,6 +241,20 @@ pub enum PackageCommand {
         #[arg(long)]
         system: bool,
     },
+    /// Show package information
+    Info {
+        /// Package name
+        package: String,
+        /// Show package from this registry
+        #[arg(long)]
+        registry: Option<String>,
+        /// Show permission metadata only
+        #[arg(long)]
+        permissions: bool,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
+    },
     /// List packages
     List {
         /// Only installed packages
@@ -272,6 +304,12 @@ pub enum PackageCommand {
         /// Query the system scope instead of the user scope
         #[arg(long)]
         system: bool,
+    },
+    /// Produce and verify package runtime attestations
+    Attest {
+        /// The attestation operation to run
+        #[command(subcommand)]
+        command: AttestCommand,
     },
     /// Prevent a package from being upgraded
     Hold {
@@ -349,6 +387,9 @@ pub enum PackageCommand {
         #[arg(long)]
         drain: bool,
     },
+    /// Prepare package credential payloads
+    #[command(subcommand)]
+    Credential(CredentialCommand),
     /// Manage registries
     #[command(after_long_help = ENVIRONMENT_HELP)]
     Registry {
@@ -397,6 +438,70 @@ pub enum PackageCommand {
         /// The systemd client operation to exercise
         #[command(subcommand)]
         op: TestSystemdClientOp,
+    },
+    /// Hidden: reconcile exposed package units from the package profile.
+    #[command(name = "_test-reconcile-exposed-units", hide = true)]
+    TestReconcileExposedUnits {
+        /// Use the system package profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Hidden: verify an RFC-0001 package attestation event log.
+    #[command(name = "_test-verify-package-attestation", hide = true)]
+    TestVerifyPackageAttestation {
+        /// Use system registry metadata
+        #[arg(long)]
+        system: bool,
+        /// Package event log JSONL path
+        #[arg(long)]
+        event_log: PathBuf,
+        /// Quoted PCR 15 value as SHA-256 hex
+        #[arg(long)]
+        pcr15: String,
+        /// Expected PCR 15 value before package measurements
+        #[arg(long)]
+        pcr15_baseline: Option<String>,
+    },
+    /// Hidden: produce an RFC-0001 package attestation TPM quote.
+    #[command(name = "_test-produce-package-attestation-quote", hide = true)]
+    TestProducePackageAttestationQuote {
+        /// Verifier nonce as an even-length hex string
+        #[arg(long)]
+        nonce: String,
+        /// Directory where quote artifacts are written
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
+    /// Hidden: load fleet BPF-LSM policies selected by host policy.
+    #[command(name = "_load-ebpf-lsm-policies", hide = true)]
+    LoadEbpfLsmPolicies {
+        /// Use the system package profile
+        #[arg(long)]
+        system: bool,
+    },
+}
+
+/// Package credential helper operations.
+#[derive(Subcommand)]
+pub enum CredentialCommand {
+    /// Encrypt plaintext for inline expose credential metadata
+    Encrypt {
+        /// systemd credential name
+        name: String,
+        /// Plaintext credential file
+        input: PathBuf,
+        /// Write encrypted payload to this file
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Signed PCR public key
+        #[arg(long = "pcr-public-key")]
+        pcr_public_key: Option<PathBuf>,
+        /// Print a Nix expose.config.credentials entry
+        #[arg(long)]
+        expose_nix: bool,
+        /// Service unit that consumes the credential
+        #[arg(long = "unit")]
+        units: Vec<String>,
     },
 }
 
@@ -472,8 +577,8 @@ impl PackageCommand {
     /// Mutating and sysroot commands (`install`, `upgrade`, `rollback`,
     /// `update`, `registry`) select the system scope to act on it; the
     /// read-only query commands (`search`, `show`, `list`, `depends`,
-    /// `rdepends`, `policy`, `files`, `held`, `orphans`) select it to read the
-    /// system registry cache and profile instead of the per-user ones.
+    /// `rdepends`, `policy`, `files`, `held`, `orphans`, `info`) select it to
+    /// read the system registry cache and profile instead of the per-user ones.
     pub fn is_system(&self) -> bool {
         match self {
             PackageCommand::Install { system, .. } => *system,
@@ -483,14 +588,122 @@ impl PackageCommand {
             PackageCommand::Registry { system, .. } => *system,
             PackageCommand::Search { system, .. } => *system,
             PackageCommand::Show { system, .. } => *system,
+            PackageCommand::Info { system, .. } => *system,
             PackageCommand::List { system, .. } => *system,
             PackageCommand::Depends { system, .. } => *system,
             PackageCommand::Rdepends { system, .. } => *system,
             PackageCommand::Policy { system, .. } => *system,
             PackageCommand::Files { system, .. } => *system,
+            PackageCommand::Attest { command } => command.is_system(),
             PackageCommand::Held { system, .. } => *system,
             PackageCommand::Orphans { system, .. } => *system,
+            PackageCommand::TestReconcileExposedUnits { system } => *system,
+            PackageCommand::TestVerifyPackageAttestation { system, .. } => *system,
             _ => false,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum AttestCommand {
+    /// Produce a TPM quote over the package PCR set
+    Quote {
+        /// Verifier nonce as an even-length hex string
+        #[arg(long)]
+        nonce: Option<String>,
+        /// File containing the verifier nonce as hex
+        #[arg(long)]
+        nonce_file: Option<PathBuf>,
+        /// Directory where quote artifacts are written
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
+    /// Enroll a quote identity into a verifier trust catalog
+    Enroll {
+        /// Directory containing a quote bundle with AK/EK identity files
+        #[arg(long)]
+        quote_dir: PathBuf,
+        /// Human-readable fleet node or TPM label
+        #[arg(long)]
+        label: String,
+        /// Enrollment proof workflow used for this identity
+        #[arg(long, value_enum)]
+        method: AttestEnrollmentMethod,
+        /// File containing the credential-activation, privacy-CA, or OOB proof
+        #[arg(long = "evidence-file")]
+        evidence_file: PathBuf,
+        /// Verifier quote identity catalog to create or update
+        #[arg(long = "catalog-file")]
+        catalog_file: PathBuf,
+    },
+    /// Verify a package event log against a PCR 15 value or quote bundle
+    Verify {
+        /// Use system registry metadata
+        #[arg(long)]
+        system: bool,
+        /// Package event log JSONL path
+        #[arg(long)]
+        event_log: PathBuf,
+        /// Quoted PCR 15 value as SHA-256 hex
+        #[arg(long)]
+        pcr15: Option<String>,
+        /// Directory containing an unauthenticated quote bundle
+        #[arg(long)]
+        quote_dir: Option<PathBuf>,
+        /// Verifier nonce as an even-length hex string
+        #[arg(long)]
+        nonce: Option<String>,
+        /// File containing the verifier nonce as hex
+        #[arg(long)]
+        nonce_file: Option<PathBuf>,
+        /// Pinned quote identity catalog JSON file
+        #[arg(long = "quote-identity-file")]
+        quote_identity_files: Vec<PathBuf>,
+        /// Additional golden measurement catalog JSON file
+        #[arg(long = "catalog-file")]
+        catalog_files: Vec<PathBuf>,
+        /// Expected PCR 15 value before package measurements
+        #[arg(long)]
+        pcr15_baseline: Option<String>,
+    },
+    /// Print the package golden measurement catalog
+    Catalog {
+        /// Use system registry metadata
+        #[arg(long)]
+        system: bool,
+        /// Additional golden measurement catalog JSON file
+        #[arg(long = "catalog-file")]
+        catalog_files: Vec<PathBuf>,
+    },
+}
+
+impl AttestCommand {
+    fn is_system(&self) -> bool {
+        match self {
+            AttestCommand::Verify { system, .. } => *system,
+            AttestCommand::Catalog { system, .. } => *system,
+            AttestCommand::Quote { .. } | AttestCommand::Enroll { .. } => false,
+        }
+    }
+}
+
+/// Enrollment proof workflows accepted by `apm attest enroll`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AttestEnrollmentMethod {
+    /// TPM credential activation was completed outside this verifier.
+    CredentialActivation,
+    /// A privacy CA certified the AK/EK binding.
+    PrivacyCa,
+    /// An operator supplied an equivalent out-of-band TPM enrollment proof.
+    OutOfBand,
+}
+
+impl AttestEnrollmentMethod {
+    fn as_str(self) -> &'static str {
+        match self {
+            AttestEnrollmentMethod::CredentialActivation => "credential-activation",
+            AttestEnrollmentMethod::PrivacyCa => "privacy-ca",
+            AttestEnrollmentMethod::OutOfBand => "out-of-band",
         }
     }
 }
@@ -643,6 +856,9 @@ pub enum RegistryCommand {
         /// Image format for each --image (repeatable, paired with --image)
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
+        /// Expose manifest.json to publish with package metadata
+        #[arg(long = "expose-manifest")]
+        expose_manifest: Option<String>,
         /// Bless additional content for paths already recorded with different
         /// bits in the store/ graph instead of failing
         #[arg(long)]
@@ -660,7 +876,7 @@ pub enum RegistryCommand {
         /// Private key path used to sign the publish commit
         #[arg(long)]
         key: Option<String>,
-        /// Active key id whose configured private key signs the publish commit
+        /// Active key id whose configured private key signs the publish commit and provenance
         #[arg(long = "key-id")]
         key_id: Option<String>,
         /// Registry to operate on
@@ -1753,6 +1969,51 @@ pub async fn run(
         return test_systemd_client::run(op, printer).await;
     }
 
+    if let PackageCommand::LoadEbpfLsmPolicies { system } = command {
+        if !*system {
+            bail!("_load-ebpf-lsm-policies requires --system");
+        }
+        return ebpf_lsm::load_system_policies();
+    }
+
+    if let PackageCommand::TestProducePackageAttestationQuote { nonce, output_dir } = command {
+        return run_produce_package_attestation_quote(nonce, output_dir, printer);
+    }
+
+    if let PackageCommand::Attest {
+        command:
+            AttestCommand::Quote {
+                nonce,
+                nonce_file,
+                output_dir,
+            },
+    } = command
+    {
+        let nonce = read_attestation_nonce(nonce, nonce_file)?;
+        return run_produce_package_attestation_quote(&nonce, output_dir, printer);
+    }
+
+    if let PackageCommand::Attest {
+        command:
+            AttestCommand::Enroll {
+                quote_dir,
+                label,
+                method,
+                evidence_file,
+                catalog_file,
+            },
+    } = command
+    {
+        return run_enroll_package_attestation_quote(
+            quote_dir,
+            catalog_file,
+            label,
+            *method,
+            evidence_file,
+            printer,
+        );
+    }
+
     // The hidden activate split runs during the activate script while that
     // script holds the switch lock. These paths talk to systemd over D-Bus,
     // need no apm config, and must return their own 0/1/2 exit codes (which
@@ -1783,6 +2044,7 @@ pub async fn run(
     match command {
         PackageCommand::Install {
             packages,
+            from,
             registry,
             download_only,
             no_deps,
@@ -1798,7 +2060,26 @@ pub async fn run(
             ..
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
-            if *install_system || image_fmt.is_some() {
+            if let Some(path) = from {
+                if !*install_system {
+                    anyhow::bail!("apm install --from requires --system");
+                }
+                if !packages.is_empty() {
+                    anyhow::bail!("apm install --from cannot be combined with package names");
+                }
+                if registry.is_some()
+                    || *download_only
+                    || *reinstall
+                    || *no_deps
+                    || image_fmt.is_some()
+                    || image_output.is_some()
+                {
+                    anyhow::bail!(
+                        "apm install --from cannot be combined with registry, download, reinstall, dependency, or image options"
+                    );
+                }
+                desired::reconcile_from_file(&config, path, dry_run, yes, printer).await
+            } else if *install_system || image_fmt.is_some() {
                 let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::install_system(
                     &config,
@@ -1904,6 +2185,12 @@ pub async fn run(
         PackageCommand::Show {
             package, registry, ..
         } => query::show(&config, package, registry.as_deref(), printer).await,
+        PackageCommand::Info {
+            package,
+            registry,
+            permissions,
+            ..
+        } => query::info(&config, package, registry.as_deref(), *permissions, printer).await,
         PackageCommand::List {
             installed,
             upgradable,
@@ -1925,6 +2212,45 @@ pub async fn run(
         PackageCommand::Rdepends { package, .. } => deps::rdepends(&config, package, printer).await,
         PackageCommand::Policy { package, .. } => deps::policy(&config, package, printer).await,
         PackageCommand::Files { package, .. } => deps::files(&config, package, printer).await,
+        PackageCommand::Attest {
+            command:
+                AttestCommand::Verify {
+                    event_log,
+                    pcr15,
+                    quote_dir,
+                    nonce,
+                    nonce_file,
+                    quote_identity_files,
+                    catalog_files,
+                    pcr15_baseline,
+                    ..
+                },
+        } => {
+            let measurement = read_attestation_measurement(
+                pcr15,
+                quote_dir,
+                nonce,
+                nonce_file,
+                quote_identity_files,
+            )?;
+            run_verify_package_attestation(
+                &config,
+                event_log,
+                measurement,
+                catalog_files,
+                pcr15_baseline,
+                printer,
+            )
+        }
+        PackageCommand::Attest {
+            command: AttestCommand::Catalog { catalog_files, .. },
+        } => run_package_attestation_catalog(&config, catalog_files, printer),
+        PackageCommand::Attest {
+            command: AttestCommand::Quote { .. },
+        } => unreachable!("AttestCommand::Quote is handled before ApmConfig::load"),
+        PackageCommand::Attest {
+            command: AttestCommand::Enroll { .. },
+        } => unreachable!("AttestCommand::Enroll is handled before ApmConfig::load"),
         PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
         PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
         PackageCommand::Held { .. } => hold::run_held(&config, printer).await,
@@ -1940,6 +2266,7 @@ pub async fn run(
             fetch,
             verify,
         } => source::run_source(&config, package, *show_drv, *fetch, *verify, printer).await,
+        PackageCommand::Credential(command) => credential::run(&config, command, printer),
         PackageCommand::Rollback {
             generation,
             system: rollback_system,
@@ -1968,6 +2295,25 @@ pub async fn run(
             }
         }
         PackageCommand::Registry { command, .. } => run_registry(&config, command, printer).await,
+        PackageCommand::TestReconcileExposedUnits { .. } => {
+            exposed_units::reconcile_system_profile(&config, printer).await
+        }
+        PackageCommand::TestVerifyPackageAttestation {
+            event_log,
+            pcr15,
+            pcr15_baseline,
+            ..
+        } => run_verify_package_attestation(
+            &config,
+            event_log,
+            AttestationMeasurement::Pcr15(pcr15.clone()),
+            &[],
+            pcr15_baseline,
+            printer,
+        ),
+        PackageCommand::TestProducePackageAttestationQuote { .. } => {
+            unreachable!("TestProducePackageAttestationQuote is handled before ApmConfig::load")
+        }
         // Dispatched by the early-return above, before `ApmConfig::load`.
         PackageCommand::TestSystemdClient { .. } => {
             unreachable!("TestSystemdClient is handled before ApmConfig::load")
@@ -1978,7 +2324,308 @@ pub async fn run(
         PackageCommand::ActivatePostEtcSwap { .. } => {
             unreachable!("ActivatePostEtcSwap is handled before ApmConfig::load")
         }
+        PackageCommand::LoadEbpfLsmPolicies { .. } => {
+            unreachable!("LoadEbpfLsmPolicies is handled before ApmConfig::load")
+        }
     }
+}
+
+#[derive(Debug)]
+enum AttestationMeasurement {
+    Pcr15(String),
+    Quote {
+        quote_dir: PathBuf,
+        nonce: String,
+        identity_files: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AttestationQuoteTrust {
+    PcrValueOnly,
+    BundleSelfConsistent,
+    IdentityPinned { anchor: String, ak_ek_trusted: bool },
+}
+
+fn read_attestation_measurement(
+    pcr15: &Option<String>,
+    quote_dir: &Option<PathBuf>,
+    nonce: &Option<String>,
+    nonce_file: &Option<PathBuf>,
+    quote_identity_files: &[PathBuf],
+) -> Result<AttestationMeasurement> {
+    match (pcr15, quote_dir) {
+        (Some(_), Some(_)) => bail!("use either --pcr15 or --quote-dir, not both"),
+        (Some(pcr15), None) => {
+            if nonce.is_some() || nonce_file.is_some() {
+                bail!("--nonce and --nonce-file require --quote-dir");
+            }
+            if !quote_identity_files.is_empty() {
+                bail!("--quote-identity-file requires --quote-dir");
+            }
+            Ok(AttestationMeasurement::Pcr15(pcr15.clone()))
+        }
+        (None, Some(quote_dir)) => Ok(AttestationMeasurement::Quote {
+            quote_dir: quote_dir.clone(),
+            nonce: read_attestation_nonce(nonce, nonce_file)?,
+            identity_files: quote_identity_files.to_vec(),
+        }),
+        (None, None) => bail!("attest verify requires --pcr15 or --quote-dir"),
+    }
+}
+
+fn run_verify_package_attestation(
+    config: &config::ApmConfig,
+    event_log: &PathBuf,
+    measurement: AttestationMeasurement,
+    catalog_files: &[PathBuf],
+    pcr15_baseline: &Option<String>,
+    printer: &Printer,
+) -> Result<()> {
+    let (pcr15, trust) = match measurement {
+        AttestationMeasurement::Pcr15(pcr15) => (pcr15, AttestationQuoteTrust::PcrValueOnly),
+        AttestationMeasurement::Quote {
+            quote_dir,
+            nonce,
+            identity_files,
+        } => {
+            let quote = package_attestation::verify_attestation_quote_bundle(
+                &quote_dir,
+                &nonce,
+                &identity_files,
+            )?;
+            let trust = if quote.identity_pinned {
+                AttestationQuoteTrust::IdentityPinned {
+                    anchor: quote
+                        .identity_label
+                        .unwrap_or_else(|| "unlabeled".to_string()),
+                    ak_ek_trusted: quote.ak_ek_trusted,
+                }
+            } else {
+                AttestationQuoteTrust::BundleSelfConsistent
+            };
+            (quote.quoted_pcr15, trust)
+        }
+    };
+    let log = fs::read(event_log)
+        .with_context(|| format!("reading package event log {}", event_log.display()))?;
+    let log = package_attestation::decode_package_event_log_bytes(&log)
+        .with_context(|| format!("decoding package event log {}", event_log.display()))?;
+    let catalog = load_package_attestation_catalog(config, catalog_files)?;
+    let verified = package_attestation::verify_package_event_log_against_measurement_catalog(
+        &log,
+        &pcr15,
+        pcr15_baseline.as_deref(),
+        &catalog,
+    )?;
+
+    if printer.mode() == OutputMode::Json {
+        let mut output = serde_json::json!({
+            "pcr15": verified.pcr15,
+            "package_count": verified.package_count,
+        });
+        if matches!(
+            trust,
+            AttestationQuoteTrust::BundleSelfConsistent
+                | AttestationQuoteTrust::IdentityPinned { .. }
+        ) {
+            output["quote_bundle_verified"] = serde_json::json!(true);
+            output["ak_ek_trusted"] = serde_json::json!(matches!(
+                &trust,
+                AttestationQuoteTrust::IdentityPinned {
+                    ak_ek_trusted: true,
+                    ..
+                }
+            ));
+            output["quote_identity_pinned"] = serde_json::json!(matches!(
+                &trust,
+                AttestationQuoteTrust::IdentityPinned { .. }
+            ));
+            if let AttestationQuoteTrust::IdentityPinned { anchor, .. } = &trust {
+                output["quote_identity_label"] = serde_json::json!(anchor);
+            }
+        }
+        printer.json(&output);
+    } else {
+        let mut message = format!(
+            "Package attestation event log verified ({} package events, PCR 15 {}).",
+            verified.package_count, verified.pcr15
+        );
+        if trust == AttestationQuoteTrust::BundleSelfConsistent {
+            message.push_str(" Quote bundle is self-consistent; AK/EK trust was not checked.");
+        } else if let AttestationQuoteTrust::IdentityPinned {
+            anchor,
+            ak_ek_trusted,
+        } = trust
+        {
+            if ak_ek_trusted {
+                message.push_str(&format!(
+                    " Quote bundle matches enrolled identity '{anchor}'."
+                ));
+            } else {
+                message.push_str(&format!(
+                    " Quote bundle matches pinned identity '{anchor}'; AK/EK trust was not checked."
+                ));
+            }
+        }
+        printer.success(&message);
+    }
+    Ok(())
+}
+
+fn run_package_attestation_catalog(
+    config: &config::ApmConfig,
+    catalog_files: &[PathBuf],
+    printer: &Printer,
+) -> Result<()> {
+    let catalog = load_package_attestation_catalog(config, catalog_files)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!(catalog));
+        return Ok(());
+    }
+    if catalog.is_empty() {
+        printer.info("No package attestation measurements in catalog.");
+        return Ok(());
+    }
+    for entry in catalog {
+        printer.plain(&format!(
+            "{} {} {} {}",
+            entry.name, entry.version, entry.root_digest, entry.measurement
+        ));
+    }
+    Ok(())
+}
+
+fn load_package_attestation_catalog(
+    config: &config::ApmConfig,
+    catalog_files: &[PathBuf],
+) -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
+    let registries = install::load_registries(config)?;
+    let catalog = registries
+        .registries()
+        .iter()
+        .flat_map(|registry| registry.package_versions().cloned())
+        .collect::<Vec<_>>();
+    package_attestation_catalog_from_sources(
+        &catalog,
+        Some(Path::new(PACKAGE_ATTESTATION_SEED_CATALOG)),
+        catalog_files,
+    )
+}
+
+fn package_attestation_catalog_from_sources(
+    registry_packages: &[types::PackageMeta],
+    seed_catalog: Option<&Path>,
+    catalog_files: &[PathBuf],
+) -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
+    let mut catalog =
+        package_attestation::package_measurement_catalog_from_package_meta(registry_packages)?;
+    if let Some(seed_catalog) = seed_catalog {
+        append_optional_package_attestation_catalog(seed_catalog, &mut catalog)?;
+    }
+    for path in catalog_files {
+        append_package_attestation_catalog(path, &mut catalog)?;
+    }
+    package_attestation::canonical_package_measurement_catalog(&catalog)
+}
+
+fn append_optional_package_attestation_catalog(
+    path: &Path,
+    catalog: &mut Vec<package_attestation::PackageMeasurementCatalogEntry>,
+) -> Result<()> {
+    match read_package_attestation_catalog(path) {
+        Ok(entries) => {
+            catalog.extend(entries);
+            Ok(())
+        }
+        Err(err)
+            if err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|err| err.kind() == ErrorKind::NotFound) =>
+        {
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn append_package_attestation_catalog(
+    path: &Path,
+    catalog: &mut Vec<package_attestation::PackageMeasurementCatalogEntry>,
+) -> Result<()> {
+    let entries = read_package_attestation_catalog(path)?;
+    catalog.extend(entries);
+    Ok(())
+}
+
+fn read_package_attestation_catalog(
+    path: &Path,
+) -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading package attestation catalog {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("parsing package attestation catalog {}", path.display()))
+}
+
+fn read_attestation_nonce(nonce: &Option<String>, nonce_file: &Option<PathBuf>) -> Result<String> {
+    match (nonce.as_deref(), nonce_file.as_ref()) {
+        (Some(_), Some(_)) => bail!("use either --nonce or --nonce-file, not both"),
+        (Some(nonce), None) => Ok(nonce.to_string()),
+        (None, Some(path)) => fs::read_to_string(path)
+            .with_context(|| format!("reading attestation nonce {}", path.display()))
+            .map(|nonce| nonce.trim().to_string()),
+        (None, None) => bail!("attest quote requires --nonce or --nonce-file"),
+    }
+}
+
+fn run_produce_package_attestation_quote(
+    nonce: &str,
+    output_dir: &PathBuf,
+    printer: &Printer,
+) -> Result<()> {
+    let quote = package_attestation::produce_package_quote(nonce, output_dir)?;
+    let json = serde_json::to_value(&quote).context("serializing package quote artifacts")?;
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&json);
+    } else {
+        printer.success(&format!(
+            "Package attestation quote written to {} ({}).",
+            output_dir.display(),
+            quote.pcr_selection
+        ));
+    }
+    Ok(())
+}
+
+fn run_enroll_package_attestation_quote(
+    quote_dir: &PathBuf,
+    catalog_file: &PathBuf,
+    label: &str,
+    method: AttestEnrollmentMethod,
+    evidence_file: &PathBuf,
+    printer: &Printer,
+) -> Result<()> {
+    let enrollment = package_attestation::enroll_quote_identity(
+        quote_dir,
+        catalog_file,
+        label,
+        method.as_str(),
+        evidence_file,
+    )?;
+    let json = serde_json::to_value(&enrollment).context("serializing package quote enrollment")?;
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&json);
+    } else {
+        printer.success(&format!(
+            "Enrolled package attestation identity '{}' in {} ({}).",
+            enrollment.label,
+            catalog_file.display(),
+            enrollment.method
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2074,6 +2721,7 @@ async fn run_registry(
             source_drv,
             images,
             image_formats,
+            expose_manifest,
             bless,
             no_ca,
             no_commit,
@@ -2097,6 +2745,7 @@ async fn run_registry(
                 source_drv.as_deref(),
                 images,
                 image_formats,
+                expose_manifest.as_deref(),
                 *bless,
                 *no_ca,
                 *no_commit,
@@ -2820,49 +3469,157 @@ fn materialize_authoring_clone(
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
-    let mut clone = gitcmd::transport();
-    clone.args(["clone", "--no-checkout", url]);
-    clone.arg(&clone_dir);
-    run_git_command(clone, format!("cloning registry '{name}' from {url}"))?;
-
-    if let Some(branch) = branch {
-        let remote_branch = format!("origin/{branch}");
-        let mut checkout = gitcmd::hermetic();
-        checkout
-            .current_dir(&clone_dir)
-            .args(["checkout", "-B", branch, &remote_branch]);
-        run_git_command(checkout, format!("checking out branch '{branch}'"))?;
-    } else if let Some(tag) = tag {
-        let mut checkout = gitcmd::hermetic();
-        checkout.current_dir(&clone_dir).args(["checkout", tag]);
-        run_git_command(checkout, format!("checking out tag '{tag}'"))?;
-    } else if let Some(commit) = commit {
-        let mut checkout = gitcmd::hermetic();
-        checkout
-            .current_dir(&clone_dir)
-            .args(["checkout", "--detach", commit]);
-        run_git_command(checkout, format!("checking out commit '{commit}'"))?;
-    } else {
-        let mut checkout = gitcmd::hermetic();
-        checkout.current_dir(&clone_dir).arg("checkout");
-        run_git_command(checkout, "checking out remote HEAD")?;
-    }
+    let normalized = url.strip_prefix("git+").unwrap_or(url);
+    clone_authoring_registry(&clone_dir, normalized, branch, tag, commit)
+        .with_context(|| format!("cloning registry '{name}' from {url}"))?;
 
     printer.info(&format!("Authoring clone ready at {}", clone_dir.display()));
     Ok(())
 }
 
-fn run_git_command(mut command: Command, context: impl Into<String>) -> Result<()> {
-    let context = context.into();
-    let output = command
-        .output()
-        .with_context(|| format!("running git command while {context}"))?;
-    if output.status.success() {
-        return Ok(());
+/// Clone `url` into `clone_dir` for authoring, then check out the requested
+/// ref, using libgit2 for smart transports (local, `git://`, `ssh://`) and the
+/// pure-Rust dumb-HTTP reader for static `http(s)://` origins.
+fn clone_authoring_registry(
+    clone_dir: &std::path::Path,
+    url: &str,
+    branch: Option<&str>,
+    tag: Option<&str>,
+    commit: Option<&str>,
+) -> Result<()> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        // libgit2 cannot read the static dumb-HTTP object tree; init locally
+        // and fetch through the pure-Rust reader.
+        let repo = git2::Repository::init(clone_dir)
+            .with_context(|| format!("initializing {}", clone_dir.display()))?;
+        repo.remote("origin", url).context("adding origin remote")?;
+        let refspecs = vec![
+            "+refs/heads/*:refs/remotes/origin/*".to_string(),
+            "+refs/tags/*:refs/tags/*".to_string(),
+            // Capture the origin's default branch so a bare clone can check it
+            // out, mirroring `RepoBuilder`/`git clone` on smart transports.
+            "+HEAD:refs/remotes/origin/HEAD".to_string(),
+        ];
+        let dir = clone_dir.to_path_buf();
+        let fetch_url = url.to_string();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(registry::repo::fetch(&dir, &fetch_url, &refspecs))
+        })
+        .context("fetching registry objects")?;
+
+        // With no explicit ref, dumb-HTTP has no worktree checked out yet;
+        // resolve and check out the origin's default branch.
+        let default_branch;
+        let effective_branch = if branch.is_none() && tag.is_none() && commit.is_none() {
+            default_branch = default_remote_branch(&repo);
+            default_branch.as_deref()
+        } else {
+            branch
+        };
+        return checkout_authoring_ref(&repo, effective_branch, tag, commit);
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    bail!("{} failed: {}", context, stderr);
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(registry::repo::credentials);
+    let mut fetch_options = git2::FetchOptions::new();
+    fetch_options.remote_callbacks(callbacks);
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.fetch_options(fetch_options);
+    // RepoBuilder checks out the remote HEAD; only an explicit ref needs more.
+    let repo = builder
+        .clone(url, clone_dir)
+        .with_context(|| format!("cloning {url}"))?;
+    checkout_authoring_ref(&repo, branch, tag, commit)
+}
+
+/// Resolve the origin's default branch (the branch its `HEAD` points at) from
+/// the fetched `refs/remotes/origin/*`, by matching the captured
+/// `refs/remotes/origin/HEAD` object id. Returns `None` for an empty origin.
+fn default_remote_branch(repo: &git2::Repository) -> Option<String> {
+    let head_oid = repo.refname_to_id("refs/remotes/origin/HEAD").ok()?;
+    let references = repo.references_glob("refs/remotes/origin/*").ok()?;
+    for reference in references {
+        let Ok(reference) = reference else { continue };
+        let Ok(name) = reference.name() else { continue };
+        if name.ends_with("/HEAD") {
+            continue;
+        }
+        if reference.target() == Some(head_oid) {
+            return name
+                .strip_prefix("refs/remotes/origin/")
+                .map(ToString::to_string);
+        }
+    }
+    None
+}
+
+/// Check out the branch, tag, commit, or remote HEAD an authoring clone wants.
+fn checkout_authoring_ref(
+    repo: &git2::Repository,
+    branch: Option<&str>,
+    tag: Option<&str>,
+    commit: Option<&str>,
+) -> Result<()> {
+    if let Some(branch) = branch {
+        let remote_ref = format!("refs/remotes/origin/{branch}");
+        let object = repo
+            .revparse_single(&remote_ref)
+            .with_context(|| format!("resolving origin/{branch}"))?;
+        let target = object
+            .peel_to_commit()
+            .context("remote branch is not a commit")?;
+        repo.branch(branch, &target, true)
+            .with_context(|| format!("creating local branch '{branch}'"))?;
+        repo.checkout_tree(&object, None)
+            .with_context(|| format!("checking out '{branch}'"))?;
+        repo.set_head(&format!("refs/heads/{branch}"))
+            .with_context(|| format!("switching to '{branch}'"))?;
+    } else if let Some(spec) = tag.or(commit) {
+        let object = repo
+            .revparse_single(spec)
+            .with_context(|| format!("resolving '{spec}'"))?;
+        let target = object.peel_to_commit().context("target is not a commit")?;
+        repo.checkout_tree(&object, None)
+            .with_context(|| format!("checking out '{spec}'"))?;
+        repo.set_head_detached(target.id())
+            .with_context(|| format!("detaching HEAD at '{spec}'"))?;
+    }
+    // No branch resolved (e.g. an empty origin): nothing to check out. For
+    // smart transports `RepoBuilder` has already checked out the remote HEAD.
+    Ok(())
+}
+
+/// Version-control summary of the git repository at or above `dir`: the short
+/// `HEAD` commit, the branch name, and whether the working tree has
+/// uncommitted tracked changes.
+///
+/// Reads through libgit2, so it works without the `git` CLI on `PATH`. Every
+/// field degrades to `None`/`false` when it cannot be determined; this drives
+/// the best-effort `aos describe` output.
+pub fn local_git_info(dir: &Path) -> (Option<String>, Option<String>, bool) {
+    let Ok(repo) = git2::Repository::discover(dir) else {
+        return (None, None, false);
+    };
+    let head = repo.head().ok();
+    let branch = head
+        .as_ref()
+        .and_then(|h| h.shorthand().ok())
+        .map(ToString::to_string);
+    let commit = head
+        .as_ref()
+        .and_then(|h| h.peel_to_commit().ok())
+        .and_then(|c| {
+            let short = c.as_object().short_id().ok()?;
+            short.as_str().ok().map(ToString::to_string)
+        });
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(false);
+    let dirty = repo
+        .statuses(Some(&mut opts))
+        .map(|statuses| !statuses.is_empty())
+        .unwrap_or(false);
+    (commit, branch, dirty)
 }
 
 /// `apr remove` — delete a registry's config file, metadata cache, local
@@ -3158,7 +3915,10 @@ fn registry_defined_by_seed(config: &config::ApmConfig, name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::config::ApmConfig;
-    use crate::types::{ApmSettings, RegistryConfig};
+    use crate::types::{
+        ApmSettings, AttestationMeta, PACKAGE_META_FORMAT, PackageMeta, PermissionsMeta,
+        RegistryConfig,
+    };
     use tempfile::TempDir;
 
     fn make_config(
@@ -3217,6 +3977,63 @@ mod tests {
         }
     }
 
+    fn attested_package_meta(
+        name: &str,
+        version: &str,
+        root_digest: &str,
+        measurement: &str,
+    ) -> PackageMeta {
+        PackageMeta {
+            name: name.into(),
+            version: version.into(),
+            description: String::new(),
+            homepage: None,
+            license: String::new(),
+            maintainer: String::new(),
+            platform: "x86_64-linux".into(),
+            store_path: format!("/nix/store/hash-{name}-{version}"),
+            nar_hash: String::new(),
+            nar_size: 0,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 0,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec!["attestation-v1".into()],
+            expose: None,
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: AttestationMeta {
+                root_digest: Some(root_digest.into()),
+                root_hash: Some(root_digest.into()),
+                root_hash_sig: Some("root.roothash.p7s".into()),
+                provenance: None,
+                measurement: Some(measurement.into()),
+            },
+        }
+    }
+
+    fn write_catalog_file(
+        path: &Path,
+        name: &str,
+        version: &str,
+        root_digest: &str,
+        measurement: &str,
+    ) {
+        let content = serde_json::json!([{
+            "name": name,
+            "version": version,
+            "root_digest": root_digest,
+            "measurement": measurement,
+        }]);
+        fs::write(path, serde_json::to_vec(&content).expect("catalog JSON"))
+            .expect("write catalog");
+    }
+
     #[test]
     fn derive_name_from_https_url() {
         assert_eq!(
@@ -3257,6 +4074,175 @@ mod tests {
             }
             .is_system()
         );
+        assert!(
+            PackageCommand::Attest {
+                command: AttestCommand::Verify {
+                    system: true,
+                    event_log: "/run/log/aos-packages.cel".into(),
+                    pcr15: Some("00".repeat(32)),
+                    quote_dir: None,
+                    nonce: None,
+                    nonce_file: None,
+                    quote_identity_files: Vec::new(),
+                    catalog_files: Vec::new(),
+                    pcr15_baseline: None,
+                },
+            }
+            .is_system()
+        );
+        assert!(
+            !PackageCommand::Attest {
+                command: AttestCommand::Quote {
+                    nonce: Some("00".into()),
+                    nonce_file: None,
+                    output_dir: "/tmp/aos-quote".into(),
+                },
+            }
+            .is_system()
+        );
+        assert!(
+            !PackageCommand::Attest {
+                command: AttestCommand::Enroll {
+                    quote_dir: "/tmp/aos-quote".into(),
+                    label: "node-a".into(),
+                    method: AttestEnrollmentMethod::OutOfBand,
+                    evidence_file: "/tmp/evidence.txt".into(),
+                    catalog_file: "/tmp/quote-identity.json".into(),
+                },
+            }
+            .is_system()
+        );
+        assert!(
+            PackageCommand::Attest {
+                command: AttestCommand::Catalog {
+                    system: true,
+                    catalog_files: Vec::new(),
+                },
+            }
+            .is_system()
+        );
+    }
+
+    #[test]
+    fn attest_nonce_reader_accepts_inline_or_file() {
+        assert_eq!(
+            read_attestation_nonce(&Some("0011".into()), &None).expect("inline nonce"),
+            "0011"
+        );
+
+        let tmp = TempDir::new().expect("tempdir");
+        let nonce_file = tmp.path().join("nonce");
+        fs::write(&nonce_file, "aabb\n").expect("nonce file");
+        assert_eq!(
+            read_attestation_nonce(&None, &Some(nonce_file)).expect("file nonce"),
+            "aabb"
+        );
+
+        let conflict =
+            read_attestation_nonce(&Some("0011".into()), &Some(tmp.path().join("nonce")))
+                .unwrap_err();
+        assert!(format!("{conflict:#}").contains("either --nonce or --nonce-file"));
+    }
+
+    #[test]
+    fn attest_verify_measurement_args_require_one_source() {
+        let pcr15 = Some("00".repeat(32));
+        let quote_dir = Some(PathBuf::from("/run/aos-attest/quote"));
+        let nonce = Some("0011".to_string());
+        let no_nonce = None;
+        let no_nonce_file = None;
+
+        let pcr = read_attestation_measurement(&pcr15, &None, &no_nonce, &no_nonce_file, &[])
+            .expect("pcr15 source");
+        assert!(matches!(pcr, AttestationMeasurement::Pcr15(_)));
+
+        let quote = read_attestation_measurement(&None, &quote_dir, &nonce, &no_nonce_file, &[])
+            .expect("quote source");
+        assert!(matches!(quote, AttestationMeasurement::Quote { .. }));
+
+        let conflict =
+            read_attestation_measurement(&pcr15, &quote_dir, &nonce, &no_nonce_file, &[])
+                .unwrap_err();
+        assert!(format!("{conflict:#}").contains("either --pcr15 or --quote-dir"));
+
+        let missing =
+            read_attestation_measurement(&None, &None, &no_nonce, &no_nonce_file, &[]).unwrap_err();
+        assert!(format!("{missing:#}").contains("requires --pcr15 or --quote-dir"));
+
+        let stray_nonce =
+            read_attestation_measurement(&pcr15, &None, &nonce, &no_nonce_file, &[]).unwrap_err();
+        assert!(format!("{stray_nonce:#}").contains("require --quote-dir"));
+
+        let identity_files = vec![PathBuf::from("/etc/aos/attestation-identity.json")];
+        let stray_trust =
+            read_attestation_measurement(&pcr15, &None, &no_nonce, &no_nonce_file, &identity_files)
+                .unwrap_err();
+        assert!(format!("{stray_trust:#}").contains("--quote-identity-file"));
+    }
+
+    #[test]
+    fn package_attestation_catalog_file_parses_entries() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("catalog.json");
+        fs::write(
+            &path,
+            r#"[{"name":"web","version":"1.0","root_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","measurement":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]"#,
+        )
+        .expect("catalog file");
+
+        let entries = read_package_attestation_catalog(&path).expect("read catalog");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "web");
+        assert_eq!(entries[0].version, "1.0");
+    }
+
+    #[test]
+    fn package_attestation_catalog_sources_merge_registry_seed_and_files() {
+        let tmp = TempDir::new().expect("tempdir");
+        let seed = tmp.path().join("seed-catalog.json");
+        let explicit = tmp.path().join("explicit-catalog.json");
+        let root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let web_measurement =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let seed_measurement =
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let explicit_measurement =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        write_catalog_file(&seed, "seeded", "1.0", root_digest, seed_measurement);
+        write_catalog_file(&explicit, "extra", "2.0", root_digest, explicit_measurement);
+        let registry = attested_package_meta("web", "1.0", root_digest, web_measurement);
+
+        let catalog =
+            package_attestation_catalog_from_sources(&[registry], Some(&seed), &[explicit])
+                .expect("merged catalog");
+
+        let names = catalog
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["extra", "seeded", "web"]);
+        assert_eq!(catalog[0].measurement, explicit_measurement);
+        assert_eq!(catalog[1].measurement, seed_measurement);
+        assert_eq!(catalog[2].measurement, web_measurement);
+    }
+
+    #[test]
+    fn package_attestation_catalog_sources_reject_conflicting_explicit_file() {
+        let tmp = TempDir::new().expect("tempdir");
+        let explicit = tmp.path().join("explicit-catalog.json");
+        let root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let registry_measurement =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let explicit_measurement =
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        write_catalog_file(&explicit, "web", "1.0", root_digest, explicit_measurement);
+        let registry = attested_package_meta("web", "1.0", root_digest, registry_measurement);
+
+        let err =
+            package_attestation_catalog_from_sources(&[registry], None, &[explicit]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("conflicting golden measurements"));
     }
 
     #[test]

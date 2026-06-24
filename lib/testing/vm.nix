@@ -57,7 +57,7 @@
   #              announce a partition that doesn't exist.
   #   4  var   — 256 MiB ext4. Carries the /var/etc allowlist plus
   #              test-specific overrides (host SSH key, SELinux off,
-  #              test units) and role state used by fleet tests.
+  #              test units) and package state used by fleet tests.
   #              Label `var` via GPT partlabel so mount-var.service
   #              finds it.
   #
@@ -66,8 +66,8 @@
   # widen that scope: the test units (aos-test.target,
   # aos-test-agent.service) and the per-test fallbacks (nsswitch.conf,
   # etc.) also live there. This is a deliberate test-only deviation;
-  # production roles must use the `environment.etc` route through the
-  # EROFS image.
+  # production package policy must use the `environment.etc` route
+  # through the EROFS image.
   #
   # `mkTestDisk` is a function of `{system, extraClosures, varSizeMiB}`:
   # two callers passing identical inputs reference the same Nix derivation,
@@ -85,9 +85,24 @@
     # Size of the /var partition (partition 4) in MiB. Raise for tests
     # whose guests stage large payloads under /var (e.g. a fleet registry
     # peer writing a static binary cache of a full system closure).
+    # Only consulted when `varProvisioning == "baked"`; under "ignition"
+    # the image carries no /var partition and the size is applied at boot.
     varSizeMiB ? 256,
+    # Most VM tests run without an SELinux policy and need the test
+    # /var/etc lower to keep SELinux disabled. SELinux-specific tests
+    # opt out so the system-generated /etc/selinux/config is visible.
+    seedSELinuxDisabledConfig ? true,
+    # How /var is provisioned. "baked" (default): /var is partition 4 of
+    # this image, formatted and seeded at build time. "ignition": the
+    # image is boot+root-a+swap only — ignition creates and formats /var
+    # on first boot (see lib/testing/fleet.nix), so machines differing
+    # only in /var size share one base image. The build-time `varSeed` is
+    # skipped under "ignition"; the guest agent arrives via the
+    # `aos-test-agent` package instead.
+    varProvisioning ? "baked",
   }: let
     systemPackages = system.config.environment.systemPackages;
+    bakeVar = varProvisioning == "baked";
 
     # rootfsPost — shell fragment spliced into the shared rootfs
     # helper's populate phase after tree population, before mkfs.
@@ -217,8 +232,9 @@
       # only fall back to vsock when no virtio port shows up after a
       # short wait (Firecracker's transport).
       # The script body lives in agent/aos-test-agent.sh — shared with
-      # the aos-test-agent role (modules/roles/aos-test-agent.nix),
-      # which bakes the same bytes into image-boot fleet machines.
+      # the aos-test-agent exposed package
+      # (pkgs/tests/aos-test-agent.nix), which bakes the same bytes
+      # into image-boot fleet machines.
       # One source of truth for the agent protocol.
       cp ${./agent/aos-test-agent.sh} rootfs/opt/aos-test/bin/aos-test-agent
       chmod +x rootfs/opt/aos-test/bin/aos-test-agent
@@ -239,16 +255,18 @@
       mkdir -p var/etc/systemd/system/multi-user.target.wants
       mkdir -p var/etc/systemd/system/aos-test.target.wants
       mkdir -p var/etc/ssh
-      mkdir -p var/etc/selinux
+      ${lib.optionalString seedSELinuxDisabledConfig ''
+        mkdir -p var/etc/selinux
 
-      # SELinux off — the test rootfs has no policy files; enforcing
-      # mode would freeze systemd. The toplevel may write
-      # /etc/selinux/config from modules/security/selinux.nix; the
-      # var entry shadows it via the /var/etc overlay lower.
-      cat > var/etc/selinux/config << 'SELINUXCFG'
-      SELINUX=disabled
-      SELINUXTYPE=targeted
-      SELINUXCFG
+        # SELinux off — most test rootfs images have no policy files;
+        # enforcing mode would freeze systemd. The toplevel may write
+        # /etc/selinux/config from modules/security/selinux.nix; this
+        # var entry shadows it via the /var/etc overlay lower.
+        cat > var/etc/selinux/config << 'SELINUXCFG'
+        SELINUX=disabled
+        SELINUXTYPE=targeted
+        SELINUXCFG
+      ''}
 
       # Empty fstab — systemd-fstab-generator synthesises
       # sysroot.mount from `root=` on the cmdline; mount-var.service
@@ -372,19 +390,20 @@
           name = "assemble";
           script = ''
             set -eu
-            VAR_SIZE_MIB=${builtins.toString varSizeMiB}
+            ${lib.optionalString bakeVar ''
+              VAR_SIZE_MIB=${builtins.toString varSizeMiB}
 
-            # ── /var partition staging ──────────────────────────────────
-            mkdir -p var
+              # ── /var partition staging ────────────────────────────────
+              mkdir -p var
 
-            # Spec v12 model: the test-only /etc overrides + test units
-            # live on /var/etc (the persistent overlay lower), not on
-            # the rootfs's /etc tree (which is now empty by design).
-            ${varSeed}
+              # Spec v12 model: the test-only /etc overrides + test units
+              # live on /var/etc (the persistent overlay lower), not on
+              # the rootfs's /etc tree (which is now empty by design).
+              ${varSeed}
 
-            # fakeroot so the var partition's files land as uid/gid 0.
-            fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q var.img "''${VAR_SIZE_MIB}M"
-
+              # fakeroot so the var partition's files land as uid/gid 0.
+              fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q var.img "''${VAR_SIZE_MIB}M"
+            ''}
             # ── Root image from the shared rootfs helper ────────────────
             cp "$ROOT_IMG" root.img
             chmod u+w root.img
@@ -395,16 +414,30 @@
             # for GPT headers. Partition 1 (boot) is vestigial in tests
             # — the harness passes kernel+initrd via -kernel/-initrd —
             # but reserving it keeps root at /dev/vda2 matching production.
+            #
+            # Under varProvisioning="ignition" the image stops at
+            # boot+root-a+swap: ignition creates /var (partition 4) on
+            # first boot, so machines differing only in /var size share
+            # this one base image. The driver grows the per-run copy to
+            # make room before boot (see lib/testing/fleet.nix).
             BOOT_SECTORS=$(( 4 * 1024 * 1024 / 512 ))   # 4 MiB
             ROOT_SECTORS=$(( root_bytes / 512 ))
             SWAP_SECTORS=$(( 8 * 1024 * 1024 / 512 ))   # 8 MiB
-            VAR_SECTORS=$(( VAR_SIZE_MIB * 1024 * 1024 / 512 ))
 
             BOOT_START=2048
             ROOT_START=$(( BOOT_START + BOOT_SECTORS ))
             SWAP_START=$(( ROOT_START + ROOT_SECTORS ))
-            VAR_START=$((  SWAP_START + SWAP_SECTORS ))
-            DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
+            ${
+              if bakeVar
+              then ''
+                VAR_SECTORS=$(( VAR_SIZE_MIB * 1024 * 1024 / 512 ))
+                VAR_START=$((  SWAP_START + SWAP_SECTORS ))
+                DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
+              ''
+              else ''
+                DISK_SECTORS=$(( SWAP_START + SWAP_SECTORS + 2048 ))
+              ''
+            }
             DISK_BYTES=$(( DISK_SECTORS * 512 ))
 
             echo "==> Assembling $(( DISK_BYTES / 1048576 )) MiB GPT disk image"
@@ -415,17 +448,19 @@
             # mount-var.service binds to via /dev/disk/by-partlabel/var.
             # The root partition is labelled `root-a` to match the
             # production A/B layout — aos-growfs triggers on
-            # ConditionPathExists=/dev/disk/by-partlabel/root-a.
-            sfdisk disk.img <<PTABLE
-            label: gpt
-            size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="boot"
-            size=$ROOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="root-a"
-            size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name="swap"
-            size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="var"
-            PTABLE
+            # ConditionPathExists=/dev/disk/by-partlabel/root-a. The var
+            # line is omitted under "ignition" (created at first boot).
+            {
+              echo "label: gpt"
+              echo "size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=boot"
+              echo "size=$ROOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=root-a"
+              echo "size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name=swap"
+              ${lib.optionalString bakeVar ''echo "size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=var"''}
+            } > ptable.sfdisk
+            sfdisk disk.img < ptable.sfdisk
 
             dd if=root.img of=disk.img bs=512 seek="$ROOT_START" conv=notrunc status=none
-            dd if=var.img  of=disk.img bs=512 seek="$VAR_START"  conv=notrunc status=none
+            ${lib.optionalString bakeVar ''dd if=var.img  of=disk.img bs=512 seek="$VAR_START"  conv=notrunc status=none''}
 
             mkdir -p $out
             mv disk.img $out/disk.img
@@ -455,7 +490,10 @@
       pname = name;
       inherit testScript rootfsDeps;
     };
-    kernelPath = builtins.toString kernel;
+    # Firecracker boots the uncompressed vmlinux ELF, which lives in the
+    # kernel's separate `vmlinux` output (pkgs/kernel/linux.nix) — not in
+    # `out`, whose /boot ships only the compressed vmlinuz.
+    kernelPath = builtins.toString kernel.vmlinux;
 
     headlessBuildDeps = [
       pkgs.coreutils
@@ -595,6 +633,7 @@
     testScript ? null,
     timeout ? 120,
     memory ? null,
+    seedSELinuxDisabledConfig ? true,
   }:
     assert (instanceMetadata != null -> system != null)
     || throw "mkVMTest '${name}': instanceMetadata requires system mode (got rootfsDeps or neither)";
@@ -613,7 +652,7 @@
         }
       else if system != null
       then let
-        systemDisk = mkTestDisk {inherit system;};
+        systemDisk = mkTestDisk {inherit system seedSELinuxDisabledConfig;};
         systemKernel = system.config.system.build.kernel;
         systemInitrd = system.config.system.build.initrd;
 
@@ -659,7 +698,11 @@
             {
               name = "vm";
               transport = "firecracker";
-              kernel = builtins.toString systemKernel;
+              # The driver feeds this to Firecracker as the boot kernel, which
+              # must be the uncompressed vmlinux ELF — sourced from the kernel's
+              # separate `vmlinux` output (the system's `out` /boot has only the
+              # compressed vmlinuz). Matches the system's own kernel build.
+              kernel = builtins.toString systemKernel.vmlinux;
               initrd = "${builtins.toString systemInitrd}/initrd.img";
               disk = "${builtins.toString systemDisk}/disk.img";
               metadata =

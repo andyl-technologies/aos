@@ -37,30 +37,30 @@ in {
     {
       # Security: debug level (permissive SELinux, core dumps, no lockdown)
       aos.security.level = lib.mkDefault "debug";
-
-      # Debug and diagnostic tools
-      environment.systemPackages = [
-        pkgs.strace
-        pkgs.tcpdump
-        pkgs.lsof
-        pkgs.hdparm
-        pkgs.smartmontools
-        pkgs.procps-ng
-        pkgs.conntrack-tools
-        pkgs.iproute2
-        pkgs.ethtool
-        pkgs.curl
-        pkgs.jq
-      ];
     }
 
     (lib.mkIf cfg.autologin (let
       # agetty invokes --login-program as `PROG -f USER`, matching
       # /bin/login's calling convention. Passing bash directly makes
       # bash interpret `-f` as its own flag and `USER` as a script
-      # path — it exits 126. Tiny shim drops the args and execs an
+      # path — it exits 126. This shim drops those args and execs an
       # interactive root shell instead.
+      #
+      # It also seeds the session environment that /bin/login would
+      # have exported from root's passwd entry. AOS ships no
+      # /bin/login (util-linux is built --disable-login), and bash
+      # does not synthesize HOME itself, so without this HOME/USER/
+      # LOGNAME come up empty on every autologin console. (sshd
+      # exports these itself, so SSH sessions are unaffected.)
+      # Hardcoded to root: every agetty unit below autologins root,
+      # and these values hold identically in the stage-1 initrd,
+      # which has no NSS to resolve a passwd lookup through.
       autologinShell = pkgs.writeShellScriptBin "autologin-shell" ''
+        export USER=root
+        export LOGNAME=root
+        export HOME=/root
+        export SHELL=${pkgs.bash}/bin/bash
+        cd "$HOME" 2>/dev/null || true
         exec ${pkgs.bash}/bin/bash -l
       '';
     in {

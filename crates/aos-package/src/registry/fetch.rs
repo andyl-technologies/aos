@@ -24,7 +24,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::download::join_cache_url;
-use crate::gitcmd;
 use crate::registry::pack;
 use aos_core::output::Printer;
 
@@ -327,7 +326,7 @@ async fn fetch_delta(
 /// Try to download and index the self-contained full pack for `version`.
 ///
 /// Reads the release's `objects/info/packs` listing, downloads the first
-/// pack (verifying or regenerating its `.idx`), and returns `Ok(None)` when
+/// pack and indexes it (regenerating its `.idx`), and returns `Ok(None)` when
 /// the release publishes no full pack.
 async fn fetch_full_pack(
     repo_dir: &Path,
@@ -353,17 +352,9 @@ async fn fetch_full_pack(
         .await
         .with_context(|| format!("writing {}", pack_path.display()))?;
 
-    let idx_name = pack_name.trim_end_matches(".pack").to_string() + ".idx";
-    let idx_relative = format!("releases/{release}/objects/pack/{idx_name}");
-    if let Some(idx_bytes) = get_optional(origin, &idx_relative).await? {
-        let idx_path = local_pack_path(repo_dir, &idx_name)?;
-        tokio::fs::write(&idx_path, idx_bytes)
-            .await
-            .with_context(|| format!("writing {}", idx_path.display()))?;
-        pack::verify_pack_index(repo_dir, &idx_path).await?;
-    } else {
-        pack::index_pack(repo_dir, &pack_path).await?;
-    }
+    // libgit2's pack writer regenerates and verifies the index, so the
+    // server-published `.idx` is neither downloaded nor trusted.
+    pack::index_pack(repo_dir, &pack_path).await?;
 
     Ok(Some(FetchStep::Full {
         version: version.clone(),
@@ -378,19 +369,12 @@ async fn git_fetch_release(
     target: &semver::Version,
 ) -> Result<FetchStep> {
     let refspec = release_refspec(target);
-    let output = gitcmd::transport_async()
-        .arg("-C")
-        .arg(repo_dir)
-        .args(["fetch", "--force", origin, &refspec])
-        .output()
+    // Leading `+` forces the ref update (the historical `git fetch --force`);
+    // the stored FetchStep keeps the logical, unforced refspec.
+    let forced = format!("+{refspec}");
+    crate::registry::repo::fetch(repo_dir, origin, std::slice::from_ref(&forced))
         .await
-        .with_context(|| format!("running git fetch {refspec}"))?;
-    if !output.status.success() {
-        bail!(
-            "git fetch fallback failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
+        .with_context(|| format!("git fetch {refspec}"))?;
     Ok(FetchStep::GitFetchFallback { refspec })
 }
 

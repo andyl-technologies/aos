@@ -44,13 +44,5 @@ in {
       "vm.swappiness" = "10";
       "vm.vfs_cache_pressure" = "200";
     };
-
-    # Minimal system packages
-    environment.systemPackages = [
-      pkgs.procps-ng
-      pkgs.iproute2
-      pkgs.curl
-      pkgs.jq
-    ];
   };
 }

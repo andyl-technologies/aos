@@ -19,10 +19,8 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
-
-use crate::gitcmd;
 use crate::security::verify_tag_signature;
+use anyhow::{Context, Result, bail};
 
 // The tag-object header parser, the `TagObject`/`TagTarget` types, and the
 // name-binding check are the *pure* core of tag verification. They live in
@@ -44,24 +42,15 @@ pub struct VerifiedRelease {
     pub commit: String,
 }
 
-/// Read a tag object by oid/ref using `git cat-file -p`.
+/// Read and parse a tag object named by oid or ref via libgit2.
 ///
 /// # Errors
 ///
 /// Returns an error if the object is not readable or lacks required tag fields.
 pub fn read_tag_object(repo: &Path, oid: &str) -> Result<TagObject> {
-    let output = gitcmd::hermetic()
-        .args(["cat-file", "-p", oid])
-        .current_dir(repo)
-        .output()
-        .with_context(|| format!("running git cat-file -p {oid}"))?;
-    if !output.status.success() {
-        bail!(
-            "git cat-file -p {oid} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    parse_tag_object(&String::from_utf8_lossy(&output.stdout))
+    let body = crate::registry::repo::object_body_blocking(repo, oid)
+        .with_context(|| format!("reading tag object {oid}"))?;
+    parse_tag_object(&String::from_utf8_lossy(&body))
 }
 
 /// Verify `channel tag -> semver tag -> commit` and return the trusted release.
@@ -131,18 +120,8 @@ pub fn verify_tag_chain(
 
 /// Resolve a tag ref to its tag *object* id (not the peeled commit).
 fn resolve_tag_object(repo: &Path, tag: &str) -> Result<String> {
-    let output = gitcmd::hermetic()
-        .args(["rev-parse", &format!("{tag}^{{tag}}")])
-        .current_dir(repo)
-        .output()
-        .with_context(|| format!("running git rev-parse {tag}^{{tag}}"))?;
-    if !output.status.success() {
-        bail!(
-            "git rev-parse {tag}^{{tag}} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    crate::registry::repo::rev_parse_blocking(repo, &format!("{tag}^{{tag}}"))
+        .with_context(|| format!("resolving tag object for {tag}"))
 }
 
 #[cfg(test)]

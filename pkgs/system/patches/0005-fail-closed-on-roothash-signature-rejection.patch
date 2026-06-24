@@ -1,0 +1,123 @@
+--- i/src/shared/cryptsetup-util.h
++++ w/src/shared/cryptsetup-util.h
+@@ -55,6 +55,7 @@ extern DLSYM_PROTOTYPE(crypt_set_log_callback);
+ extern DLSYM_PROTOTYPE(crypt_set_metadata_size);
+ extern DLSYM_PROTOTYPE(crypt_set_pbkdf_type);
+ extern DLSYM_PROTOTYPE(crypt_suspend);
++extern DLSYM_PROTOTYPE(crypt_status);
+ extern DLSYM_PROTOTYPE(crypt_token_json_get);
+ extern DLSYM_PROTOTYPE(crypt_token_json_set);
+ #if HAVE_CRYPT_TOKEN_MAX
+--- i/src/shared/cryptsetup-util.c
++++ w/src/shared/cryptsetup-util.c
+@@ -55,6 +55,7 @@ DLSYM_PROTOTYPE(crypt_set_log_callback) = NULL;
+ DLSYM_PROTOTYPE(crypt_set_metadata_size) = NULL;
+ DLSYM_PROTOTYPE(crypt_set_pbkdf_type) = NULL;
+ DLSYM_PROTOTYPE(crypt_suspend) = NULL;
++DLSYM_PROTOTYPE(crypt_status) = NULL;
+ DLSYM_PROTOTYPE(crypt_token_json_get) = NULL;
+ DLSYM_PROTOTYPE(crypt_token_json_set) = NULL;
+ #if HAVE_CRYPT_TOKEN_MAX
+@@ -259,6 +260,7 @@ int dlopen_cryptsetup(void) {
+                         DLSYM_ARG(crypt_set_metadata_size),
+                         DLSYM_ARG(crypt_set_pbkdf_type),
+                         DLSYM_ARG(crypt_suspend),
++                        DLSYM_ARG(crypt_status),
+                         DLSYM_ARG(crypt_token_json_get),
+                         DLSYM_ARG(crypt_token_json_set),
+ #if HAVE_CRYPT_TOKEN_MAX
+--- i/src/shared/dissect-image.c
++++ w/src/shared/dissect-image.c
+@@ -2773,6 +2773,11 @@ static int verity_can_reuse(
+ 
+         cryptsetup_enable_logging(cd);
+ 
++        crypt_status_info status = sym_crypt_status(cd, name);
++        if (!IN_SET(status, CRYPT_ACTIVE, CRYPT_BUSY))
++                return log_debug_errno(SYNTHETIC_ERRNO(EDESTADDRREQ),
++                                       "Error opening verity device, it already exists but is not active.");
++
+         r = sym_crypt_get_verity_info(cd, &crypt_params);
+         if (r < 0)
+                 return log_debug_errno(r, "Error opening verity device, crypt_get_verity_info failed: %m");
+@@ -2803,7 +2808,7 @@
+ }
+ DEFINE_TRIVIAL_CLEANUP_FUNC(char *, dm_deferred_remove_clean);
+ 
+-static int validate_signature_userspace(const VeritySettings *verity, DissectImageFlags flags) {
++_unused_ static int validate_signature_userspace(const VeritySettings *verity, DissectImageFlags flags) {
+         int r;
+ 
+         /* Returns > 0 if signature checks out, == 0 if not, < 0 on unexpected errors */
+@@ -2916,7 +2921,7 @@
+                 PartitionPolicyFlags policy_flags) {
+ 
+         bool check_signature;
+-        int r, k;
++        int r;
+ 
+         assert(cd);
+         assert(name);
+@@ -2942,11 +2947,28 @@
+                                 verity->root_hash_sig.iov_len,
+                                 CRYPT_ACTIVATE_READONLY);
+                 if (r >= 0) {
++                        _cleanup_(sym_crypt_freep) struct crypt_device *verified_cd = NULL;
++                        crypt_status_info status;
++
++                        status = sym_crypt_status(cd, name);
++                        if (!IN_SET(status, CRYPT_ACTIVE, CRYPT_BUSY)) {
++                                (void) sym_crypt_deactivate_by_name(NULL, name, CRYPT_DEACTIVATE_DEFERRED);
++                                return log_debug_errno(SYNTHETIC_ERRNO(EDESTADDRREQ),
++                                                       "Verity activation via kernel signature logic did not leave an active device, refusing: %m");
++                        }
++
++                        r = verity_can_reuse(verity, name, &verified_cd);
++                        if (r < 0) {
++                                (void) sym_crypt_deactivate_by_name(NULL, name, CRYPT_DEACTIVATE_DEFERRED);
++                                (void) log_debug_errno(r, "Verity activation via kernel signature logic did not leave a signed device: %m");
++                                return -EDESTADDRREQ;
++                        }
++
+                         log_debug("Verity activation via kernel signature logic worked.");
+                         return 0;
+                 }
+ 
+-                log_debug_errno(r, "Validation of dm-verity signature failed via the kernel, trying userspace validation instead: %m");
++                log_debug_errno(r, "Validation of dm-verity signature failed via the kernel, refusing unsigned fallback: %m");
+ 
+                 /* Let's mangle ENOKEY → EDESTADDRREQ, so that we return a clear, recognizable error if
+                  * there's a signature we don't recognize, that is distinct from the LUKS/encryption
+@@ -2954,27 +2976,11 @@
+                 if (r == -ENOKEY)
+                         r = -EDESTADDRREQ;
+ 
+-                /* So this didn't work via the kernel, then let's try userspace validation instead. If that
+-                 * works we'll try to activate without telling the kernel the signature. */
+-
+-                /* Preferably propagate the original kernel error, so that the fallback logic can work,
+-                 * as the device-mapper is finicky around concurrent activations of the same volume */
+-                k = validate_signature_userspace(verity, flags);
+-                if (k < 0)
+-                        return k;
+-                if (k == 0) {
+-                        log_debug("Activation of signed Verity volume worked neither via the kernel nor in userspace, can't activate.");
+-
+-                        /* So if we had a signature and we're supposed to exclusively allow
+-                         * signature-based activation, then return the error now */
+-                        if (!FLAGS_SET(policy_flags, PARTITION_POLICY_VERITY))
+-                                return r < 0 ? r : -EDESTADDRREQ;
+-
+-                        log_debug("Activation of signed Verity volume without validating signature is permitted by policy. Continuing.");
+-                } else
+-                        log_debug("Verity activation via userspace signature logic worked, activating by root hash.");
+-
+-                /* Otherwise let's see what signature-less activation results in. */
++                /* AOS requires RootHashSignature= to be verified by the kernel keyrings. Falling back to
++                 * userspace validation or unsigned root-hash activation would allow a unit to start after
++                 * the kernel rejected the configured signature. */
++                (void) sym_crypt_deactivate_by_name(NULL, name, CRYPT_DEACTIVATE_DEFERRED);
++                return -EDESTADDRREQ;
+
+         } else if (!FLAGS_SET(policy_flags, PARTITION_POLICY_VERITY))
+                 return log_debug_errno(SYNTHETIC_ERRNO(ERFKILL),

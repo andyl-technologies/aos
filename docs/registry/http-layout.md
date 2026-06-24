@@ -304,10 +304,10 @@ SSH-Ed25519-signed git tag object whose **tag-name field equals the channel name
 - These files are **layout, not refs**: they are not in `info/refs`, so a stock
   `git clone` never sees them. That is intentional — rollout is an AOS-fleet concept.
 - They change frequently (every rollout advance), so `/channels/**` is **low TTL**
-  (§6). Freshness comes from that low CDN TTL combined with the consumer's own
-  max-staleness policy and the monotonic anti-rollback floor — there is **no in-band
-  `valid_until`** in the tag (§6). The trade-off: this is weaker than an in-band
-  signed expiry against a frozen-but-validly-signed mirror.
+  (§6). Partition freshness comes from that low CDN TTL combined with the
+  consumer's own max-staleness policy and the monotonic anti-rollback floor.
+  Moving-ref release metadata freshness is separately required and signed in
+  `tuf/timestamp.json`.
 
 A single partition file is just the raw bytes of a git tag object; a client fetches
 `/channels/stable/<bucket>`, verifies the signature and the name binding, follows the
@@ -343,11 +343,12 @@ This is the asymmetric-cost philosophy realised at the cache edge: publishing re
 a handful of low-TTL index files; the bulk of bytes (objects and packs) is immutable
 and served from cache near-permanently.
 
-The low CDN TTL on `/channels` (and `info/refs`, `objects/info`) is also the
-**freshness mechanism**: there is no in-band signed `valid_until` (C). Freshness is
-the low TTL plus the consumer's own max-staleness policy plus the monotonic
-anti-rollback floor; the trade-off is that this is weaker than an in-band signed
-expiry against a frozen-but-validly-signed mirror.
+The low CDN TTL on `/channels` (and `info/refs`, `objects/info`) is the
+**pointer freshness mechanism** for rollout refs. Moving-ref release metadata
+must also carry signed freshness in `tuf/timestamp.json`; consumers verify that
+timestamp before extracting the package catalog. Explicit commit/tag/version pins
+still verify signed metadata and catalog hashes when present without expiring old
+immutable release snapshots.
 
 ```
                  publish event

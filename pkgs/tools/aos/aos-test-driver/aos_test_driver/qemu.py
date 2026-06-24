@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import IO, ClassVar, override
 
 from .agent import Driver
+from .fs import clone_or_copy
 from .machine import Machine
 
 
@@ -82,6 +83,7 @@ class QemuMachine(Machine):
     firmware_vars_src: str | None
     fw_cfg_path: str | None
     disk_size_mib: int | None
+    var_size_mib: int | None
     memory_mib: int
     vcpu_count: int
     mac: str
@@ -118,6 +120,7 @@ class QemuMachine(Machine):
         firmware_vars: str | None = None,
         fw_cfg: str | None = None,
         disk_size_mib: int | None = None,
+        var_size_mib: int | None = None,
         tpm: bool = False,
         swtpm_bin: str | None = None,
     ) -> None:
@@ -130,6 +133,7 @@ class QemuMachine(Machine):
         self.firmware_vars_src = firmware_vars
         self.fw_cfg_path = fw_cfg
         self.disk_size_mib = disk_size_mib
+        self.var_size_mib = var_size_mib
         self.memory_mib = memory_mib
         self.vcpu_count = vcpu_count
         self.mac = mac
@@ -188,11 +192,16 @@ class QemuMachine(Machine):
 
         # Per-machine writable copy. The disk is shared across machines of
         # this system variant (Nix dedups), but each VM needs a writable
-        # copy because QEMU opens it rw. The metadata ISO is per-machine
-        # already; the local copy isolates the run from any read-side
-        # caching quirks with store files on certain filesystems.
-        shutil.copyfile(self.disk_src, self.disk_copy)
+        # copy because QEMU opens it rw. clone_or_copy reflinks it on a
+        # CoW filesystem (the common case: the Nix store and build scratch
+        # are the same btrfs/XFS/ZFS volume), so the copy is near-instant and
+        # free until the guest writes — it falls back to a full copy
+        # otherwise. The metadata ISO is per-machine already; its local
+        # copy isolates the run from any read-side caching quirks with
+        # store files on certain filesystems.
+        reflinked = clone_or_copy(self.disk_src, self.disk_copy)
         os.chmod(self.disk_copy, 0o644)
+        copy_method = "reflink" if reflinked else "copy"
 
         if self.boot == "image":
             # Grow the per-run copy to the install target size (sparse —
@@ -218,7 +227,12 @@ class QemuMachine(Machine):
             # firmware package's template.
             shutil.copyfile(self.firmware_vars_src, self.vars_copy)
             os.chmod(self.vars_copy, 0o644)
-            log.info("  Image:    %s (%s MiB)", self.disk_copy, self.disk_size_mib)
+            log.info(
+                "  Image:    %s (%s MiB, %s)",
+                self.disk_copy,
+                self.disk_size_mib,
+                copy_method,
+            )
             log.info("  Firmware: %s", self.firmware_code)
             log.info("  fw_cfg:   %s", self.fw_cfg_path)
         else:
@@ -228,7 +242,34 @@ class QemuMachine(Machine):
                 )
             shutil.copyfile(self.metadata_src, self.metadata_copy)
             os.chmod(self.metadata_copy, 0o644)
-            log.info("  Disk:     %s", self.disk_copy)
+
+            # Kernel-boot "ignition" var: the base image ships no /var, so
+            # grow the per-run copy by var_size_mib to open trailing free
+            # space (sparse — os.truncate extends with holes) and relocate
+            # the GPT backup header to the new end. The guest's
+            # aos-gpt-relocate + ignition-disks then create and format /var
+            # there on first boot, mirroring production. Growing the per-run
+            # copy — not the shared base image — is what lets machines
+            # differing only in /var size share one deduplicated base disk.
+            if self.var_size_mib is not None:
+                grown = os.path.getsize(self.disk_copy) + (
+                    self.var_size_mib + 1
+                ) * 1024 * 1024
+                os.truncate(self.disk_copy, grown)
+                subprocess.run(
+                    ["sgdisk", "-e", self.disk_copy],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.STDOUT,
+                )
+                log.info(
+                    "  Disk:     %s (%s, +%s MiB /var via ignition)",
+                    self.disk_copy,
+                    copy_method,
+                    self.var_size_mib,
+                )
+            else:
+                log.info("  Disk:     %s (%s)", self.disk_copy, copy_method)
             log.info("  Metadata: %s", self.metadata_copy)
 
         # Serial drain — unidirectional listener appending to
@@ -470,8 +511,10 @@ class QemuMachine(Machine):
         not first boot — and re-handshake with the agent.
         """
         # The trailing `&` detaches the reboot so the agent can frame
-        # its reply before PID 1 tears the transport down.
-        self.execute("(sleep 1; reboot -f) >/dev/null 2>&1 &", timeout=30)
+        # its reply before PID 1 starts an orderly shutdown. Do not use
+        # `reboot -f` here: it bypasses systemd, so journald and /var do
+        # not get a clean stop before the next boot reads the journal.
+        self.execute("(sleep 1; systemctl reboot) >/dev/null 2>&1 &", timeout=30)
         self.agent.close()
 
         if self.qemu_proc is None:
@@ -497,10 +540,10 @@ class QemuMachine(Machine):
             return
 
         try:
-            self.qemu_proc.wait(timeout=60)
+            self.qemu_proc.wait(timeout=120)
         except subprocess.TimeoutExpired:
             raise RuntimeError(
-                f"[{self.name}] guest did not exit QEMU within 60s of reboot"
+                f"[{self.name}] guest did not exit QEMU within 120s of reboot"
             ) from None
         if self._qemu_log_fd is not None:
             self._qemu_log_fd.close()
@@ -543,16 +586,16 @@ class QemuMachine(Machine):
                 "failed to load",
                 "verification failed",
             ]
-        self.execute("(sleep 1; reboot -f) >/dev/null 2>&1 &", timeout=30)
+        self.execute("(sleep 1; systemctl reboot) >/dev/null 2>&1 &", timeout=30)
         self.agent.close()
 
         if self.qemu_proc is None:
             raise RuntimeError(f"[{self.name}] reboot before start()")
         try:
-            self.qemu_proc.wait(timeout=60)
+            self.qemu_proc.wait(timeout=120)
         except subprocess.TimeoutExpired:
             raise RuntimeError(
-                f"[{self.name}] guest did not exit QEMU within 60s of reboot"
+                f"[{self.name}] guest did not exit QEMU within 120s of reboot"
             ) from None
         if self._qemu_log_fd is not None:
             self._qemu_log_fd.close()

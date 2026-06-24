@@ -12,7 +12,15 @@
   config,
   lib,
   ...
-}: {
+}: let
+  hardwareAutoloadedInitrdModules = [
+    "ena"
+    "gve"
+    "hv_netvsc"
+    "mlx5_core"
+    "mlx4_en"
+  ];
+in {
   options.aos.boot = {
     ## Kernel command line parameters.
     ##
@@ -46,39 +54,53 @@
       ## Kernel modules to include in the initrd.
       modules = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [
-          "virtio_blk"
-          "virtio_pci"
-          "virtio_net"
-          "ext4"
-          "isofs"
-          "usb_storage"
-          "uas"
-          "overlay"
-          "dm-crypt"
-          "qemu_fw_cfg"
-          # Cloud NIC drivers — stage-1 ignition brings up DHCP on
-          # network-dependent platforms to fetch instance metadata.
-          # systemd-modules-load ignores absent/hardware-missing modules,
-          # so listing drivers irrelevant to a given platform is safe.
-          "ena" # AWS Nitro
-          "gve" # GCP gVNIC
-          "hv_netvsc" # Azure / Hyper-V
-          "mlx5_core" # Azure accelerated networking (ConnectX-5+)
-          "mlx4_en" # Mellanox ConnectX-3 (pulls mlx4_core via modprobe)
-        ];
+        default =
+          [
+            "virtio_blk"
+            "virtio_pci"
+            "virtio_net"
+            "ext4"
+            "isofs"
+            "usb_storage"
+            "uas"
+            "overlay"
+            "dm-crypt"
+            "qemu_fw_cfg"
+          ]
+          ++ hardwareAutoloadedInitrdModules;
         description = ''
-          Kernel modules to include in the initrd. These are loaded
-          early in boot before the root filesystem is mounted. The
-          defaults cover virtio (QEMU/KVM block, PCI, net), ext4
+          Kernel modules to include in the initrd module manifest. The
+          initrd builder copies the active kernel's module tree; this
+          list records the drivers the image is expected to support and
+          feeds `aos.boot.initrd.loadModules` by default.
+
+          The defaults cover virtio (QEMU/KVM block, PCI, net), ext4
           root, ISO9660 metadata channel, USB mass storage
           (usb_storage/uas) for bare-metal IPMI virtual media,
           overlayfs for /etc, dm-crypt for encrypted swap,
-          qemu_fw_cfg for ignition's QEMU platform reader, and the
-          cloud NIC drivers (ena/gve/hv_netvsc/mlx5_core/mlx4_en)
-          that stage-1 ignition networking needs to DHCP for instance
-          metadata. (af_packet is builtin — CONFIG_PACKET=y — so it is
-          not listed here.)
+          qemu_fw_cfg for ignition's QEMU platform reader, and cloud
+          NIC drivers (ena/gve/hv_netvsc/mlx5_core/mlx4_en) that
+          stage-1 ignition networking may need to DHCP for instance
+          metadata. Hardware-specific cloud NICs are left for
+          udev/modalias autoload rather than force-loaded on every
+          hypervisor. (af_packet is builtin — CONFIG_PACKET=y — so it
+          is not listed here.)
+        '';
+      };
+
+      ## Kernel modules to force-load in the initrd.
+      loadModules = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = ''
+          Kernel modules to force-load through the initrd's
+          `/etc/modules-load.d/initrd.conf`. When this option is left
+          at its module default, AOS derives it from
+          `aos.boot.initrd.modules` but removes hardware-autoloaded
+          cloud NIC drivers (ena/gve/hv_netvsc/mlx5_core/mlx4_en).
+          Those drivers remain available in the copied module tree and
+          load via udev/modalias only on matching hardware, avoiding
+          noisy module insertion failures on unrelated hypervisors.
         '';
       };
 
@@ -149,7 +171,18 @@
       # an sd-boot random seed, so mask it rather than leave a failed unit
       # on every UEFI boot (RFC-0006).
       "systemd.mask=systemd-boot-random-seed.service"
+      # Same immutable-ESP rationale: the image builder owns sd-boot and
+      # UKI placement, so the guest must not attempt a runtime bootloader
+      # update and leave systemd-boot-update.service failed.
+      "systemd.mask=systemd-boot-update.service"
     ];
+
+    aos.boot.initrd.loadModules = lib.mkDefault (
+      lib.filter (
+        module: !(builtins.elem module hardwareAutoloadedInitrdModules)
+      )
+      config.aos.boot.initrd.modules
+    );
 
     # systemd-initrd kernel modules configuration.
     # Written to /etc/initrd-modules.conf for the image builder.

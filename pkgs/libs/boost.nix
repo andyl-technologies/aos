@@ -15,6 +15,13 @@ in
     pname = "boost";
     inherit version;
 
+    # Split outputs: `out` (default) carries only the shared libraries
+    # (~5 MiB); `dev` carries the headers and CMake package files (~90 MiB).
+    # Boost is overwhelmingly headers, so a consumer that only links it at
+    # runtime (nix) keeps the header tree out of its runtime closure by using
+    # `boost` for libs and `boost.dev` for build-time includes.
+    outputs = ["out" "dev"];
+
     src = fetchurl {
       urls = [
         "https://archives.boost.io/release/${version}/source/boost_${underscoreVersion}.tar.bz2"
@@ -77,13 +84,24 @@ in
       {
         name = "install";
         script = ''
+          # Headers -> $dev/include, shared libraries -> $out/lib. With
+          # link=shared b2 builds no static archives, so $out/lib holds only
+          # the .so set; the CMake package files are build-time only and are
+          # moved into $dev so the runtime lib output references nothing in it.
           ./b2 install \
-            --prefix=$out \
+            --prefix=$dev \
+            --includedir=$dev/include \
+            --libdir=$out/lib \
             toolset=gcc \
             variant=release \
             link=shared \
             runtime-link=shared \
             threading=multi
+
+          if [ -d "$out/lib/cmake" ]; then
+            mkdir -p "$dev/lib"
+            mv "$out/lib/cmake" "$dev/lib/cmake"
+          fi
         '';
       }
     ];

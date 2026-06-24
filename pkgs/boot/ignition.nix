@@ -22,9 +22,8 @@ in
     # Patches applied after unpack:
     #   0001 — Add `file://` URL scheme support so ignition can fetch
     #          configs and resources from the initrd's local filesystem.
-    #          Used by AOS to expose per-role configs at
-    #          /etc/aos/ignition-roles/<role-name> for first-boot
-    #          merge via `ignition.config.merge`.
+    #          Used by AOS to merge local first-boot configs via
+    #          `ignition.config.merge`.
     patches = [
       ./ignition-patches/0001-add-file-url-scheme-support.patch
     ];

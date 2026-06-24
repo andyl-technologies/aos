@@ -240,12 +240,11 @@ in {
     system.build.initrd = import ../base/_initrd-builder.nix {
       inherit pkgs lib;
       kernel = config.system.build.kernel;
-      kernelModules = config.aos.boot.initrd.modules;
+      loadModules = config.aos.boot.initrd.loadModules;
       initrdUnits = config.system.build.systemdInitrdUnits;
       initrdExtraPackages = config.aos.boot.initrd.extraPackages;
       inherit initrdNetworkDir;
       maskedUnits = cfg.maskedUnits;
-      ignitionRoles = config.system.build.ignitionRolesBundle;
     };
   };
 }

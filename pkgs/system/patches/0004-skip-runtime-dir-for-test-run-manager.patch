@@ -1,0 +1,19 @@
+diff --git i/src/core/manager.c w/src/core/manager.c
+index fd5f27ef42..5c64458c7e 100644
+--- i/src/core/manager.c
++++ w/src/core/manager.c
+@@ -2005,9 +2005,11 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds, const char *roo
+ 
+         assert(m);
+ 
+-        r = manager_make_runtime_dir(m);
+-        if (r < 0)
+-                return r;
++        if (!MANAGER_IS_TEST_RUN(m)) {
++                r = manager_make_runtime_dir(m);
++                if (r < 0)
++                        return r;
++        }
+ 
+         /* If we are running in test mode, we still want to run the generators,
+          * but we should not touch the real generator directories. */

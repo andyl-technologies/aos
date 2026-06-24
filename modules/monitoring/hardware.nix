@@ -127,8 +127,5 @@ in {
         PrivateTmp = true;
       };
     };
-
-    # Install smartmontools if smartd is enabled.
-    environment.systemPackages = lib.mkIf cfg.smartd [pkgs.smartmontools];
   };
 }

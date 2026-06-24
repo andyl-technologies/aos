@@ -31,7 +31,9 @@
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use aos_cache::backend::{self, AuthOptions, CacheBackend};
+use aos_cache::backend::{
+    self, AuthOptions, CacheBackend, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
+};
 use aos_core::output::Printer;
 use futures_util::stream::{StreamExt, TryStreamExt};
 
@@ -41,11 +43,6 @@ use crate::registry::objectstore;
 /// `aos_net` connection pool enforces the real per-host limit; this only
 /// bounds how many requests we stage at once.
 const UPLOAD_CONCURRENCY: usize = 16;
-
-/// `Cache-Control` for content-addressed files that never change in place.
-const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
-/// `Cache-Control` for pointer files that are rewritten on every publish.
-const MUTABLE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
 
 /// Mutability class of a static origin file.
 ///

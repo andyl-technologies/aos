@@ -1063,12 +1063,25 @@ impl Drop for StaticHttpServer {
 }
 
 async fn serve_one(mut stream: TcpStream, root: PathBuf) -> Result<()> {
-    let mut buf = vec![0_u8; 8192];
-    let n = stream.read(&mut buf).await.context("reading request")?;
-    if n == 0 {
+    // Read until the end of the request headers. A single `read` can return a
+    // partial request line under concurrent load (TCP segmentation), which
+    // would truncate the path and 404 a valid object.
+    let mut buf = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let n = stream.read(&mut chunk).await.context("reading request")?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 64 * 1024 {
+            break;
+        }
+    }
+    if buf.is_empty() {
         return Ok(());
     }
-    let request = String::from_utf8_lossy(&buf[..n]);
+    let request = String::from_utf8_lossy(&buf);
     let Some(line) = request.lines().next() else {
         return Ok(());
     };

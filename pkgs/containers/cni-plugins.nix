@@ -2,10 +2,22 @@
 {
   mkDerivation,
   fetchurl,
+  fetchGoModules,
   gnumake,
   go,
 }: let
   version = "1.9.0";
+  flannelVersion = "1.9.0-flannel1";
+  flannelSrc = fetchurl {
+    urls = [
+      "https://github.com/flannel-io/cni-plugin/archive/v${flannelVersion}/cni-plugin-${flannelVersion}.tar.gz"
+    ];
+    hash = "sha256-ie1V2EBX3o3DN+y/D9nQjAzZNJAl52zb6sPCbqkxQI0=";
+  };
+  flannelGoModules = fetchGoModules {
+    src = flannelSrc;
+    hash = "sha256-d+j+m9yj9BpMuPS01DBsrhSPoBnifcS262u6fp4/ffI=";
+  };
 in
   mkDerivation {
     pname = "cni-plugins";
@@ -30,6 +42,7 @@ in
         name = "unpack";
         script = ''
           tar xf $src
+          tar xf ${flannelSrc}
           cd plugins-${version}
         '';
       }
@@ -57,6 +70,20 @@ in
               echo "WARNING: plugin $plugin not found, skipping"
             fi
           done
+
+          echo "Building flannel..."
+          (
+            cd ../cni-plugin-${flannelVersion}
+            GOPATH="${flannelGoModules}" \
+              GOFLAGS="-trimpath -mod=readonly" \
+              go build \
+                -tags "netgo osusergo no_stage static_build" \
+                -ldflags "-s -w \
+                  -X main.Program=flannel \
+                  -X main.Version=v${flannelVersion} \
+                  -X main.Commit=v${flannelVersion}" \
+                -o ../plugins-${version}/bin/flannel .
+          )
         '';
       }
       {
@@ -82,6 +109,7 @@ in
           test -x ${self}/bin/loopback
           test -x ${self}/bin/host-local
           test -x ${self}/bin/portmap
+          test -x ${self}/bin/flannel
           echo "==> CNI plugin binaries verified"
         '';
       };

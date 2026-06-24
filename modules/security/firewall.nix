@@ -34,10 +34,9 @@
     flush ruleset
 
     table inet filter {
-      # Named sets for the inbound port allow-list. Declared here so
-      # role drop-ins under /etc/nftables.d/*.nft can `add element` to
-      # them within the same atomic `nft -f` transaction. An empty set
-      # is harmless — referencing it from a rule simply never matches.
+      # Named sets for the inbound port allow-list. Package firewall
+      # services mutate these sets at activation time. An empty set is
+      # harmless — referencing it from a rule simply never matches.
       set allowed_tcp {
         type inet_service${setElements cfg.allowedTCP}
       }
@@ -61,8 +60,8 @@
         ip protocol icmp accept
         ip6 nexthdr ipv6-icmp accept
 
-        # Allowed inbound ports — base config plus any role drop-ins
-        # that `add element` to the sets above.
+        # Allowed inbound ports — base config plus any active package
+        # firewall service that `add element`s to the sets above.
         tcp dport @allowed_tcp accept
         udp dport @allowed_udp accept
 
@@ -84,12 +83,6 @@
         type filter hook output priority 0; policy accept;
       }
     }
-
-    # Role kernel/firewall drop-ins. `include` of a wildcard pattern
-    # that matches nothing — including a missing /etc/nftables.d
-    # directory — is not an error in nftables, so no placeholder file
-    # or pre-created directory is needed.
-    include "/etc/nftables.d/*.nft"
   '';
 in {
   options.aos.firewall = {
@@ -179,17 +172,15 @@ in {
         {
           name = "ruleset-loaded";
           description = "nftables ruleset is loaded";
+          # `nft` by absolute store path: image slimming keeps nftables off the
+          # system PATH (it is in the closure via this module's own units), so
+          # the bare command is not available in-guest.
           script = ''
-            vm.succeed("nft list ruleset")
+            vm.succeed("${pkgs.nftables}/sbin/nft list ruleset")
           '';
         }
       ];
     };
-
-    environment.systemPackages = [
-      pkgs.nftables
-      pkgs.iptables
-    ];
 
     # /etc/nftables.conf — complete nftables ruleset.
     environment.etc."nftables.conf" = {
@@ -205,12 +196,11 @@ in {
       # would briefly `flush ruleset` and leave a window with no firewall.
       # `allowedTCP` / `allowedUDP` are baked into the base
       # `/etc/nftables.conf` (the `set allowed_tcp { elements = … }` lines
-      # above), and role drop-ins live under `/etc/nftables.d/*.nft`, so
-      # the trigger must watch both paths — not just the drop-in dir.
+      # above). Package-scoped firewall side effects are re-applied by
+      # their own ReloadPropagatedFrom=nftables.service units.
       reloadIfChanged = true;
       reloadTriggers = [
         "/etc/nftables.conf"
-        "/etc/nftables.d"
       ];
       wantedBy = ["multi-user.target"];
       before = ["network-pre.target"];
