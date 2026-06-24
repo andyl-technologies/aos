@@ -25,6 +25,7 @@
 ##!   - `nix-overlay-setup.service` — /nix overlay with persistent upper
 ##!                                    on /var (writable Nix store layer)
 {
+  config,
   pkgs,
   lib,
   ...
@@ -233,7 +234,14 @@ in {
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "${pkgs.aos-growfs}/bin/aos-growfs";
+          # Only a writable ext4 root is grown to fill its partition. A
+          # read-only erofs root is the fixed immutable base (the writable
+          # Nix store layer and all mutable state live on /var), so there is
+          # nothing to grow — running resize2fs on erofs would just fail.
+          ExecStart =
+            if config.aos.filesystems.rootFsType == "ext4"
+            then "${pkgs.aos-growfs}/bin/aos-growfs"
+            else "${pkgs.coreutils}/bin/true";
           StandardOutput = "journal+console";
           StandardError = "journal+console";
         };
