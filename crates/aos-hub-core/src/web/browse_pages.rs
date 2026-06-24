@@ -211,7 +211,8 @@ pub fn instance_home(
         })
         .collect();
 
-    let mut body = String::from("<h1>Registries</h1>\n");
+    // No page-title <h1>: the masthead/title already say "registries".
+    let mut body = String::new();
     let _ = writeln!(
         body,
         "<form method=\"get\" data-live><input type=\"search\" name=\"q\" value=\"{}\" \
