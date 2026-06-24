@@ -461,7 +461,7 @@ The control channel is determinism-neutral by construction.
   → run-via-shmem (control channel silent) → Quit; assert no control frame is
   exchanged during the run. — satisfies [PROTO-1], [PROTO-2], [PROTO-4],
   [PROTO-18]; spec §2, §5.1.
-- [ ] **T-PROTO-7** Implement the graceful-shutdown escalation Quit → QMP quit →
+- [x] **T-PROTO-7** Implement the graceful-shutdown escalation Quit → QMP quit →
   SIGTERM → SIGKILL → reap with bounded per-rung waits, and prove no QEMU child
   is leaked under an unresponsive guest/plugin. — satisfies [PROTO-14],
   [PROTO-20]; spec §3.9, §5.3.
