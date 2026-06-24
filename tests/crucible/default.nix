@@ -159,6 +159,7 @@ in {
     spscConcurrency = import ./phase2-spsc-concurrency.nix {inherit pkgs lib;};
     shmemSnapshotRestore = import ./phase2-shmem-snapshot-restore.nix {inherit pkgs lib;};
     shmemHandoffFutex = import ./phase2-shmem-handoff-futex.nix {inherit pkgs lib;};
+    shmemControlFlags = import ./phase2-shmem-control-flags.nix {inherit pkgs lib;};
     shmemDeliverability = import ./phase2-shmem-deliverability.nix {inherit pkgs lib;};
     gates = {
       abiConformance = redGate {

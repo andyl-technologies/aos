@@ -905,7 +905,7 @@ by when the producer's store landed in shared memory.
   [SHM-27]; spec §13.7.
 - [x] **T-SHM-10** Implement the off-Linux no-op shim for the futex path so the
   pure atomic/SPSC logic unit-tests off-Linux. — satisfies [SHM-28]; spec §13.7.
-- [ ] **T-SHM-11** Implement global `pause_requested`/`shutdown_requested`
+- [x] **T-SHM-11** Implement global `pause_requested`/`shutdown_requested`
   observation and the wake-all-on-flag behavior. — satisfies [SHM-29]; spec
   §13.7.
 - [x] **T-SHM-12** Implement the logical-node → physical-slot allocator, with the

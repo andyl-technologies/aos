@@ -216,11 +216,99 @@ impl RegionHeader {
         }
     }
 
+    /// Requests a coordinated pause and wakes every node slot.
+    ///
+    /// The flag is release-stored before the wake-all pass, so a node that wakes
+    /// and acquire-loads [`RegionHeader::control_action`] observes the pause
+    /// request before deciding whether to run another quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionControlError`] when any slot's non-private futex wake
+    /// fails.
+    pub fn request_pause<'a>(
+        &self,
+        slots: impl IntoIterator<Item = &'a NodeSlot>,
+    ) -> Result<WakeAllResult, RegionControlError> {
+        self.pause_requested.store(1, Ordering::Release);
+        wake_all_slots_for_control(slots)
+    }
+
+    /// Clears a coordinated pause request.
+    ///
+    /// This only updates the flag; callers that need to resume parked nodes must
+    /// publish the appropriate per-node scheduling state and wake those nodes.
+    pub fn clear_pause(&self) {
+        self.pause_requested.store(0, Ordering::Release);
+    }
+
+    /// Requests shutdown and wakes every node slot.
+    ///
+    /// The flag is release-stored before the wake-all pass, so parked nodes wake,
+    /// acquire-observe [`RegionControlAction::Shutdown`], mark themselves done,
+    /// and exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionControlError`] when any slot's non-private futex wake
+    /// fails.
+    pub fn request_shutdown<'a>(
+        &self,
+        slots: impl IntoIterator<Item = &'a NodeSlot>,
+    ) -> Result<WakeAllResult, RegionControlError> {
+        self.shutdown_requested.store(1, Ordering::Release);
+        wake_all_slots_for_control(slots)
+    }
+
+    /// Returns the node-side action implied by the global control flags.
+    #[must_use]
+    pub fn control_action(&self) -> RegionControlAction {
+        if self.shutdown_requested.load(Ordering::Acquire) != 0 {
+            RegionControlAction::Shutdown
+        } else if self.pause_requested.load(Ordering::Acquire) != 0 {
+            RegionControlAction::Pause
+        } else {
+            RegionControlAction::Continue
+        }
+    }
+
+    /// Returns whether a coordinated pause is currently requested.
+    #[must_use]
+    pub fn pause_requested(&self) -> bool {
+        self.pause_requested.load(Ordering::Acquire) != 0
+    }
+
+    /// Returns whether shutdown is currently requested.
+    #[must_use]
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested.load(Ordering::Acquire) != 0
+    }
+
     /// Returns `true` when all forward-compatible reserved header bytes are zero.
     #[must_use]
     pub fn reserved_bytes_are_zero(&self) -> bool {
         self._reserved.iter().all(|byte| *byte == 0)
     }
+}
+
+/// A node-side action derived from the region's global control flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegionControlAction {
+    /// No global pause or shutdown flag is set.
+    Continue,
+    /// The node must quiesce at a quantum boundary and stay parked for snapshot.
+    Pause,
+    /// The node must wake, publish done status, and exit.
+    Shutdown,
+}
+
+/// Result of waking every node for a global control flag change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WakeAllResult {
+    /// Number of node slots whose wake signal was incremented.
+    pub slots_signaled: usize,
+    /// Total number of futex waiters reported woken across all slots.
+    pub waiters_woken: u64,
 }
 
 /// An acquire snapshot of the shared-memory region header.
@@ -597,6 +685,25 @@ fn node_slot_for_physical_index(vm_node_count: u32, slot: usize) -> NodeSlot {
 
 fn usize_to_u64(value: usize) -> Result<u64, RegionLayoutError> {
     u64::try_from(value).map_err(|_| RegionLayoutError::GeometryOverflow)
+}
+
+fn wake_all_slots_for_control<'a>(
+    slots: impl IntoIterator<Item = &'a NodeSlot>,
+) -> Result<WakeAllResult, RegionControlError> {
+    let mut slots_signaled = 0;
+    let mut waiters_woken = 0_u64;
+    for (slot_index, slot) in slots.into_iter().enumerate() {
+        let action = slot
+            .wake_after_signal_increment()
+            .map_err(|source| RegionControlError::WakeSlot { slot_index, source })?;
+        let WakeAction::Wake { futex, .. } = action;
+        slots_signaled += 1;
+        waiters_woken += u64::from(futex.waiters_woken);
+    }
+    Ok(WakeAllResult {
+        slots_signaled,
+        waiters_woken,
+    })
 }
 
 /// A Lamport SPSC ring header shared by exactly one producer and one consumer.
@@ -1084,6 +1191,27 @@ impl NodeSlot {
         Ok(self.prepare_futex_wait())
     }
 
+    /// Publishes that a node quiesced at a pause boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when virtual-time conversion fails under
+    /// `shift_bits`.
+    pub fn publish_pause_quiesced(
+        &self,
+        reached_icount: u64,
+        shift_bits: u8,
+    ) -> Result<(), NodeSlotError> {
+        let current_ns = icount_to_virtual_ns(reached_icount, shift_bits)?;
+        self.publish_state(
+            reached_icount,
+            current_ns,
+            Some(reached_icount),
+            STATUS_IDLE,
+        );
+        Ok(())
+    }
+
     /// Computes the race-free futex wait decision after an idle publish.
     #[must_use]
     pub fn prepare_futex_wait(&self) -> FutexWait {
@@ -1106,6 +1234,13 @@ impl NodeSlot {
     pub fn mark_running(&self) {
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.status.store(STATUS_RUNNING, Ordering::Release);
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Marks a node as done after it observes shutdown.
+    pub fn mark_done(&self) {
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.status.store(STATUS_DONE, Ordering::Release);
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
     }
 
@@ -1334,6 +1469,20 @@ pub enum FutexError {
         operation: &'static str,
         /// The raw return count.
         count: i64,
+    },
+}
+
+/// An error produced while updating global region control flags.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum RegionControlError {
+    /// A slot wake failed while broadcasting a control-flag update.
+    #[error("waking node slot {slot_index} for control flag failed")]
+    WakeSlot {
+        /// The index in the caller-provided slot iterator.
+        slot_index: usize,
+        /// The futex wake failure.
+        #[source]
+        source: FutexError,
     },
 }
 
