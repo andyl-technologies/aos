@@ -10291,18 +10291,24 @@ pub async fn release(
     Ok(())
 }
 
+/// Publish a release's `--store-path` into the registry tree.
+///
+/// The published package version is **not** the release tag. Like a plain
+/// `apr publish`, the version is taken from the store-path basename (the
+/// package derivation's `version`), so a registry release tag and the package
+/// versions it snapshots are independent. The `version_override` argument to
+/// [`publish`] is therefore left `None`; `--store-path` carries the version
+/// already.
 async fn publish_release_store_path(
     publish_opts: &ReleaseStorePublish,
-    version: &semver::Version,
     signing_key: &str,
     printer: &Printer,
 ) -> Result<()> {
-    let release_version = version.to_string();
     publish(
         &publish_opts.config,
         &publish_opts.store_path,
         publish_opts.name.as_deref(),
-        Some(release_version.as_str()),
+        None,
         publish_opts.platform.as_deref(),
         publish_opts.description.as_deref(),
         publish_opts.homepage.as_deref(),
@@ -10328,12 +10334,15 @@ async fn publish_release_store_path(
 
 /// Executes the release workflow against a registry directory.
 ///
-/// Under an exclusive release lock, this: optionally commits a
-/// `registry.toml` cache pointer; creates the signed semver release tag at
-/// HEAD (or reuses an existing tag there when `resume` is set); generates
-/// the release pack artifacts under `.git/releases/<version>/` — a full
-/// pack for major/minor releases plus zstd-compressed thin deltas from the
-/// prior releases selected by the delta scheme; optionally generates the
+/// Under an exclusive release lock, this: rejects up front a release whose
+/// tag already exists (unless `resume`), so a doomed release fails before any
+/// mutating work; optionally publishes `--store-path` (whose package version
+/// comes from the store path, independent of the release tag); optionally
+/// commits a `registry.toml` cache pointer; creates the signed semver release
+/// tag at HEAD (or reuses an existing tag there when `resume` is set);
+/// generates the release pack artifacts under `.git/releases/<version>/` — a
+/// full pack for major/minor releases plus zstd-compressed thin deltas from
+/// the prior releases selected by the delta scheme; optionally generates the
 /// static Nix cache; initializes or advances the rollout channel; and
 /// uploads the static origin files. The dumb-HTTP object store is
 /// refreshed after each ref-moving step. With `dry_run`, the plan is
@@ -10375,10 +10384,10 @@ pub async fn release_registry_tree(
     let _lock = ReleaseLock::acquire(dir)?;
     objectstore::assert_sha256(dir)?;
     ensure_release_worktree_clean(dir)?;
+    ensure_release_tag_available(dir, &options.version, options.resume)?;
 
     if let Some(publish) = &options.store_publish {
-        publish_release_store_path(publish, &options.version, &options.signing_key, printer)
-            .await?;
+        publish_release_store_path(publish, &options.signing_key, printer).await?;
     }
 
     // Publishing cache unit (§9): generate into the internal staging dir, push
@@ -10911,6 +10920,38 @@ fn existing_release_tag_commit(dir: &Path, version: &semver::Version) -> Result<
     }
     let commit = release_commit(dir, version)?;
     Ok(Some(commit))
+}
+
+/// Reject a release whose tag already exists, before any mutating work.
+///
+/// This is a best-effort preflight, not a lock. It runs before the store-path
+/// publish and the static-cache generation/upload so that the common mistake —
+/// re-using a version that is already released — fails fast and leaves the
+/// registry untouched, instead of bailing only at tag-creation time after a
+/// publish commit and a cache upload have already landed.
+///
+/// It is deliberately *not* sufficient on its own: the authoritative collision
+/// check still happens in [`ensure_release_tag`] under the release lock, since
+/// a concurrent producer working from a different clone can create the same
+/// tag after this check passes. That residual race resolves when the losing
+/// producer pushes to the shared origin. Passing `resume` skips the preflight,
+/// since resuming an interrupted release legitimately reuses an existing tag.
+///
+/// # Errors
+///
+/// Returns an error when `resume` is false and the release tag already exists,
+/// or when probing the tag fails (for example, a non-annotated tag of the same
+/// name).
+fn ensure_release_tag_available(dir: &Path, version: &semver::Version, resume: bool) -> Result<()> {
+    if resume {
+        return Ok(());
+    }
+    if let Some(existing) = existing_release_tag_commit(dir, version)? {
+        bail!(
+            "release tag {version} already exists at {existing}; choose an unused version or pass --resume to resume that release"
+        );
+    }
+    Ok(())
 }
 
 /// Generate the pack artifacts for a release under
@@ -12035,6 +12076,61 @@ mod tests {
             format!("{:#}", validate_release_options(&options).unwrap_err())
                 .contains("cache flags require registry store paths")
         );
+    }
+
+    #[test]
+    fn release_tag_preflight_rejects_existing_tag_unless_resume() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=main",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+        // Create the annotated release tag the way production does, via
+        // `sign_tag` (libgit2). The `git()` porcelain dispatcher only supports
+        // `tag --list` / `tag -d`, so `git tag -a` is an unsupported invocation.
+        let signing = write_test_signing_key(tmp.path(), "aos-core");
+        sign_tag(
+            &repo,
+            "1.0.0",
+            "HEAD",
+            Some("release 1.0.0"),
+            signing.private_key.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
+
+        let taken = semver::Version::parse("1.0.0").unwrap();
+        let unused = semver::Version::parse("2.0.0").unwrap();
+
+        // A version already released is rejected before any mutating work.
+        let err = ensure_release_tag_available(&repo, &taken, false).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("already exists"),
+            "unexpected error: {err:#}"
+        );
+
+        // An unused version passes the preflight.
+        ensure_release_tag_available(&repo, &unused, false).unwrap();
+
+        // `resume` legitimately reuses an existing tag, so the preflight is skipped.
+        ensure_release_tag_available(&repo, &taken, true).unwrap();
     }
 
     #[test]
