@@ -129,7 +129,7 @@
       package = "crucible";
       testTarget = "gate_scheduler_liveness";
       requiredFeatures = ["test-double"];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:control-responsive";
@@ -374,7 +374,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=18
+            placeholder_targets=17
             RESULT
           '';
         }

@@ -201,13 +201,10 @@ in {
         attrPath = "checks.crucible.phase3.gates.layer1Injection";
         taskIds = ["T-PLAN-3" "T-HARN-8" "T-DET-11" "T-DET-12" "T-DET-13" "T-DET-14"];
       };
-      schedulerLiveness = redGate {
+      schedulerLiveness = import ./phase3-scheduler-liveness.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase3.gates.schedulerLiveness";
-        gateName = "gate:scheduler-liveness";
-        owner = "crucible";
-        phase = "phase3";
         taskIds = ["T-PLAN-3" "T-HARN-14"];
-        reason = "scheduler liveness gate is intentionally pending";
       };
       adversarialDeterminism = redGate {
         attrPath = "checks.crucible.phase3.gates.adversarialDeterminism";

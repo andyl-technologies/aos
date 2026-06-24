@@ -1,9 +1,279 @@
-//! Red placeholder for `gate:scheduler-liveness` under `--features test-double`.
+//! Implements `gate:scheduler-liveness` under `--features test-double`.
 
 #![forbid(unsafe_code)]
 
+use crucible::{
+    BackendInput, ExactLocalEvent, NodeCounter, NodeId, ScheduledEvent, ScheduledEventKey,
+    ScheduledEventPayload, SchedulerLivenessError, SchedulerLivenessScenario,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulerTerminal,
+    SchedulingNodeKind, Shift, SimInstant, VirtualTime, check_scheduler_liveness,
+};
+
 #[test]
-#[ignore = "T-HARN-14 implements gate:scheduler-liveness"]
-fn gate_scheduler_liveness_is_mapped() {
-    panic!("gate:scheduler-liveness implementation is pending T-HARN-14");
+fn gate_scheduler_liveness_generated_scenarios_terminate() {
+    let scenarios = generated_scheduler_liveness_scenarios();
+    assert!(
+        scenarios.len() >= 32,
+        "scheduler liveness gate must cover a generated corpus"
+    );
+
+    for (index, scenario) in scenarios.into_iter().enumerate() {
+        let budget = scenario.quantum_budget;
+        let report = assert_scheduler_liveness(scenario);
+
+        assert!(
+            matches!(
+                report.terminal,
+                SchedulerTerminal::Quiescent | SchedulerTerminal::TimeLimitReached
+            ),
+            "scenario {index} did not reach a valid terminal"
+        );
+        assert!(
+            report.quanta <= budget,
+            "scenario {index} exceeded quantum budget: {} > {budget}",
+            report.quanta
+        );
+        assert!(
+            report.yielded_between_quanta,
+            "scenario {index} advanced a node without yielding the scheduler lock"
+        );
+        assert_eq!(
+            report.final_configuration.schedule.len(),
+            report.quanta as usize,
+            "scenario {index} must record one scheduler decision per quantum"
+        );
+    }
+}
+
+#[test]
+fn gate_scheduler_liveness_reaches_time_limit_terminal() {
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "time-limit-negative-space",
+        shift(0),
+        16,
+        SimInstant { nanos: 1 },
+        vec![scenario_node("node-a", 0, 8, ExactLocalEvent::NoArmedTimer)],
+        Vec::new(),
+    );
+
+    let report = assert_scheduler_liveness(scenario);
+
+    assert_eq!(report.terminal, SchedulerTerminal::TimeLimitReached);
+    assert_eq!(report.frontier, VirtualTime { ticks: 1 });
+    assert_eq!(report.quanta, 1);
+}
+
+#[test]
+fn gate_scheduler_liveness_rejects_due_event_deadlock() {
+    let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
+    let producer = scheduler_node("node-b", SchedulingNodeKind::Vm);
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "deadlock-due-event",
+        shift(0),
+        8,
+        SimInstant { nanos: 8 },
+        vec![idle_scenario_node(
+            "node-a",
+            0,
+            0,
+            ExactLocalEvent::TimerDeadline {
+                virtual_time: SimInstant { nanos: 0 },
+            },
+        )],
+        vec![backend_event(0, &consumer, &producer, 7, b"due")],
+    );
+
+    let error = match check_scheduler_liveness(scenario) {
+        Ok(report) => panic!("due-event deadlock should fail, got {report:?}"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        SchedulerLivenessError::Deadlock {
+            frontier: VirtualTime { ticks: 0 },
+            pending_events: 1,
+        }
+    ));
+}
+
+#[test]
+fn gate_scheduler_liveness_rejects_stalled_runnable_livelock() {
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "stalled-runnable-node",
+        shift(0),
+        8,
+        SimInstant { nanos: 8 },
+        vec![scenario_node(
+            "node-a",
+            0,
+            0,
+            ExactLocalEvent::TimerDeadline {
+                virtual_time: SimInstant { nanos: 0 },
+            },
+        )],
+        Vec::new(),
+    );
+
+    let error = match check_scheduler_liveness(scenario) {
+        Ok(report) => panic!("stalled runnable node should fail, got {report:?}"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        SchedulerLivenessError::Livelock {
+            quantum: 0,
+            counter: NodeCounter { ticks: 0 },
+            ..
+        }
+    ));
+}
+
+fn generated_scheduler_liveness_scenarios() -> Vec<SchedulerLivenessScenario> {
+    (0..48)
+        .map(|seed| {
+            let shift_bits = (seed % 3) as u8;
+            let shift = shift(shift_bits);
+            let scale = 1_u64 << shift_bits;
+            let node_count = 2 + (seed % 4);
+            let nodes = (0..node_count)
+                .map(|node_index| {
+                    let start = u64::from((seed + node_index) % 3);
+                    let span = u64::from(3 + ((seed * 7 + node_index * 5) % 6));
+                    let network_horizon = (start + span) * scale;
+                    let exact_local_event = if (seed + node_index) % 5 == 0 {
+                        ExactLocalEvent::TimerDeadline {
+                            virtual_time: SimInstant {
+                                nanos: (start + 1 + span / 2) * scale,
+                            },
+                        }
+                    } else {
+                        ExactLocalEvent::NoArmedTimer
+                    };
+
+                    scenario_node(
+                        &format!("node-{node_index}"),
+                        start,
+                        network_horizon,
+                        exact_local_event,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let time_limit = if seed % 7 == 0 {
+                SimInstant { nanos: 4 * scale }
+            } else {
+                SimInstant { nanos: 24 * scale }
+            };
+            let pending_events = generated_events(seed, &nodes, scale);
+
+            SchedulerLivenessScenario::from_canonical_material(
+                &format!("generated-seed-{seed}"),
+                shift,
+                96,
+                time_limit,
+                nodes,
+                pending_events,
+            )
+        })
+        .collect()
+}
+
+fn generated_events(seed: u32, nodes: &[SchedulerScenarioNode], scale: u64) -> Vec<ScheduledEvent> {
+    nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| {
+            let producer = &nodes[(index + 1) % nodes.len()].id;
+            let due_tick = node.counter.ticks + 1 + u64::from((seed + index as u32) % 2);
+            let due_time = due_tick * scale;
+            let horizon = node.network_horizon.nanos;
+
+            (due_time <= horizon).then(|| {
+                backend_event(
+                    due_time,
+                    &node.id,
+                    producer,
+                    100 + seed as u64 + index as u64,
+                    b"generated",
+                )
+            })
+        })
+        .collect()
+}
+
+fn assert_scheduler_liveness(
+    scenario: SchedulerLivenessScenario,
+) -> crucible::SchedulerLivenessReport {
+    match check_scheduler_liveness(scenario) {
+        Ok(report) => report,
+        Err(error) => panic!("scheduler liveness gate failed: {error}"),
+    }
+}
+
+fn scenario_node(
+    name: &str,
+    counter: u64,
+    network_horizon: u64,
+    exact_local_event: ExactLocalEvent,
+) -> SchedulerScenarioNode {
+    SchedulerScenarioNode {
+        id: scheduler_node(name, SchedulingNodeKind::Vm),
+        counter: NodeCounter { ticks: counter },
+        activity: SchedulerNodeActivity::Runnable,
+        network_horizon: SimInstant {
+            nanos: network_horizon,
+        },
+        exact_local_event,
+    }
+}
+
+fn idle_scenario_node(
+    name: &str,
+    counter: u64,
+    network_horizon: u64,
+    exact_local_event: ExactLocalEvent,
+) -> SchedulerScenarioNode {
+    let mut node = scenario_node(name, counter, network_horizon, exact_local_event);
+    node.activity = SchedulerNodeActivity::Idle;
+    node
+}
+
+fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {
+    SchedulerNodeId {
+        node: NodeId {
+            name: name.to_owned(),
+        },
+        kind,
+    }
+}
+
+fn backend_event(
+    virtual_time: u64,
+    consumer: &SchedulerNodeId,
+    producer: &SchedulerNodeId,
+    sequence: u64,
+    payload: &[u8],
+) -> ScheduledEvent {
+    ScheduledEvent {
+        key: ScheduledEventKey::from_parts(
+            VirtualTime {
+                ticks: virtual_time,
+            },
+            consumer.clone(),
+            producer.clone(),
+            sequence,
+        ),
+        payload: ScheduledEventPayload::BackendInput(BackendInput {
+            node: consumer.node.clone(),
+            payload: payload.to_vec(),
+        }),
+    }
+}
+
+fn shift(bits: u8) -> Shift {
+    match Shift::new(bits) {
+        Ok(shift) => shift,
+        Err(error) => panic!("test shift should be valid: {error}"),
+    }
 }
