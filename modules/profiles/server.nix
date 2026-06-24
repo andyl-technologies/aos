@@ -28,10 +28,12 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    # Storage: ext4 root (read-only), /var on its own ext4 partition
-    # created by ignition at first boot. ZFS deferred.
+    # Storage: zstd-compressed read-only erofs root (~3x smaller than ext4;
+    # the root is immutable, with writable state on /var, /etc overlay, and
+    # tmpfs). /var on its own ext4 partition created by ignition at first
+    # boot. ZFS deferred.
     aos.filesystems.zfs.enable = lib.mkDefault false;
-    aos.filesystems.rootFsType = lib.mkDefault "ext4";
+    aos.filesystems.rootFsType = lib.mkDefault "erofs";
     aos.filesystems.rootReadOnly = lib.mkDefault true;
 
     # Kernel modules for encrypted swap in stage 2.
