@@ -20,8 +20,9 @@
 //! advancement, and the time-control ordering contract; `block_io` owns guest
 //! block submit/poll request routing through the reserved block executor;
 //! `ninep_io` owns raw 9p submit/poll/burst routing through the reserved 9p
-//! executor. Future modules will add live device callback behavior and
-//! QEMU-facing helpers.
+//! executor; `whitebox_doorbell` owns optional white-box trap planning, guest
+//! memory reads, marker stamping, and host-to-guest input delivery gates. Future
+//! modules will add live device callback behavior and QEMU-facing helpers.
 //!
 //! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
 //! pointers and delegate to safe Rust shims for time-control, callback
@@ -44,6 +45,7 @@ pub mod ninep_io;
 pub mod registration;
 pub mod setup;
 pub mod time_control;
+pub mod whitebox_doorbell;
 
 pub use abi::{
     InertDeviceCallback, MIN_SUPPORTED_VCPU_COUNT, OWNED_DEVICE_CALLBACK_KINDS,
@@ -114,4 +116,15 @@ pub use time_control::{
     QEMU_PLUGIN_UPDATE_NS_SYMBOL, QemuAdvanceVirtualTimeDirectFn, SchedulerAuthorizedIdleJump,
     SchedulerCeiling, SynchronousIdleAdvance, SynchronousIdleAdvanceError, SynchronousIdleDrain,
     TimeControlRegistrationError, TimeControlRegistrationPlan,
+};
+pub use whitebox_doorbell::{
+    GuestMemoryAddressSpace, GuestMemoryRange, GuestMemoryReadError, GuestMemoryReader,
+    PluginWhiteboxDoorbell, QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL,
+    QEMU_PLUGIN_GUEST_MEMORY_WRITE_SYMBOL, QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL,
+    WhiteboxDoorbellCapabilities, WhiteboxDoorbellError, WhiteboxDoorbellRegistrationPlan,
+    WhiteboxDoorbellTrap, WhiteboxDoorbellTrapEvent, WhiteboxGuestInput,
+    WhiteboxGuestInputCapability, WhiteboxGuestInputInjection, WhiteboxGuestInputOutcome,
+    WhiteboxGuestInputWriteError, WhiteboxGuestInputWriter, WhiteboxMarker, WhiteboxMarkerSink,
+    WhiteboxMarkerSinkError, handle_whitebox_doorbell_callback,
+    handle_whitebox_guest_input_callback,
 };
