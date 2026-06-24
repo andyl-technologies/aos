@@ -89,10 +89,6 @@ const PINNED_LANG_CPP_NIX_VERSION: LangVersion = LangVersion::new(2, 24, 12);
 const LANG_VERSION_SKIP_RULES: &[LangVersionSkipRule] = &[];
 const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
     LangCaseExclusion {
-        name: "eval-fail-derivation-name",
-        reason: "derivation name validation gap",
-    },
-    LangCaseExclusion {
         name: "eval-fail-dup-dynamic-attrs",
         reason: "duplicate dynamic attr detection gap",
     },
@@ -161,8 +157,8 @@ const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
         reason: "symlink directory resolution gap",
     },
 ];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 190;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 19;
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 191;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 18;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",
@@ -561,7 +557,7 @@ fn run_lang_case_with_exclusions(
             parse_case(&source).with_context(|| format!("{} should parse", case.name))?;
             Ok(CaseOutcome::Passed)
         }
-        LangCategory::EvalFail => match eval_case(&source, config.options) {
+        LangCategory::EvalFail => match eval_strict_case(&source, config.options) {
             Ok(()) => bail!("{} evaluated but should fail", case.name),
             Err(error) => {
                 let mut err = format!("{error}\n").into_bytes();
@@ -1005,11 +1001,11 @@ fn parse_case(source: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn eval_case(source: &[u8], options: TreeWalkOptions) -> Result<()> {
+fn eval_strict_case(source: &[u8], options: TreeWalkOptions) -> Result<()> {
     let parsed = parse_bytes(source).context("parsing expression")?;
     let resolved = resolve(parsed).context("resolving expression")?;
     let ir = lower(resolved).context("lowering expression")?;
-    eval_whnf_owned_with_options(&ir, options).context("evaluating expression")?;
+    eval_raw_bytes_with_options(&ir, options).context("evaluating strict expression")?;
     Ok(())
 }
 
@@ -1266,13 +1262,40 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
 fn eval_fail_detection_allows_successful_non_numeric_values() -> Result<()> {
     let flags = Vec::new();
     let config = LangEvalConfig::from_options(TreeWalkOptions::default());
-    assert!(eval_case(b"x: x", TreeWalkOptions::default()).is_ok());
+    assert!(eval_strict_case(b"x: x", TreeWalkOptions::default()).is_ok());
     assert_eq!(
         eval_raw_case(b"x: x", &fixture_lang_dir(), &config, &flags)?,
         b"<LAMBDA>\n"
     );
 
     Ok(())
+}
+
+#[test]
+fn eval_fail_derivation_name_rejects_invalid_names() {
+    let source = br#"derivation {
+  name = "~jiggle~";
+  system = "some-system";
+  builder = "/dontcare";
+}"#;
+
+    let parsed = parse_bytes(source).expect("source parses");
+    let resolved = resolve(parsed).expect("source resolves");
+    let ir = lower(resolved).expect("source lowers");
+    eval_whnf_owned_with_options(&ir, TreeWalkOptions::default())
+        .expect("derivation wrapper stays lazy at WHNF like C++ Nix");
+
+    let error = eval_strict_case(source, TreeWalkOptions::default())
+        .expect_err("strict eval should force the invalid derivation name");
+    assert!(
+        error.to_string().contains("evaluating strict expression"),
+        "{error:?}"
+    );
+    assert!(
+        format!("{error:?}").contains("invalid derivation name")
+            && format!("{error:?}").contains("contains illegal character '~'"),
+        "{error:?}"
+    );
 }
 
 #[test]

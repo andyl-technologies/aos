@@ -393,7 +393,7 @@ without executing fixture shell, supports raw `eval-okay` output, XML
 runs by default. Setting `AOS_NIX_LANG_TESTS` to an unpacked
 `tests/functional/lang/` directory turns on the full pinned corpus gate,
 including `lang.sh`'s special non-eval `bad-drvPath` case; as of this
-checkpoint, pinned Nix `2.24.12` reports `190 passed, 19 skipped, 0 failed` with
+checkpoint, pinned Nix `2.24.12` reports `191 passed, 18 skipped, 0 failed` with
 every intentional skip named in `LANG_CASE_EXCLUSIONS` (plus upstream
 `.exp-disabled`).
 
@@ -853,8 +853,8 @@ The cutover is permitted **iff all** of the following are simultaneously true:
       (`eval-okay`/`eval-fail`/`parse-okay`/`parse-fail`), runs a local fixture
       covering those categories by default, and, when `AOS_NIX_LANG_TESTS` is set
       to the pinned corpus, checks the exact Nix `2.24.12` case-name snapshot and
-      allowed skip set. The recorded configured checkpoint is `190 passed`,
-      `19 skipped`, `0 failed`, with intentional skips named in
+      allowed skip set. The recorded configured checkpoint is `191 passed`,
+      `18 skipped`, `0 failed`, with intentional skips named in
       `LANG_CASE_EXCLUSIONS` (§3.4, criterion **C2** support).
 - [ ] **Cutover-time conformance green remains.** At the default-on decision
       point, CI/gating must run the configured C++ Nix language suite for the AOS
@@ -1025,7 +1025,7 @@ This document *is* the gate. The differential `.drv`-diff harness is a **P1** de
 
 ### Conformance-suite reuse (§3)
 
-- [x] Reuse the C++ Nix `tests/functional/lang/` corpus as Tvix/Snix does: reimplement `lang.sh` discovery + version-reactive skip logic, in all four categories `eval-okay`/`eval-fail`/`parse-okay`/`parse-fail` (§3.1, §3.2). `crates/aos-nix/tests/lang_conformance.rs` discovers the upstream category prefixes, parses `.flags`, honors `.exp-disabled`, applies a skip-rule table against pinned C++ Nix `2.24.12`, runs the configured `AOS_NIX_LANG_TESTS` full pinned corpus gate including `lang.sh`'s special non-eval `bad-drvPath` case, accepts duplicate strict-eval flags already covered by the runner (`--eval`, `--strict`) plus eval-fail trace-display flags when strict eval remains explicit (`--show-trace`, `--no-show-trace`), applies `--max-call-depth` to `TreeWalkOptions`, models eval-okay `-I` search-path flags plus `lang.sh`'s default `NIX_PATH=lang/dir3:lang/dir4`, sets `HOME=/fake-home` and `TEST_VAR=foo`, supports `--extra-experimental-features parse-toml-timestamps` via gated `fromTOML` timestamp decoding, supports the pinned `--arg`/`--argstr`/`-A` autoargs fixture shape, models the pinned digit-normalizing `.postprocess` script without executing fixture shell, supports XML expected-output cases, normalizes output paths the same way as `lang.sh`, precisely skips unsupported capability-changing flags, and runs a local fixture covering all four categories with raw strict `eval-okay` value output. The pinned `2.24.12` corpus currently gates at `190 passed, 19 skipped, 0 failed`; every non-upstream-disabled skip is named with a reason in `LANG_CASE_EXCLUSIONS` — **P1**, criterion **C2**; owned jointly with [20](20-nix-language-conformance.md)/[21](21-builtins-conformance.md).
+- [x] Reuse the C++ Nix `tests/functional/lang/` corpus as Tvix/Snix does: reimplement `lang.sh` discovery + version-reactive skip logic, in all four categories `eval-okay`/`eval-fail`/`parse-okay`/`parse-fail` (§3.1, §3.2). `crates/aos-nix/tests/lang_conformance.rs` discovers the upstream category prefixes, parses `.flags`, honors `.exp-disabled`, applies a skip-rule table against pinned C++ Nix `2.24.12`, runs the configured `AOS_NIX_LANG_TESTS` full pinned corpus gate including `lang.sh`'s special non-eval `bad-drvPath` case, accepts duplicate strict-eval flags already covered by the runner (`--eval`, `--strict`) plus eval-fail trace-display flags when strict eval remains explicit (`--show-trace`, `--no-show-trace`), applies `--max-call-depth` to `TreeWalkOptions`, models eval-okay `-I` search-path flags plus `lang.sh`'s default `NIX_PATH=lang/dir3:lang/dir4`, sets `HOME=/fake-home` and `TEST_VAR=foo`, supports `--extra-experimental-features parse-toml-timestamps` via gated `fromTOML` timestamp decoding, supports the pinned `--arg`/`--argstr`/`-A` autoargs fixture shape, models the pinned digit-normalizing `.postprocess` script without executing fixture shell, supports XML expected-output cases, normalizes output paths the same way as `lang.sh`, precisely skips unsupported capability-changing flags, and runs a local fixture covering all four categories with raw strict `eval-okay` value output. The pinned `2.24.12` corpus currently gates at `191 passed, 18 skipped, 0 failed`; every non-upstream-disabled skip is named with a reason in `LANG_CASE_EXCLUSIONS` — **P1**, criterion **C2**; owned jointly with [20](20-nix-language-conformance.md)/[21](21-builtins-conformance.md).
 - [x] Error-**class** parity (type stays type, `throw` stays `throw`, assert stays assert): `cpp_nix_error_classes_match_tree_walk` is a pinned-oracle/configured conformance gate for representative parse-fail, type-error, `throw`, assert, and `abort` failures, while error-**text** parity remains a non-goal for the first gate (§3.3, §3.4) — **P1**; the basis for the `EvalError`-vs-`Unsupported` fallback ([14](14-integration-with-aos.md) §6). Full upstream `tests/functional/lang` reuse remains tracked by the preceding corpus row.
 
 ### The tree-walk oracle and the fuzzers (§7)

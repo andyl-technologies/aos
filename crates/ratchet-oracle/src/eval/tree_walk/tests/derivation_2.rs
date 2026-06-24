@@ -211,6 +211,7 @@ fn derivation_strict_rejects_invalid_derivation_names_before_later_attrs() {
     let cases = [
         ("", "name must not be empty"),
         ("bad/name", "contains illegal character '/'"),
+        ("~jiggle~", "contains illegal character '~'"),
         (".", "name '.' is not valid"),
         (
             ".-component",
