@@ -421,6 +421,8 @@ impl DiffInstantiation {
     }
 
     fn read_drv_bytes(&self, path: &Path, label: &str) -> Result<Vec<u8>> {
+        let resolved = drv_file_path(path);
+        let path = resolved.as_path();
         match &self.bytes {
             DiffByteSource::FileSystem => std::fs::read(path)
                 .with_context(|| format!("reading {label} drv {}", path.display())),
@@ -647,6 +649,24 @@ fn read_drv_closure_bundle(path: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
             Ok((PathBuf::from(path), bytes))
         })
         .collect()
+}
+
+/// Resolves a derivation path to the on-disk `.drv` file it names.
+///
+/// An evaluator may return a *deriving path* — a `.drv` followed by an output
+/// selector, e.g. `/nix/store/…-glibc-2.39.drv!getent` — when an expression
+/// evaluates to a specific output of a multi-output derivation (such as
+/// `lib.getOutput "getent" stdenv.glibc`). The selector chooses an output but
+/// does not change the derivation, so it is stripped here to read/compare the
+/// underlying `.drv`. Plain `.drv` paths (every closure-internal input) are
+/// returned unchanged.
+fn drv_file_path(path: &Path) -> PathBuf {
+    if let Some(text) = path.to_str() {
+        if let Some(marker) = text.find(".drv!") {
+            return PathBuf::from(&text[..marker + ".drv".len()]);
+        }
+    }
+    path.to_path_buf()
 }
 
 fn instantiate_for_mode(

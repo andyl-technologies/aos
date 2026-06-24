@@ -632,10 +632,26 @@ impl NixEval for NixCli {
 }
 
 pub(crate) fn read_drv_closure(root: PathBuf) -> Result<DrvClosure> {
+    // Instantiation can yield a *deriving path* — a `.drv` with an output
+    // selector, e.g. `…-glibc-2.39.drv!getent` from `lib.getOutput "getent"
+    // stdenv.glibc`. The selector names an output but the on-disk artifact is the
+    // plain `.drv`; resolve to it so the file can be read and the closure rooted
+    // consistently with the candidate evaluator.
+    let root = resolve_drv_file_path(root);
     let mut drvs = BTreeMap::new();
     let mut visiting = BTreeSet::new();
     read_drv_closure_at(&root, &mut visiting, &mut drvs)?;
     Ok(DrvClosure::new(root, drvs))
+}
+
+/// Strips a trailing `!<output>` deriving-path selector to the `.drv` file path.
+fn resolve_drv_file_path(path: PathBuf) -> PathBuf {
+    if let Some(text) = path.to_str() {
+        if let Some(marker) = text.find(".drv!") {
+            return PathBuf::from(&text[..marker + ".drv".len()]);
+        }
+    }
+    path
 }
 
 fn read_drv_closure_at(
