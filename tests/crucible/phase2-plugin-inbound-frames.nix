@@ -146,8 +146,20 @@
         needle = "delivery_icount < consumer_current_icount";
       }
       {
-        label = "current-icount delivery check";
-        needle = "delivery_icount == consumer_current_icount";
+        label = "current-or-passed-icount delivery check";
+        needle = "delivery_icount <= consumer_current_icount";
+      }
+      {
+        label = "idle-window delivery drain";
+        needle = "pub fn drain_deliverable_since";
+      }
+      {
+        label = "idle-window preview";
+        needle = "pub fn preview_deliverable_since";
+      }
+      {
+        label = "jumped-over delivery test";
+        needle = "inbound_frame_drain_since_includes_jumped_over_delivery_window";
       }
       {
         label = "deterministic total order";
@@ -197,7 +209,7 @@
       }
       {
         label = "ring drain after wake";
-        needle = "PluginInboundFrames::drain_deliverable";
+        needle = "PluginInboundFrames::drain_deliverable_since";
       }
       {
         label = "idle inbound error path";

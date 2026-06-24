@@ -15,9 +15,10 @@ use crucible_shmem::{
 
 use crate::{
     ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport, InboundFrameError,
-    InboundFrameRing, PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze,
-    PluginInboundFrames, PluginVirtualClock, SchedulerCeiling, SynchronousIdleAdvance,
-    SynchronousIdleAdvanceError, SynchronousIdleDrain,
+    InboundFrameRing, LosslessNetworkRxQueue, NetworkRxError, NetworkRxInjection,
+    PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze, PluginInboundFrames,
+    PluginNetworkRx, PluginVirtualClock, SchedulerCeiling, SynchronousIdleAdvance,
+    SynchronousIdleAdvanceError, SynchronousIdleDrain, handle_network_rx_idle_callback,
 };
 
 /// The source that determined the node's next idle wake.
@@ -132,6 +133,7 @@ pub struct IdleHotLoopResult {
     advance: PluginClockAdvance,
     synchronous_drain: SynchronousIdleDrain,
     injected_frames: Vec<FrameEntry>,
+    network_rx_injection: Option<NetworkRxInjection>,
 }
 
 impl IdleHotLoopResult {
@@ -157,6 +159,12 @@ impl IdleHotLoopResult {
     #[must_use]
     pub fn injected_frames(&self) -> &[FrameEntry] {
         &self.injected_frames
+    }
+
+    /// Returns the lossless network RX injection metadata, if this turn injected frames.
+    #[must_use]
+    pub fn network_rx_injection(&self) -> Option<&NetworkRxInjection> {
+        self.network_rx_injection.as_ref()
     }
 }
 
@@ -349,12 +357,13 @@ impl PluginIdleHotLoop {
         candidate_frames: impl IntoIterator<Item = FrameEntry>,
     ) -> Result<IdleHotLoopResult, IdleHotLoopError> {
         let candidate_frames = candidate_frames.into_iter().collect::<Vec<_>>();
-        reject_passed_materialized_frames(&candidate_frames, request.plan.desired_wake_icount)?;
+        reject_passed_materialized_frames(&candidate_frames, request.plan.current_icount)?;
         let (advance, synchronous_drain) =
             Self::advance_after_scheduler_wake(slot, clock, synchronous_idle_advance, &request)?;
-        let injected_frames = PluginInboundFrames::select_deliverable_frames(
+        let injected_frames = PluginInboundFrames::select_deliverable_frames_since(
             candidate_frames,
             clock.current_icount(),
+            request.plan.current_icount,
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         Self::publish_completed_idle(
@@ -364,6 +373,7 @@ impl PluginIdleHotLoop {
             advance,
             synchronous_drain,
             injected_frames,
+            None,
         )
     }
 
@@ -388,14 +398,17 @@ impl PluginIdleHotLoop {
         let inbound_rings = inbound_rings.into_iter().collect::<Vec<_>>();
         PluginInboundFrames::reject_already_passed_ring_heads(
             inbound_rings.iter().copied(),
-            request.plan.desired_wake_icount,
+            request.plan.current_icount,
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         let (advance, synchronous_drain) =
             Self::advance_after_scheduler_wake(slot, clock, synchronous_idle_advance, &request)?;
-        let inbound_batch =
-            PluginInboundFrames::drain_deliverable(inbound_rings, clock.current_icount())
-                .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
+        let inbound_batch = PluginInboundFrames::drain_deliverable_since(
+            inbound_rings,
+            clock.current_icount(),
+            request.plan.current_icount,
+        )
+        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         Self::publish_completed_idle(
             slot,
             clock,
@@ -403,6 +416,86 @@ impl PluginIdleHotLoop {
             advance,
             synchronous_drain,
             inbound_batch.into_frames(),
+            None,
+        )
+    }
+
+    /// Completes the idle jump, drains due inbound frames, and injects them via RX.
+    ///
+    /// Ring heads behind the authorized wake are rejected before QEMU virtual time
+    /// is advanced. After the direct idle jump completes, due heads at the reached
+    /// icount are consumed, queued through the lossless network RX backend, flushed,
+    /// and then the node is republished as running.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdleHotLoopError`] when the scheduler has not authorized the
+    /// desired wake, the virtual-clock jump fails, inbound frame polling fails,
+    /// network RX injection fails, or running-state publication fails.
+    pub fn complete_after_scheduler_wake_from_inbound_rings_with_rx_injection<'a, Q>(
+        slot: &NodeSlot,
+        clock: &mut PluginVirtualClock,
+        synchronous_idle_advance: &SynchronousIdleAdvance,
+        request: IdleParkRequest,
+        inbound_rings: impl IntoIterator<Item = InboundFrameRing<'a>>,
+        network_rx: &PluginNetworkRx,
+        rx_queue: &mut Q,
+    ) -> Result<IdleHotLoopResult, IdleHotLoopError>
+    where
+        Q: LosslessNetworkRxQueue + ?Sized,
+    {
+        let inbound_rings = inbound_rings.into_iter().collect::<Vec<_>>();
+        PluginInboundFrames::reject_already_passed_ring_heads(
+            inbound_rings.iter().copied(),
+            request.plan.current_icount,
+        )
+        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
+        let (advance, synchronous_drain) =
+            Self::advance_after_scheduler_wake(slot, clock, synchronous_idle_advance, &request)?;
+        let inbound_batch = PluginInboundFrames::preview_deliverable_since(
+            inbound_rings.iter().copied(),
+            clock.current_icount(),
+            request.plan.current_icount,
+        )
+        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
+        let injected_frames = inbound_batch.into_frames();
+        let network_rx_injection = handle_network_rx_idle_callback(
+            network_rx,
+            rx_queue,
+            request.plan.current_icount,
+            clock.current_icount(),
+            &injected_frames,
+        )
+        .map_err(|source| IdleHotLoopError::NetworkRxInjection { source })?;
+        let committed_batch = PluginInboundFrames::drain_deliverable_since(
+            inbound_rings,
+            clock.current_icount(),
+            request.plan.current_icount,
+        )
+        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
+        if committed_batch.frames() != injected_frames.as_slice() {
+            return Err(IdleHotLoopError::InboundFrames {
+                source: InboundFrameError::CommittedBatchMismatch {
+                    expected: injected_frames
+                        .iter()
+                        .map(FrameEntry::delivery_key)
+                        .collect(),
+                    actual: committed_batch
+                        .frames()
+                        .iter()
+                        .map(FrameEntry::delivery_key)
+                        .collect(),
+                },
+            });
+        }
+        Self::publish_completed_idle(
+            slot,
+            clock,
+            request,
+            advance,
+            synchronous_drain,
+            injected_frames,
+            Some(network_rx_injection),
         )
     }
 
@@ -445,6 +538,7 @@ impl PluginIdleHotLoop {
         advance: PluginClockAdvance,
         synchronous_drain: SynchronousIdleDrain,
         injected_frames: Vec<FrameEntry>,
+        network_rx_injection: Option<NetworkRxInjection>,
     ) -> Result<IdleHotLoopResult, IdleHotLoopError> {
         slot.publish_reached_icount(clock.current_icount(), clock.icount_shift())
             .map_err(|source| IdleHotLoopError::PublishReached { source })?;
@@ -454,6 +548,7 @@ impl PluginIdleHotLoop {
             advance,
             synchronous_drain,
             injected_frames,
+            network_rx_injection,
         })
     }
 
@@ -693,6 +788,12 @@ pub enum IdleHotLoopError {
         /// The inbound frame error.
         source: InboundFrameError,
     },
+    /// Lossless network RX injection failed.
+    #[error("network RX injection failed: {source}")]
+    NetworkRxInjection {
+        /// The network RX injection error.
+        source: NetworkRxError,
+    },
 }
 
 #[cfg(test)]
@@ -707,7 +808,7 @@ mod tests {
     };
 
     use crate::{
-        CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, PluginDeviceIoFreeze,
+        CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, NetworkRxQueueError, PluginDeviceIoFreeze,
         PluginRegistrationSequence, PluginTimeControlOwnership,
     };
 
@@ -936,6 +1037,7 @@ mod tests {
             request,
             [
                 frame(20, 9, 4, b"late-by-key"),
+                frame(15, 4, 1, b"jumped-over"),
                 frame(20, 1, 7, b"first"),
                 frame(21, 1, 8, b"future"),
             ],
@@ -958,6 +1060,7 @@ mod tests {
                 .map(FrameEntry::delivery_key)
                 .collect::<Vec<_>>(),
             vec![
+                frame(15, 4, 1, b"jumped-over").delivery_key(),
                 frame(20, 1, 7, b"first").delivery_key(),
                 frame(20, 9, 4, b"late-by-key").delivery_key(),
             ]
@@ -1039,12 +1142,151 @@ mod tests {
     }
 
     #[test]
+    fn idle_loop_rx_injection_runs_after_direct_advance_and_before_republish() {
+        let slot = NodeSlot::new(KIND_VM);
+        let clock = owned_clock(10, 1);
+        let ring_a = RingHeader::new();
+        let ring_b = RingHeader::new();
+        let mut entries_a = empty_entries();
+        let mut entries_b = empty_entries();
+        enqueue(&ring_a, &mut entries_a, frame(20, 9, 4, b"third"));
+        enqueue(&ring_a, &mut entries_a, frame(20, 1, 7, b"first"));
+        enqueue(&ring_b, &mut entries_b, frame(20, 4, 1, b"second"));
+        publish_ceiling(&slot, ceiling(0, 10));
+
+        let request = match PluginIdleHotLoop::begin_idle_with_inbound_rings(
+            &slot,
+            &clock,
+            &deadline_reader(deadline_80),
+            [
+                InboundFrameRing::new(0, &ring_a, &entries_a),
+                InboundFrameRing::new(1, &ring_b, &entries_b),
+            ],
+            None,
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("idle begin should peek inbound rings: {error}"),
+        };
+        assert_eq!(slot.snapshot().status, STATUS_IDLE);
+
+        publish_ceiling(&slot, ceiling(10, 20));
+        let mut clock = clock;
+        LAST_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        let network_rx = PluginNetworkRx::new();
+        let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
+        let result =
+            match PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings_with_rx_injection(
+                &slot,
+                &mut clock,
+                &synchronous_idle_advance(),
+                request,
+                [
+                    InboundFrameRing::new(0, &ring_a, &entries_a),
+                    InboundFrameRing::new(1, &ring_b, &entries_b),
+                ],
+                &network_rx,
+                &mut rx_queue,
+            ) {
+                Ok(result) => result,
+                Err(error) => panic!("idle completion should inject RX frames: {error}"),
+            };
+
+        assert_eq!(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), 40);
+        assert_eq!(rx_queue.direct_advance_ns_at_queue, vec![40, 40, 40]);
+        assert_eq!(
+            rx_queue.slot_status_at_queue,
+            vec![STATUS_IDLE, STATUS_IDLE, STATUS_IDLE]
+        );
+        assert_eq!(
+            rx_queue.queued_payloads,
+            vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
+        );
+        assert_eq!(rx_queue.flush_count, 1);
+
+        let injection = match result.network_rx_injection() {
+            Some(injection) => injection,
+            None => panic!("RX injection metadata should be present"),
+        };
+        assert_eq!(injection.current_icount(), 20);
+        assert_eq!(
+            injection.frame_keys(),
+            &[
+                frame(20, 1, 7, b"first").delivery_key(),
+                frame(20, 4, 1, b"second").delivery_key(),
+                frame(20, 9, 4, b"third").delivery_key(),
+            ]
+        );
+        assert!(injection.flushed());
+        assert_eq!(
+            result
+                .injected_frames()
+                .iter()
+                .map(FrameEntry::delivery_key)
+                .collect::<Vec<_>>(),
+            injection.frame_keys()
+        );
+        assert_eq!(slot.snapshot().status, STATUS_RUNNING);
+    }
+
+    #[test]
+    fn idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads() {
+        let slot = NodeSlot::new(KIND_VM);
+        let clock = owned_clock(10, 1);
+        let ring = RingHeader::new();
+        let mut entries = empty_entries();
+        enqueue(&ring, &mut entries, frame(20, 1, 0, b"queued"));
+        publish_ceiling(&slot, ceiling(0, 10));
+        let request = match PluginIdleHotLoop::begin_idle_with_inbound_rings(
+            &slot,
+            &clock,
+            &deadline_reader(deadline_80),
+            [InboundFrameRing::new(0, &ring, &entries)],
+            None,
+        ) {
+            Ok(request) => request,
+            Err(error) => panic!("idle begin should peek inbound rings: {error}"),
+        };
+
+        publish_ceiling(&slot, ceiling(10, 20));
+        let mut clock = clock;
+        LAST_DIRECT_ADVANCE_NS.store(-1, Ordering::SeqCst);
+        let network_rx = PluginNetworkRx::new();
+        let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
+        rx_queue.queue_error_at = Some(0);
+
+        assert_eq!(
+            PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings_with_rx_injection(
+                &slot,
+                &mut clock,
+                &synchronous_idle_advance(),
+                request,
+                [InboundFrameRing::new(0, &ring, &entries)],
+                &network_rx,
+                &mut rx_queue,
+            ),
+            Err(IdleHotLoopError::NetworkRxInjection {
+                source: NetworkRxError::Queue {
+                    frame: frame(20, 1, 0, b"queued").delivery_key(),
+                    source: NetworkRxQueueError::queue("test queue failure"),
+                },
+            })
+        );
+
+        assert_eq!(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst), 40);
+        assert_eq!(clock.current_icount(), 20);
+        assert_eq!(ring.read_index(), 0);
+        assert!(rx_queue.queued_payloads.is_empty());
+        assert_eq!(rx_queue.flush_count, 0);
+        assert_eq!(slot.snapshot().status, STATUS_IDLE);
+    }
+
+    #[test]
     fn idle_loop_rejects_late_inbound_ring_before_direct_advance() {
         let slot = NodeSlot::new(KIND_VM);
         let mut clock = owned_clock(10, 1);
         let ring = RingHeader::new();
         let mut entries = empty_entries();
-        enqueue(&ring, &mut entries, frame(19, 7, 2, b"late"));
+        enqueue(&ring, &mut entries, frame(9, 7, 2, b"late"));
         publish_ceiling(&slot, ceiling(10, 20));
         let request = IdleParkRequest {
             plan: IdleWakePlan {
@@ -1052,7 +1294,7 @@ mod tests {
                 desired_wake_icount: 20,
                 ceiling_icount: 20,
                 timer_deadline_icount: None,
-                inbound_delivery_icount: Some(19),
+                inbound_delivery_icount: Some(9),
                 device_io_holding_ticks: false,
                 cause: IdleWakeCause::InboundFrame,
             },
@@ -1072,8 +1314,8 @@ mod tests {
             Err(IdleHotLoopError::InboundFrames {
                 source: InboundFrameError::DeliveryAlreadyPassed {
                     ring_index: Some(3),
-                    consumer_current_icount: 20,
-                    frame: frame(19, 7, 2, b"late").delivery_key(),
+                    consumer_current_icount: 10,
+                    frame: frame(9, 7, 2, b"late").delivery_key(),
                 },
             })
         );
@@ -1095,7 +1337,7 @@ mod tests {
                 desired_wake_icount: 20,
                 ceiling_icount: 20,
                 timer_deadline_icount: None,
-                inbound_delivery_icount: Some(19),
+                inbound_delivery_icount: Some(9),
                 device_io_holding_ticks: false,
                 cause: IdleWakeCause::InboundFrame,
             },
@@ -1110,13 +1352,13 @@ mod tests {
                 &mut clock,
                 &blocked_synchronous_idle_advance(),
                 request,
-                [frame(19, 7, 2, b"late")]
+                [frame(9, 7, 2, b"late")]
             ),
             Err(IdleHotLoopError::InboundFrames {
                 source: InboundFrameError::DeliveryAlreadyPassed {
                     ring_index: None,
-                    consumer_current_icount: 20,
-                    frame: frame(19, 7, 2, b"late").delivery_key(),
+                    consumer_current_icount: 10,
+                    frame: frame(9, 7, 2, b"late").delivery_key(),
                 },
             })
         );
@@ -1390,6 +1632,46 @@ mod tests {
     fn publish_ceiling(slot: &NodeSlot, ceiling: AdvanceCeiling) {
         if let Err(error) = slot.publish_scheduler_ceiling(ceiling) {
             panic!("test ceiling should publish: {error}");
+        }
+    }
+
+    struct RecordingNetworkRxQueue<'a> {
+        slot: &'a NodeSlot,
+        queued_payloads: Vec<Vec<u8>>,
+        direct_advance_ns_at_queue: Vec<i64>,
+        slot_status_at_queue: Vec<u8>,
+        flush_count: usize,
+        queue_error_at: Option<usize>,
+    }
+
+    impl<'a> RecordingNetworkRxQueue<'a> {
+        fn for_slot(slot: &'a NodeSlot) -> Self {
+            Self {
+                slot,
+                queued_payloads: Vec::new(),
+                direct_advance_ns_at_queue: Vec::new(),
+                slot_status_at_queue: Vec::new(),
+                flush_count: 0,
+                queue_error_at: None,
+            }
+        }
+    }
+
+    impl LosslessNetworkRxQueue for RecordingNetworkRxQueue<'_> {
+        fn queue_lossless_rx(&mut self, payload: &[u8]) -> Result<(), NetworkRxQueueError> {
+            if self.queue_error_at == Some(self.queued_payloads.len()) {
+                return Err(NetworkRxQueueError::queue("test queue failure"));
+            }
+            self.direct_advance_ns_at_queue
+                .push(LAST_DIRECT_ADVANCE_NS.load(Ordering::SeqCst));
+            self.slot_status_at_queue.push(self.slot.snapshot().status);
+            self.queued_payloads.push(payload.to_vec());
+            Ok(())
+        }
+
+        fn flush_lossless_rx(&mut self) -> Result<(), NetworkRxQueueError> {
+            self.flush_count += 1;
+            Ok(())
         }
     }
 

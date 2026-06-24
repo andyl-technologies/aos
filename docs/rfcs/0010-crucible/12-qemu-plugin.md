@@ -946,7 +946,7 @@ component that makes that purity true *inside* the QEMU process.
   frames into the outbound router ring with an emit-icount stamp, re-entrancy-safe,
   rejecting oversize frames and full rings loudly. — satisfies [PLUG-23],
   [PLUG-24], [PLUG-25]; spec §12.5.1.
-- [ ] **T-PLUG-11** Implement RX injection via the lossless queueing path from
+- [x] **T-PLUG-11** Implement RX injection via the lossless queueing path from
   the idle context, after the idle jump, gated by the delivery-icount rule. —
   satisfies [PLUG-26], [PLUG-27]; spec §12.5.2.
 - [ ] **T-PLUG-12** Implement the block submit/poll callbacks against the

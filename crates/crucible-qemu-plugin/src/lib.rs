@@ -12,9 +12,10 @@
 //! `deadline` owns exact virtual-clock deadline introspection; `device_io` owns
 //! the virtual-time hold for in-flight device I/O; `idle_loop` owns the idle
 //! callback hot-loop state machine; `inbound` owns inbound frame polling and
-//! deterministic injection ordering; `network_tx` owns guest network transmit
-//! interception and outbound ring enqueueing; `registration` owns the fail-stop
-//! registration sequencer; `setup` owns descriptor mapping and setup
+//! deterministic injection ordering; `network_rx` owns idle-context guest network
+//! receive injection through QEMU's lossless queue; `network_tx` owns guest
+//! network transmit interception and outbound ring enqueueing; `registration` owns
+//! the fail-stop registration sequencer; `setup` owns descriptor mapping and setup
 //! acknowledgement; `time_control` owns clock ownership, authorized virtual-time
 //! advancement, and the time-control ordering contract. Future modules will add
 //! live device callback behavior and QEMU-facing helpers.
@@ -33,6 +34,7 @@ pub mod deadline;
 pub mod device_io;
 pub mod idle_loop;
 pub mod inbound;
+pub mod network_rx;
 pub mod network_tx;
 pub mod registration;
 pub mod setup;
@@ -69,6 +71,12 @@ pub use idle_loop::{
     IdleWakePlan, PluginIdleHotLoop, compute_idle_wake_plan, timer_deadline_icount,
 };
 pub use inbound::{InboundFrameBatch, InboundFrameError, InboundFrameRing, PluginInboundFrames};
+pub use network_rx::{
+    LosslessNetworkRxQueue, NetworkRxError, NetworkRxInjection, NetworkRxQueueError,
+    NetworkRxQueueOperation, PluginNetworkRx, QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL,
+    QEMU_PLUGIN_NET_FLUSH_SYMBOL, QEMU_PLUGIN_NET_SEND_SYMBOL, QemuLosslessNetworkRxQueue,
+    QemuPluginNetFlushFn, QemuPluginNetSendFn, handle_network_rx_idle_callback,
+};
 pub use network_tx::{
     NetworkTxEnqueue, NetworkTxError, NetworkTxRing, PluginNetworkTx, handle_network_tx_callback,
 };
