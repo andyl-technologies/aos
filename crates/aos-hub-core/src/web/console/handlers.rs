@@ -197,7 +197,9 @@ fn require_sudo(session: &Session, headers: &HeaderMap) -> Result<(), Box<Respon
         None,
         crate::clock::Instant::now(),
     );
-    Err(Box::new((StatusCode::FORBIDDEN, Html(page)).into_response()))
+    Err(Box::new(
+        (StatusCode::FORBIDDEN, Html(page)).into_response(),
+    ))
 }
 
 /// Extract a safe same-origin return path from the request's `Referer`.
@@ -264,7 +266,10 @@ pub(crate) async fn reauth(
     }
     let return_to = {
         let p = form.return_to.trim();
-        if p.starts_with('/') && !p.starts_with("//") && p != "/-/reauth" && !p.starts_with("/login")
+        if p.starts_with('/')
+            && !p.starts_with("//")
+            && p != "/-/reauth"
+            && !p.starts_with("/login")
         {
             p.to_string()
         } else {
@@ -292,7 +297,8 @@ pub(crate) async fn reauth(
         }
         Err(err) => return internal(err),
     };
-    if user_id != session.auth.user_id || !crate::auth::password::verify_password(&form.password, &hash)
+    if user_id != session.auth.user_id
+        || !crate::auth::password::verify_password(&form.password, &hash)
     {
         return render_err("Incorrect password.");
     }
@@ -1308,15 +1314,17 @@ pub(crate) async fn passkey_login_finish(
         authenticator_data,
         signature,
     };
-    let user_id =
-        match crate::auth::webauthn::finish_assertion(&deps.db, &rp.id, &rp.origin, &response).await
-        {
-            Ok(id) => id,
-            Err(err) => {
-                tracing::warn!(error = %format!("{err:#}"), "passkey assertion rejected");
-                return (StatusCode::UNAUTHORIZED, "passkey sign-in failed").into_response();
-            }
-        };
+    let user_id = match crate::auth::webauthn::finish_assertion(
+        &deps.db, &rp.id, &rp.origin, &response,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(err) => {
+            tracing::warn!(error = %format!("{err:#}"), "passkey assertion rejected");
+            return (StatusCode::UNAUTHORIZED, "passkey sign-in failed").into_response();
+        }
+    };
     match deps.db.user_email(user_id).await {
         Ok(Some(email)) => match sso_enforced_for(&deps, &email, Some(user_id)).await {
             Ok(Some(org_slug)) => {
@@ -1643,9 +1651,7 @@ pub(crate) async fn org_danger(
 
 /// `GET /-/org/{org}/settings` — legacy alias; the former single settings tab
 /// is now split into Projects/Members/Storage/Danger. Redirect to Projects.
-pub(crate) async fn org_settings(
-    Path(org_slug): Path<String>,
-) -> Response {
+pub(crate) async fn org_settings(Path(org_slug): Path<String>) -> Response {
     Redirect::to(&format!("/-/org/{org_slug}/projects")).into_response()
 }
 
@@ -1702,7 +1708,9 @@ async fn org_view(
         let can_manage = session
             .allows(&deps.db, Permission::MembersManage, &scope)
             .await;
-        let can_audit = session.allows(&deps.db, Permission::AuditRead, &scope).await;
+        let can_audit = session
+            .allows(&deps.db, Permission::AuditRead, &scope)
+            .await;
         let can_configure = session
             .allows(&deps.db, Permission::RegistryConfigure, &scope)
             .await;
@@ -1769,7 +1777,10 @@ pub(crate) async fn org_audit(
         Err(resp) => return *resp,
     };
     let scope = Scope::parse(&org_slug);
-    if !session.allows(&deps.db, Permission::AuditRead, &scope).await {
+    if !session
+        .allows(&deps.db, Permission::AuditRead, &scope)
+        .await
+    {
         if session.allows(&deps.db, Permission::Read, &scope).await {
             return (StatusCode::FORBIDDEN, "audit read requires admin").into_response();
         }
@@ -1988,20 +1999,10 @@ async fn cache_in_org(
     org_slug: &str,
     cache_slug: &str,
 ) -> Result<(OrgRecord, crate::db::Cache), Response> {
-    let Some(org) = deps
-        .db
-        .org_by_slug(org_slug)
-        .await
-        .map_err(internal)?
-    else {
+    let Some(org) = deps.db.org_by_slug(org_slug).await.map_err(internal)? else {
         return Err(StatusCode::NOT_FOUND.into_response());
     };
-    let Some(cache) = deps
-        .db
-        .cache_by_slug(cache_slug)
-        .await
-        .map_err(internal)?
-    else {
+    let Some(cache) = deps.db.cache_by_slug(cache_slug).await.map_err(internal)? else {
         return Err(StatusCode::NOT_FOUND.into_response());
     };
     if cache.org_id != Some(org.id) || cache.deleted_at.is_some() {
@@ -2050,7 +2051,8 @@ pub(crate) async fn org_create_cache(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
     {
         return *deny;
     }
@@ -2066,7 +2068,13 @@ pub(crate) async fn org_create_cache(
         "" | "zstd" => "zstd",
         "xz" => "xz",
         "none" => "none",
-        other => return (StatusCode::BAD_REQUEST, format!("invalid compression '{other}'")).into_response(),
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid compression '{other}'"),
+            )
+                .into_response()
+        }
     };
     let result = async {
         let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
@@ -2127,7 +2135,9 @@ pub(crate) async fn org_create_cache(
     }
     .await;
     match result {
-        Ok(Some(Ok(()))) => Redirect::to(&format!("/-/org/{org_slug}/caches/{slug}")).into_response(),
+        Ok(Some(Ok(()))) => {
+            Redirect::to(&format!("/-/org/{org_slug}/caches/{slug}")).into_response()
+        }
         Ok(Some(Err(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => internal(err),
@@ -2149,7 +2159,8 @@ pub(crate) async fn cache_update(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
     {
         return *deny;
     }
@@ -2165,11 +2176,21 @@ pub(crate) async fn cache_update(
     } else {
         form.name.trim().to_string()
     };
-    let priority = form.priority.trim().parse::<i64>().unwrap_or(cache.priority);
+    let priority = form
+        .priority
+        .trim()
+        .parse::<i64>()
+        .unwrap_or(cache.priority);
     let compression = match form.compression.trim() {
         "" => cache.compression.clone(),
         c @ ("zstd" | "xz" | "none") => c.to_string(),
-        other => return (StatusCode::BAD_REQUEST, format!("invalid compression '{other}'")).into_response(),
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid compression '{other}'"),
+            )
+                .into_response()
+        }
     };
     let result = deps
         .db
@@ -2204,7 +2225,8 @@ pub(crate) async fn cache_link(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
     {
         return *deny;
     }
@@ -2288,7 +2310,8 @@ pub(crate) async fn cache_change_storage(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
     {
         return *deny;
     }
@@ -2297,10 +2320,11 @@ pub(crate) async fn cache_change_storage(
         Err(resp) => return resp,
     };
     let result = async {
-        let new_binding_id = match resolve_target_binding(&deps, Some(org.id), &form.binding).await? {
-            Ok(id) => id,
-            Err(msg) => return Ok(Some(msg)),
-        };
+        let new_binding_id =
+            match resolve_target_binding(&deps, Some(org.id), &form.binding).await? {
+                Ok(id) => id,
+                Err(msg) => return Ok(Some(msg)),
+            };
         match crate::migrate::migrate_cache_storage(
             &deps.db,
             deps.surface.as_ref(),
@@ -2316,9 +2340,7 @@ pub(crate) async fn cache_change_storage(
     }
     .await;
     match result {
-        Ok(None) => {
-            Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response()
-        }
+        Ok(None) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response(),
         Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(err) => internal(err),
     }
@@ -2383,7 +2405,8 @@ pub(crate) async fn cache_unlink(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
     {
         return *deny;
     }
@@ -2427,7 +2450,8 @@ pub(crate) async fn cache_gc(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
     {
         return *deny;
     }
@@ -2437,24 +2461,26 @@ pub(crate) async fn cache_gc(
     };
     let dry_run = form.dry_run.is_some();
     let now = crate::clock::now_unix_secs();
-    let notice = match crate::gc::sweep_cache(&deps.db, deps.surface_write.as_ref(), &cache, dry_run, now).await
-    {
-        Ok(stats) => {
-            let freed = crate::web::render::human_size(stats.freed_bytes.max(0) as u64);
-            if dry_run {
-                format!(
-                    "Dry run: {} of {} objects collectable, {} reclaimable.",
-                    stats.deleted_objects, stats.scanned, freed
-                )
-            } else {
-                format!(
-                    "Collected {} objects, reclaimed {} ({} retained).",
-                    stats.deleted_objects, freed, stats.retained
-                )
+    let notice =
+        match crate::gc::sweep_cache(&deps.db, deps.surface_write.as_ref(), &cache, dry_run, now)
+            .await
+        {
+            Ok(stats) => {
+                let freed = crate::web::render::human_size(stats.freed_bytes.max(0) as u64);
+                if dry_run {
+                    format!(
+                        "Dry run: {} of {} objects collectable, {} reclaimable.",
+                        stats.deleted_objects, stats.scanned, freed
+                    )
+                } else {
+                    format!(
+                        "Collected {} objects, reclaimed {} ({} retained).",
+                        stats.deleted_objects, freed, stats.retained
+                    )
+                }
             }
-        }
-        Err(err) => format!("GC failed: {err:#}"),
-    };
+            Err(err) => format!("GC failed: {err:#}"),
+        };
     render_cache_detail(&deps, &session, &org, &cache, true, Some(&notice), started).await
 }
 
@@ -2474,7 +2500,8 @@ pub(crate) async fn cache_delete(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
     {
         return *deny;
     }
@@ -2645,12 +2672,8 @@ pub(crate) async fn org_invite_member(
                     "{}/auth/magic?token={secret}",
                     deps.external_url.trim_end_matches('/'),
                 );
-                let content = crate::email::invite_email(
-                    console::brand(),
-                    &org.slug,
-                    role.as_str(),
-                    &link,
-                );
+                let content =
+                    crate::email::invite_email(console::brand(), &org.slug, role.as_str(), &link);
                 if let Err(err) = deps.mailer.send_email(&email, &content).await {
                     tracing::warn!(error = %format!("{err:#}"), "invite email delivery failed");
                 }
@@ -3515,7 +3538,15 @@ pub(crate) async fn org_binding_action(
         Ok(n) => n,
         Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
     };
-    org_binding_view(&deps, &session, &org_slug, binding_id, Some(notice), started).await
+    org_binding_view(
+        &deps,
+        &session,
+        &org_slug,
+        binding_id,
+        Some(notice),
+        started,
+    )
+    .await
 }
 
 /// `GET /-/org/{org}/registries/new` — the create-registry form.
@@ -3690,7 +3721,11 @@ pub(crate) async fn org_create_registry(
         Ok(_) => {}
         Err(err) => return reject(&deps, &org, &session, &format!("{err:#}"), started).await,
     }
-    let canonical = match deps.db.registry_by_scope(&org.slug, project_path, name).await {
+    let canonical = match deps
+        .db
+        .registry_by_scope(&org.slug, project_path, name)
+        .await
+    {
         Ok(Some(reg)) => reg.slug,
         Ok(None) => return internal(anyhow::anyhow!("registry vanished after creation")),
         Err(err) => return internal(err),
@@ -3758,7 +3793,10 @@ pub(crate) async fn org_delete(
         let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
             return Ok(false);
         };
-        let deleted = deps.db.soft_delete_org(org.id, ORG_DELETE_GRACE_SECS).await?;
+        let deleted = deps
+            .db
+            .soft_delete_org(org.id, ORG_DELETE_GRACE_SECS)
+            .await?;
         if deleted {
             deps.db
                 .record_audit(
@@ -4005,7 +4043,14 @@ pub(crate) async fn instance_settings_action(
         return internal(err);
     }
     audit_instance(&deps, &session, "instance.signup_policy", policy.as_str()).await;
-    render_instance(&deps, &session, "general", Some("Signup &amp; identity saved."), started).await
+    render_instance(
+        &deps,
+        &session,
+        "general",
+        Some("Signup &amp; identity saved."),
+        started,
+    )
+    .await
 }
 
 /// `POST /-/instance/branding` form: site title, tagline, banner, footer links.
@@ -4082,7 +4127,14 @@ pub(crate) async fn instance_branding_action(
         opt(&form.support_url),
     );
     audit_instance(&deps, &session, "instance.branding", &form.site_title).await;
-    render_instance(&deps, &session, "branding", Some("Branding saved."), started).await
+    render_instance(
+        &deps,
+        &session,
+        "branding",
+        Some("Branding saved."),
+        started,
+    )
+    .await
 }
 
 /// `POST /-/instance/serving` form: default crawl policy and max upload size.
@@ -4123,7 +4175,14 @@ pub(crate) async fn instance_serving_action(
         return internal(err);
     }
     audit_instance(&deps, &session, "instance.serving", policy.as_str()).await;
-    render_instance(&deps, &session, "serving", Some("Serving defaults saved."), started).await
+    render_instance(
+        &deps,
+        &session,
+        "serving",
+        Some("Serving defaults saved."),
+        started,
+    )
+    .await
 }
 
 /// `POST /-/instance/storage` — manage the instance default storage binding's
@@ -4400,7 +4459,12 @@ async fn registry_settings_view(
         // Resolve the owning org slug (for cache links) and the binary caches
         // that serve this registry — the reverse of a cache's linked registries.
         let org_slug = match registry.org_id {
-            Some(id) => deps.db.org_by_id(id).await?.map(|o| o.slug).unwrap_or_default(),
+            Some(id) => deps
+                .db
+                .org_by_id(id)
+                .await?
+                .map(|o| o.slug)
+                .unwrap_or_default(),
             None => String::new(),
         };
         let mut caches = Vec::new();
@@ -4435,7 +4499,8 @@ async fn registry_settings_view(
         // visibility so the form can grey out advertise for a less-visible one.
         let mut linkable_caches = Vec::new();
         for c in deps.db.list_caches().await? {
-            if c.org_id == registry.org_id && c.deleted_at.is_none() && !linked_ids.contains(&c.id) {
+            if c.org_id == registry.org_id && c.deleted_at.is_none() && !linked_ids.contains(&c.id)
+            {
                 linkable_caches.push((c.slug, c.visibility));
             }
         }
@@ -4598,7 +4663,11 @@ fn cache_advertise_notice(
     proposed: Option<&crate::gitwrite::ProposedChange>,
 ) -> Option<String> {
     proposed.map(|p| {
-        let merge_url = format!("{}/{}", deps.external_url.trim_end_matches('/'), registry.slug);
+        let merge_url = format!(
+            "{}/{}",
+            deps.external_url.trim_end_matches('/'),
+            registry.slug
+        );
         let cmd = crate::git::merge_command(&merge_url, &p.change_id);
         format!(
             "Cache-advertise change request {} created — promote it with: {cmd}",
@@ -4645,50 +4714,53 @@ pub(crate) async fn registry_cache_link(
     }
     let advertised = form.advertised.is_some();
     let roots_packages = form.roots_packages.is_some();
-    let outcome = async {
-        let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? else {
-            return Ok(Err("unknown cache".to_string()));
-        };
-        if cache.org_id != registry.org_id {
-            return Ok(Err("cache is not in this organization".to_string()));
-        }
-        let advisory = crate::service::assess_cache_link(
-            &cache.slug,
-            &cache.visibility,
-            &registry.slug,
-            &registry.visibility,
-            advertised,
-            roots_packages,
-        );
-        if let Some(reject) = advisory.reject {
-            return Ok(Err(reject));
-        }
-        deps.db
-            .link_cache(cache.id, registry.id, roots_packages, advertised)
-            .await?;
-        // Write-through: reconcile the committed [[caches]] with the advertise
-        // flag (add when advertised, remove otherwise) as a change request. This
-        // is best-effort and NON-FATAL: the link itself is already saved, so a
-        // proposal failure (most commonly: the registry has no published/indexed
-        // config to branch a change from) becomes an explanatory notice rather
-        // than a 500 that hides the successful link.
-        let notice = match propose_cache_advertise(&deps, &session, &registry, &cache.slug, advertised)
-            .await
-        {
-            Ok(proposed) => cache_advertise_notice(&deps, &registry, proposed.as_ref())
-                .unwrap_or_else(|| "Cache link saved.".to_string()),
-            Err(e) => format!(
-                "Cache link saved, but the registry.toml advertise change could not be \
+    let outcome =
+        async {
+            let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? else {
+                return Ok(Err("unknown cache".to_string()));
+            };
+            if cache.org_id != registry.org_id {
+                return Ok(Err("cache is not in this organization".to_string()));
+            }
+            let advisory = crate::service::assess_cache_link(
+                &cache.slug,
+                &cache.visibility,
+                &registry.slug,
+                &registry.visibility,
+                advertised,
+                roots_packages,
+            );
+            if let Some(reject) = advisory.reject {
+                return Ok(Err(reject));
+            }
+            deps.db
+                .link_cache(cache.id, registry.id, roots_packages, advertised)
+                .await?;
+            // Write-through: reconcile the committed [[caches]] with the advertise
+            // flag (add when advertised, remove otherwise) as a change request. This
+            // is best-effort and NON-FATAL: the link itself is already saved, so a
+            // proposal failure (most commonly: the registry has no published/indexed
+            // config to branch a change from) becomes an explanatory notice rather
+            // than a 500 that hides the successful link.
+            let notice =
+                match propose_cache_advertise(&deps, &session, &registry, &cache.slug, advertised)
+                    .await
+                {
+                    Ok(proposed) => cache_advertise_notice(&deps, &registry, proposed.as_ref())
+                        .unwrap_or_else(|| "Cache link saved.".to_string()),
+                    Err(e) => format!(
+                        "Cache link saved, but the registry.toml advertise change could not be \
                  proposed: {e:#}. Publish or index the registry first, then re-save to \
                  advertise the cache to consumers."
-            ),
-        };
-        Ok::<Result<String, String>, anyhow::Error>(Ok(notice))
-    }
-    .await;
+                    ),
+                };
+            Ok::<Result<String, String>, anyhow::Error>(Ok(notice))
+        }
+        .await;
     match outcome {
         Ok(Ok(notice)) => {
-            registry_settings_view(&deps, &session, &registry, Some(&notice), "caches", started).await
+            registry_settings_view(&deps, &session, &registry, Some(&notice), "caches", started)
+                .await
         }
         Ok(Err(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(err) => internal(err),
@@ -4757,7 +4829,8 @@ pub(crate) async fn registry_cache_unlink(
     .await;
     match outcome {
         Ok(notice) => {
-            registry_settings_view(&deps, &session, &registry, Some(&notice), "caches", started).await
+            registry_settings_view(&deps, &session, &registry, Some(&notice), "caches", started)
+                .await
         }
         Err(err) => internal(err),
     }
@@ -4808,10 +4881,11 @@ pub(crate) async fn registry_change_storage(
         return *deny;
     }
     let result = async {
-        let new_binding_id = match resolve_target_binding(&deps, registry.org_id, &form.binding).await? {
-            Ok(id) => id,
-            Err(msg) => return Ok(Some(msg)),
-        };
+        let new_binding_id =
+            match resolve_target_binding(&deps, registry.org_id, &form.binding).await? {
+                Ok(id) => id,
+                Err(msg) => return Ok(Some(msg)),
+            };
         match crate::migrate::migrate_registry_storage(
             &deps.db,
             deps.surface.as_ref(),
@@ -4940,8 +5014,15 @@ pub(crate) async fn registry_visibility(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    registry_visibility_action(&deps, &session, &registry, &form.csrf, &form.visibility, started)
-        .await
+    registry_visibility_action(
+        &deps,
+        &session,
+        &registry,
+        &form.csrf,
+        &form.visibility,
+        started,
+    )
+    .await
 }
 
 /// The visibility-change action.
@@ -4982,8 +5063,15 @@ async fn registry_visibility_action(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => return internal(err),
     };
-    registry_settings_view(deps, session, &updated, Some(change_id.0.as_str()), "general", started)
-        .await
+    registry_settings_view(
+        deps,
+        session,
+        &updated,
+        Some(change_id.0.as_str()),
+        "general",
+        started,
+    )
+    .await
 }
 
 /// `POST /{slug}/-/settings/crawl` form: the new crawl policy.
@@ -5013,7 +5101,15 @@ pub(crate) async fn registry_crawl_policy(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    registry_crawl_policy_action(&deps, &session, &registry, &form.csrf, &form.policy, started).await
+    registry_crawl_policy_action(
+        &deps,
+        &session,
+        &registry,
+        &form.csrf,
+        &form.policy,
+        started,
+    )
+    .await
 }
 
 /// The crawl-policy-change action (mirrors [`registry_visibility_action`]).
@@ -5054,8 +5150,15 @@ async fn registry_crawl_policy_action(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => return internal(err),
     };
-    registry_settings_view(deps, session, &updated, Some(change_id.0.as_str()), "general", started)
-        .await
+    registry_settings_view(
+        deps,
+        session,
+        &updated,
+        Some(change_id.0.as_str()),
+        "general",
+        started,
+    )
+    .await
 }
 
 /// `POST /{slug}/-/settings/delete` form: the typed-confirmation name.
@@ -5084,7 +5187,15 @@ pub(crate) async fn registry_delete(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    registry_delete_action(&deps, &session, &registry, &form.csrf, &form.confirm, &headers).await
+    registry_delete_action(
+        &deps,
+        &session,
+        &registry,
+        &form.csrf,
+        &form.confirm,
+        &headers,
+    )
+    .await
 }
 
 /// The registry-delete action.
@@ -5199,7 +5310,10 @@ async fn tokens_create_action(
         return *resp;
     }
     let scope = Scope::parse(&registry.slug);
-    if !session.allows(&deps.db, Permission::TokensSelf, &scope).await {
+    if !session
+        .allows(&deps.db, Permission::TokensSelf, &scope)
+        .await
+    {
         return (StatusCode::FORBIDDEN, "tokens.self required").into_response();
     }
     let mut perms = Vec::new();
@@ -5297,7 +5411,9 @@ async fn render_tokens(
     started: Instant,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
-    let can_create = session.allows(&deps.db, Permission::TokensSelf, &scope).await;
+    let can_create = session
+        .allows(&deps.db, Permission::TokensSelf, &scope)
+        .await;
     let all = match deps.db.list_tokens_for(session.principal()).await {
         Ok(tokens) => tokens,
         Err(err) => return internal(err),
@@ -5722,9 +5838,7 @@ async fn advance_direct_action(
             render_channel_console(deps, session, registry, name, None, Some(&message), started)
                 .await
         }
-        Err(err) => {
-            (StatusCode::BAD_REQUEST, format!("advance failed: {err:#}")).into_response()
-        }
+        Err(err) => (StatusCode::BAD_REQUEST, format!("advance failed: {err:#}")).into_response(),
     }
 }
 
@@ -5753,7 +5867,10 @@ async fn render_org_keys(
     started: Instant,
 ) -> Response {
     let scope = Scope::parse(org_slug);
-    if !session.allows(&deps.db, Permission::KeysManage, &scope).await {
+    if !session
+        .allows(&deps.db, Permission::KeysManage, &scope)
+        .await
+    {
         if session.allows(&deps.db, Permission::Read, &scope).await {
             return (StatusCode::FORBIDDEN, "keys.manage required").into_response();
         }
@@ -5822,7 +5939,10 @@ pub(crate) async fn org_keys_action(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if !session.allows(&deps.db, Permission::KeysManage, &scope).await {
+    if !session
+        .allows(&deps.db, Permission::KeysManage, &scope)
+        .await
+    {
         if session.allows(&deps.db, Permission::Read, &scope).await {
             return (StatusCode::FORBIDDEN, "keys.manage required").into_response();
         }
@@ -5900,7 +6020,11 @@ pub(crate) async fn org_keys_action(
                     Err(err) => return internal(err),
                 }
             }
-            if let Err(err) = deps.db.set_registry_hosted_key(registry.id, hosted_key_id).await {
+            if let Err(err) = deps
+                .db
+                .set_registry_hosted_key(registry.id, hosted_key_id)
+                .await
+            {
                 return internal(err);
             }
             let detail = serde_json::json!({ "hosted_key_id": hosted_key_id }).to_string();
@@ -6043,7 +6167,10 @@ pub(crate) async fn org_webhooks_action(
                 )
                     .into_response();
             }
-            let known: Vec<&str> = console::WEBHOOK_EVENT_TYPES.iter().map(|(e, _)| *e).collect();
+            let known: Vec<&str> = console::WEBHOOK_EVENT_TYPES
+                .iter()
+                .map(|(e, _)| *e)
+                .collect();
             if let Some(bad) = events.iter().find(|e| !known.contains(&e.as_str())) {
                 return (StatusCode::BAD_REQUEST, format!("unknown event: {bad}")).into_response();
             }
@@ -6390,7 +6517,8 @@ pub(crate) async fn org_sso_action(
             match deps.db.org_domain(&domain).await {
                 Ok(Some(d)) if d.org_id == org.id => {}
                 Ok(_) => {
-                    return (StatusCode::NOT_FOUND, "domain not claimed by this org").into_response()
+                    return (StatusCode::NOT_FOUND, "domain not claimed by this org")
+                        .into_response()
                 }
                 Err(err) => return internal(err),
             }
@@ -6682,7 +6810,8 @@ async fn serving_action(
             if let Err(err) = updated {
                 return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response();
             }
-            if let Err(err) = audit(deps, session, registry, "frontend.edit", &id.to_string()).await {
+            if let Err(err) = audit(deps, session, registry, "frontend.edit", &id.to_string()).await
+            {
                 return internal(err);
             }
             serving_view(deps, session, registry, Some("Frontend updated."), started).await
@@ -6699,7 +6828,8 @@ async fn serving_action(
             if let Err(err) = deps.db.delete_frontend(id).await {
                 return internal(err);
             }
-            if let Err(err) = audit(deps, session, registry, "frontend.delete", &id.to_string()).await
+            if let Err(err) =
+                audit(deps, session, registry, "frontend.delete", &id.to_string()).await
             {
                 return internal(err);
             }
@@ -6735,13 +6865,21 @@ async fn serving_action(
             if let Err(err) = audit(deps, session, registry, "mirror.set", upstream).await {
                 return internal(err);
             }
-            serving_view(deps, session, registry, Some("Mirror configuration saved."), started).await
+            serving_view(
+                deps,
+                session,
+                registry,
+                Some("Mirror configuration saved."),
+                started,
+            )
+            .await
         }
         "remove-mirror" => {
             if let Err(err) = deps.db.delete_mirror_source(registry.id).await {
                 return internal(err);
             }
-            if let Err(err) = audit(deps, session, registry, "mirror.remove", &registry.slug).await {
+            if let Err(err) = audit(deps, session, registry, "mirror.remove", &registry.slug).await
+            {
                 return internal(err);
             }
             serving_view(deps, session, registry, Some("Stopped mirroring."), started).await
@@ -7004,9 +7142,11 @@ async fn current_registry_toml(
     };
     let head = aos_registry_surface::object::Oid::from_hex(&head_hex)?;
     let fetch = deps.surface.fetcher(registry).await?;
-    Ok(crate::git::load_committed_file(fetch.as_ref(), head, "registry.toml")
-        .await?
-        .unwrap_or_default())
+    Ok(
+        crate::git::load_committed_file(fetch.as_ref(), head, "registry.toml")
+            .await?
+            .unwrap_or_default(),
+    )
 }
 
 /// `POST /{slug}/-/settings/config` — submit a structured config change request.
@@ -7056,7 +7196,15 @@ pub(crate) async fn config_submit(
     };
     match crate::web::config_form::build_toml(&existing, &sub) {
         Ok(contents) => {
-            propose_registry_config(&deps, &session, &registry, &contents, started).await
+            let trimmed = |s: &str| {
+                let t = s.trim();
+                (!t.is_empty()).then(|| t.to_string())
+            };
+            let meta = crate::gitwrite::ProposeMeta {
+                title: trimmed(&sub.title),
+                body: trimmed(&sub.body),
+            };
+            propose_registry_config(&deps, &session, &registry, &contents, meta, started).await
         }
         Err(err) => {
             // Re-render the form with the error and the user's preserved input;
@@ -7094,6 +7242,7 @@ async fn propose_registry_config(
     session: &Session,
     registry: &RegistryRecord,
     contents: &str,
+    meta: crate::gitwrite::ProposeMeta,
     started: Instant,
 ) -> Response {
     let fetch = match deps.surface.fetcher(registry).await {
@@ -7116,6 +7265,7 @@ async fn propose_registry_config(
         Some(session.auth.user_id),
         &session.email,
         crate::clock::now_unix_secs(),
+        meta,
     )
     .await;
     match proposed {
@@ -7161,67 +7311,59 @@ pub(crate) async fn changes(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    changes_view(&deps, &session, &registry, started).await
+    let filter = console::ChangesFilter::parse(query_value(&uri, "state").as_deref());
+    changes_view(&deps, &session, &registry, filter, started).await
 }
 
 /// Render the change-request list page for a resolved registry.
 ///
-/// Gated to `audit.read` (admin+). Each draft renders its file diffs (computed
-/// from the recorded old/new file contents) and the promotion command.
+/// Gated to `audit.read` (admin+). Renders the Open/Closed/All tabbed list; each
+/// row links to the change's detail page.
 async fn changes_view(
     deps: &ConsoleDeps,
     session: &Session,
     registry: &RegistryRecord,
+    filter: console::ChangesFilter,
     started: Instant,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
-    if !session.allows(&deps.db, Permission::AuditRead, &scope).await {
+    if !session
+        .allows(&deps.db, Permission::AuditRead, &scope)
+        .await
+    {
         return (StatusCode::FORBIDDEN, "audit.read required").into_response();
     }
 
     let result = async {
-        let merge_url = format!(
-            "{}/{}",
-            deps.external_url.trim_end_matches('/'),
-            registry.slug
-        );
         let changesets = deps.db.list_changesets(&registry.slug).await?;
-        let mut requests: Vec<console::ChangeRequestView> = Vec::new();
+        let mut rows: Vec<console::ChangeListRow> = Vec::new();
         for cs in changesets.into_iter().filter(|cs| cs.git_ref.is_some()) {
-            let file_diffs = deps
+            let comment_count = deps
                 .db
-                .list_revisions(&cs.change_id)
+                .list_change_comments(&cs.change_id)
                 .await
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|r| r.object_type == "registry_file")
-                .map(|r| {
-                    (
-                        r.object_id.clone(),
-                        crate::git::unified_diff(
-                            &r.object_id,
-                            r.old_json.as_deref().unwrap_or_default(),
-                            r.new_json.as_deref().unwrap_or_default(),
-                        ),
-                    )
-                })
-                .collect();
-            let merge_command =
-                crate::git::merge_command(&merge_url, &config::ChangeId(cs.change_id.clone()));
-            requests.push(console::ChangeRequestView {
+                .map(|c| c.len())
+                .unwrap_or(0);
+            let title = cs
+                .title
+                .clone()
+                .or_else(|| cs.summary.clone())
+                .unwrap_or_default();
+            rows.push(console::ChangeListRow {
                 change_id: cs.change_id,
+                title,
                 status: cs.status,
-                summary: cs.summary.unwrap_or_default(),
+                closed: cs.closed_at.is_some(),
                 actor_label: cs.actor_label,
-                git_commit: cs.git_commit.unwrap_or_default(),
-                file_diffs,
-                merge_command,
+                created_at: cs.created_at,
+                comment_count,
             });
         }
         Ok::<_, anyhow::Error>(console::changes_page(
             &session.email,
             registry,
-            &requests,
+            &rows,
+            filter,
             started,
         ))
     }
@@ -7230,4 +7372,509 @@ async fn changes_view(
         Ok(html) => Html(html).into_response(),
         Err(err) => internal(err),
     }
+}
+
+/// Reads a single query-string value by key from a request URI.
+fn query_value(uri: &axum::http::Uri, key: &str) -> Option<String> {
+    uri.query().and_then(|q| {
+        url::form_urlencoded::parse(q.as_bytes())
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.into_owned())
+    })
+}
+
+/// `GET /{slug}/-/changes/{id}` — the change-request detail (review) page.
+///
+/// Renders the PR-style Conversation / Diff / Checks views for one git-backed
+/// change request. Gated to `audit.read`; a change whose scope is not contained
+/// by the resolved registry (or that is not a git-backed change request) 404s,
+/// so a registry's URL can only reach its own changes.
+pub(crate) async fn change_detail(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path((slug, id)): Path<(String, String)>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    change_detail_view(&deps, &session, &registry, &id, &uri, started).await
+}
+
+/// Renders the change-request detail page for a resolved registry and change id.
+async fn change_detail_view(
+    deps: &ConsoleDeps,
+    session: &Session,
+    registry: &RegistryRecord,
+    change_id: &str,
+    uri: &axum::http::Uri,
+    started: Instant,
+) -> Response {
+    let scope = Scope::parse(&registry.slug);
+    if !session
+        .allows(&deps.db, Permission::AuditRead, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "audit.read required").into_response();
+    }
+    let can_close = session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await;
+
+    let result = async {
+        let Some(cs) = deps.db.changeset(change_id).await? else {
+            return Ok(None);
+        };
+        // Scope guard: only this registry's own git-backed change requests.
+        if cs.git_ref.is_none() || !scope.contains(&Scope::parse(&cs.scope)) {
+            return Ok(None);
+        }
+
+        let revisions = deps.db.list_revisions(change_id).await.unwrap_or_default();
+        let file_revs: Vec<_> = revisions
+            .into_iter()
+            .filter(|r| r.object_type == "registry_file")
+            .collect();
+        let file_diffs = file_revs
+            .iter()
+            .map(|r| {
+                (
+                    r.object_id.clone(),
+                    crate::git::unified_diff(
+                        &r.object_id,
+                        r.old_json.as_deref().unwrap_or_default(),
+                        r.new_json.as_deref().unwrap_or_default(),
+                    ),
+                )
+            })
+            .collect();
+        let checks = compute_config_checks(
+            file_revs
+                .first()
+                .and_then(|r| r.new_json.as_deref())
+                .unwrap_or_default(),
+        );
+
+        let comments = deps
+            .db
+            .list_change_comments(change_id)
+            .await
+            .unwrap_or_default();
+        let reviews = deps
+            .db
+            .list_change_reviews(change_id)
+            .await
+            .unwrap_or_default();
+        let timeline = build_change_timeline(&cs, &comments, &reviews);
+
+        let merge_url = format!(
+            "{}/{}",
+            deps.external_url.trim_end_matches('/'),
+            registry.slug
+        );
+        let merge_command =
+            crate::git::merge_command(&merge_url, &config::ChangeId(cs.change_id.clone()));
+
+        let detail = console::ChangeDetailView {
+            title: cs
+                .title
+                .clone()
+                .or_else(|| cs.summary.clone())
+                .unwrap_or_default(),
+            body: cs.body.clone().unwrap_or_default(),
+            status: cs.status.clone(),
+            closed: cs.closed_at.is_some(),
+            actor_label: cs.actor_label.clone(),
+            created_at: cs.created_at,
+            git_commit: cs.git_commit.clone().unwrap_or_default(),
+            base_branch: "HEAD".to_string(),
+            file_diffs,
+            checks,
+            timeline,
+            merge_command,
+            view: console::DetailTab::parse(query_value(uri, "view").as_deref()),
+            can_review: true,
+            can_close,
+            csrf: session.csrf(),
+            change_id: cs.change_id,
+        };
+        Ok(Some(console::change_detail_page(
+            &session.email,
+            registry,
+            &detail,
+            started,
+        )))
+    }
+    .await;
+
+    match result {
+        Ok(Some(html)) => Html(html).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// Recomputes the change-request validation checks from the proposed
+/// `registry.toml` text, fully tolerant of malformed input (never panics).
+fn compute_config_checks(new_text: &str) -> Vec<console::CheckRow> {
+    use aos_registry_surface::manifest::RegistryRootConfig;
+
+    let mut checks = Vec::new();
+    let schema = toml::from_str::<RegistryRootConfig>(new_text);
+    checks.push(console::CheckRow {
+        ok: schema.is_ok(),
+        label: "schema valid".to_string(),
+        note: schema
+            .as_ref()
+            .err()
+            .map(|e| e.to_string().lines().next().unwrap_or_default().to_string())
+            .unwrap_or_default(),
+    });
+
+    match toml::from_str::<toml::Value>(new_text) {
+        Ok(val) => {
+            let name_ok = val
+                .get("registry")
+                .and_then(|r| r.get("name"))
+                .and_then(toml::Value::as_str)
+                .is_some_and(|n| !n.trim().is_empty());
+            checks.push(console::CheckRow {
+                ok: name_ok,
+                label: "registry name set".to_string(),
+                note: String::new(),
+            });
+
+            let caches = val.get("caches").and_then(toml::Value::as_array);
+            let count = caches.map_or(0, Vec::len);
+            let prio_ok = caches.is_none_or(|arr| {
+                arr.iter().all(|e| {
+                    e.get("priority")
+                        .is_none_or(|p| p.as_integer().is_some_and(|i| i >= 0))
+                })
+            });
+            let url_ok = caches.is_none_or(|arr| {
+                arr.iter().all(|e| {
+                    e.get("url")
+                        .and_then(toml::Value::as_str)
+                        .is_some_and(|u| !u.trim().is_empty())
+                })
+            });
+            checks.push(console::CheckRow {
+                ok: prio_ok,
+                label: "cache priorities parse".to_string(),
+                note: format!("{count} cache(s)"),
+            });
+            checks.push(console::CheckRow {
+                ok: url_ok,
+                label: "cache URLs present".to_string(),
+                note: String::new(),
+            });
+        }
+        Err(_) => {
+            checks.push(console::CheckRow {
+                ok: false,
+                label: "registry name set".to_string(),
+                note: "file does not parse".to_string(),
+            });
+        }
+    }
+    checks
+}
+
+/// Synthesizes the conversation timeline from the change-set lifecycle stamps,
+/// its comments, and its reviews, sorted oldest-first.
+fn build_change_timeline(
+    cs: &crate::db::ChangesetRow,
+    comments: &[crate::db::ChangeCommentRow],
+    reviews: &[crate::db::ChangeReviewRow],
+) -> Vec<console::TimelineItem> {
+    use console::{TimelineItem, TimelineKind};
+
+    let mut items = vec![TimelineItem {
+        kind: TimelineKind::Opened,
+        actor: cs.actor_label.clone(),
+        when: cs.created_at,
+        body: String::new(),
+    }];
+    for c in comments {
+        items.push(TimelineItem {
+            kind: TimelineKind::Comment,
+            actor: c.actor_label.clone(),
+            when: c.created_at,
+            body: c.body.clone(),
+        });
+    }
+    for r in reviews {
+        let kind = if r.verdict == "approve" {
+            TimelineKind::Approved
+        } else {
+            TimelineKind::RequestedChanges
+        };
+        items.push(TimelineItem {
+            kind,
+            actor: r.actor_label.clone(),
+            when: r.created_at,
+            body: r.body.clone().unwrap_or_default(),
+        });
+    }
+    if let Some(when) = cs.closed_at {
+        items.push(TimelineItem {
+            kind: TimelineKind::Closed,
+            actor: String::new(),
+            when,
+            body: String::new(),
+        });
+    }
+    if cs.status == "applied" {
+        items.push(TimelineItem {
+            kind: TimelineKind::Merged,
+            actor: String::new(),
+            when: cs.applied_at.unwrap_or(cs.created_at),
+            body: String::new(),
+        });
+    }
+    if cs.status == "reverted" {
+        items.push(TimelineItem {
+            kind: TimelineKind::Reverted,
+            actor: String::new(),
+            when: cs.applied_at.unwrap_or(cs.created_at),
+            body: String::new(),
+        });
+    }
+    items.sort_by_key(|i| i.when);
+    items
+}
+
+/// CSRF-only form for the close/reopen actions.
+///
+/// All fields default so a missing CSRF token deserializes to `""` and is
+/// rejected by [`check_csrf`] with a `403` (rather than a `422` from the `Form`
+/// extractor), keeping CSRF the first gate — matching `config_submit`.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct ChangeActionForm {
+    /// The session CSRF token.
+    pub csrf: String,
+}
+
+/// A discussion-comment submission.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct ChangeCommentForm {
+    /// The session CSRF token.
+    pub csrf: String,
+    /// The comment text.
+    pub body: String,
+}
+
+/// An advisory-review submission.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct ChangeReviewForm {
+    /// The session CSRF token.
+    pub csrf: String,
+    /// `approve` or `request_changes`.
+    pub verdict: String,
+    /// Optional review note.
+    pub body: String,
+}
+
+/// Loads a change request for a mutating action: resolves the registry, checks
+/// `perm`, validates CSRF, and confirms the change is one of this registry's own
+/// git-backed change requests. Returns the loaded changeset on success, or the
+/// error response to return.
+async fn authorize_change_action(
+    deps: &ConsoleDeps,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+    slug: &str,
+    change_id: &str,
+    csrf: &str,
+    perm: Permission,
+) -> Result<(Session, RegistryRecord, crate::db::ChangesetRow), Response> {
+    let session = require_session(deps, headers).await.map_err(|r| *r)?;
+    let Some(registry) = resolve_registry(deps, slug, uri).await.map_err(internal)? else {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    };
+    if let Err(resp) = check_csrf(&session, csrf) {
+        return Err(*resp);
+    }
+    let scope = Scope::parse(&registry.slug);
+    if !session.allows(&deps.db, perm, &scope).await {
+        return Err((StatusCode::FORBIDDEN, "insufficient permission").into_response());
+    }
+    let Some(cs) = deps.db.changeset(change_id).await.map_err(internal)? else {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    };
+    if cs.git_ref.is_none() || !scope.contains(&Scope::parse(&cs.scope)) {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    }
+    Ok((session, registry, cs))
+}
+
+/// A 303 redirect back to a change's detail page (post/redirect/get).
+fn redirect_to_change(slug: &str, change_id: &str) -> Response {
+    Redirect::to(&format!("/{slug}/-/changes/{change_id}")).into_response()
+}
+
+/// `POST /{slug}/-/changes/{id}/comment` — post a discussion comment.
+///
+/// Gated to `audit.read` (anyone who can see the change may discuss it).
+pub(crate) async fn change_comment(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path((slug, id)): Path<(String, String)>,
+    Form(form): Form<ChangeCommentForm>,
+) -> Response {
+    let (session, _registry, cs) = match authorize_change_action(
+        &deps,
+        &headers,
+        &uri,
+        &slug,
+        &id,
+        &form.csrf,
+        Permission::AuditRead,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let body = form.body.trim();
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, "empty comment").into_response();
+    }
+    if let Err(err) = deps
+        .db
+        .add_change_comment(
+            &cs.change_id,
+            "user",
+            Some(session.auth.user_id),
+            &session.email,
+            body,
+        )
+        .await
+    {
+        return internal(err);
+    }
+    redirect_to_change(&slug, &cs.change_id)
+}
+
+/// `POST /{slug}/-/changes/{id}/review` — submit an advisory review.
+///
+/// Gated to `audit.read`. Reviews are advisory: there is no server-side merge,
+/// so an approval gates nothing — it is recorded for the timeline.
+pub(crate) async fn change_review(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path((slug, id)): Path<(String, String)>,
+    Form(form): Form<ChangeReviewForm>,
+) -> Response {
+    let (session, _registry, cs) = match authorize_change_action(
+        &deps,
+        &headers,
+        &uri,
+        &slug,
+        &id,
+        &form.csrf,
+        Permission::AuditRead,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let verdict = match form.verdict.as_str() {
+        v @ ("approve" | "request_changes") => v,
+        _ => return (StatusCode::BAD_REQUEST, "invalid verdict").into_response(),
+    };
+    let note = form.body.trim();
+    let note = (!note.is_empty()).then_some(note);
+    if let Err(err) = deps
+        .db
+        .add_change_review(
+            &cs.change_id,
+            "user",
+            Some(session.auth.user_id),
+            &session.email,
+            verdict,
+            note,
+        )
+        .await
+    {
+        return internal(err);
+    }
+    redirect_to_change(&slug, &cs.change_id)
+}
+
+/// `POST /{slug}/-/changes/{id}/close` — withdraw an open draft change request.
+///
+/// Gated to `registry.configure`. Sets `closed_at`; never touches git, so the
+/// draft ref remains promotable.
+pub(crate) async fn change_close(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path((slug, id)): Path<(String, String)>,
+    Form(form): Form<ChangeActionForm>,
+) -> Response {
+    let (_session, _registry, cs) = match authorize_change_action(
+        &deps,
+        &headers,
+        &uri,
+        &slug,
+        &id,
+        &form.csrf,
+        Permission::RegistryConfigure,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Err(err) = deps.db.close_changeset(&cs.change_id).await {
+        return internal(err);
+    }
+    redirect_to_change(&slug, &cs.change_id)
+}
+
+/// `POST /{slug}/-/changes/{id}/reopen` — reopen a closed change request.
+///
+/// Gated to `registry.configure`. Clears `closed_at`, re-arming the indexer's
+/// auto-merge detection.
+pub(crate) async fn change_reopen(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path((slug, id)): Path<(String, String)>,
+    Form(form): Form<ChangeActionForm>,
+) -> Response {
+    let (_session, _registry, cs) = match authorize_change_action(
+        &deps,
+        &headers,
+        &uri,
+        &slug,
+        &id,
+        &form.csrf,
+        Permission::RegistryConfigure,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Err(err) = deps.db.reopen_changeset(&cs.change_id).await {
+        return internal(err);
+    }
+    redirect_to_change(&slug, &cs.change_id)
 }

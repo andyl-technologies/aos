@@ -153,6 +153,11 @@ pub struct Submission {
     pub content_addressed: bool,
     /// The submitted cache rows, paired by document order.
     pub caches: Vec<RawCacheRow>,
+    /// The change-request title the proposer typed (untrimmed; empty falls back
+    /// to the auto commit summary).
+    pub title: String,
+    /// The change-request description the proposer typed (untrimmed; optional).
+    pub body: String,
 }
 
 /// Decodes an `application/x-www-form-urlencoded` config-form body.
@@ -198,6 +203,8 @@ pub fn parse_submission(body: &str) -> Submission {
         readme: first("readme"),
         content_addressed: pairs.iter().any(|(k, _)| k == "content_addressed"),
         caches,
+        title: first("cr_title"),
+        body: first("cr_body"),
     }
 }
 
@@ -344,7 +351,10 @@ fn open_doc(existing: &str, registry_name: &str) -> Result<toml::Value> {
         .and_then(toml::Value::as_str)
         .is_some_and(|n| !n.trim().is_empty());
     if !has_name {
-        reg.insert("name".into(), toml::Value::String(registry_name.to_string()));
+        reg.insert(
+            "name".into(),
+            toml::Value::String(registry_name.to_string()),
+        );
     }
     Ok(doc)
 }
@@ -391,11 +401,7 @@ fn cache_entry_matches(entry: &toml::Value, url: &str) -> bool {
 ///
 /// Returns an error when the existing file is malformed or not a TOML table, or
 /// when the rebuilt document fails schema validation.
-pub fn add_cache_to_toml(
-    existing: &str,
-    registry_name: &str,
-    url: &str,
-) -> Result<Option<String>> {
+pub fn add_cache_to_toml(existing: &str, registry_name: &str, url: &str) -> Result<Option<String>> {
     let mut doc = open_doc(existing, registry_name)?;
     let root = doc
         .as_table_mut()
@@ -455,7 +461,7 @@ mod tests {
         assert_eq!(cfg.caches.len(), 1);
         assert_eq!(cfg.caches[0].url, "https://c1");
         assert_eq!(cfg.caches[0].priority, 100); // omitted → schema default
-        // Re-adding the same URL is a no-op (no change request).
+                                                 // Re-adding the same URL is a no-op (no change request).
         assert!(add_cache_to_toml(&out, "andyl", "https://c1")
             .expect("idempotent")
             .is_none());
@@ -471,7 +477,10 @@ mod tests {
             .expect("changed");
         let cfg: RegistryRootConfig = toml::from_str(&out).expect("valid");
         assert_eq!(cfg.caches.len(), 2);
-        assert!(cfg.caches.iter().any(|c| c.url == "https://ext" && c.priority == 50));
+        assert!(cfg
+            .caches
+            .iter()
+            .any(|c| c.url == "https://ext" && c.priority == 50));
         assert!(cfg.caches.iter().any(|c| c.url == "https://managed"));
         assert!(cfg.cache_stack.is_some()); // advanced stack untouched
     }

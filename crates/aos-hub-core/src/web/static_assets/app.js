@@ -572,8 +572,29 @@
     });
   }
 
+  // --- Copy-to-clipboard buttons ----------------------------------------
+  // A `[data-copy-target="<id>"]` button (rendered `hidden`) copies the text
+  // content of the element with that id — used for the `apr change merge`
+  // command on the change-request page. With no JS (or no Clipboard API) the
+  // button stays hidden and the command text is selectable as the floor.
+  function initCopyButton(btn) {
+    var target = document.getElementById(btn.getAttribute("data-copy-target"));
+    if (!target || !navigator.clipboard) return;
+    btn.hidden = false;
+    btn.addEventListener("click", function () {
+      navigator.clipboard.writeText(target.textContent.trim()).then(function () {
+        var prev = btn.textContent;
+        btn.textContent = "copied";
+        setTimeout(function () {
+          btn.textContent = prev;
+        }, 1200);
+      });
+    });
+  }
+
   document.querySelectorAll("form[data-live]").forEach(initLiveSearch);
   document.querySelectorAll(".code-editor").forEach(initCodeEditor);
+  document.querySelectorAll("[data-copy-target]").forEach(initCopyButton);
   document.querySelectorAll("[data-filter-widget]").forEach(initFilterBox);
   document.querySelectorAll("form[data-binding-kind]").forEach(initBindingForm);
   document.querySelectorAll("form[data-cache-link]").forEach(initCacheLinkForm);

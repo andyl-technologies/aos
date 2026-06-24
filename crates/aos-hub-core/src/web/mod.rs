@@ -53,5 +53,6 @@ pub mod csrf;
 pub mod help;
 pub mod render;
 pub mod session;
+pub mod toml_highlight;
 
 pub use render::PageChrome;

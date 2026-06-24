@@ -1404,6 +1404,49 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE registries ADD COLUMN advertise_storage_frontend INTEGER NOT NULL DEFAULT 1;
     ALTER TABLE caches ADD COLUMN advertise_storage_frontend INTEGER NOT NULL DEFAULT 1;
     ",
+    // v32: PR-style review surface for git-backed config change requests
+    // (RFC-0004 "Web change requests"). Three additive columns on
+    // config_changesets carry the human title/body a proposer types when
+    // opening a change (the git commit message stays the deterministic
+    // `config: edit ...` summary) and a `closed_at` timestamp.
+    //
+    // `closed_at` is an ORTHOGONAL axis, deliberately NOT a new `status` value:
+    // the indexer auto-merges a draft via mark_changeset_applied_commit guarded
+    // `WHERE status = 'draft'`, so a `status='closed'` row whose ref is later
+    // promoted by `apr change merge` would never flip to applied. Modeling
+    // "withdrawn" as `closed_at IS NOT NULL` (status untouched) keeps auto-merge
+    // armed; reopen clears `closed_at` and a reopened→merged change still flips.
+    //
+    // change_comments and change_reviews are the discussion + advisory-review
+    // log a change accrues in the console. Reviews are advisory only — there is
+    // no server-side merge, so an approval gates nothing; it is recorded for the
+    // timeline. Both cascade-delete with their changeset.
+    "
+    ALTER TABLE config_changesets ADD COLUMN title TEXT;        -- PR title (NULL for pre-v32 rows)
+    ALTER TABLE config_changesets ADD COLUMN body TEXT;         -- PR description (plain text)
+    ALTER TABLE config_changesets ADD COLUMN closed_at INTEGER; -- set on close; NULL when open/reopened
+    CREATE TABLE change_comments (
+        id          INTEGER PRIMARY KEY,
+        change_id   TEXT NOT NULL REFERENCES config_changesets(change_id) ON DELETE CASCADE,
+        actor_kind  TEXT NOT NULL,
+        actor_id    INTEGER,
+        actor_label TEXT NOT NULL,
+        body        TEXT NOT NULL,
+        created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX change_comments_change_idx ON change_comments (change_id, id);
+    CREATE TABLE change_reviews (
+        id          INTEGER PRIMARY KEY,
+        change_id   TEXT NOT NULL REFERENCES config_changesets(change_id) ON DELETE CASCADE,
+        actor_kind  TEXT NOT NULL,
+        actor_id    INTEGER,
+        actor_label TEXT NOT NULL,
+        verdict     TEXT NOT NULL,                              -- approve | request_changes
+        body        TEXT,                                       -- optional review note
+        created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX change_reviews_change_idx ON change_reviews (change_id, id);
+    ",
 ];
 
 /// Returns every migration's individual SQL statements, in order.
@@ -2381,6 +2424,60 @@ pub struct ChangesetRow {
     /// Signed draft-commit oid the [`Self::git_ref`] points at, or `None` for
     /// a SQL-only change-set.
     pub git_commit: Option<String>,
+    /// Human title the proposer gave the change request, or `None` for change-
+    /// sets opened before the review surface existed (fall back to
+    /// [`Self::summary`]).
+    pub title: Option<String>,
+    /// Optional free-text description the proposer wrote, or `None`.
+    pub body: Option<String>,
+    /// Unix time an open draft was *withdrawn* (closed without merging), or
+    /// `None` when open or reopened. Orthogonal to [`Self::status`]: a closed
+    /// change-set keeps `status = 'draft'` so the indexer can still flip it to
+    /// `applied` if its ref is later promoted.
+    pub closed_at: Option<i64>,
+}
+
+/// One discussion comment on a change request (system-of-record row).
+#[derive(Debug, Clone)]
+pub struct ChangeCommentRow {
+    /// Row id (monotonic; the timeline orders by it).
+    pub id: i64,
+    /// The change-set this comment belongs to.
+    pub change_id: String,
+    /// Actor kind: `user`, `service_account`, `key`, or `system`.
+    pub actor_kind: String,
+    /// Owning principal's row id, when applicable.
+    pub actor_id: Option<i64>,
+    /// Human label of the comment's author.
+    pub actor_label: String,
+    /// The comment text (plain, rendered escaped).
+    pub body: String,
+    /// Unix time the comment was posted.
+    pub created_at: i64,
+}
+
+/// One advisory review on a change request (system-of-record row).
+///
+/// Reviews carry no enforcement: promotion is via `apr change merge`, so an
+/// `approve` unlocks nothing. They are recorded for the conversation timeline.
+#[derive(Debug, Clone)]
+pub struct ChangeReviewRow {
+    /// Row id (monotonic; the timeline orders by it).
+    pub id: i64,
+    /// The change-set this review belongs to.
+    pub change_id: String,
+    /// Actor kind: `user`, `service_account`, `key`, or `system`.
+    pub actor_kind: String,
+    /// Owning principal's row id, when applicable.
+    pub actor_id: Option<i64>,
+    /// Human label of the reviewer.
+    pub actor_label: String,
+    /// The verdict: `approve` or `request_changes`.
+    pub verdict: String,
+    /// Optional review note, or `None`.
+    pub body: Option<String>,
+    /// Unix time the review was submitted.
+    pub created_at: i64,
 }
 
 /// One revision row within a change-set (system-of-record).
@@ -2624,9 +2721,7 @@ impl Database {
             self.backend
                 .execute_batch(&pending)
                 .await
-                .with_context(|| {
-                    format!("applying migrations v{}..=v{}", current + 1, target)
-                })?;
+                .with_context(|| format!("applying migrations v{}..=v{}", current + 1, target))?;
         }
         self.backend
             .execute("DELETE FROM schema_version", &[])
@@ -2798,7 +2893,13 @@ impl Database {
         let mut next_channel = self.max_id("channels").await?;
 
         let mut stmts: Vec<Statement> = Vec::new();
-        for table in ["packages", "channels", "releases", "key_rosters", "advertised_caches"] {
+        for table in [
+            "packages",
+            "channels",
+            "releases",
+            "key_rosters",
+            "advertised_caches",
+        ] {
             stmts.push(Statement::new(
                 format!("DELETE FROM {table} WHERE registry_id = ?1"),
                 vals![registry_id].to_vec(),
@@ -3785,8 +3886,14 @@ impl Database {
             let binding_id: Option<i64> = match row.get::<Option<i64>>(2)? {
                 Some(b) => Some(b),
                 None => match (registry_id, cache_id) {
-                    (Some(r), _) => self.registry_by_id(r).await?.and_then(|x| x.storage_binding_id),
-                    (_, Some(c)) => self.cache_by_id(c).await?.and_then(|x| x.storage_binding_id),
+                    (Some(r), _) => self
+                        .registry_by_id(r)
+                        .await?
+                        .and_then(|x| x.storage_binding_id),
+                    (_, Some(c)) => self
+                        .cache_by_id(c)
+                        .await?
+                        .and_then(|x| x.storage_binding_id),
                     _ => None,
                 },
             };
@@ -5937,7 +6044,13 @@ impl Database {
                  ON CONFLICT(cache_id, registry_id) DO UPDATE SET
                    roots_packages = excluded.roots_packages,
                    advertised = excluded.advertised",
-                &vals![cache_id, registry_id, roots_packages, advertised, unix_now()],
+                &vals![
+                    cache_id,
+                    registry_id,
+                    roots_packages,
+                    advertised,
+                    unix_now()
+                ],
             )
             .await?;
         Ok(())
@@ -6255,7 +6368,12 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn touch_cache_object(&self, cache_id: i64, store_hash: &str, now: i64) -> Result<()> {
+    pub async fn touch_cache_object(
+        &self,
+        cache_id: i64,
+        store_hash: &str,
+        now: i64,
+    ) -> Result<()> {
         let stale_before = now - LRU_TOUCH_DEBOUNCE_SECS;
         self.backend
             .execute(
@@ -6997,12 +7115,9 @@ impl Database {
             }
             return Ok(Some(path));
         };
-        let binding = self
-            .storage_binding(binding_id)
-            .await?
-            .with_context(|| {
-                format!("cache {cache_id} bound to missing storage binding {binding_id}")
-            })?;
+        let binding = self.storage_binding(binding_id).await?.with_context(|| {
+            format!("cache {cache_id} bound to missing storage binding {binding_id}")
+        })?;
         let mut path = PathBuf::from(binding.root);
         if !cache.prefix.is_empty() {
             path.push(&cache.prefix);
@@ -10051,13 +10166,16 @@ impl Database {
         summary: Option<&str>,
         git_ref: &str,
         git_commit: &str,
+        title: Option<&str>,
+        body: Option<&str>,
     ) -> Result<()> {
         self.backend
             .execute(
                 "INSERT INTO config_changesets
              (change_id, actor_kind, actor_id, actor_label, scope, status,
-              summary, created_at, applied_at, reverted_by_change_id, git_ref, git_commit)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'draft', ?6, ?7, NULL, NULL, ?8, ?9)",
+              summary, created_at, applied_at, reverted_by_change_id, git_ref, git_commit,
+              title, body)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'draft', ?6, ?7, NULL, NULL, ?8, ?9, ?10, ?11)",
                 &vals![
                     change_id,
                     actor_kind,
@@ -10068,6 +10186,8 @@ impl Database {
                     unix_now(),
                     git_ref,
                     git_commit,
+                    title,
+                    body,
                 ],
             )
             .await?;
@@ -10162,6 +10282,173 @@ impl Database {
                     old_json: row.get(5)?,
                     new_json: row.get(6)?,
                     seq: row.get(7)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Withdraw an open draft change request (close without merging).
+    ///
+    /// Stamps `closed_at = now` on a change-set that is still `draft` and not
+    /// already closed. This is hub-side advisory metadata only — it never
+    /// touches `status` or the git ref, so a closed change can still be promoted
+    /// by `apr change merge` (the indexer would then flip it to `applied`).
+    /// Idempotent: closing an already-closed or non-draft row affects no rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn close_changeset(&self, change_id: &str) -> Result<()> {
+        self.backend
+            .execute(
+                "UPDATE config_changesets SET closed_at = ?2
+             WHERE change_id = ?1 AND status = 'draft' AND closed_at IS NULL",
+                &vals![change_id, unix_now()],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Reopen a closed change request, clearing its `closed_at` stamp.
+    ///
+    /// Only affects a `draft` row (a merged or reverted change-set is terminal
+    /// and cannot be reopened). Clearing `closed_at` re-arms the indexer's
+    /// auto-merge detection. Idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn reopen_changeset(&self, change_id: &str) -> Result<()> {
+        self.backend
+            .execute(
+                "UPDATE config_changesets SET closed_at = NULL
+             WHERE change_id = ?1 AND status = 'draft'",
+                &vals![change_id],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Append a discussion comment to a change request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a foreign-key violation
+    /// when `change_id` is unknown.
+    pub async fn add_change_comment(
+        &self,
+        change_id: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        body: &str,
+    ) -> Result<()> {
+        self.backend
+            .execute(
+                "INSERT INTO change_comments
+             (change_id, actor_kind, actor_id, actor_label, body, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                &vals![
+                    change_id,
+                    actor_kind,
+                    actor_id,
+                    actor_label,
+                    body,
+                    unix_now()
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// List a change request's discussion comments, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_change_comments(&self, change_id: &str) -> Result<Vec<ChangeCommentRow>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT id, change_id, actor_kind, actor_id, actor_label, body, created_at
+             FROM change_comments WHERE change_id = ?1 ORDER BY id",
+                &vals![change_id],
+            )
+            .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(ChangeCommentRow {
+                    id: row.get(0)?,
+                    change_id: row.get(1)?,
+                    actor_kind: row.get(2)?,
+                    actor_id: row.get(3)?,
+                    actor_label: row.get(4)?,
+                    body: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Record an advisory review (`approve` or `request_changes`) on a change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a foreign-key violation
+    /// when `change_id` is unknown.
+    pub async fn add_change_review(
+        &self,
+        change_id: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        verdict: &str,
+        body: Option<&str>,
+    ) -> Result<()> {
+        self.backend
+            .execute(
+                "INSERT INTO change_reviews
+             (change_id, actor_kind, actor_id, actor_label, verdict, body, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                &vals![
+                    change_id,
+                    actor_kind,
+                    actor_id,
+                    actor_label,
+                    verdict,
+                    body,
+                    unix_now()
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// List a change request's advisory reviews, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_change_reviews(&self, change_id: &str) -> Result<Vec<ChangeReviewRow>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT id, change_id, actor_kind, actor_id, actor_label, verdict, body, created_at
+             FROM change_reviews WHERE change_id = ?1 ORDER BY id",
+                &vals![change_id],
+            )
+            .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(ChangeReviewRow {
+                    id: row.get(0)?,
+                    change_id: row.get(1)?,
+                    actor_kind: row.get(2)?,
+                    actor_id: row.get(3)?,
+                    actor_label: row.get(4)?,
+                    verdict: row.get(5)?,
+                    body: row.get(6)?,
+                    created_at: row.get(7)?,
                 })
             })
             .collect()
@@ -10976,7 +11263,9 @@ fn validate_frontend_target(domain: &str, base_path: &str) -> Result<(String, St
         bail!("frontend domain '{domain}' must be a bare host with no scheme (drop the https://)");
     }
     if domain.contains('/') {
-        bail!("frontend domain '{domain}' must be a host only; put any path in the base path field");
+        bail!(
+            "frontend domain '{domain}' must be a host only; put any path in the base path field"
+        );
     }
     if domain.is_empty() || domain.contains(char::is_whitespace) || !domain.contains('.') {
         bail!("frontend domain '{domain}' is not a valid host");
@@ -11002,8 +11291,8 @@ fn row_to_frontend(row: &Row) -> Result<FrontendRecord> {
     // A malformed/partial proxy_config never fails the row: an unparseable blob
     // falls back to conservative defaults (Some(default)), and NULL ⇒ None.
     let proxy_config: Option<String> = row.get(12)?;
-    let proxy_config = proxy_config
-        .map(|json| serde_json::from_str::<ProxyConfig>(&json).unwrap_or_default());
+    let proxy_config =
+        proxy_config.map(|json| serde_json::from_str::<ProxyConfig>(&json).unwrap_or_default());
     Ok(FrontendRecord {
         id: row.get(0)?,
         registry_id: row.get(1)?,
@@ -11063,7 +11352,8 @@ fn issuer_host(issuer: &str) -> String {
 
 /// The `config_changesets` columns, in the order [`row_to_changeset`] reads.
 const CHANGESET_COLUMNS: &str = "change_id, actor_kind, actor_id, actor_label, scope, status, \
-     summary, created_at, applied_at, reverted_by_change_id, git_ref, git_commit";
+     summary, created_at, applied_at, reverted_by_change_id, git_ref, git_commit, \
+     title, body, closed_at";
 
 fn row_to_changeset(row: &Row) -> Result<ChangesetRow> {
     Ok(ChangesetRow {
@@ -11079,6 +11369,9 @@ fn row_to_changeset(row: &Row) -> Result<ChangesetRow> {
         reverted_by_change_id: row.get(9)?,
         git_ref: row.get(10)?,
         git_commit: row.get(11)?,
+        title: row.get(12)?,
+        body: row.get(13)?,
+        closed_at: row.get(14)?,
     })
 }
 
@@ -11790,6 +12083,8 @@ mod tests {
             Some("edit registry.toml"),
             "refs/hub/changes/ch-1",
             "abc123",
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -11818,6 +12113,8 @@ mod tests {
             Some("edit"),
             "refs/hub/changes/ch-3",
             "draftoid",
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -11834,6 +12131,96 @@ mod tests {
             .unwrap();
         let again = db.changeset("ch-3").await.unwrap().unwrap();
         assert_eq!(again.git_commit.as_deref(), Some("rosteroid"));
+    }
+
+    /// The central regression guard for the `closed_at`-axis design: closing and
+    /// reopening a draft must leave `status = 'draft'`, so the indexer's
+    /// `status='draft'`-guarded auto-merge still fires for a reopened change.
+    #[tokio::test]
+    async fn close_reopen_preserves_draft_auto_merge() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.create_git_changeset(
+            "ch-cr",
+            "user",
+            Some(1),
+            "alice@acme.com",
+            "acme/cdn",
+            Some("edit"),
+            "refs/hub/changes/ch-cr",
+            "draftoid",
+            Some("tighten caches"),
+            Some("body text"),
+        )
+        .await
+        .unwrap();
+        // Title/body round-trip; opens un-closed.
+        let cs = db.changeset("ch-cr").await.unwrap().unwrap();
+        assert_eq!(cs.title.as_deref(), Some("tighten caches"));
+        assert_eq!(cs.body.as_deref(), Some("body text"));
+        assert!(cs.closed_at.is_none());
+
+        // Close stamps closed_at but never touches status.
+        db.close_changeset("ch-cr").await.unwrap();
+        let cs = db.changeset("ch-cr").await.unwrap().unwrap();
+        assert_eq!(cs.status, "draft");
+        assert!(cs.closed_at.is_some());
+
+        // Reopen clears closed_at.
+        db.reopen_changeset("ch-cr").await.unwrap();
+        let cs = db.changeset("ch-cr").await.unwrap().unwrap();
+        assert!(cs.closed_at.is_none());
+
+        // Auto-merge still flips the reopened draft to applied.
+        db.mark_changeset_applied_commit("ch-cr", "rosteroid")
+            .await
+            .unwrap();
+        let cs = db.changeset("ch-cr").await.unwrap().unwrap();
+        assert_eq!(cs.status, "applied");
+        assert_eq!(cs.git_commit.as_deref(), Some("rosteroid"));
+    }
+
+    #[tokio::test]
+    async fn change_comments_and_reviews_record_and_list_in_order() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.create_git_changeset(
+            "ch-d",
+            "user",
+            Some(1),
+            "alice@acme.com",
+            "acme/cdn",
+            Some("edit"),
+            "refs/hub/changes/ch-d",
+            "draftoid",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        db.add_change_comment("ch-d", "user", Some(1), "alice@acme.com", "first")
+            .await
+            .unwrap();
+        db.add_change_comment("ch-d", "user", Some(2), "bob@acme.com", "second")
+            .await
+            .unwrap();
+        let comments = db.list_change_comments("ch-d").await.unwrap();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].body, "first");
+        assert_eq!(comments[1].body, "second");
+
+        db.add_change_review(
+            "ch-d",
+            "user",
+            Some(2),
+            "bob@acme.com",
+            "approve",
+            Some("lgtm"),
+        )
+        .await
+        .unwrap();
+        let reviews = db.list_change_reviews("ch-d").await.unwrap();
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(reviews[0].verdict, "approve");
+        assert_eq!(reviews[0].body.as_deref(), Some("lgtm"));
     }
 
     #[tokio::test]
@@ -12843,7 +13230,10 @@ mod tests {
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(defaults, 1, "exactly one instance-default binding is seeded");
+        assert_eq!(
+            defaults, 1,
+            "exactly one instance-default binding is seeded"
+        );
         let row = db
             .backend
             .query_opt(
@@ -12944,11 +13334,31 @@ mod tests {
 
         // Direct over a private binding is rejected; proxied is allowed.
         assert!(db
-            .create_storage_frontend(id, "cdn.acme.com", "", "direct", true, true, true, 100, true)
+            .create_storage_frontend(
+                id,
+                "cdn.acme.com",
+                "",
+                "direct",
+                true,
+                true,
+                true,
+                100,
+                true
+            )
             .await
             .is_err());
         assert!(db
-            .create_storage_frontend(id, "proxy.acme.com", "", "proxied", true, true, true, 100, true)
+            .create_storage_frontend(
+                id,
+                "proxy.acme.com",
+                "",
+                "proxied",
+                true,
+                true,
+                true,
+                100,
+                true
+            )
             .await
             .is_ok());
 
@@ -12958,7 +13368,17 @@ mod tests {
             .await
             .unwrap());
         assert!(db
-            .create_storage_frontend(id, "cdn.acme.com", "", "direct", true, true, true, 100, true)
+            .create_storage_frontend(
+                id,
+                "cdn.acme.com",
+                "",
+                "direct",
+                true,
+                true,
+                true,
+                100,
+                true
+            )
             .await
             .is_ok());
 
@@ -13087,7 +13507,17 @@ mod tests {
             .unwrap();
         // While the binding is public, a Direct frontend is allowed.
         assert!(db
-            .create_frontend(reg, "direct.example", "", "direct", true, true, true, 100, true)
+            .create_frontend(
+                reg,
+                "direct.example",
+                "",
+                "direct",
+                true,
+                true,
+                true,
+                100,
+                true
+            )
             .await
             .is_ok());
         // Make the binding private: a new Direct frontend is now rejected, but a
@@ -13096,11 +13526,31 @@ mod tests {
             .await
             .unwrap();
         assert!(db
-            .create_frontend(reg, "direct2.example", "", "direct", true, true, true, 100, true)
+            .create_frontend(
+                reg,
+                "direct2.example",
+                "",
+                "direct",
+                true,
+                true,
+                true,
+                100,
+                true
+            )
             .await
             .is_err());
         assert!(db
-            .create_frontend(reg, "proxied.example", "", "proxied", true, true, true, 100, true)
+            .create_frontend(
+                reg,
+                "proxied.example",
+                "",
+                "proxied",
+                true,
+                true,
+                true,
+                100,
+                true
+            )
             .await
             .is_ok());
     }
@@ -13114,12 +13564,33 @@ mod tests {
             .await
             .unwrap();
         let cache = db
-            .create_cache(Some(org), "acme-cache", "Cache", Some(binding), "c", None, "public", 40, "zstd", true)
+            .create_cache(
+                Some(org),
+                "acme-cache",
+                "Cache",
+                Some(binding),
+                "c",
+                None,
+                "public",
+                40,
+                "zstd",
+                true,
+            )
             .await
             .unwrap();
-        db.create_frontend(reg, "reg.example", "", "proxied", true, true, true, 100, true)
-            .await
-            .unwrap();
+        db.create_frontend(
+            reg,
+            "reg.example",
+            "",
+            "proxied",
+            true,
+            true,
+            true,
+            100,
+            true,
+        )
+        .await
+        .unwrap();
         db.create_cache_frontend(cache, "cache.example", "", "proxied", true, 40, true)
             .await
             .unwrap();
@@ -13134,7 +13605,12 @@ mod tests {
         assert_eq!(cache_fes[0].cache_id, Some(cache));
         assert_eq!(cache_fes[0].registry_id, None);
         // The registry-scoped list never leaks the cache frontend, and vice versa.
-        assert!(db.list_cache_frontends(cache).await.unwrap().iter().all(|f| f.registry_id.is_none()));
+        assert!(db
+            .list_cache_frontends(cache)
+            .await
+            .unwrap()
+            .iter()
+            .all(|f| f.registry_id.is_none()));
 
         // A Direct cache frontend over a private binding is rejected.
         db.set_storage_binding_access(binding, "private", None, Some("c"))
@@ -13147,7 +13623,9 @@ mod tests {
 
         // Proxy settings: default until set, then round-trip + primary flag.
         let cache_fe = db.list_cache_frontends(cache).await.unwrap()[0].id;
-        assert!(db.list_cache_frontends(cache).await.unwrap()[0].proxy_config.is_none());
+        assert!(db.list_cache_frontends(cache).await.unwrap()[0]
+            .proxy_config
+            .is_none());
         assert!(!db.list_cache_frontends(cache).await.unwrap()[0].is_primary);
         let cfg = ProxyConfig {
             read_timeout_secs: 90,
@@ -13155,7 +13633,10 @@ mod tests {
             retries: 5,
             ..ProxyConfig::default()
         };
-        assert!(db.set_frontend_proxy(cache_fe, Some(&cfg), true).await.unwrap());
+        assert!(db
+            .set_frontend_proxy(cache_fe, Some(&cfg), true)
+            .await
+            .unwrap());
         let fe = &db.list_cache_frontends(cache).await.unwrap()[0];
         assert_eq!(fe.proxy_config.as_ref().unwrap().read_timeout_secs, 90);
         assert!(!fe.proxy_config.as_ref().unwrap().stream);
@@ -13165,7 +13646,9 @@ mod tests {
         assert!(fe.is_primary);
         // Clearing reverts to defaults (None).
         assert!(db.set_frontend_proxy(cache_fe, None, false).await.unwrap());
-        assert!(db.list_cache_frontends(cache).await.unwrap()[0].proxy_config.is_none());
+        assert!(db.list_cache_frontends(cache).await.unwrap()[0]
+            .proxy_config
+            .is_none());
     }
 
     /// Set up an org + binding and return `(db, org_id, binding_id)`.
@@ -13199,11 +13682,33 @@ mod tests {
             .unwrap();
         // Duplicate slug rejected; unsafe prefix rejected.
         assert!(db
-            .create_cache(None, "acme-cache", "x", Some(binding), "", None, "public", 40, "zstd", true)
+            .create_cache(
+                None,
+                "acme-cache",
+                "x",
+                Some(binding),
+                "",
+                None,
+                "public",
+                40,
+                "zstd",
+                true
+            )
             .await
             .is_err());
         assert!(db
-            .create_cache(None, "bad", "x", Some(binding), "../escape", None, "public", 40, "zstd", true)
+            .create_cache(
+                None,
+                "bad",
+                "x",
+                Some(binding),
+                "../escape",
+                None,
+                "public",
+                40,
+                "zstd",
+                true
+            )
             .await
             .is_err());
 
@@ -13212,12 +13717,26 @@ mod tests {
         assert_eq!(c.org_id, Some(org));
         assert_eq!(c.prefix, "caches/acme");
         assert!(c.want_mass_query);
-        assert_eq!(db.cache_by_id(id).await.unwrap().unwrap().slug, "acme-cache");
+        assert_eq!(
+            db.cache_by_id(id).await.unwrap().unwrap().slug,
+            "acme-cache"
+        );
 
         // An instance-level standalone cache (no org).
-        db.create_cache(None, "standalone", "Standalone", Some(binding), "caches/std", None, "public", 30, "xz", false)
-            .await
-            .unwrap();
+        db.create_cache(
+            None,
+            "standalone",
+            "Standalone",
+            Some(binding),
+            "caches/std",
+            None,
+            "public",
+            30,
+            "xz",
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(db.list_caches().await.unwrap().len(), 2);
         assert_eq!(db.list_caches_for_org(org).await.unwrap().len(), 1);
 
@@ -13245,7 +13764,18 @@ mod tests {
         // No binding: the cache uses the deployment's default storage and its
         // prefix auto-derives from the slug (like a binding-less registry).
         let id = db
-            .create_cache(Some(org), "build", "Build", None, "", None, "public", 40, "zstd", true)
+            .create_cache(
+                Some(org),
+                "build",
+                "Build",
+                None,
+                "",
+                None,
+                "public",
+                40,
+                "zstd",
+                true,
+            )
             .await
             .unwrap();
         let c = db.cache_by_id(id).await.unwrap().unwrap();
@@ -13261,7 +13791,18 @@ mod tests {
         let db2 = Database::open_in_memory().await.unwrap();
         let org2 = db2.create_org("b", "B").await.unwrap();
         let id2 = db2
-            .create_cache(Some(org2), "c2", "C2", None, "", None, "public", 40, "zstd", true)
+            .create_cache(
+                Some(org2),
+                "c2",
+                "C2",
+                None,
+                "",
+                None,
+                "public",
+                40,
+                "zstd",
+                true,
+            )
             .await
             .unwrap();
         assert!(db2.cache_surface_root(id2).await.unwrap().is_none());
@@ -13270,12 +13811,34 @@ mod tests {
     #[tokio::test]
     async fn list_caches_excludes_soft_deleted_org() {
         let (db, org, binding) = cache_fixture().await;
-        db.create_cache(Some(org), "owned", "Owned", Some(binding), "p1", None, "public", 40, "zstd", true)
-            .await
-            .unwrap();
-        db.create_cache(None, "standalone", "Standalone", Some(binding), "p2", None, "public", 40, "zstd", true)
-            .await
-            .unwrap();
+        db.create_cache(
+            Some(org),
+            "owned",
+            "Owned",
+            Some(binding),
+            "p1",
+            None,
+            "public",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
+        db.create_cache(
+            None,
+            "standalone",
+            "Standalone",
+            Some(binding),
+            "p2",
+            None,
+            "public",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
         assert_eq!(db.list_caches().await.unwrap().len(), 2);
         // Soft-deleting the org drops its cache from the servable list; the
         // instance-level (org_id IS NULL) cache still passes.
@@ -13289,7 +13852,18 @@ mod tests {
     async fn cache_links_gc_policy_and_pins() {
         let (db, org, binding) = cache_fixture().await;
         let cache = db
-            .create_cache(Some(org), "c", "C", Some(binding), "p", None, "public", 40, "zstd", true)
+            .create_cache(
+                Some(org),
+                "c",
+                "C",
+                Some(binding),
+                "p",
+                None,
+                "public",
+                40,
+                "zstd",
+                true,
+            )
             .await
             .unwrap();
         let reg = db
@@ -13339,7 +13913,18 @@ mod tests {
     async fn cache_objects_search_refcount_and_usage() {
         let (db, org, binding) = cache_fixture().await;
         let cache = db
-            .create_cache(Some(org), "c", "C", Some(binding), "p", None, "public", 40, "zstd", true)
+            .create_cache(
+                Some(org),
+                "c",
+                "C",
+                Some(binding),
+                "p",
+                None,
+                "public",
+                40,
+                "zstd",
+                true,
+            )
             .await
             .unwrap();
         let obj = CacheObject {
@@ -13365,8 +13950,18 @@ mod tests {
         assert_eq!(got.file_size, 1024);
 
         // Search by name / deriver substring.
-        assert_eq!(db.search_cache_objects(cache, "hello", 50).await.unwrap().len(), 1);
-        assert!(db.search_cache_objects(cache, "absent", 50).await.unwrap().is_empty());
+        assert_eq!(
+            db.search_cache_objects(cache, "hello", 50)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(db
+            .search_cache_objects(cache, "absent", 50)
+            .await
+            .unwrap()
+            .is_empty());
         assert_eq!(db.list_cache_objects(cache, 50).await.unwrap().len(), 1);
 
         // Usage recompute.
@@ -13379,18 +13974,32 @@ mod tests {
         // window is a no-op; a touch past it updates.
         db.touch_cache_object(cache, "aaaa", 1_000).await.unwrap();
         assert_eq!(
-            db.cache_object(cache, "aaaa").await.unwrap().unwrap().last_accessed_at,
+            db.cache_object(cache, "aaaa")
+                .await
+                .unwrap()
+                .unwrap()
+                .last_accessed_at,
             Some(1_000)
         );
         db.touch_cache_object(cache, "aaaa", 1_500).await.unwrap(); // within 3600s
         assert_eq!(
-            db.cache_object(cache, "aaaa").await.unwrap().unwrap().last_accessed_at,
+            db.cache_object(cache, "aaaa")
+                .await
+                .unwrap()
+                .unwrap()
+                .last_accessed_at,
             Some(1_000),
             "debounced touch is a no-op"
         );
-        db.touch_cache_object(cache, "aaaa", 1_000 + 3_601).await.unwrap();
+        db.touch_cache_object(cache, "aaaa", 1_000 + 3_601)
+            .await
+            .unwrap();
         assert_eq!(
-            db.cache_object(cache, "aaaa").await.unwrap().unwrap().last_accessed_at,
+            db.cache_object(cache, "aaaa")
+                .await
+                .unwrap()
+                .unwrap()
+                .last_accessed_at,
             Some(4_601),
             "touch past the debounce window updates"
         );
@@ -13404,7 +14013,9 @@ mod tests {
 
         // GC run lifecycle.
         let run = db.start_cache_gc_run(cache).await.unwrap();
-        db.finish_cache_gc_run(run, "ok", None, 10, 8, 2, 2048).await.unwrap();
+        db.finish_cache_gc_run(run, "ok", None, 10, 8, 2, 2048)
+            .await
+            .unwrap();
         let runs = db.list_cache_gc_runs(cache, 10).await.unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].status, "ok");
@@ -13441,9 +14052,20 @@ mod tests {
             .await
             .unwrap();
         // A managed cache and a registry coexist without table collision.
-        db.create_cache(Some(org), "c", "C", Some(binding), "p", None, "public", 40, "zstd", true)
-            .await
-            .unwrap();
+        db.create_cache(
+            Some(org),
+            "c",
+            "C",
+            Some(binding),
+            "p",
+            None,
+            "public",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
         db.create_managed_registry(org, "", "reg", "public", Some(binding), "reg", &[], false)
             .await
             .unwrap();
@@ -13780,12 +14402,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            db.registry_by_slug("demo").await.unwrap().unwrap().llms_txt_body,
+            db.registry_by_slug("demo")
+                .await
+                .unwrap()
+                .unwrap()
+                .llms_txt_body,
             Some("# custom\n".to_string())
         );
         db.set_registry_llms_txt("demo", None).await.unwrap();
         assert_eq!(
-            db.registry_by_slug("demo").await.unwrap().unwrap().llms_txt_body,
+            db.registry_by_slug("demo")
+                .await
+                .unwrap()
+                .unwrap()
+                .llms_txt_body,
             None
         );
     }
@@ -13796,8 +14426,13 @@ mod tests {
         let db = Database::open_in_memory().await.unwrap();
         // Defaults to allow-all when unset.
         assert_eq!(db.root_crawl_policy().await.unwrap(), CrawlPolicy::AllowAll);
-        db.set_root_crawl_policy(CrawlPolicy::AllowNoAi).await.unwrap();
-        assert_eq!(db.root_crawl_policy().await.unwrap(), CrawlPolicy::AllowNoAi);
+        db.set_root_crawl_policy(CrawlPolicy::AllowNoAi)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.root_crawl_policy().await.unwrap(),
+            CrawlPolicy::AllowNoAi
+        );
         // A corrupt stored value reads as the permissive default (lenient read).
         db.instance_config_set("root_crawl_policy", "garbage")
             .await
@@ -13806,7 +14441,9 @@ mod tests {
 
         // Root robots/llms overrides set and clear.
         assert_eq!(db.root_robots_body().await.unwrap(), None);
-        db.set_root_robots_body(Some("User-agent: *\n")).await.unwrap();
+        db.set_root_robots_body(Some("User-agent: *\n"))
+            .await
+            .unwrap();
         assert_eq!(
             db.root_robots_body().await.unwrap(),
             Some("User-agent: *\n".to_string())
@@ -13815,7 +14452,10 @@ mod tests {
         assert_eq!(db.root_robots_body().await.unwrap(), None);
 
         db.set_root_llms_body(Some("# hub\n")).await.unwrap();
-        assert_eq!(db.root_llms_body().await.unwrap(), Some("# hub\n".to_string()));
+        assert_eq!(
+            db.root_llms_body().await.unwrap(),
+            Some("# hub\n".to_string())
+        );
         db.set_root_llms_body(None).await.unwrap();
         assert_eq!(db.root_llms_body().await.unwrap(), None);
     }

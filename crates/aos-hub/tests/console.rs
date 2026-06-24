@@ -745,13 +745,12 @@ async fn config_edit_and_change_request_console_flow() {
     .await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
 
-    // A valid submission creates a draft change request and echoes the merge
-    // command.
+    // A valid submission (the structured config form) creates a titled draft
+    // change request and echoes the merge command.
     let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
-    let new_toml = "[registry]\nname = \"demo\"\ndescription = \"console edit\"\n";
     let form = format!(
-        "csrf={csrf}&contents={}",
-        url::form_urlencoded::byte_serialize(new_toml.as_bytes()).collect::<String>()
+        "csrf={csrf}&name=demo&description=console+edit&cr_title=tighten+config\
+         &cr_body=bump+the+description"
     );
     let resp = send(
         &app,
@@ -775,7 +774,10 @@ async fn config_edit_and_change_request_console_flow() {
     assert_eq!(drafts.len(), 1);
     assert_eq!(drafts[0].status, "draft");
 
-    // The change-requests list page shows the draft with its diff.
+    // The change-requests list page shows the draft as an Open row that links
+    // to its detail page.
+    let change_id = drafts[0].change_id.clone();
+    let detail_url = format!("/acme/infra/prod/cdn/-/changes/{change_id}");
     let resp = send(
         &app,
         "GET",
@@ -786,8 +788,105 @@ async fn config_edit_and_change_request_console_flow() {
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("Change requests"), "{}", resp.body);
+    assert!(
+        resp.body.contains("badge-open"),
+        "open badge: {}",
+        resp.body
+    );
+    assert!(
+        resp.body.contains(&format!("href=\"{detail_url}\"")),
+        "list links to detail: {}",
+        resp.body
+    );
+
+    // The Diff view renders the syntax-highlighted change.
+    let resp = send(
+        &app,
+        "GET",
+        &format!("{detail_url}?view=diff"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(resp.body.contains("class=\"diff\""), "{}", resp.body);
     assert!(resp.body.contains("console edit"), "{}", resp.body);
+
+    // The Conversation view carries the (CLI-only) merge command + copy button.
+    let resp = send(&app, "GET", &detail_url, Some(&cookie), None).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("apr change merge"), "{}", resp.body);
+    assert!(resp.body.contains("data-copy-target"), "{}", resp.body);
+
+    // The Checks view recomputes validation and never claims a roster signature.
+    let resp = send(
+        &app,
+        "GET",
+        &format!("{detail_url}?view=checks"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(resp.body.contains("schema valid"), "{}", resp.body);
+    assert!(
+        resp.body.contains("not in the roster"),
+        "honest draft-key note: {}",
+        resp.body
+    );
+
+    // A change action without a valid CSRF token is rejected.
+    let resp = send(
+        &app,
+        "POST",
+        &format!("{detail_url}/comment"),
+        Some(&cookie),
+        Some("body=nope"),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+
+    // Posting a comment appends it to the conversation timeline.
+    let resp = send(
+        &app,
+        "POST",
+        &format!("{detail_url}/comment"),
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&body=lgtm-from-owner")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    let resp = send(&app, "GET", &detail_url, Some(&cookie), None).await;
+    assert!(resp.body.contains("lgtm-from-owner"), "{}", resp.body);
+
+    // Closing withdraws the draft (status stays draft; closed badge shows).
+    let resp = send(
+        &app,
+        "POST",
+        &format!("{detail_url}/close"),
+        Some(&cookie),
+        Some(&format!("csrf={csrf}")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    let closed = db.changeset(&change_id).await.unwrap().unwrap();
+    assert_eq!(closed.status, "draft", "close must not touch status");
+    assert!(closed.closed_at.is_some(), "close stamps closed_at");
+    let resp = send(&app, "GET", &detail_url, Some(&cookie), None).await;
+    assert!(resp.body.contains("badge-closed"), "{}", resp.body);
+
+    // Reopening clears closed_at, re-arming auto-merge detection.
+    let resp = send(
+        &app,
+        "POST",
+        &format!("{detail_url}/reopen"),
+        Some(&cookie),
+        Some(&format!("csrf={csrf}")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    let reopened = db.changeset(&change_id).await.unwrap().unwrap();
+    assert!(reopened.closed_at.is_none(), "reopen clears closed_at");
 
     // A developer (no registry.configure) cannot submit a change request.
     let dev = db.find_or_create_user("dev@acme.com").await.unwrap();

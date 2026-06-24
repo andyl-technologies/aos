@@ -93,6 +93,17 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
         "changes" => !is_post,
         "keys" | "keys/rotate" | "publishes" => !is_post,
         other => {
+            // changes/{id} (GET detail) and changes/{id}/{action} (POST).
+            if let Some(rest) = other.strip_prefix("changes/") {
+                return match rest.split_once('/') {
+                    Some((id, action)) => {
+                        is_post
+                            && !id.is_empty()
+                            && matches!(action, "comment" | "review" | "close" | "reopen")
+                    }
+                    None => !is_post && !rest.is_empty(),
+                };
+            }
             if let Some(name) = other
                 .strip_prefix("channels/")
                 .and_then(|rest| rest.strip_suffix("/console"))
@@ -116,9 +127,7 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
 /// (which clamps to at least 1 internally).
 fn page_query(uri: &Uri) -> PageQuery {
     uri.query()
-        .map(|q| {
-            serde_urlencoded::from_str::<PageQuery>(q).unwrap_or_default()
-        })
+        .map(|q| serde_urlencoded::from_str::<PageQuery>(q).unwrap_or_default())
         .unwrap_or_default()
 }
 
@@ -267,8 +276,15 @@ pub async fn dispatch_nested(
         }
         // -- tokens ----------------------------------------------------------
         ("settings/tokens", false) => {
-            handlers::tokens(deps, headers, started, uri.clone(), Path(slug), Query(page_query(&uri)))
-                .await
+            handlers::tokens(
+                deps,
+                headers,
+                started,
+                uri.clone(),
+                Path(slug),
+                Query(page_query(&uri)),
+            )
+            .await
         }
         ("settings/tokens", true) => {
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
@@ -299,17 +315,74 @@ pub async fn dispatch_nested(
             handlers::config_submit(deps, headers, started, uri, Path(slug), body).await
         }
         ("changes", false) => handlers::changes(deps, headers, started, uri, Path(slug)).await,
+        // -- change-request detail & review actions --------------------------
+        (other, false)
+            if other
+                .strip_prefix("changes/")
+                .is_some_and(|r| !r.contains('/')) =>
+        {
+            // `is_console_path` proved the shape; recover the id defensively.
+            let Some(id) = other.strip_prefix("changes/").map(str::to_string) else {
+                return Some(bad_request());
+            };
+            handlers::change_detail(deps, headers, started, uri, Path((slug, id))).await
+        }
+        (other, true)
+            if other
+                .strip_prefix("changes/")
+                .is_some_and(|r| r.contains('/')) =>
+        {
+            let Some((id, action)) = other
+                .strip_prefix("changes/")
+                .and_then(|rest| rest.split_once('/'))
+            else {
+                return Some(bad_request());
+            };
+            let id = id.to_string();
+            match action {
+                "comment" => {
+                    let Ok(form) = serde_urlencoded::from_bytes(&body) else {
+                        return Some(bad_request());
+                    };
+                    handlers::change_comment(deps, headers, uri, Path((slug, id)), Form(form)).await
+                }
+                "review" => {
+                    let Ok(form) = serde_urlencoded::from_bytes(&body) else {
+                        return Some(bad_request());
+                    };
+                    handlers::change_review(deps, headers, uri, Path((slug, id)), Form(form)).await
+                }
+                "close" => {
+                    let Ok(form) = serde_urlencoded::from_bytes(&body) else {
+                        return Some(bad_request());
+                    };
+                    handlers::change_close(deps, headers, uri, Path((slug, id)), Form(form)).await
+                }
+                "reopen" => {
+                    let Ok(form) = serde_urlencoded::from_bytes(&body) else {
+                        return Some(bad_request());
+                    };
+                    handlers::change_reopen(deps, headers, uri, Path((slug, id)), Form(form)).await
+                }
+                _ => return Some(bad_request()),
+            }
+        }
         // -- hosted keys & publishes -----------------------------------------
         ("keys", false) => {
-            handlers::keys(deps, headers, started, uri.clone(), Path(slug), Query(page_query(&uri)))
-                .await
+            handlers::keys(
+                deps,
+                headers,
+                started,
+                uri.clone(),
+                Path(slug),
+                Query(page_query(&uri)),
+            )
+            .await
         }
         ("keys/rotate", false) => {
             handlers::keys_rotate(deps, headers, started, uri, Path(slug)).await
         }
-        ("publishes", false) => {
-            handlers::publishes(deps, headers, started, uri, Path(slug)).await
-        }
+        ("publishes", false) => handlers::publishes(deps, headers, started, uri, Path(slug)).await,
         // -- channel rollout -------------------------------------------------
         (other, true) if other.ends_with("/advance") => {
             // channels/{name}/advance (POST): the direct hosted-key advance.
@@ -322,8 +395,15 @@ pub async fn dispatch_nested(
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                 return Some(bad_request());
             };
-            handlers::channel_advance_direct(deps, headers, started, uri, Path((slug, name)), Form(form))
-                .await
+            handlers::channel_advance_direct(
+                deps,
+                headers,
+                started,
+                uri,
+                Path((slug, name)),
+                Form(form),
+            )
+            .await
         }
         (other, _) => {
             // channels/{name}/console (GET renders, POST prepares an advance);
@@ -337,8 +417,15 @@ pub async fn dispatch_nested(
                 let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                     return Some(bad_request());
                 };
-                handlers::channel_advance(deps, headers, started, uri, Path((slug, name)), Form(form))
-                    .await
+                handlers::channel_advance(
+                    deps,
+                    headers,
+                    started,
+                    uri,
+                    Path((slug, name)),
+                    Form(form),
+                )
+                .await
             } else {
                 handlers::channel_console(deps, headers, started, uri, Path((slug, name))).await
             }
@@ -401,7 +488,13 @@ mod tests {
 
     #[test]
     fn rejects_browse_tails() {
-        for tail in ["packages", "channels", "channels/stable", "releases", "health"] {
+        for tail in [
+            "packages",
+            "channels",
+            "channels/stable",
+            "releases",
+            "health",
+        ] {
             assert!(!is_console_path(tail, false), "{tail} GET");
             assert!(!is_console_path(tail, true), "{tail} POST");
         }
