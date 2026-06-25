@@ -738,117 +738,116 @@ impl TreeWalk {
                 Ok(value)
             }
             ForceClaim::Claimed(guard) => {
-                let cache_subject = self.force_cache_subject_for_thunk(
-                    EvalNodeRef::new(self.current_module, id),
-                    &thunk,
-                );
-                if let Some(value) =
-                    self.lookup_forced_inline_expression_result(cache_subject.clone())
-                {
-                    let value = guard.finish(value).map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
-                    })?;
-                    self.lazy_identity_thunks.remove(&forced_payload);
-                    return Ok(value);
-                }
-
-                self.increment_thunks_forced();
-                let impure_trace_cursor = self.impure_input_trace_cursor();
-                let result = match thunk.kind() {
-                    EvalThunkKind::Node {
-                        body,
-                        env,
-                        with_env,
-                        scoped_globals,
-                    } => {
-                        let thunk_env = self.clone_env_frames(id, env, span)?;
-                        let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
-                        let thunk_scoped_globals =
-                            self.clone_scoped_globals(id, scoped_globals, span)?;
-                        let saved_env = std::mem::replace(&mut self.env, thunk_env);
-                        let saved_with_scopes =
-                            std::mem::replace(&mut self.with_scopes, thunk_with_env);
-                        let saved_scoped_globals =
-                            std::mem::replace(&mut self.scoped_globals, thunk_scoped_globals);
-                        let result = self
-                            .with_current_module(body.module(), |eval| eval.eval_node(body.id()));
-                        self.env = saved_env;
-                        self.with_scopes = saved_with_scopes;
-                        self.scoped_globals = saved_scoped_globals;
-                        result
-                    }
-                    EvalThunkKind::Apply {
-                        function,
-                        function_span,
-                        function_value,
-                        argument,
-                        argument_value,
-                    } => self.with_current_module(function.module(), |eval| {
-                        eval.apply_lambda_value(
-                            id,
-                            span,
-                            function.id(),
-                            *function_value,
-                            *function_span,
-                            argument.id(),
-                            *argument_value,
-                        )
-                    }),
-                    EvalThunkKind::Apply2 {
-                        function,
-                        function_span,
-                        function_value,
-                        first_argument,
-                        first_argument_span,
-                        first_argument_value,
-                        second_argument,
-                        second_argument_value,
-                    } => self.with_current_module(function.module(), |eval| {
-                        eval.apply_lambda_value_2(
-                            id,
-                            span,
-                            function.id(),
-                            *function_value,
-                            *function_span,
-                            first_argument.id(),
-                            *first_argument_span,
-                            *first_argument_value,
-                            second_argument.id(),
-                            *second_argument_value,
-                        )
-                    }),
-                    EvalThunkKind::Select {
-                        select,
-                        receiver,
-                        path,
-                    } => self.with_current_module(select.module(), |eval| {
-                        let span = eval.node(select.id())?.span;
-                        let value = eval.eval_select_from_value(
-                            select.id(),
-                            span,
-                            *receiver,
-                            *path,
-                            None,
-                            true,
-                        )?;
-                        eval.force_node_result(select.id(), span, value)
-                    }),
-                    EvalThunkKind::BuiltinAttr { symbol, builtin } => {
-                        (*builtin).select(self, id, span, *symbol)
-                    }
-                };
-                let value = result?;
-                let impure_trace = self.force_cache_impure_input_trace_segment(impure_trace_cursor);
-                let value = guard.finish(value).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
-                })?;
-                self.lazy_identity_thunks.remove(&forced_payload);
-                if let Some(subject) = &cache_subject {
-                    self.record_forced_expression_demand(subject);
-                }
-                self.observe_forced_inline_expression_result(cache_subject, value, impure_trace);
-                Ok(value)
+                self.force_memoized_claimed_thunk(id, span, forced_payload, &thunk, guard)
             }
         }
+    }
+
+    fn force_memoized_claimed_thunk(
+        &mut self,
+        id: IrId,
+        span: Span,
+        forced_payload: u64,
+        thunk: &EvalThunk,
+        guard: ForceGuard<'_>,
+    ) -> Result<Value, TreeWalkError> {
+        let cache_subject =
+            self.force_cache_subject_for_thunk(EvalNodeRef::new(self.current_module, id), thunk);
+        if let Some(value) = self.lookup_forced_inline_expression_result(cache_subject.clone()) {
+            let value = guard.finish(value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
+            })?;
+            self.lazy_identity_thunks.remove(&forced_payload);
+            return Ok(value);
+        }
+
+        self.increment_thunks_forced();
+        let impure_trace_cursor = self.impure_input_trace_cursor();
+        let result = match thunk.kind() {
+            EvalThunkKind::Node {
+                body,
+                env,
+                with_env,
+                scoped_globals,
+            } => {
+                let thunk_env = self.clone_env_frames(id, env, span)?;
+                let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
+                let thunk_scoped_globals = self.clone_scoped_globals(id, scoped_globals, span)?;
+                let saved_env = std::mem::replace(&mut self.env, thunk_env);
+                let saved_with_scopes = std::mem::replace(&mut self.with_scopes, thunk_with_env);
+                let saved_scoped_globals =
+                    std::mem::replace(&mut self.scoped_globals, thunk_scoped_globals);
+                let result =
+                    self.with_current_module(body.module(), |eval| eval.eval_node(body.id()));
+                self.env = saved_env;
+                self.with_scopes = saved_with_scopes;
+                self.scoped_globals = saved_scoped_globals;
+                result
+            }
+            EvalThunkKind::Apply {
+                function,
+                function_span,
+                function_value,
+                argument,
+                argument_value,
+            } => self.with_current_module(function.module(), |eval| {
+                eval.apply_lambda_value(
+                    id,
+                    span,
+                    function.id(),
+                    *function_value,
+                    *function_span,
+                    argument.id(),
+                    *argument_value,
+                )
+            }),
+            EvalThunkKind::Apply2 {
+                function,
+                function_span,
+                function_value,
+                first_argument,
+                first_argument_span,
+                first_argument_value,
+                second_argument,
+                second_argument_value,
+            } => self.with_current_module(function.module(), |eval| {
+                eval.apply_lambda_value_2(
+                    id,
+                    span,
+                    function.id(),
+                    *function_value,
+                    *function_span,
+                    first_argument.id(),
+                    *first_argument_span,
+                    *first_argument_value,
+                    second_argument.id(),
+                    *second_argument_value,
+                )
+            }),
+            EvalThunkKind::Select {
+                select,
+                receiver,
+                path,
+            } => self.with_current_module(select.module(), |eval| {
+                let span = eval.node(select.id())?.span;
+                let value =
+                    eval.eval_select_from_value(select.id(), span, *receiver, *path, None, true)?;
+                eval.force_node_result(select.id(), span, value)
+            }),
+            EvalThunkKind::BuiltinAttr { symbol, builtin } => {
+                (*builtin).select(self, id, span, *symbol)
+            }
+        };
+        let value = result?;
+        let impure_trace = self.force_cache_impure_input_trace_segment(impure_trace_cursor);
+        let value = guard
+            .finish(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
+        self.lazy_identity_thunks.remove(&forced_payload);
+        if let Some(subject) = &cache_subject {
+            self.record_forced_expression_demand(subject);
+        }
+        self.observe_forced_inline_expression_result(cache_subject, value, impure_trace);
+        Ok(value)
     }
 }

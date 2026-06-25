@@ -465,6 +465,20 @@ alone (`M-1`/`Q-A`).
       separate inner/outer observers, run the full ready-dirty recomputation
       loop, integrate impure-input leaves and persistence, and prove
       cached/uncached `.drv` parity.
+- [x] Current `force_memoized` claimed-thunk boundary: tree-walk `force_value`
+      delegates newly claimed thunk forcing to `force_memoized_claimed_thunk`,
+      which builds an advisory force-cache subject only after demand reaches the
+      thunk, consults the shared in-memory/durable force-cache path before
+      evaluating the thunk body, publishes cache hits into the thunk cell, and
+      observes successful WHNF results after uncached body evaluation.
+      Allocating a source-backed lazy attr thunk leaves the shared `EvalCache`
+      empty until the thunk is actually forced. This is the current
+      claimed-thunk inline payload boundary only; full demand-node lifecycle,
+      dynamic dependency capture, canonical free-variable production, general
+      memo lookup, persistent graph integration, and cached/uncached `.drv`
+      harness proof remain open (`S-14`). The gate covers
+      `source_backed_force_cache_creates_expression_node_only_on_force` plus
+      source-backed force-cache hit/update tests.
 - [x] Current `cache/key.rs` standalone combiner substrate: `CacheExprIdentity`
       plus opaque `DemandCacheKey` compute one order-sensitive hot xxh3 probe
       and one BLAKE3 confirmation digest over domain/version prefixes,

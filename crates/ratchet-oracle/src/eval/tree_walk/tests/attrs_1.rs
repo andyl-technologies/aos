@@ -784,6 +784,53 @@ fn source_backed_forced_inline_thunks_update_shared_eval_cache() {
 }
 
 #[test]
+fn source_backed_force_cache_creates_expression_node_only_on_force() {
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    assert_eq!(
+        evaluator.stats().thunks_allocated(),
+        1,
+        "evaluating the attrset allocates the lazy attr thunk"
+    );
+    {
+        let runtime = cache.lock().expect("cache lock is valid");
+        assert!(
+            runtime.cache().expect("cache is enabled").is_empty(),
+            "allocating the thunk must not allocate an expression cache node"
+        );
+    }
+
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(evaluator.stats().cache_misses(), 1);
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "forcing the thunk creates the expression cache node on demand"
+    );
+}
+
+#[test]
 fn source_backed_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() {
     let source = "{ a = 1 + 2; }";
     let ir = lower(source);

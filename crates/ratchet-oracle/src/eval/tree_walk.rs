@@ -49,7 +49,7 @@ use super::heap::{
     EvalHeap, EvalHeapError, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalThunk, EvalThunkKind,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
-use super::thunk::{ForceClaim, ForceError, ThunkState};
+use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, AttrPosition, FlatAttrs};
 use crate::cache::{
     CacheExprIdentity, CachedExpressionValue, CachedParse, DirEntryInput, DurableBlake3Hash,
