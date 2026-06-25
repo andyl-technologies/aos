@@ -98,7 +98,14 @@ keep an Ignition-compat fallback (see [`provisioning.md`](provisioning.md) §Pha
       `pkgs/boot/aos-platform-detect.nix`) + `fetch`; reuse `aos-net` +
       `security.rs` SSHSIG + `TrustStore`. Transport-only in initrd; stash
       `/run/aos-metadata/{host.nix,host.nix.sig,facts.json}`. Literal-Nix payload
-      + URL-pointer (`sha256` content-pin).
+      + URL-pointer (`sha256` content-pin). Reuse surface in
+      [`provisioning.md`](provisioning.md) §Implementation.
+- [ ] Net-new pieces (the rest is reuse): a **config-drive mount helper**
+      (`blkid -L cidata|config-2|aos-metadata` + ISO9660/vfat mount — the one
+      capability with no aos primitive); **vendor a YAML crate** (no
+      `serde_yaml` in the lock); a `tokio::time::timeout` **request-timeout
+      shim**; the thin **per-platform fetchers** behind a `PlatformFetcher`
+      trait (AWS IMDSv2 / GCP / Azure / OpenStack / DO), recorded-fixture tested.
 - [ ] Render `facts.json` → `/run/aos-eval/host-facts.nix` as `host.facts.*`
       (D9); no imperative `/etc/hostname`/`authorized_keys` writes (manifest
       outputs), except the gen-0 SSH-key bootstrap carve-out.

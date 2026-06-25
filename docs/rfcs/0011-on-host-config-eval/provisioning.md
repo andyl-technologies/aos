@@ -228,6 +228,40 @@ they participate in generations/rollback. (One deliberate carve-out: a single
 `host.facts.ssh_authorized_keys`-derived key may be seeded into `/var/etc` in
 initrd for pre-eval SSH reachability on the gen-0 seed.)
 
+### Implementation: reuse surface
+
+The agent is **not** a 1:1 Go→Rust port of Ignition. Ignition's fetch code is
+~90% generic plumbing (HTTP, retry, encoding, signature, label/mount) wrapping a
+thin per-platform knowledge layer (endpoint, header, label, format). The
+plumbing already exists in aos crates; the knowledge layer is re-encoded from
+each provider's documented spec, not translated from Ignition source.
+
+| Capability | Verdict | Where |
+|---|---|---|
+| HTTP GET/**PUT** + custom headers + plain-`http://` to IMDS | **reuse** | `aos-net` `TransferEngine` (`transfer.rs:61`) + `HttpProtocol` (`protocol/http.rs:26`), `TransferRequest::with_header` (`types.rs:218`); general, not registry-specific |
+| Retry / backoff | **reuse** | `aos-net/retry.rs` `RetryConfig` + `with_retry` (exponential + jitter); engine auto-retries transient errors |
+| Detached SSHSIG over `host.nix` | **reuse** | `security.rs:639` `verify_payload_signature` + `KeyStore` (`:73`) + `sshkey.rs`; point a `KeyStore` at `trusted-config-keys.d` (stage-2) |
+| base64 / gzip / JSON / TOML | **reuse** | `base64 0.22`, `flate2`, `serde_json`, `toml` already in `Cargo.lock` |
+| CLI + initrd-service wiring | **reuse pattern** | clap variant in `crates/aos/src/cli/mod.rs`, impl `commands/metadata.rs`, dispatch in `main.rs`; `boot.initrd.systemd.services` |
+| **Config-drive mount** (`blkid -L`, ISO9660/vfat: `cidata`/`config-2`/`aos-metadata`) | **BUILD — the one real gap** | no Rust today; existing logic is Nix shell handling only the single `aos-metadata` label (`pkgs/boot/aos-platform-detect.nix:51`). Shell out to `pkgs.util-linux` `blkid`/`mount` or bind libblkid |
+| YAML (`meta-data`, cloud-config) | **BUILD (vendor)** | no YAML crate in the lock — vendor one |
+| Request timeout | **BUILD (shim)** | `aos-net`'s client is a process-wide singleton with only a 10s `connect_timeout` and `HttpProtocol::with_client` isn't wired through the engine; wrap IMDS calls in `tokio::time::timeout` |
+| DMI/SMBIOS + fw_cfg detection | **reuse knowledge, thin reader** | the vendor/asset-tag→platform table already exists (`pkgs/boot/aos-platform-detect.nix:64-123`) — verbatim port into `std::fs` reads |
+| Per-platform fetchers | **BUILD (thin)** | AWS IMDSv2 PUT-token→GET, GCP `Metadata-Flavor`, Azure `Metadata:true`+base64, OpenStack/DO/Oracle — thin orchestration over `TransferEngine`+`with_header`+`RetryConfig`, behind a `PlatformFetcher` trait, recorded-fixture tested off-box |
+
+**Genuinely-new code** is therefore small and bounded: the config-drive mount
+helper (the only capability with no aos primitive), a vendored YAML crate, a
+`tokio::time::timeout` shim, and the per-platform fetchers (facts-from-docs over
+existing plumbing). Phase B (offline channels) is mostly the mount helper + the
+DMI port; Phase C (cloud IMDS) is the per-platform fetchers — neither blocks the
+other.
+
+**Not reusable (registry-specific — do not chase):** `AuthStore::refresh_token`
+(OAuth2 for registry tokens, `auth.rs:219`) and `AuthStore`'s per-domain model
+(use per-request `with_header` for IMDS); the git-object signature paths
+(`verify_commit_signature`/`verify_tag_signature`/`check_downgrade`); the S3/SFTP
+protocol handlers (scheme dispatch ignores them).
+
 ## Phasing (do not big-bang; keep an Ignition-compat fallback)
 
 - **Phase A — keep Ignition for fetch, change the payload.** Land the stage-2
