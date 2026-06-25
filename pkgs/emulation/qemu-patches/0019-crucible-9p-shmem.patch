@@ -102,7 +102,7 @@ diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
  static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
  {
      V9fsVirtioState *v = (V9fsVirtioState *)vdev;
-@@ -77,6 +161,7 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
+@@ -76,6 +170,7 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
      V9fsPDU *pdu;
      ssize_t len;
      VirtQueueElement *elem;
@@ -110,7 +110,8 @@ diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
  
      while ((pdu = pdu_alloc(s))) {
          P9MsgHeader out;
-@@ -101,13 +195,29 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
+@@ -101,15 +196,31 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
+ 
          v->elems[pdu->idx] = elem;
  
 +        if (crucible_9p_callbacks_ready()) {
@@ -140,7 +141,8 @@ diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
 +    crucible_9p_finish_burst(&crucible_9p_burst_active);
      pdu_free(pdu);
  }
-@@ -239,6 +340,7 @@ static void virtio_9p_device_realize(DeviceState *dev, Error **errp)
+ 
+@@ -241,6 +352,7 @@ static void virtio_9p_device_realize(DeviceState *dev, Error **errp)
          return;
      }
  

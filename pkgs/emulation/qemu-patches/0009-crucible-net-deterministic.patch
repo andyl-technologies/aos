@@ -1,11 +1,27 @@
+diff --git a/include/net/queue.h b/include/net/queue.h
+--- a/include/net/queue.h
++++ b/include/net/queue.h
+@@ -46,6 +46,13 @@ typedef ssize_t (NetQueueDeliverFunc)(NetClientState *sender,
+ 
+ NetQueue *qemu_new_net_queue(NetQueueDeliverFunc *deliver, void *opaque);
+ 
++bool qemu_net_queue_append_lossless(NetQueue *queue,
++                                    NetClientState *sender,
++                                    unsigned flags,
++                                    const uint8_t *data,
++                                    size_t size,
++                                    NetPacketSent *sent_cb);
++
+ void qemu_net_queue_append_iov(NetQueue *queue,
+                                NetClientState *sender,
+                                unsigned flags,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -727,6 +727,52 @@
-  */
+@@ -728,6 +728,52 @@ const void *qemu_plugin_request_time_control(void);
  QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
-+
+ 
 +/**
 + * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
 + * @data: Ethernet frame bytes
@@ -51,35 +67,17 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 + */
 +QEMU_PLUGIN_API
 +int qemu_plugin_net_can_receive(void);
- 
++
  typedef void
  (*qemu_plugin_vcpu_syscall_cb_t)(qemu_plugin_id_t id, unsigned int vcpu_index,
-diff --git a/include/net/queue.h b/include/net/queue.h
---- a/include/net/queue.h
-+++ b/include/net/queue.h
-@@ -46,6 +46,13 @@
- 
- NetQueue *qemu_new_net_queue(NetQueueDeliverFunc *deliver, void *opaque);
- 
-+bool qemu_net_queue_append_lossless(NetQueue *queue,
-+                                    NetClientState *sender,
-+                                    unsigned flags,
-+                                    const uint8_t *data,
-+                                    size_t size,
-+                                    NetPacketSent *sent_cb);
-+
- void qemu_net_queue_append_iov(NetQueue *queue,
-                                NetClientState *sender,
-                                unsigned flags,
+                                  int64_t num, uint64_t a1, uint64_t a2,
 diff --git a/net/queue.c b/net/queue.c
 --- a/net/queue.c
 +++ b/net/queue.c
-@@ -111,6 +111,22 @@
- 
-     queue->nq_count++;
+@@ -113,6 +113,22 @@ static void qemu_net_queue_append(NetQueue *queue,
      QTAILQ_INSERT_TAIL(&queue->packets, packet, entry);
-+}
-+
+ }
+ 
 +bool qemu_net_queue_append_lossless(NetQueue *queue,
 +                                    NetClientState *sender,
 +                                    unsigned flags,
@@ -94,9 +92,11 @@ diff --git a/net/queue.c b/net/queue.c
 +
 +    qemu_net_queue_append(queue, sender, flags, data, size, sent_cb);
 +    return true;
- }
- 
++}
++
  void qemu_net_queue_append_iov(NetQueue *queue,
+                                NetClientState *sender,
+                                unsigned flags,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
@@ -108,7 +108,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  #include "qapi/error.h"
  #include "migration/blocker.h"
  #include "hw/boards.h"
-@@ -136,6 +137,114 @@
+@@ -136,6 +137,114 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
      }
  }
  

@@ -1,5 +1,4 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index 402d3e3..c074b7e 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -47,6 +47,7 @@
@@ -74,7 +73,6 @@ index 402d3e3..c074b7e 100644
          timers_state.icount_warp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,
                                           icount_timer_cb, NULL);
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
-index 27cf104..14da5c3 100644
 --- a/accel/tcg/tcg-accel-ops-icount.c
 +++ b/accel/tcg/tcg-accel-ops-icount.c
 @@ -93,7 +93,14 @@ void icount_handle_deadline(void)
@@ -94,10 +92,9 @@ index 27cf104..14da5c3 100644
      if (timeslice == 0) {
          timeslice = limit;
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index f62cf24..7426205 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -4,6 +4,16 @@
+@@ -111,6 +111,16 @@ static void rr_wait_io_event(void)
  
      while (all_cpu_threads_idle()) {
          rr_stop_kick_timer();
@@ -115,7 +112,6 @@ index f62cf24..7426205 100644
      }
  
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 3a850aa..c507f37 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -931,6 +931,92 @@ QEMU_PLUGIN_API
@@ -212,7 +208,6 @@ index 3a850aa..c507f37 100644
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
 diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index 64ae54f..b7955d8 100644
 --- a/include/system/cpu-timers.h
 +++ b/include/system/cpu-timers.h
 @@ -68,6 +68,9 @@ bool icount_configure(QemuOpts *opts, Error **errp);
@@ -226,7 +221,6 @@ index 64ae54f..b7955d8 100644
  void icount_start_warp_timer(void);
  void icount_account_warp_timer(void);
 diff --git a/plugins/api.c b/plugins/api.c
-index 604ce06..2c24610 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -39,8 +39,13 @@
@@ -359,10 +353,9 @@ index 604ce06..2c24610 100644
  {
      return plugin_scoreboard_new(element_size);
 diff --git a/qemu-options.hx b/qemu-options.hx
-index dc694a9..65a69a6 100644
 --- a/qemu-options.hx
 +++ b/qemu-options.hx
-@@ -1,13 +1,13 @@
+@@ -4917,13 +4917,13 @@ SRST
  ERST
  
  DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
@@ -378,7 +371,7 @@ index dc694a9..65a69a6 100644
      Enable virtual instruction counter. The virtual cpu will execute one
      instruction every 2^N ns of virtual time. If ``auto`` is specified
      then the virtual cpu speed will be automatically adjusted to keep
-@@ -15,7 +15,14 @@
+@@ -4951,7 +4951,14 @@ SRST
      option. Whenever the guest clock is behind the host clock and if
      ``align=on`` is specified then we print a message to the user to
      inform about the delay. Currently this option does not work when
@@ -395,7 +388,6 @@ index dc694a9..65a69a6 100644
      Typically this happens when the shift value is high (how high
      depends on the host machine). The default if icount is enabled
 diff --git a/system/cpu-timers.c b/system/cpu-timers.c
-index 23dd82b..91fa999 100644
 --- a/system/cpu-timers.c
 +++ b/system/cpu-timers.c
 @@ -25,6 +25,7 @@
@@ -460,7 +452,6 @@ index 23dd82b..91fa999 100644
      },
      .subsections = (const VMStateDescription * const []) {
 diff --git a/system/vl.c b/system/vl.c
-index ec93988..9d56aeb 100644
 --- a/system/vl.c
 +++ b/system/vl.c
 @@ -446,6 +446,9 @@ static QemuOptsList qemu_icount_opts = {

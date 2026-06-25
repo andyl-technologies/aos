@@ -1,7 +1,7 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -30,6 +30,7 @@
+@@ -31,6 +31,7 @@
  #include "qemu/main-loop.h"
  #include "qemu/notify.h"
  #include "qemu/guest-random.h"
@@ -9,7 +9,8 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  #include "qemu/plugin.h"
  #include "exec/cpu-common.h"
  #include "tcg/startup.h"
-@@ -57,6 +58,33 @@ static QEMUTimer *rr_kick_vcpu_timer;
+@@ -63,6 +64,33 @@ void rr_kick_vcpu_thread(CPUState *unused)
+ static QEMUTimer *rr_kick_vcpu_timer;
  static CPUState *rr_current_cpu;
  
 +static bool rr_crucible_sim_mode(void)
@@ -42,8 +43,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  static inline int64_t rr_next_kick_time(void)
  {
      return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
- }
-@@ -250,6 +278,7 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -252,6 +280,7 @@ static void *rr_cpu_thread_fn(void *arg)
          if (!cpu) {
              cpu = first_cpu;
          }
@@ -51,7 +51,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  
          while (cpu && cpu_work_list_empty(cpu) && !cpu->exit_request) {
              /* Store rr_current_cpu before evaluating cpu_can_run().  */
-@@ -296,7 +325,7 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -299,7 +328,7 @@ static void *rr_cpu_thread_fn(void *arg)
          qatomic_set(&rr_current_cpu, NULL);
  
          if (cpu && cpu->exit_request) {

@@ -1520,31 +1520,25 @@ production path remains gated on the patch-series exact virtual-clock deadline
 export plus a ceiling mechanism that stops at `max_advance_icount` exactly,
 including interior-TB ceilings.
 
-**RISK-16** is resolved by `T-RISK-9` with the build-identity/re-gate fallback:
-`checks.crucible.phase0.s9QemuBuildIdentity` consumed the green
-`checks.crucible.phase0.s1Fingerprint` result for the active AOS
-`qemu-crucible` build, recorded the QEMU derivation path and patch-series hash,
-and emitted a reproduction-artifact-shaped JSON carrying the build identity. The
-run reported `qemu_version=9.2.4`,
-`qemu_build_id=729b568e369aac8b090a2b743ef14f1e8338fcbfa8d6e0412d5ba2dc973a5ba4`,
-`qemu_nix_hash=bbdaae2e7c1a5ac000ae311c840e659db2925b1e43f3af877c54a00f456caa5c`,
-`patch_count=1`,
-`patch_0001_hash=1996b15d86a2e7af293652649ef9c2f204e209ffe38b5ed232dbb5ae389c3a0e`,
-`patch_series_hash=f2b409e1639b9616d6daa321774131028b6e7ef35185a2d49950ec187aab2653`,
-`patch_apply_list_matches=true`, `plugin_exports_present=true`,
-`rr_switch_quantum_default_zero=true`, `non_sim_icount_patch_present=true`,
-`s1_result_consumed=true`, `s1_result_status=PASS`,
-`s1_horizon_extended_hash=9d1e61606ac54920`,
-`s1_pause_retired=3200000005`, `s1_pause_overshoot=5`,
-`artifact_build_id_match=true`, `artifact_mismatch_regates=true`,
-`full_upstream_inertness_comparison=false`,
-`qemu_inert_gate_status=fallback_pending_upstream_comparison`, and
-`fallback_adopted=pin_build_id_and_regate_on_change`. The current patch series is
-not fully inert relative to upstream when sim mode is off: it includes
-load-bearing icount idle-warp and timer-VMState normalization behavior. Phase 0
-therefore retires silent QEMU rebuild drift by pinning the build id and forcing a
-re-gate on mismatch; full upstream-vs-patched inertness remains owned by the later
-`gate:qemu-inert`.
+**RISK-16** is resolved by `T-RISK-9` and the Phase-2 regeneration/build-identity
+gate. `checks.crucible.phase2.qemuPatchRegeneration` now verifies the checked-in
+`crucible/qemu-10.0.0` branch bundle, proves the bundle base/head and each
+per-patch commit/tree entry match the manifest, regenerates all 27 committed patch
+files byte-for-byte with `--unified=3`, applies the regenerated stack with fuzz
+disabled, and emits a manifest-derived QEMU build identity. The run reported
+`qemu_version=10.0.0`,
+`patch_series_hash=2ed729cda5e0b78b208a6ef61b7b07af658435a71e50e247e701314c26bd57f8`,
+`patch_branch_bundle_hash=6661ad51927d0e61744e180a2989072da83e9342e6d2f37908bc2dfd20c0dfb1`,
+`patch_branch_head_commit=1ca198288b0ca503b8dd86b459dfe03cd1959e46`,
+`patch_branch_material_hash=6b325a5a18abb07d7d7576012e562aac10eecab8ce3a042d1080102cf20c0e97`,
+`qemu_build_id=3c402016048ce1d4c4e84d4e183b39a409d13cf7dff14f09954d9fb4b2ffd374`,
+`qemu_nix_hash=35aad46df419155f4ce336d66dd4eac329348b333b1d202937ad05a0d94add09`,
+`qemu_configure_flags_hash=716c3de64e42d5fee65c1b0ebb4dc213f282aba1d916820e1896ee36bc0db5f8`,
+`artifact_build_id_match=true`, `artifact_validator_rejects_mismatch=true`,
+`artifact_mismatch_regates=true`, and
+`qemu_version_bump_regate_enforced=true`. `gate:patch-microtests` consumes that
+result, and `gate:qemu-inert` owns the separate upstream-vs-patched sim-off
+inertness proof.
 
 **RISK-17** is resolved by `T-RISK-10` with the aarch64 black-box-only fallback:
 `checks.crucible.phase0.s10Aarch64Doorbell` inspected the current AOS QEMU and

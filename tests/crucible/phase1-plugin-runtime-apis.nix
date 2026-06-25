@@ -123,10 +123,6 @@
         label = "RR loop callback hook";
         needle = "qemu_plugin_maybe_fire_tcg_exec_cb(cpu)";
       }
-      {
-        label = "post-icount-process hook context";
-        needle = "icount_process_data(cpu);";
-      }
     ];
 
   failures =
@@ -210,6 +206,7 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.gawk
         pkgs.grep
         pkgs.patch
       ];
@@ -593,6 +590,11 @@ in
             grep -q 'qemu_plugin_main_loop_wait' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_register_tcg_exec_cb' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_maybe_fire_tcg_exec_cb(cpu);' accel/tcg/tcg-accel-ops-rr.c
+            awk '
+              /icount_process_data\(cpu\);/ { saw_icount = NR }
+              /qemu_plugin_maybe_fire_tcg_exec_cb\(cpu\);/ { saw_callback = NR }
+              END { exit !(saw_icount && saw_callback && saw_icount < saw_callback) }
+            ' accel/tcg/tcg-accel-ops-rr.c
 
             cp "$microtestSourcePath" phase1-plugin-runtime-apis.c
             cc -std=c11 -O2 -Wall -Wextra -Werror -DCONFIG_PLUGIN \
@@ -645,6 +647,7 @@ in
             tcg_exec_callback_symbol=qemu_plugin_register_tcg_exec_cb
             tcg_exec_callback_count=1
             tcg_exec_callback_after_icount_process=true
+            tcg_exec_callback_after_icount_context=true
             tcg_exec_disabled_single_null_check=true
             RESULT
           '';

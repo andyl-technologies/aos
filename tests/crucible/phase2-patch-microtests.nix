@@ -5,10 +5,14 @@
   taskIds ? ["T-HARN-20" "T-PATCH-2"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
+  series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   defaultNix = builtins.readFile ./default.nix;
   qemuPatchSeries = import ./phase2-qemu-patch-series.nix {inherit pkgs lib;};
   qemuPackage = pkgs.qemu-crucible;
+  qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
+    inherit pkgs lib qemuPackage;
+  };
   qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix {inherit pkgs lib qemuPackage;};
   qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix {inherit pkgs lib qemuPackage;};
   patchFiles =
@@ -197,6 +201,10 @@
       builtins.substring index needleLen haystack == needle)
     indexes;
 
+  qemuNixAppliesManifestSeries =
+    hasInfix "patchCommand = file:" qemuNix
+    && hasInfix "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)" qemuNix;
+
   missingMicrotests =
     builtins.filter (patch: !(builtins.elem patch microtestPatchNames)) patchFiles;
   staleMicrotests =
@@ -223,6 +231,9 @@
     staleMicrotests
     ++ map (patch: "pkgs/emulation/qemu.nix: carried patch is not applied by the QEMU package: ${patch}")
     unwiredPatches
+    ++ lib.optionals (!qemuNixAppliesManifestSeries) [
+      "pkgs/emulation/qemu.nix: QEMU patch phase must be generated from qemu-patches/_series.nix"
+    ]
     ++ lib.optionals qemuInertGateUnwired [
       "tests/crucible/default.nix: phase2 gate:qemu-inert is not wired into the patch CI dependency surface"
     ];
@@ -305,6 +316,21 @@ in
 
             cp "${qemuPatchSeries}/result" "$out/patch-series.result"
             grep -q '^PASS$' "$out/patch-series.result"
+            cp "${qemuPatchRegeneration}/result" "$out/patch-regeneration.result"
+            grep -q '^PASS$' "$out/patch-regeneration.result"
+            grep -q '^gate=gate:patch-microtests$' "$out/patch-regeneration.result"
+            grep -q '^patch_regeneration_from_tracked_stack=true$' "$out/patch-regeneration.result"
+            grep -q '^regenerated_patch_bytes_match_committed=true$' "$out/patch-regeneration.result"
+            grep -q '^patch_branch_bundle_verified=true$' "$out/patch-regeneration.result"
+            grep -q '^patch_branch_commit_hashes_match_manifest=true$' "$out/patch-regeneration.result"
+            grep -q '^apply_clean_regenerated_series=true$' "$out/patch-regeneration.result"
+            grep -q '^qemu_package_patch_phase_generated_from_manifest=true$' "$out/patch-regeneration.result"
+            grep -q '^qemu_build_identity_metadata_installed=true$' "$out/patch-regeneration.result"
+            grep -q '^qemu_build_id_material_includes=qemu_version,qemu_source_hash,qemu_nix_hash,qemu_configure_flags_hash,patch_series_hash,patch_branch_bundle_hash,patch_branch_material_hash$' "$out/patch-regeneration.result"
+            grep -q '^artifact_build_id_match=true$' "$out/patch-regeneration.result"
+            grep -q '^artifact_validator_rejects_mismatch=true$' "$out/patch-regeneration.result"
+            grep -q '^artifact_mismatch_regates=true$' "$out/patch-regeneration.result"
+            grep -q '^qemu_version_bump_regate_enforced=true$' "$out/patch-regeneration.result"
             cp "${qemuDoorbellNoPatch}/result" "$out/qemu-doorbell-no-patch.result"
             grep -q '^PASS$' "$out/qemu-doorbell-no-patch.result"
             grep -q '^gate=gate:patch-microtests$' "$out/qemu-doorbell-no-patch.result"
@@ -332,6 +358,12 @@ in
             microtest_count=${toString (builtins.length perPatchMicrotests)}
             patches=${builtins.concatStringsSep "," patchFiles}
             patch_series_gate_passed=true
+            patch_regeneration_gate_passed=true
+            patch_regeneration_drift_checked=true
+            patch_regeneration_result_consumed=true
+            qemu_build_identity_artifact_checked=true
+            qemu_version_bump_regate_enforced=true
+            qemu_package_patch_phase_generated_from_manifest=true
             qemu_doorbell_no_patch_gate_passed=true
             qemu_diagnostic_patches_dev_only_gate_passed=true
             apply_clean_pinned_qemu=true

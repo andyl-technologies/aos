@@ -1,7 +1,7 @@
 diff --git a/util/guest-random.c b/util/guest-random.c
 --- a/util/guest-random.c
 +++ b/util/guest-random.c
-@@ -10,6 +10,7 @@
+@@ -11,6 +11,7 @@
  
  #include "qemu/osdep.h"
  #include "qemu/cutils.h"

@@ -1,11 +1,10 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -771,6 +771,16 @@
-  */
+@@ -772,6 +772,16 @@ void qemu_plugin_drain_main_loop(void);
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_icount_raw(void);
-+
+ 
 +/**
 + * qemu_plugin_force_vcpu_exit() - force the current vCPU out of cpu_exec
 + *
@@ -15,13 +14,14 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 + */
 +QEMU_PLUGIN_API
 +void qemu_plugin_force_vcpu_exit(void);
- 
++
  /**
   * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+  * @data: Ethernet frame bytes
 diff --git a/plugins/api-system.c b/plugins/api-system.c
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -192,7 +192,14 @@
+@@ -192,6 +192,13 @@ uint64_t qemu_plugin_icount_raw(void)
      return (uint64_t)raw_icount;
  }
  
@@ -31,8 +31,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
 +        qatomic_set_mb(&current_cpu->exit_request, 1);
 +    }
 +}
- 
 +
+ 
  static NetClientState *qemu_plugin_default_nic_queue(void)
  {
-     NetClientState *nc;

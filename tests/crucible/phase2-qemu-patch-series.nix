@@ -5,6 +5,7 @@
   taskIds ? ["T-PATCH-1"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
+  series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   packagingSpec = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
@@ -208,6 +209,7 @@
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
+  seriesPatchFiles = series.patchFiles;
 
   noPatchDecisions = [
     {
@@ -239,6 +241,10 @@
       builtins.substring index needleLen haystack == needle)
     indexes;
 
+  qemuNixAppliesManifestSeries =
+    hasInfix "patchCommand = file:" qemuNix
+    && hasInfix "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)" qemuNix;
+
   missingCarriedPatches =
     builtins.filter (patch: !(builtins.elem patch patchFiles)) carriedPatchFiles;
   unmanifestedPatches =
@@ -259,13 +265,28 @@
     unmanifestedPatches
     ++ map (patch: "pkgs/emulation/qemu.nix: carried patch is not applied by the QEMU package: ${patch}")
     unwiredPatches
+    ++ lib.optionals (!qemuNixAppliesManifestSeries) [
+      "pkgs/emulation/qemu.nix: QEMU patch phase must be generated from qemu-patches/_series.nix"
+    ]
     ++ map (patch: "docs/rfcs/0010-crucible/11-qemu-patches.md: catalog missing carried patch name ${patch.catalogName}")
     uncatalogedPatches
-    ++ lib.optionals (!(hasInfix ''version = "10.0.0";'' qemuNix)) [
-      "pkgs/emulation/qemu.nix: QEMU pin must be 10.0.0 for this carried series"
+    ++ lib.optionals (seriesPatchFiles != carriedPatchFiles) [
+      "pkgs/emulation/qemu-patches/_series.nix: patch manifest does not match phase2 carried-patch catalog"
     ]
-    ++ lib.optionals (!(hasInfix ''hash = "sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=";'' qemuNix)) [
-      "pkgs/emulation/qemu.nix: QEMU 10.0.0 source hash is not the recorded pin"
+    ++ lib.optionals (!(hasInfix "series ? import ./qemu-patches/_series.nix" qemuNix)) [
+      "pkgs/emulation/qemu.nix: QEMU package must consume the patch-series manifest"
+    ]
+    ++ lib.optionals (!(hasInfix "version = series.qemuVersion;" qemuNix)) [
+      "pkgs/emulation/qemu.nix: QEMU version must be read from qemu-patches/_series.nix"
+    ]
+    ++ lib.optionals (!(hasInfix "hash = series.qemuSourceHash;" qemuNix)) [
+      "pkgs/emulation/qemu.nix: QEMU source hash must be read from qemu-patches/_series.nix"
+    ]
+    ++ lib.optionals (series.qemuVersion != "10.0.0") [
+      "pkgs/emulation/qemu-patches/_series.nix: QEMU pin must be 10.0.0 for this carried series"
+    ]
+    ++ lib.optionals (series.qemuSourceHash != "sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=") [
+      "pkgs/emulation/qemu-patches/_series.nix: QEMU 10.0.0 source hash is not the recorded pin"
     ]
     ++ lib.optionals (!(hasInfix "pinned minimum QEMU version of 10.0 or" qemuPatchSpec)) [
       "docs/rfcs/0010-crucible/11-qemu-patches.md: PATCH-40 QEMU >=10.0 requirement missing"
@@ -376,14 +397,17 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            qemu_version=10.0.0
+            qemu_version=${series.qemuVersion}
             qemu_minimum_version_satisfied=true
-            qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=
+            qemu_source_hash=${series.qemuSourceHash}
             gate=gate:patch-series
             carried_patch_count=${toString (builtins.length carriedPatches)}
             patches=${builtins.concatStringsSep "," carriedPatchFiles}
+            patch_manifest=pkgs/emulation/qemu-patches/_series.nix
+            patch_manifest_matches_carried_catalog=true
             stable_numeric_crucible_patch_names=true
             significant_order_is_manifested=true
+            qemu_package_patch_phase_generated_from_manifest=true
             every_carried_patch_has_class=true
             every_carried_patch_has_invariant_or_capability=true
             qemu_package_applies_manifested_series=true
