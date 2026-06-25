@@ -322,6 +322,15 @@ impl TreeWalk {
             let value = self.alloc_static_string(id, span, file_type_name(file_type))?;
             attrs.push(AttrEntry::new(symbol, value));
         }
+        // `readDir` is generated data, so it has no source order to preserve.
+        // Canonicalizing here makes replayable attrset payloads deterministic.
+        attrs.sort_unstable_by(|left, right| {
+            let left_name = self.symbols.resolve(left.key).unwrap_or(&[]);
+            let right_name = self.symbols.resolve(right.key).unwrap_or(&[]);
+            left_name
+                .cmp(right_name)
+                .then_with(|| left.key.cmp(&right.key))
+        });
         let attrs = FlatAttrs::new(attrs, &self.symbols)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
         if trace_entries_complete {

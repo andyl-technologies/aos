@@ -687,6 +687,43 @@ fn force_attr_a(evaluator: &mut TreeWalk, ir: &Ir, a: Symbol) -> Value {
     force_attr(evaluator, ir, a, "a")
 }
 
+fn force_attr_a_string(evaluator: &mut TreeWalk, ir: &Ir, a: Symbol, expected: &[u8]) {
+    let value = force_attr_a(evaluator, ir, a);
+    let string = evaluator
+        .heap()
+        .get_string(value)
+        .expect("forced value is a string");
+    assert_eq!(string.bytes(), expected);
+}
+
+fn force_attr_a_attrs_strings(
+    evaluator: &mut TreeWalk,
+    ir: &Ir,
+    a: Symbol,
+    expected: &[(&[u8], &[u8])],
+) {
+    let value = force_attr_a(evaluator, ir, a);
+    let symbols = expected
+        .iter()
+        .map(|(name, _)| evaluator.symbols.intern(name).expect("symbol interns"))
+        .collect::<Vec<_>>();
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("forced value is an attrset");
+    assert_eq!(attrs.len(), expected.len());
+    for ((name, expected_value), symbol) in expected.iter().zip(symbols) {
+        let value = attrs
+            .get(symbol)
+            .unwrap_or_else(|| panic!("{} exists", String::from_utf8_lossy(name)));
+        let string = evaluator
+            .heap()
+            .get_string(value)
+            .expect("attr value is a string");
+        assert_eq!(string.bytes(), *expected_value);
+    }
+}
+
 fn force_attr(evaluator: &mut TreeWalk, ir: &Ir, attr: Symbol, label: &str) -> Value {
     let root = evaluator.eval_root().expect("attrset evaluates");
     let thunk_value = {
@@ -2381,6 +2418,271 @@ fn changed_read_file_string_payload_thunks_miss_after_revalidation() {
     assert_eq!(changed_string.bytes(), b"changed");
     assert_eq!(changed.stats().thunks_forced(), 1);
     assert_eq!(changed.stats().cache_hits(), 0);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn get_env_string_payload_thunks_hit_and_miss_after_revalidation() {
+    let source = r#"{ a = builtins.getEnv "AOS_FORCE_CACHE_TEST"; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let name = b"AOS_FORCE_CACHE_TEST";
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options.set_env_var(name.to_vec(), b"first".to_vec());
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    force_attr_a_string(&mut eval, &ir, a, b"first");
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options.set_env_var(name.to_vec(), b"first".to_vec());
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    force_attr_a_string(&mut second, &ir, a, b"first");
+
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "stable getEnv payloads should hit after input revalidation"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+    let expected_trace =
+        vec![ImpureInputFingerprint::get_env(name, Some(b"first")).expect("fingerprint builds")];
+    assert_eq!(
+        second.impure_input_trace(),
+        expected_trace.as_slice(),
+        "cache-hit revalidation must replay getEnv edges"
+    );
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options.set_env_var(name.to_vec(), b"second".to_vec());
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    force_attr_a_string(&mut changed, &ir, a, b"second");
+
+    assert_eq!(changed.stats().thunks_forced(), 1);
+    assert_eq!(changed.stats().cache_hits(), 0);
+    assert!(changed.stats().cache_misses() > 0);
+    let changed_trace =
+        vec![ImpureInputFingerprint::get_env(name, Some(b"second")).expect("fingerprint builds")];
+    assert_eq!(changed.impure_input_trace(), changed_trace.as_slice());
+}
+
+#[test]
+fn read_dir_attrset_payload_thunks_hit_and_miss_after_revalidation() {
+    let root = unique_temp_dir("force-cache-read-dir-list-payload");
+    fs::create_dir(root.join("dir")).expect("directory creates");
+    fs::write(root.join("dir").join("alpha"), b"data").expect("alpha writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let dir_path = path_bytes(&root.join("dir"));
+    let source = "{ a = builtins.readDir ./dir; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    force_attr_a_attrs_strings(&mut eval, &ir, a, &[(b"alpha", b"regular")]);
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    force_attr_a_attrs_strings(&mut second, &ir, a, &[(b"alpha", b"regular")]);
+
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "stable readDir payloads should hit after input revalidation"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+    let expected_trace = vec![
+        ImpureInputFingerprint::read_dir(
+            &dir_path,
+            [DirEntryInput::new(b"alpha", FileTypeForInput::Regular)],
+        )
+        .expect("fingerprint builds"),
+    ];
+    assert_eq!(
+        second.impure_input_trace(),
+        expected_trace.as_slice(),
+        "cache-hit revalidation must replay readDir edges"
+    );
+
+    fs::write(root.join("dir").join("beta"), b"data").expect("beta writes");
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    force_attr_a_attrs_strings(
+        &mut changed,
+        &ir,
+        a,
+        &[(b"alpha", b"regular"), (b"beta", b"regular")],
+    );
+
+    assert_eq!(changed.stats().thunks_forced(), 1);
+    assert_eq!(changed.stats().cache_hits(), 0);
+    assert!(changed.stats().cache_misses() > 0);
+    let changed_trace = vec![
+        ImpureInputFingerprint::read_dir(
+            &dir_path,
+            [
+                DirEntryInput::new(b"alpha", FileTypeForInput::Regular),
+                DirEntryInput::new(b"beta", FileTypeForInput::Regular),
+            ],
+        )
+        .expect("fingerprint builds"),
+    ];
+    assert_eq!(changed.impure_input_trace(), changed_trace.as_slice());
+
+    let mut fourth_options = TreeWalkOptions::new();
+    fourth_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut fourth = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        fourth_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    force_attr_a_attrs_strings(
+        &mut fourth,
+        &ir,
+        a,
+        &[(b"alpha", b"regular"), (b"beta", b"regular")],
+    );
+
+    assert_eq!(
+        fourth.stats().thunks_forced(),
+        0,
+        "stable multi-entry readDir payloads should hit after recomputation"
+    );
+    assert_eq!(fourth.stats().cache_hits(), 1);
+    assert_eq!(fourth.impure_input_trace(), changed_trace.as_slice());
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn read_file_type_string_payload_thunks_hit_and_miss_after_revalidation() {
+    let root = unique_temp_dir("force-cache-read-file-type-string-payload");
+    fs::write(root.join("target"), b"data").expect("target writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let target_path = path_bytes(&root.join("target"));
+    let source = "{ a = builtins.readFileType ./target; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    force_attr_a_string(&mut eval, &ir, a, b"regular");
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    force_attr_a_string(&mut second, &ir, a, b"regular");
+
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "stable readFileType payloads should hit after input revalidation"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+    let expected_trace = vec![
+        ImpureInputFingerprint::read_file_type(&target_path, FileTypeForInput::Regular)
+            .expect("fingerprint builds"),
+    ];
+    assert_eq!(
+        second.impure_input_trace(),
+        expected_trace.as_slice(),
+        "cache-hit revalidation must replay readFileType edges"
+    );
+
+    fs::remove_file(root.join("target")).expect("target file removes");
+    fs::create_dir(root.join("target")).expect("target directory creates");
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    force_attr_a_string(&mut changed, &ir, a, b"directory");
+
+    assert_eq!(changed.stats().thunks_forced(), 1);
+    assert_eq!(changed.stats().cache_hits(), 0);
+    assert!(changed.stats().cache_misses() > 0);
+    let changed_trace = vec![
+        ImpureInputFingerprint::read_file_type(&target_path, FileTypeForInput::Directory)
+            .expect("fingerprint builds"),
+    ];
+    assert_eq!(changed.impure_input_trace(), changed_trace.as_slice());
 
     fs::remove_dir_all(root).expect("temp tree removed");
 }

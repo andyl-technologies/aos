@@ -906,12 +906,15 @@ harness, never cut for scope.
   fresh inputs invalidate the payload and miss. Tree-walk
   supplies a conservative options-backed revalidator for `import`, `getEnv`,
   `pathExists`, `readFile`, `readDir`, and `readFileType`, so stable
-  source-backed `pathExists`, `readFile`-backed, and canonical plain-file
-  filesystem-import-backed thunks reached without symlinked path components can
-  hit after replaying their input probes, including import-cache hits that
-  replay the originally observed nested input trace. Deleted paths, changed read
-  bytes, changed import source bytes, or symlinked import routes force
-  recomputation through the normal evaluator path. Revalidated cache hits append
+  source-backed `getEnv`, `pathExists`, `readFile`-, `readDir`-, and
+  `readFileType`-backed thunks, plus canonical plain-file filesystem-import-backed
+  thunks reached without symlinked path components, can hit after replaying
+  their input probes, including generated `readDir` attrsets canonicalized to a
+  deterministic source order and import-cache hits that replay the originally
+  observed nested input trace. Changed environment values, directory listings,
+  file types, read bytes, import source bytes, deleted paths, unavailable paths,
+  or symlinked import routes force recomputation through the normal evaluator
+  path. Revalidated cache hits append
   their fresh fingerprints back into the
   active evaluator trace so enclosing forced thunks cannot be observed as pure
   by losing nested dependencies. `readFile` revalidation is guarded by the
@@ -929,8 +932,8 @@ harness, never cut for scope.
   and cached/uncached harness proof remain open ([§3.1](#31-what-a-node-is),
   [§6.3](#63-treating-importreadfile-reads-as-hashed-inputs)) — P2 precursor,
   `R-10`/`S-14`; gate: cache revalidation tests plus source-backed
-  stable/changed `pathExists`, readFile-backed hit/miss, and
-  import-backed hit/miss tests.
+  stable/changed `getEnv`, `pathExists`, `readFile`, `readDir`, `readFileType`,
+  and import-backed hit/miss tests.
 - [x] Current force-cache evaluator option identity salt: force expression identities now hash the module's `store_dir`, `home_dir`, configured `current_system`, configured `current_time`, and `eval_mode` alongside source name or lowered-IR fingerprint, path-literal base, lowered node source span, and IR node id. This prevents the current advisory force cache from sharing inline payloads across evaluator configurations that can change path/context, ambient builtin constants, impurity-policy behavior, or expression source position. It is deliberately conservative and may miss across option/span changes that do not affect a specific expression; full cache-key integration, canonical free-variable hashes, fine-grained option dependency tracking, persistent keys, and cached/uncached harness proof remain open ([§3.2](#32-constructing-the-dependency-key), [§6.3](#63-treating-importreadfile-reads-as-hashed-inputs)) — P2 precursor, `C-1`/`C-2`/`R-10`; gate: force-cache identity tests for `store_dir`, `home_dir`, `current_system`, and eval mode.
 - [x] Current ambient and synthetic builtin constant force-cache substrate: tree-walk admits only symbol-checked `BuiltinAttr` constants for force-cache lookup/observation: immediate true/false/null, `currentSystem`, `storeDir`, `nixVersion`, and `langVersion`; `currentTime` is observation-only and remains uncacheable through its existing impure trace. Matching configured `currentSystem` and `storeDir` thunks can now hit as context-free string payloads, while changed `currentSystem` or `storeDir` options miss through the expanded option identity salt. Reified `builtins` attrset entries for those constants are now delayed synthetic builtin-attr thunks, so constructing the attrset does not force `currentTime`, and runtime selections such as `let b = builtins; in b.currentSystem` use synthetic identities keyed by module identity, force-site `IrId` and lowered source span, builtin symbol, and execution tag. This deliberately skips the recursive `builtins` attrset, `nixPath`, derivation, first-class primops, synthetic apply/select thunks, persistence, and cached/uncached harness proof ([§3.1](#31-what-a-node-is), [§3.2](#32-constructing-the-dependency-key)) — P2 precursor, `C-1`/`C-2`/`R-10`; gate: source-backed and source-less ambient and synthetic `currentSystem` hit/miss, synthetic `storeDir` hit/miss/symbol-separation, synthetic force-site span separation, synthetic immediate constants, reified `currentTime` laziness, stale synthetic `currentTime` payload invalidation, and source-backed/source-less `currentTime` uncacheable-trace force-cache tests.
 - [x] Current source-less lowered-IR force-cache identity substrate: `cache::parse::lowered_ir_fingerprint` hashes the stable `ir.bin` and `symbols.bin` artifact encodings under the parse-cache schema version, and tree-walk uses that digest when a module has no source provenance before applying the same path-literal-base, `store_dir`, `home_dir`, configured `current_system`, configured `current_time`, and `eval_mode` salts plus lowered node and synthetic force-site source spans. This lets caller-owned in-memory cache runtimes share conservative source-less lowered-IR node-thunk and admitted synthetic builtin-attr payloads without requiring source bytes, while still separating equal-shaped IR whose symbol tables, path bases, evaluator options, node spans, or synthetic force-site spans differ. It is a source-independent identity substrate only; broader source-less raw eval surfaces, synthetic apply/select thunks, remaining composite payloads, persistence, fine-grained option dependency tracking, and cached/uncached harness proof remain open ([§3.2](#32-constructing-the-dependency-key)) — P2 precursor, `C-1`/`C-2`/`S-14`; gate: lowered-IR fingerprint tests plus source-less hit/miss, source/source-less domain separation, path/store/home/current-system/eval-mode salt, readFile revalidation, captured-free-variable tests, and source-less synthetic builtin constant hit tests.
