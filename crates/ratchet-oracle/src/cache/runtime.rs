@@ -832,10 +832,13 @@ impl EvalCache {
 
     /// Observes an expression evaluation trace and wires cacheable leaves to its node.
     ///
-    /// This first observes the trace. Incomplete or uncacheable traces return
-    /// their status without creating an expression node. Complete cacheable
-    /// traces get or insert the caller-supplied expression node and then add
-    /// dependencies from that node to the observed input leaves.
+    /// This first computes the expression key and observes the trace.
+    /// Incomplete or uncacheable traces return their status without creating a
+    /// new expression node; if the expression key already exists, any side
+    /// inline payload is invalidated and its stale dependencies are cleared.
+    /// Complete cacheable traces get or insert the caller-supplied expression
+    /// node, invalidate any prior side inline payload, and then replace that
+    /// node's dependencies with the observed input leaves.
     ///
     /// This is still an explicit adapter: callers supply expression identity,
     /// ordered free-variable value hashes, and the optional current value hash.
@@ -843,13 +846,13 @@ impl EvalCache {
     /// dynamic evaluator node lifecycle.
     ///
     /// Successful leaf observations are not rolled back if expression-node
-    /// allocation or edge wiring later fails.
+    /// allocation or edge replacement later fails.
     ///
     /// # Errors
     ///
     /// Returns a [`DemandGraphError`] if trace observation fails, expression
-    /// cache-key construction or insertion fails, or dependency edge insertion
-    /// fails.
+    /// cache-key construction or insertion fails, an existing payload cannot be
+    /// invalidated, or dependency edge replacement fails.
     pub fn observe_expression_impure_inputs<I, T>(
         &mut self,
         identity: CacheExprIdentity,
@@ -861,16 +864,22 @@ impl EvalCache {
         I: IntoIterator<Item = DurableBlake3Hash>,
         T: ImpureInputTraceSource + ?Sized,
     {
+        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
+            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        let existing_node = self.graph.node_id_for_key(key);
         let trace = self.observe_impure_inputs(source)?;
+        self.invalidate_existing_inline_payload_if_present(existing_node)?;
         if trace.status() != ImpureTraceStatus::Cacheable {
+            if let Some(node) = existing_node {
+                self.graph
+                    .replace_dependencies(node, std::iter::empty::<DemandNodeId>())?;
+            }
             return Ok(ExpressionTraceObservation::new(None, trace));
         }
 
-        let node =
-            self.get_or_insert_expression_node(identity, free_var_value_hashes, value_hash)?;
-        for leaf in trace.leaves() {
-            self.graph.add_dependency(node, leaf.node())?;
-        }
+        let node = self.graph.get_or_insert_node(key, value_hash)?;
+        self.graph
+            .replace_dependencies(node, trace.leaves().iter().map(|leaf| leaf.node()))?;
         Ok(ExpressionTraceObservation::new(Some(node), trace))
     }
 
@@ -954,22 +963,24 @@ impl EvalCache {
 
     /// Observes one recomputed expression payload with its impure inputs.
     ///
-    /// Cacheable traces get or insert the expression node, wire observed input
-    /// leaves as dependencies, reconsider the node from the payload value hash,
-    /// and store the side payload plus the cacheable input fingerprints
+    /// Cacheable traces get or insert the expression node, replace its
+    /// dependencies with the observed input leaves, reconsider the node from
+    /// the payload value hash, and store the side payload plus the cacheable
+    /// input fingerprints
     /// required by
     /// [`EvalCache::lookup_inline_expression_payload_with_impure_inputs`].
     /// Incomplete or uncacheable traces return their status without creating a
     /// new expression node or payload; if the expression key already exists,
-    /// its prior inline payload is removed and the node is marked dirty.
+    /// its prior inline payload and stale dependencies are removed and the node
+    /// is marked dirty.
     ///
     /// Successful leaf observations are not rolled back if expression-node
-    /// allocation, edge wiring, or value reconsideration later fails.
+    /// allocation, edge replacement, or value reconsideration later fails.
     ///
     /// # Errors
     ///
     /// Returns a [`DemandGraphError`] if trace observation fails, expression
-    /// cache-key construction or insertion fails, dependency edge insertion
+    /// cache-key construction or insertion fails, dependency edge replacement
     /// fails, dirty marking fails, or node reconsideration fails.
     pub fn observe_inline_expression_payload_with_impure_inputs<I, T>(
         &mut self,
@@ -1000,6 +1011,10 @@ impl EvalCache {
         let trace = self.observe_impure_inputs(source)?;
         if trace.status() != ImpureTraceStatus::Cacheable {
             self.invalidate_existing_inline_payload(existing_node)?;
+            if let Some(node) = existing_node {
+                self.graph
+                    .replace_dependencies(node, std::iter::empty::<DemandNodeId>())?;
+            }
             return Ok(ExpressionTraceObservation::new(None, trace));
         }
 
@@ -1007,15 +1022,18 @@ impl EvalCache {
             Ok(record) => record,
             Err(error) => {
                 self.invalidate_existing_inline_payload(existing_node)?;
+                if let Some(node) = existing_node {
+                    self.graph
+                        .replace_dependencies(node, std::iter::empty::<DemandNodeId>())?;
+                }
                 return Err(error);
             }
         };
         let node = self
             .graph
             .get_or_insert_node(key, Some(record.value_hash))?;
-        for leaf in trace.leaves() {
-            self.graph.add_dependency(node, leaf.node())?;
-        }
+        self.graph
+            .replace_dependencies(node, trace.leaves().iter().map(|leaf| leaf.node()))?;
         self.graph.reconsider_node(node, record.value_hash)?;
         self.inline_values.insert(node, record);
         Ok(ExpressionTraceObservation::new(Some(node), trace))
@@ -1079,6 +1097,18 @@ impl EvalCache {
         if let Some(node) = node {
             self.graph.mark_dirty(node)?;
             self.inline_values.remove(&node);
+        }
+        Ok(())
+    }
+
+    fn invalidate_existing_inline_payload_if_present(
+        &mut self,
+        node: Option<DemandNodeId>,
+    ) -> Result<(), DemandGraphError> {
+        if let Some(node) = node {
+            if self.inline_values.contains_key(&node) {
+                self.invalidate_existing_inline_payload(Some(node))?;
+            }
         }
         Ok(())
     }
@@ -3080,6 +3110,81 @@ mod tests {
     }
 
     #[test]
+    fn eval_cache_expression_trace_adapter_uncacheable_trace_clears_prior_edges() {
+        let first_source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/first", b"same")],
+            complete: true,
+        };
+        let second_source = TraceSource {
+            trace: vec![
+                read_file_trace(b"/tmp/second", b"same"),
+                ImpureInputFingerprint::current_time(),
+            ],
+            complete: true,
+        };
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+        let first_observation = cache
+            .observe_expression_impure_inputs(
+                identity,
+                [durable_hash(b"free-var")],
+                Some(value_hash(b"value")),
+                &first_source,
+            )
+            .expect("first expression trace observes");
+        let node = first_observation
+            .node()
+            .expect("cacheable trace creates node");
+        let first_dependency = first_observation.trace().leaves()[0].node();
+
+        let second_observation = cache
+            .observe_expression_impure_inputs(
+                identity,
+                [durable_hash(b"free-var")],
+                Some(value_hash(b"value")),
+                &second_source,
+            )
+            .expect("uncacheable expression trace observes");
+
+        assert_eq!(
+            second_observation.trace().status(),
+            ImpureTraceStatus::Uncacheable(UncacheableInput::CurrentTime)
+        );
+        assert_eq!(second_observation.node(), None);
+        assert!(
+            cache
+                .graph()
+                .node(node)
+                .expect("expression node exists")
+                .dependencies()
+                .is_empty()
+        );
+        assert!(
+            !cache
+                .graph()
+                .node(first_dependency)
+                .expect("first dependency exists")
+                .dependents()
+                .contains(&node)
+        );
+
+        cache
+            .observe_impure_inputs(&TraceSource {
+                trace: vec![read_file_trace(b"/tmp/first", b"changed")],
+                complete: true,
+            })
+            .expect("stale input reconsiders");
+        assert_eq!(
+            cache
+                .graph()
+                .node(node)
+                .expect("expression node exists")
+                .freshness(),
+            NodeFreshness::Clean
+        );
+    }
+
+    #[test]
     fn eval_cache_expression_trace_adapter_marks_incomplete_trace_not_memoizable() {
         let source = TraceSource {
             trace: vec![read_file_trace(b"/tmp/version", b"1")],
@@ -3190,6 +3295,190 @@ mod tests {
             "trace-backed payloads require input revalidation before reuse"
         );
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn eval_cache_recomputed_trace_backed_payload_replaces_prior_input_edges() {
+        let first_source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/first", b"same")],
+            complete: true,
+        };
+        let second_source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/second", b"same")],
+            complete: true,
+        };
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+        let first_observation = cache
+            .observe_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+                &first_source,
+            )
+            .expect("first inline result and trace observe");
+        let node = first_observation
+            .node()
+            .expect("cacheable trace creates node");
+        let first_dependency = first_observation.trace().leaves()[0].node();
+
+        let second_observation = cache
+            .observe_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+                &second_source,
+            )
+            .expect("second inline result and trace observe");
+        assert_eq!(second_observation.node(), Some(node));
+        let second_dependency = second_observation.trace().leaves()[0].node();
+
+        assert!(
+            !cache
+                .graph()
+                .node(node)
+                .expect("expression node exists")
+                .dependencies()
+                .contains(&first_dependency)
+        );
+        assert!(
+            cache
+                .graph()
+                .node(node)
+                .expect("expression node exists")
+                .dependencies()
+                .contains(&second_dependency)
+        );
+        assert!(
+            !cache
+                .graph()
+                .node(first_dependency)
+                .expect("first dependency exists")
+                .dependents()
+                .contains(&node)
+        );
+        assert!(
+            cache
+                .graph()
+                .node(second_dependency)
+                .expect("second dependency exists")
+                .dependents()
+                .contains(&node)
+        );
+
+        cache
+            .observe_impure_inputs(&TraceSource {
+                trace: vec![read_file_trace(b"/tmp/first", b"changed")],
+                complete: true,
+            })
+            .expect("stale input reconsiders");
+        assert_eq!(
+            cache
+                .graph()
+                .node(node)
+                .expect("expression node exists")
+                .freshness(),
+            NodeFreshness::Clean
+        );
+
+        cache
+            .observe_impure_inputs(&TraceSource {
+                trace: vec![read_file_trace(b"/tmp/second", b"changed")],
+                complete: true,
+            })
+            .expect("current input reconsiders");
+        assert_eq!(
+            cache
+                .graph()
+                .node(node)
+                .expect("expression node exists")
+                .freshness(),
+            NodeFreshness::Dirty
+        );
+    }
+
+    #[test]
+    fn eval_cache_expression_trace_adapter_invalidates_existing_trace_backed_payload() {
+        let first_fingerprint = read_file_trace(b"/tmp/first", b"same");
+        let first_source = TraceSource {
+            trace: vec![first_fingerprint.clone()],
+            complete: true,
+        };
+        let second_source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/second", b"same")],
+            complete: true,
+        };
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+        let first_observation = cache
+            .observe_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+                &first_source,
+            )
+            .expect("first inline result and trace observe");
+        let node = first_observation
+            .node()
+            .expect("cacheable trace creates node");
+        let first_dependency = first_observation.trace().leaves()[0].node();
+
+        let mut first_revalidator = StaticRevalidator::new(vec![first_fingerprint.clone()]);
+        let value = cache
+            .lookup_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                &mut first_revalidator,
+            )
+            .expect("lookup revalidates");
+        assert_eq!(value.expect("cache hit").as_int(), Ok(3));
+
+        let second_observation = cache
+            .observe_expression_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Some(value_hash(b"value")),
+                &second_source,
+            )
+            .expect("trace-only observation succeeds");
+        assert_eq!(second_observation.node(), Some(node));
+        let second_dependency = second_observation.trace().leaves()[0].node();
+
+        assert!(
+            !cache
+                .graph()
+                .node(node)
+                .expect("expression node exists")
+                .dependencies()
+                .contains(&first_dependency)
+        );
+        assert!(
+            cache
+                .graph()
+                .node(node)
+                .expect("expression node exists")
+                .dependencies()
+                .contains(&second_dependency)
+        );
+        assert_eq!(
+            cache
+                .graph()
+                .node(node)
+                .expect("expression node exists")
+                .freshness(),
+            NodeFreshness::Dirty
+        );
+
+        let mut stale_revalidator = StaticRevalidator::new(vec![first_fingerprint]);
+        let value = cache
+            .lookup_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                &mut stale_revalidator,
+            )
+            .expect("lookup succeeds");
+        assert!(value.is_none());
+        assert_eq!(stale_revalidator.calls(), 0);
     }
 
     #[test]

@@ -371,6 +371,155 @@ mod tests {
     }
 
     #[test]
+    fn cacheable_impure_trace_for_node_replaces_prior_input_edges() {
+        let mut graph = DemandGraph::new();
+        let dependent = node_with_hash(&mut graph, 7, b"dependent");
+        let first = [read_file_trace(b"/tmp/first", b"same")];
+        let first_observation = graph
+            .observe_impure_trace_for_node(dependent, &first, true)
+            .expect("first trace observes and wires");
+        let first_dependency = first_observation.leaves()[0].node();
+
+        let second = [read_file_trace(b"/tmp/second", b"same")];
+        let second_observation = graph
+            .observe_impure_trace_for_node(dependent, &second, true)
+            .expect("second trace replaces edges");
+        let second_dependency = second_observation.leaves()[0].node();
+
+        assert!(
+            !graph
+                .node(dependent)
+                .expect("dependent exists")
+                .dependencies()
+                .contains(&first_dependency)
+        );
+        assert!(
+            graph
+                .node(dependent)
+                .expect("dependent exists")
+                .dependencies()
+                .contains(&second_dependency)
+        );
+        assert!(
+            !graph
+                .node(first_dependency)
+                .expect("first dependency exists")
+                .dependents()
+                .contains(&dependent)
+        );
+        assert!(
+            graph
+                .node(second_dependency)
+                .expect("second dependency exists")
+                .dependents()
+                .contains(&dependent)
+        );
+
+        graph
+            .observe_impure_trace(&[read_file_trace(b"/tmp/first", b"changed")], true)
+            .expect("stale input reconsiders");
+        assert_eq!(
+            graph.node(dependent).expect("dependent exists").freshness(),
+            NodeFreshness::Clean
+        );
+
+        graph
+            .observe_impure_trace(&[read_file_trace(b"/tmp/second", b"changed")], true)
+            .expect("current input reconsiders");
+        assert_eq!(
+            graph.node(dependent).expect("dependent exists").freshness(),
+            NodeFreshness::Dirty
+        );
+    }
+
+    #[test]
+    fn uncacheable_impure_trace_for_node_clears_prior_input_edges() {
+        let mut graph = DemandGraph::new();
+        let dependent = node_with_hash(&mut graph, 7, b"dependent");
+        let first = [read_file_trace(b"/tmp/first", b"same")];
+        let first_observation = graph
+            .observe_impure_trace_for_node(dependent, &first, true)
+            .expect("first trace observes and wires");
+        let first_dependency = first_observation.leaves()[0].node();
+
+        let uncacheable = [
+            read_file_trace(b"/tmp/second", b"same"),
+            ImpureInputFingerprint::current_time(),
+        ];
+        let second_observation = graph
+            .observe_impure_trace_for_node(dependent, &uncacheable, true)
+            .expect("uncacheable trace clears edges");
+
+        assert_eq!(
+            second_observation.status(),
+            ImpureTraceStatus::Uncacheable(UncacheableInput::CurrentTime)
+        );
+        assert!(
+            graph
+                .node(dependent)
+                .expect("dependent exists")
+                .dependencies()
+                .is_empty()
+        );
+        assert!(
+            !graph
+                .node(first_dependency)
+                .expect("first dependency exists")
+                .dependents()
+                .contains(&dependent)
+        );
+
+        graph
+            .observe_impure_trace(&[read_file_trace(b"/tmp/first", b"changed")], true)
+            .expect("stale input reconsiders");
+        assert_eq!(
+            graph.node(dependent).expect("dependent exists").freshness(),
+            NodeFreshness::Clean
+        );
+    }
+
+    #[test]
+    fn incomplete_impure_trace_for_node_clears_prior_input_edges() {
+        let mut graph = DemandGraph::new();
+        let dependent = node_with_hash(&mut graph, 7, b"dependent");
+        let first = [read_file_trace(b"/tmp/first", b"same")];
+        let first_observation = graph
+            .observe_impure_trace_for_node(dependent, &first, true)
+            .expect("first trace observes and wires");
+        let first_dependency = first_observation.leaves()[0].node();
+
+        let incomplete = [read_file_trace(b"/tmp/second", b"same")];
+        let second_observation = graph
+            .observe_impure_trace_for_node(dependent, &incomplete, false)
+            .expect("incomplete trace clears edges");
+
+        assert_eq!(second_observation.status(), ImpureTraceStatus::Incomplete);
+        assert!(second_observation.leaves().is_empty());
+        assert!(
+            graph
+                .node(dependent)
+                .expect("dependent exists")
+                .dependencies()
+                .is_empty()
+        );
+        assert!(
+            !graph
+                .node(first_dependency)
+                .expect("first dependency exists")
+                .dependents()
+                .contains(&dependent)
+        );
+
+        graph
+            .observe_impure_trace(&[read_file_trace(b"/tmp/first", b"changed")], true)
+            .expect("stale input reconsiders");
+        assert_eq!(
+            graph.node(dependent).expect("dependent exists").freshness(),
+            NodeFreshness::Clean
+        );
+    }
+
+    #[test]
     fn changed_wired_impure_input_dirties_dependent_node() {
         let mut graph = DemandGraph::new();
         let dependent = node_with_hash(&mut graph, 7, b"dependent");

@@ -460,6 +460,17 @@ alone (`M-1`/`Q-A`).
       read-only adapter only; evaluator recomputation, node lifecycle
       integration, dynamic dependency tracing, persistence, and cached/uncached
       harness proof remain open (`S-14`/`C-20`).
+- [x] Current dynamic dependency replacement substrate:
+      `DemandGraph::replace_dependencies` validates a caller-supplied node and
+      replacement dependency set before atomically swapping the node's whole
+      forward dependency set and reverse dependent edges, and the explicit
+      impure-trace adapters use it only for nodes whose dependencies are
+      represented by the latest explicit trace, replacing those edges on
+      cacheable recomputes and clearing them on incomplete or uncacheable
+      recomputes. This is explicit graph/runtime edge maintenance only; typed
+      dependency groups, automatic evaluator-owned dynamic dependency capture,
+      separate inner/outer observers, ready-dirty recomputation, persistence,
+      and cached/uncached `.drv` parity proof remain open (`S-14`/`C-20`).
 - [ ] Full demand-driven incremental graph remains: create nodes on actual
       force/eval demand, capture dependencies dynamically Adapton-style,
       separate inner/outer observers, run the full ready-dirty recomputation
@@ -1531,11 +1542,14 @@ alone (`M-1`/`Q-A`).
       (`R-10`/`S-14`).
 - [x] Current graph-side impure input edge substrate:
       `DemandGraph::observe_impure_trace_for_node` wires complete cacheable
-      input leaves to a caller-supplied existing node, so later changed input
-      observations dirty that node through ordinary dependency propagation;
-      incomplete and uncacheable traces add no leaves or edges. This is
-      graph-side edge wiring only; automatic demand/evaluating-node creation,
-      cache-key integration for evaluator nodes, automatic edges from
+      input leaves to a caller-supplied existing node by replacing that node's
+      whole dependency set with the latest leaves, so later changed input
+      observations dirty that node only for current trace-owned inputs;
+      incomplete and uncacheable traces add no leaves and clear prior
+      dependencies from that node. This is graph-side edge wiring only for
+      nodes whose dependencies are owned by the explicit trace; automatic
+      demand/evaluating-node creation, cache-key integration for evaluator
+      nodes, mixed dependency scopes, typed edge groups, automatic edges from
       evaluator-created nodes to input leaves, value memoization, currentTime
       taint propagation through memoized nodes, persistence,
       allowed-path/IFD/fetch trace coverage, and edge-exactness harness
@@ -1552,11 +1566,13 @@ alone (`M-1`/`Q-A`).
       edge-exactness harness coverage remain open (`R-10`/`S-14`).
 - [x] Current explicit expression-trace edge adapter:
       `EvalCache::observe_expression_impure_inputs` and
-      `EvalCacheRuntime::observe_expression_impure_inputs` first
-      observe/classify a completed trace, skip expression-node creation for
-      incomplete or uncacheable traces, and for complete cacheable traces get
-      or insert a caller-supplied expression node before wiring input leaves to
-      it. This is
+      `EvalCacheRuntime::observe_expression_impure_inputs` first compute the
+      caller-supplied expression key and observe/classify a completed trace,
+      skip new expression-node creation for incomplete or uncacheable traces
+      while invalidating any existing inline side payload and clearing stale
+      dependencies for an existing key, and for complete cacheable traces get
+      or insert the expression node before invalidating any prior side payload
+      and replacing its input edges. This is
       still explicit caller-driven wiring; automatic evaluator demand-node
       lifecycle, evaluator-produced expression identities/free-variable value
       hashes, value memoization, currentTime taint propagation through memoized

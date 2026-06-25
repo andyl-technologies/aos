@@ -179,20 +179,25 @@ impl DemandGraph {
     ///
     /// `dependent` must be an existing caller-supplied evaluating node. This
     /// method does not create demand nodes for evaluator computations. Complete
-    /// cacheable traces add dependencies from `dependent` to every observed
-    /// input leaf, so later changed input observations dirty `dependent`.
-    /// Incomplete and uncacheable traces return their cacheability status
-    /// without adding leaves or edges.
+    /// cacheable traces replace `dependent`'s dependencies with the observed
+    /// input leaves, so later changed input observations dirty `dependent` only
+    /// for the latest trace.
+    /// Incomplete and uncacheable traces return their cacheability status and
+    /// clear any existing dependencies from `dependent`.
     ///
-    /// Successful leaf observations are not rolled back if later edge wiring
-    /// fails.
+    /// The graph does not type dependency edges. Callers must use this method
+    /// only when the impure trace represents the full dependency set that should
+    /// remain on `dependent`.
+    ///
+    /// Successful leaf observations are not rolled back if later edge
+    /// replacement fails.
     ///
     /// # Errors
     ///
     /// Returns [`DemandGraphError::UnknownNode`] if `dependent` does not belong
     /// to this graph. Returns [`DemandGraphError::SelfDependency`] if
     /// `dependent` is itself one of the observed input leaves. Returns other
-    /// [`DemandGraphError`] values from trace observation or edge insertion.
+    /// [`DemandGraphError`] values from trace observation or edge replacement.
     pub fn observe_impure_trace_for_node(
         &mut self,
         dependent: DemandNodeId,
@@ -202,6 +207,7 @@ impl DemandGraph {
         self.node(dependent)?;
         let observation = self.observe_impure_trace(trace, complete)?;
         if observation.status() != ImpureTraceStatus::Cacheable {
+            self.replace_dependencies(dependent, std::iter::empty::<DemandNodeId>())?;
             return Ok(observation);
         }
 
@@ -213,9 +219,10 @@ impl DemandGraph {
             return Err(DemandGraphError::SelfDependency { id: dependent });
         }
 
-        for leaf in observation.leaves() {
-            self.add_dependency(dependent, leaf.node())?;
-        }
+        self.replace_dependencies(
+            dependent,
+            observation.leaves().iter().map(|leaf| leaf.node()),
+        )?;
         Ok(observation)
     }
 
@@ -241,6 +248,52 @@ impl DemandGraph {
             .dependencies
             .insert(dependency);
         self.nodes[dependency.index()].dependents.insert(dependent);
+        Ok(())
+    }
+
+    /// Replaces all dependencies read by `dependent`.
+    ///
+    /// Existing reverse edges from dependencies that are no longer present are
+    /// removed, and new reverse edges are inserted for every replacement
+    /// dependency. Duplicate replacement ids are collapsed by the graph's
+    /// deterministic node-id ordering.
+    ///
+    /// Dependency edges are untyped, so replacement covers the node's whole
+    /// dependency set. Callers that need to preserve separate dependency groups
+    /// must merge those groups before calling this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DemandGraphError::UnknownNode`] if any id does not belong to
+    /// this graph, or [`DemandGraphError::SelfDependency`] if `dependent`
+    /// appears in the replacement dependency set. On error, graph edges are left
+    /// unchanged.
+    pub fn replace_dependencies<I>(
+        &mut self,
+        dependent: DemandNodeId,
+        dependencies: I,
+    ) -> Result<(), DemandGraphError>
+    where
+        I: IntoIterator<Item = DemandNodeId>,
+    {
+        self.node(dependent)?;
+        let mut replacement = BTreeSet::new();
+        for dependency in dependencies {
+            self.node(dependency)?;
+            if dependent == dependency {
+                return Err(DemandGraphError::SelfDependency { id: dependent });
+            }
+            replacement.insert(dependency);
+        }
+
+        let previous = self.nodes[dependent.index()].dependencies.clone();
+        for removed in previous.difference(&replacement) {
+            self.nodes[removed.index()].dependents.remove(&dependent);
+        }
+        for added in replacement.difference(&previous) {
+            self.nodes[added.index()].dependents.insert(dependent);
+        }
+        self.nodes[dependent.index()].dependencies = replacement;
         Ok(())
     }
 
