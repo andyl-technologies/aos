@@ -958,10 +958,18 @@ information that cannot be recomputed.
     localization, replay-oracle fat/thin mismatch localization, and
     matching-stream rejection so oracle failures cannot be repaired, retried, or
     smoothed over silently.
-- [ ] **T-EXEC-13** Express save/replay/search as model operations
+- [x] **T-EXEC-13** Express save/replay/search as model operations
   (fat-checkpoint materialization keyed by `config.id()`, on-demand oracle replay,
   frontier `step` enumeration) with content-addressed temporal-graph dedup. —
   satisfies [EXEC-25], [EXEC-26], [G-6]; spec §9.
+  - Completed by `crates/crucible/src/model.rs`: `TemporalGraph::save_checkpoint`
+    materializes non-genesis configurations as fat checkpoints keyed by
+    `Configuration::id`, `TemporalGraph::replay_checkpoint` performs on-demand
+    thin replay and reports `ReplayOracleMismatch` when the fat oracle diverges,
+    and `TemporalGraph::enumerate_frontier` applies candidate `Decision`s with
+    `step` while deduplicating recorded configurations by content address.
+    `checks.crucible.phase1.executionGraphOperations` gates the model APIs,
+    focused temporal-graph tests, and RFC linkage.
 - [ ] **T-EXEC-14** Implement the `Engine` async state machine (closed run-states,
   poll-then-step actor loop) inside the `Session` actor with bounded quanta and
   inter-quantum yields. — satisfies [EXEC-27], [EXEC-28]; spec §10.

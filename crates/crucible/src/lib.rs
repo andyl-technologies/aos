@@ -31,11 +31,11 @@ pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use model::{
     AppRandomDecision, Checkpoint, CheckpointKind, ChoiceTag, ClockDriftRate, Configuration,
     ContentHash, Decision, DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId,
-    GenesisCheckpoint, Icount, IrqVector, NodeBlobRef, NodeClockSkew, NodeCounter, NodeId,
-    OverrideDecision, PreemptionDecision, PreemptionKind, ReadyPoint, RngDecision, RngStreamId,
-    RuntimeState, ScenarioDef, Schedule, ScheduleError, SchedulingPoint, Shift, SimDuration,
-    SimInstant, SimOffset, State, TemporalGraph, TimeConversionError, VcpuId, VirtualInstant,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
+    FrontierChild, GenesisCheckpoint, Icount, IrqVector, NodeBlobRef, NodeClockSkew, NodeCounter,
+    NodeId, OverrideDecision, PreemptionDecision, PreemptionKind, ReadyPoint, ReplayOracleCheck,
+    RngDecision, RngStreamId, RuntimeState, ScenarioDef, Schedule, ScheduleError, SchedulingPoint,
+    Shift, SimDuration, SimInstant, SimOffset, State, TemporalGraph, TimeConversionError, VcpuId,
+    VirtualInstant, VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
@@ -663,6 +663,159 @@ mod tests {
     }
 
     #[test]
+    fn temporal_graph_save_materializes_fat_checkpoint_keyed_by_configuration() {
+        let scenario = generated_scenario(75);
+        let genesis = Configuration::genesis(scenario.clone());
+        let config = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(75, 2),
+        };
+        let mut graph = match TemporalGraph::empty()
+            .with_baked_genesis(&scenario, genesis_checkpoint_for(&genesis))
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+
+        let checkpoint = match graph.save_checkpoint(&config) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("save should materialize through instantiate: {error}"),
+        };
+        let saved_again = match graph.save_checkpoint(&config) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("duplicate save should reuse checkpoint: {error}"),
+        };
+
+        assert_eq!(checkpoint, saved_again);
+        assert_eq!(checkpoint.configuration, config.id());
+        assert_eq!(checkpoint.kind, CheckpointKind::Fat);
+        assert_eq!(graph.cached_snapshot(&config), Some(&checkpoint));
+        assert_eq!(graph.cached_snapshot_count(), 1);
+        assert!(graph.contains_configuration(&config));
+        assert_eq!(
+            instantiate(&graph, &config).map(|runtime| runtime.id),
+            Ok(reduced_state_id(&config))
+        );
+    }
+
+    #[test]
+    fn temporal_graph_replay_checkpoint_is_on_demand_replay_oracle() {
+        let scenario = generated_scenario(77);
+        let genesis = Configuration::genesis(scenario.clone());
+        let config = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(77, 3),
+        };
+        let mut graph = match TemporalGraph::empty()
+            .with_baked_genesis(&scenario, genesis_checkpoint_for(&genesis))
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+        let checkpoint = match graph.save_checkpoint(&config) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("save should materialize checkpoint: {error}"),
+        };
+
+        let check = match graph.replay_checkpoint(&config, &checkpoint) {
+            Ok(check) => check,
+            Err(error) => panic!("fat checkpoint should match thin replay: {error}"),
+        };
+        let genesis_checkpoint = match graph.save_checkpoint(&genesis) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("genesis save should reuse baked checkpoint: {error}"),
+        };
+        let genesis_check = match graph.replay_checkpoint(&genesis, &genesis_checkpoint) {
+            Ok(check) => check,
+            Err(error) => panic!("baked genesis should match thin replay: {error}"),
+        };
+        let mut corrupted = checkpoint.clone();
+        corrupted.id = ContentHash::from_canonical_material(
+            "crucible.test.fat-checkpoint.corrupt",
+            "wrong-runtime",
+        );
+        let mismatch = match graph.replay_checkpoint(&config, &corrupted) {
+            Ok(_) => panic!("corrupt fat checkpoint should fail replay oracle"),
+            Err(error) => error,
+        };
+
+        assert_eq!(check.configuration, config.id());
+        assert_eq!(check.fat_checkpoint, checkpoint.id);
+        assert_eq!(check.thin_checkpoint, checkpoint.id);
+        assert_eq!(genesis_check.configuration, genesis.id());
+        assert_eq!(genesis_check.fat_checkpoint, genesis_checkpoint.id);
+        assert_eq!(genesis_check.thin_checkpoint, genesis_checkpoint.id);
+        assert!(matches!(
+            mismatch,
+            EngineError::ReplayOracleMismatch { checkpoint, .. } if checkpoint == corrupted.id
+        ));
+    }
+
+    #[test]
+    fn temporal_graph_replay_checkpoint_ignores_exact_target_snapshot() {
+        let scenario = generated_scenario(78);
+        let genesis = Configuration::genesis(scenario.clone());
+        let config = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(78, 2),
+        };
+        let mut materializer = match TemporalGraph::empty()
+            .with_baked_genesis(&scenario, genesis_checkpoint_for(&genesis))
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+        let checkpoint = match materializer.save_checkpoint(&config) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("save should materialize checkpoint: {error}"),
+        };
+        let graph = match TemporalGraph::empty().with_cached_snapshot(&config, checkpoint.clone()) {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid exact target snapshot should register: {error}"),
+        };
+
+        let error = match graph.replay_checkpoint(&config, &checkpoint) {
+            Ok(_) => panic!("replay oracle should not load the exact target snapshot"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            EngineError::MissingBakedGenesis { scenario: missing } if missing == scenario.id
+        ));
+    }
+
+    #[test]
+    fn temporal_graph_frontier_enumeration_deduplicates_by_configuration_id() {
+        let scenario = generated_scenario(79);
+        let frontier = Configuration::genesis(scenario);
+        let duplicate = generated_decision(79, 0);
+        let distinct = generated_decision(79, 1);
+        let mut graph = TemporalGraph::empty();
+
+        let first = graph.enumerate_frontier(
+            &frontier,
+            vec![duplicate.clone(), duplicate, distinct.clone()],
+        );
+        let second = graph.enumerate_frontier(&frontier, vec![generated_decision(79, 0), distinct]);
+
+        assert_eq!(first.len(), 2);
+        assert!(first.iter().all(|child| !child.already_recorded));
+        assert_eq!(second.len(), 2);
+        assert!(second.iter().all(|child| child.already_recorded));
+        assert_eq!(graph.recorded_configuration_count(), 3);
+        assert!(graph.contains_configuration(&frontier));
+        for child in first {
+            assert!(graph.contains_configuration(&child.configuration));
+            assert_eq!(child.configuration.def, frontier.def);
+            assert_eq!(
+                child.configuration.schedule.len(),
+                frontier.schedule.len() + 1
+            );
+        }
+    }
+
+    #[test]
     fn bake_content_addresses_world_as_shared_fat_genesis_checkpoint() {
         let world = generated_world(71);
         let same_world = generated_world(71);
@@ -1239,6 +1392,11 @@ mod tests {
             expected: ContentHash::default(),
             actual: ContentHash::default(),
         };
+        let replay_oracle_mismatch = EngineError::ReplayOracleMismatch {
+            checkpoint: ContentHash::default(),
+            expected: ContentHash::default(),
+            actual: ContentHash::default(),
+        };
         let schedule_prefix = EngineError::SchedulePrefix(ScheduleError::PrefixTooLong {
             requested: 3,
             available: 2,
@@ -1274,6 +1432,10 @@ mod tests {
         assert_eq!(
             replay_target_mismatch.to_string(),
             "replayed suffix did not produce requested configuration"
+        );
+        assert_eq!(
+            replay_oracle_mismatch.to_string(),
+            "replay oracle mismatch between fat checkpoint and thin derivation"
         );
         assert_eq!(
             schedule_prefix.to_string(),
