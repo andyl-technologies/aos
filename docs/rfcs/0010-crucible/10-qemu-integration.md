@@ -851,8 +851,8 @@ determinism contract (04).
   per-elimination executable negative microtest matrix for TCG/icount, CPU
   entropy, RTC, guest entropy, run seed, kernel randomization, input, CoW
   backing, idle-warp, and sim-mode inertness. The full real-QEMU
-  `gate:qemu-inert` corpus remains tracked by [T-HARN-21], and N-vCPU
-  fingerprint expansion remains tracked by [T-QEMU-16].
+  `gate:qemu-inert` corpus remains tracked by [T-HARN-21]; the N-vCPU
+  fingerprint expansion is covered by `checks.crucible.phase2.qemuNvcpuFingerprint`.
 - [x] **T-QEMU-11** Implement the single-VM fingerprint hook for
   `gate:single-vm-fingerprint`: run-twice-and-diff under adversarial host
   conditions with first-mismatch icount-window localization and a fixed,
@@ -931,8 +931,24 @@ determinism contract (04).
   scenario material. The pre-spawn validator rejects MTTCG and unpinned or zero
   RR quantum before QEMU is spawned, while accepting the RFC alias
   `crucible-rr-quantum-icount` for patched QEMU command lines.
-- [ ] **T-QEMU-16** Extend the single-VM fingerprint hook to N-vCPU nodes: read
+- [x] **T-QEMU-16** Extend the single-VM fingerprint hook to N-vCPU nodes: read
   all N vCPUs' register files plus the round-robin cursor (current vCPU +
   position within `rr_switch_quantum`) via the plugin's per-vCPU introspection
   capability (12) and QMP, include them in the digest, and localize a mismatch
   to the first differing icount window. — satisfies [QEMU-34]; spec §10.7.
+  **Completed:** the `crucible-qemu` single-VM fingerprint stream now carries
+  canonical N-vCPU sample material: sorted register-file digests for exactly
+  vCPUs `0..N`, the RR cursor (`current_vcpu`, position inside the pinned
+  `rr_switch_quantum`, and the quantum), guest-memory digest, and device-state
+  digest. The scenario carries the launch-derived `-smp N` and pinned
+  `rr_switch_quantum`, and gate admission rejects streams that omit launched
+  vCPUs or report cursor state from a different quantum. Stream validation
+  recomputes each rolling fingerprint from that material, the definition digest,
+  and the previous rolling fingerprint, so all-vCPU registers and the RR cursor
+  are part of the compared digest rather than advisory metadata. Sample mismatch
+  diagnostics localize the first differing icount window and name the first
+  differing component, including per-vCPU register digests and RR cursor
+  position. The task check realizes the plugin per-vCPU introspection check and
+  the typed QMP control-boundary check, runs a bounded real-QEMU `-smp 4`
+  RR-TCG trace smoke test, and keeps a source-checked link to the documented
+  Phase 0 multi-vCPU RR-TCG fingerprint spike.

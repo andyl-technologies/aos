@@ -9,6 +9,10 @@
 
 use std::os::raw::c_int;
 
+use crucible_protocol::{
+    PluginNvcpuFingerprintSnapshot, PluginNvcpuFingerprintSnapshotError,
+    PluginRoundRobinCursorSnapshot, PluginVcpuRegisterSnapshot,
+};
 use thiserror::Error;
 
 use crate::RoundRobinRunState;
@@ -126,6 +130,23 @@ impl PluginVcpuRegisterDigest {
     pub const fn retired_instruction_count(&self) -> u64 {
         self.retired_instruction_count
     }
+
+    /// Converts this plugin register digest into the host/plugin protocol shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginNvcpuFingerprintSnapshotError`] when the register byte
+    /// count violates the shared snapshot contract.
+    pub const fn to_protocol_snapshot(
+        &self,
+    ) -> Result<PluginVcpuRegisterSnapshot, PluginNvcpuFingerprintSnapshotError> {
+        PluginVcpuRegisterSnapshot::new(
+            self.vcpu_id,
+            self.register_digest,
+            self.register_file_bytes,
+            self.retired_instruction_count,
+        )
+    }
 }
 
 /// Round-robin cursor state included in N-vCPU fingerprint inputs.
@@ -211,6 +232,24 @@ impl PluginRoundRobinCursor {
     pub const fn rr_switch_quantum(self) -> u64 {
         self.rr_switch_quantum
     }
+
+    /// Converts this plugin cursor into the host/plugin protocol shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginNvcpuFingerprintSnapshotError`] when the cursor is not
+    /// valid for `vcpu_count`.
+    pub const fn to_protocol_snapshot(
+        self,
+        vcpu_count: u32,
+    ) -> Result<PluginRoundRobinCursorSnapshot, PluginNvcpuFingerprintSnapshotError> {
+        PluginRoundRobinCursorSnapshot::new(
+            self.current_vcpu,
+            self.cursor_position,
+            self.rr_switch_quantum,
+            vcpu_count,
+        )
+    }
 }
 
 /// Plugin-side inputs required by the N-vCPU execution fingerprint.
@@ -276,6 +315,29 @@ impl PluginNvcpuFingerprintInputs {
     #[must_use]
     pub const fn rr_cursor(&self) -> PluginRoundRobinCursor {
         self.rr_cursor
+    }
+
+    /// Converts the plugin reader output into the validated host/plugin protocol snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginNvcpuFingerprintSnapshotError`] when the plugin output is
+    /// malformed or too large for the shared snapshot contract.
+    pub fn to_protocol_snapshot(
+        &self,
+    ) -> Result<PluginNvcpuFingerprintSnapshot, PluginNvcpuFingerprintSnapshotError> {
+        let vcpu_count = u32::try_from(self.vcpu_registers.len()).map_err(|_error| {
+            PluginNvcpuFingerprintSnapshotError::VcpuCountTooLarge {
+                vcpu_count: self.vcpu_registers.len(),
+            }
+        })?;
+        let registers = self
+            .vcpu_registers
+            .iter()
+            .map(PluginVcpuRegisterDigest::to_protocol_snapshot)
+            .collect::<Result<Vec<_>, _>>()?;
+        let cursor = self.rr_cursor.to_protocol_snapshot(vcpu_count)?;
+        PluginNvcpuFingerprintSnapshot::new(registers, cursor)
     }
 }
 
@@ -621,6 +683,37 @@ mod tests {
         assert_eq!(inputs.rr_cursor().cursor_position(), 3);
         assert_eq!(inputs.rr_cursor().quantum_remaining(), 5);
         assert_eq!(inputs.rr_cursor().rr_switch_quantum(), 8);
+    }
+
+    #[test]
+    fn vcpu_introspection_converts_reader_output_to_protocol_snapshot() {
+        reset_log();
+        let introspector =
+            PluginVcpuIntrospector::require(Some(read_test_registers), Some(read_test_cursor))
+                .unwrap_or_else(|error| panic!("introspector should validate: {error}"));
+
+        let inputs = introspector
+            .read_nvcpu_fingerprint_inputs(2)
+            .unwrap_or_else(|error| panic!("fingerprint inputs should read: {error}"));
+        let snapshot = inputs
+            .to_protocol_snapshot()
+            .unwrap_or_else(|error| panic!("protocol snapshot should validate: {error}"));
+
+        assert_eq!(read_log(), vec![0, 1]);
+        assert_eq!(snapshot.vcpu_registers().len(), 2);
+        assert_eq!(snapshot.vcpu_registers()[0].vcpu_id(), 0);
+        assert_eq!(
+            snapshot.vcpu_registers()[1].register_digest(),
+            inputs.vcpu_registers()[1].register_digest()
+        );
+        assert_eq!(snapshot.vcpu_registers()[1].register_file_bytes(), 3);
+        assert_eq!(
+            snapshot.vcpu_registers()[1].retired_instruction_count(),
+            101
+        );
+        assert_eq!(snapshot.rr_cursor().current_vcpu(), 1);
+        assert_eq!(snapshot.rr_cursor().position_in_quantum(), 3);
+        assert_eq!(snapshot.rr_cursor().rr_switch_quantum(), 8);
     }
 
     #[test]

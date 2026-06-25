@@ -116,11 +116,15 @@ fn validate_stream_for_run(
             reason: "stream definition digest differs from scenario definition",
         });
     }
-    validate_samples(&stream.samples, scenario.run_horizon_icount).map_err(|_| {
-        SingleVmFingerprintGateError::InvalidStreamForRun {
-            ordinal,
-            reason: "stream samples are not canonical for the scenario horizon",
-        }
+    validate_samples(
+        &stream.definition_digest,
+        &stream.samples,
+        scenario.run_horizon_icount,
+        Some(scenario.nvcpu_contract()),
+    )
+    .map_err(|_| SingleVmFingerprintGateError::InvalidStreamForRun {
+        ordinal,
+        reason: "stream samples are not canonical for the scenario horizon",
     })?;
     validate_final_icount(stream.final_icount, scenario.run_horizon_icount).map_err(|_| {
         SingleVmFingerprintGateError::InvalidStreamForRun {

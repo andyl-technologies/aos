@@ -321,6 +321,9 @@ in
               vcpu_introspection::tests::vcpu_introspection_reads_all_vcpu_registers_and_rr_cursor \
               vcpu_introspection::tests::vcpu_introspection_reads_all_vcpu_registers_and_rr_cursor
             run_exact_test \
+              vcpu_introspection::tests::vcpu_introspection_converts_reader_output_to_protocol_snapshot \
+              vcpu_introspection::tests::vcpu_introspection_converts_reader_output_to_protocol_snapshot
+            run_exact_test \
               vcpu_introspection::tests::vcpu_introspection_rejects_bad_cursor_before_register_reads \
               vcpu_introspection::tests::vcpu_introspection_rejects_bad_cursor_before_register_reads
             run_exact_test \
@@ -347,6 +350,7 @@ in
             rr_cursor=current-vcpu-position-and-quantum
             side_effects=S-and-T-neutral-reads
             fingerprint_input=N-vCPU-registers-plus-RR-cursor
+            protocol_snapshot=crucible-protocol::PluginNvcpuFingerprintSnapshot
             RESULT
           '';
         }

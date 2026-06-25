@@ -24,10 +24,15 @@ impl fmt::Display for SingleVmFingerprintMismatch {
             SingleVmFingerprintMismatchKind::Definition { .. } => {
                 write!(formatter, "fingerprint definitions differ")
             }
-            SingleVmFingerprintMismatchKind::Sample { first, second } => write!(
+            SingleVmFingerprintMismatchKind::Sample {
+                first,
+                second,
+                difference,
+            } => write!(
                 formatter,
-                "fingerprint sample {} differs: first seq={} node={} icount={}, second seq={} node={} icount={}",
+                "fingerprint sample {} differs at {}: first seq={} node={} icount={}, second seq={} node={} icount={}",
                 self.sample_index,
+                difference.material_token(),
                 first.seq,
                 first.node,
                 first.icount,
@@ -69,6 +74,8 @@ pub enum SingleVmFingerprintMismatchKind {
         first: Box<SingleVmFingerprintSample>,
         /// Sample from the second run.
         second: Box<SingleVmFingerprintSample>,
+        /// First component that differed inside the sample material.
+        difference: SingleVmFingerprintSampleDifference,
     },
     /// One stream ended before the other.
     Length {
@@ -88,6 +95,83 @@ pub enum SingleVmFingerprintMismatchKind {
         /// Final fingerprint bytes from the second run.
         second: Vec<u8>,
     },
+}
+
+/// The first sample component that differed between two fingerprint streams.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SingleVmFingerprintSampleDifference {
+    /// Sample sequence number differed.
+    Sequence,
+    /// Sample node identifier differed.
+    Node,
+    /// Aggregate node icount differed.
+    Icount,
+    /// Sample trigger differed.
+    Trigger,
+    /// The streams sampled different vCPU-set sizes.
+    VcpuRegisterCount,
+    /// A vCPU register entry appeared at a different index or id.
+    VcpuRegisterId {
+        /// Index at which the vCPU id differed.
+        index: usize,
+    },
+    /// One vCPU's architectural register digest differed.
+    VcpuRegisterDigest {
+        /// vCPU whose register digest differed.
+        vcpu_id: u64,
+    },
+    /// One vCPU's reported register-file byte count differed.
+    VcpuRegisterFileBytes {
+        /// vCPU whose register byte count differed.
+        vcpu_id: u64,
+    },
+    /// One vCPU's local retired-instruction count differed.
+    VcpuRetiredInstructionCount {
+        /// vCPU whose retired count differed.
+        vcpu_id: u64,
+    },
+    /// The RR cursor named a different current vCPU.
+    RoundRobinCurrentVcpu,
+    /// The RR cursor position within `rr_switch_quantum` differed.
+    RoundRobinPositionInQuantum,
+    /// The pinned RR switch quantum differed.
+    RoundRobinSwitchQuantum,
+    /// The guest-memory digest differed.
+    GuestMemoryDigest,
+    /// The device-state digest differed.
+    DeviceStateDigest,
+    /// Only the rolling digest differed after material comparison matched.
+    RollingFingerprint,
+}
+
+impl SingleVmFingerprintSampleDifference {
+    /// Returns the stable diagnostic component token.
+    #[must_use]
+    pub fn material_token(self) -> String {
+        match self {
+            Self::Sequence => "seq".to_owned(),
+            Self::Node => "node".to_owned(),
+            Self::Icount => "icount".to_owned(),
+            Self::Trigger => "trigger".to_owned(),
+            Self::VcpuRegisterCount => "vcpu_register_count".to_owned(),
+            Self::VcpuRegisterId { index } => format!("vcpu_register_id[{index}]"),
+            Self::VcpuRegisterDigest { vcpu_id } => {
+                format!("vcpu_register_digest[{vcpu_id}]")
+            }
+            Self::VcpuRegisterFileBytes { vcpu_id } => {
+                format!("vcpu_register_file_bytes[{vcpu_id}]")
+            }
+            Self::VcpuRetiredInstructionCount { vcpu_id } => {
+                format!("vcpu_retired_instruction_count[{vcpu_id}]")
+            }
+            Self::RoundRobinCurrentVcpu => "rr_current_vcpu".to_owned(),
+            Self::RoundRobinPositionInQuantum => "rr_position_in_quantum".to_owned(),
+            Self::RoundRobinSwitchQuantum => "rr_switch_quantum".to_owned(),
+            Self::GuestMemoryDigest => "guest_memory_digest".to_owned(),
+            Self::DeviceStateDigest => "device_state_digest".to_owned(),
+            Self::RollingFingerprint => "rolling_fingerprint".to_owned(),
+        }
+    }
 }
 
 /// Compares two single-VM fingerprint streams in canonical order.
@@ -117,11 +201,13 @@ pub fn compare_single_vm_fingerprint_streams(
         first.samples.iter().zip(second.samples.iter()).enumerate()
     {
         if first_sample != second_sample {
+            let difference = first_sample_difference(first_sample, second_sample);
             return Err(SingleVmFingerprintMismatch {
                 sample_index,
                 kind: SingleVmFingerprintMismatchKind::Sample {
                     first: Box::new(first_sample.clone()),
                     second: Box::new(second_sample.clone()),
+                    difference,
                 },
                 previous_matching_icount: previous_icount(first, sample_index),
                 first_different_icount: Some(first_sample.icount.min(second_sample.icount)),
@@ -177,4 +263,71 @@ fn previous_icount(stream: &SingleVmFingerprintStream, sample_index: usize) -> O
         .checked_sub(1)
         .and_then(|index| stream.samples.get(index))
         .map(|sample| sample.icount)
+}
+
+fn first_sample_difference(
+    first: &SingleVmFingerprintSample,
+    second: &SingleVmFingerprintSample,
+) -> SingleVmFingerprintSampleDifference {
+    if first.seq != second.seq {
+        return SingleVmFingerprintSampleDifference::Sequence;
+    }
+    if first.node != second.node {
+        return SingleVmFingerprintSampleDifference::Node;
+    }
+    if first.icount != second.icount {
+        return SingleVmFingerprintSampleDifference::Icount;
+    }
+    if first.trigger != second.trigger {
+        return SingleVmFingerprintSampleDifference::Trigger;
+    }
+
+    let first_registers = first.nvcpu_fingerprint.vcpu_registers();
+    let second_registers = second.nvcpu_fingerprint.vcpu_registers();
+    if first_registers.len() != second_registers.len() {
+        return SingleVmFingerprintSampleDifference::VcpuRegisterCount;
+    }
+    for (index, (first_register, second_register)) in first_registers
+        .iter()
+        .zip(second_registers.iter())
+        .enumerate()
+    {
+        if first_register.vcpu_id() != second_register.vcpu_id() {
+            return SingleVmFingerprintSampleDifference::VcpuRegisterId { index };
+        }
+        let vcpu_id = first_register.vcpu_id();
+        if first_register.register_digest() != second_register.register_digest() {
+            return SingleVmFingerprintSampleDifference::VcpuRegisterDigest { vcpu_id };
+        }
+        if first_register.register_file_bytes() != second_register.register_file_bytes() {
+            return SingleVmFingerprintSampleDifference::VcpuRegisterFileBytes { vcpu_id };
+        }
+        if first_register.retired_instruction_count() != second_register.retired_instruction_count()
+        {
+            return SingleVmFingerprintSampleDifference::VcpuRetiredInstructionCount { vcpu_id };
+        }
+    }
+
+    let first_cursor = first.nvcpu_fingerprint.rr_cursor();
+    let second_cursor = second.nvcpu_fingerprint.rr_cursor();
+    if first_cursor.current_vcpu() != second_cursor.current_vcpu() {
+        return SingleVmFingerprintSampleDifference::RoundRobinCurrentVcpu;
+    }
+    if first_cursor.position_in_quantum() != second_cursor.position_in_quantum() {
+        return SingleVmFingerprintSampleDifference::RoundRobinPositionInQuantum;
+    }
+    if first_cursor.rr_switch_quantum() != second_cursor.rr_switch_quantum() {
+        return SingleVmFingerprintSampleDifference::RoundRobinSwitchQuantum;
+    }
+    if first.nvcpu_fingerprint.guest_memory_digest()
+        != second.nvcpu_fingerprint.guest_memory_digest()
+    {
+        return SingleVmFingerprintSampleDifference::GuestMemoryDigest;
+    }
+    if first.nvcpu_fingerprint.device_state_digest()
+        != second.nvcpu_fingerprint.device_state_digest()
+    {
+        return SingleVmFingerprintSampleDifference::DeviceStateDigest;
+    }
+    SingleVmFingerprintSampleDifference::RollingFingerprint
 }
