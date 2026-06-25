@@ -196,6 +196,19 @@ pub trait QemuVmRealizationExecutor {
         admission: QemuLoadvmRealizationAdmission,
     ) -> Result<RuntimeState, QemuVmRealizationError>;
 
+    /// Loads an exact snapshot for a replay-oracle probe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when launching QEMU, handshaking,
+    /// restoring the VM snapshot, or restoring host-owned state fails.
+    fn load_exact_snapshot_for_replay_oracle_probe(
+        &mut self,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        authorization: QemuLoadvmCommandAuthorization,
+    ) -> Result<RuntimeState, QemuVmRealizationError>;
+
     /// Loads a baked genesis snapshot without cold-booting.
     ///
     /// # Errors
@@ -373,6 +386,62 @@ pub fn bake_qemu_genesis_vm(
     executor.cold_boot_to_ready_and_savevm(world)
 }
 
+/// Checks `loadvm(snapshot(config))` against replay from an ancestor.
+///
+/// The exact snapshot is loaded with [`QemuSavevmCompletenessPolicy`]'s probe
+/// authorization, not production runtime admission. The thin side uses the
+/// ordinary instantiate/replay machinery and excludes the target exact snapshot
+/// from branch selection.
+///
+/// # Errors
+///
+/// Returns [`QemuVmRealizationError`] when the exact snapshot is missing or
+/// invalid, when either realization path fails, or when either runtime claims a
+/// configuration other than `config`.
+pub fn check_qemu_replay_oracle(
+    world: &World,
+    config: &Configuration,
+    store: &mut impl QemuVmRealizationStore,
+    executor: &mut impl QemuVmRealizationExecutor,
+    policy: QemuSavevmCompletenessPolicy,
+) -> Result<QemuReplayOracleValidation, QemuVmRealizationError> {
+    let snapshot =
+        store
+            .exact_snapshot(config)?
+            .ok_or_else(|| QemuVmRealizationError::InvalidCheckpoint {
+                role: "replay oracle",
+                message: String::from("exact snapshot required for replay-oracle check"),
+            })?;
+    validate_checkpoint_matches_config(&snapshot.checkpoint, config, "exact snapshot")?;
+    if snapshot.checkpoint.kind != CheckpointKind::Fat {
+        return Err(QemuVmRealizationError::InvalidCheckpoint {
+            role: "exact snapshot",
+            message: String::from("replay oracle requires a fat exact snapshot"),
+        });
+    }
+
+    let fat_runtime = executor.load_exact_snapshot_for_replay_oracle_probe(
+        config,
+        &snapshot,
+        policy.authorize_loadvm_probe(),
+    )?;
+    validate_oracle_runtime_configuration("loadvm snapshot", &fat_runtime, config.id())?;
+    let thin_runtime =
+        realize_qemu_replay_oracle_thin_path(world, config.clone(), store, executor, policy)?;
+    validate_oracle_runtime_configuration("thin replay", &thin_runtime, config.id())?;
+
+    if fat_runtime.id == thin_runtime.id {
+        Ok(QemuReplayOracleValidation::Match {
+            runtime_hash: fat_runtime.id,
+        })
+    } else {
+        Ok(QemuReplayOracleValidation::Mismatch {
+            fat_hash: fat_runtime.id,
+            thin_hash: thin_runtime.id,
+        })
+    }
+}
+
 fn instantiate_qemu_vm_for_operation(
     operation: QemuVmRealizationOperation,
     world: &World,
@@ -521,6 +590,67 @@ fn replay_decisions(
     } else {
         Err(QemuVmRealizationError::InvalidAncestor {
             message: String::from("replay suffix did not reach target configuration"),
+        })
+    }
+}
+
+fn realize_qemu_replay_oracle_thin_path(
+    world: &World,
+    config: Configuration,
+    store: &mut impl QemuVmRealizationStore,
+    executor: &mut impl QemuVmRealizationExecutor,
+    policy: QemuSavevmCompletenessPolicy,
+) -> Result<RuntimeState, QemuVmRealizationError> {
+    if let Some(ancestor) = store.nearest_cached_ancestor(&config)? {
+        validate_checkpoint_matches_config(
+            &ancestor.checkpoint,
+            &ancestor.configuration,
+            "cached ancestor",
+        )?;
+        let suffix = proper_ancestor_suffix(&ancestor.configuration, &config)?;
+        let realized_ancestor = instantiate_qemu_vm_inner(
+            world,
+            ancestor.configuration.clone(),
+            store,
+            executor,
+            policy,
+        )?;
+        return replay_decisions(
+            realized_ancestor.runtime,
+            ancestor.configuration,
+            config,
+            suffix,
+            executor,
+        );
+    }
+
+    if config.is_genesis() {
+        let snapshot = store.baked_genesis(world, &config.def)?;
+        validate_baked_genesis_snapshot(&snapshot, world)?;
+        return executor.load_baked_genesis(&config, &snapshot);
+    }
+
+    let genesis = Configuration::genesis(config.def.clone());
+    let suffix = schedule_suffix(&genesis, &config)?;
+    let realized_genesis =
+        instantiate_qemu_vm_inner(world, genesis.clone(), store, executor, policy)?;
+    replay_decisions(realized_genesis.runtime, genesis, config, suffix, executor)
+}
+
+fn validate_oracle_runtime_configuration(
+    role: &'static str,
+    runtime: &RuntimeState,
+    expected_configuration: ContentHash,
+) -> Result<(), QemuVmRealizationError> {
+    if runtime.configuration == expected_configuration {
+        Ok(())
+    } else {
+        Err(QemuVmRealizationError::InvalidCheckpoint {
+            role,
+            message: format!(
+                "runtime configuration {:?} does not match target {:?}",
+                runtime.configuration, expected_configuration
+            ),
         })
     }
 }
@@ -867,6 +997,25 @@ mod tests {
             })
         }
 
+        fn load_exact_snapshot_for_replay_oracle_probe(
+            &mut self,
+            config: &Configuration,
+            _snapshot: &QemuVmSnapshot,
+            authorization: QemuLoadvmCommandAuthorization,
+        ) -> Result<RuntimeState, QemuVmRealizationError> {
+            self.log.borrow_mut().push(RealizationCall::LoadExact {
+                config: config.id(),
+                authorization: authorization.purpose(),
+            });
+            Ok(RuntimeState {
+                id: match self.exact_runtime_override {
+                    Some(hash) => hash,
+                    None => config.id(),
+                },
+                configuration: config.id(),
+            })
+        }
+
         fn load_baked_genesis(
             &mut self,
             config: &Configuration,
@@ -1202,6 +1351,93 @@ mod tests {
             !logged(&log)
                 .iter()
                 .any(|call| matches!(call, RealizationCall::Replay { .. }))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_replay_oracle_matches_loadvm_snapshot_to_replay_from_ancestor()
+    -> Result<(), QemuVmRealizationError> {
+        let world = world("oracle-match");
+        let def = scenario("oracle-match");
+        let target = config_with_decisions(def.clone(), 1);
+        let log = shared_log();
+        let mut store = scripted_store(Rc::clone(&log), &world, &def);
+        store.exact_snapshots.push((
+            target.id(),
+            QemuVmSnapshot {
+                checkpoint: checkpoint_for_config("oracle-exact", &target, CheckpointKind::Fat),
+                replay_oracle_validation: QemuReplayOracleValidation::NotRun,
+            },
+        ));
+        let mut executor = scripted_executor(Rc::clone(&log));
+
+        let validation = check_qemu_replay_oracle(
+            &world,
+            &target,
+            &mut store,
+            &mut executor,
+            QemuSavevmCompletenessPolicy::default(),
+        )?;
+
+        assert_eq!(
+            validation,
+            QemuReplayOracleValidation::Match {
+                runtime_hash: target.id(),
+            }
+        );
+        assert!(logged(&log).contains(&RealizationCall::LoadExact {
+            config: target.id(),
+            authorization: QemuLoadvmCommandPurpose::SnapshotCompletenessProbe,
+        }));
+        assert!(logged(&log).contains(&RealizationCall::BakedGenesis(world.id)));
+        assert!(logged(&log).contains(&RealizationCall::LoadBaked(
+            Configuration::genesis(def).id()
+        )));
+        assert!(logged(&log).contains(&RealizationCall::Replay {
+            from_len: 0,
+            to_len: 1,
+            value: 0,
+        }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_replay_oracle_reports_loadvm_replay_mismatch() -> Result<(), QemuVmRealizationError> {
+        let world = world("oracle-mismatch");
+        let def = scenario("oracle-mismatch");
+        let target = config_with_decisions(def.clone(), 1);
+        let fat_hash = hash("runtime", "oracle-mismatch");
+        let log = shared_log();
+        let mut store = scripted_store(Rc::clone(&log), &world, &def);
+        store.exact_snapshots.push((
+            target.id(),
+            QemuVmSnapshot {
+                checkpoint: checkpoint_for_config("oracle-exact", &target, CheckpointKind::Fat),
+                replay_oracle_validation: QemuReplayOracleValidation::NotRun,
+            },
+        ));
+        let mut executor = ScriptedExecutor {
+            log,
+            exact_runtime_override: Some(fat_hash),
+        };
+
+        let validation = check_qemu_replay_oracle(
+            &world,
+            &target,
+            &mut store,
+            &mut executor,
+            QemuSavevmCompletenessPolicy::default(),
+        )?;
+
+        assert_eq!(
+            validation,
+            QemuReplayOracleValidation::Mismatch {
+                fat_hash,
+                thin_hash: target.id(),
+            }
         );
 
         Ok(())
