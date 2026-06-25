@@ -181,6 +181,45 @@ impl CachedExpressionValue {
         }
     }
 
+    /// Creates a cached strict Nix attrset payload from replayable bindings.
+    ///
+    /// This represents an attrset whose binding values are already replayable
+    /// values. It does not represent lazy binding thunks; callers must not
+    /// force bindings just to build this payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CachedExpressionValuePayloadError::NonCanonicalAttrsPayloadName`]
+    /// if two bindings have the same attribute name.
+    pub fn strict_attrs(
+        mut entries: Vec<(Vec<u8>, Self)>,
+    ) -> Result<Self, CachedExpressionValuePayloadError> {
+        if entries.is_empty() {
+            return Ok(Self::empty_attrs());
+        }
+        entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        for (index, pair) in entries.windows(2).enumerate() {
+            if pair[0].0 == pair[1].0 {
+                return Err(
+                    CachedExpressionValuePayloadError::NonCanonicalAttrsPayloadName {
+                        index: index + 1,
+                    },
+                );
+            }
+        }
+        Ok(Self {
+            payload: InlineValuePayload::Attrs(
+                entries
+                    .into_iter()
+                    .map(|(name, value)| AttrPayloadEntry {
+                        name,
+                        value: value.payload,
+                    })
+                    .collect(),
+            ),
+        })
+    }
+
     /// Creates a cached empty Nix attrset payload.
     pub const fn empty_attrs() -> Self {
         Self {
@@ -243,6 +282,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::EmptyList
             | InlineValuePayload::List(_)
             | InlineValuePayload::EmptyAttrs
+            | InlineValuePayload::Attrs(_)
             | InlineValuePayload::Int(_)
             | InlineValuePayload::Float(_)
             | InlineValuePayload::Bool(_)
@@ -263,6 +303,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::EmptyList
             | InlineValuePayload::List(_)
             | InlineValuePayload::EmptyAttrs
+            | InlineValuePayload::Attrs(_)
             | InlineValuePayload::Null => None,
         }
     }
@@ -280,6 +321,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::EmptyList
             | InlineValuePayload::List(_)
             | InlineValuePayload::EmptyAttrs
+            | InlineValuePayload::Attrs(_)
             | InlineValuePayload::Null => None,
         }
     }
@@ -297,6 +339,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::EmptyList
             | InlineValuePayload::List(_)
             | InlineValuePayload::EmptyAttrs
+            | InlineValuePayload::Attrs(_)
             | InlineValuePayload::Null => None,
         }
     }
@@ -319,7 +362,8 @@ impl CachedExpressionValue {
             | InlineValuePayload::ContextString { .. }
             | InlineValuePayload::Path(_)
             | InlineValuePayload::ContextPath { .. }
-            | InlineValuePayload::EmptyAttrs => None,
+            | InlineValuePayload::EmptyAttrs
+            | InlineValuePayload::Attrs(_) => None,
         }
     }
 
@@ -346,12 +390,60 @@ impl CachedExpressionValue {
             | InlineValuePayload::Path(_)
             | InlineValuePayload::ContextPath { .. }
             | InlineValuePayload::EmptyAttrs => None,
+            InlineValuePayload::Attrs(_) => None,
         }
     }
 
     /// Returns whether this payload is the empty Nix attrset.
     pub const fn is_empty_attrs(&self) -> bool {
         matches!(&self.payload, InlineValuePayload::EmptyAttrs)
+    }
+
+    /// Returns the cached attrset binding count, if this payload is an attrset.
+    pub fn attrs_len(&self) -> Option<usize> {
+        match &self.payload {
+            InlineValuePayload::EmptyAttrs => Some(0),
+            InlineValuePayload::Attrs(entries) => Some(entries.len()),
+            InlineValuePayload::Int(_)
+            | InlineValuePayload::Float(_)
+            | InlineValuePayload::Bool(_)
+            | InlineValuePayload::Null
+            | InlineValuePayload::ContextFreeString(_)
+            | InlineValuePayload::ContextString { .. }
+            | InlineValuePayload::Path(_)
+            | InlineValuePayload::ContextPath { .. }
+            | InlineValuePayload::EmptyList
+            | InlineValuePayload::List(_) => None,
+        }
+    }
+
+    pub(crate) fn attrs_entries(&self) -> Option<Vec<(Vec<u8>, Self)>> {
+        match &self.payload {
+            InlineValuePayload::EmptyAttrs => Some(Vec::new()),
+            InlineValuePayload::Attrs(entries) => {
+                let mut out = Vec::new();
+                out.try_reserve_exact(entries.len()).ok()?;
+                out.extend(entries.iter().map(|entry| {
+                    (
+                        entry.name.clone(),
+                        CachedExpressionValue {
+                            payload: entry.value.clone(),
+                        },
+                    )
+                }));
+                Some(out)
+            }
+            InlineValuePayload::Int(_)
+            | InlineValuePayload::Float(_)
+            | InlineValuePayload::Bool(_)
+            | InlineValuePayload::Null
+            | InlineValuePayload::ContextFreeString(_)
+            | InlineValuePayload::ContextString { .. }
+            | InlineValuePayload::Path(_)
+            | InlineValuePayload::ContextPath { .. }
+            | InlineValuePayload::EmptyList
+            | InlineValuePayload::List(_) => None,
+        }
     }
 }
 
@@ -382,6 +474,12 @@ pub enum CachedExpressionValuePayloadError {
     #[error("failed to reserve cached expression list storage for {len} elements")]
     ListAllocationFailed {
         /// The requested list element capacity.
+        len: usize,
+    },
+    /// Attrset binding storage could not be reserved while decoding.
+    #[error("failed to reserve cached expression attrset storage for {len} bindings")]
+    AttrsAllocationFailed {
+        /// The requested attrset binding capacity.
         len: usize,
     },
     /// A length field cannot fit in `usize` on this host.
@@ -445,11 +543,11 @@ pub enum CachedExpressionValuePayloadError {
         /// The malformed contextual payload kind.
         payload: &'static str,
     },
-    /// An attrset payload encoded a non-empty binding table that this precursor cannot replay yet.
-    #[error("cached expression attrset payload has unsupported length {len}")]
-    UnsupportedAttrsPayloadLength {
-        /// The encoded attrset binding count.
-        len: u128,
+    /// An attrset payload binding name was out of canonical order or duplicated.
+    #[error("cached expression attrset payload has non-canonical binding name at index {index}")]
+    NonCanonicalAttrsPayloadName {
+        /// The zero-based index of the out-of-order or duplicate binding name.
+        index: usize,
     },
     /// Nested payload decoding exceeded the supported recursion depth.
     #[error("cached expression payload nesting exceeded {limit} levels")]
@@ -1111,6 +1209,13 @@ enum InlineValuePayload {
     EmptyList,
     List(Vec<InlineValuePayload>),
     EmptyAttrs,
+    Attrs(Vec<AttrPayloadEntry>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AttrPayloadEntry {
+    name: Vec<u8>,
+    value: InlineValuePayload,
 }
 
 impl InlineValuePayload {
@@ -1154,7 +1259,8 @@ impl InlineValuePayload {
             | Self::ContextPath { .. }
             | Self::EmptyList
             | Self::List(_)
-            | Self::EmptyAttrs => None,
+            | Self::EmptyAttrs
+            | Self::Attrs(_) => None,
         }
     }
 
@@ -1175,6 +1281,7 @@ impl InlineValuePayload {
             Self::EmptyList => Ok(ValueHash::from_empty_list()),
             Self::List(_) => Ok(self.value_hash_from_persistent_payload()),
             Self::EmptyAttrs => Ok(ValueHash::from_empty_attrs()),
+            Self::Attrs(_) => Ok(self.value_hash_from_persistent_payload()),
         }
     }
 
@@ -1250,6 +1357,17 @@ impl InlineValuePayload {
                 hasher.update(b"attrs");
                 hasher.update(&0u128.to_le_bytes());
             }
+            Self::Attrs(entries) => {
+                hasher.update(ATTRS_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"attrs");
+                hasher.update(&(entries.len() as u128).to_le_bytes());
+                for entry in entries {
+                    hasher.update(&(entry.name.len() as u128).to_le_bytes());
+                    hasher.update(&entry.name);
+                    hasher.update(&entry.value.persistent_payload_len().to_le_bytes());
+                    entry.value.update_persistent_payload_preimage(hasher);
+                }
+            }
         }
     }
 
@@ -1293,6 +1411,19 @@ impl InlineValuePayload {
                         .sum::<u128>()
             }
             Self::EmptyAttrs => ATTRS_VALUE_HASH_DOMAIN_VERSION.len() as u128 + 5 + 16,
+            Self::Attrs(entries) => {
+                ATTRS_VALUE_HASH_DOMAIN_VERSION.len() as u128
+                    + 5
+                    + 16
+                    + entries
+                        .iter()
+                        .map(|entry| {
+                            16 + entry.name.len() as u128
+                                + 16
+                                + entry.value.persistent_payload_len()
+                        })
+                        .sum::<u128>()
+            }
         }
     }
 
@@ -1362,6 +1493,17 @@ impl InlineValuePayload {
                 append_payload_bytes(&mut out, ATTRS_VALUE_HASH_DOMAIN_VERSION)?;
                 append_payload_bytes(&mut out, b"attrs")?;
                 append_payload_u128(&mut out, 0)?;
+            }
+            Self::Attrs(entries) => {
+                append_payload_bytes(&mut out, ATTRS_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, b"attrs")?;
+                append_payload_u128(&mut out, entries.len() as u128)?;
+                for entry in entries {
+                    append_payload_u128(&mut out, entry.name.len() as u128)?;
+                    append_payload_bytes(&mut out, &entry.name)?;
+                    append_payload_u128(&mut out, entry.value.persistent_payload_len())?;
+                    append_payload_bytes(&mut out, &entry.value.encode_persistent_payload()?)?;
+                }
             }
         }
         Ok(out)
@@ -1475,14 +1617,35 @@ impl InlineValuePayload {
             let mut cursor = PayloadCursor::new(bytes);
             cursor.take_marker(ATTRS_VALUE_HASH_DOMAIN_VERSION, "attrs value domain")?;
             cursor.take_marker(b"attrs", "attrs payload tag")?;
-            let len = cursor.take_u128()?;
-            if len != 0 {
-                return Err(
-                    CachedExpressionValuePayloadError::UnsupportedAttrsPayloadLength { len },
-                );
+            let len = cursor.take_len()?;
+            if len == 0 {
+                cursor.finish()?;
+                return Ok(Self::EmptyAttrs);
+            }
+            let mut entries: Vec<AttrPayloadEntry> = Vec::new();
+            entries
+                .try_reserve_exact(len)
+                .map_err(|_| CachedExpressionValuePayloadError::AttrsAllocationFailed { len })?;
+            for index in 0..len {
+                let name = cursor.take_length_prefixed_bytes()?;
+                if let Some(previous) = entries.last()
+                    && previous.name.as_slice() >= name.as_slice()
+                {
+                    return Err(
+                        CachedExpressionValuePayloadError::NonCanonicalAttrsPayloadName { index },
+                    );
+                }
+                let value = cursor.take_length_prefixed_bytes()?;
+                entries.push(AttrPayloadEntry {
+                    name,
+                    value: Self::decode_persistent_payload_with_depth(
+                        &value,
+                        depth.saturating_add(1),
+                    )?,
+                });
             }
             cursor.finish()?;
-            return Ok(Self::EmptyAttrs);
+            return Ok(Self::Attrs(entries));
         }
         Err(CachedExpressionValuePayloadError::UnknownDomain)
     }
@@ -2345,6 +2508,21 @@ mod tests {
                 ]),
             ]),
             CachedExpressionValue::empty_attrs(),
+            CachedExpressionValue::strict_attrs(vec![
+                (
+                    b"b".to_vec(),
+                    CachedExpressionValue::context_free_string(b"value".to_vec()),
+                ),
+                (
+                    b"a".to_vec(),
+                    CachedExpressionValue::strict_list(vec![
+                        CachedExpressionValue::immediate(Value::bool(true))
+                            .expect("bool payload builds"),
+                        CachedExpressionValue::empty_attrs(),
+                    ]),
+                ),
+            ])
+            .expect("strict attrs payload builds"),
         ];
 
         for payload in payloads {
@@ -2537,15 +2715,42 @@ mod tests {
     }
 
     #[test]
-    fn cached_expression_payload_decode_rejects_non_empty_attrsets() {
+    fn cached_expression_payload_decode_rejects_truncated_attrset_bindings() {
         let encoded = attrs_payload_with_len(1);
 
         let error = CachedExpressionValue::decode_persistent_payload(&encoded)
-            .expect_err("non-empty attrset payload errors");
+            .expect_err("truncated attrset binding payload errors");
+
+        assert!(matches!(
+            error,
+            CachedExpressionValuePayloadError::ShortPayload { .. }
+        ));
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_noncanonical_attrset_names() {
+        let mut encoded = Vec::new();
+        append_payload_bytes(&mut encoded, ATTRS_VALUE_HASH_DOMAIN_VERSION)
+            .expect("domain appends");
+        append_payload_bytes(&mut encoded, b"attrs").expect("tag appends");
+        append_payload_u128(&mut encoded, 2).expect("attrs length appends");
+        let value = CachedExpressionValue::immediate(Value::int(1))
+            .expect("int payload builds")
+            .encode_persistent_payload()
+            .expect("value encodes");
+        for name in [b"b".as_slice(), b"a".as_slice()] {
+            append_payload_u128(&mut encoded, name.len() as u128).expect("name length appends");
+            append_payload_bytes(&mut encoded, name).expect("name appends");
+            append_payload_u128(&mut encoded, value.len() as u128).expect("value length appends");
+            append_payload_bytes(&mut encoded, &value).expect("value appends");
+        }
+
+        let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+            .expect_err("out-of-order attrset names error");
 
         assert_eq!(
             error,
-            CachedExpressionValuePayloadError::UnsupportedAttrsPayloadLength { len: 1 }
+            CachedExpressionValuePayloadError::NonCanonicalAttrsPayloadName { index: 1 }
         );
     }
 
@@ -3650,6 +3855,51 @@ mod tests {
             .expect("immediate lookup succeeds");
 
         assert!(payload.is_empty_attrs());
+        assert!(!payload.is_empty_list());
+        assert!(payload.context_free_string_bytes().is_none());
+        assert!(payload.context_string_parts().is_none());
+        assert!(payload.path_bytes().is_none());
+        assert!(payload.context_path_parts().is_none());
+        assert!(payload.immediate_value().is_none());
+        assert!(
+            immediate.is_none(),
+            "generic Value lookup must not return heap-backed payload pointers"
+        );
+    }
+
+    #[test]
+    fn eval_cache_looks_up_strict_attrs_payloads() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+
+        cache
+            .observe_inline_expression_payload(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::strict_attrs(vec![
+                    (
+                        b"b".to_vec(),
+                        CachedExpressionValue::context_free_string(b"value".to_vec()),
+                    ),
+                    (
+                        b"a".to_vec(),
+                        CachedExpressionValue::immediate(Value::int(1))
+                            .expect("int payload builds"),
+                    ),
+                ])
+                .expect("strict attrs payload builds"),
+            )
+            .expect("strict attrset payload observes");
+        let payload = cache
+            .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("payload lookup succeeds")
+            .expect("memoized strict attrset payload is present");
+        let immediate = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("immediate lookup succeeds");
+
+        assert_eq!(payload.attrs_len(), Some(2));
+        assert!(!payload.is_empty_attrs());
         assert!(!payload.is_empty_list());
         assert!(payload.context_free_string_bytes().is_none());
         assert!(payload.context_string_parts().is_none());

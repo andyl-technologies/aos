@@ -764,7 +764,25 @@ impl TreeWalk {
                 if attrs.is_empty() {
                     Some(CachedExpressionValue::empty_attrs())
                 } else {
-                    None
+                    if attrs.source_order() != attrs.iteration_order() {
+                        return None;
+                    }
+                    let mut entries = Vec::new();
+                    entries.try_reserve_exact(attrs.len()).ok()?;
+                    for entry in attrs.iter_lexicographic() {
+                        if entry.position.is_some() {
+                            return None;
+                        }
+                        let name = self.symbols.resolve(entry.key)?;
+                        entries.push((
+                            try_clone_bytes(name).ok()?,
+                            self.force_cache_payload_for_value_with_depth(
+                                entry.value,
+                                depth.saturating_add(1),
+                            )?,
+                        ));
+                    }
+                    CachedExpressionValue::strict_attrs(entries).ok()
                 }
             }
             _ => None,
@@ -982,6 +1000,20 @@ impl TreeWalk {
         }
         if payload.is_empty_attrs() {
             return self.heap.alloc_attrs(0, FlatAttrs::empty()).ok();
+        }
+        if let Some(attr_payloads) = payload.attrs_entries() {
+            let mut entries = Vec::new();
+            entries.try_reserve_exact(attr_payloads.len()).ok()?;
+            for (name, value_payload) in attr_payloads {
+                let symbol = self.symbols.intern(&name).ok()?;
+                let value = self.value_for_cached_expression_payload_with_depth(
+                    value_payload,
+                    depth.saturating_add(1),
+                )?;
+                entries.push(AttrEntry::new(symbol, value));
+            }
+            let attrs = FlatAttrs::new(entries, &self.symbols).ok()?;
+            return self.heap.alloc_attrs(0, attrs).ok();
         }
         let bytes = try_clone_bytes(payload.path_bytes()?).ok()?;
         self.heap.alloc_path(NixString::from_bytes(bytes)).ok()
