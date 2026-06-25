@@ -1529,12 +1529,16 @@ alone (`M-1`/`Q-A`).
       artifact cache only when `parse_cache_root` is present, materialize
       file-derived parse artifacts only when `persist_cache_root` is present,
       and `NixNative` keeps `EvalCacheRuntime` disabled when eval-cache
-      ingestion is disabled.
-      This covers only the current parse-cache persistence layer and in-memory
-      impure-trace leaf ingestion, not value memoization,
-      demand/evaluating-node lifecycle, persistent demand graph/value cache, or
-      in-process import result memo ([12](12-incremental-evaluation-cache.md)
-      §8.3).
+      ingestion is disabled. Forced-expression persistent demand accounting,
+      durable hit selection, value payload writeback, and verifying-trace
+      writeback are gated by `eval_cache_enabled`, so disabled eval-cache
+      observation writes no persistent force metadata even if a test caller
+      configures a persistent root directly. This covers the current
+      parse-cache persistence layer, in-memory impure-trace leaf ingestion, and
+      replayable forced-expression value/trace cache, not full
+      demand/evaluating-node lifecycle, persistent demand graph, generic value
+      memoization, or in-process import result memo
+      ([12](12-incremental-evaluation-cache.md) §8.3).
 - [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
       future incremental persistence/value memoization, and CI must periodically
       run cold cached-vs-uncached full-closure `.drv` revalidation

@@ -173,8 +173,8 @@ impl TreeWalkOptions {
     /// artifacts from this root, and may write back newly parsed import
     /// artifacts to it when [`Self::parse_cache_root`] is also configured.
     /// Forced-expression cache observation may also use this root for demand
-    /// accounting and threshold-driven durable value/trace writeback when
-    /// [`Self::eval_cache_enabled`] is true.
+    /// accounting, durable hit selection, and threshold-driven durable
+    /// value/trace writeback when [`Self::eval_cache_enabled`] is true.
     pub fn with_persist_cache_root(persist_cache_root: impl Into<PathBuf>) -> Self {
         let mut options = Self::default();
         options.set_persist_cache_root(persist_cache_root);
@@ -539,8 +539,9 @@ impl TreeWalkOptions {
     /// writeback only when a normal parse-cache root is also configured,
     /// because hydrated artifacts are read back through the parse-cache entry
     /// layout before evaluation. It also supplies the persistent root for
-    /// forced-expression demand accounting and threshold-driven value/trace
-    /// writeback when eval-cache observation is enabled.
+    /// forced-expression demand accounting, durable hit selection, and
+    /// threshold-driven value/trace writeback when eval-cache observation is
+    /// enabled.
     pub fn set_persist_cache_root(&mut self, persist_cache_root: impl Into<PathBuf>) {
         self.persist_cache_root = Some(persist_cache_root.into());
     }
@@ -554,8 +555,11 @@ impl TreeWalkOptions {
     ///
     /// This controls in-memory [`crate::cache::EvalCache`] observation and,
     /// when a persistent-cache root is configured, gates forced-expression
-    /// demand accounting plus durable payload writeback. It does not enable the
-    /// future full demand-graph evaluator or general memo lookup.
+    /// demand accounting, durable hit selection, durable payload writeback, and
+    /// verifying-trace writeback. It does not disable parse-cache persistence
+    /// for callers that configure parse and persistent roots explicitly, and it
+    /// does not enable the future full demand-graph evaluator or general memo
+    /// lookup.
     pub fn set_eval_cache_enabled(&mut self, eval_cache_enabled: bool) {
         self.eval_cache_enabled = eval_cache_enabled;
     }

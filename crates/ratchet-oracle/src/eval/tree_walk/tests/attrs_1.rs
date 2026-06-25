@@ -1,6 +1,9 @@
 //! Tree-walk evaluator tests: attrs 1.
 
-use crate::cache::PersistNodeTraceLogEntry;
+use crate::cache::{
+    PERSIST_NODE_METADATA_INDEX_ENTRY_LEN, PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN,
+    PersistNodeTraceLogEntry,
+};
 
 use super::*;
 
@@ -4069,6 +4072,133 @@ fn synthetic_builtin_attr_hits_persistent_current_system_with_empty_trace() {
 }
 
 #[test]
+fn disabled_eval_cache_skips_persistent_current_system_hit() {
+    let persist_root = unique_temp_dir("force-cache-persistent-hit-disabled");
+    let source = "let b = builtins; in { a = b.currentSystem; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let current_system = symbol_for(&ir, b"currentSystem");
+    let builtin = lookup_builtin(b"currentSystem").expect("currentSystem builtin is registered");
+    let mut key_eval = TreeWalk::with_options_and_source(
+        &ir,
+        TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+            .expect("currentSystem is valid"),
+        "synthetic-builtins.nix",
+        source,
+    );
+    let root = key_eval.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = key_eval
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let select_id = key_eval
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a remains a suspended select thunk")
+        .body()
+        .expect("a thunk has a lowered select body");
+    let identity = key_eval
+        .cache_synthetic_builtin_attr_identity(
+            EvalNodeRef::new(EvalModuleId::ROOT, select_id),
+            current_system,
+            builtin,
+        )
+        .expect("synthetic currentSystem identity builds");
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let payload = CachedExpressionValue::context_free_string(b"stale-disabled-hit".to_vec());
+    let value_hash = payload.value_hash().expect("seed payload hashes");
+    let trace_payload = persistent_empty_trace_payload();
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("seed persistent payload materializes");
+    persist
+        .record_node_trace(key, value_hash, &trace_payload)
+        .expect("seed persistent trace records");
+    drop(persist);
+
+    let mut options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    options.set_persist_cache_root(&persist_root);
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "synthetic-builtins.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let forced = force_attr_a(&mut evaluator, &ir, a);
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(forced)
+            .expect("currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux",
+        "disabled eval-cache observation must not rehydrate the seeded persistent payload"
+    );
+    assert_eq!(
+        evaluator.stats().cache_hits(),
+        0,
+        "disabled eval-cache observation must not count a persistent force hit"
+    );
+    assert_eq!(
+        evaluator.stats().thunks_forced(),
+        3,
+        "disabled eval-cache observation must force the let binding, attr thunk, and builtin attr normally"
+    );
+    drop(evaluator);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
+    assert_eq!(
+        persist
+            .lookup_node_materialization_reuse(key)
+            .expect("metadata lookup succeeds"),
+        Some(MaterializationReuse::new(0, 0)),
+        "disabled eval-cache observation must not record fresh persistent demand"
+    );
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        Some(payload),
+        "disabled eval-cache observation must leave the seeded payload unchanged"
+    );
+    assert_eq!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds"),
+        Some(PersistNodeTraceLogEntry::new(
+            key,
+            value_hash,
+            trace_payload
+        )),
+        "disabled eval-cache observation must leave the seeded trace unchanged"
+    );
+    assert_eq!(
+        fs::metadata(persist.node_trace_log().path())
+            .expect("node trace log metadata")
+            .len(),
+        PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN as u64
+            + persistent_empty_trace_payload()
+                .encode()
+                .expect("empty trace payload encodes")
+                .len() as u64,
+        "disabled eval-cache observation must not append extra persistent traces"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
 fn rejected_force_observation_clears_persistent_value_link() {
     let persist_root = unique_temp_dir("force-cache-persistent-clear-rejected");
     let ir = lower("1");
@@ -4419,8 +4549,13 @@ fn disabled_eval_cache_skips_persistent_current_demand() {
         .expect("currentSystem is valid");
     options.set_persist_cache_root(&persist_root);
 
-    let mut evaluator =
-        TreeWalk::with_options_and_source(&ir, options, "synthetic-builtins.nix", source);
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "synthetic-builtins.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
     let root = evaluator.eval_root().expect("attrset evaluates");
     let thunk_value = {
         let attrs = evaluator
@@ -4444,6 +4579,10 @@ fn disabled_eval_cache_skips_persistent_current_demand() {
         .expect("synthetic currentSystem identity builds");
     let key =
         PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    PersistCache::open(&persist_root)
+        .expect("persistent cache opens")
+        .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
+        .expect("prior-run demand records");
     let forced = evaluator
         .force_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("currentSystem force succeeds");
@@ -4462,8 +4601,36 @@ fn disabled_eval_cache_skips_persistent_current_demand() {
         persist
             .lookup_node_materialization_reuse(key)
             .expect("metadata lookup succeeds"),
+        Some(MaterializationReuse::from_previous_run(1)),
+        "disabled eval-cache observation must not add current-run persistent demand counters"
+    );
+    assert_eq!(
+        fs::metadata(persist.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        PERSIST_NODE_METADATA_INDEX_ENTRY_LEN as u64,
+        "disabled eval-cache observation must not append extra persistent force metadata records"
+    );
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
         None,
-        "disabled eval-cache observation must not write persistent demand counters"
+        "disabled eval-cache observation must not write persistent force value payloads"
+    );
+    assert_eq!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds"),
+        None,
+        "disabled eval-cache observation must not write persistent force traces"
+    );
+    assert_eq!(
+        fs::metadata(persist.node_trace_log().path())
+            .expect("node trace log metadata")
+            .len(),
+        0,
+        "disabled eval-cache observation must not append any persistent force trace records"
     );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");

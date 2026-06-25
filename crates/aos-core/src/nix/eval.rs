@@ -2912,6 +2912,20 @@ mod tests {
         assert_eq!(options.parse_cache_root(), None);
         assert_eq!(options.persist_cache_root(), None);
         assert!(!options.eval_cache_enabled());
+
+        config.set_native_cache_root("/aos/cache")?;
+        config.set_aos_nix_cache_env_var("0".to_owned());
+        let options = tree_walk_options_from_config(&config)?;
+        assert_eq!(options.parse_cache_root(), None);
+        assert_eq!(options.persist_cache_root(), None);
+        assert!(!options.eval_cache_enabled());
+
+        config.set_native_cache_root("/aos/cache")?;
+        config.set_aos_nix_cache_env_var("".to_owned());
+        let options = tree_walk_options_from_config(&config)?;
+        assert_eq!(options.parse_cache_root(), None);
+        assert_eq!(options.persist_cache_root(), None);
+        assert!(!options.eval_cache_enabled());
         Ok(())
     }
 
