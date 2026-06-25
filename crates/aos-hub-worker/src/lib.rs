@@ -737,4 +737,67 @@ mod entry {
             worker::console_error!("scheduled cache gc failed: {err:#}");
         }
     }
+
+    /// The Queue-trigger consumer: drain deferred post-write jobs (RFC-0004
+    /// ch.14 Phase D).
+    ///
+    /// Decodes each [`Job`](aos_hub_core::jobs::Job) in the batch and runs it.
+    /// `RebuildDirectory` is executed inline (it rebuilds the KV directory
+    /// projection from D1); the remaining job kinds (surface regeneration,
+    /// reindex, read-model invalidation, webhook delivery) are logged pending
+    /// their full consumer wiring, which is exercised under a live queue. A
+    /// decode failure retries the whole batch; otherwise the batch is acked.
+    #[worker::event(queue)]
+    async fn queue(
+        batch: worker::MessageBatch<aos_hub_core::jobs::Job>,
+        env: Env,
+        _ctx: Context,
+    ) -> Result<()> {
+        use aos_hub_core::jobs::Job;
+        crate::tracinglog::init();
+        let messages = match batch.messages() {
+            Ok(messages) => messages,
+            Err(err) => {
+                worker::console_error!("queue: failed to decode batch: {err}");
+                batch.retry_all();
+                return Ok(());
+            }
+        };
+        for message in &messages {
+            match message.body() {
+                Job::RebuildDirectory => {
+                    // Rebuild the public-registry directory projection in KV from
+                    // D1, off the request path (the home reads this single value).
+                    let (Ok(d1), Ok(kv_ns)) = (
+                        env.d1(crate::handlers::bindings::D1),
+                        env.kv(crate::handlers::bindings::KV_SESSIONS),
+                    ) else {
+                        worker::console_error!("queue: rebuild_directory: D1/KV binding missing");
+                        continue;
+                    };
+                    match crate::d1backend::open_session(&d1, D1_SEED_PRIMARY) {
+                        Ok(session) => {
+                            let db = aos_hub_core::db::Database::attach(Box::new(
+                                crate::d1backend::D1Backend::new(session),
+                            ));
+                            let kv = crate::workerkv::WorkerKv::new(kv_ns);
+                            if let Err(err) = aos_hub_core::directory::rebuild(&db, &kv).await {
+                                worker::console_error!("queue: rebuild_directory: {err:#}");
+                            }
+                        }
+                        Err(err) => {
+                            worker::console_error!("queue: rebuild_directory session: {err:#}")
+                        }
+                    }
+                }
+                other => {
+                    // Full execution is wired with the rest of the Phase D
+                    // consumer (deploy-gated); record the job for now.
+                    worker::console_log!("queue: job pending consumer wiring: {other:?}");
+                }
+            }
+        }
+        batch.ack_all();
+        Ok(())
+    }
 }

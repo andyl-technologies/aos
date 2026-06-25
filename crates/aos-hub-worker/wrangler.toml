@@ -69,3 +69,36 @@ id = "00000000000000000000000000000000"  # replace with your KV namespace id
 # surface into D1. Fires the `scheduled` event handler.
 [triggers]
 crons = ["*/15 * * * *"]
+
+# The coordinator Durable Object (RFC-0004 ch.14 Phase B): the
+# strongly-consistent rate-limit counter, publish lease, and (future) channel
+# floors. The binding name must match `handlers::bindings::COORDINATOR`; the
+# class name is the `#[durable_object]` struct `CoordinatorObject`. Phase E adds
+# per-tenant SQLite DOs alongside this.
+[[durable_objects.bindings]]
+name = "COORDINATOR"
+class_name = "CoordinatorObject"
+
+# Declare the DO class on first deploy. `CoordinatorObject` uses the transactional
+# key-value storage (not SQLite), so a plain `new_classes` migration; a future
+# per-tenant SQLite DO would use `new_sqlite_classes`.
+[[migrations]]
+tag = "v1"
+new_classes = ["CoordinatorObject"]
+
+# The deferred-jobs queue (RFC-0004 ch.14 Phase D): the Worker is both a producer
+# (the write path enqueues post-write propagation) and the consumer (it drains
+# the batch in the `queue` event handler). The binding name must match
+# `handlers::bindings::QUEUE`.
+[[queues.producers]]
+binding = "JOBS"
+queue = "aos-hub-jobs"
+
+[[queues.consumers]]
+queue = "aos-hub-jobs"
+max_batch_size = 10
+max_batch_timeout = 5
+
+# KV for human sessions (RFC-0004) — now also the Phase C read-through cache for
+# hot point-key state (sessions/tokens/config/routing). The binding name matches
+# `handlers::bindings::KV_SESSIONS`. (Declared above under `[[kv_namespaces]]`.)
