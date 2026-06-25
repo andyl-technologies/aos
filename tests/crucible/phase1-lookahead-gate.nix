@@ -120,11 +120,11 @@
     ++ forbiddenFor "crates/crucible-shmem/src/lib.rs" shmemLib [
       {
         label = "public current icount field bypass";
-        needle = "pub current_icount: u64";
+        needle = "pub struct AdvanceCeiling {\n    pub current_icount: u64";
       }
       {
         label = "public max advance icount field bypass";
-        needle = "pub max_advance_icount: u64";
+        needle = "pub struct AdvanceCeiling {\n    current_icount: u64,\n    pub max_advance_icount: u64";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [

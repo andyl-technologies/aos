@@ -72,6 +72,13 @@
       enforces = "DET-21,DET-19,E9";
       capability = "sim unseeded guest-random fails closed before host crypto";
     }
+    {
+      file = "0009-crucible-net-deterministic.patch";
+      catalogName = "crucible-net-deterministic";
+      class = "D";
+      enforces = "DET-11,DET-13,E18";
+      capability = "plugin-chosen icount network RX injection and flush";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

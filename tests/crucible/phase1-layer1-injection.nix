@@ -6,6 +6,7 @@
 }: let
   icountStampedInjection = import ./phase1-icount-stamped-injection.nix {inherit pkgs lib;};
   lookaheadGate = import ./phase1-lookahead-gate.nix {inherit pkgs lib;};
+  qemuNetDeterministic = import ./phase1-qemu-net-deterministic.nix {inherit pkgs lib;};
   sameIcountTieBreak = import ./phase1-same-icount-tie-break.nix {inherit pkgs lib;};
 
   deviceManifest = builtins.readFile ../../crates/crucible-device/Cargo.toml;
@@ -258,6 +259,12 @@ in
             require_line ${icountStampedInjection} "arrival_order_visible=false"
             require_line ${lookaheadGate} "late_delivery_policy=fail_loudly"
             require_line ${lookaheadGate} "ceiling_rule=max_advance_icount_lt_earliest_possible_delivery_icount"
+            require_line ${qemuNetDeterministic} "qemu_net_rx_delivery_icount_deterministic=true"
+            require_line ${qemuNetDeterministic} "qemu_net_rx_lossless_queue=true"
+            require_line ${qemuNetDeterministic} "qemu_net_rx_flush_at_delivery_icount=true"
+            require_line ${qemuNetDeterministic} "qemu_net_rx_send_deferred_when_ready=true"
+            require_line ${qemuNetDeterministic} "qemu_net_rx_flush_fails_loudly_when_not_ready=true"
+            require_line ${qemuNetDeterministic} "skewed_producer_observed_icount_identical=true"
             require_line ${sameIcountTieBreak} "shmem_projection=delivery_icount,src_node,seq"
             require_line ${sameIcountTieBreak} "arrival_order_visible=false"
 
@@ -272,6 +279,11 @@ in
             interleavings=producer_skewed,consumer_skewed
             observed_vector=consumer_node,observed_icount,delivery_icount,src_node,seq
             observed_vectors_identical=true
+            qemu_net_rx_delivery_icount_deterministic=true
+            qemu_net_rx_lossless_queue=true
+            qemu_net_rx_flush_at_delivery_icount=true
+            qemu_net_rx_send_deferred_when_ready=true
+            qemu_net_rx_flush_fails_loudly_when_not_ready=true
             producer_timing_negative_control_failed=true
             RESULT
           '';
