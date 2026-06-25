@@ -257,6 +257,76 @@ fn cache_node_metadata_index_records_and_looks_up_entries() {
 }
 
 #[test]
+fn cache_node_materialization_reuse_records_and_looks_up_counters() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let other_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let reuse = MaterializationReuse::new(2, 3);
+
+    cache
+        .record_node_materialization_reuse(key, reuse)
+        .expect("node reuse records");
+
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(key)
+            .expect("node reuse lookup succeeds"),
+        Some(reuse)
+    );
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(other_key)
+            .expect("node reuse miss succeeds"),
+        None
+    );
+    assert_eq!(
+        fs::metadata(cache.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        PERSIST_NODE_METADATA_INDEX_ENTRY_LEN as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_node_current_demand_updates_latest_reuse_counters() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+
+    let first = cache
+        .record_node_current_demand(key)
+        .expect("first demand records");
+    assert_eq!(first, MaterializationReuse::new(0, 1));
+
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(7, u64::MAX))
+        .expect("saturated reuse records");
+    let saturated = cache
+        .record_node_current_demand(key)
+        .expect("saturating demand records");
+
+    assert_eq!(saturated, MaterializationReuse::new(7, u64::MAX));
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(key)
+            .expect("node reuse lookup succeeds"),
+        Some(saturated)
+    );
+    assert_eq!(
+        fs::metadata(cache.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 3) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_materialization_decision_can_skip_without_writing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

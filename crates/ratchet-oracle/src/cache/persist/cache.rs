@@ -278,6 +278,65 @@ impl PersistCache {
         self.node_metadata_index.lookup(key)
     }
 
+    /// Appends materialization reuse counters for one demand node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, validated, written, or flushed.
+    pub fn record_node_materialization_reuse(
+        &self,
+        key: PersistNodeMetadataKey,
+        reuse: MaterializationReuse,
+    ) -> Result<(), PersistNodeMetadataIndexError> {
+        self.record_node_metadata(PersistNodeMetadataIndexEntry::new(
+            key,
+            PersistNodeMetadataIndexValue::new(reuse),
+        ))
+    }
+
+    /// Looks up materialization reuse counters for one demand node.
+    ///
+    /// Missing index entries return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, read, or decoded.
+    pub fn lookup_node_materialization_reuse(
+        &self,
+        key: PersistNodeMetadataKey,
+    ) -> Result<Option<MaterializationReuse>, PersistNodeMetadataIndexError> {
+        Ok(self
+            .lookup_node_metadata(key)?
+            .map(PersistNodeMetadataIndexValue::materialization_reuse))
+    }
+
+    /// Records one current-run demand observation for a demand node.
+    ///
+    /// The helper reads the latest persisted counters, starts from empty
+    /// counters on a miss, appends the updated counters, and returns the value
+    /// that was recorded. Callers must serialize writes for the same node key:
+    /// this fixed-record sidecar stores absolute counters, so concurrent
+    /// read-modify-append calls can overwrite one another under newest-record
+    /// lookup semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, read, decoded, written, or flushed.
+    pub fn record_node_current_demand(
+        &self,
+        key: PersistNodeMetadataKey,
+    ) -> Result<MaterializationReuse, PersistNodeMetadataIndexError> {
+        let reuse = self
+            .lookup_node_materialization_reuse(key)?
+            .unwrap_or_default()
+            .record_current_demand();
+        self.record_node_materialization_reuse(key, reuse)?;
+        Ok(reuse)
+    }
+
     /// Looks up a blob location through the sidecar index selected by `key`.
     ///
     /// # Errors

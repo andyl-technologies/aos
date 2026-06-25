@@ -920,9 +920,21 @@ alone (`M-1`/`Q-A`).
       resolves lookups with newest-record-wins semantics, and
       `PersistCache::record_node_metadata`/`lookup_node_metadata` expose the
       sidecar through the opened persistent cache root. This is a simple
-      fixed-record sidecar only; LMDB/redb node tables, durable counter update
-      policy, evaluator demand accounting, process-boundary updates, mmap
-      reads, GC/repack, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
+      fixed-record sidecar only; typed counter update helpers are covered by
+      the next row, while LMDB/redb node tables, evaluator demand accounting,
+      process-boundary updates, mmap reads, GC/repack, and AOS tuning remain
+      open (`C-13`/`C-14`/`S-14`).
+- [x] Current explicit node reuse counter update adapter:
+      `PersistCache::record_node_materialization_reuse` and
+      `lookup_node_materialization_reuse` expose typed materialization reuse
+      counters over the raw metadata index, and
+      `record_node_current_demand` reads the newest counters, starts from empty
+      counters on a miss, appends a saturated current-demand increment, and
+      returns the recorded value. This is caller-driven, append-only, and
+      requires callers to serialize writes for the same node key; evaluator
+      demand accounting, atomic writer coordination, automatic process-boundary
+      updates, LMDB/redb node tables, compaction/GC, and AOS tuning remain open
+      (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit materialization-to-pack adapter:
       `PersistCache::materialize_blob` consumes a caller-supplied
       `MaterializationDecision`, skips without hashing/writing on
