@@ -57,8 +57,14 @@ use crate::db::{Database, IndexStatus, PackageRow, RegistryRecord};
 use crate::domain::{Permission, Principal, Scope};
 use crate::ui::pages;
 
-/// Lifetime, in seconds, of a hub access token minted at `/oauth2/token`.
-const ACCESS_TOKEN_TTL_SECS: i64 = 900;
+/// Lifetime, in seconds, of a hub access token minted at `/oauth2/token`
+/// (1 hour).
+///
+/// Kept in parity with the Worker
+/// (`aos_hub_core::connect`'s `ACCESS_TOKEN_TTL_SECS`): an hour covers a bulk
+/// publish while keeping the bearer short-lived; longer-running clients
+/// re-exchange the provisioning token rather than relying on a long TTL.
+const ACCESS_TOKEN_TTL_SECS: i64 = 3600;
 
 /// Maximum repair-job rows shown in the per-registry health-page history.
 const HEALTH_REPAIR_JOB_LIMIT: i64 = 50;
