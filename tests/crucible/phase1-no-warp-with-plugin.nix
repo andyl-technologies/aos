@@ -1,12 +1,23 @@
 {
   pkgs,
   lib,
+  qemuPackage ? null,
 }: let
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   patchName = "0003-crucible-no-warp-with-plugin.patch";
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-no-warp-with-plugin.c;
+  qemuPackageResultLines =
+    if qemuPackage == null
+    then ''
+      qemu_package=standalone-fixture
+      qemu_package_version=standalone-fixture
+    ''
+    else ''
+      qemu_package=${qemuPackage}
+      qemu_package_version=${qemuPackage.version}
+    '';
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -379,6 +390,7 @@ in
             patch=0003-crucible-no-warp-with-plugin.patch
             patched_fixture_exercised=true
             stock_negative_control=true
+            ${qemuPackageResultLines}
             time_control_predicate=qemu_plugin_has_time_control
             wall_clock_warp_under_time_control=false
             notify_preserved_under_time_control=true
