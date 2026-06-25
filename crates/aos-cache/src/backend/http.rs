@@ -280,6 +280,126 @@ impl CacheBackend for HttpBackend {
         Ok(())
     }
 
+    fn supports_multipart(&self) -> bool {
+        // The AOS hub facade implements the multipart protocol (initiate /
+        // upload-part / complete) over `/{slug}/nar/...` for every storage
+        // backend; large NARs upload this way regardless of the `is_aos` batch
+        // optimization.
+        true
+    }
+
+    async fn initiate_multipart(&self, nar_path: &str) -> Result<(String, u64)> {
+        let url = format!("{}?uploads", self.nar_url(nar_path));
+        let req = self.add_headers(TransferRequest::post(&url, Vec::new()));
+        let result = self
+            .engine
+            .execute(req)
+            .await
+            .context("initiating multipart upload")?;
+        if result.status >= 400 {
+            anyhow::bail!(
+                "initiate multipart upload: HTTP {} for {nar_path}",
+                result.status
+            );
+        }
+        let body = result
+            .body
+            .ok_or_else(|| anyhow::anyhow!("empty initiate-multipart response"))?;
+        #[derive(serde::Deserialize)]
+        struct InitiateResp {
+            upload_id: String,
+            part_size: u64,
+        }
+        let resp: InitiateResp =
+            serde_json::from_slice(&body).context("parsing initiate-multipart response")?;
+        Ok((resp.upload_id, resp.part_size))
+    }
+
+    async fn upload_part(
+        &self,
+        nar_path: &str,
+        upload_id: &str,
+        part_number: u32,
+        data: &[u8],
+    ) -> Result<(u32, String)> {
+        let qs = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("uploadId", upload_id)
+            .append_pair("partNumber", &part_number.to_string())
+            .finish();
+        let url = format!("{}?{qs}", self.nar_url(nar_path));
+        let mut req = TransferRequest::put(&url, data.to_vec());
+        add_static_metadata_headers(&mut req, Some("application/x-nix-nar"), None);
+        let req = self.add_headers(req);
+        let result = self
+            .engine
+            .execute(req)
+            .await
+            .context("uploading multipart part")?;
+        if result.status >= 400 {
+            anyhow::bail!(
+                "upload multipart part {part_number}: HTTP {} for {nar_path}",
+                result.status
+            );
+        }
+        let body = result
+            .body
+            .ok_or_else(|| anyhow::anyhow!("empty upload-part response"))?;
+        #[derive(serde::Deserialize)]
+        struct PartResp {
+            part_number: u32,
+            etag: String,
+        }
+        let resp: PartResp =
+            serde_json::from_slice(&body).context("parsing upload-part response")?;
+        Ok((resp.part_number, resp.etag))
+    }
+
+    async fn complete_multipart(
+        &self,
+        nar_path: &str,
+        upload_id: &str,
+        parts: &[(u32, String)],
+    ) -> Result<()> {
+        let qs = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("uploadId", upload_id)
+            .finish();
+        let url = format!("{}?{qs}", self.nar_url(nar_path));
+        #[derive(serde::Serialize)]
+        struct CompletePart {
+            part_number: u32,
+            etag: String,
+        }
+        #[derive(serde::Serialize)]
+        struct CompleteReq {
+            parts: Vec<CompletePart>,
+        }
+        let payload = serde_json::to_vec(&CompleteReq {
+            parts: parts
+                .iter()
+                .map(|(n, e)| CompletePart {
+                    part_number: *n,
+                    etag: e.clone(),
+                })
+                .collect(),
+        })?;
+        let mut req = TransferRequest::post(&url, payload);
+        req.headers
+            .push(("Content-Type".to_string(), "application/json".to_string()));
+        let req = self.add_headers(req);
+        let result = self
+            .engine
+            .execute(req)
+            .await
+            .context("completing multipart upload")?;
+        if result.status >= 400 {
+            anyhow::bail!(
+                "complete multipart upload: HTTP {} for {nar_path}",
+                result.status
+            );
+        }
+        Ok(())
+    }
+
     async fn query_missing(&self, store_hashes: &[&str]) -> Result<Vec<String>> {
         if self.is_aos {
             // AOS server has a batch endpoint.

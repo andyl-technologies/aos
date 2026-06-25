@@ -169,6 +169,62 @@ pub trait CacheBackend: Send + Sync {
     async fn upload_pack(&self, _data: &[u8]) -> Result<Vec<String>> {
         anyhow::bail!("pack upload not supported by this backend")
     }
+
+    /// Whether this backend supports the multipart upload protocol
+    /// (initiate → upload-part → complete) for large NARs.
+    ///
+    /// The default is `false`; only a backend that can assemble a single object
+    /// from several sub-cap parts (an AOS hub, whose backend passes through to
+    /// R2/S3/local-disk native multipart) returns `true`. A NAR larger than a
+    /// single request can carry is uploadable only when this is `true`.
+    fn supports_multipart(&self) -> bool {
+        false
+    }
+
+    /// Begin a multipart upload of the NAR at `nar_path` (e.g.
+    /// `nar/<file>.nar.zst`), returning the backend's opaque `upload_id` and the
+    /// suggested part size in bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend does not support multipart or the
+    /// request fails. The default always errors.
+    async fn initiate_multipart(&self, _nar_path: &str) -> Result<(String, u64)> {
+        anyhow::bail!("multipart upload not supported by this backend")
+    }
+
+    /// Upload one part (`part_number`, 1-based) of the in-progress upload
+    /// `upload_id`, returning the part's `(part_number, etag)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend does not support multipart or the
+    /// part upload fails.
+    async fn upload_part(
+        &self,
+        _nar_path: &str,
+        _upload_id: &str,
+        _part_number: u32,
+        _data: &[u8],
+    ) -> Result<(u32, String)> {
+        anyhow::bail!("multipart upload not supported by this backend")
+    }
+
+    /// Complete the multipart upload `upload_id`, assembling the ordered
+    /// `(part_number, etag)` parts into the final NAR.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend does not support multipart or the
+    /// completion fails.
+    async fn complete_multipart(
+        &self,
+        _nar_path: &str,
+        _upload_id: &str,
+        _parts: &[(u32, String)],
+    ) -> Result<()> {
+        anyhow::bail!("multipart upload not supported by this backend")
+    }
 }
 
 /// `Cache-Control` for content-addressed payloads that never change in
