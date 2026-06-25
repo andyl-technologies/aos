@@ -461,18 +461,40 @@ alone (`M-1`/`Q-A`).
       `EvalCacheRuntime::observe_inline_expression_result` insert/reconsider
       expression nodes from caller-supplied identities, and tree-walk
       `force_value` now observes successful, closed, source-backed
-      `EvalThunkKind::Node` forces whose WHNF result is an inline scalar. The
-      precursor expression identity uses a domain-separated hash of source name,
-      source bytes, and module path-literal base plus the IR node id, so
-      identical file bytes under different relative-path bases do not share one
-      observed node. `NixNative` passes its caller-owned cache runtime into
-      tree-walk evaluation, so repeated closed source-backed evaluations reuse
-      the same demand node and apply the existing inline-value early-cutoff
-      decision. This is observation/reconsideration only: source-less raw eval,
-      captured lexical/dynamic/scoped-global thunks, synthetic
-      apply/select/builtin-attr thunks, canonical free-variable hashes, memo
-      lookup, heap/composite value hashing, persistence, and cached/uncached
-      harness proof remain open (`S-14`/`S-15`).
+      `EvalThunkKind::Node` forces whose entire body subtree is both speculable
+      and in a conservative self-contained IR-kind whitelist, and whose WHNF
+      result is an inline scalar. The precursor expression identity uses a
+      domain-separated hash of source name, source bytes, and module
+      path-literal base plus the IR node id, so identical file bytes under
+      different relative-path bases do not share one observed node. `NixNative`
+      passes its caller-owned cache runtime into tree-walk evaluation, so
+      repeated closed source-backed evaluations reuse the same demand node and
+      apply the existing inline-value early-cutoff decision. This is
+      observation/reconsideration only: source-less raw eval, captured
+      lexical/dynamic/scoped-global thunks, ambient builtin constants,
+      search-path/path/global/builtin/primop/application/dialect nodes pending
+      explicit option and impure-input keys, synthetic apply/select/builtin-attr
+      thunks, canonical free-variable hashes, general memo lookup,
+      heap/composite value hashing, persistence, and cached/uncached harness
+      proof remain open (`S-14`/`S-15`).
+- [x] Current pure closed inline force-cache hit substrate: `EvalCache` keeps
+      per-node inline scalar payload records beside demand-graph value hashes,
+      `EvalCacheRuntime::lookup_inline_expression_result` returns a memoized
+      value only for clean nodes whose payload hash still matches the graph, and
+      tree-walk `force_value` consults this shared cache before evaluating a
+      newly claimed closed source-backed thunk whose entire body subtree is
+      both speculable and in the conservative self-contained IR-kind whitelist.
+      Hits publish the scalar into the evaluator-local thunk cell and update
+      cache-hit stats; disabled runtimes, unknown nodes, dirty nodes, missing
+      payloads, and stale payloads are misses. This is a scalar/pure/local hit
+      path only: source-less raw eval, captured lexical/dynamic/scoped-global
+      thunks, ambient builtin constants,
+      search-path/path/global/builtin/primop/application/dialect nodes pending
+      explicit option and impure-input keys, synthetic apply/select/builtin-attr
+      thunks, canonical free-variable hashes, heap/composite payloads,
+      transitive dirty scheduling, persistence, `derivationStrict` SHA-256
+      short-circuiting, and cached/uncached harness proof remain open
+      (`S-14`/`S-15`).
 - [ ] Full cache-key integration remains: feed source content + IR node position
       from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real

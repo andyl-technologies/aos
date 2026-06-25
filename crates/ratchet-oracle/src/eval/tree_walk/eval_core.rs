@@ -21,8 +21,9 @@ impl TreeWalk {
     /// Creates a tree-walk evaluator over `ir` with caller-owned cache state.
     ///
     /// The cache runtime stays advisory. Disabled runtimes are no-ops; enabled
-    /// runtimes record source-backed forced inline thunk results but do not
-    /// perform memo lookup or persistence.
+    /// runtimes record source-backed forced inline thunk results and may reuse
+    /// clean pure inline-scalar force results for a conservative IR subset.
+    /// They do not perform general memo lookup or persistence.
     pub fn with_options_and_eval_cache(
         ir: &Ir,
         options: TreeWalkOptions,
@@ -408,12 +409,242 @@ impl TreeWalk {
         }
     }
 
+    pub(super) fn lookup_forced_inline_expression_result(
+        &mut self,
+        body: Option<EvalNodeRef>,
+    ) -> Option<Value> {
+        let Some(body) = body else {
+            return None;
+        };
+        let Some(identity) = self.cache_identity_for_node(body) else {
+            return None;
+        };
+
+        let Ok(cache) = self.eval_cache.lock() else {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                "tree-walk evaluator cache lock was poisoned; skipping forced expression lookup"
+            );
+            return None;
+        };
+        if !cache.is_enabled() {
+            return None;
+        }
+        match cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        {
+            Ok(Some(value)) => {
+                drop(cache);
+                self.increment_eval_cache_hit();
+                Some(value)
+            }
+            Ok(None) => {
+                drop(cache);
+                self.increment_eval_cache_miss();
+                None
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator forced expression lookup failed"
+                );
+                None
+            }
+        }
+    }
+
     fn cache_identity_for_node(&self, body: EvalNodeRef) -> Option<CacheExprIdentity> {
         let module = self.modules.get(body.module().index())?;
+        if !Self::subtree_is_speculable(&module.ir, body.id()) {
+            return None;
+        }
         Some(CacheExprIdentity::new(
             Self::cache_source_identity_hash(module)?,
             body.id(),
         ))
+    }
+
+    fn subtree_is_speculable(ir: &Ir, root: IrId) -> bool {
+        let mut visited = BTreeSet::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id.as_u32()) {
+                continue;
+            }
+            let Some(node) = ir.arena.node(id) else {
+                return false;
+            };
+            if !node.effect.is_speculable() {
+                return false;
+            }
+            if !Self::node_kind_is_force_cache_safe(node.kind) {
+                return false;
+            }
+            if !Self::push_ir_children(ir, node, &mut stack) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn node_kind_is_force_cache_safe(kind: IrKind) -> bool {
+        matches!(
+            kind,
+            IrKind::Int
+                | IrKind::Float
+                | IrKind::Bool
+                | IrKind::Null
+                | IrKind::Str
+                | IrKind::Uri
+                | IrKind::LocalVar
+                | IrKind::List
+                | IrKind::AttrSet
+                | IrKind::Let
+                | IrKind::Assert
+                | IrKind::If
+                | IrKind::BinOp
+                | IrKind::UnaryOp
+                | IrKind::Interp
+                | IrKind::Select
+                | IrKind::HasAttr
+                | IrKind::ThunkAlloc
+        )
+    }
+
+    fn push_ir_children(ir: &Ir, node: &IrNode, stack: &mut Vec<IrId>) -> bool {
+        match node.data {
+            IrData::None
+            | IrData::Int(_)
+            | IrData::Float(_)
+            | IrData::Bool(_)
+            | IrData::Symbol(_) => {}
+            IrData::SearchPath { search_path, .. } => {
+                stack.extend(search_path);
+            }
+            IrData::Node(child) => stack.push(child),
+            IrData::Pair { first, second } => {
+                stack.push(first);
+                stack.push(second);
+            }
+            IrData::Triple {
+                first,
+                second,
+                third,
+            } => {
+                stack.push(first);
+                stack.push(second);
+                stack.push(third);
+            }
+            IrData::Children(children) => {
+                let Some(children) = ir.arena.child_slice(children) else {
+                    return false;
+                };
+                stack.extend(children.iter().copied());
+            }
+            IrData::Bindings(bindings) => {
+                if !Self::push_binding_children(ir, bindings, stack) {
+                    return false;
+                }
+            }
+            IrData::Binary { op, lhs, rhs } => {
+                if matches!(op, BinOpKind::PipeLeft | BinOpKind::PipeRight) {
+                    return false;
+                }
+                stack.push(lhs);
+                stack.push(rhs);
+            }
+            IrData::Unary { operand, .. } => stack.push(operand),
+            IrData::Select {
+                receiver,
+                path,
+                default,
+                ..
+            } => {
+                stack.push(receiver);
+                stack.extend(default);
+                if !Self::push_attr_path_children(ir, path, stack) {
+                    return false;
+                }
+            }
+            IrData::HasAttr { receiver, path, .. } => {
+                stack.push(receiver);
+                if !Self::push_attr_path_children(ir, path, stack) {
+                    return false;
+                }
+            }
+            IrData::PrimOp { args, .. } => {
+                let Some(args) = ir.arena.child_slice(args) else {
+                    return false;
+                };
+                stack.extend(args.iter().copied());
+            }
+            IrData::DialectNode { argument, .. } => stack.push(argument),
+            IrData::DialectScopeVar { chain, .. } => {
+                let Some(chain) = usize::try_from(chain)
+                    .ok()
+                    .and_then(|index| ir.with_chains.get(index))
+                else {
+                    return false;
+                };
+                stack.extend(chain.scopes.iter().copied());
+            }
+            IrData::Lambda { pattern, body, .. } => {
+                stack.push(pattern);
+                stack.push(body);
+            }
+            IrData::Let { bindings, body, .. } => {
+                stack.push(body);
+                if !Self::push_binding_children(ir, bindings, stack) {
+                    return false;
+                }
+            }
+            IrData::AttrSet { bindings, .. } => {
+                if !Self::push_binding_children(ir, bindings, stack) {
+                    return false;
+                }
+            }
+            IrData::FormalSet { formals, .. } => {
+                let Some(formals) = ir.arena.child_slice(formals) else {
+                    return false;
+                };
+                stack.extend(formals.iter().copied());
+            }
+            IrData::Formal { default, .. } => {
+                stack.extend(default);
+            }
+            IrData::Local { .. } | IrData::Upval { .. } => {}
+        }
+        true
+    }
+
+    fn push_binding_children(ir: &Ir, bindings: IrBindingSlice, stack: &mut Vec<IrId>) -> bool {
+        let start = bindings.start as usize;
+        let Some(end) = start.checked_add(bindings.len()) else {
+            return false;
+        };
+        let Some(bindings) = ir.bindings.get(start..end) else {
+            return false;
+        };
+        for binding in bindings {
+            stack.push(binding.value);
+            if let IrAttrPathSegment::Dynamic(segment) = binding.key {
+                stack.push(segment);
+            }
+        }
+        true
+    }
+
+    fn push_attr_path_children(ir: &Ir, path: IrAttrPathId, stack: &mut Vec<IrId>) -> bool {
+        let Some(segments) = ir.attr_paths.get(path.index()) else {
+            return false;
+        };
+        for segment in segments.as_ref() {
+            if let IrAttrPathSegment::Dynamic(segment) = segment {
+                stack.push(*segment);
+            }
+        }
+        true
     }
 
     fn cache_source_identity_hash(module: &TreeWalkModule) -> Option<DurableBlake3Hash> {

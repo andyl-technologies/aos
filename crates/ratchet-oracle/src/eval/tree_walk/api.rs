@@ -83,8 +83,10 @@ pub fn eval_whnf_owned_with_options_and_realizer(
 /// Evaluates an IR root with explicit options, IFD, and caller-owned cache state.
 ///
 /// The supplied cache runtime remains advisory: enabled runtimes may observe
-/// source-backed forced inline thunk results, but evaluation never performs
-/// memo lookup through this entry point.
+/// source-backed forced inline thunk results and reuse clean pure inline-scalar
+/// force results for a conservative IR subset when source provenance is
+/// available. They do not perform general memo lookup or persistence through
+/// this entry point.
 ///
 /// # Errors
 ///
@@ -170,7 +172,9 @@ pub fn eval_instantiation_attr_path_owned_with_options_source_and_realizer(
 ///
 /// This is the cache-sharing variant of
 /// [`eval_instantiation_attr_path_owned_with_options_source_and_realizer`].
-/// The cache runtime remains advisory and does not perform memo lookup.
+/// The cache runtime remains advisory: enabled runtimes may reuse clean pure
+/// inline-scalar force results for a conservative IR subset, but they do not
+/// perform general memo lookup or persistence.
 ///
 /// # Errors
 ///

@@ -69,4 +69,12 @@ impl TreeWalk {
     pub(super) fn increment_thunk_cache_hits(&mut self) {
         self.stats.thunk_cache_hits = self.stats.thunk_cache_hits.saturating_add(1);
     }
+
+    pub(super) fn increment_eval_cache_hit(&mut self) {
+        self.stats.cache_hits = self.stats.cache_hits.saturating_add(1);
+    }
+
+    pub(super) fn increment_eval_cache_miss(&mut self) {
+        self.stats.cache_misses = self.stats.cache_misses.saturating_add(1);
+    }
 }

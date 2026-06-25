@@ -738,8 +738,16 @@ impl TreeWalk {
                 Ok(value)
             }
             ForceClaim::Claimed(guard) => {
-                self.increment_thunks_forced();
                 let observed_body = thunk.closed_body_ref();
+                if let Some(value) = self.lookup_forced_inline_expression_result(observed_body) {
+                    let value = guard.finish(value).map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
+                    })?;
+                    self.lazy_identity_thunks.remove(&forced_payload);
+                    return Ok(value);
+                }
+
+                self.increment_thunks_forced();
                 let result = match thunk.kind() {
                     EvalThunkKind::Node {
                         body,

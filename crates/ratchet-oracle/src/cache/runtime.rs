@@ -4,10 +4,12 @@
 //! without owning evaluation or memoization policy. Callers explicitly decide
 //! when to observe a completed evaluation outcome.
 
+use std::collections::BTreeMap;
+
 use super::{
-    CacheExprIdentity, DemandGraph, DemandGraphError, DemandNodeId, DurableBlake3Hash,
-    ImpureInputFingerprint, ImpureTraceObservation, ImpureTraceStatus, Reconsideration,
-    UncacheableInput, ValueHash,
+    CacheExprIdentity, DemandCacheKey, DemandGraph, DemandGraphError, DemandNodeId,
+    DurableBlake3Hash, ImpureInputFingerprint, ImpureTraceObservation, ImpureTraceStatus,
+    NodeFreshness, Reconsideration, UncacheableInput, ValueHash, ValueHashError,
 };
 use crate::value::Value;
 
@@ -75,6 +77,7 @@ impl ExpressionTraceObservation {
 #[derive(Clone, Debug, Default)]
 pub struct EvalCache {
     graph: DemandGraph,
+    inline_values: BTreeMap<DemandNodeId, InlineValueRecord>,
 }
 
 impl EvalCache {
@@ -85,7 +88,10 @@ impl EvalCache {
 
     /// Creates an evaluator cache from an existing demand graph.
     pub fn from_graph(graph: DemandGraph) -> Self {
-        Self { graph }
+        Self {
+            graph,
+            inline_values: BTreeMap::new(),
+        }
     }
 
     /// Returns the number of nodes in the underlying demand graph.
@@ -106,6 +112,43 @@ impl EvalCache {
     /// Consumes this cache into its demand graph.
     pub fn into_graph(self) -> DemandGraph {
         self.graph
+    }
+
+    /// Looks up a clean memoized inline expression result.
+    ///
+    /// This is a precursor memo path for force-time cache hits. It returns a
+    /// value only when the expression key already exists, its demand node is
+    /// clean, and the side payload record still matches the node's value hash.
+    /// Unknown, dirty, missing-payload, and stale-payload nodes are cache
+    /// misses.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails.
+    pub fn lookup_inline_expression_result<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+    ) -> Result<Option<Value>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
+            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        let Some(node) = self.graph.node_id_for_key(key) else {
+            return Ok(None);
+        };
+        let graph_node = self.graph.node(node)?;
+        if graph_node.freshness() != NodeFreshness::Clean {
+            return Ok(None);
+        }
+        let Some(record) = self.inline_values.get(&node).copied() else {
+            return Ok(None);
+        };
+        if graph_node.value_hash() != Some(record.value_hash) {
+            return Ok(None);
+        }
+        Ok(Some(record.value()))
     }
 
     /// Gets or inserts an expression node in the underlying demand graph.
@@ -245,8 +288,12 @@ impl EvalCache {
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
+        let record = InlineValueRecord::from_value(value)
+            .map_err(|source| DemandGraphError::ValueHash { source })?;
         let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
-        self.reconsider_inline_value_node(node, value)
+        let reconsideration = self.graph.reconsider_node(node, record.value_hash)?;
+        self.inline_values.insert(node, record);
+        Ok(reconsideration)
     }
 
     /// Reconsiders one node from a recomputed inline scalar value.
@@ -264,6 +311,74 @@ impl EvalCache {
         value: Value,
     ) -> Result<Reconsideration, DemandGraphError> {
         self.graph.reconsider_inline_value_node(id, value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InlineValueRecord {
+    payload: InlineValuePayload,
+    value_hash: ValueHash,
+}
+
+impl InlineValueRecord {
+    fn from_value(value: Value) -> Result<Self, ValueHashError> {
+        let payload = InlineValuePayload::from_value(value)?;
+        let value_hash = ValueHash::from_inline_value(value)?;
+        Ok(Self {
+            payload,
+            value_hash,
+        })
+    }
+
+    const fn value(self) -> Value {
+        self.payload.value()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InlineValuePayload {
+    Int(i64),
+    Float(u64),
+    Bool(bool),
+    Null,
+}
+
+impl InlineValuePayload {
+    fn from_value(value: Value) -> Result<Self, ValueHashError> {
+        value
+            .validate_payload()
+            .map_err(|source| ValueHashError::InvalidValue { source })?;
+        match value.tag() {
+            crate::value::ValueTag::Int => value
+                .as_int()
+                .map(Self::Int)
+                .map_err(|source| ValueHashError::InvalidValue { source }),
+            crate::value::ValueTag::Float => value
+                .as_float()
+                .map(f64::to_bits)
+                .map(Self::Float)
+                .map_err(|source| ValueHashError::InvalidValue { source }),
+            crate::value::ValueTag::Bool => value
+                .as_bool()
+                .map(Self::Bool)
+                .map_err(|source| ValueHashError::InvalidValue { source }),
+            crate::value::ValueTag::Null => {
+                value
+                    .as_null()
+                    .map_err(|source| ValueHashError::InvalidValue { source })?;
+                Ok(Self::Null)
+            }
+            tag => Err(ValueHashError::UnsupportedTag { tag }),
+        }
+    }
+
+    const fn value(self) -> Value {
+        match self {
+            Self::Int(value) => Value::int(value),
+            Self::Float(bits) => Value::float(f64::from_bits(bits)),
+            Self::Bool(value) => Value::bool(value),
+            Self::Null => Value::null(),
+        }
     }
 }
 
@@ -393,6 +508,30 @@ impl EvalCacheRuntime {
         cache
             .observe_expression_impure_inputs(identity, free_var_value_hashes, value_hash, source)
             .map(Some)
+    }
+
+    /// Looks up a clean inline expression result when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity. Enabled runtimes delegate to
+    /// [`EvalCache::lookup_inline_expression_result`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to build the expression cache key.
+    pub fn lookup_inline_expression_result<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+    ) -> Result<Option<Value>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache() else {
+            return Ok(None);
+        };
+        cache.lookup_inline_expression_result(identity, free_var_value_hashes)
     }
 
     /// Observes one inline expression result when cache observation is enabled.
@@ -841,6 +980,94 @@ mod tests {
     }
 
     #[test]
+    fn eval_cache_looks_up_clean_inline_expression_results() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+
+        cache
+            .observe_inline_expression_result(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+            )
+            .expect("result observes");
+        let value = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("lookup succeeds")
+            .expect("memoized inline result is present");
+
+        assert_eq!(value.as_int(), Ok(3));
+    }
+
+    #[test]
+    fn eval_cache_lookup_requires_side_payload_record() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+        cache
+            .get_or_insert_expression_node(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Some(ValueHash::from_inline_value(Value::int(3)).expect("inline value hashes")),
+            )
+            .expect("node inserts");
+
+        let value = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("lookup succeeds");
+
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn eval_cache_lookup_rejects_dirty_inline_expression_nodes() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+        let observation = cache
+            .observe_inline_expression_result(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+            )
+            .expect("result observes");
+        cache
+            .graph
+            .mark_dirty(observation.node())
+            .expect("node can be marked dirty");
+
+        let value = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("lookup succeeds");
+
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn eval_cache_lookup_rejects_stale_inline_payload_records() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+        let observation = cache
+            .observe_inline_expression_result(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+            )
+            .expect("result observes");
+        cache
+            .graph
+            .reconsider_node(
+                observation.node(),
+                ValueHash::from_inline_value(Value::int(4)).expect("inline value hashes"),
+            )
+            .expect("node can be reconsidered independently");
+
+        let value = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("lookup succeeds");
+
+        assert!(value.is_none());
+    }
+
+    #[test]
     fn enabled_eval_cache_runtime_observes_inline_expression_results() {
         let mut runtime = EvalCacheRuntime::enabled();
         let identity = identity(b"source", 7);
@@ -869,6 +1096,27 @@ mod tests {
     }
 
     #[test]
+    fn enabled_eval_cache_runtime_looks_up_inline_expression_results() {
+        let mut runtime = EvalCacheRuntime::enabled();
+        let identity = identity(b"source", 7);
+
+        runtime
+            .observe_inline_expression_result(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::bool(true),
+            )
+            .expect("result observes")
+            .expect("enabled runtime observes expression results");
+        let value = runtime
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("lookup succeeds")
+            .expect("memoized inline result is present");
+
+        assert_eq!(value.as_bool(), Ok(true));
+    }
+
+    #[test]
     fn disabled_eval_cache_runtime_expression_result_observation_is_noop() {
         let mut runtime = EvalCacheRuntime::disabled();
 
@@ -881,6 +1129,21 @@ mod tests {
             .expect("disabled expression result observation succeeds");
 
         assert_eq!(observation, None);
+        assert!(runtime.cache().is_none());
+    }
+
+    #[test]
+    fn disabled_eval_cache_runtime_expression_result_lookup_is_noop() {
+        let runtime = EvalCacheRuntime::disabled();
+
+        let value = runtime
+            .lookup_inline_expression_result(
+                identity(b"source", 7),
+                std::iter::empty::<DurableBlake3Hash>(),
+            )
+            .expect("disabled lookup succeeds");
+
+        assert!(value.is_none());
         assert!(runtime.cache().is_none());
     }
 

@@ -723,21 +723,84 @@ fn source_backed_forced_inline_thunks_update_shared_eval_cache() {
 }
 
 #[test]
+fn source_backed_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() {
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root = first.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = first.heap().get_attrs(root).expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = first
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("first force succeeds");
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(first.stats().thunks_forced(), 1);
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root = second.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = second
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = second
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("second force succeeds from cache");
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "cache hits publish the scalar without evaluating the thunk body"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+
+    let thunk = second
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("thunk remains heap-owned");
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Forced));
+    let forced_again = second
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("published cache hit reuses thunk cell");
+    assert_eq!(forced_again.as_int(), Ok(3));
+    assert_eq!(second.stats().thunk_cache_hits(), 1);
+}
+
+#[test]
 fn source_backed_forced_inline_thunks_include_path_base_in_cache_identity() {
     let root = unique_temp_dir("force-cache-path-base");
     let first_dir = root.join("first");
     let second_dir = root.join("second");
     fs::create_dir_all(&first_dir).expect("first dir exists");
     fs::create_dir_all(&second_dir).expect("second dir exists");
-    fs::write(first_dir.join("marker"), b"present").expect("marker exists");
     let first_dir = fs::canonicalize(&first_dir).expect("first dir canonicalizes");
     let second_dir = fs::canonicalize(&second_dir).expect("second dir canonicalizes");
-    let source = "{ a = builtins.pathExists ./marker; }";
+    let source = "{ a = 1 + 2; }";
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
 
-    for (path_base, expected) in [(&first_dir, true), (&second_dir, false)] {
+    for path_base in [&first_dir, &second_dir] {
         let mut options = TreeWalkOptions::new();
         options
             .set_path_literal_base(path_bytes(path_base))
@@ -760,7 +823,7 @@ fn source_backed_forced_inline_thunks_include_path_base_in_cache_identity() {
         let forced = evaluator
             .force_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("thunk force succeeds");
-        assert_eq!(forced.as_bool(), Ok(expected));
+        assert_eq!(forced.as_int(), Ok(3));
     }
 
     let runtime = cache.lock().expect("cache lock is valid");
@@ -771,6 +834,237 @@ fn source_backed_forced_inline_thunks_include_path_base_in_cache_identity() {
     );
 
     fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn effectful_forced_inline_thunks_wait_for_impure_input_edges() {
+    let root = unique_temp_dir("force-cache-effectful");
+    fs::write(root.join("marker"), b"present").expect("marker exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = "{ a = builtins.pathExists ./marker; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+
+    assert_eq!(forced.as_bool(), Ok(true));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "effectful thunks need impure-input dependency edges before memoization"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn effectful_descendant_forced_inline_thunks_wait_for_impure_input_edges() {
+    let root = unique_temp_dir("force-cache-effectful-descendant");
+    fs::write(root.join("marker"), b"present").expect("marker exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = "{ a = if builtins.pathExists ./marker then 1 else 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+
+    assert_eq!(forced.as_int(), Ok(1));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "effectful descendants need impure-input dependency edges before memoization"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn ambient_builtin_constants_wait_for_impure_input_edges() {
+    let source = "{ a = builtins.currentTime; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let options = TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+
+    assert_eq!(forced.as_int(), Ok(1_700_000_000));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "ambient builtin constants need impure-input dependency edges before memoization"
+    );
+}
+
+#[test]
+fn search_path_forced_inline_thunks_wait_for_impure_input_edges() {
+    let root = unique_temp_dir("force-cache-search-path");
+    let target = root.join("target");
+    fs::create_dir_all(&target).expect("target dir exists");
+    let target = fs::canonicalize(&target).expect("target canonicalizes");
+    let source = "{ a = <pkg> == <pkg>; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::new();
+    options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&target))
+        .expect("search-path entry is valid");
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+
+    assert_eq!(forced.as_bool(), Ok(true));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "search-path literals need search-path/input keys before memoization"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn pipe_forced_inline_thunks_wait_for_application_cache_keys() {
+    let mut symbols = SymbolTable::new();
+    let x = symbols.intern(b"x").expect("symbol interns");
+    let frames = vec![FrameInfo {
+        slot_count: 1,
+        captures: Vec::new().into_boxed_slice(),
+        rec: false,
+        has_with: false,
+    }];
+    let ir = manual_ir_with_symbols_and_frames(
+        IrId::new(5),
+        vec![
+            pure_node(
+                IrKind::Formal,
+                Span::new(0, 1),
+                IrData::Formal {
+                    name: x,
+                    default: None,
+                },
+            ),
+            pure_node(IrKind::Int, Span::new(3, 4), IrData::Int(3)),
+            pure_node(
+                IrKind::Lambda,
+                Span::new(0, 4),
+                IrData::Lambda {
+                    pattern: IrId::new(0),
+                    body: IrId::new(1),
+                    frame: Some(FrameId::new(0)),
+                },
+            ),
+            pure_node(IrKind::Int, Span::new(8, 9), IrData::Int(1)),
+            pure_node(
+                IrKind::BinOp,
+                Span::new(0, 9),
+                IrData::Binary {
+                    op: BinOpKind::PipeRight,
+                    lhs: IrId::new(3),
+                    rhs: IrId::new(2),
+                },
+            ),
+            pure_node(
+                IrKind::ThunkAlloc,
+                Span::new(0, 9),
+                IrData::Node(IrId::new(4)),
+            ),
+        ],
+        symbols,
+        frames,
+    );
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        "{ a = 1 |> f; }",
+        cache.clone(),
+    );
+    let forced = evaluator
+        .eval_root()
+        .expect("thunked pipe root evaluates to weak head normal form");
+
+    assert_eq!(forced.as_int(), Ok(3));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "pipe operators evaluate as application and need application cache keys"
+    );
 }
 
 #[test]
