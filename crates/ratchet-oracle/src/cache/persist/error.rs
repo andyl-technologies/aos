@@ -478,6 +478,23 @@ pub enum PersistParseFileIndexedHydrationError {
     },
 }
 
+/// Indexed parse-cache load from a caller-supplied source buffer failed.
+#[derive(Debug, Error)]
+pub enum PersistParseSourceIndexedLoadError {
+    /// The indexed file artifact could not hydrate the parse-cache entry.
+    #[error("failed to hydrate indexed parse-cache entry for source load")]
+    Hydrate {
+        /// The underlying indexed hydration error.
+        source: PersistFileArtifactIndexedHydrationError,
+    },
+    /// The hydrated parse-cache entry could not be loaded as a cache hit.
+    #[error("failed to load hydrated source parse-cache entry")]
+    Load {
+        /// The underlying parse-cache read error.
+        source: ParseCacheError,
+    },
+}
+
 /// Indexed parse-cache load from a filesystem source failed.
 #[derive(Debug, Error)]
 pub enum PersistParseFileIndexedLoadError {

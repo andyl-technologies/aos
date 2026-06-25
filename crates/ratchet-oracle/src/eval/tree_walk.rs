@@ -55,7 +55,8 @@ use crate::cache::{
     CacheExprIdentity, CachedExpressionValue, CachedParse, DirEntryInput, DurableBlake3Hash,
     EvalCacheRuntime, FileTypeForInput, ImpureInputFingerprint, ImpureInputIdentity,
     ImpureInputKind, ImpureInputMode, ImpureInputRevalidator, ImpureInputTraceSource,
-    InputFingerprintError, ParseCache, ParseCacheError, ValueHash, lowered_ir_fingerprint,
+    InputFingerprintError, ParseCache, ParseCacheError, PersistCache, ValueHash,
+    lowered_ir_fingerprint,
 };
 use crate::compile::{
     FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,
@@ -329,6 +330,7 @@ pub struct TreeWalkOptions {
     reject_ambient_search_path: bool,
     reject_unconfigured_impure_builtin_constants: bool,
     parse_cache_root: Option<PathBuf>,
+    persist_cache_root: Option<PathBuf>,
     eval_cache_enabled: bool,
     #[cfg(test)]
     fetch_tree_url_responses: BTreeMap<Vec<u8>, Vec<u8>>,
@@ -356,6 +358,7 @@ impl Default for TreeWalkOptions {
             reject_ambient_search_path: false,
             reject_unconfigured_impure_builtin_constants: false,
             parse_cache_root: None,
+            persist_cache_root: None,
             eval_cache_enabled: false,
             #[cfg(test)]
             fetch_tree_url_responses: BTreeMap::new(),
@@ -724,6 +727,8 @@ pub struct TreeWalk {
     known_derivations: BTreeMap<nix_compat::store_path::StorePath<String>, KnownDerivation>,
     import_cache: BTreeMap<PathBuf, ImportCacheEntry>,
     parse_cache: Option<ParseCache>,
+    persist_cache: Option<PersistCache>,
+    persist_cache_open_attempted: bool,
     eval_cache: Arc<Mutex<EvalCacheRuntime>>,
     import_parse_cache_hits: usize,
     import_parse_cache_misses: usize,

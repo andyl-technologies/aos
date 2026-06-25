@@ -46,6 +46,7 @@ pub use persist::{
     PersistFileArtifactKey, PersistFileArtifactMaterialization, PersistLayout,
     PersistMaterialization, PersistPackFormatError, PersistParseArtifactMaterializationError,
     PersistParseFileIndexedHydrationError, PersistParseFileIndexedLoadError,
+    PersistParseSourceIndexedLoadError,
 };
 pub use policy::{
     MaterializationCosts, MaterializationDecision, MaterializationReuse, MaterializationSignals,

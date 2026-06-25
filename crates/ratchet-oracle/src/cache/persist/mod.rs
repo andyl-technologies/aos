@@ -69,7 +69,7 @@ pub use error::{
     PersistFileArtifactIndexError, PersistFileArtifactIndexedHydrationError,
     PersistFileArtifactIndexedWriteError, PersistPackFormatError,
     PersistParseArtifactMaterializationError, PersistParseFileIndexedHydrationError,
-    PersistParseFileIndexedLoadError,
+    PersistParseFileIndexedLoadError, PersistParseSourceIndexedLoadError,
 };
 pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,

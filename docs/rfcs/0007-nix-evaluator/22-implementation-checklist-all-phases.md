@@ -1014,6 +1014,16 @@ alone (`M-1`/`Q-A`).
       resolution, automatic parse-cache integration, durable hit selection,
       mmap reads, full artifact semantic validation beyond existing decoders,
       GC/repack, and harness proof remain open (`C-13`).
+- [x] Current source-derived indexed parse-cache load adapter:
+      `PersistCache::load_parse_cache_source_from_index` derives both source
+      identities from one caller-supplied canonical realpath/source byte pair,
+      hydrates the matching durable file-artifact entry into the normal
+      `ParseCache` layout, then returns it through
+      `ParseCache::load_cached_bytes` as a `CachedParse` hit. This is explicit
+      caller-driven durable hit loading only; canonical path resolution,
+      automatic evaluator/import selection, mmap reads, full artifact semantic
+      validation beyond existing decoders, GC/repack, and harness proof remain
+      open (`C-13`/`R-10`).
 - [x] Current file-derived indexed parse-cache hydration adapter:
       `PersistCache::hydrate_parse_cache_entry_from_file_index` canonicalizes a
       requested filesystem path, reads the canonical source bytes, derives the
@@ -1031,6 +1041,20 @@ alone (`M-1`/`Q-A`).
       caller-driven durable hit loading only; automatic evaluator/import
       selection, mmap reads, full artifact semantic validation beyond existing
       decoders, GC/repack, and harness proof remain open (`C-13`/`R-10`).
+- [x] Current ordinary filesystem import durable parse-cache hit selection:
+      `TreeWalkOptions::set_persist_cache_root` configures an optional
+      persistent cache root, and unscoped filesystem imports with a configured
+      `parse_cache_root` now try
+      `PersistCache::load_parse_cache_source_from_index` using the same
+      canonical realpath/source bytes already recorded for the import input
+      fingerprint before falling back to `ParseCache::load_or_parse_bytes` when
+      the persistent root is unavailable, misses, or has stale/corrupt indexed
+      artifacts. The persistent root opens lazily on the first eligible import;
+      scoped imports and text-store imports still bypass this path. This is
+      evaluator import hit selection only; automatic persistent
+      materialization/writeback, source root/native expression durable lookup,
+      mmap reads, full artifact semantic validation beyond existing decoders,
+      GC/repack, and harness proof remain open (`C-13`/`R-10`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus

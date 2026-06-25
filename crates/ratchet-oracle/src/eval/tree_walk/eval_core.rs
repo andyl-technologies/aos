@@ -118,6 +118,8 @@ impl TreeWalk {
             known_derivations: BTreeMap::new(),
             import_cache: BTreeMap::new(),
             parse_cache,
+            persist_cache: None,
+            persist_cache_open_attempted: false,
             eval_cache,
             import_parse_cache_hits: 0,
             import_parse_cache_misses: 0,

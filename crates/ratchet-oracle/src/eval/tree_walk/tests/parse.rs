@@ -323,6 +323,198 @@ fn ordinary_filesystem_import_uses_configured_parse_cache() {
 }
 
 #[test]
+fn ordinary_filesystem_import_uses_persistent_parse_cache_index() {
+    use crate::cache::{MaterializationDecision, ParseCache, ParseFileKey, PersistCache};
+
+    let root = fs::canonicalize(unique_temp_dir("import-persist-parse-cache"))
+        .expect("temp directory canonicalizes");
+    let seed_parse_root = root.join("seed-parse");
+    let runtime_parse_root = root.join("runtime-parse");
+    let persist_root = root.join("persist");
+    let dep_path = root.join("dep.nix");
+    let source = b"{ zOnly = 41; }";
+    fs::write(&dep_path, source).expect("dep writes");
+    let realpath = fs::canonicalize(&dep_path).expect("dep canonicalizes");
+    let seed_parse = ParseCache::new(&seed_parse_root);
+    let parsed = seed_parse
+        .load_or_parse_bytes(source, Some(realpath.to_string_lossy().into_owned()))
+        .expect("seed source parses");
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    let file_key = ParseFileKey::for_source(&realpath, source);
+    persist
+        .materialize_parse_artifact_entry_indexed(
+            &file_key,
+            parsed.key,
+            &parsed.entry,
+            MaterializationDecision::Materialize,
+        )
+        .expect("seed parse artifact materializes");
+    fs::remove_dir_all(&seed_parse_root).expect("seed parse cache removes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&runtime_parse_root);
+    options.set_persist_cache_root(&persist_root);
+    let ir = lower(r#"builtins.concatStringsSep "," (builtins.attrNames (import ./dep.nix))"#);
+
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator
+        .eval_root()
+        .expect("persistent cached import evaluates");
+    let string = evaluator
+        .heap()
+        .get_string(value)
+        .expect("attrNames result concatenates to string");
+
+    assert_eq!(string.bytes(), b"zOnly");
+    assert_eq!(evaluator.import_parse_cache_stats(), (1, 0));
+    assert!(
+        ParseCache::new(&runtime_parse_root)
+            .entry_for_source(source)
+            .is_complete(),
+        "persistent hit should hydrate the runtime parse-cache entry"
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn ordinary_filesystem_import_falls_back_after_persistent_parse_cache_miss() {
+    use crate::cache::{ParseCache, PersistCache};
+
+    let root = fs::canonicalize(unique_temp_dir("import-persist-parse-cache-miss"))
+        .expect("temp directory canonicalizes");
+    let cache_root = root.join("cache");
+    let persist_root = root.join("persist");
+    let source = b"{ zOnly = 41; }";
+    fs::write(root.join("dep.nix"), source).expect("dep writes");
+    PersistCache::open(&persist_root).expect("empty persistent cache opens");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&cache_root);
+    options.set_persist_cache_root(&persist_root);
+    let ir = lower(r#"builtins.concatStringsSep "," (builtins.attrNames (import ./dep.nix))"#);
+
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator
+        .eval_root()
+        .expect("persistent miss falls back to parsing");
+    let string = evaluator
+        .heap()
+        .get_string(value)
+        .expect("attrNames result concatenates to string");
+
+    assert_eq!(string.bytes(), b"zOnly");
+    assert_eq!(evaluator.import_parse_cache_stats(), (0, 1));
+    assert!(
+        ParseCache::new(&cache_root)
+            .entry_for_source(source)
+            .is_complete(),
+        "persistent miss should keep the ordinary parse-cache write path"
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn ordinary_filesystem_import_falls_back_after_stale_persistent_parse_cache_hit() {
+    use crate::cache::{
+        DurableBlake3Hash, PERSIST_BLOB_PACK_HEADER_LEN, ParseCache, ParseFileKey,
+        PersistBlobLocation, PersistCache, PersistFileArtifactIndexEntry,
+        PersistFileArtifactIndexValue, PersistFileArtifactKey,
+    };
+
+    let root = fs::canonicalize(unique_temp_dir("import-persist-parse-cache-stale-hit"))
+        .expect("temp directory canonicalizes");
+    let cache_root = root.join("cache");
+    let persist_root = root.join("persist");
+    let source = b"{ zOnly = 41; }";
+    let dep_path = root.join("dep.nix");
+    fs::write(&dep_path, source).expect("dep writes");
+    let realpath = fs::canonicalize(&dep_path).expect("dep canonicalizes");
+    let parse_cache = ParseCache::new(&cache_root);
+    let parse_key = parse_cache.key_for_source(source);
+    let file_key = ParseFileKey::for_source(&realpath, source);
+    let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let stale_value = PersistFileArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"missing artifact"),
+        PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
+    );
+    PersistCache::open(&persist_root)
+        .expect("persistent cache opens")
+        .record_file_artifact(PersistFileArtifactIndexEntry::new(
+            artifact_key,
+            stale_value,
+        ))
+        .expect("stale mapping records");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&cache_root);
+    options.set_persist_cache_root(&persist_root);
+    let ir = lower(r#"builtins.concatStringsSep "," (builtins.attrNames (import ./dep.nix))"#);
+
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator
+        .eval_root()
+        .expect("stale persistent hit falls back to parsing");
+    let string = evaluator
+        .heap()
+        .get_string(value)
+        .expect("attrNames result concatenates to string");
+
+    assert_eq!(string.bytes(), b"zOnly");
+    assert_eq!(evaluator.import_parse_cache_stats(), (0, 1));
+    assert!(
+        parse_cache.entry_for_source(source).is_complete(),
+        "stale persistent hit should keep the ordinary parse-cache write path"
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn ordinary_filesystem_import_does_not_open_persist_cache_without_parse_cache() {
+    let root = fs::canonicalize(unique_temp_dir("import-persist-without-parse-cache"))
+        .expect("temp directory canonicalizes");
+    let persist_root = root.join("persist");
+    fs::write(root.join("dep.nix"), b"{ zOnly = 41; }").expect("dep writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_persist_cache_root(&persist_root);
+    let ir = lower(r#"builtins.concatStringsSep "," (builtins.attrNames (import ./dep.nix))"#);
+
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    assert!(
+        !persist_root.exists(),
+        "constructing the evaluator should not open the persistent cache"
+    );
+    let value = evaluator
+        .eval_root()
+        .expect("import without parse-cache root evaluates");
+    let string = evaluator
+        .heap()
+        .get_string(value)
+        .expect("attrNames result concatenates to string");
+
+    assert_eq!(string.bytes(), b"zOnly");
+    assert!(!persist_root.exists());
+    assert_eq!(evaluator.import_parse_cache_stats(), (0, 0));
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
 fn parse_cached_import_remaps_formal_and_inherit_symbols() {
     let root = fs::canonicalize(unique_temp_dir("import-parse-cache-symbols"))
         .expect("temp directory canonicalizes");

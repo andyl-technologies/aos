@@ -653,6 +653,42 @@ impl PersistCache {
         self.hydrate_file_artifact_bundle_from_index(&file_key, parse_key, &entry)
     }
 
+    /// Loads an indexed parse-cache hit for caller-supplied source bytes.
+    ///
+    /// This is a source-shaped load adapter over
+    /// [`Self::hydrate_parse_cache_entry_from_source_index`] and
+    /// [`ParseCache::load_cached_bytes`]. It derives both identities from the
+    /// same canonical `realpath` and `source` bytes, hydrates the normal
+    /// parse-cache entry from the persistent file-artifact index, and returns
+    /// the hydrated entry as a [`CachedParse`] hit. Missing file-artifact index
+    /// entries return `Ok(None)`.
+    ///
+    /// `realpath` must already be the canonical path used for file-artifact
+    /// identity; this helper does not canonicalize or read source files.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseSourceIndexedLoadError`] if the file-artifact index
+    /// cannot be read, a matching indexed artifact cannot be hydrated, or the
+    /// hydrated parse-cache entry cannot be read back as a [`CachedParse`].
+    pub fn load_parse_cache_source_from_index(
+        &self,
+        parse_cache: &ParseCache,
+        realpath: impl AsRef<Path>,
+        source: &[u8],
+    ) -> Result<Option<CachedParse>, PersistParseSourceIndexedLoadError> {
+        if self
+            .hydrate_parse_cache_entry_from_source_index(parse_cache, realpath, source)
+            .map_err(|source| PersistParseSourceIndexedLoadError::Hydrate { source })?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        parse_cache
+            .load_cached_bytes(source)
+            .map_err(|source| PersistParseSourceIndexedLoadError::Load { source })
+    }
+
     /// Canonicalizes a source path and hydrates the matching parse-cache entry.
     ///
     /// This file-shaped adapter canonicalizes `path`, reads the canonical

@@ -167,6 +167,17 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with a configured persistent-cache root.
+    ///
+    /// Ordinary filesystem-backed imports may lazily hydrate durable parse
+    /// artifacts from this root when [`Self::parse_cache_root`] is also
+    /// configured. Scoped imports and text-store imports do not use this cache.
+    pub fn with_persist_cache_root(persist_cache_root: impl Into<PathBuf>) -> Self {
+        let mut options = Self::default();
+        options.set_persist_cache_root(persist_cache_root);
+        options
+    }
+
     /// Creates evaluator options with advisory eval-cache trace ingestion configured.
     pub fn with_eval_cache_enabled(eval_cache_enabled: bool) -> Self {
         let mut options = Self::default();
@@ -512,6 +523,20 @@ impl TreeWalkOptions {
         self.parse_cache_root = None;
     }
 
+    /// Replaces the persistent-cache root directory.
+    ///
+    /// This enables advisory durable import parse-cache hit lookup only when a
+    /// normal parse-cache root is also configured, because hydrated artifacts
+    /// are read back through the parse-cache entry layout before evaluation.
+    pub fn set_persist_cache_root(&mut self, persist_cache_root: impl Into<PathBuf>) {
+        self.persist_cache_root = Some(persist_cache_root.into());
+    }
+
+    /// Disables persistent-cache use by this evaluator.
+    pub fn clear_persist_cache_root(&mut self) {
+        self.persist_cache_root = None;
+    }
+
     /// Enables or disables advisory incremental eval-cache trace ingestion.
     ///
     /// This only controls whether native evaluator handles own an in-memory
@@ -636,6 +661,11 @@ impl TreeWalkOptions {
     /// Returns the configured parse-cache root directory, if any.
     pub fn parse_cache_root(&self) -> Option<&Path> {
         self.parse_cache_root.as_deref()
+    }
+
+    /// Returns the configured persistent-cache root directory, if any.
+    pub fn persist_cache_root(&self) -> Option<&Path> {
+        self.persist_cache_root.as_deref()
     }
 
     /// Returns whether advisory incremental eval-cache trace ingestion is enabled.

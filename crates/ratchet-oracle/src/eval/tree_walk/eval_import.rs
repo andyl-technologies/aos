@@ -1050,7 +1050,7 @@ impl TreeWalk {
     }
 
     pub(super) fn load_parse_cached_import(
-        &self,
+        &mut self,
         argument: IrId,
         argument_span: Span,
         realpath: &Path,
@@ -1064,6 +1064,23 @@ impl TreeWalk {
         let Some(cache) = &self.parse_cache else {
             return Ok(None);
         };
+
+        if self.persist_cache.is_none() && !self.persist_cache_open_attempted {
+            self.persist_cache_open_attempted = true;
+            if let Some(root) = self.options.persist_cache_root().map(Path::to_path_buf) {
+                self.persist_cache = PersistCache::open(root).ok();
+            }
+        }
+
+        if let Some(persist_cache) = &self.persist_cache {
+            if let Some(cached) = persist_cache
+                .load_parse_cache_source_from_index(cache, realpath, source)
+                .ok()
+                .flatten()
+            {
+                return Ok(Some(cached));
+            }
+        }
 
         let source_hint = Some(realpath.to_string_lossy().into_owned());
         cache
