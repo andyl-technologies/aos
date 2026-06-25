@@ -11,7 +11,7 @@ use thiserror::Error;
 use super::cutoff::{
     CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION, CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION,
     CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION, INLINE_VALUE_HASH_DOMAIN_VERSION,
-    PATH_VALUE_HASH_DOMAIN_VERSION,
+    LIST_VALUE_HASH_DOMAIN_VERSION, PATH_VALUE_HASH_DOMAIN_VERSION,
 };
 use super::{
     CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey, DemandGraph, DemandGraphError,
@@ -155,6 +155,13 @@ impl CachedExpressionValue {
         }
     }
 
+    /// Creates a cached empty Nix list payload.
+    pub const fn empty_list() -> Self {
+        Self {
+            payload: InlineValuePayload::EmptyList,
+        }
+    }
+
     /// Returns the durable value hash for this cached payload.
     ///
     /// # Errors
@@ -207,6 +214,7 @@ impl CachedExpressionValue {
             InlineValuePayload::ContextString { .. }
             | InlineValuePayload::Path(_)
             | InlineValuePayload::ContextPath { .. }
+            | InlineValuePayload::EmptyList
             | InlineValuePayload::Int(_)
             | InlineValuePayload::Float(_)
             | InlineValuePayload::Bool(_)
@@ -224,6 +232,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::ContextFreeString(_)
             | InlineValuePayload::Path(_)
             | InlineValuePayload::ContextPath { .. }
+            | InlineValuePayload::EmptyList
             | InlineValuePayload::Null => None,
         }
     }
@@ -238,6 +247,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::ContextFreeString(_)
             | InlineValuePayload::ContextString { .. }
             | InlineValuePayload::ContextPath { .. }
+            | InlineValuePayload::EmptyList
             | InlineValuePayload::Null => None,
         }
     }
@@ -252,8 +262,14 @@ impl CachedExpressionValue {
             | InlineValuePayload::ContextFreeString(_)
             | InlineValuePayload::ContextString { .. }
             | InlineValuePayload::Path(_)
+            | InlineValuePayload::EmptyList
             | InlineValuePayload::Null => None,
         }
+    }
+
+    /// Returns whether this payload is the empty Nix list.
+    pub const fn is_empty_list(&self) -> bool {
+        matches!(&self.payload, InlineValuePayload::EmptyList)
     }
 }
 
@@ -340,6 +356,12 @@ pub enum CachedExpressionValuePayloadError {
     EmptyStringContext {
         /// The malformed contextual payload kind.
         payload: &'static str,
+    },
+    /// A list payload encoded a non-empty spine that this precursor cannot replay yet.
+    #[error("cached expression list payload has unsupported length {len}")]
+    UnsupportedListPayloadLength {
+        /// The encoded list spine length.
+        len: u128,
     },
 }
 
@@ -992,6 +1014,7 @@ enum InlineValuePayload {
         bytes: Vec<u8>,
         context: StringContext,
     },
+    EmptyList,
 }
 
 impl InlineValuePayload {
@@ -1032,7 +1055,8 @@ impl InlineValuePayload {
             Self::ContextFreeString(_)
             | Self::ContextString { .. }
             | Self::Path(_)
-            | Self::ContextPath { .. } => None,
+            | Self::ContextPath { .. }
+            | Self::EmptyList => None,
         }
     }
 
@@ -1050,6 +1074,7 @@ impl InlineValuePayload {
             Self::ContextPath { bytes, context } => {
                 Ok(ValueHash::from_context_path_parts(bytes, context))
             }
+            Self::EmptyList => Ok(ValueHash::from_empty_list()),
         }
     }
 
@@ -1100,6 +1125,11 @@ impl InlineValuePayload {
                 append_payload_u128(&mut out, bytes.len() as u128)?;
                 append_payload_bytes(&mut out, bytes)?;
                 append_string_context_payload(&mut out, context)?;
+            }
+            Self::EmptyList => {
+                append_payload_bytes(&mut out, LIST_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, b"list")?;
+                append_payload_u128(&mut out, 0)?;
             }
         }
         Ok(out)
@@ -1171,6 +1201,19 @@ impl InlineValuePayload {
                 bytes: path_bytes,
                 context,
             });
+        }
+        if bytes.starts_with(LIST_VALUE_HASH_DOMAIN_VERSION) {
+            let mut cursor = PayloadCursor::new(bytes);
+            cursor.take_marker(LIST_VALUE_HASH_DOMAIN_VERSION, "list value domain")?;
+            cursor.take_marker(b"list", "list payload tag")?;
+            let len = cursor.take_u128()?;
+            if len != 0 {
+                return Err(
+                    CachedExpressionValuePayloadError::UnsupportedListPayloadLength { len },
+                );
+            }
+            cursor.finish()?;
+            return Ok(Self::EmptyList);
         }
         Err(CachedExpressionValuePayloadError::UnknownDomain)
     }
@@ -1929,6 +1972,14 @@ mod tests {
         encoded
     }
 
+    fn list_payload_with_len(len: u128) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        append_payload_bytes(&mut encoded, LIST_VALUE_HASH_DOMAIN_VERSION).expect("domain appends");
+        append_payload_bytes(&mut encoded, b"list").expect("tag appends");
+        append_payload_u128(&mut encoded, len).expect("list length appends");
+        encoded
+    }
+
     fn key(node: u32, label: &[u8]) -> DemandCacheKey {
         DemandCacheKey::for_free_vars(identity(label, node), [durable_hash(label)])
             .expect("key builds")
@@ -1954,6 +2005,7 @@ mod tests {
                 b"/nix/store/context-path".to_vec(),
                 all_context_kinds(),
             ),
+            CachedExpressionValue::empty_list(),
         ];
 
         for payload in payloads {
@@ -2107,6 +2159,19 @@ mod tests {
         assert_eq!(
             error,
             CachedExpressionValuePayloadError::NonCanonicalStringContext { index: 1 }
+        );
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_non_empty_lists() {
+        let encoded = list_payload_with_len(1);
+
+        let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+            .expect_err("non-empty list payload errors");
+
+        assert_eq!(
+            error,
+            CachedExpressionValuePayloadError::UnsupportedListPayloadLength { len: 1 }
         );
     }
 
@@ -3115,6 +3180,38 @@ mod tests {
         assert_eq!(cached_context, &context);
         assert!(payload.context_string_parts().is_none());
         assert!(payload.path_bytes().is_none());
+        assert!(payload.immediate_value().is_none());
+        assert!(
+            immediate.is_none(),
+            "generic Value lookup must not return heap-backed payload pointers"
+        );
+    }
+
+    #[test]
+    fn eval_cache_looks_up_empty_list_payloads() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+
+        cache
+            .observe_inline_expression_payload(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::empty_list(),
+            )
+            .expect("empty list payload observes");
+        let payload = cache
+            .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("payload lookup succeeds")
+            .expect("memoized empty list payload is present");
+        let immediate = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("immediate lookup succeeds");
+
+        assert!(payload.is_empty_list());
+        assert!(payload.context_free_string_bytes().is_none());
+        assert!(payload.context_string_parts().is_none());
+        assert!(payload.path_bytes().is_none());
+        assert!(payload.context_path_parts().is_none());
         assert!(payload.immediate_value().is_none());
         assert!(
             immediate.is_none(),

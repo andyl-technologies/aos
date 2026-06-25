@@ -490,7 +490,8 @@ alone (`M-1`/`Q-A`).
       `EvalThunkKind::Node` forces whose entire body subtree is both speculable
       and in a conservative self-contained IR-kind whitelist, and whose WHNF
       result is either an inline scalar, a Nix string payload with or without
-      context, or a Nix path payload with or without context. The
+      context, a Nix path payload with or without context, or the empty Nix
+      list. The
       precursor expression identity uses a domain-separated hash of source name,
       source bytes, and module path-literal base plus the IR node id, so
       identical file bytes under different relative-path bases do not share one
@@ -504,27 +505,27 @@ alone (`M-1`/`Q-A`).
       search-path/global/builtin/primop/application/dialect nodes pending
       explicit option and impure-input keys, synthetic apply/select
       thunks, canonical free-variable hashes, general memo lookup,
-      captured thunk-cell free variables, lists/attrs and other
+      captured thunk-cell free variables, non-empty lists, attrs, and other
       composite value hashing, persistence, and cached/uncached harness proof remain open
       (`S-14`/`S-15`).
 - [x] Current pure closed force-cache hit substrate: `EvalCache` keeps per-node
-      scalar/string/path payload records beside demand-graph value
+      scalar/string/path/empty-list payload records beside demand-graph value
       hashes, `EvalCacheRuntime::lookup_inline_expression_payload` returns a
       memoized payload only for clean nodes whose payload hash still matches the
       graph, and tree-walk `force_value` consults this shared cache before
       evaluating a newly claimed closed source-backed thunk whose entire body
       subtree is both speculable and in the conservative self-contained IR-kind
       whitelist. Hits publish immediate scalars directly and rehydrate
-      context-free string bytes, context-bearing string bytes plus context, or path bytes with or without context into the evaluator-local heap before finishing
+      context-free string bytes, context-bearing string bytes plus context, path bytes with or without context, or the empty Nix list into the evaluator-local heap before finishing
       the thunk cell; disabled runtimes, unknown nodes, dirty nodes, missing
-      payloads, and stale payloads are misses. This is a scalar/string/path
+      payloads, and stale payloads are misses. This is a scalar/string/path/empty-list
       pure/local hit path only: source-less raw eval outside the
       lowered-IR-backed node-thunk subset, captured dynamic/scoped-global
       thunks, ambient/synthetic builtin values outside the admitted constant subset,
       search-path/global/builtin/primop/application/dialect nodes pending
       explicit option and impure-input keys, synthetic apply/select
       thunks, canonical free-variable hashes, captured thunk-cell free variables,
-      lists/attrs and other composite payloads,
+      non-empty lists, attrs, and other composite payloads,
       transitive dirty scheduling, persistence, `derivationStrict` SHA-256
       short-circuiting, and cached/uncached harness proof remain open
       (`S-14`/`S-15`).
@@ -532,7 +533,7 @@ alone (`M-1`/`Q-A`).
       impure-input trace observed while a closed source-backed thunk body
       evaluates, and
       `EvalCache::observe_inline_expression_payload_with_impure_inputs` stores
-      a scalar/string/path payload only when that slice is complete and
+      a scalar/string/path/empty-list payload only when that slice is complete and
       cacheable, wiring the expression node to the observed input leaves at the
       same time.
       The observation whitelist admits the existing pure subset plus cacheable
@@ -554,8 +555,8 @@ alone (`M-1`/`Q-A`).
       search-path/global/builtin/
       application/dialect nodes beyond the traceable primop subset, canonical
       free-variable hashes, typed input-identity retention, force-time input
-      revalidation, captured thunk-cell free variables, lists/attrs and other
-      composite payloads, transitive dirty scheduling,
+      revalidation, captured thunk-cell free variables, non-empty lists, attrs,
+      and other composite payloads, transitive dirty scheduling,
       persistence, `derivationStrict` SHA-256 short-circuiting, and
       cached/uncached harness proof remain open (`R-10`/`S-14`).
 - [x] Current force-time inline impure revalidation substrate: trace-backed
@@ -579,14 +580,14 @@ alone (`M-1`/`Q-A`).
       pure by losing nested dependencies.
       `readFile` revalidation is guarded by the option-salted expression
       identity for store-dir-dependent string context, and the older public pure
-      lookup remains immediate-value-only. This is in-memory scalar/string/path
+      lookup remains immediate-value-only. This is in-memory scalar/string/path/empty-list
       effectful reuse only; source-less raw eval outside the
       lowered-IR-backed node-thunk subset, captured dynamic/scoped-global
       thunks, ambient builtin values outside the admitted constant subset,
       search-path/global/builtin/application/dialect nodes beyond the
       traceable primop subset, canonical free-variable hashes, persistent
-      input-identity retention, captured thunk-cell free variables, lists/attrs and
-      other composite payloads, transitive dirty
+      input-identity retention, captured thunk-cell free variables, non-empty
+      lists, attrs, and other composite payloads, transitive dirty
       scheduling, persistent graph/value cache integration, `derivationStrict`
       SHA-256 short-circuiting, and cached/uncached harness proof remain open
       (`R-10`/`S-14`).
@@ -633,7 +634,7 @@ alone (`M-1`/`Q-A`).
       while still separating equal-shaped IR whose symbol tables differ and
       equal source-less expressions under different path bases. It is a
       source-independent identity substrate only; broader source-less raw eval
-      surfaces, synthetic apply/select thunks, composite payloads, persistence,
+      surfaces, synthetic apply/select thunks, non-empty composite payloads, persistence,
       fine-grained option dependency tracking, and cached/uncached harness proof
       remain open. The gate covers lowered-IR fingerprint tests plus
       source-less hit/miss, source/source-less domain separation,
@@ -680,16 +681,17 @@ alone (`M-1`/`Q-A`).
       `ValueHash` plus `EarlyCutoff::decide(previous, recomputed)` returns
       `CutOff` only when a prior value hash exists and equals the recomputed
       value hash; missing or changed prior hashes return `Propagate`.
-- [x] Current inline scalar/string/path value-hash substrate:
+- [x] Current inline scalar/string/path/empty-list value-hash substrate:
       `ValueHash::from_inline_value` hashes validated inline WHNF
       `int`/`bool`/`null`/`float` payloads in the durable BLAKE3 domain
       `aos-nix-inline-value-hash-v1`; floats are hashed by raw IEEE bits, so
       this may over-propagate relative to future Nix numeric canonicalization
       but cannot cut off distinct bit patterns. `ValueHash` also hashes
       context-free string bytes, context-bearing string bytes plus canonical
-      context elements, and path bytes with or without canonical context elements
-      in separate durable BLAKE3 domains for the force-cache payload precursor.
-      Lists/attrs canonical serialization, functions/thunks cacheability
+      context elements, path bytes with or without canonical context elements,
+      and the empty list in separate durable BLAKE3 domains for the force-cache
+      payload precursor.
+      Non-empty list/attr canonical serialization, functions/thunks cacheability
       policy, generic hash-cons value fields, `force_memoized` integration,
       persistence, and harness proof remain open (`S-14`/`S-15`).
 - [x] Current inline-value early-cutoff adapter:
@@ -1034,17 +1036,18 @@ alone (`M-1`/`Q-A`).
       `CachedExpressionValue::encode_persistent_payload` and
       `decode_persistent_payload` round-trip the current replayable force-cache
       payload set (inline scalars, context-free strings, context-bearing
-      strings, and path payloads with or without context) as the canonical BLAKE3 preimage used by
+      strings, path payloads with or without context, and empty lists) as the canonical BLAKE3 preimage used by
       `ValueHash`, so hashing the encoded bytes yields the payload's durable
       value-hash digest. The decoder rejects malformed and non-canonical
-      string-context payloads. `PersistCache::materialize_cached_expression_value_indexed`,
+      string-context payloads plus non-empty list payloads until element
+      serialization is available. `PersistCache::materialize_cached_expression_value_indexed`,
       `materialize_cached_expression_value_indexed_with_signals`, and
       `load_cached_expression_value_indexed` write and read those payloads
       through the indexed `values/` pack by value hash, and loads rehash the
       decoded payload before returning it while preserving
       skip-without-hash/encode/write behavior when the materialization threshold
       fails. This is an explicit cache-level payload bridge only; evaluator
-      durable hit selection, composite values, mmap
+      durable hit selection, non-empty composite values, mmap
       reads, cost measurement, GC/repack, and cached/uncached harness proof
       remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current cached-expression node-value metadata linkage adapter:
@@ -1060,7 +1063,7 @@ alone (`M-1`/`Q-A`).
       record metadata, and node-key loads return `None` for missing metadata,
       reuse-only metadata, cleared metadata, or missing value blobs. This is
       explicit cache-level linkage only; evaluator durable hit selection,
-      node/value transactionality, composite values, mmap
+      node/value transactionality, non-empty composite values, mmap
       reads, cost measurement, GC/repack, and cached/uncached harness proof
       remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current force-cache persistent value writeback:
@@ -1077,7 +1080,7 @@ alone (`M-1`/`Q-A`).
       persistent roots, and advisory write errors, and currently uses explicit
       `MaterializationDecision::Materialize` as a precursor to threshold-driven
       evaluator policy. This is cold-force durable writeback/clear only;
-      evaluator durable hit selection, cost measurement, composite values, mmap
+      evaluator durable hit selection, cost measurement, non-empty composite values, mmap
       reads, GC/repack, and cached/uncached harness proof
       remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current node verifying-trace payload codec:
@@ -1153,7 +1156,7 @@ alone (`M-1`/`Q-A`).
       persistent read errors, stale impure observations, missing value blobs,
       and unsupported payload rehydration all fall back to ordinary forcing.
       This is replayable forced-expression hit selection only:
-      dirty propagation beyond revalidation miss fallback, composite values,
+      dirty propagation beyond revalidation miss fallback, non-empty composite values,
       trace tombstones, transactionality with value
       materialization, currentTime taint propagation through persisted
       dependents, automatic compaction/GC, mmap reads, and cached/uncached

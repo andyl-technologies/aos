@@ -731,6 +731,14 @@ impl TreeWalk {
                     Some(CachedExpressionValue::path(bytes))
                 }
             }
+            ValueTag::List => {
+                let list = self.heap.get_list(value).ok()?;
+                if list.is_empty() {
+                    Some(CachedExpressionValue::empty_list())
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -918,6 +926,9 @@ impl TreeWalk {
             let bytes = try_clone_bytes(bytes).ok()?;
             let context = context.try_clone_context().ok()?;
             return self.heap.alloc_path(NixString::new(bytes, context)).ok();
+        }
+        if payload.is_empty_list() {
+            return self.heap.alloc_list(NixList::empty()).ok();
         }
         let bytes = try_clone_bytes(payload.path_bytes()?).ok()?;
         self.heap.alloc_path(NixString::from_bytes(bytes)).ok()
