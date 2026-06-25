@@ -143,9 +143,9 @@ The **risky** patches for AOS's production QEMU — the ones whose inertness mus
 argued most carefully because they touch shared, always-compiled files — are:
 
 - `crucible-icount-no-realtime` (§11.4) — edits the upstream icount budget
-  function; gated on `use_icount == ICOUNT_PRECISE`.
+  function; gated on `-accel sim` with `use_icount == ICOUNT_PRECISE`.
 - `crucible-no-warp-with-plugin` (§11.4) — edits the upstream warp timer; gated on
-  `qemu_plugin_has_time_control()`.
+  `-accel sim` with `qemu_plugin_has_time_control()`.
 - `crucible-det-getrandom` and `crucible-det-glib-prng` (§11.4) — edit QEMU's
   entropy paths; gated on a `deterministic` predicate set only under sim mode.
 
@@ -263,24 +263,27 @@ determinism-critical.
 
 - **Enforces:** [DET-10], [TIME-21]; eliminates E2 (wall-clock warp while idle).
 - **Mechanism:** In the upstream warp-timer path (`icount_start_warp_timer`),
-  when a plugin holds time control (`qemu_plugin_has_time_control()` returns
-  true), skip *all* clock advancement (both the `sleep=off` bias warp and the
-  `sleep=on` realtime timer) but **preserve the `qemu_clock_notify(QEMU_CLOCK_VIRTUAL)`
-  wakeup**, so the main loop still wakes when vCPUs idle and plugin timers still
-  fire. Only the plugin may advance `qemu_icount_bias` thereafter.
-- **Micro-test:** with time control held, idle the guest and assert virtual time
-  does not advance until the plugin issues an explicit jump; without time control,
-  assert upstream warp still advances the clock (the notify path is preserved).
-- **Inertness:** [PATCH-3](b) — the new branch is taken *only* when a plugin holds
-  time control; the else-branch is verbatim upstream warp behavior.
+  when the selected accelerator is `sim` and a plugin holds time control
+  (`qemu_plugin_has_time_control()` returns true), skip *all* clock advancement
+  (both the `sleep=off` bias warp and the `sleep=on` realtime timer) but
+  **preserve the `qemu_clock_notify(QEMU_CLOCK_VIRTUAL)` wakeup**, so the main
+  loop still wakes when vCPUs idle and plugin timers still fire. Only the plugin
+  may advance `qemu_icount_bias` thereafter.
+- **Micro-test:** with sim time control held, idle the guest and assert virtual
+  time does not advance until the plugin issues an explicit jump; without time
+  control, and with non-sim time control, assert upstream warp still advances the
+  clock (the notify path is preserved).
+- **Inertness:** [PATCH-3](b) — the new branch is taken *only* under sim mode with
+  plugin time control held; the else-branch is verbatim upstream warp behavior.
 - **Risk:** D (edits an always-compiled upstream file).
 
-- **[PATCH-12]** The series MUST suppress QEMU's idle wall-clock warp whenever a
-  plugin holds time control, while preserving the clock-notify wakeup path so the
-  main loop and plugin timers still progress. The suppression MUST be gated on the
-  time-control predicate so non-sim QEMU warps exactly as upstream. *Gate:*
-  `gate:layer0-determinism`, `gate:qemu-inert`. *Spec:* §11.4; satisfies [DET-10],
-  [TIME-21], [DET-18] (E2), [INV-7].
+- **[PATCH-12]** The series MUST suppress QEMU's idle wall-clock warp whenever
+  sim mode is active and a plugin holds time control, while preserving the
+  clock-notify wakeup path so the main loop and plugin timers still progress.
+  The suppression MUST be gated on the sim and time-control predicates so
+  non-sim QEMU warps exactly as upstream. *Gate:* `gate:layer0-determinism`,
+  `gate:qemu-inert`. *Spec:* §11.4; satisfies [DET-10], [TIME-21], [DET-18]
+  (E2), [INV-7].
 
 ### crucible-icount-no-realtime — drop realtime deadlines from the icount budget
 
@@ -288,23 +291,25 @@ determinism-critical.
   icount budget).
 - **Mechanism:** In `icount_get_limit`, the instruction budget is normally the
   soonest of the `QEMU_CLOCK_VIRTUAL` deadline and the `QEMU_CLOCK_REALTIME`
-  deadline (the latter "helps with input processing"). Adds a **precise icount
-  mode** (`ICOUNT_PRECISE`) in which the realtime deadline is *not* folded in, so
-  the number of guest instructions executed per TB exit depends solely on the
-  virtual clock and is host-speed-independent. Non-precise (adaptive) icount keeps
-  the upstream behavior.
+  deadline (the latter "helps with input processing"). In sim-mode **precise
+  icount** (`-accel sim -icount shift=N`), the realtime deadline is *not* folded
+  in, so the number of guest instructions executed per TB exit depends solely on
+  the virtual clock and is host-speed-independent. Non-sim and non-precise
+  (adaptive) icount keep the upstream behavior.
 - **Micro-test:** run a fixed workload under precise mode on an artificially
   slowed host and a fast host; assert identical instructions-per-TB-exit; assert
   adaptive mode still consults the realtime deadline.
-- **Inertness:** [PATCH-3](b) — the realtime deadline is dropped only when
-  `use_icount == ICOUNT_PRECISE`; every other mode is unchanged.
+- **Inertness:** [PATCH-3](b) — the realtime deadline is dropped only under
+  `-accel sim` with `use_icount == ICOUNT_PRECISE`; every other mode is
+  unchanged.
 - **Risk:** D (edits an always-compiled upstream file).
 
-- **[PATCH-13]** The series MUST add a precise (fixed-shift) icount mode whose
+- **[PATCH-13]** The series MUST add a sim precise (fixed-shift) icount mode whose
   instruction budget is computed from `QEMU_CLOCK_VIRTUAL` deadlines only, never
-  mixing `QEMU_CLOCK_REALTIME` deadlines into the budget; non-precise modes MUST
-  retain upstream behavior. *Gate:* `gate:layer0-determinism`, `gate:qemu-inert`.
-  *Spec:* §11.4; satisfies [DET-9], [TIME-22], [DET-18] (E3), [INV-7].
+  mixing `QEMU_CLOCK_REALTIME` deadlines into the budget; non-sim and
+  non-precise modes MUST retain upstream behavior. *Gate:*
+  `gate:layer0-determinism`, `gate:qemu-inert`. *Spec:* §11.4; satisfies
+  [DET-9], [TIME-22], [DET-18] (E3), [INV-7].
 
 ### crucible-block-rtc-read — pin the guest realtime-clock base
 
@@ -1130,10 +1135,20 @@ time-control primitives the whole design rests on.
     under fixed icount. `checks.crucible.phase2.gates.patchMicrotests` carries
     the per-patch runtime check, while `checks.crucible.phase2.gates.qemuInert`
     verifies sim remains opt-in and inert under the normal patched QEMU surface.
-- [ ] **T-PATCH-5** Implement the warp/budget determinism patches
+- [x] **T-PATCH-5** Implement the warp/budget determinism patches
   `crucible-no-warp-with-plugin` and `crucible-icount-no-realtime`, each gated on
   its sim predicate with reintroduce-to-red micro-tests. — satisfies [PATCH-12],
   [PATCH-13]; spec §11.4 (E2, E3).
+  - Completed by `0003-crucible-icount-no-realtime.patch`,
+    `0004-crucible-no-warp-with-plugin.patch`, and their phase1 micro-tests:
+    sim precise icount excludes synthetic fast/slow realtime deadlines from TB
+    budgets while non-sim precise/adaptive modes retain upstream realtime
+    consultation; sim time-control suppresses both sleep-off bias warp and
+    sleep-on realtime timer arming while preserving virtual-clock notify, and
+    non-sim time-control remains upstream. `checks.crucible.phase2.gates.patchMicrotests`
+    exercises both reintroduce-to-red fixtures, and
+    `checks.crucible.phase2.gates.qemuInert` verifies the normal patched QEMU
+    surface remains inert.
 - [ ] **T-PATCH-6** Implement `crucible-block-rtc-read`: guest RTC/realtime reads
   resolve to the icount-derived virtual clock + fixed epoch in sim mode only. —
   satisfies [PATCH-14]; spec §11.4 (E5).
