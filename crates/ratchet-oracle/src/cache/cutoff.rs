@@ -11,11 +11,12 @@ use super::hashing::DurableBlake3Hash;
 use crate::string::{ContextKind, StringContext};
 use crate::value::{Value, ValueError, ValueTag};
 
-const INLINE_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-inline-value-hash-v1";
-const CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION: &[u8] =
+pub(crate) const INLINE_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-inline-value-hash-v1";
+pub(crate) const CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION: &[u8] =
     b"aos-nix-context-free-string-value-hash-v1";
-const CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-context-string-value-hash-v1";
-const PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-path-value-hash-v1";
+pub(crate) const CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION: &[u8] =
+    b"aos-nix-context-string-value-hash-v1";
+pub(crate) const PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-path-value-hash-v1";
 
 /// A durable hash of a canonical evaluated value.
 ///

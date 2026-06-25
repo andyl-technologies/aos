@@ -17,8 +17,9 @@ use super::parse::{
     ParseCacheError, ParseCacheKey, ParseFileKey,
 };
 use super::{
-    CacheExprIdentity, DurableBlake3Hash, MaterializationCosts, MaterializationDecision,
-    MaterializationReuse, MaterializationSignals,
+    CacheExprIdentity, CachedExpressionValue, CachedExpressionValuePayloadError, DurableBlake3Hash,
+    MaterializationCosts, MaterializationDecision, MaterializationReuse, MaterializationSignals,
+    ValueHash, ValueHashError,
 };
 
 /// The persistent eval-cache schema format marker.
@@ -88,7 +89,8 @@ mod pack;
 pub use cache::PersistCache;
 pub use error::{
     PersistBlobIndexError, PersistBlobIndexedReadError, PersistBlobIndexedWriteError,
-    PersistBlobPackError, PersistError, PersistFileArtifactHydrationError,
+    PersistBlobPackError, PersistCachedExpressionValueIndexedLoadError,
+    PersistCachedExpressionValueIndexedWriteError, PersistError, PersistFileArtifactHydrationError,
     PersistFileArtifactIndexError, PersistFileArtifactIndexedHydrationError,
     PersistFileArtifactIndexedWriteError, PersistNodeMetadataIndexError, PersistPackFormatError,
     PersistParseArtifactHydrationError, PersistParseArtifactIndexError,

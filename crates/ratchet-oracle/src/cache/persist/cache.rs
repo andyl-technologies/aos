@@ -509,6 +509,99 @@ impl PersistCache {
             .map_err(|source| PersistBlobIndexedReadError::Read { source })
     }
 
+    /// Materializes a cached expression payload into the indexed `values/` pack.
+    ///
+    /// [`MaterializationDecision::KeepInMemory`] returns
+    /// [`PersistMaterialization::Skipped`] without hashing, encoding, or
+    /// writing `value`. [`MaterializationDecision::Materialize`] encodes the
+    /// payload as canonical value-store bytes, uses the payload's
+    /// [`ValueHash`] as the `values/` content address, and records the pack
+    /// location in the sidecar blob index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistCachedExpressionValueIndexedWriteError`] when
+    /// materialization is requested and the payload cannot be hashed, encoded,
+    /// appended, or indexed.
+    pub fn materialize_cached_expression_value_indexed(
+        &self,
+        value: &CachedExpressionValue,
+        decision: MaterializationDecision,
+    ) -> Result<PersistMaterialization, PersistCachedExpressionValueIndexedWriteError> {
+        let MaterializationDecision::Materialize = decision else {
+            return Ok(PersistMaterialization::Skipped);
+        };
+        let value_hash = value
+            .value_hash()
+            .map_err(|source| PersistCachedExpressionValueIndexedWriteError::Hash { source })?;
+        let payload = value
+            .encode_persistent_payload()
+            .map_err(|source| PersistCachedExpressionValueIndexedWriteError::Encode { source })?;
+        let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+        self.materialize_blob_indexed(key, &payload, MaterializationDecision::Materialize)
+            .map_err(|source| PersistCachedExpressionValueIndexedWriteError::Write { source })
+    }
+
+    /// Applies materialization threshold signals to a cached expression payload.
+    ///
+    /// The signals are evaluated with [`MaterializationSignals::decide`] and
+    /// then applied through
+    /// [`Self::materialize_cached_expression_value_indexed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistCachedExpressionValueIndexedWriteError`] when the
+    /// signals choose materialization and the payload cannot be hashed,
+    /// encoded, appended, or indexed.
+    pub fn materialize_cached_expression_value_indexed_with_signals(
+        &self,
+        value: &CachedExpressionValue,
+        signals: MaterializationSignals,
+    ) -> Result<PersistMaterialization, PersistCachedExpressionValueIndexedWriteError> {
+        self.materialize_cached_expression_value_indexed(value, signals.decide())
+    }
+
+    /// Loads a cached expression payload from the indexed `values/` pack.
+    ///
+    /// Missing index entries return `Ok(None)`. Present entries are read by
+    /// `value_hash`, verified by the blob pack, and decoded as a cached
+    /// expression payload. The decoded value is then hashed again and must
+    /// match `value_hash` before being returned for evaluator-local
+    /// rehydration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistCachedExpressionValueIndexedLoadError`] if the sidecar
+    /// index cannot be read, the indexed blob cannot be verified, the bytes
+    /// are not a supported cached-expression payload, or the decoded payload's
+    /// value hash does not match `value_hash`.
+    pub fn load_cached_expression_value_indexed(
+        &self,
+        value_hash: ValueHash,
+    ) -> Result<Option<CachedExpressionValue>, PersistCachedExpressionValueIndexedLoadError> {
+        let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+        let Some(payload) = self
+            .read_blob_indexed(key)
+            .map_err(|source| PersistCachedExpressionValueIndexedLoadError::Read { source })?
+        else {
+            return Ok(None);
+        };
+        let value = CachedExpressionValue::decode_persistent_payload(&payload)
+            .map_err(|source| PersistCachedExpressionValueIndexedLoadError::Decode { source })?;
+        let actual = value
+            .value_hash()
+            .map_err(|source| PersistCachedExpressionValueIndexedLoadError::Hash { source })?;
+        if actual != value_hash {
+            return Err(
+                PersistCachedExpressionValueIndexedLoadError::ValueHashMismatch {
+                    expected: value_hash,
+                    actual,
+                },
+            );
+        }
+        Ok(Some(value))
+    }
+
     /// Applies `decision` to `payload` in the packfile selected by `key`.
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns

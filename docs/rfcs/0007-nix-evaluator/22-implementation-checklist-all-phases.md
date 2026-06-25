@@ -880,10 +880,10 @@ alone (`M-1`/`Q-A`).
       `MaterializationSignals`, computes `write_cost = hash + serialize + IO`
       with saturation, and returns `Materialize` only when
       `eval_cost > write_cost` and the caller-supplied reuse signal predicts
-      cross-run reuse. This is a pure threshold decision only; cost measurement,
-      persistent reuse-metadata bridges are covered below, while cost
-      measurement, RAM-tier promotion, automatic value writes, GC/repack, and
-      AOS tuning remain open (`C-14`).
+      cross-run reuse. This is a pure threshold decision only; persistent
+      reuse-metadata bridges are covered below, while cost measurement,
+      RAM-tier promotion, automatic value writes, GC/repack, and AOS tuning
+      remain open (`C-14`).
 - [x] Current materialization reuse-counter signal substrate:
       `MaterializationReuse` carries prior-run and current-run demand counters,
       saturates current-run increments, and converts prior-run demand into the
@@ -974,7 +974,7 @@ alone (`M-1`/`Q-A`).
       in-memory force-cache hits. Observation-only uncacheable subjects such as
       `currentTime` have no metadata identity and are not counted. This is
       current-run demand accounting only; automatic run-boundary orchestration,
-      atomic writer coordination, persistent value payload writes, LMDB/redb
+      atomic writer coordination, automatic cached-payload writeback, LMDB/redb
       node tables, automatic compaction/GC policy, and AOS tuning remain open
       (`C-13`/`C-14`/`S-14`).
 - [x] Current node-reuse materialization decision adapter:
@@ -986,8 +986,8 @@ alone (`M-1`/`Q-A`).
       accepted by the existing blob/file/parse materializers. Current-run-only
       demand does not predict cross-run reuse until an explicit run-boundary
       advance has moved it into prior history. This is decision plumbing only;
-      automatic run-boundary orchestration, cost measurement, automatic value
-      serialization/writes, LMDB/redb node tables, automatic compaction/GC
+      automatic run-boundary orchestration, cost measurement, automatic
+      evaluator writeback, LMDB/redb node tables, automatic compaction/GC
       policy, and AOS tuning remain open (`C-13`/`C-14`).
 - [x] Current explicit materialization-to-pack adapter:
       `PersistCache::materialize_blob` consumes a caller-supplied
@@ -1017,9 +1017,27 @@ alone (`M-1`/`Q-A`).
       behavior, and on `Materialize` append through `append_blob_indexed` so
       successful materialization records a sidecar hash-to-offset entry. This is
       explicit non-transactional indexed materialization only; cost measurement,
-      reuse metadata production, evaluator value serialization, automatic raw
+      reuse metadata production, typed evaluator payload handling, automatic raw
       materialization indexing, mmap reads, GC/repack, and AOS tuning remain
       open (`C-13`/`C-14`).
+- [x] Current cached-expression value payload persistence adapter:
+      `CachedExpressionValue::encode_persistent_payload` and
+      `decode_persistent_payload` round-trip the current replayable force-cache
+      payload set (inline scalars, context-free strings, context-bearing
+      strings, and context-free paths) as the canonical BLAKE3 preimage used by
+      `ValueHash`, so hashing the encoded bytes yields the payload's durable
+      value-hash digest. The decoder rejects malformed and non-canonical
+      string-context payloads. `PersistCache::materialize_cached_expression_value_indexed`,
+      `materialize_cached_expression_value_indexed_with_signals`, and
+      `load_cached_expression_value_indexed` write and read those payloads
+      through the indexed `values/` pack by value hash, and loads rehash the
+      decoded payload before returning it while preserving
+      skip-without-hash/encode/write behavior when the materialization threshold
+      fails. This is an explicit cache-level payload bridge only; automatic
+      evaluator writeback and durable hit selection, node metadata linkage from
+      expression keys to value hashes/locations, context-bearing paths,
+      composite values, mmap reads, cost measurement, GC/repack, and
+      cached/uncached harness proof remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips

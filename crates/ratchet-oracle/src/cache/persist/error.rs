@@ -444,6 +444,62 @@ pub enum PersistBlobIndexedReadError {
     },
 }
 
+/// Indexed cached-expression payload materialization failed.
+#[derive(Debug, Error)]
+pub enum PersistCachedExpressionValueIndexedWriteError {
+    /// The cached payload could not be hashed as a durable value.
+    #[error("failed to hash cached expression payload for persistent materialization")]
+    Hash {
+        /// The underlying value-hash error.
+        source: ValueHashError,
+    },
+    /// The cached payload could not be encoded as stable value-store bytes.
+    #[error("failed to encode cached expression payload for persistent materialization")]
+    Encode {
+        /// The underlying payload encoding error.
+        source: CachedExpressionValuePayloadError,
+    },
+    /// The encoded cached payload could not be written to the indexed `values/` pack.
+    #[error("failed to write indexed cached expression payload")]
+    Write {
+        /// The underlying indexed blob write error.
+        source: PersistBlobIndexedWriteError,
+    },
+}
+
+/// Indexed cached-expression payload load failed.
+#[derive(Debug, Error)]
+pub enum PersistCachedExpressionValueIndexedLoadError {
+    /// The indexed value blob could not be read.
+    #[error("failed to read indexed cached expression payload")]
+    Read {
+        /// The underlying indexed blob read error.
+        source: PersistBlobIndexedReadError,
+    },
+    /// The materialized payload bytes were not a cached expression value.
+    #[error("failed to decode indexed cached expression payload")]
+    Decode {
+        /// The underlying payload decoding error.
+        source: CachedExpressionValuePayloadError,
+    },
+    /// The decoded payload could not be hashed as a durable value.
+    #[error("failed to hash decoded indexed cached expression payload")]
+    Hash {
+        /// The underlying value-hash error.
+        source: ValueHashError,
+    },
+    /// The decoded payload did not hash back to the requested value hash.
+    #[error(
+        "indexed cached expression payload hash mismatch: expected {expected:?}, got {actual:?}"
+    )]
+    ValueHashMismatch {
+        /// The value hash requested by the caller and blob index.
+        expected: ValueHash,
+        /// The value hash recomputed from the decoded payload.
+        actual: ValueHash,
+    },
+}
+
 /// Indexed file-artifact materialization failed.
 #[derive(Debug, Error)]
 pub enum PersistFileArtifactIndexedWriteError {

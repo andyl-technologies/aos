@@ -6,13 +6,19 @@
 
 use std::collections::BTreeMap;
 
+use thiserror::Error;
+
+use super::cutoff::{
+    CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION, CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION,
+    INLINE_VALUE_HASH_DOMAIN_VERSION, PATH_VALUE_HASH_DOMAIN_VERSION,
+};
 use super::{
     CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey, DemandGraph, DemandGraphError,
     DemandNodeId, DirtyFrontier, DurableBlake3Hash, ImpureInputFingerprint, ImpureInputIdentity,
     ImpureTraceObservation, ImpureTraceStatus, NodeFreshness, Reconsideration, UncacheableInput,
     ValueHash, ValueHashError,
 };
-use crate::string::StringContext;
+use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};
 use crate::value::Value;
 
 /// A source of evaluator-observed impure input trace entries.
@@ -131,6 +137,46 @@ impl CachedExpressionValue {
         }
     }
 
+    /// Returns the durable value hash for this cached payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueHashError`] if an immediate scalar payload cannot be
+    /// represented as a supported inline value.
+    pub fn value_hash(&self) -> Result<ValueHash, ValueHashError> {
+        self.payload.value_hash()
+    }
+
+    /// Encodes this payload for the persistent `values/` pack.
+    ///
+    /// The encoded bytes are the canonical BLAKE3 preimage used by
+    /// [`Self::value_hash`]. Consequently
+    /// `DurableBlake3Hash::for_bytes(encoded) == self.value_hash().as_durable_hash()`,
+    /// allowing the persistent pack to address payload bytes by the same value
+    /// hash the demand graph records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CachedExpressionValuePayloadError`] if the encoded payload
+    /// cannot reserve enough byte storage.
+    pub fn encode_persistent_payload(&self) -> Result<Vec<u8>, CachedExpressionValuePayloadError> {
+        self.payload.encode_persistent_payload()
+    }
+
+    /// Decodes a payload produced by [`Self::encode_persistent_payload`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CachedExpressionValuePayloadError`] if `bytes` are not a
+    /// complete, canonical cached-expression payload.
+    pub fn decode_persistent_payload(
+        bytes: &[u8],
+    ) -> Result<Self, CachedExpressionValuePayloadError> {
+        Ok(Self {
+            payload: InlineValuePayload::decode_persistent_payload(bytes)?,
+        })
+    }
+
     /// Returns the immediate scalar value, if this payload is immediate.
     pub fn immediate_value(&self) -> Option<Value> {
         self.payload.immediate_value()
@@ -174,6 +220,86 @@ impl CachedExpressionValue {
             | InlineValuePayload::Null => None,
         }
     }
+}
+
+/// Persistent cached-expression payload encoding failed.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum CachedExpressionValuePayloadError {
+    /// Payload byte storage could not be reserved.
+    #[error("failed to reserve cached expression payload storage for {len} bytes")]
+    PayloadAllocationFailed {
+        /// The requested byte capacity.
+        len: usize,
+    },
+    /// Payload byte length arithmetic overflowed.
+    #[error("cached expression payload length overflow: {current} + {additional}")]
+    PayloadLengthOverflow {
+        /// The current payload length.
+        current: usize,
+        /// The additional bytes being appended.
+        additional: usize,
+    },
+    /// Context element storage could not be reserved while decoding.
+    #[error("failed to reserve cached expression context storage for {len} elements")]
+    ContextAllocationFailed {
+        /// The requested context element capacity.
+        len: usize,
+    },
+    /// A length field cannot fit in `usize` on this host.
+    #[error("cached expression payload length {len} cannot fit in usize")]
+    LengthOverflow {
+        /// The oversized encoded length.
+        len: u128,
+    },
+    /// The payload did not carry a known value-hash domain prefix.
+    #[error("cached expression payload has an unknown value-hash domain")]
+    UnknownDomain,
+    /// A payload section had an unexpected tag.
+    #[error("cached expression payload has invalid {section} tag {tag}")]
+    InvalidTag {
+        /// The malformed payload section.
+        section: &'static str,
+        /// The unexpected tag byte.
+        tag: u8,
+    },
+    /// A decoded bool payload byte was not `0` or `1`.
+    #[error("cached expression bool payload has invalid byte {byte}")]
+    InvalidBool {
+        /// The invalid bool byte.
+        byte: u8,
+    },
+    /// The payload ended before a required section was complete.
+    #[error("cached expression payload has {actual} bytes, expected at least {expected}")]
+    ShortPayload {
+        /// The minimum required payload length.
+        expected: usize,
+        /// The available payload length.
+        actual: usize,
+    },
+    /// A fixed payload marker was absent at the current cursor position.
+    #[error("cached expression payload is missing {marker}")]
+    MissingMarker {
+        /// The marker name.
+        marker: &'static str,
+    },
+    /// The decoder did not consume the whole payload.
+    #[error("cached expression payload has {remaining} trailing bytes")]
+    TrailingBytes {
+        /// The number of unconsumed bytes.
+        remaining: usize,
+    },
+    /// A decoded string-context element violated context invariants.
+    #[error("cached expression payload has invalid string context: {source}")]
+    Context {
+        /// The underlying string-context error.
+        source: NixStringError,
+    },
+    /// A decoded string-context element was out of canonical order or duplicated.
+    #[error("cached expression payload has non-canonical string context element at index {index}")]
+    NonCanonicalStringContext {
+        /// The zero-based index of the out-of-order or duplicate element.
+        index: usize,
+    },
 }
 
 /// Explicit evaluator cache state owned by the caller.
@@ -849,6 +975,329 @@ impl InlineValuePayload {
             Self::Path(bytes) => Ok(ValueHash::from_path_bytes(bytes)),
         }
     }
+
+    fn encode_persistent_payload(&self) -> Result<Vec<u8>, CachedExpressionValuePayloadError> {
+        let mut out = Vec::new();
+        match self {
+            Self::Int(value) => {
+                append_payload_bytes(&mut out, INLINE_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, b"int")?;
+                append_payload_bytes(&mut out, &value.to_le_bytes())?;
+            }
+            Self::Float(bits) => {
+                append_payload_bytes(&mut out, INLINE_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, b"float")?;
+                append_payload_bytes(&mut out, &bits.to_le_bytes())?;
+            }
+            Self::Bool(value) => {
+                append_payload_bytes(&mut out, INLINE_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, b"bool")?;
+                append_payload_byte(&mut out, u8::from(*value))?;
+            }
+            Self::Null => {
+                append_payload_bytes(&mut out, INLINE_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, b"null")?;
+            }
+            Self::ContextFreeString(bytes) => {
+                append_payload_bytes(&mut out, CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, b"string")?;
+                append_payload_u128(&mut out, bytes.len() as u128)?;
+                append_payload_bytes(&mut out, bytes)?;
+            }
+            Self::ContextString { bytes, context } => {
+                append_payload_bytes(&mut out, CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, b"string")?;
+                append_payload_u128(&mut out, bytes.len() as u128)?;
+                append_payload_bytes(&mut out, bytes)?;
+                append_string_context_payload(&mut out, context)?;
+            }
+            Self::Path(bytes) => {
+                append_payload_bytes(&mut out, PATH_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, b"path")?;
+                append_payload_u128(&mut out, bytes.len() as u128)?;
+                append_payload_bytes(&mut out, bytes)?;
+            }
+        }
+        Ok(out)
+    }
+
+    fn decode_persistent_payload(bytes: &[u8]) -> Result<Self, CachedExpressionValuePayloadError> {
+        if bytes.starts_with(INLINE_VALUE_HASH_DOMAIN_VERSION) {
+            let mut cursor = PayloadCursor::new(bytes);
+            cursor.take_marker(INLINE_VALUE_HASH_DOMAIN_VERSION, "inline value domain")?;
+            let payload = decode_inline_value_payload(&mut cursor)?;
+            cursor.finish()?;
+            return Ok(payload);
+        }
+        if bytes.starts_with(CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION) {
+            let mut cursor = PayloadCursor::new(bytes);
+            cursor.take_marker(
+                CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION,
+                "context-free string value domain",
+            )?;
+            cursor.take_marker(b"string", "string payload tag")?;
+            let payload = Self::ContextFreeString(cursor.take_length_prefixed_bytes()?);
+            cursor.finish()?;
+            return Ok(payload);
+        }
+        if bytes.starts_with(CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION) {
+            let mut cursor = PayloadCursor::new(bytes);
+            cursor.take_marker(
+                CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION,
+                "context string value domain",
+            )?;
+            cursor.take_marker(b"string", "string payload tag")?;
+            let string_bytes = cursor.take_length_prefixed_bytes()?;
+            let context = cursor.take_string_context()?;
+            cursor.finish()?;
+            return Ok(Self::ContextString {
+                bytes: string_bytes,
+                context,
+            });
+        }
+        if bytes.starts_with(PATH_VALUE_HASH_DOMAIN_VERSION) {
+            let mut cursor = PayloadCursor::new(bytes);
+            cursor.take_marker(PATH_VALUE_HASH_DOMAIN_VERSION, "path value domain")?;
+            cursor.take_marker(b"path", "path payload tag")?;
+            let payload = Self::Path(cursor.take_length_prefixed_bytes()?);
+            cursor.finish()?;
+            return Ok(payload);
+        }
+        Err(CachedExpressionValuePayloadError::UnknownDomain)
+    }
+}
+
+fn append_payload_byte(
+    out: &mut Vec<u8>,
+    byte: u8,
+) -> Result<(), CachedExpressionValuePayloadError> {
+    append_payload_bytes(out, &[byte])
+}
+
+fn append_payload_u128(
+    out: &mut Vec<u8>,
+    value: u128,
+) -> Result<(), CachedExpressionValuePayloadError> {
+    append_payload_bytes(out, &value.to_le_bytes())
+}
+
+fn append_payload_bytes(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+) -> Result<(), CachedExpressionValuePayloadError> {
+    let len = out.len().checked_add(bytes.len()).ok_or(
+        CachedExpressionValuePayloadError::PayloadLengthOverflow {
+            current: out.len(),
+            additional: bytes.len(),
+        },
+    )?;
+    out.try_reserve_exact(bytes.len())
+        .map_err(|_| CachedExpressionValuePayloadError::PayloadAllocationFailed { len })?;
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn append_length_prefixed_payload_bytes(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+) -> Result<(), CachedExpressionValuePayloadError> {
+    append_payload_u128(out, bytes.len() as u128)?;
+    append_payload_bytes(out, bytes)
+}
+
+fn append_string_context_payload(
+    out: &mut Vec<u8>,
+    context: &StringContext,
+) -> Result<(), CachedExpressionValuePayloadError> {
+    append_payload_bytes(out, b"context")?;
+    append_payload_u128(out, context.len() as u128)?;
+    for element in context.elements() {
+        match element.kind() {
+            ContextKind::OpaquePath => {
+                append_payload_byte(out, 0)?;
+                append_length_prefixed_payload_bytes(out, element.path())?;
+            }
+            ContextKind::SingleOutput => {
+                append_payload_byte(out, 1)?;
+                append_length_prefixed_payload_bytes(out, element.path())?;
+                let output = match element.output() {
+                    Some(output) => output,
+                    None => &[],
+                };
+                append_length_prefixed_payload_bytes(out, output)?;
+            }
+            ContextKind::DeepDerivation => {
+                append_payload_byte(out, 2)?;
+                append_length_prefixed_payload_bytes(out, element.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn decode_inline_value_payload(
+    cursor: &mut PayloadCursor<'_>,
+) -> Result<InlineValuePayload, CachedExpressionValuePayloadError> {
+    if cursor.remaining().starts_with(b"int") {
+        cursor.take_marker(b"int", "int payload tag")?;
+        return Ok(InlineValuePayload::Int(cursor.take_i64()?));
+    }
+    if cursor.remaining().starts_with(b"float") {
+        cursor.take_marker(b"float", "float payload tag")?;
+        return Ok(InlineValuePayload::Float(cursor.take_u64()?));
+    }
+    if cursor.remaining().starts_with(b"bool") {
+        cursor.take_marker(b"bool", "bool payload tag")?;
+        let byte = cursor.take_byte()?;
+        return match byte {
+            0 => Ok(InlineValuePayload::Bool(false)),
+            1 => Ok(InlineValuePayload::Bool(true)),
+            byte => Err(CachedExpressionValuePayloadError::InvalidBool { byte }),
+        };
+    }
+    if cursor.remaining().starts_with(b"null") {
+        cursor.take_marker(b"null", "null payload tag")?;
+        return Ok(InlineValuePayload::Null);
+    }
+    let tag = match cursor.remaining().first().copied() {
+        Some(tag) => tag,
+        None => 0,
+    };
+    Err(CachedExpressionValuePayloadError::InvalidTag {
+        section: "inline value",
+        tag,
+    })
+}
+
+struct PayloadCursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> PayloadCursor<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn remaining(&self) -> &'a [u8] {
+        &self.bytes[self.offset..]
+    }
+
+    fn finish(&self) -> Result<(), CachedExpressionValuePayloadError> {
+        let remaining = self.bytes.len() - self.offset;
+        if remaining == 0 {
+            Ok(())
+        } else {
+            Err(CachedExpressionValuePayloadError::TrailingBytes { remaining })
+        }
+    }
+
+    fn take_marker(
+        &mut self,
+        marker: &'static [u8],
+        name: &'static str,
+    ) -> Result<(), CachedExpressionValuePayloadError> {
+        let actual = self.take_bytes(marker.len())?;
+        if actual == marker {
+            Ok(())
+        } else {
+            Err(CachedExpressionValuePayloadError::MissingMarker { marker: name })
+        }
+    }
+
+    fn take_byte(&mut self) -> Result<u8, CachedExpressionValuePayloadError> {
+        Ok(self.take_bytes(1)?[0])
+    }
+
+    fn take_i64(&mut self) -> Result<i64, CachedExpressionValuePayloadError> {
+        let bytes = self.take_bytes(8)?;
+        let mut out = [0; 8];
+        out.copy_from_slice(bytes);
+        Ok(i64::from_le_bytes(out))
+    }
+
+    fn take_u64(&mut self) -> Result<u64, CachedExpressionValuePayloadError> {
+        let bytes = self.take_bytes(8)?;
+        let mut out = [0; 8];
+        out.copy_from_slice(bytes);
+        Ok(u64::from_le_bytes(out))
+    }
+
+    fn take_u128(&mut self) -> Result<u128, CachedExpressionValuePayloadError> {
+        let bytes = self.take_bytes(16)?;
+        let mut out = [0; 16];
+        out.copy_from_slice(bytes);
+        Ok(u128::from_le_bytes(out))
+    }
+
+    fn take_len(&mut self) -> Result<usize, CachedExpressionValuePayloadError> {
+        let len = self.take_u128()?;
+        usize::try_from(len).map_err(|_| CachedExpressionValuePayloadError::LengthOverflow { len })
+    }
+
+    fn take_length_prefixed_bytes(&mut self) -> Result<Vec<u8>, CachedExpressionValuePayloadError> {
+        let len = self.take_len()?;
+        let bytes = self.take_bytes(len)?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(bytes.len()).map_err(|_| {
+            CachedExpressionValuePayloadError::PayloadAllocationFailed { len: bytes.len() }
+        })?;
+        out.extend_from_slice(bytes);
+        Ok(out)
+    }
+
+    fn take_string_context(&mut self) -> Result<StringContext, CachedExpressionValuePayloadError> {
+        self.take_marker(b"context", "string context tag")?;
+        let len = self.take_len()?;
+        let mut elements = Vec::new();
+        elements
+            .try_reserve_exact(len)
+            .map_err(|_| CachedExpressionValuePayloadError::ContextAllocationFailed { len })?;
+        for index in 0..len {
+            let tag = self.take_byte()?;
+            let path = self.take_length_prefixed_bytes()?;
+            let element = match tag {
+                0 => ContextElement::opaque_path(path),
+                1 => {
+                    let output = self.take_length_prefixed_bytes()?;
+                    ContextElement::single_output(path, output)
+                }
+                2 => ContextElement::deep_derivation(path),
+                tag => {
+                    return Err(CachedExpressionValuePayloadError::InvalidTag {
+                        section: "string context",
+                        tag,
+                    });
+                }
+            }
+            .map_err(|source| CachedExpressionValuePayloadError::Context { source })?;
+            if let Some(previous) = elements.last()
+                && previous >= &element
+            {
+                return Err(CachedExpressionValuePayloadError::NonCanonicalStringContext { index });
+            }
+            elements.push(element);
+        }
+        Ok(StringContext::new(elements))
+    }
+
+    fn take_bytes(&mut self, len: usize) -> Result<&'a [u8], CachedExpressionValuePayloadError> {
+        let end = self.offset.checked_add(len).ok_or(
+            CachedExpressionValuePayloadError::PayloadLengthOverflow {
+                current: self.offset,
+                additional: len,
+            },
+        )?;
+        if end > self.bytes.len() {
+            return Err(CachedExpressionValuePayloadError::ShortPayload {
+                expected: end,
+                actual: self.bytes.len(),
+            });
+        }
+        let out = &self.bytes[self.offset..end];
+        self.offset = end;
+        Ok(out)
+    }
 }
 
 /// Optional evaluator cache runtime state.
@@ -1302,6 +1751,33 @@ mod tests {
         .expect("context allocates")
     }
 
+    fn all_context_kinds() -> StringContext {
+        StringContext::new(vec![
+            ContextElement::single_output(b"/nix/store/pkg.drv".to_vec(), b"out".to_vec())
+                .expect("single-output context builds"),
+            ContextElement::opaque_path(b"/nix/store/source".to_vec())
+                .expect("opaque context builds"),
+            ContextElement::deep_derivation(b"/nix/store/toolchain.drv".to_vec())
+                .expect("deep context builds"),
+        ])
+    }
+
+    fn context_string_payload_with_opaque_paths(paths: &[&[u8]]) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        append_payload_bytes(&mut encoded, CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION)
+            .expect("domain appends");
+        append_payload_bytes(&mut encoded, b"string").expect("tag appends");
+        append_payload_u128(&mut encoded, 0).expect("string length appends");
+        append_payload_bytes(&mut encoded, b"context").expect("context tag appends");
+        append_payload_u128(&mut encoded, paths.len() as u128).expect("context count appends");
+        for path in paths {
+            append_payload_byte(&mut encoded, 0).expect("context kind appends");
+            append_payload_u128(&mut encoded, path.len() as u128).expect("path length appends");
+            append_payload_bytes(&mut encoded, path).expect("path appends");
+        }
+        encoded
+    }
+
     fn key(node: u32, label: &[u8]) -> DemandCacheKey {
         DemandCacheKey::for_free_vars(identity(label, node), [durable_hash(label)])
             .expect("key builds")
@@ -1311,6 +1787,135 @@ mod tests {
         graph
             .get_or_insert_node(key(node, label), Some(value_hash(label)))
             .expect("node inserts")
+    }
+
+    #[test]
+    fn cached_expression_payloads_round_trip_through_persistent_encoding() {
+        let payloads = vec![
+            CachedExpressionValue::immediate(Value::int(-7)).expect("int payload builds"),
+            CachedExpressionValue::immediate(Value::float(1.25)).expect("float payload builds"),
+            CachedExpressionValue::immediate(Value::bool(false)).expect("bool payload builds"),
+            CachedExpressionValue::immediate(Value::null()).expect("null payload builds"),
+            CachedExpressionValue::context_free_string(b"plain bytes".to_vec()),
+            CachedExpressionValue::context_string(b"context bytes".to_vec(), all_context_kinds()),
+            CachedExpressionValue::path(b"/nix/store/path".to_vec()),
+        ];
+
+        for payload in payloads {
+            let encoded = payload
+                .encode_persistent_payload()
+                .expect("payload encodes");
+            assert_eq!(
+                DurableBlake3Hash::for_bytes(&encoded),
+                payload
+                    .value_hash()
+                    .expect("payload hashes")
+                    .as_durable_hash()
+            );
+            assert_eq!(
+                CachedExpressionValue::decode_persistent_payload(&encoded)
+                    .expect("payload decodes"),
+                payload
+            );
+        }
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_unknown_domain() {
+        let error = CachedExpressionValue::decode_persistent_payload(b"not-a-cache-payload")
+            .expect_err("unknown domains error");
+
+        assert_eq!(error, CachedExpressionValuePayloadError::UnknownDomain);
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_trailing_bytes() {
+        let mut encoded = CachedExpressionValue::immediate(Value::int(7))
+            .expect("payload builds")
+            .encode_persistent_payload()
+            .expect("payload encodes");
+        encoded.extend_from_slice(b"trailing");
+
+        let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+            .expect_err("trailing bytes error");
+
+        assert_eq!(
+            error,
+            CachedExpressionValuePayloadError::TrailingBytes {
+                remaining: b"trailing".len()
+            }
+        );
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_truncated_payload() {
+        let mut encoded = CachedExpressionValue::context_free_string(b"abc".to_vec())
+            .encode_persistent_payload()
+            .expect("payload encodes");
+        encoded.pop();
+
+        let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+            .expect_err("truncated bytes error");
+
+        assert!(matches!(
+            error,
+            CachedExpressionValuePayloadError::ShortPayload { .. }
+        ));
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_validates_context_elements() {
+        let mut encoded = Vec::new();
+        append_payload_bytes(&mut encoded, CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION)
+            .expect("domain appends");
+        append_payload_bytes(&mut encoded, b"string").expect("tag appends");
+        append_payload_u128(&mut encoded, 0).expect("string length appends");
+        append_payload_bytes(&mut encoded, b"context").expect("context tag appends");
+        append_payload_u128(&mut encoded, 1).expect("context count appends");
+        append_payload_byte(&mut encoded, 0).expect("context kind appends");
+        append_payload_u128(&mut encoded, 0).expect("empty path length appends");
+
+        let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+            .expect_err("empty context path errors");
+
+        assert!(matches!(
+            error,
+            CachedExpressionValuePayloadError::Context {
+                source: NixStringError::EmptyContextPath
+            }
+        ));
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_unsorted_context_elements() {
+        let encoded = context_string_payload_with_opaque_paths(&[
+            b"/nix/store/z".as_slice(),
+            b"/nix/store/a".as_slice(),
+        ]);
+
+        let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+            .expect_err("non-canonical context order errors");
+
+        assert_eq!(
+            error,
+            CachedExpressionValuePayloadError::NonCanonicalStringContext { index: 1 }
+        );
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_duplicate_context_elements() {
+        let encoded = context_string_payload_with_opaque_paths(&[
+            b"/nix/store/a".as_slice(),
+            b"/nix/store/a".as_slice(),
+        ]);
+
+        let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+            .expect_err("duplicate context element errors");
+
+        assert_eq!(
+            error,
+            CachedExpressionValuePayloadError::NonCanonicalStringContext { index: 1 }
+        );
     }
 
     #[test]

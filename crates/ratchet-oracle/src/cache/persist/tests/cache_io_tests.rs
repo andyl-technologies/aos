@@ -1,6 +1,24 @@
 //! Tests for routed blob I/O and materialization decisions on the cache.
 
 use super::*;
+use crate::cache::cutoff::CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION;
+use crate::cache::{CachedExpressionValue, CachedExpressionValuePayloadError, ValueHash};
+use crate::value::Value;
+
+fn noncanonical_context_string_payload() -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION);
+    encoded.extend_from_slice(b"string");
+    encoded.extend_from_slice(&0u128.to_le_bytes());
+    encoded.extend_from_slice(b"context");
+    encoded.extend_from_slice(&2u128.to_le_bytes());
+    for path in [b"/nix/store/z".as_slice(), b"/nix/store/a".as_slice()] {
+        encoded.push(0);
+        encoded.extend_from_slice(&(path.len() as u128).to_le_bytes());
+        encoded.extend_from_slice(path);
+    }
+    encoded
+}
 
 #[test]
 fn cache_blob_io_is_routed_by_key_store() {
@@ -663,6 +681,143 @@ fn cache_indexed_materialization_decision_appends_and_indexes_when_requested() {
             .expect("indexed read succeeds")
             .expect("indexed blob exists")
             .as_slice(),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_payload_materialization_can_skip_without_writing() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = CachedExpressionValue::context_free_string(b"cached string".to_vec());
+
+    let result = cache
+        .materialize_cached_expression_value_indexed(
+            &payload,
+            MaterializationDecision::KeepInMemory,
+        )
+        .expect("skip succeeds");
+
+    assert_eq!(result, PersistMaterialization::Skipped);
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata")
+            .len(),
+        PERSIST_BLOB_PACK_HEADER_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_payload_materializes_and_loads_by_value_hash() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+
+    let result = cache
+        .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
+        .expect("payload materializes");
+
+    let PersistMaterialization::Materialized(location) = result else {
+        panic!("payload should materialize");
+    };
+    assert_eq!(
+        cache
+            .lookup_blob_location(key)
+            .expect("indexed lookup succeeds"),
+        Some(location)
+    );
+    assert_eq!(
+        cache
+            .read_blob_indexed(key)
+            .expect("indexed blob reads")
+            .expect("indexed blob exists")
+            .as_slice(),
+        payload
+            .encode_persistent_payload()
+            .expect("payload encodes")
+            .as_slice()
+    );
+    assert_eq!(
+        cache
+            .load_cached_expression_value_indexed(value_hash)
+            .expect("payload loads")
+            .expect("payload exists"),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_payload_load_rejects_noncanonical_indexed_bytes() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = noncanonical_context_string_payload();
+    let payload_hash = DurableBlake3Hash::for_bytes(&payload);
+    let key = PersistBlobKey::for_value(payload_hash);
+    cache
+        .append_blob_indexed(key, &payload)
+        .expect("manual non-canonical blob indexes");
+
+    let error = cache
+        .load_cached_expression_value_indexed(ValueHash::from_canonical_value_hash(payload_hash))
+        .expect_err("non-canonical indexed payload errors");
+
+    assert!(matches!(
+        error,
+        PersistCachedExpressionValueIndexedLoadError::Decode {
+            source: CachedExpressionValuePayloadError::NonCanonicalStringContext { index: 1 }
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_payload_materialization_signals_drive_writes() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = CachedExpressionValue::path(b"/nix/store/source".to_vec());
+    let value_hash = payload.value_hash().expect("payload hashes");
+
+    let skipped = cache
+        .materialize_cached_expression_value_indexed_with_signals(
+            &payload,
+            profitable_materialization_signals(false),
+        )
+        .expect("skip succeeds");
+    assert_eq!(skipped, PersistMaterialization::Skipped);
+    assert_eq!(
+        cache
+            .load_cached_expression_value_indexed(value_hash)
+            .expect("missing payload lookup succeeds"),
+        None
+    );
+
+    let written = cache
+        .materialize_cached_expression_value_indexed_with_signals(
+            &payload,
+            profitable_materialization_signals(true),
+        )
+        .expect("write succeeds");
+    assert!(matches!(written, PersistMaterialization::Materialized(_)));
+    assert_eq!(
+        cache
+            .load_cached_expression_value_indexed(value_hash)
+            .expect("payload loads")
+            .expect("payload exists"),
         payload
     );
 
