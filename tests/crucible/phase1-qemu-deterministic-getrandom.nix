@@ -4,7 +4,7 @@
   qemuPackage ? null,
 }: let
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  patchName = "0005-crucible-det-glib-prng.patch";
+  patchName = "0008-crucible-det-getrandom.patch";
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-qemu-deterministic-entropy.c;
@@ -45,27 +45,31 @@
 
   qemuNixRequirements = [
     {
-      label = "deterministic entropy patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0005-crucible-det-glib-prng.patch}";
+      label = "deterministic getrandom patch wiring";
+      needle = "patch -p1 < \${./qemu-patches/0008-crucible-det-getrandom.patch}";
     }
   ];
 
   patchRequirements = [
     {
-      label = "guest-random seed entrypoint";
-      needle = "int qemu_guest_random_seed_main(const char *seedstr, Error **errp)";
+      label = "accelerator header include";
+      needle = "#include \"qemu/accel.h\"";
     }
     {
-      label = "GLib seed helper";
-      needle = "static guint32 deterministic_glib_seed(uint64_t seed)";
+      label = "sim getrandom guard predicate";
+      needle = "crucible_guest_random_sim_requires_seed";
     }
     {
-      label = "GLib global PRNG seed call";
-      needle = "g_random_set_seed(deterministic_glib_seed(seed));";
+      label = "sim accelerator predicate";
+      needle = "strcmp(current_accel_name(), \"sim\") == 0";
     }
     {
-      label = "same run-seed rationale";
-      needle = "seed that global stream from the same run seed";
+      label = "sim unseeded failure";
+      needle = "-accel sim requires -seed for deterministic guest random";
+    }
+    {
+      label = "fail closed return";
+      needle = "return -1;";
     }
   ];
 
@@ -75,32 +79,12 @@
       needle = "#include \"util/guest-random.c\"";
     }
     {
-      label = "run seed fixture";
-      needle = "0x0123456789abcdefull";
-    }
-    {
       label = "guest-random seed entrypoint";
       needle = "qemu_guest_random_seed_main";
     }
     {
-      label = "GLib global seed assertion";
-      needle = "g_random_last_seed != folded_glib_seed(run_seed)";
-    }
-    {
-      label = "guest-random seed word assertion";
-      needle = "seed_array_words[0] != expected_words[0]";
-    }
-    {
-      label = "guest-random source assertion";
-      needle = "host_random_calls != 0";
-    }
-    {
-      label = "unseeded random remains host crypto";
-      needle = "unseeded_guest_random_uses_host_crypto=true";
-    }
-    {
-      label = "different run seed changes guest-random";
-      needle = "different_run_seed_changes_guest_random=true";
+      label = "guest-random deterministic draw assertion";
+      needle = "guest_random_uses_run_seed=true";
     }
     {
       label = "thread seed part1 assertion";
@@ -111,8 +95,20 @@
       needle = "guest_random_thread_seed_part2_gated=true";
     }
     {
-      label = "stock negative control";
-      needle = "stock_qemu_guest_random_seed_main_without_glib_seed";
+      label = "sim unseeded guest random fails closed";
+      needle = "sim_unseeded_guest_random_fails_closed=true";
+    }
+    {
+      label = "sim unseeded suppresses host entropy";
+      needle = "sim_unseeded_host_entropy_calls=0";
+    }
+    {
+      label = "non-sim unseeded remains host crypto";
+      needle = "non_sim_unseeded_guest_random_uses_host_crypto=true";
+    }
+    {
+      label = "host entropy suppression assertion";
+      needle = "host_entropy_calls=0";
     }
   ];
 
@@ -122,10 +118,10 @@
     ++ failuresFor "tests/crucible/phase1-qemu-deterministic-entropy.c" microtestSource microtestRequirements;
 in
   if failures != []
-  then throw "crucible phase1 QEMU deterministic entropy check failed:\n${builtins.concatStringsSep "\n" failures}"
+  then throw "crucible phase1 QEMU deterministic getrandom check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
     pkgs.mkDerivation {
-      pname = "crucible-phase1-qemu-deterministic-entropy";
+      pname = "crucible-phase1-qemu-deterministic-getrandom";
       version = "0";
       src = null;
 
@@ -140,7 +136,7 @@ in
 
       phases = [
         {
-          name = "run-qemu-deterministic-entropy-microtest";
+          name = "run-qemu-deterministic-getrandom-microtest";
           script = ''
             set -eu
 
@@ -149,6 +145,7 @@ in
             : > exec/replay-core.h
             : > include/qemu/guest-random.h
             : > qapi/error.h
+            : > qemu/accel.h
             : > qemu/cutils.h
             : > qemu/osdep.h
 
@@ -175,6 +172,10 @@ in
             static __thread GRand *thread_rand;
             static bool deterministic;
 
+            static guint32 deterministic_glib_seed(uint64_t seed)
+            {
+                return (guint32)(seed ^ (seed >> 32));
+            }
 
             static int glib_random_bytes(void *buf, size_t len)
             {
@@ -250,6 +251,13 @@ in
                     return -1;
                 } else {
                     deterministic = true;
+                    /*
+                     * QEMU uses GLib's process-global PRNG for generated IDs, UUIDs, and
+                     * device metadata. When -seed requests deterministic guest random,
+                     * seed that global stream from the same run seed so internal device
+                     * state is reproducible too.
+                     */
+                    g_random_set_seed(deterministic_glib_seed(seed));
                     qemu_guest_random_seed_thread_part2(seed);
                     return 0;
                 }
@@ -259,6 +267,7 @@ in
             patch --batch --fuzz=0 -p1 < "$patchSourcePath"
             cp "$microtestSourcePath" phase1-qemu-deterministic-entropy.c
             cc -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-maybe-uninitialized \
+              -DCRUCIBLE_EXPECT_SIM_GETRANDOM_GUARD \
               -I. -Iinclude \
               phase1-qemu-deterministic-entropy.c \
               -o phase1-qemu-deterministic-entropy
@@ -270,28 +279,31 @@ in
             grep -q '^guest_random_thread_seed_part1_uses_run_seed=true$' "$out/result"
             grep -q '^guest_random_thread_seed_part2_gated=true$' "$out/result"
             grep -q '^different_run_seed_changes_guest_random=true$' "$out/result"
-            grep -q '^glib_global_prng_uses_run_seed=true$' "$out/result"
             grep -q '^unseeded_guest_random_uses_host_crypto=true$' "$out/result"
             grep -q '^host_entropy_calls=0$' "$out/result"
-            grep -q '^stock_negative_control_glib_unseeded=true$' "$out/result"
+            grep -q '^sim_unseeded_guest_random_fails_closed=true$' "$out/result"
+            grep -q '^sim_unseeded_host_entropy_calls=0$' "$out/result"
+            grep -q '^non_sim_unseeded_guest_random_uses_host_crypto=true$' "$out/result"
+            grep -q '^stock_sim_unseeded_negative_control_uses_host_crypto=true$' "$out/result"
 
             cp "$patchSourcePath" "$out/${patchName}"
             cp util/guest-random.c "$out/guest-random.c.patched"
             cat >> "$out/result" <<'RESULT'
-            check=checks.crucible.phase1.qemuDeterministicEntropy
+            check=checks.crucible.phase1.qemuDeterministicGetrandom
             gate=gate:layer0-determinism
             gate=gate:patch-microtests
-            tasks=T-DET-4
-            patch=0005-crucible-det-glib-prng.patch
+            tasks=T-DET-4,T-DET-5
+            patch=0008-crucible-det-getrandom.patch
             patched_fixture_exercised=true
             stock_negative_control=true
             ${qemuPackageResultLines}
+            qemu_guest_getrandom_sim_unseeded_policy=fail_closed
             qemu_seed_option_controls_guest_random=true
-            qemu_thread_seed_part1_uses_deterministic_guest_random=true
-            qemu_thread_seed_part2_gated_by_deterministic_guest_random=true
-            qemu_seed_option_controls_glib_global_prng=true
-            unseeded_guest_random_uses_host_crypto=true
-            different_run_seed_changes_guest_random=true
+            host_entropy_calls_under_seed=0
+            sim_unseeded_guest_random_fails_closed=true
+            sim_unseeded_host_entropy_calls=0
+            non_sim_unseeded_guest_random_uses_host_crypto=true
+            sim_fail_closed_negative_control=true
             RESULT
           '';
         }

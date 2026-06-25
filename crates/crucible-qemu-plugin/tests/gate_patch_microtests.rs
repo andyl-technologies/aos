@@ -15,6 +15,7 @@ const EXPECTED_PATCHES: &[&str] = &[
     "0005-crucible-det-glib-prng.patch",
     "0006-crucible-clock-deadline.patch",
     "0007-crucible-block-rtc-read.patch",
+    "0008-crucible-det-getrandom.patch",
 ];
 
 #[test]
@@ -115,6 +116,11 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             "tests/crucible/phase1-block-rtc-read.nix",
             "tests/crucible/phase1-block-rtc-read.c",
             "0007-crucible-block-rtc-read.patch",
+        ),
+        (
+            "tests/crucible/phase1-qemu-deterministic-getrandom.nix",
+            "tests/crucible/phase1-qemu-deterministic-entropy.c",
+            "0008-crucible-det-getrandom.patch",
         ),
     ];
 

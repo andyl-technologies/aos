@@ -44,6 +44,10 @@
       patch = "0007-crucible-block-rtc-read.patch";
       check = import ./phase1-block-rtc-read.nix {inherit pkgs lib qemuPackage;};
     }
+    {
+      patch = "0008-crucible-det-getrandom.patch";
+      check = import ./phase1-qemu-deterministic-getrandom.nix {inherit pkgs lib qemuPackage;};
+    }
   ];
 
   microtestPatchNames =

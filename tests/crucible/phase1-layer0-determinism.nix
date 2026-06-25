@@ -6,6 +6,7 @@
 }: let
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
   qemuDeterministicEntropy = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;};
+  qemuDeterministicGetrandom = import ./phase1-qemu-deterministic-getrandom.nix {inherit pkgs lib;};
   guestEntropyLaunch = import ./phase1-guest-entropy-launch.nix {inherit pkgs lib;};
   kaslrAslrDefault = import ./phase1-kaslr-aslr-default.nix {inherit pkgs lib;};
   contractAIsolation = import ./phase1-contract-a-isolation.nix {inherit pkgs lib;};
@@ -258,8 +259,18 @@ in
               "gate=gate:layer0-determinism" \
               "tasks=T-DET-4" \
               "qemu_seed_option_controls_guest_random=true" \
+              "qemu_thread_seed_part1_uses_deterministic_guest_random=true" \
+              "qemu_thread_seed_part2_gated_by_deterministic_guest_random=true" \
               "qemu_seed_option_controls_glib_global_prng=true" \
               "patched_fixture_exercised=true"
+            require_leaf ${qemuDeterministicGetrandom} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-4,T-DET-5" \
+              "qemu_guest_getrandom_sim_unseeded_policy=fail_closed" \
+              "sim_unseeded_guest_random_fails_closed=true" \
+              "sim_unseeded_host_entropy_calls=0" \
+              "host_entropy_calls_under_seed=0" \
+              "non_sim_unseeded_guest_random_uses_host_crypto=true"
             require_leaf ${guestEntropyLaunch} \
               "gate=gate:layer0-determinism" \
               "tasks=T-DET-5" \
@@ -342,14 +353,14 @@ in
             evidence.E6=deterministicLaunch.timers
             evidence.E7=deterministicLaunch.interrupt_timing
             evidence.E8=guestEntropyLaunch.firmware_seed_source+guest_csprng_same_seed_reproducible
-            evidence.E9=qemuDeterministicEntropy.qemu_seed_option_controls_guest_random+qemu_seed_option_controls_glib_global_prng
+            evidence.E9=qemuDeterministicEntropy.qemu_seed_option_controls_guest_random+qemu_seed_option_controls_glib_global_prng+qemuDeterministicGetrandom.qemu_guest_getrandom_sim_unseeded_policy
             evidence.E10=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E13=deterministicLaunch.smp_vcpus+contractAIsolation.rr_vcpu_cursor+timeMultiVcpuAggregateClock.aggregate_node_clock
             evidence.E14=noWarpWithPlugin.time_control_predicate+notify_preserved_under_time_control
             evidence.E15=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E16=deterministicLaunch.machine_reset+ram_reset
             evidence.E17=deterministicLaunch.input_policy+contractAIsolation.recorded_inputs_enforced
-            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,timeContractADeterminism,timeMultiVcpuAggregateClock,noWarpWithPlugin,icountNoRealtime,blockRtcRead,singleVmFingerprint
+            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,qemuDeterministicGetrandom,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,timeContractADeterminism,timeMultiVcpuAggregateClock,noWarpWithPlugin,icountNoRealtime,blockRtcRead,singleVmFingerprint
             RESULT
           '';
         }

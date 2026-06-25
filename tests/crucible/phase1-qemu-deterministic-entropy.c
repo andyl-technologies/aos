@@ -122,11 +122,10 @@ parse_uint_full(const char *seedstr, int base, uint64_t *seed)
 }
 
 static void
-error_setg(Error **errp, const char *message, const char *seedstr)
+error_setg(Error **errp, const char *message, ...)
 {
   static Error error;
 
-  (void)seedstr;
   error.message = message;
   if (errp != NULL) {
     *errp = &error;
@@ -159,7 +158,37 @@ replay_save_random(int ret, const void *buf, size_t len)
   replay_save_calls++;
 }
 
+static const char *current_accel_label = "tcg";
+
+const char *
+current_accel_name(void)
+{
+  return current_accel_label;
+}
+
 #include "util/guest-random.c"
+
+#ifdef CRUCIBLE_EXPECT_SIM_GETRANDOM_GUARD
+static int
+stock_qemu_guest_getrandom_without_sim_guard(void *buf, size_t len,
+                                             Error **errp)
+{
+  int ret;
+
+  if (replay_mode == REPLAY_MODE_PLAY) {
+    return replay_read_random(buf, len);
+  }
+  if (unlikely(deterministic)) {
+    ret = glib_random_bytes(buf, len);
+  } else {
+    ret = qcrypto_random_bytes(buf, len, errp);
+  }
+  if (replay_mode == REPLAY_MODE_RECORD) {
+    replay_save_random(ret, buf, len);
+  }
+  return ret;
+}
+#endif
 
 struct SeedObservation {
   uint32_t glib_seed;
@@ -304,6 +333,7 @@ main(void)
 
   reset_instrumentation();
   reset_qemu_guest_random_state();
+  current_accel_label = "tcg";
   if (stock_qemu_guest_random_seed_main_without_glib_seed("81985529216486895",
                                                           &err) != 0 ||
       err != NULL || g_random_set_seed_calls != 0 ||
@@ -317,6 +347,7 @@ main(void)
 
   reset_instrumentation();
   reset_qemu_guest_random_state();
+  current_accel_label = "tcg";
   if (qemu_guest_getrandom(unseeded_bytes, sizeof(unseeded_bytes), &err) != 0 ||
       host_random_calls != 1 || g_rand_new_calls != 0 ||
       g_rand_int_calls != 0 || g_random_set_seed_calls != 0) {
@@ -324,6 +355,66 @@ main(void)
             "unseeded random path mismatch: host=%u g_rand_new=%u g_rand_int=%u glib_seed=%u\n",
             host_random_calls, g_rand_new_calls, g_rand_int_calls,
             g_random_set_seed_calls);
+    return 1;
+  }
+
+#ifdef CRUCIBLE_EXPECT_SIM_GETRANDOM_GUARD
+  reset_instrumentation();
+  reset_qemu_guest_random_state();
+  current_accel_label = "sim";
+  if (stock_qemu_guest_getrandom_without_sim_guard(unseeded_bytes,
+                                                   sizeof(unseeded_bytes),
+                                                   &err) != 0 ||
+      host_random_calls != 1 || err != NULL) {
+    fprintf(stderr,
+            "stock sim negative control did not use host crypto: host=%u err=%p\n",
+            host_random_calls, (void *)err);
+    return 1;
+  }
+
+  reset_instrumentation();
+  reset_qemu_guest_random_state();
+  current_accel_label = "sim";
+  if (qemu_guest_getrandom(unseeded_bytes, sizeof(unseeded_bytes), &err) == 0 ||
+      host_random_calls != 0 || g_rand_new_calls != 0 ||
+      g_rand_int_calls != 0 || err == NULL ||
+      strcmp(err->message,
+             "-accel sim requires -seed for deterministic guest random") != 0) {
+    fprintf(stderr,
+            "sim unseeded getrandom guard mismatch: host=%u g_rand_new=%u g_rand=%u err=%p\n",
+            host_random_calls, g_rand_new_calls, g_rand_int_calls,
+            (void *)err);
+    return 1;
+  }
+
+  reset_instrumentation();
+  reset_qemu_guest_random_state();
+  current_accel_label = "tcg";
+  err = NULL;
+  if (qemu_guest_getrandom(unseeded_bytes, sizeof(unseeded_bytes), &err) != 0 ||
+      host_random_calls != 1 || err != NULL) {
+    fprintf(stderr,
+            "non-sim unseeded getrandom path mismatch: host=%u err=%p\n",
+            host_random_calls, (void *)err);
+    return 1;
+  }
+#endif
+
+  reset_instrumentation();
+  reset_qemu_guest_random_state();
+  current_accel_label = "tcg";
+  if (qemu_guest_random_seed_thread_part1() != 0 ||
+      g_rand_new_seed_array_calls != 0 || g_rand_int_calls != 0) {
+    fprintf(stderr,
+            "unseeded thread seed path should stay disabled: seed_array=%u g_rand=%u\n",
+            g_rand_new_seed_array_calls, g_rand_int_calls);
+    return 1;
+  }
+  qemu_guest_random_seed_thread_part2(run_seed);
+  if (thread_rand != NULL || g_rand_new_seed_array_calls != 0) {
+    fprintf(stderr,
+            "unseeded thread seed part2 created deterministic stream: rand=%p calls=%u\n",
+            (void *)thread_rand, g_rand_new_seed_array_calls);
     return 1;
   }
 
@@ -357,6 +448,40 @@ main(void)
     return 1;
   }
 
+  reset_instrumentation();
+  reset_qemu_guest_random_state();
+  if (qemu_guest_random_seed_main("81985529216486895", &err) != 0 ||
+      err != NULL) {
+    fputs("seed parsing failed before thread seed probe\n", stderr);
+    return 1;
+  }
+  uint64_t thread_seed = qemu_guest_random_seed_thread_part1();
+  guint32 expected_thread_words[2];
+  if (thread_seed == 0 || host_random_calls != 0 || g_rand_int_calls != 2) {
+    fprintf(stderr,
+            "seeded thread seed path did not use deterministic stream: seed=0x%016llx host=%u g_rand=%u\n",
+            (unsigned long long)thread_seed, host_random_calls,
+            g_rand_int_calls);
+    return 1;
+  }
+  expected_seed_words(thread_seed, expected_thread_words);
+  thread_rand = NULL;
+  g_rand_new_seed_array_calls = 0;
+  seed_array_len = 0;
+  seed_array_words[0] = 0;
+  seed_array_words[1] = 0;
+  qemu_guest_random_seed_thread_part2(thread_seed);
+  if (thread_rand == NULL || g_rand_new_seed_array_calls != 1 ||
+      seed_array_len != 2 || seed_array_words[0] != expected_thread_words[0] ||
+      seed_array_words[1] != expected_thread_words[1]) {
+    fprintf(stderr,
+            "seeded thread handoff mismatch: rand=%p calls=%u len=%u w0=0x%08x/%08x w1=0x%08x/%08x\n",
+            (void *)thread_rand, g_rand_new_seed_array_calls, seed_array_len,
+            seed_array_words[0], expected_thread_words[0], seed_array_words[1],
+            expected_thread_words[1]);
+    return 1;
+  }
+
   puts("PASS");
   puts("patched_guest_random_fixture=true");
   printf("run_seed=0x%016llx\n", (unsigned long long)run_seed);
@@ -366,10 +491,18 @@ main(void)
   printf("guest_random_seed_word1=0x%08x\n", first.seed_words[1]);
   printf("guest_random_initial_state=0x%08x\n", first.initial_state);
   puts("guest_random_uses_run_seed=true");
+  puts("guest_random_thread_seed_part1_uses_run_seed=true");
+  puts("guest_random_thread_seed_part2_gated=true");
   puts("different_run_seed_changes_guest_random=true");
   puts("glib_global_prng_uses_run_seed=true");
   puts("unseeded_guest_random_uses_host_crypto=true");
   puts("host_entropy_calls=0");
+#ifdef CRUCIBLE_EXPECT_SIM_GETRANDOM_GUARD
+  puts("sim_unseeded_guest_random_fails_closed=true");
+  puts("sim_unseeded_host_entropy_calls=0");
+  puts("non_sim_unseeded_guest_random_uses_host_crypto=true");
+  puts("stock_sim_unseeded_negative_control_uses_host_crypto=true");
+#endif
   puts("stock_negative_control_glib_unseeded=true");
   return 0;
 }
