@@ -12,10 +12,22 @@ use crucible_shmem::MAX_FRAME_DATA;
 
 use crate::{PluginDeviceCallbackKind, PluginSwitch};
 
+/// QEMU plugin API label for translation-block instrumentation.
+pub const QEMU_PLUGIN_DOORBELL_TRANSLATION_SYMBOL: &str = "qemu_plugin_register_vcpu_tb_trans_cb";
+/// QEMU plugin API label for installing memory callbacks on translated instructions.
+pub const QEMU_PLUGIN_DOORBELL_MEM_CB_SYMBOL: &str = "qemu_plugin_register_vcpu_mem_cb";
+/// QEMU plugin API label for resolving a memory callback's hardware address.
+pub const QEMU_PLUGIN_GET_HWADDR_SYMBOL: &str = "qemu_plugin_get_hwaddr";
+/// QEMU plugin API label for checking whether a memory callback targets I/O space.
+pub const QEMU_PLUGIN_IO_ADDRESS_QUERY_SYMBOL: &str = "qemu_plugin_hwaddr_is_io";
+/// QEMU plugin API label for extracting a hardware-address physical address.
+pub const QEMU_PLUGIN_HWADDR_PHYS_ADDR_SYMBOL: &str = "qemu_plugin_hwaddr_phys_addr";
+/// QEMU plugin API label for reading a register during a callback.
+pub const QEMU_PLUGIN_READ_REGISTER_SYMBOL: &str = "qemu_plugin_read_register";
 /// QEMU capability label for registering the reserved white-box doorbell trap.
-pub const QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL: &str = "qemu_plugin_register_doorbell_trap";
+pub const QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL: &str = QEMU_PLUGIN_DOORBELL_MEM_CB_SYMBOL;
 /// QEMU capability label for reading guest memory at the trap icount.
-pub const QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL: &str = "qemu_plugin_guest_memory_read";
+pub const QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL: &str = "qemu_plugin_read_memory_vaddr";
 /// QEMU capability label for writing white-box replies into guest memory.
 pub const QEMU_PLUGIN_GUEST_MEMORY_WRITE_SYMBOL: &str = "qemu_plugin_guest_memory_write";
 /// Fixed little-endian doorbell frame magic (`CRBL`).
@@ -74,8 +86,8 @@ impl PluginWhiteboxDoorbell {
     ///
     /// Off-mode returns [`WhiteboxDoorbellRegistrationPlan::Disabled`] without
     /// requiring any white-box QEMU capability, which is the black-box default.
-    /// On-mode requires both the trap registration surface and the guest-memory
-    /// read surface before it can install the callback.
+    /// On-mode requires both the upstream memory-callback trap surface and the
+    /// guest-memory read surface before it can install the callback.
     ///
     /// # Errors
     ///
@@ -961,8 +973,11 @@ fn app_random_reply_payload(value: u64, width_bytes: u8) -> Vec<u8> {
 /// QEMU capabilities needed by the optional white-box channel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WhiteboxDoorbellCapabilities {
+    /// Whether upstream plugin memory callbacks can observe the reserved trap.
     register_doorbell_trap: bool,
+    /// Whether upstream plugin memory reads can copy the payload at trap icount.
     guest_memory_read: bool,
+    /// Whether a host-to-guest reply write surface is available.
     guest_memory_write: bool,
 }
 
@@ -997,7 +1012,7 @@ impl WhiteboxDoorbellCapabilities {
         }
     }
 
-    /// Returns whether the reserved trap can be registered.
+    /// Returns whether the reserved trap can be observed through memory callbacks.
     #[must_use]
     pub const fn register_doorbell_trap(self) -> bool {
         self.register_doorbell_trap

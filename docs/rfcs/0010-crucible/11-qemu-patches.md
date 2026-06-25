@@ -1316,10 +1316,30 @@ time-control primitives the whole design rests on.
     delivery. The Rust plugin now exports typed resolvers for TX callback
     registration and the RX send/flush/can-receive patch symbols; live install
     registration remains owned by the later plugin lifecycle gates.
-- [ ] **T-PATCH-15** Confirm (or spike) that the guest↔host doorbell needs **no
+- [x] **T-PATCH-15** Confirm (or spike) that the guest↔host doorbell needs **no
   new patch**: reuse the existing port-I/O/MMIO trap + plugin mem-read; any patch
   added is white-box-only, inert, and spike-gated. — satisfies [PATCH-33]; spec
   §11.7, coordinates with 16.
+  - Completed by `checks.crucible.phase1.qemuDoorbellNoPatch`,
+    `checks.crucible.phase0.s5VirtualMemory`, the existing Phase 0 I/O-trap
+    plugin evidence, `checks.crucible.phase2.qemuPatchSeries`, and
+    `checks.crucible.phase2.gates.patchMicrotests`: no QEMU patch was added,
+    and the carried patch count remains 20. The pinned QEMU 10.0
+    plugin header already exposes `qemu_plugin_register_vcpu_tb_trans_cb`,
+    `qemu_plugin_register_vcpu_mem_cb`, `qemu_plugin_get_hwaddr`,
+    `qemu_plugin_hwaddr_is_io`, `qemu_plugin_read_register`, and
+    `qemu_plugin_read_memory_vaddr`. The white-box doorbell crate now labels its
+    guest-to-host trap capability with those upstream plugin APIs rather than a
+    bespoke `qemu_plugin_register_doorbell_trap` or
+    `qemu_plugin_guest_memory_read` patch symbol. Phase 0 S5 recorded
+    `qemu_plugin_read_memory_vaddr_available=true`,
+    `doorbell_surface=phase0_instruction_marker_double`,
+    reproducible marker icounts, matching payload bytes, and a side-effect-free
+    fingerprint; Phase 0 S2 uses QEMU's existing plugin memory callbacks and
+    hardware-address I/O query to observe port I/O. White-box mode still installs
+    no trap when disabled, and any future host-to-guest write/reply surface
+    remains outside this no-patch guest-to-host decision until a separate
+    spike-gated lifecycle item adopts it.
 - [ ] **T-PATCH-16** Implement the sim-correctness patches
   (`crucible-sim-loop-fix`, `crucible-sim-first-exit`,
   `crucible-sim-skip-second-events`, `crucible-sim-poll-immediate`,
