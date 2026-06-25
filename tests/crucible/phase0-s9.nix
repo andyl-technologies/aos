@@ -307,6 +307,7 @@ in
           rr_switch_quantum_default_zero=true
           non_sim_icount_patch_present=true
           no_warp_with_plugin_patch_present=true
+          qemu_clock_deadline_patch_present=true
           qemu_rtc_patch_present=true
           qemu_internal_entropy_patch_present=true
           qemu_guest_random_patch_present=true
@@ -368,6 +369,7 @@ in
             echo rr_switch_quantum_default_zero="$rr_switch_quantum_default_zero"
             echo non_sim_icount_patch_present="$non_sim_icount_patch_present"
             echo no_warp_with_plugin_patch_present="$no_warp_with_plugin_patch_present"
+            echo qemu_clock_deadline_patch_present="$qemu_clock_deadline_patch_present"
             echo qemu_rtc_patch_present="$qemu_rtc_patch_present"
             echo qemu_internal_entropy_patch_present="$qemu_internal_entropy_patch_present"
             echo qemu_guest_random_patch_present="$qemu_guest_random_patch_present"

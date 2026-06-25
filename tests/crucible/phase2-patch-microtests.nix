@@ -159,6 +159,7 @@ in
             nm -D --defined-only ${qemuPackage}/bin/qemu-system-x86_64 \
               > "$out/qemu-system-x86_64.dynamic-symbols"
             for symbol in \
+              qemu_plugin_clock_deadline_ns \
               qemu_plugin_net_inject \
               qemu_plugin_net_send \
               qemu_plugin_net_flush \
@@ -190,6 +191,7 @@ in
             patched_qemu_package=${qemuPackage}
             patched_qemu_package_version=${qemuPackage.version}
             plugin_exports_dynamic_symbols_checked=true
+            qemu_plugin_clock_deadline_export_present=true
             qemu_plugin_net_exports_present=true
             qemu_plugin_time_drain_exports_present=true
             qemu_inert_gate_attr=checks.crucible.phase2.gates.qemuInert

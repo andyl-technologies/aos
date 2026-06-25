@@ -1308,6 +1308,29 @@ mod tests {
     }
 
     #[test]
+    fn abi_install_full_capability_scaffold_fails_closed_without_exact_deadline() {
+        let valid_info = qemu_info_fixture(2, 1, QEMU_PLUGIN_API_VERSION);
+
+        assert_eq!(
+            install_required_vcpu_introspection_scaffold_from_qemu_info(
+                &valid_info,
+                QemuTcgThreading::SingleThreadedRoundRobin,
+                None,
+                Some(abi_test_direct_advance),
+                Some(abi_test_inject_preemption),
+                Some(abi_test_read_vcpu_regs),
+                Some(abi_test_rr_cursor),
+            )
+            .map(|_state| ()),
+            Err(QemuPluginAbiError::ExactDeadlineCapability {
+                source: ExactDeadlineError::CapabilityUnavailable {
+                    symbol: crate::QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
+                },
+            })
+        );
+    }
+
+    #[test]
     fn abi_execution_model_requires_single_threaded_tcg_not_single_vcpu_only() {
         let single =
             match QemuPluginExecutionModel::validate(1, QemuTcgThreading::SingleThreadedRoundRobin)

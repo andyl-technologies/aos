@@ -1207,10 +1207,23 @@ time-control primitives the whole design rests on.
     returning; the fixture proves the timer BH sets `cpu->interrupt_request` at
     the same icount across skewed producers, and the main-loop drain runs a
     nonblocking completion-BH pass without advancing virtual time.
-- [ ] **T-PATCH-10** Implement `crucible-clock-deadline` (exact next
+- [x] **T-PATCH-10** Implement `crucible-clock-deadline` (exact next
   `QEMU_CLOCK_VIRTUAL` deadline, REQUIRED) and ban the overshoot-and-correct
   fallback; fail loudly if the capability is unavailable. — satisfies [PATCH-21],
   [PATCH-41]; spec §11.5, §11.10.
+  - Completed by `0006-crucible-clock-deadline.patch` and
+    `checks.crucible.phase1.clockDeadline`: QEMU exports
+    `qemu_plugin_clock_deadline_ns`, reading only `QEMU_CLOCK_VIRTUAL` and
+    returning an absolute virtual-clock deadline or `-1` when no timer is armed.
+    The focused gate verifies the stock negative control, exercises an armed
+    virtual-timer queue while the synthetic guest is idle, rejects realtime/host
+    sources, proves the install path fails with only the deadline capability
+    missing, forbids overshoot-and-correct, consumes the canonical
+    `gate:scheduler-liveness` result, and bridges exact deadlines into scheduler
+    horizons with ceil icount conversion. `gate:patch-microtests` checks the
+    symbol in the built QEMU binary, `gate:layer0-determinism` consumes the
+    evidence, and [PATCH-41] records that this required API is Crucible-supplied
+    rather than an upstream QEMU plugin assumption.
 - [ ] **T-PATCH-11** Implement the plugin reads/exits/wakes
   `crucible-plugin-icount-raw`, `crucible-plugin-vcpu-exit`,
   `crucible-plugin-wake-fd`, `crucible-plugin-tcg-exec-cb`, each additive and

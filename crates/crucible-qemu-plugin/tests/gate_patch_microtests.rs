@@ -48,6 +48,7 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "qemu_package_version=${qemuPackage.version}");
     assert_contains(&aggregate, "nm -D --defined-only");
     assert_contains(&aggregate, "plugin_exports_dynamic_symbols_checked=true");
+    assert_contains(&aggregate, "qemu_plugin_clock_deadline_export_present=true");
     assert_contains(&aggregate, "qemu_plugin_net_exports_present=true");
     assert_contains(&aggregate, "qemu_plugin_time_drain_exports_present=true");
     assert_contains(&aggregate, "qemu_inert_gate_wired=true");

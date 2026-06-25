@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.clockDeadline",
-  taskIds ? ["T-TIME-6"],
+  taskIds ? ["T-TIME-6" "T-PATCH-10"],
   qemuPackage ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -17,11 +17,14 @@
   patchSource = builtins.readFile (../../pkgs/emulation/qemu-patches + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-clock-deadline.c;
   pluginRoot = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
   scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
+  qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   defaultChecks = builtins.readFile ./default.nix;
+  schedulerLiveness = import ./phase3-scheduler-liveness.nix {inherit pkgs lib;};
   qemuPackageResultLines =
     if qemuPackage == null
     then ''
@@ -123,6 +126,34 @@
         needle = "deadline_absolute_time=124456";
       }
       {
+        label = "virtual timer queue fixture";
+        needle = "struct FakeTimer";
+      }
+      {
+        label = "armed virtual timer fixture";
+        needle = "fake_timer_mod(0, 124456)";
+      }
+      {
+        label = "idle guest deadline query fixture";
+        needle = "fake_guest_idle()";
+      }
+      {
+        label = "deadline delta assertion";
+        needle = "deadline_delta_ns=123456";
+      }
+      {
+        label = "virtual timer armed assertion";
+        needle = "virtual_timer_armed=true";
+      }
+      {
+        label = "guest idle assertion";
+        needle = "guest_idle_for_deadline_query=true";
+      }
+      {
+        label = "minimum virtual timer selection";
+        needle = "min_virtual_timer_selected=true";
+      }
+      {
         label = "virtual source assertion";
         needle = "deadline_source=QEMU_CLOCK_VIRTUAL";
       }
@@ -159,6 +190,16 @@
       {
         label = "deadline symbol export";
         needle = "QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
+      {
+        label = "isolated missing deadline capability test";
+        needle = "abi_install_full_capability_scaffold_fails_closed_without_exact_deadline";
+      }
+      {
+        label = "missing deadline before later capability resolution";
+        needle = "install_required_vcpu_introspection_scaffold_from_qemu_info(\n                &valid_info,\n                QemuTcgThreading::SingleThreadedRoundRobin,\n                None,";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [
@@ -247,6 +288,20 @@
       {
         label = "T-TIME-6 checklist complete";
         needle = "- [x] **T-TIME-6**";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
+      {
+        label = "PATCH-41 upstream absence documented";
+        needle = "upstream QEMU's plugin API";
+      }
+      {
+        label = "PATCH-41 exact deadline remains required";
+        needle = "capability remains REQUIRED";
+      }
+      {
+        label = "T-PATCH-10 checklist item";
+        needle = "- [x] **T-PATCH-10** Implement `crucible-clock-deadline`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -465,12 +520,19 @@ in
             grep -q '^PASS$' "$out/clock-deadline-microtest"
             grep -q '^deadline_source=QEMU_CLOCK_VIRTUAL$' "$out/clock-deadline-microtest"
             grep -q '^deadline_absolute_time=124456$' "$out/clock-deadline-microtest"
+            grep -q '^deadline_delta_ns=123456$' "$out/clock-deadline-microtest"
+            grep -q '^virtual_timer_armed=true$' "$out/clock-deadline-microtest"
+            grep -q '^guest_idle_for_deadline_query=true$' "$out/clock-deadline-microtest"
+            grep -q '^min_virtual_timer_selected=true$' "$out/clock-deadline-microtest"
             grep -q '^realtime_deadline_reads=0$' "$out/clock-deadline-microtest"
             grep -q '^host_deadline_reads=0$' "$out/clock-deadline-microtest"
             grep -q '^realtime_clock_reads=0$' "$out/clock-deadline-microtest"
             grep -q '^host_clock_reads=0$' "$out/clock-deadline-microtest"
             grep -q '^no_armed_timer_sentinel=-1$' "$out/clock-deadline-microtest"
             grep -q '^stock_negative_control_deadline_symbol_absent=true$' "$out/clock-deadline-microtest"
+            cp "${schedulerLiveness}/result" "$out/scheduler-liveness.result"
+            grep -q '^PASS$' "$out/scheduler-liveness.result"
+            grep -q '^gate=gate:scheduler-liveness$' "$out/scheduler-liveness.result"
 
             cd "$TMPDIR"
             cd "$NIX_BUILD_TOP/source/crates"
@@ -480,6 +542,13 @@ in
               --target-dir "$TMPDIR/crucible-clock-deadline-target" \
               -p crucible-qemu-plugin \
               --lib exact_deadline \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-clock-deadline-target" \
+              -p crucible-qemu-plugin \
+              --lib abi_install_full_capability_scaffold_fails_closed_without_exact_deadline \
               -- --test-threads=1
             cargo test \
               --frozen \
@@ -515,6 +584,10 @@ in
             deadline_symbol=qemu_plugin_clock_deadline_ns
             deadline_source=QEMU_CLOCK_VIRTUAL
             deadline_absolute_time=124456
+            deadline_delta_ns=123456
+            virtual_timer_armed=true
+            guest_idle_for_deadline_query=true
+            min_virtual_timer_selected=true
             realtime_deadline_source=false
             host_deadline_source=false
             realtime_clock_source=false
@@ -522,7 +595,10 @@ in
             no_armed_timer_sentinel=-1
             capability_required=true
             missing_capability_fails_closed=true
+            install_missing_deadline_isolated=true
             overshoot_and_correct_fallback=false
+            patch41_upstream_api_absent_documented=true
+            scheduler_liveness_gate_consumed=true
             scheduler_horizon_exact_local_event=true
             scheduler_deadline_bridge=true
             scheduler_deadline_to_icount=ceil
