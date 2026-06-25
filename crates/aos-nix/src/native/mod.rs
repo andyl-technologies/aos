@@ -50,6 +50,8 @@ pub struct NixNative {
     eval_cache: Arc<Mutex<EvalCacheRuntime>>,
     #[cfg(test)]
     persist_cache_hook: Option<PersistCacheTestHook>,
+    #[cfg(test)]
+    persistent_parse_hit_hook: Option<PersistentParseHitTestHook>,
 }
 
 #[cfg(test)]
@@ -61,6 +63,27 @@ impl std::fmt::Debug for PersistCacheTestHook {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("PersistCacheTestHook")
     }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct PersistentParseHitTestHook(Arc<dyn Fn(NativePersistentParseHit) + Send + Sync>);
+
+#[cfg(test)]
+impl std::fmt::Debug for PersistentParseHitTestHook {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PersistentParseHitTestHook")
+    }
+}
+
+/// Identifies which persistent parse-index path supplied a native cache hit.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativePersistentParseHit {
+    /// A raw source-bytes artifact was hydrated from the persistent parse index.
+    Bytes,
+    /// A file-backed source artifact was hydrated from the persistent file index.
+    Source,
 }
 
 /// An evaluated derivation closure that has not been registered in the store.
@@ -119,6 +142,8 @@ impl NixNative {
             ifd_realizer: None,
             #[cfg(test)]
             persist_cache_hook: None,
+            #[cfg(test)]
+            persistent_parse_hit_hook: None,
         })
     }
 
@@ -138,6 +163,15 @@ impl NixNative {
         hook: impl Fn(&PersistCache) + Send + Sync + 'static,
     ) {
         self.persist_cache_hook = Some(PersistCacheTestHook(Arc::new(hook)));
+    }
+
+    /// Installs a callback used by tests to observe persistent parse-cache hits.
+    #[cfg(test)]
+    pub(crate) fn set_persistent_parse_hit_hook(
+        &mut self,
+        hook: impl Fn(NativePersistentParseHit) + Send + Sync + 'static,
+    ) {
+        self.persistent_parse_hit_hook = Some(PersistentParseHitTestHook(Arc::new(hook)));
     }
 
     /// Returns this evaluator with a callback used to realize derivation outputs for IFD.
@@ -456,6 +490,12 @@ impl NixNative {
                         .flatten()
                 };
                 if let Some(cached) = cached {
+                    #[cfg(test)]
+                    self.observe_persistent_parse_hit(if source_path.is_some() {
+                        NativePersistentParseHit::Source
+                    } else {
+                        NativePersistentParseHit::Bytes
+                    });
                     return Ok(cached.ir);
                 }
             }
@@ -546,6 +586,13 @@ impl NixNative {
 
     #[cfg(not(test))]
     fn run_persist_cache_hook(&self, _persist_cache: &PersistCache) {}
+
+    #[cfg(test)]
+    fn observe_persistent_parse_hit(&self, hit: NativePersistentParseHit) {
+        if let Some(hook) = &self.persistent_parse_hit_hook {
+            (hook.0)(hit);
+        }
+    }
 
     fn observe_eval_cache(&self, outcome: &EvalOutcome) {
         let Ok(mut cache) = self.eval_cache.lock() else {

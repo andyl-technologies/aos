@@ -1633,6 +1633,17 @@ alone (`M-1`/`Q-A`).
       demand/evaluating-node lifecycle, persistent demand graph, generic value
       memoization, or in-process import result memo
       ([12](12-incremental-evaluation-cache.md) §8.3).
+- [x] Current native raw-instantiation cache-off/cached closure parity canary:
+      `native_instantiation_expr_cache_off_on_and_persistent_hit_preserve_drv_closure`
+      evaluates the same two-derivation raw expression with native cache
+      disabled, with configured parse/persist/eval cache on the miss/write
+      path, and with a fresh parse root hydrated from a persistent raw
+      parse-artifact hit. It requires the root `.drv` path and every recorded
+      input/root ATerm byte payload to be identical and records the persistent
+      parse-index hit. This samples the current native raw-instantiation
+      closure surface, not the full cached-vs-uncached AOS closure harness or
+      future value-memoization safety net
+      ([12](12-incremental-evaluation-cache.md) §8.3).
 - [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
       future incremental persistence/value memoization, and CI must periodically
       run cold cached-vs-uncached full-closure `.drv` revalidation
