@@ -1306,6 +1306,180 @@ fn node_trace_log_appends_and_finds_latest_matching_entry() {
 }
 
 #[test]
+fn node_trace_log_lists_latest_entries_in_key_order() {
+    let root = temp_root();
+    let log_path = root.join("nodes").join("traces.log");
+    let log = PersistNodeTraceLog::open(&log_path).expect("trace log opens");
+    let first_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"a"));
+    let second_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"b"));
+    let first_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"first value"));
+    let stale_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"stale value"));
+    let latest_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"latest value"));
+    let first_payload = test_node_trace_payload(b"first", 1);
+    let stale_payload = test_node_trace_payload(b"stale", 2);
+    let latest_payload = PersistNodeTracePayload::tombstone();
+
+    assert_eq!(
+        log.latest_entries().expect("empty latest entries"),
+        Vec::new()
+    );
+
+    log.append_entry(PersistNodeTraceLogEntry::new(
+        second_key,
+        stale_value_hash,
+        stale_payload,
+    ))
+    .expect("stale entry appends");
+    log.append_entry(PersistNodeTraceLogEntry::new(
+        first_key,
+        first_value_hash,
+        first_payload.clone(),
+    ))
+    .expect("first entry appends");
+    log.append_entry(PersistNodeTraceLogEntry::new(
+        second_key,
+        latest_value_hash,
+        latest_payload.clone(),
+    ))
+    .expect("latest entry appends");
+
+    let entries = log.latest_entries().expect("latest entries load");
+    assert_eq!(entries.len(), 2);
+    assert!(entries.windows(2).all(|pair| pair[0].key() < pair[1].key()));
+    assert!(entries.contains(&PersistNodeTraceLogEntry::new(
+        first_key,
+        first_value_hash,
+        first_payload
+    )));
+    assert!(entries.contains(&PersistNodeTraceLogEntry::new(
+        second_key,
+        latest_value_hash,
+        latest_payload
+    )));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn node_trace_log_compacts_to_latest_entries() {
+    let root = temp_root();
+    let log_path = root.join("nodes").join("traces.log");
+    let log = PersistNodeTraceLog::open(&log_path).expect("trace log opens");
+    let first_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"a"));
+    let second_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"b"));
+    let first_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"first value"));
+    let stale_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"stale value"));
+    let latest_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"latest value"));
+    let first_payload = test_node_trace_payload(b"first", 1);
+    let stale_payload = test_node_trace_payload(b"stale", 2);
+    let latest_payload = PersistNodeTracePayload::tombstone();
+
+    log.append_entry(PersistNodeTraceLogEntry::new(
+        second_key,
+        stale_value_hash,
+        stale_payload,
+    ))
+    .expect("stale entry appends");
+    log.append_entry(PersistNodeTraceLogEntry::new(
+        first_key,
+        first_value_hash,
+        first_payload.clone(),
+    ))
+    .expect("first entry appends");
+    log.append_entry(PersistNodeTraceLogEntry::new(
+        second_key,
+        latest_value_hash,
+        latest_payload.clone(),
+    ))
+    .expect("latest entry appends");
+    let before_len = fs::metadata(log.path())
+        .expect("trace log metadata before compaction")
+        .len();
+
+    assert_eq!(log.compact_latest_entries().expect("log compacts"), 2);
+    assert!(
+        fs::metadata(log.path())
+            .expect("trace log metadata after compaction")
+            .len()
+            < before_len
+    );
+    assert_eq!(
+        log.lookup(first_key).expect("first lookup succeeds"),
+        Some(PersistNodeTraceLogEntry::new(
+            first_key,
+            first_value_hash,
+            first_payload
+        ))
+    );
+    assert_eq!(
+        log.lookup(second_key).expect("second lookup succeeds"),
+        Some(PersistNodeTraceLogEntry::new(
+            second_key,
+            latest_value_hash,
+            latest_payload
+        ))
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn node_trace_log_compaction_truncates_stale_temp_file() {
+    let root = temp_root();
+    let log_path = root.join("nodes").join("traces.log");
+    let log = PersistNodeTraceLog::open(&log_path).expect("trace log opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let stale_temp_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"stale temp"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+    let stale_temp_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"stale temp value"));
+    let payload = test_node_trace_payload(b"input", 1);
+    let stale_temp_payload = test_node_trace_payload(b"stale temp", 2);
+
+    log.append_entry(PersistNodeTraceLogEntry::new(
+        key,
+        value_hash,
+        payload.clone(),
+    ))
+    .expect("entry appends");
+    let rewrite_id = 987_654_321;
+    let stale_temp_path =
+        log_path.with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
+    let stale_temp_log = PersistNodeTraceLog::open(&stale_temp_path).expect("stale temp opens");
+    stale_temp_log
+        .append_entry(PersistNodeTraceLogEntry::new(
+            stale_temp_key,
+            stale_temp_value_hash,
+            stale_temp_payload,
+        ))
+        .expect("stale temp entry appends");
+
+    assert_eq!(
+        log.compact_latest_entries_with_rewrite_id_for_tests(rewrite_id)
+            .expect("log compacts"),
+        1
+    );
+    assert_eq!(
+        log.lookup(key).expect("key lookup succeeds"),
+        Some(PersistNodeTraceLogEntry::new(key, value_hash, payload))
+    );
+    assert_eq!(
+        log.lookup(stale_temp_key)
+            .expect("stale temp key lookup succeeds"),
+        None
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn node_trace_log_open_rejects_truncated_record_header() {
     let root = temp_root();
     let log_path = root.join("nodes").join("traces.log");

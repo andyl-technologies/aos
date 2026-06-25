@@ -427,6 +427,60 @@ fn cache_node_trace_log_records_and_looks_up_payloads() {
 }
 
 #[test]
+fn cache_node_traces_compacts_to_latest_entries() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let other_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+    let other_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"other value"));
+    let stale_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"stale value"));
+    let payload = test_node_trace_payload(b"input", 1);
+    let stale_payload = test_node_trace_payload(b"stale", 2);
+    let other_payload = PersistNodeTracePayload::tombstone();
+
+    cache
+        .record_node_trace(key, stale_value_hash, &stale_payload)
+        .expect("stale trace records");
+    cache
+        .record_node_trace(other_key, other_value_hash, &other_payload)
+        .expect("other trace records");
+    cache
+        .record_node_trace(key, value_hash, &payload)
+        .expect("latest trace records");
+    let before_len = fs::metadata(cache.node_trace_log().path())
+        .expect("trace log metadata before compaction")
+        .len();
+
+    assert_eq!(cache.compact_node_traces().expect("traces compact"), 2);
+    assert!(
+        fs::metadata(cache.node_trace_log().path())
+            .expect("trace log metadata after compaction")
+            .len()
+            < before_len
+    );
+    assert_eq!(
+        cache.lookup_node_trace(key).expect("trace lookup succeeds"),
+        Some(PersistNodeTraceLogEntry::new(key, value_hash, payload))
+    );
+    assert_eq!(
+        cache
+            .lookup_node_trace(other_key)
+            .expect("other trace lookup succeeds"),
+        Some(PersistNodeTraceLogEntry::new(
+            other_key,
+            other_value_hash,
+            other_payload
+        ))
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_materialization_reuse_records_and_looks_up_counters() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

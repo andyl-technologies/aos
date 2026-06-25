@@ -1779,6 +1779,92 @@ impl PersistNodeTraceLog {
         })?;
         Ok(found)
     }
+
+    /// Returns the newest trace log entry for every node metadata key.
+    ///
+    /// Entries are returned in stable key order. If a key appears multiple
+    /// times in the append-only log, only its newest trace entry is returned.
+    /// Tombstones are entries and are preserved when they are newest for a key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTraceLogError`] if the log cannot be opened, read,
+    /// or decoded.
+    pub fn latest_entries(
+        &self,
+    ) -> Result<Vec<PersistNodeTraceLogEntry>, PersistNodeTraceLogError> {
+        ensure_node_trace_log_file(&self.path)?;
+        let mut latest = std::collections::BTreeMap::new();
+        scan_node_trace_log_entries(&self.path, |entry| {
+            latest.insert(entry.key(), (entry.value_hash(), entry.into_payload()));
+            Ok(())
+        })?;
+        Ok(latest
+            .into_iter()
+            .map(|(key, (value_hash, payload))| {
+                PersistNodeTraceLogEntry::new(key, value_hash, payload)
+            })
+            .collect())
+    }
+
+    /// Rewrites the log to the newest trace entry for every node metadata key.
+    ///
+    /// Entries are written in stable key order through a temporary file that is
+    /// renamed over the original log. The returned count is the number of
+    /// latest entries preserved after compaction. Tombstones are preserved when
+    /// they are the newest entry for a key. Callers must exclude all concurrent
+    /// log writers across threads and processes while this method runs; an
+    /// append that races between the snapshot and rename can be lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTraceLogError`] if the log cannot be opened, read,
+    /// decoded, written, flushed, or renamed into place.
+    pub fn compact_latest_entries(&self) -> Result<usize, PersistNodeTraceLogError> {
+        let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
+        self.compact_latest_entries_with_rewrite_id(rewrite_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compact_latest_entries_with_rewrite_id_for_tests(
+        &self,
+        rewrite_id: u64,
+    ) -> Result<usize, PersistNodeTraceLogError> {
+        self.compact_latest_entries_with_rewrite_id(rewrite_id)
+    }
+
+    fn compact_latest_entries_with_rewrite_id(
+        &self,
+        rewrite_id: u64,
+    ) -> Result<usize, PersistNodeTraceLogError> {
+        let entries = self.latest_entries()?;
+        let tmp_path = self
+            .path
+            .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
+        {
+            let _ = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)
+                .map_err(|source| PersistNodeTraceLogError::Write {
+                    path: tmp_path.clone(),
+                    source,
+                })?;
+            let tmp_log = PersistNodeTraceLog::open(tmp_path.clone())?;
+            for entry in &entries {
+                tmp_log.append_entry(entry.clone())?;
+            }
+        }
+        fs::rename(&tmp_path, &self.path).map_err(|source| {
+            let _ = fs::remove_file(&tmp_path);
+            PersistNodeTraceLogError::Write {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        Ok(entries.len())
+    }
 }
 
 fn encode_node_trace_log_record_header(

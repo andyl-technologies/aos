@@ -349,6 +349,20 @@ impl PersistCache {
         self.node_trace_log.lookup(key)
     }
 
+    /// Compacts node traces to the newest record for every known demand node.
+    ///
+    /// This delegates to [`PersistNodeTraceLog::compact_latest_entries`].
+    /// Callers must serialize writes to the node trace sidecar while this
+    /// method runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTraceLogError`] if the trace log cannot be opened,
+    /// read, decoded, written, flushed, or renamed into place.
+    pub fn compact_node_traces(&self) -> Result<usize, PersistNodeTraceLogError> {
+        self.node_trace_log.compact_latest_entries()
+    }
+
     /// Appends materialization reuse counters for one demand node.
     ///
     /// Existing materialized value-hash metadata for the same node is

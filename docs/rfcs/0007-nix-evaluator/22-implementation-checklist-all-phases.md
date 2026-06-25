@@ -1257,9 +1257,19 @@ alone (`M-1`/`Q-A`).
       LMDB/redb node tables, transactionality with node metadata or value
       blobs, automatic evaluator writeback beyond the force-cache bridge below,
       durable hit selection, revalidation, currentTime taint propagation through
-      persisted dependents, automatic compaction/GC, mmap reads, and
+      persisted dependents, automatic compaction/GC policy, mmap reads, and
       cached/uncached harness proof remain open
       (`C-13`/`R-10`/`S-14`).
+- [x] Current explicit node trace-log compaction substrate:
+      `PersistNodeTraceLog::latest_entries` scans the append-only
+      `nodes/traces.log` into the newest trace entry per node key, preserving
+      tombstones when they are newest; `compact_latest_entries` rewrites those
+      newest entries in stable key order through a temporary log and rename;
+      and `PersistCache::compact_node_traces` exposes the operation at cache
+      level. This is an explicit caller-driven maintenance primitive only;
+      automatic compaction/GC policy, LMDB/redb node table, transactionality
+      with metadata/value blobs, concurrent writer coordination, mmap reads,
+      and cached/uncached harness proof remain open (`C-13`/`R-10`/`S-14`).
 - [x] Current force-cache persistent trace writeback:
       after tree-walk `force_value` gets an accepted forced-expression
       observation and successfully materializes its value payload, it appends a
