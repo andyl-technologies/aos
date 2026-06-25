@@ -5,7 +5,7 @@
 //! deliberately does not cover the build phase, which remains delegated to real
 //! Nix through [`NixCli::realise`](crate::nix::NixCli::realise).
 //!
-//! The default implementation is [`NixCli`](crate::nix::NixCli), the permanent
+//! The default implementation is [`NixCli`], the permanent
 //! C++ Nix oracle and fallback. The native implementation lives in the
 //! `aos-nix` crate so `aos-core` stays lightweight.
 
@@ -604,7 +604,8 @@ impl NixEvalConfig {
 
     /// Returns the native evaluator cache root, if one was provided.
     ///
-    /// The parse cache stores entries below this root's `parse/` child. The
+    /// The parse cache stores entries below this root's `parse/` child, and
+    /// file-derived persistent artifacts use its `persist/` child. The
     /// in-memory incremental eval-cache precursor also uses this setting as
     /// its enable switch, but it does not persist demand-graph records yet.
     pub fn native_cache_root(&self) -> Option<&Path> {
@@ -890,7 +891,8 @@ impl NixEvalConfig {
 
     /// Replaces the native evaluator cache root.
     ///
-    /// The parse cache stores entries below this root's `parse/` child. The
+    /// The parse cache stores entries below this root's `parse/` child, and
+    /// file-derived persistent artifacts use its `persist/` child. The
     /// in-memory incremental eval-cache precursor also uses this setting as
     /// its enable switch. Use [`Self::clear_native_cache_root`] for uncached
     /// native evaluation.
@@ -2259,6 +2261,7 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
     }
     if let Some(cache_root) = config.native_cache_root() {
         options.set_parse_cache_root(cache_root.join("parse"));
+        options.set_persist_cache_root(cache_root.join("persist"));
         options.set_eval_cache_enabled(true);
     }
     options.set_trace_verbose(config.trace_verbose());
@@ -2881,9 +2884,15 @@ mod tests {
 
     #[cfg(feature = "native-eval")]
     #[test]
-    fn eval_config_maps_native_cache_root_to_parse_cache_options() -> Result<()> {
+    fn eval_config_maps_native_cache_root_to_cache_options() -> Result<()> {
         let mut config = NixEvalConfig::new();
         config.set_eval_mode(NixEvalMode::Impure);
+
+        let options = tree_walk_options_from_config(&config)?;
+        assert_eq!(options.parse_cache_root(), None);
+        assert_eq!(options.persist_cache_root(), None);
+        assert!(!options.eval_cache_enabled());
+
         config.set_native_cache_root("/aos/cache")?;
 
         let options = tree_walk_options_from_config(&config)?;
@@ -2892,7 +2901,17 @@ mod tests {
             options.parse_cache_root(),
             Some(Path::new("/aos/cache/parse"))
         );
+        assert_eq!(
+            options.persist_cache_root(),
+            Some(Path::new("/aos/cache/persist"))
+        );
         assert!(options.eval_cache_enabled());
+
+        config.set_aos_nix_cache_env_var("relative/cache".to_owned());
+        let options = tree_walk_options_from_config(&config)?;
+        assert_eq!(options.parse_cache_root(), None);
+        assert_eq!(options.persist_cache_root(), None);
+        assert!(!options.eval_cache_enabled());
         Ok(())
     }
 

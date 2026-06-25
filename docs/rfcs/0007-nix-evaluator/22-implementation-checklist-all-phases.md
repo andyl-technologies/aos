@@ -1076,9 +1076,9 @@ alone (`M-1`/`Q-A`).
       fallback parses to the persistent file-artifact index. Raw
       `eval_expr`/`instantiate_expr` sources do not synthesize file-artifact
       keys. This is native file-root lookup/writeback only; raw expression
-      durable identities, AOS `AOS_NIX_CACHE` mapping for `persist_cache_root`,
-      mmap reads, full artifact semantic validation beyond existing decoders,
-      GC/repack, and harness proof remain open (`C-13`/`C-14`/`R-10`).
+      durable identities, mmap reads, full artifact semantic validation beyond
+      existing decoders, GC/repack, and harness proof remain open
+      (`C-13`/`C-14`/`R-10`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus
@@ -1181,11 +1181,14 @@ alone (`M-1`/`Q-A`).
 - [x] Current precursor: AOS-configured native-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
       `NixEvalConfig::native_cache_root`; only a valid absolute root maps to
-      `TreeWalkOptions::parse_cache_root = <root>/parse` and
+      `TreeWalkOptions::parse_cache_root = <root>/parse`,
+      `TreeWalkOptions::persist_cache_root = <root>/persist`, and
       `TreeWalkOptions::eval_cache_enabled = true`. Native frontend lowering
       and ordinary import parse-cache paths use the durable frontend parse/IR
-      artifact cache only when `parse_cache_root` is present, and `NixNative`
-      keeps `EvalCacheRuntime` disabled when eval-cache ingestion is disabled.
+      artifact cache only when `parse_cache_root` is present, materialize
+      file-derived parse artifacts only when `persist_cache_root` is present,
+      and `NixNative` keeps `EvalCacheRuntime` disabled when eval-cache
+      ingestion is disabled.
       This covers only the current parse-cache persistence layer and in-memory
       impure-trace leaf ingestion, not value memoization,
       demand/evaluating-node lifecycle, persistent demand graph/value cache, or

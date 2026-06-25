@@ -9,7 +9,7 @@
 //! that operates on arbitrary stores.
 //!
 //! All subprocesses inherit the `AOS_ROOT`-derived environment from
-//! [`aos_nix_env`], so they target the AOS store layout when
+//! `aos_nix_env`, so they target the AOS store layout when
 //! `AOS_ROOT` is set and the canonical `/nix/store` otherwise.
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -83,7 +83,7 @@ fn resolve_nix_program(program: &str) -> std::ffi::OsString {
 /// Private evaluator-control flags are removed so evaluator selection and
 /// canary verification never leak into C++ Nix subprocesses. `AOS_ROOT`-derived
 /// store bindings are then applied through [`aos_nix_env`]. The program is
-/// resolved through [`resolve_nix_program`] so `AOS_NIX_ORACLE` pins the oracle
+/// resolved through `resolve_nix_program` so `AOS_NIX_ORACLE` pins the oracle
 /// nix distribution.
 pub fn aos_nix_command(program: &str) -> Command {
     let mut command = Command::new(resolve_nix_program(program));

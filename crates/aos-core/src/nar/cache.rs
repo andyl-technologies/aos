@@ -202,7 +202,7 @@ pub fn normalize_sha256_nix32(hash: &str) -> String {
     hash.to_string()
 }
 
-/// Decodes Nix's base32 variant (the inverse of [`encode_nix_base32`]).
+/// Decodes Nix's base32 variant (the inverse of `encode_nix_base32`).
 ///
 /// Returns `None` for characters outside the Nix alphabet, for an
 /// encoding whose spare high bits are non-zero (which no valid Nix
