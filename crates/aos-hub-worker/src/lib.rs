@@ -736,6 +736,26 @@ mod entry {
         if let Err(err) = crate::indexer::gc_all(gc_backend, gc_bucket, now, sealer).await {
             worker::console_error!("scheduled cache gc failed: {err:#}");
         }
+
+        // Rebuild the KV directory projection (RFC-0004 ch.14 Phase D) so the
+        // anonymous instance home is served from one KV read. Best-effort: a
+        // failure just leaves the home on its live-path fallback until the next
+        // run. (Event-driven rebuild on publish is enqueued via the `JOBS`
+        // queue's `RebuildDirectory`; this Cron pass is the backstop.)
+        if let (Ok(dir_db), Ok(dir_kv)) = (
+            env.d1(crate::handlers::bindings::D1),
+            env.kv(crate::handlers::bindings::KV_SESSIONS),
+        ) {
+            if let Ok(session) = crate::d1backend::open_session(&dir_db, D1_SEED_PRIMARY) {
+                let db = aos_hub_core::db::Database::attach(Box::new(
+                    crate::d1backend::D1Backend::new(session),
+                ));
+                let kv = crate::workerkv::WorkerKv::new(dir_kv);
+                if let Err(err) = aos_hub_core::directory::rebuild(&db, &kv).await {
+                    worker::console_error!("scheduled directory rebuild failed: {err:#}");
+                }
+            }
+        }
     }
 
     /// The Queue-trigger consumer: drain deferred post-write jobs (RFC-0004
