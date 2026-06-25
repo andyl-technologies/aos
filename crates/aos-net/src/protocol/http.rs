@@ -347,9 +347,12 @@ impl HttpProtocol {
         // Set the request body.
         match &request.body {
             Some(TransferBody::Bytes(data)) => {
-                builder = builder
-                    .header("Content-Length", data.len().to_string())
-                    .body(data.clone());
+                // reqwest derives Content-Length from a sized in-memory body.
+                // Setting it manually too emits a *duplicate* Content-Length
+                // header, which strict edges (Cloudflare) reject with 400. Let
+                // reqwest set it. (The File arm below keeps an explicit length
+                // because its wrapped stream has no inherent size.)
+                builder = builder.body(data.clone());
             }
             Some(TransferBody::File(path)) => {
                 let file = tokio::fs::File::open(path)
@@ -415,9 +418,12 @@ impl HttpProtocol {
 
         match &request.body {
             Some(TransferBody::Bytes(data)) => {
-                builder = builder
-                    .header("Content-Length", data.len().to_string())
-                    .body(data.clone());
+                // reqwest derives Content-Length from a sized in-memory body.
+                // Setting it manually too emits a *duplicate* Content-Length
+                // header, which strict edges (Cloudflare) reject with 400. Let
+                // reqwest set it. (The File arm below keeps an explicit length
+                // because its wrapped stream has no inherent size.)
+                builder = builder.body(data.clone());
             }
             Some(TransferBody::File(path)) => {
                 let file = tokio::fs::File::open(path)
