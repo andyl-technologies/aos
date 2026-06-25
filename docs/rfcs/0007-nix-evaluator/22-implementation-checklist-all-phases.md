@@ -703,9 +703,13 @@ alone (`M-1`/`Q-A`).
 - [x] Current memoization-granularity policy substrate: `cache::policy` defines
       `MemoizationSubject` defaults for the always/conditional/never classes and
       `MemoizationClass::decide` admits conditional work only when both
-      used-many and cheap-value-hash signals are present. This is policy
-      vocabulary only; evaluator subject selection, demand/cardinality signal
-      production, hit/overhead tracing, `force_memoized` use,
+      used-many and cheap-value-hash signals are present. `MemoizationDemand`
+      records same-run demand counts with saturating increments, marks a
+      computation used-many on the second observed demand, and feeds that signal
+      into the existing admission decision when the caller supplies
+      value-hash cost information. This is policy vocabulary only; evaluator
+      subject selection, cardinality-analysis signal bridges,
+      hit/overhead tracing, `force_memoized` use,
       persistence/materialization decisions, and measured AOS tuning remain open
       (`M-11`).
 - [x] Current `cache/cutoff.rs` standalone decision primitive: typed

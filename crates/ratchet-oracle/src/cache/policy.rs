@@ -2,7 +2,8 @@
 //!
 //! This module names the coarse §3.3 cache-granularity classes and the §3.4
 //! durable materialization threshold. It does not wire policy decisions into
-//! the evaluator, collect demand counters, or write persistent cache records.
+//! the evaluator, collect evaluator demand observations, or write persistent
+//! cache records.
 
 /// A coarse evaluator computation category for memoization admission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,6 +81,43 @@ impl MemoizationSignals {
     /// Returns whether the value hash is already available or cheap to compute.
     pub const fn cheap_value_hash(self) -> bool {
         self.cheap_value_hash
+    }
+}
+
+/// Same-run demand observations for RAM-tier memoization admission.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MemoizationDemand {
+    current_run_demands: u64,
+}
+
+impl MemoizationDemand {
+    /// Creates same-run demand observations from an explicit count.
+    pub const fn new(current_run_demands: u64) -> Self {
+        Self {
+            current_run_demands,
+        }
+    }
+
+    /// Returns the number of demands observed in the current run.
+    pub const fn current_run_demands(self) -> u64 {
+        self.current_run_demands
+    }
+
+    /// Returns observations with one more current-run demand, saturating on overflow.
+    pub const fn record_current_demand(self) -> Self {
+        Self {
+            current_run_demands: self.current_run_demands.saturating_add(1),
+        }
+    }
+
+    /// Returns whether this computation has crossed the used-many threshold.
+    pub const fn used_many(self) -> bool {
+        self.current_run_demands > 1
+    }
+
+    /// Combines same-run demand with caller-supplied value-hash cost information.
+    pub const fn signals(self, cheap_value_hash: bool) -> MemoizationSignals {
+        MemoizationSignals::new(self.used_many(), cheap_value_hash)
     }
 }
 
@@ -308,6 +346,44 @@ mod tests {
             class.decide(MemoizationSignals::new(true, true)),
             MemoizationDecision::Admit
         );
+    }
+
+    #[test]
+    fn memoization_demand_marks_second_demand_as_used_many() {
+        let first = MemoizationDemand::default().record_current_demand();
+        let second = first.record_current_demand();
+
+        assert_eq!(first.current_run_demands(), 1);
+        assert!(!first.used_many());
+        assert_eq!(
+            MemoizationClass::Conditional.decide(first.signals(true)),
+            MemoizationDecision::Bypass
+        );
+        assert_eq!(second.current_run_demands(), 2);
+        assert!(second.used_many());
+        assert_eq!(
+            MemoizationClass::Conditional.decide(second.signals(true)),
+            MemoizationDecision::Admit
+        );
+    }
+
+    #[test]
+    fn memoization_demand_still_requires_cheap_value_hash() {
+        let used_many = MemoizationDemand::new(2);
+
+        assert!(used_many.used_many());
+        assert_eq!(
+            MemoizationClass::Conditional.decide(used_many.signals(false)),
+            MemoizationDecision::Bypass
+        );
+    }
+
+    #[test]
+    fn memoization_demand_saturates() {
+        let demand = MemoizationDemand::new(u64::MAX).record_current_demand();
+
+        assert_eq!(demand.current_run_demands(), u64::MAX);
+        assert!(demand.used_many());
     }
 
     #[test]

@@ -70,7 +70,8 @@ pub use persist::{
 };
 pub use policy::{
     MaterializationCosts, MaterializationDecision, MaterializationReuse, MaterializationSignals,
-    MemoizationClass, MemoizationDecision, MemoizationSignals, MemoizationSubject,
+    MemoizationClass, MemoizationDecision, MemoizationDemand, MemoizationSignals,
+    MemoizationSubject,
 };
 pub use runtime::{
     CachedExpressionValue, CachedExpressionValuePayloadError, EvalCache, EvalCacheRuntime,
