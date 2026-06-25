@@ -6,7 +6,7 @@ use crucible_sim::StableHasher;
 
 use crate::{
     AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, CheckpointKind, ContentHash,
-    ExecutionFingerprint, ExecutionHorizon, Icount,
+    ExecutionFingerprint, ExecutionHorizon, Icount, NodeBlobRef, NodeId,
 };
 
 /// A deterministic in-process backend implementing [`Backend`].
@@ -92,11 +92,12 @@ impl Backend for SimBackend {
     }
 
     fn snapshot(&mut self) -> Result<Checkpoint, BackendError> {
-        let checkpoint = Checkpoint {
-            id: self.state.checkpoint_id(),
-            configuration: self.state.fingerprint(),
-            kind: CheckpointKind::Fat,
-        };
+        let checkpoint = Checkpoint::with_node_blobs(
+            self.state.checkpoint_id(),
+            self.state.fingerprint(),
+            CheckpointKind::Fat,
+            self.state.node_blobs(),
+        );
         self.snapshots.insert(checkpoint.id, self.state.clone());
         Ok(checkpoint)
     }
@@ -156,6 +157,26 @@ impl SimBackendState {
             bytes: hasher.finish().bytes,
         }
     }
+
+    fn node_blobs(&self) -> BTreeMap<NodeId, NodeBlobRef> {
+        let parent = ContentHash::from_canonical_material("crucible.sim-backend.node-blob", "root");
+        let resolved = self.fingerprint();
+        let delta = ContentHash::from_canonical_material(
+            "crucible.sim-backend.node-blob.delta",
+            &format!(
+                "icount={}\ninputs={}\nshutdown={}",
+                self.icount.retired,
+                self.delivered_inputs.len(),
+                self.shutdown
+            ),
+        );
+        BTreeMap::from([(
+            NodeId {
+                name: String::from("sim"),
+            },
+            NodeBlobRef::cow_delta(parent, delta, resolved),
+        )])
+    }
 }
 
 #[cfg(test)]
@@ -205,6 +226,12 @@ mod tests {
             Ok(checkpoint) => checkpoint,
             Err(error) => panic!("snapshot should succeed: {error}"),
         };
+        assert!(matches!(
+            checkpoint.node_blob(&NodeId {
+                name: String::from("sim"),
+            }),
+            Some(NodeBlobRef::CowDelta { .. })
+        ));
         assert_eq!(
             backend.advance_to_horizon(ExecutionHorizon {
                 icount: Icount { retired: 9 },
@@ -252,11 +279,11 @@ mod tests {
     #[test]
     fn sim_backend_rejects_unknown_checkpoint_deterministically() {
         let mut backend = SimBackend::new();
-        let unknown = Checkpoint {
-            id: ContentHash { bytes: [7; 32] },
-            configuration: ContentHash::default(),
-            kind: CheckpointKind::Fat,
-        };
+        let unknown = Checkpoint::new(
+            ContentHash { bytes: [7; 32] },
+            ContentHash::default(),
+            CheckpointKind::Fat,
+        );
 
         assert!(matches!(
             backend.restore(&unknown),

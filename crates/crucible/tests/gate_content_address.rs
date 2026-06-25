@@ -184,16 +184,8 @@ fn gate_content_address_excludes_materialization_cache_from_identity() {
         }),
     );
     let id = configuration.content_hash();
-    let thin = Checkpoint {
-        id,
-        configuration: id,
-        kind: CheckpointKind::Thin,
-    };
-    let fat = Checkpoint {
-        id,
-        configuration: id,
-        kind: CheckpointKind::Fat,
-    };
+    let thin = Checkpoint::new(id, id, CheckpointKind::Thin);
+    let fat = Checkpoint::new(id, id, CheckpointKind::Fat);
 
     assert_eq!(thin.id, fat.id);
     assert_eq!(thin.configuration, fat.configuration);

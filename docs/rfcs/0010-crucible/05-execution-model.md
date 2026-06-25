@@ -548,8 +548,12 @@ parent's blob (07, 15). The type is the same; only the referent differs.
 pub enum NodeBlobRef {
     /// Genesis: the baked snapshot for this node's `World` entry (§6).
     Baked(ContentHash),
-    /// A copy-on-write delta over a parent blob (files 07, 15).
-    CowDelta { parent: ContentHash, delta: ContentHash },
+    /// A copy-on-write delta over a parent blob, plus the resolved state hash.
+    CowDelta {
+        parent: ContentHash,
+        delta: ContentHash,
+        resolved: ContentHash,
+    },
 }
 ```
 
@@ -917,9 +921,20 @@ information that cannot be recomputed.
     ready-point material sensitivity, white-box opt-in rejection, and
     content-identical repeated bake output for each ready-point policy;
     `checks.crucible.phase1.executionReadyPoint` gates the task.
-- [ ] **T-EXEC-10** Implement the homogeneous `NodeBlobRef` (baked vs CoW-delta)
+- [x] **T-EXEC-10** Implement the homogeneous `NodeBlobRef` (baked vs CoW-delta)
   so no code path distinguishes initial from materialized VM state. — satisfies
   [EXEC-21], [EXEC-22]; spec §7.
+  - Completed by `crates/crucible/src/model.rs`: `NodeBlobRef` now represents
+    both baked ready-point blobs and CoW deltas with an explicit resolved
+    content hash, normalizes both shapes through `content_hash()`, and is
+    carried by every `Checkpoint` in the same `node_blobs` map. Model bake and
+    QEMU bake populate baked per-node refs for worlds with ready-point nodes,
+    QEMU baked-genesis validation rejects missing baked node refs, and the sim
+    backend, replay-oracle test double, and QEMU cached-checkpoint helpers
+    materialize `CowDelta` refs via `Checkpoint::with_node_blobs`.
+    `crates/crucible/src/lib.rs` covers baked-genesis refs and uniform baked/CoW
+    content comparison; `checks.crucible.phase1.executionNodeBlobRef` gates the
+    task.
 - [ ] **T-EXEC-11** Implement the replay-oracle equality check
   (`loadvm(snapshot) ≡ replay-from-ancestor`) and wire it as `gate:replay-oracle`
   in CI. — satisfies [EXEC-23]; spec §8.

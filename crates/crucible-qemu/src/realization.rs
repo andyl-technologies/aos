@@ -6,8 +6,8 @@
 //! the required priority order while keeping the true cold boot inside `bake`.
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EngineError, RuntimeState,
-    ScenarioDef, ScheduleError, World,
+    Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EngineError, NodeBlobRef,
+    RuntimeState, ScenarioDef, ScheduleError, World,
 };
 use thiserror::Error;
 
@@ -563,6 +563,26 @@ fn validate_baked_genesis_snapshot(
             message: String::from("baked genesis checkpoint must be fat"),
         });
     }
+    validate_baked_genesis_node_blobs(snapshot, world)?;
+    Ok(())
+}
+
+fn validate_baked_genesis_node_blobs(
+    snapshot: &QemuBakedGenesisSnapshot,
+    world: &World,
+) -> Result<(), QemuVmRealizationError> {
+    for node in &world.nodes {
+        if !matches!(
+            snapshot.checkpoint.node_blob(&node.id),
+            Some(NodeBlobRef::Baked(_))
+        ) {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "baked genesis",
+                message: format!("missing baked node blob for node {}", node.id.name),
+            });
+        }
+    }
+
     Ok(())
 }
 
@@ -704,7 +724,8 @@ mod tests {
     use std::rc::Rc;
 
     use crucible::{
-        NodeId, ReadyPoint, RngDecision, RngStreamId, Schedule, WhiteBoxPolicy, WorldNode,
+        NodeBlobRef, NodeId, ReadyPoint, RngDecision, RngStreamId, Schedule, WhiteBoxPolicy,
+        WorldNode,
     };
 
     use super::*;
@@ -887,11 +908,12 @@ mod tests {
                 .push(RealizationCall::ColdBootBake(world.id));
             Ok(QemuBakedGenesisSnapshot {
                 world_id: world.id,
-                checkpoint: Checkpoint {
-                    id: hash("checkpoint", "baked-genesis"),
-                    configuration: hash("configuration", "baked-by-executor"),
-                    kind: CheckpointKind::Fat,
-                },
+                checkpoint: Checkpoint::with_node_blobs(
+                    hash("checkpoint", "baked-genesis"),
+                    hash("configuration", "baked-by-executor"),
+                    CheckpointKind::Fat,
+                    qemu_baked_node_blobs(world),
+                ),
             })
         }
     }
@@ -1353,6 +1375,35 @@ mod tests {
     }
 
     #[test]
+    fn qemu_bake_records_baked_node_blob_refs() -> Result<(), QemuVmRealizationError> {
+        let node = NodeId {
+            name: String::from("qemu"),
+        };
+        let world = match World::from_nodes(vec![WorldNode {
+            id: node.clone(),
+            ready_point: ReadyPoint::ConsoleMarker {
+                marker: String::from("ready"),
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+        }]) {
+            Ok(world) => world,
+            Err(error) => panic!("test world should be valid: {error}"),
+        };
+        let log = shared_log();
+        let mut executor = scripted_executor(Rc::clone(&log));
+
+        let baked = bake_qemu_genesis_vm(&world, &mut executor)?;
+
+        assert!(matches!(
+            baked.checkpoint.node_blob(&node),
+            Some(NodeBlobRef::Baked(_))
+        ));
+        assert_eq!(baked.checkpoint.node_blobs.len(), 1);
+        assert_eq!(logged(&log), vec![RealizationCall::ColdBootBake(world.id)]);
+        Ok(())
+    }
+
+    #[test]
     fn qemu_bake_rejects_agent_signal_without_white_box_opt_in() {
         let world = World {
             id: hash("world", "qemu-invalid-agent-ready"),
@@ -1503,6 +1554,48 @@ mod tests {
     }
 
     #[test]
+    fn qemu_instantiate_rejects_baked_genesis_missing_node_blob() {
+        let world = match World::from_nodes(vec![WorldNode {
+            id: NodeId {
+                name: String::from("qemu"),
+            },
+            ready_point: ReadyPoint::FixedIcount {
+                icount: crucible::Icount { retired: 1 },
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+        }]) {
+            Ok(world) => world,
+            Err(error) => panic!("test world should be valid: {error}"),
+        };
+        let def = scenario("missing-baked-node-blob");
+        let genesis = Configuration::genesis(def.clone());
+        let log = shared_log();
+        let mut store = scripted_store(Rc::clone(&log), &world, &def);
+        store.baked.checkpoint = Checkpoint::new(
+            hash("checkpoint", "empty-baked-genesis"),
+            genesis.id(),
+            CheckpointKind::Fat,
+        );
+        let mut executor = scripted_executor(log);
+
+        let result = instantiate_qemu_vm(
+            &world,
+            &genesis,
+            &mut store,
+            &mut executor,
+            QemuSavevmCompletenessPolicy::default(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "baked genesis",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn qemu_baked_genesis_snapshot_is_shared_across_same_world_scenarios()
     -> Result<(), QemuVmRealizationError> {
         let world = world("shared-baked-world");
@@ -1589,7 +1682,12 @@ mod tests {
             ancestors: Vec::new(),
             baked: QemuBakedGenesisSnapshot {
                 world_id: world.id,
-                checkpoint: checkpoint_for_config("baked-genesis", &genesis, CheckpointKind::Fat),
+                checkpoint: Checkpoint::with_node_blobs(
+                    hash("checkpoint", "baked-genesis"),
+                    genesis.id(),
+                    CheckpointKind::Fat,
+                    qemu_baked_node_blobs(world),
+                ),
             },
         }
     }
@@ -1636,6 +1734,20 @@ mod tests {
         World::from_content_hash(hash("world", name))
     }
 
+    fn qemu_baked_node_blobs(world: &World) -> std::collections::BTreeMap<NodeId, NodeBlobRef> {
+        world
+            .nodes
+            .iter()
+            .map(|node| {
+                let blob = hash(
+                    "qemu-test-baked-node-blob",
+                    &format!("world={:?}\nnode={}", world.id.bytes, node.id.name),
+                );
+                (node.id.clone(), NodeBlobRef::baked(blob))
+            })
+            .collect()
+    }
+
     fn scenario(name: &str) -> ScenarioDef {
         ScenarioDef {
             id: hash("scenario", name),
@@ -1666,11 +1778,30 @@ mod tests {
         kind: CheckpointKind,
     ) -> Checkpoint {
         let id = hash("checkpoint", name);
-        Checkpoint {
-            id,
-            configuration: config.id(),
-            kind,
-        }
+        Checkpoint::with_node_blobs(id, config.id(), kind, qemu_materialized_node_blobs(config))
+    }
+
+    fn qemu_materialized_node_blobs(
+        config: &Configuration,
+    ) -> std::collections::BTreeMap<NodeId, NodeBlobRef> {
+        let parent = hash(
+            "qemu-test-node-blob-parent",
+            &format!("scenario={:?}", config.def.id.bytes),
+        );
+        let delta = hash(
+            "qemu-test-node-blob-delta",
+            &format!("config={:?}", config.id().bytes),
+        );
+        let resolved = hash(
+            "qemu-test-node-blob-resolved",
+            &format!("config={:?}", config.id().bytes),
+        );
+        std::collections::BTreeMap::from([(
+            NodeId {
+                name: String::from("qemu"),
+            },
+            NodeBlobRef::cow_delta(parent, delta, resolved),
+        )])
     }
 
     fn decision_value(decision: &Decision) -> u64 {

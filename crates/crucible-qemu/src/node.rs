@@ -1422,11 +1422,11 @@ mod tests {
     }
 
     fn checkpoint(name: &str) -> Checkpoint {
-        Checkpoint {
-            id: content_hash("checkpoint", name),
-            configuration: content_hash("configuration", name),
-            kind: CheckpointKind::Fat,
-        }
+        Checkpoint::new(
+            content_hash("checkpoint", name),
+            content_hash("configuration", name),
+            CheckpointKind::Fat,
+        )
     }
 
     fn content_hash(domain: &str, material: &str) -> ContentHash {
