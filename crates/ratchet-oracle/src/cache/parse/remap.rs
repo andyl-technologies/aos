@@ -92,6 +92,13 @@ impl SymbolRemapper {
             NodeData::Symbol(symbol) => {
                 Ok(NodeData::Symbol(self.local_symbol(source_symbols, symbol)?))
             }
+            NodeData::SearchPath {
+                literal,
+                search_path,
+            } => Ok(NodeData::SearchPath {
+                literal: self.local_symbol(source_symbols, literal)?,
+                search_path,
+            }),
             NodeData::FormalSet {
                 formals,
                 ellipsis,

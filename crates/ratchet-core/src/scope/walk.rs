@@ -7,6 +7,7 @@
 use super::*;
 
 const CUR_POS_NAME: &[u8] = b"__curPos";
+const NIX_PATH_NAME: &[u8] = b"__nixPath";
 
 impl ResolverState {
     pub(super) fn resolve_node(&mut self, id: NodeId) -> Result<(), ScopeError> {
@@ -16,12 +17,12 @@ impl ResolverState {
             | NodeKind::Float
             | NodeKind::Str
             | NodeKind::Path
-            | NodeKind::SearchPath
             | NodeKind::Uri
             | NodeKind::LocalVar
             | NodeKind::UpvalVar
             | NodeKind::GlobalVar
             | NodeKind::WithVar => Ok(()),
+            NodeKind::SearchPath => self.resolve_search_path(id, node),
             NodeKind::Ident => self.resolve_identifier(id, node),
             NodeKind::List => self.resolve_children_payload(node),
             NodeKind::AttrSet => self.resolve_attrset(node),
@@ -69,6 +70,10 @@ impl ResolverState {
             return self.replace_node(id, kind, data);
         }
 
+        if self.symbols.resolve(symbol) == Some(NIX_PATH_NAME) {
+            return self.replace_node(id, NodeKind::GlobalVar, NodeData::Symbol(symbol));
+        }
+
         if self.is_unshadowable_global_symbol(symbol) {
             return self.replace_node(id, NodeKind::GlobalVar, NodeData::Symbol(symbol));
         }
@@ -97,6 +102,40 @@ impl ResolverState {
             ScopeErrorKind::UndefinedSymbol(symbol),
             node.span,
         ))
+    }
+
+    fn resolve_search_path(&mut self, id: NodeId, node: Node) -> Result<(), ScopeError> {
+        let literal = match node.data {
+            NodeData::Symbol(symbol) => symbol,
+            NodeData::SearchPath { literal, .. } => literal,
+            _ => return Err(self.invalid_shape(node, "search-path payload")),
+        };
+        let nix_path = self.nix_path_symbol()?;
+        let search_path = if let Some((depth, slot, binding_frame)) = self.lookup_symbol(nix_path) {
+            self.record_captures(binding_frame, slot, node.span)?;
+            let data = if depth == 0 {
+                NodeData::Local { slot }
+            } else {
+                NodeData::Upval { depth, slot }
+            };
+            let kind = if depth == 0 {
+                NodeKind::LocalVar
+            } else {
+                NodeKind::UpvalVar
+            };
+            Some(self.push_synthetic_node(kind, node.span, data)?)
+        } else {
+            None
+        };
+
+        self.replace_node(
+            id,
+            NodeKind::SearchPath,
+            NodeData::SearchPath {
+                literal,
+                search_path,
+            },
+        )
     }
 
     fn resolve_let_in(&mut self, id: NodeId, node: Node) -> Result<(), ScopeError> {
@@ -643,5 +682,11 @@ impl ResolverState {
             }
             _ => Ok(None),
         }
+    }
+
+    fn nix_path_symbol(&mut self) -> Result<Symbol, ScopeError> {
+        self.symbols
+            .intern(NIX_PATH_NAME)
+            .map_err(ScopeError::from_ast)
     }
 }

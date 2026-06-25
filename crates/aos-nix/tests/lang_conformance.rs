@@ -90,18 +90,12 @@ struct LangCaseExclusion {
 
 const PINNED_LANG_CPP_NIX_VERSION: LangVersion = LangVersion::new(2, 24, 12);
 const LANG_VERSION_SKIP_RULES: &[LangVersionSkipRule] = &[];
-const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
-    LangCaseExclusion {
-        name: "eval-fail-infinite-recursion-lambda",
-        reason: "native evaluator stack-safety gap for infinite lambda recursion",
-    },
-    LangCaseExclusion {
-        name: "eval-okay-search-path",
-        reason: "implicit C++ Nix corepkgs search path is not modeled",
-    },
-];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 206;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 3;
+const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[LangCaseExclusion {
+    name: "eval-fail-infinite-recursion-lambda",
+    reason: "native evaluator stack-safety gap for infinite lambda recursion",
+}];
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 207;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 2;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",
@@ -869,6 +863,9 @@ fn base_eval_options(lang_dir: &Path) -> std::result::Result<TreeWalkOptions, St
             .set_search_path_base(path_bytes(parent))
             .map_err(|error| error.to_string())?;
     }
+    options
+        .set_corepkgs_path(path_bytes(&fixture_corepkgs_dir()))
+        .map_err(|error| error.to_string())?;
     Ok(options)
 }
 
@@ -1126,6 +1123,13 @@ fn fixture_lang_dir() -> PathBuf {
         .join("tests")
         .join("fixtures")
         .join("lang")
+}
+
+fn fixture_corepkgs_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("corepkgs")
 }
 
 fn unique_temp_lang_dir(label: &str) -> PathBuf {
@@ -1666,6 +1670,10 @@ fn lang_sh_search_path_flags_configure_eval_okay() {
         path_bytes(&lang_dir.parent().unwrap())
     );
     assert_eq!(options.nix_path().len(), 5);
+    assert_eq!(
+        options.corepkgs_path(),
+        Some(path_bytes(&fixture_corepkgs_dir()).as_slice())
+    );
 }
 
 #[test]

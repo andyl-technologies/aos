@@ -46,6 +46,16 @@ fn validate_node_data(resolved: &ResolvedAst, data: NodeData) -> Result<(), Stri
     match data {
         NodeData::None | NodeData::Int(_) | NodeData::Float(_) => Ok(()),
         NodeData::Symbol(symbol) => check_symbol(resolved, symbol),
+        NodeData::SearchPath {
+            literal,
+            search_path,
+        } => {
+            check_symbol(resolved, literal)?;
+            if let Some(search_path) = search_path {
+                check_node_id(resolved, search_path, "search-path list")?;
+            }
+            Ok(())
+        }
         NodeData::Node(node) => check_node_id(resolved, node, "node payload"),
         NodeData::Pair { first, second } => {
             check_node_id(resolved, first, "pair first")?;
@@ -220,7 +230,7 @@ fn validate_ir_node_shape(node: IrNode) -> Result<(), String> {
             | (IrKind::Null, IrData::None)
             | (IrKind::Str, IrData::Symbol(_))
             | (IrKind::Path, IrData::Symbol(_))
-            | (IrKind::SearchPath, IrData::Symbol(_))
+            | (IrKind::SearchPath, IrData::SearchPath { .. })
             | (IrKind::Uri, IrData::Symbol(_))
             | (IrKind::LocalVar, IrData::Local { .. })
             | (IrKind::UpvalVar, IrData::Upval { .. })
@@ -308,6 +318,16 @@ fn validate_ir_data(ir: &Ir, data: IrData) -> Result<(), String> {
     match data {
         IrData::None | IrData::Int(_) | IrData::Float(_) | IrData::Bool(_) => Ok(()),
         IrData::Symbol(symbol) => check_ir_symbol(ir, symbol),
+        IrData::SearchPath {
+            literal,
+            search_path,
+        } => {
+            check_ir_symbol(ir, literal)?;
+            if let Some(search_path) = search_path {
+                check_ir_id(ir, search_path, "search-path list")?;
+            }
+            Ok(())
+        }
         IrData::Node(node) => check_ir_id(ir, node, "node payload"),
         IrData::Pair { first, second } => {
             check_ir_id(ir, first, "pair first")?;

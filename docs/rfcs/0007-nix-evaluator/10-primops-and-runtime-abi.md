@@ -588,9 +588,12 @@ output this must resolve to the *same* concrete store path C++ Nix would
 resolve, so the native evaluator treats the configured entries as the parity
 boundary: `NixEvalConfig` maps representable `NIX_PATH` strings to ordered
 entries, the language conformance runner maps supported `-I` flags the same way,
-and unrepresentable ambient search paths fall back rather than guessing. The
-tree-walk evaluator caches both positive and negative lookups per configured
-entry list and lookup key. In AOS practice the package set is pinned (flake or
+models C++ Nix's hidden `<nix/...>` corepkgs lookup without reflecting it through
+`builtins.nixPath`, and unrepresentable ambient search paths fall back rather
+than guessing. Lexical `__nixPath` bindings override angle-bracket lookup for the
+body that defines them, matching the upstream language fixture. The tree-walk
+evaluator caches both positive and negative lookups per configured entry list,
+lookup key, and lookup origin. In AOS practice the package set is pinned (flake or
 pinned `NIX_PATH`), so this is deterministic, but the harness still diffs it
 because a wrong `<nixpkgs>` resolution is a silent, catastrophic divergence.
 
@@ -800,7 +803,7 @@ harness, never cut for scope.
 - [x] Two-level cache: ordinary filesystem imports use a durable content-addressed parse/compile cache keyed by source BLAKE3 plus schema/flags, and a Nix-faithful result memo keyed by canonical realpath only. Cached import IR is remapped per import site so byte-identical modules reached from different directories still preserve module-relative path bases; tests cover durable hit/miss stats, remapping for formals/inherits/builtins/with-vars, and result reuse ([§6.1](#61-semantics)–[§6.2](#62-the-two-level-cache)) — P2, `S-12`; gate: differential `.drv` harness (hazard #6).
 - [x] `import` is memoized, while `scopedImport` deliberately bypasses the result memo and re-evaluates under a fresh injected global scope. Current tree-walk `scopedImport` and text-store imports also bypass the durable parse cache; tests assert scoped imports trace twice and bypass parse-cache stats/artifacts ([§6.1](#61-semantics), [§6.2](#62-the-two-level-cache)) — P2; gate: conformance 21.
 - [ ] Composition with the cross-run incremental cache; import as the early-cutoff granularity boundary ([§6.3](#63-interaction-with-the-incremental-cache), [12](12-incremental-evaluation-cache.md)) — P2, `S-14`.
-- [x] `findFile` / `<nixpkgs>` resolution over configured search-path entries, including `builtins.nixPath` reflection, angle-bracket lookup, explicit `builtins.findFile`, prefix matching, ordered fallback, relative entries, path-value returns, pure/restricted filesystem policy, positive/negative lookup caching, representable `NIX_PATH` mapping in `NixEvalConfig`, and supported `-I` flag modeling in the language conformance runner. Unrepresentable ambient search paths still fall back explicitly rather than silently diverging; opt-in C++ Nix oracle tests cover the configured findFile/search-path cases ([§6.4](#64-findfile-and-the-lookup-path)) — P1; gate: differential `.drv` harness (hazard #7).
+- [x] `findFile` / `<nixpkgs>` resolution over configured search-path entries, including `builtins.nixPath` reflection, angle-bracket lookup, lexical `__nixPath` override, hidden C++ Nix `<nix/...>` corepkgs lookup, explicit `builtins.findFile`, prefix matching, ordered fallback, relative entries, path-value returns, pure/restricted filesystem policy, positive/negative lookup caching, representable `NIX_PATH` mapping in `NixEvalConfig`, and supported `-I` flag modeling in the language conformance runner. Unrepresentable ambient search paths still fall back explicitly rather than silently diverging; opt-in C++ Nix oracle tests cover the configured findFile/search-path cases ([§6.4](#64-findfile-and-the-lookup-path)) — P1; gate: differential `.drv` harness (hazard #7).
 
 ### Impure primops and the concurrency runtime
 

@@ -524,6 +524,13 @@ pub enum IrData {
     Bool(bool),
     /// The node carries an interned symbol.
     Symbol(Symbol),
+    /// The node represents a search-path literal.
+    SearchPath {
+        /// The literal text, including the surrounding angle brackets.
+        literal: Symbol,
+        /// The optional lowered expression supplying a lexical `__nixPath`.
+        search_path: Option<IrId>,
+    },
     /// The node references one child.
     Node(IrId),
     /// The node references two children.

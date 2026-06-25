@@ -454,6 +454,33 @@ impl TreeWalkOptions {
         Ok(())
     }
 
+    /// Replaces the hidden C++ Nix corepkgs directory used for `<nix/...>`.
+    ///
+    /// C++ Nix resolves some `<nix/...>` lookups from an internal corepkgs tree
+    /// without reflecting that tree in `builtins.nixPath`. Setting this path
+    /// models that fallback while keeping [`TreeWalkOptions::nix_path`] focused
+    /// on visible search-path entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `path` is relative.
+    pub fn set_corepkgs_path(
+        &mut self,
+        path: impl Into<Vec<u8>>,
+    ) -> Result<(), TreeWalkOptionsError> {
+        self.corepkgs_path = Some(normalize_absolute_path(
+            path.into(),
+            b"/",
+            TreeWalkOptionsError::RelativeCorepkgsPath,
+        )?);
+        Ok(())
+    }
+
+    /// Clears the hidden C++ Nix corepkgs directory.
+    pub fn clear_corepkgs_path(&mut self) {
+        self.corepkgs_path = None;
+    }
+
     /// Enables or disables ambient Nix search-path lookup.
     ///
     /// When enabled, evaluating `<...>` or `builtins.nixPath` fails before
@@ -591,6 +618,11 @@ impl TreeWalkOptions {
         &self.nix_path
     }
 
+    /// Returns the hidden C++ Nix corepkgs directory for `<nix/...>` fallback.
+    pub fn corepkgs_path(&self) -> Option<&[u8]> {
+        self.corepkgs_path.as_deref()
+    }
+
     /// Returns whether ambient Nix search-path lookup is disabled.
     pub const fn reject_ambient_search_path(&self) -> bool {
         self.reject_ambient_search_path
@@ -626,6 +658,10 @@ pub enum TreeWalkOptionsError {
     /// The configured path-literal base directory is not an absolute path.
     #[error("Nix path-literal base directory must be absolute")]
     RelativePathLiteralBase,
+
+    /// The configured corepkgs directory is not an absolute path.
+    #[error("Nix corepkgs directory must be absolute")]
+    RelativeCorepkgsPath,
 
     /// The configured home directory is empty or not absolute.
     #[error("Nix home directory must be absolute")]

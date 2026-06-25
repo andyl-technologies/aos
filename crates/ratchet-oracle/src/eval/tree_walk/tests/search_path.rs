@@ -155,6 +155,40 @@ fn nix_path_value_reflects_configured_search_path() {
 }
 
 #[test]
+fn bare_nix_path_reflects_search_path_and_only_lexical_bindings_shadow_it() {
+    let (_root, nixpkgs, _subdir) = search_path_fixture();
+    let options = search_path_options(b"nixpkgs", &nixpkgs);
+    let expected = format!(
+        r#"[{{"path":{},"prefix":"nixpkgs"}}]"#,
+        nix_string_literal(&path_source(&nixpkgs))
+    )
+    .into_bytes();
+
+    assert_eq!(
+        eval_string_bytes_with_options("builtins.toJSON __nixPath", options.clone()),
+        expected
+    );
+    assert_eq!(
+        eval_json_bytes_with_options("builtins ? __nixPath", options.clone()),
+        b"false".to_vec()
+    );
+    assert_eq!(
+        eval_string_bytes_with_options(
+            "builtins.toJSON (with { __nixPath = []; }; __nixPath)",
+            options.clone()
+        ),
+        expected
+    );
+    assert_eq!(
+        eval_string_bytes_with_options(
+            "builtins.toJSON (let __nixPath = []; in __nixPath)",
+            options
+        ),
+        b"[]".to_vec()
+    );
+}
+
+#[test]
 fn find_file_and_search_path_return_path_values() {
     let (root, nixpkgs, subdir) = search_path_fixture();
     let prefixed = search_path_options(b"nixpkgs", &nixpkgs);
@@ -187,6 +221,93 @@ fn find_file_and_search_path_return_path_values() {
             "source diverged: {source}"
         );
     }
+}
+
+#[test]
+fn ambient_search_path_uses_hidden_corepkgs_without_reflecting_it() {
+    let root = unique_temp_dir("hidden-corepkgs");
+    let corepkgs = root.join("corepkgs");
+    let empty = root.join("empty");
+    fs::create_dir(&corepkgs).expect("corepkgs fixture creates");
+    fs::create_dir(&empty).expect("empty fixture creates");
+    fs::write(corepkgs.join("fetchurl.nix"), b"args: args").expect("corepkgs fetchurl writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_corepkgs_path(path_bytes(&corepkgs))
+        .expect("corepkgs path configures");
+    let source = format!(
+        r#"[
+            (builtins.length builtins.nixPath)
+            (builtins.isFunction (import <nix/fetchurl.nix>))
+            (let __nixPath = []; in builtins.isFunction (import <nix/fetchurl.nix>))
+            ((builtins.tryEval (builtins.findFile builtins.nixPath "nix/fetchurl.nix")).success)
+            ((builtins.tryEval (builtins.findFile [ {{ prefix = "nix"; path = {}; }} ] "nix/fetchurl.nix")).success)
+        ]"#,
+        nix_string_literal(&path_source(&empty))
+    );
+
+    assert_eq!(
+        eval_json_bytes_with_options(&source, options),
+        br#"[0,true,true,false,false]"#.to_vec()
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn reject_ambient_search_path_rejects_lexical_angle_bracket_lookup() {
+    let root = unique_temp_dir("reject-lexical-nix-path");
+    let dir = root.join("dir");
+    fs::create_dir(&dir).expect("search-path fixture creates");
+    fs::write(dir.join("a.nix"), br#""a""#).expect("fixture file writes");
+
+    let mut options = TreeWalkOptions::with_path_literal_base(path_bytes(&root))
+        .expect("path literal base configures");
+    options.set_reject_ambient_search_path(true);
+
+    let error = eval_whnf_owned_with_options(
+        &lower("let __nixPath = [ { path = ./dir; } ]; in <a.nix>"),
+        options,
+    )
+    .expect_err("reject mode rejects angle-bracket lookup even with lexical __nixPath");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::UnsupportedAmbientSearchPath { .. }
+    ));
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn search_path_literals_use_lexical_nix_path_but_ignore_with_bound_nix_path() {
+    let root = unique_temp_dir("lexical-nix-path");
+    let dir1 = root.join("dir1");
+    let dir2 = root.join("dir2");
+    fs::create_dir(&dir1).expect("dir1 creates");
+    fs::create_dir(&dir2).expect("dir2 creates");
+    fs::write(dir1.join("a.nix"), br#""a""#).expect("dir1 a.nix writes");
+    fs::write(dir2.join("a.nix"), br#""X""#).expect("dir2 a.nix writes");
+
+    let mut options = search_path_options(b"", &dir1);
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path literal base configures");
+    options
+        .set_search_path_base(path_bytes(&root))
+        .expect("search path base configures");
+
+    assert_eq!(
+        eval_string_bytes_with_options(
+            r#"import <a.nix>
+              + (let __nixPath = [ { path = ./dir2; } { path = ./dir1; } ]; in import <a.nix>)
+              + (with { __nixPath = [ { path = ./dir2; } ]; }; import <a.nix>)"#,
+            options,
+        ),
+        b"aXa".to_vec()
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
 }
 
 #[test]

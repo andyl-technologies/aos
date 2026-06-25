@@ -685,6 +685,7 @@ eval (network access is disabled unless explicitly allowed).
         wrong resolution is a silent catastrophic divergence.
       - `nixPath` (§14) is the reflected value of the search path.
       - Implemented for evaluator-supplied search paths, angle-bracket lookup,
+        lexical `__nixPath` override, hidden C++ Nix `<nix/...>` corepkgs lookup,
         `builtins.nixPath` reflection, explicit `builtins.findFile`, prefix
         matching, ordered fallback, relative entries, path-value returns,
         pure/restricted filesystem policy, and positive/negative lookup caching.

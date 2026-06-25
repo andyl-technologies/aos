@@ -42,6 +42,14 @@ pub(super) fn encode_ir_data(out: &mut Vec<u8>, data: IrData) {
             out.push(4);
             write_u32(out, symbol.as_u32());
         }
+        IrData::SearchPath {
+            literal,
+            search_path,
+        } => {
+            out.push(25);
+            write_u32(out, literal.as_u32());
+            encode_option_u32(out, search_path.map(IrId::as_u32));
+        }
         IrData::Node(node) => {
             out.push(5);
             write_u32(out, node.as_u32());
@@ -187,6 +195,10 @@ pub(super) fn decode_ir_data(reader: &mut BinaryReader<'_>) -> Result<IrData, St
         2 => Ok(IrData::Float(reader.read_f64()?)),
         3 => Ok(IrData::Bool(reader.read_bool()?)),
         4 => Ok(IrData::Symbol(Symbol::new(reader.read_u32()?))),
+        25 => Ok(IrData::SearchPath {
+            literal: Symbol::new(reader.read_u32()?),
+            search_path: reader.read_option_u32()?.map(IrId::new),
+        }),
         5 => Ok(IrData::Node(IrId::new(reader.read_u32()?))),
         6 => Ok(IrData::Pair {
             first: IrId::new(reader.read_u32()?),
@@ -341,6 +353,14 @@ pub(super) fn encode_node_data(out: &mut Vec<u8>, data: NodeData) {
             out.push(3);
             write_u32(out, symbol.as_u32());
         }
+        NodeData::SearchPath {
+            literal,
+            search_path,
+        } => {
+            out.push(20);
+            write_u32(out, literal.as_u32());
+            encode_option_u32(out, search_path.map(NodeId::as_u32));
+        }
         NodeData::Node(node) => {
             out.push(4);
             write_u32(out, node.as_u32());
@@ -444,6 +464,10 @@ pub(super) fn decode_node_data(reader: &mut BinaryReader<'_>) -> Result<NodeData
         1 => Ok(NodeData::Int(reader.read_i64()?)),
         2 => Ok(NodeData::Float(reader.read_f64()?)),
         3 => Ok(NodeData::Symbol(Symbol::new(reader.read_u32()?))),
+        20 => Ok(NodeData::SearchPath {
+            literal: Symbol::new(reader.read_u32()?),
+            search_path: reader.read_option_u32()?.map(NodeId::new),
+        }),
         4 => Ok(NodeData::Node(NodeId::new(reader.read_u32()?))),
         5 => Ok(NodeData::Pair {
             first: NodeId::new(reader.read_u32()?),

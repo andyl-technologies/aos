@@ -122,6 +122,7 @@ const FILE_ATTR: &[u8] = b"file";
 const LINE_ATTR: &[u8] = b"line";
 const COLUMN_ATTR: &[u8] = b"column";
 const CUR_POS_ATTR: &[u8] = b"__curPos";
+const NIX_PATH_ATTR: &[u8] = b"__nixPath";
 const OPERATOR_ATTR: &[u8] = b"operator";
 const START_SET_ATTR: &[u8] = b"startSet";
 const HASH_ATTR: &[u8] = b"hash";
@@ -215,16 +216,26 @@ struct ResolvedSearchPathEntry {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct FindFileCacheKey {
     search_path_base: Vec<u8>,
+    corepkgs_path: Option<Vec<u8>>,
     entries: Vec<ResolvedSearchPathEntry>,
     lookup: Vec<u8>,
+    origin: FindFileLookupOrigin,
 }
 
 impl FindFileCacheKey {
-    fn new(search_path_base: &[u8], entries: &[ResolvedSearchPathEntry], lookup: &[u8]) -> Self {
+    fn new(
+        search_path_base: &[u8],
+        corepkgs_path: Option<&[u8]>,
+        entries: &[ResolvedSearchPathEntry],
+        lookup: &[u8],
+        origin: FindFileLookupOrigin,
+    ) -> Self {
         Self {
             search_path_base: search_path_base.to_vec(),
+            corepkgs_path: corepkgs_path.map(<[u8]>::to_vec),
             entries: entries.to_vec(),
             lookup: lookup.to_vec(),
+            origin,
         }
     }
 }
@@ -235,9 +246,10 @@ enum FindFileCacheEntry {
     Miss,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum FindFileLookupOrigin {
     AmbientSearchPath,
+    LexicalSearchPath,
     ExplicitSearchPath,
 }
 
@@ -305,6 +317,7 @@ pub struct TreeWalkOptions {
     parse_toml_timestamps: bool,
     env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
     nix_path: Vec<NixSearchPathEntry>,
+    corepkgs_path: Option<Vec<u8>>,
     reject_ambient_search_path: bool,
     reject_unconfigured_impure_builtin_constants: bool,
     parse_cache_root: Option<PathBuf>,
@@ -331,6 +344,7 @@ impl Default for TreeWalkOptions {
             parse_toml_timestamps: false,
             env_vars: BTreeMap::new(),
             nix_path: Vec::new(),
+            corepkgs_path: None,
             reject_ambient_search_path: false,
             reject_unconfigured_impure_builtin_constants: false,
             parse_cache_root: None,

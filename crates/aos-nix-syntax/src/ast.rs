@@ -237,6 +237,15 @@ pub enum NodeData {
     Float(f64),
     /// The node carries an interned symbol.
     Symbol(Symbol),
+    /// The node represents a search-path literal with an optional explicit
+    /// `__nixPath` expression resolved from the surrounding scope.
+    SearchPath {
+        /// The literal text, including the surrounding angle brackets.
+        literal: Symbol,
+        /// The expression that should supply the lookup path, when one was
+        /// resolved lexically or dynamically.
+        search_path: Option<NodeId>,
+    },
     /// The node references one child.
     Node(NodeId),
     /// The node references two children.

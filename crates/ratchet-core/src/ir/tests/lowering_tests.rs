@@ -483,6 +483,61 @@ fn unsupported_literal_values_stay_lazy() {
 }
 
 #[test]
+fn search_path_literals_capture_lexical_nix_path() {
+    let ir = lowered("let __nixPath = []; in <a.nix>");
+    let IrData::Let { body, .. } = root_node(&ir).data else {
+        panic!("let payload expected");
+    };
+    let body = node(&ir, body);
+    let IrData::SearchPath {
+        literal,
+        search_path: Some(search_path),
+    } = body.data
+    else {
+        panic!("search-path payload with lexical list expected");
+    };
+
+    assert_eq!(symbol_text(&ir, literal), b"<a.nix>");
+    assert_eq!(node(&ir, search_path).kind, IrKind::LocalVar);
+}
+
+#[test]
+fn search_path_literals_ignore_with_bound_nix_path() {
+    let ir = lowered("with { __nixPath = []; }; <a.nix>");
+    let IrData::Pair { second, .. } = root_node(&ir).data else {
+        panic!("with payload expected");
+    };
+    let body = node(&ir, second);
+    let IrData::SearchPath {
+        literal,
+        search_path: None,
+    } = body.data
+    else {
+        panic!("ambient search-path payload expected");
+    };
+
+    assert_eq!(symbol_text(&ir, literal), b"<a.nix>");
+}
+
+#[test]
+fn bare_nix_path_is_a_magic_global_but_lexical_bindings_win() {
+    let ir = lowered("__nixPath");
+    assert_eq!(root_node(&ir).kind, IrKind::GlobalVar);
+
+    let ir = lowered("let __nixPath = []; in __nixPath");
+    let IrData::Let { body, .. } = root_node(&ir).data else {
+        panic!("let payload expected");
+    };
+    assert_eq!(node(&ir, body).kind, IrKind::LocalVar);
+
+    let ir = lowered("with { __nixPath = []; }; __nixPath");
+    let IrData::Pair { second, .. } = root_node(&ir).data else {
+        panic!("with payload expected");
+    };
+    assert_eq!(node(&ir, second).kind, IrKind::GlobalVar);
+}
+
+#[test]
 fn uri_literals_are_trivial_values() {
     let ir = lowered("let u = http://example.test; in [ u ]");
     let root = node(&ir, ir.root);

@@ -834,6 +834,9 @@ impl TreeWalk {
         if name == CUR_POS_ATTR {
             return self.eval_current_position(id, node.span);
         }
+        if name == NIX_PATH_ATTR {
+            return self.eval_nix_path_value(id, node.span);
+        }
         if let Some(value) = self.scoped_global_value(id, symbol, node.span)? {
             return Ok(value);
         }

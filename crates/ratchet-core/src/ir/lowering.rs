@@ -55,7 +55,7 @@ impl IrLowerer {
             }
             NodeKind::Str => self.lower_symbol_node(node, IrKind::Str),
             NodeKind::Path => self.lower_symbol_node(node, IrKind::Path),
-            NodeKind::SearchPath => self.lower_symbol_node(node, IrKind::SearchPath),
+            NodeKind::SearchPath => self.lower_search_path(node),
             NodeKind::Uri => self.lower_symbol_node(node, IrKind::Uri),
             NodeKind::LocalVar => {
                 let NodeData::Local { slot } = node.data else {
@@ -100,6 +100,30 @@ impl IrLowerer {
             return Err(self.invalid_shape(node, "symbol payload"));
         };
         self.push(kind, node.span, IrData::Symbol(symbol))
+    }
+
+    pub(super) fn lower_search_path(&mut self, node: Node) -> Result<IrId, IrError> {
+        let (literal, search_path) = match node.data {
+            NodeData::Symbol(symbol) => (symbol, None),
+            NodeData::SearchPath {
+                literal,
+                search_path,
+            } => {
+                let lowered = search_path
+                    .map(|search_path| self.lower_expr(search_path))
+                    .transpose()?;
+                (literal, lowered)
+            }
+            _ => return Err(self.invalid_shape(node, "search-path payload")),
+        };
+        self.push(
+            IrKind::SearchPath,
+            node.span,
+            IrData::SearchPath {
+                literal,
+                search_path,
+            },
+        )
     }
 
     pub(super) fn lower_global(&mut self, node: Node) -> Result<IrId, IrError> {

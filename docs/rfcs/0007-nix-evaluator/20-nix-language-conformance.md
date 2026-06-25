@@ -285,7 +285,10 @@ search paths, and store coercion.
       the explicitly configured search path to a path value. AOS does not read
       ambient `NIX_PATH`; callers provide entries that are reflected by
       `builtins.nixPath`, consumed by `<...>`, and shared with
-      `builtins.findFile` in configured order.
+      `builtins.findFile` in configured order. The runner also models C++ Nix's
+      hidden `<nix/...>` corepkgs lookup without reflecting it in
+      `builtins.nixPath`, and lexical `__nixPath` overrides for angle-bracket
+      imports.
 - [x] **Trailing-slash normalization** — path literals ending in a bare slash
       after a valid segment (`foo/bar/`, `./foo/`, `/tmp/`, or interpolated
       `./a/${x}/`) are parser errors matching pinned Nix. `.` and `..`

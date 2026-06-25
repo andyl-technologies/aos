@@ -158,7 +158,7 @@ const AOS_NIX_LANG_TESTS_ENV: &str = "AOS_NIX_LANG_TESTS";
 const CONFORMANCE_CORPUS_ATTRSET: &str = "conformance";
 const CONFORMANCE_CORPUS_BUILDER: &str =
     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-nix-conformance-builder";
-const LANG_CASE_EXCLUSION_NAMES: &[&str] = &["eval-okay-search-path"];
+const LANG_CASE_EXCLUSION_NAMES: &[&str] = &[];
 const CONFORMANCE_WRAPPER_ONLY_EXCLUSION_NAMES: &[&str] = &[
     // `lang.sh` fixes HOME and TEST_VAR for these cases; `nix-diff` has no
     // per-attribute environment override, so the dedicated runner owns them.

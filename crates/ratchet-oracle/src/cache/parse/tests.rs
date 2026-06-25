@@ -166,7 +166,7 @@ fn write_meta_creates_entry_directory() {
 
     entry.write_meta(&meta).expect("metadata writes");
     let text = fs::read_to_string(entry.meta_path()).expect("metadata is readable");
-    assert!(text.contains("schema_version = 7"));
+    assert!(text.contains("schema_version = 8"));
     assert!(!entry.is_complete());
 
     let _ = fs::remove_dir_all(root);
@@ -251,7 +251,7 @@ fn artifact_bundle_round_trips_complete_entry_payloads() {
     let decoded = ParseArtifactBundle::decode(&encoded).expect("artifact bundle decodes");
 
     assert_eq!(decoded, bundle);
-    assert!(String::from_utf8_lossy(decoded.meta_toml_bytes()).contains("schema_version = 7"));
+    assert!(String::from_utf8_lossy(decoded.meta_toml_bytes()).contains("schema_version = 8"));
     let meta = decoded.decode_meta().expect("bundle metadata decodes");
     assert_eq!(meta.schema_version, cache.schema_version());
     assert_eq!(meta.source_hint.as_deref(), Some("expr.nix"));
@@ -989,6 +989,53 @@ fn lowered_ir_artifacts_roundtrip_through_entry_files() {
             dynamic_start,
             dynamic_start + "${name}".len() as u32
         ))
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn lowered_ir_roundtrip_preserves_captured_search_path_literal() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = "let __nixPath = []; in <a.nix>";
+    let resolved = resolve(parse_str(source).expect("source parses")).expect("scope resolves");
+    let expected = nix_lower(file_local_resolved(&resolved).expect("symbols remap"))
+        .expect("resolved AST lowers");
+    let entry = cache.entry_for_source(source.as_bytes());
+    let meta = ParseCacheMeta::new(
+        cache.schema_version(),
+        Some("expr.nix".to_owned()),
+        resolved.arena.len() as u32,
+        resolved.symbols.len() as u32,
+    );
+
+    entry
+        .write_resolved(&resolved, &meta)
+        .expect("resolved artifact writes");
+    assert!(entry.is_complete());
+
+    let loaded = entry.read_ir().expect("lowered IR artifact reads");
+    assert!(lowered_ir_matches(&loaded, &expected));
+    let search_path = loaded
+        .arena
+        .nodes()
+        .iter()
+        .find_map(|node| match node.data {
+            IrData::SearchPath {
+                literal,
+                search_path: Some(search_path),
+            } => Some((literal, search_path)),
+            _ => None,
+        })
+        .expect("captured search-path payload round-trips");
+    assert_eq!(
+        loaded.symbols.resolve(search_path.0),
+        Some(b"<a.nix>".as_slice())
+    );
+    assert_eq!(
+        loaded.arena.nodes()[search_path.1.index()].kind,
+        IrKind::LocalVar
     );
 
     let _ = fs::remove_dir_all(root);

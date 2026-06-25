@@ -241,29 +241,43 @@ impl TreeWalk {
                 node.span,
             ));
         }
-        let IrData::Symbol(symbol) = node.data else {
+        let IrData::SearchPath {
+            literal,
+            search_path,
+        } = node.data
+        else {
             return Err(self.invalid_payload(id, node, "search-path symbol payload"));
         };
-        let lookup = self.symbols.resolve(symbol).ok_or_else(|| {
-            TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+        let lookup = self.symbols.resolve(literal).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidSymbol {
+                    id,
+                    symbol: literal,
+                },
+                node.span,
+            )
         })?;
         let lookup = Self::copy_bytes_for_node(id, node.span, lookup)?;
         let lookup = search_path_literal_lookup(id, node.span, &lookup)?;
-        let entries = self
-            .visible_nix_path()
-            .iter()
-            .map(|entry| ResolvedSearchPathEntry {
-                prefix: entry.prefix().to_vec(),
-                path: entry.path().to_vec(),
-            })
-            .collect::<Vec<_>>();
-        self.find_file_in_entries(
-            id,
-            node.span,
-            &entries,
-            lookup,
-            FindFileLookupOrigin::AmbientSearchPath,
-        )
+        let (entries, origin) = if let Some(search_path) = search_path {
+            let value = self.eval_node(search_path)?;
+            (
+                self.search_path_entries_from_value(search_path, node.span, value)?,
+                FindFileLookupOrigin::LexicalSearchPath,
+            )
+        } else {
+            (
+                self.visible_nix_path()
+                    .iter()
+                    .map(|entry| ResolvedSearchPathEntry {
+                        prefix: entry.prefix().to_vec(),
+                        path: entry.path().to_vec(),
+                    })
+                    .collect::<Vec<_>>(),
+                FindFileLookupOrigin::AmbientSearchPath,
+            )
+        };
+        self.find_file_in_entries(id, node.span, &entries, lookup, origin)
     }
 
     pub(super) fn eval_nix_path_value(
@@ -420,7 +434,13 @@ impl TreeWalk {
         lookup: &[u8],
         origin: FindFileLookupOrigin,
     ) -> Result<Value, TreeWalkError> {
-        let cache_key = FindFileCacheKey::new(self.options.search_path_base(), entries, lookup);
+        let cache_key = FindFileCacheKey::new(
+            self.options.search_path_base(),
+            self.options.corepkgs_path(),
+            entries,
+            lookup,
+            origin,
+        );
         if let Some(cached) = self.find_file_cache.get(&cache_key).cloned() {
             self.find_file_cache_hits = self.find_file_cache_hits.saturating_add(1);
             return self.find_file_cached_result(id, span, cached, lookup, origin);
@@ -453,6 +473,37 @@ impl TreeWalk {
                 {
                     continue;
                 }
+                Err(source) => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::PathStat {
+                            id,
+                            path: candidate,
+                            message: source.to_string(),
+                        },
+                        span,
+                    ));
+                }
+            }
+        }
+        if matches!(
+            origin,
+            FindFileLookupOrigin::AmbientSearchPath | FindFileLookupOrigin::LexicalSearchPath
+        ) && let Some(corepkgs_path) = self.options.corepkgs_path()
+            && let Some(suffix) = search_path_suffix(b"nix", lookup)
+        {
+            let candidate = join_search_path(id, span, b"/", corepkgs_path, suffix)?;
+            self.check_find_file_candidate_access(id, span, &candidate, origin)?;
+            match fs::metadata(Path::new(OsStr::from_bytes(&candidate))) {
+                Ok(_) => {
+                    self.find_file_cache
+                        .insert(cache_key, FindFileCacheEntry::Hit(candidate.clone()));
+                    return self.alloc_find_file_path(id, span, candidate);
+                }
+                Err(source)
+                    if matches!(
+                        source.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    ) => {}
                 Err(source) => {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::PathStat {
@@ -519,7 +570,11 @@ impl TreeWalk {
             TreeWalkErrorKind::SearchPathNotFound {
                 id,
                 lookup: lookup.to_vec(),
-                ambient: origin == FindFileLookupOrigin::AmbientSearchPath,
+                ambient: matches!(
+                    origin,
+                    FindFileLookupOrigin::AmbientSearchPath
+                        | FindFileLookupOrigin::LexicalSearchPath
+                ),
             },
             span,
         ))
