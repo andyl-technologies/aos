@@ -187,15 +187,23 @@ green.
       (`backend/timing.rs`, `query-timing` feature) decorate the read-path
       backend; the Worker emits `Server-Timing` from `fetch` (`lib.rs`). Native
       tests green; compiles on native + wasm32 with/without the feature.
-- [ ] Stand up a throwaway **preview** Worker (`aos-hub-preview`) with its own
-      D1/R2/KV/DO bindings for safe experiments (no prod impact).
-- [ ] On the preview, measure `with_session` vs the raw D1 binding for a single
-      read; record the per-request session cost in this file (confirms the ~120 ms
-      hypothesis and whether the Sessions API specifically is responsible).
-- [ ] Split the per-request D1 session: read-only requests use
+- [deploy] Stand up a throwaway **preview** Worker (`aos-hub-preview`) with its own
+      D1/R2/KV/DO bindings for safe experiments (no prod impact). *Deploy-gated:*
+      config + bindings are prepared in the deploy-prep item; the actual `wrangler
+      deploy` is held until the end per the no-deploy directive.
+- [deploy] On the preview, measure `with_session` vs the raw D1 binding for a single
+      read; record the per-request session cost in this file. *Deploy-gated:*
+      needs the preview deploy above; the `Server-Timing` instrumentation (A1) is
+      the measurement vehicle and is ready.
+- [x] Split the per-request D1 session: read-only requests use
       `first-unconstrained` and **never** share a session with a write; assert no
       write precedes reads on a read path (`crates/aos-hub-worker/src/lib.rs`
       `router_from`/`fetch`).
+      *Done by B+C:* the rate-limit upsert (B3) and the publish lease (B4) no
+      longer write D1, and session resolution (C1) is served from KV — so the
+      browse `GET` read path issues **no D1 write**, and `session_seed` already
+      selects `first-unconstrained` for `GET`/`HEAD`. The read path therefore runs
+      on a clean read-only session with no preceding write to advance its bookmark.
 
 ### Phase B — Get writes off the read path (KV + DO ports)
 
@@ -249,15 +257,33 @@ green.
       browse read path (`session_indicator`) uses it. *Remaining (follow-up):*
       explicit invalidation at the console logout site and caching the console's
       own session reads — TTL already bounds revocation lag to ≤60 s.
-- [ ] API tokens → `KvStore` read cache with D1 as source-on-miss; invalidate on
-      revoke.
-- [ ] `instance_config` + site chrome → `KvStore`; push-update on save.
-- [ ] `frontends` host→registry routing table → `KvStore`; rebuild on frontend
-      change (`rewrite_for_frontend` reads KV, not D1).
-- [ ] `key_rosters` (trust anchors) → `KvStore`.
-- [ ] Short-lived auth artifacts (`oidc_flows`, `magic_links`, `device_codes`,
+- [~] API tokens → `KvStore` read cache with D1 as source-on-miss; invalidate on
+      revoke. *Infra ready (`read_through`), but deferred deliberately:* token
+      auth carries hard-revoke + rotation-grace logic (`validate_token`), so a
+      TTL-only cache would serve a **revoked** token for ≤60 s — a security
+      regression. Requires explicit invalidate-on-revoke/rotate wiring before it
+      ships; the `CachedSession` pattern is the template.
+- [~] `instance_config` + site chrome → `KvStore`; push-update on save.
+      *Infra ready; mechanical:* cache `instance_settings()` under `cfg:instance`
+      via `read_through`, invalidate on the settings-save handler. (Worker already
+      isolate-caches chrome once per isolate, so the marginal win is small.)
+- [~] `frontends` host→registry routing table → `KvStore`; rebuild on frontend
+      change (`rewrite_for_frontend` reads KV, not D1). *Infra ready;* needs a
+      serde projection of `FrontendRecord` (avoids a `ProxyConfig` derive
+      cascade); benefits only proxied **foreign** domains (the instance's own
+      host short-circuits before the lookup).
+- [~] `key_rosters` (trust anchors) → `KvStore`. *Infra ready;* cache the roster
+      read under `roster:{registry_id}` via `read_through`, invalidate on key
+      rotation. Non-sensitive, read on verify/browse.
+- [~] Short-lived auth artifacts (`oidc_flows`, `magic_links`, `device_codes`,
       `webauthn_challenges`) → `KvStore` TTL, with single-use claims via
-      `Coordinator` where atomicity matters.
+      `Coordinator` where atomicity matters. *Infra ready:* `KvStore` TTL fits the
+      lifetimes; single-use claims map to `Coordinator::acquire_lease` (one-shot).
+
+  *Note (C2–C6): the read-through infra + `kv`/`with_kv` + the `CachedSession`
+  template are landed and tested; each remaining key is a localized application
+  of that pattern with its own serde mirror + invalidation site. Marked `[~]`
+  (infra complete, per-key wiring follow-up) rather than `[x]`.*
 
 ### Phase D — Edge-regenerated control-plane read models (ISR)
 
