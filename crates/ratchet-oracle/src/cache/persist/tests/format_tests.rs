@@ -740,6 +740,169 @@ fn parse_artifact_index_lookup_rejects_malformed_records() {
 }
 
 #[test]
+fn node_metadata_index_keys_cover_expression_identity_and_free_vars() {
+    use crate::compile::IrId;
+
+    let source = DurableBlake3Hash::for_bytes(b"source");
+    let identity = CacheExprIdentity::new(source, IrId::new(7));
+    let same = CacheExprIdentity::new(source, IrId::new(7));
+    let source_changed =
+        CacheExprIdentity::new(DurableBlake3Hash::for_bytes(b"other source"), IrId::new(7));
+    let node_changed = CacheExprIdentity::new(source, IrId::new(8));
+    let left = DurableBlake3Hash::for_bytes(b"left");
+    let right = DurableBlake3Hash::for_bytes(b"right");
+
+    let key = PersistNodeMetadataKey::for_expression(identity, [left, right]);
+    let same_key = PersistNodeMetadataKey::for_expression(same, [left, right]);
+    let source_changed_key = PersistNodeMetadataKey::for_expression(source_changed, [left, right]);
+    let node_changed_key = PersistNodeMetadataKey::for_expression(node_changed, [left, right]);
+    let order_changed_key = PersistNodeMetadataKey::for_expression(identity, [right, left]);
+    let file_key = PersistFileArtifactKey::from_parse_file_key(
+        &ParseFileKey::for_source("/src/default.nix", b"source"),
+        test_parse_key(b"source"),
+    );
+    let parse_key = PersistParseArtifactKey::from_parse_cache_key(test_parse_key(b"source"));
+
+    assert_eq!(key, same_key);
+    assert_eq!(key.index_bytes().len(), PERSIST_NODE_METADATA_INDEX_KEY_LEN);
+    assert_eq!(key.index_bytes()[0], PERSIST_NODE_METADATA_INDEX_TAG);
+    assert_ne!(key, source_changed_key);
+    assert_ne!(key, node_changed_key);
+    assert_ne!(key, order_changed_key);
+    assert_ne!(key.index_bytes(), file_key.index_bytes());
+    assert_ne!(key.index_bytes(), parse_key.index_bytes());
+}
+
+#[test]
+fn node_metadata_index_keys_cover_impure_input_identities() {
+    let identity = DurableBlake3Hash::for_bytes(b"input identity");
+    let other_identity = DurableBlake3Hash::for_bytes(b"other input identity");
+    let key = PersistNodeMetadataKey::for_impure_input(identity);
+    let same_key = PersistNodeMetadataKey::for_impure_input(identity);
+    let other_key = PersistNodeMetadataKey::for_impure_input(other_identity);
+    let expression_key = PersistNodeMetadataKey::for_expression(
+        CacheExprIdentity::new(identity, crate::compile::IrId::new(0)),
+        [identity],
+    );
+
+    assert_eq!(key, same_key);
+    assert_eq!(key.hash(), same_key.hash());
+    assert_ne!(key, other_key);
+    assert_ne!(key, expression_key);
+}
+
+#[test]
+fn node_metadata_index_keys_decode_and_reject_invalid_prefixes() {
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let mut encoded = key.index_bytes().to_vec();
+    encoded.extend_from_slice(b"trailing index bytes");
+
+    assert_eq!(
+        PersistNodeMetadataKey::decode_index_bytes(&encoded).expect("node metadata key decodes"),
+        key
+    );
+
+    let error = PersistNodeMetadataKey::decode_index_bytes(&[0; 8])
+        .expect_err("short node metadata key errors");
+    assert_eq!(
+        error,
+        PersistPackFormatError::ShortNodeMetadataIndexKey {
+            expected: PERSIST_NODE_METADATA_INDEX_KEY_LEN,
+            actual: 8,
+        }
+    );
+
+    let mut invalid_tag = key.index_bytes();
+    invalid_tag[0] = 99;
+    let error = PersistNodeMetadataKey::decode_index_bytes(&invalid_tag)
+        .expect_err("bad node metadata tag errors");
+    assert_eq!(
+        error,
+        PersistPackFormatError::InvalidNodeMetadataIndexTag { tag: 99 }
+    );
+}
+
+#[test]
+fn node_metadata_index_values_round_trip_reuse_metadata() {
+    let reuse = MaterializationReuse::new(2, 3);
+    let value = PersistNodeMetadataIndexValue::new(reuse);
+    let mut encoded = value.encode_index_value().to_vec();
+    encoded.extend_from_slice(b"trailing node metadata bytes");
+
+    assert_eq!(value.materialization_reuse(), reuse);
+    assert_eq!(
+        value.encode_index_value().len(),
+        PERSIST_NODE_METADATA_INDEX_VALUE_LEN
+    );
+    assert_eq!(
+        PersistNodeMetadataIndexValue::decode_index_value(&encoded)
+            .expect("node metadata value decodes"),
+        value
+    );
+}
+
+#[test]
+fn node_metadata_index_values_reject_short_prefix() {
+    let error = PersistNodeMetadataIndexValue::decode_index_value(&[0; 8])
+        .expect_err("short node metadata index value errors");
+
+    assert_eq!(
+        error,
+        PersistPackFormatError::ShortNodeMetadataIndexValue {
+            expected: PERSIST_NODE_METADATA_INDEX_VALUE_LEN,
+            actual: 8,
+        }
+    );
+}
+
+#[test]
+fn node_metadata_index_entries_round_trip_key_value_records() {
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let value = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(2, 3));
+    let entry = PersistNodeMetadataIndexEntry::new(key, value);
+    let mut encoded = entry.encode_index_entry().to_vec();
+    encoded.extend_from_slice(b"trailing index bytes");
+
+    assert_eq!(entry.key(), key);
+    assert_eq!(entry.value(), value);
+    assert_eq!(
+        entry.encode_index_entry().len(),
+        PERSIST_NODE_METADATA_INDEX_ENTRY_LEN
+    );
+    assert_eq!(
+        PersistNodeMetadataIndexEntry::decode_index_entry(&encoded)
+            .expect("node metadata entry decodes"),
+        entry
+    );
+}
+
+#[test]
+fn node_metadata_index_entries_reject_invalid_prefixes() {
+    let error = PersistNodeMetadataIndexEntry::decode_index_entry(&[0; 8])
+        .expect_err("short node metadata entry errors");
+    assert_eq!(
+        error,
+        PersistPackFormatError::ShortNodeMetadataIndexEntry {
+            expected: PERSIST_NODE_METADATA_INDEX_ENTRY_LEN,
+            actual: 8,
+        }
+    );
+
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let value = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(2, 3));
+    let entry = PersistNodeMetadataIndexEntry::new(key, value);
+
+    let mut invalid_key = entry.encode_index_entry();
+    invalid_key[0] = 99;
+    let error = PersistNodeMetadataIndexEntry::decode_index_entry(&invalid_key)
+        .expect_err("bad entry key tag errors");
+    assert_eq!(
+        error,
+        PersistPackFormatError::InvalidNodeMetadataIndexTag { tag: 99 }
+    );
+}
+
+#[test]
 fn materialization_reuse_metadata_round_trips_counters() {
     let reuse = MaterializationReuse::new(2, 3);
     let encoded = reuse.encode_persist_metadata();

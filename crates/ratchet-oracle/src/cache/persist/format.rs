@@ -1026,3 +1026,185 @@ impl PersistParseArtifactIndex {
         Ok(found)
     }
 }
+
+/// A stable index key for durable demand-node metadata.
+///
+/// This key lives in a persistent BLAKE3 domain separate from the hot
+/// in-process `DemandCacheKey` domain. It can address expression nodes keyed
+/// by expression identity plus ordered free-variable value hashes, or impure
+/// input leaves keyed by their typed input identity hash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistNodeMetadataKey {
+    hash: DurableBlake3Hash,
+}
+
+impl PersistNodeMetadataKey {
+    /// Creates a persistent metadata key for an expression demand node.
+    ///
+    /// `free_var_value_hashes` must be supplied in the same canonical slot
+    /// order used for the in-process demand-cache key.
+    pub fn for_expression<I>(identity: CacheExprIdentity, free_var_value_hashes: I) -> Self
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(PERSIST_NODE_METADATA_EXPRESSION_KEY_PERSONALIZATION);
+        hasher.update(&identity.source_hash().as_bytes());
+        hasher.update(&identity.node().as_u32().to_le_bytes());
+        for value_hash in free_var_value_hashes {
+            update_persist_index_chunk(&mut hasher, &value_hash.as_bytes());
+        }
+        Self {
+            hash: DurableBlake3Hash::from_hasher(hasher),
+        }
+    }
+
+    /// Creates a persistent metadata key for an impure-input leaf node.
+    pub fn for_impure_input(identity_hash: DurableBlake3Hash) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(PERSIST_NODE_METADATA_IMPURE_INPUT_KEY_PERSONALIZATION);
+        hasher.update(&identity_hash.as_bytes());
+        Self {
+            hash: DurableBlake3Hash::from_hasher(hasher),
+        }
+    }
+
+    /// Returns the durable hash of the demand-node metadata identity.
+    pub const fn hash(self) -> DurableBlake3Hash {
+        self.hash
+    }
+
+    /// Returns the stable binary key for the future demand-node metadata index.
+    pub fn index_bytes(self) -> [u8; PERSIST_NODE_METADATA_INDEX_KEY_LEN] {
+        let mut bytes = [0; PERSIST_NODE_METADATA_INDEX_KEY_LEN];
+        bytes[0] = PERSIST_NODE_METADATA_INDEX_TAG;
+        bytes[1..].copy_from_slice(&self.hash.as_bytes());
+        bytes
+    }
+
+    /// Decodes the stable binary key for the demand-node metadata index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
+    /// [`PERSIST_NODE_METADATA_INDEX_KEY_LEN`] or carries an unexpected index
+    /// tag.
+    pub fn decode_index_bytes(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_NODE_METADATA_INDEX_KEY_LEN {
+            return Err(PersistPackFormatError::ShortNodeMetadataIndexKey {
+                expected: PERSIST_NODE_METADATA_INDEX_KEY_LEN,
+                actual: bytes.len(),
+            });
+        }
+        if bytes[0] != PERSIST_NODE_METADATA_INDEX_TAG {
+            return Err(PersistPackFormatError::InvalidNodeMetadataIndexTag { tag: bytes[0] });
+        }
+        let mut hash = [0; 32];
+        hash.copy_from_slice(&bytes[1..PERSIST_NODE_METADATA_INDEX_KEY_LEN]);
+        Ok(Self {
+            hash: DurableBlake3Hash::from_bytes(hash),
+        })
+    }
+}
+
+/// A stable value for durable demand-node metadata.
+///
+/// The current substrate stores materialization reuse counters only. Future
+/// node metadata can extend this record behind a schema bump.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistNodeMetadataIndexValue {
+    materialization_reuse: MaterializationReuse,
+}
+
+impl PersistNodeMetadataIndexValue {
+    /// Creates node metadata from materialization reuse counters.
+    pub const fn new(materialization_reuse: MaterializationReuse) -> Self {
+        Self {
+            materialization_reuse,
+        }
+    }
+
+    /// Returns the materialization reuse counters.
+    pub const fn materialization_reuse(self) -> MaterializationReuse {
+        self.materialization_reuse
+    }
+
+    /// Encodes this value as stable node metadata index bytes.
+    pub fn encode_index_value(self) -> [u8; PERSIST_NODE_METADATA_INDEX_VALUE_LEN] {
+        self.materialization_reuse.encode_persist_metadata()
+    }
+
+    /// Decodes stable node metadata index bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
+    /// [`PERSIST_NODE_METADATA_INDEX_VALUE_LEN`].
+    pub fn decode_index_value(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_NODE_METADATA_INDEX_VALUE_LEN {
+            return Err(PersistPackFormatError::ShortNodeMetadataIndexValue {
+                expected: PERSIST_NODE_METADATA_INDEX_VALUE_LEN,
+                actual: bytes.len(),
+            });
+        }
+        Ok(Self::new(MaterializationReuse::decode_persist_metadata(
+            bytes,
+        )?))
+    }
+}
+
+/// A complete key/value record for the demand-node metadata index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistNodeMetadataIndexEntry {
+    key: PersistNodeMetadataKey,
+    value: PersistNodeMetadataIndexValue,
+}
+
+impl PersistNodeMetadataIndexEntry {
+    /// Creates a node metadata index entry from its key and value.
+    pub const fn new(key: PersistNodeMetadataKey, value: PersistNodeMetadataIndexValue) -> Self {
+        Self { key, value }
+    }
+
+    /// Returns the node metadata key.
+    pub const fn key(self) -> PersistNodeMetadataKey {
+        self.key
+    }
+
+    /// Returns the node metadata value.
+    pub const fn value(self) -> PersistNodeMetadataIndexValue {
+        self.value
+    }
+
+    /// Encodes this record as stable node metadata index bytes.
+    pub fn encode_index_entry(self) -> [u8; PERSIST_NODE_METADATA_INDEX_ENTRY_LEN] {
+        let mut bytes = [0; PERSIST_NODE_METADATA_INDEX_ENTRY_LEN];
+        bytes[..PERSIST_NODE_METADATA_INDEX_KEY_LEN].copy_from_slice(&self.key.index_bytes());
+        bytes[PERSIST_NODE_METADATA_INDEX_KEY_LEN..]
+            .copy_from_slice(&self.value.encode_index_value());
+        bytes
+    }
+
+    /// Decodes a complete node metadata index record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
+    /// [`PERSIST_NODE_METADATA_INDEX_ENTRY_LEN`], if the key is malformed, or
+    /// if the value is malformed.
+    pub fn decode_index_entry(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_NODE_METADATA_INDEX_ENTRY_LEN {
+            return Err(PersistPackFormatError::ShortNodeMetadataIndexEntry {
+                expected: PERSIST_NODE_METADATA_INDEX_ENTRY_LEN,
+                actual: bytes.len(),
+            });
+        }
+        let key = PersistNodeMetadataKey::decode_index_bytes(
+            &bytes[..PERSIST_NODE_METADATA_INDEX_KEY_LEN],
+        )?;
+        let value = PersistNodeMetadataIndexValue::decode_index_value(
+            &bytes[PERSIST_NODE_METADATA_INDEX_KEY_LEN..],
+        )?;
+        Ok(Self::new(key, value))
+    }
+}

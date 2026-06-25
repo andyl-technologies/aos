@@ -903,6 +903,16 @@ alone (`M-1`/`Q-A`).
       `PersistPackFormatError`. This is codec-only; node metadata index,
       durable counter storage, automatic process-boundary update, evaluator
       demand accounting, cost measurement, and AOS tuning remain open (`C-14`).
+- [x] Current demand-node metadata codec substrate:
+      `PersistNodeMetadataKey` derives stable persistent BLAKE3 keys for
+      expression nodes from `CacheExprIdentity` plus ordered free-variable value
+      hashes, and for impure-input leaves from their typed input identity hash,
+      in domains separate from hot `DemandCacheKey`; `PersistNodeMetadataIndexValue`
+      wraps the existing materialization reuse counters, and
+      `PersistNodeMetadataIndexEntry` frames key/value records. This is
+      codec-only; fixed-record node metadata index files, LMDB/redb node tables,
+      durable counter storage, evaluator demand accounting, process-boundary
+      updates, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit materialization-to-pack adapter:
       `PersistCache::materialize_blob` consumes a caller-supplied
       `MaterializationDecision`, skips without hashing/writing on

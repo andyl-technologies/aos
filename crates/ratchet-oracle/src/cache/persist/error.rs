@@ -50,6 +50,20 @@ pub enum PersistPackFormatError {
         /// The unexpected index tag.
         tag: u8,
     },
+    /// A demand-node metadata index key was shorter than the fixed encoded key length.
+    #[error("persistent node metadata index key has {actual} bytes, expected at least {expected}")]
+    ShortNodeMetadataIndexKey {
+        /// The required fixed node metadata index key length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// A demand-node metadata index key carried an unexpected index tag.
+    #[error("persistent node metadata index key has invalid tag {tag}")]
+    InvalidNodeMetadataIndexTag {
+        /// The unexpected index tag.
+        tag: u8,
+    },
     /// The packfile header was shorter than the fixed header length.
     #[error("persistent blob pack header has {actual} bytes, expected at least {expected}")]
     ShortPackHeader {
@@ -136,6 +150,26 @@ pub enum PersistPackFormatError {
     )]
     ShortParseArtifactIndexEntry {
         /// The required fixed parse-artifact index entry length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// A demand-node metadata index value was shorter than the fixed encoded length.
+    #[error(
+        "persistent node metadata index value has {actual} bytes, expected at least {expected}"
+    )]
+    ShortNodeMetadataIndexValue {
+        /// The required fixed node metadata index value length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// A demand-node metadata index entry was shorter than the fixed encoded length.
+    #[error(
+        "persistent node metadata index entry has {actual} bytes, expected at least {expected}"
+    )]
+    ShortNodeMetadataIndexEntry {
+        /// The required fixed node metadata index entry length.
         expected: usize,
         /// The available bytes.
         actual: usize,

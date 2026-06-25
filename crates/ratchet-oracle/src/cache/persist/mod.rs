@@ -17,7 +17,8 @@ use super::parse::{
     ParseCacheError, ParseCacheKey, ParseFileKey,
 };
 use super::{
-    DurableBlake3Hash, MaterializationDecision, MaterializationReuse, MaterializationSignals,
+    CacheExprIdentity, DurableBlake3Hash, MaterializationDecision, MaterializationReuse,
+    MaterializationSignals,
 };
 
 /// The persistent eval-cache schema format marker.
@@ -55,6 +56,13 @@ pub const PERSIST_PARSE_ARTIFACT_INDEX_VALUE_LEN: usize =
 /// The encoded length of a complete parse-artifact index entry.
 pub const PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN: usize =
     PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN + PERSIST_PARSE_ARTIFACT_INDEX_VALUE_LEN;
+/// The encoded length of a demand-node metadata index key.
+pub const PERSIST_NODE_METADATA_INDEX_KEY_LEN: usize = 33;
+/// The encoded length of a demand-node metadata index value.
+pub const PERSIST_NODE_METADATA_INDEX_VALUE_LEN: usize = PERSIST_MATERIALIZATION_REUSE_LEN;
+/// The encoded length of a complete demand-node metadata index entry.
+pub const PERSIST_NODE_METADATA_INDEX_ENTRY_LEN: usize =
+    PERSIST_NODE_METADATA_INDEX_KEY_LEN + PERSIST_NODE_METADATA_INDEX_VALUE_LEN;
 /// The encoded length of durable materialization reuse metadata.
 pub const PERSIST_MATERIALIZATION_REUSE_LEN: usize = 16;
 
@@ -62,6 +70,11 @@ static SCHEMA_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 const PERSIST_FILE_ARTIFACT_INDEX_TAG: u8 = 3;
 const PERSIST_FILE_ARTIFACT_KEY_PERSONALIZATION: &[u8] = b"aos-nix-persist-file-artifact-key-v1";
 const PERSIST_PARSE_ARTIFACT_INDEX_TAG: u8 = 4;
+const PERSIST_NODE_METADATA_INDEX_TAG: u8 = 5;
+const PERSIST_NODE_METADATA_EXPRESSION_KEY_PERSONALIZATION: &[u8] =
+    b"aos-nix-persist-node-expression-key-v1";
+const PERSIST_NODE_METADATA_IMPURE_INPUT_KEY_PERSONALIZATION: &[u8] =
+    b"aos-nix-persist-node-impure-input-key-v1";
 
 mod cache;
 mod disk;
@@ -87,6 +100,7 @@ pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,
     PersistBlobPackHeader, PersistBlobRecordHeader, PersistBlobStore, PersistFileArtifactIndex,
     PersistFileArtifactIndexEntry, PersistFileArtifactIndexValue, PersistFileArtifactKey,
+    PersistNodeMetadataIndexEntry, PersistNodeMetadataIndexValue, PersistNodeMetadataKey,
     PersistParseArtifactIndex, PersistParseArtifactIndexEntry, PersistParseArtifactIndexValue,
     PersistParseArtifactKey,
 };
