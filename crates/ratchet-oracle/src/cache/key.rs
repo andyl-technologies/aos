@@ -21,8 +21,10 @@ const IMPURE_INPUT_CONFIRMATION_DOMAIN_VERSION: &[u8] =
 
 /// The stable identity of one lowered expression within a source artifact.
 ///
-/// The source hash identifies the parsed/lowered source artifact, while
-/// [`IrId`] identifies the expression's node position within that artifact.
+/// The first component is a durable expression/artifact hash. Callers may supply
+/// a plain parsed/lowered artifact digest or an expression-positioned digest
+/// that already includes caller-owned salts such as a source span. [`IrId`]
+/// preserves the lowered node discriminator within that artifact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CacheExprIdentity {
     source_hash: DurableBlake3Hash,
@@ -30,12 +32,12 @@ pub struct CacheExprIdentity {
 }
 
 impl CacheExprIdentity {
-    /// Creates an expression identity from a source hash and IR node id.
+    /// Creates an expression identity from an expression/artifact hash and IR node id.
     pub const fn new(source_hash: DurableBlake3Hash, node: IrId) -> Self {
         Self { source_hash, node }
     }
 
-    /// Returns the source artifact hash component.
+    /// Returns the durable expression/artifact hash component.
     pub const fn source_hash(self) -> DurableBlake3Hash {
         self.source_hash
     }

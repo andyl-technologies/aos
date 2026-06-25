@@ -1096,6 +1096,92 @@ fn source_less_forced_inline_thunks_include_eval_mode_in_cache_identity() {
     );
 }
 
+fn force_cache_identity_for_attr_a(ir: &Ir, source: &str) -> (CacheExprIdentity, IrId) {
+    let a = symbol_for(ir, b"a");
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        ir,
+        TreeWalkOptions::new(),
+        "default.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let thunk = evaluator
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a is a thunk");
+    let body = thunk.body().expect("a is a node thunk");
+    let identity = evaluator
+        .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+        .expect("force-cache subject builds")
+        .metadata_identity
+        .expect("node thunk has metadata identity");
+    (identity, body)
+}
+
+#[test]
+fn source_backed_force_cache_identities_include_node_span() {
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let (first_identity, body) = force_cache_identity_for_attr_a(&ir, source);
+
+    let mut shifted = ir.clone();
+    let mut nodes = shifted.arena.nodes().to_vec();
+    nodes[body.index()].span = Span::new(100, 104);
+    shifted.arena = IrArena::from_raw_parts(nodes, shifted.arena.child_pool().to_vec());
+    let (shifted_identity, shifted_body) = force_cache_identity_for_attr_a(&shifted, source);
+
+    assert_eq!(shifted_body, body);
+    assert_ne!(
+        shifted_identity, first_identity,
+        "same source bytes and IR node id under a different node span must not reuse one demand node"
+    );
+
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut first, &ir, a);
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &shifted,
+        TreeWalkOptions::new(),
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut second, &shifted, a);
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(
+        second.stats().cache_hits(),
+        0,
+        "same source bytes and IR node id under a different node span must miss"
+    );
+    assert_eq!(second.stats().thunks_forced(), 1);
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "same source bytes and IR node id under different spans must allocate separate demand nodes"
+    );
+}
+
 #[test]
 fn source_backed_forced_inline_thunks_include_path_base_in_cache_identity() {
     let root = unique_temp_dir("force-cache-path-base");

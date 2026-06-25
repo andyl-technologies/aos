@@ -1293,10 +1293,7 @@ impl TreeWalk {
         if !Self::subtree_is_speculable(&module.ir, body.id()) {
             return None;
         }
-        Some(CacheExprIdentity::new(
-            Self::cache_module_identity_hash(module)?,
-            body.id(),
-        ))
+        Self::cache_expression_identity_for_node(module, body.id())
     }
 
     fn cache_lookup_identity_for_node(&self, body: EvalNodeRef) -> Option<CacheExprIdentity> {
@@ -1304,10 +1301,7 @@ impl TreeWalk {
         if !Self::subtree_is_force_lookup_safe(&module.ir, body.id()) {
             return None;
         }
-        Some(CacheExprIdentity::new(
-            Self::cache_module_identity_hash(module)?,
-            body.id(),
-        ))
+        Self::cache_expression_identity_for_node(module, body.id())
     }
 
     fn cache_observation_identity_for_node(&self, body: EvalNodeRef) -> Option<CacheExprIdentity> {
@@ -1315,9 +1309,24 @@ impl TreeWalk {
         if !Self::subtree_is_force_observation_safe(&module.ir, body.id()) {
             return None;
         }
+        Self::cache_expression_identity_for_node(module, body.id())
+    }
+
+    fn cache_expression_identity_for_node(
+        module: &TreeWalkModule,
+        id: IrId,
+    ) -> Option<CacheExprIdentity> {
+        let module_hash = Self::cache_module_identity_hash(module)?;
+        let node = module.ir.arena.node(id)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
+        hasher.update(b"node-v1");
+        hasher.update(&module_hash.as_bytes());
+        hasher.update(&node.span.start.to_le_bytes());
+        hasher.update(&node.span.end.to_le_bytes());
         Some(CacheExprIdentity::new(
-            Self::cache_module_identity_hash(module)?,
-            body.id(),
+            DurableBlake3Hash::from_hasher(hasher),
+            id,
         ))
     }
 

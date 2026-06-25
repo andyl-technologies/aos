@@ -495,9 +495,11 @@ alone (`M-1`/`Q-A`).
       position-free, source-order-canonical replayable Nix attrset whose existing
       bindings are all non-thunk replayable payloads. The
       precursor expression identity uses a domain-separated hash of source name,
-      source bytes, and module path-literal base plus the IR node id, so
-      identical file bytes under different relative-path bases do not share one
-      observed node. `NixNative` passes its caller-owned cache runtime into
+      source bytes, module path-literal base, evaluator-option salt, and the
+      lowered node source span, then pairs that expression-positioned artifact
+      hash with the IR node id, so identical file bytes under different
+      relative-path bases or node spans do not share one observed node.
+      `NixNative` passes its caller-owned cache runtime into
       tree-walk evaluation, so repeated closed source-backed evaluations reuse
       the same demand node and apply the existing value-hash early-cutoff
       decision. This is
@@ -597,11 +599,13 @@ alone (`M-1`/`Q-A`).
 - [x] Current force-cache evaluator option identity salt: force expression
       identities now hash the module's `store_dir`, `home_dir`, configured
       `current_system`, configured `current_time`, and `eval_mode` alongside
-      source name or lowered-IR fingerprint, path-literal base, and IR node id.
+      source name or lowered-IR fingerprint, path-literal base, lowered node
+      source span, and IR node id.
       This prevents the current advisory force cache from sharing inline
       payloads across evaluator configurations that can change path/context,
-      ambient builtin constants, or impurity-policy behavior. It is deliberately
-      conservative and may miss across option changes that do not affect a
+      ambient builtin constants, impurity-policy behavior, or expression source
+      position. It is deliberately conservative and may miss across option/span
+      changes that do not affect a
       specific expression; full cache-key integration, canonical free-variable
       hashes, fine-grained option dependency tracking, persistent keys, and
       cached/uncached harness proof remain open (`C-1`/`C-2`/`R-10`).
@@ -632,10 +636,11 @@ alone (`M-1`/`Q-A`).
       and tree-walk uses that digest when a module has no source provenance
       before applying the same path-literal-base, `store_dir`, `home_dir`,
       configured `current_system`, configured `current_time`, and `eval_mode`
-      salts. This lets caller-owned in-memory cache runtimes share conservative
-      source-less lowered-IR node-thunk payloads without requiring source bytes,
-      while still separating equal-shaped IR whose symbol tables differ and
-      equal source-less expressions under different path bases. It is a
+      salts plus the lowered node source span. This lets caller-owned in-memory
+      cache runtimes share conservative source-less lowered-IR node-thunk
+      payloads without requiring source bytes, while still separating
+      equal-shaped IR whose symbol tables, path bases, evaluator options, or
+      node spans differ. It is a
       source-independent identity substrate only; broader source-less raw eval
       surfaces, synthetic apply/select thunks, remaining composite payloads, persistence,
       fine-grained option dependency tracking, and cached/uncached harness proof
@@ -674,6 +679,19 @@ alone (`M-1`/`Q-A`).
       tests, preforced computed string thunk-cell capture tests, fulfilled
       replayable-attrset thunk-cell hash tests, suspended thunk-cell skip tests, and representative captured
       unsupported free-variable skips (`C-1`/`C-2`).
+- [x] Current node-span force-cache identity precursor: source-backed and
+      source-less node-thunk expression identities now fold the lowered node's
+      source span into the durable expression-identity hash before pairing that
+      hash with the existing `IrId` discriminator. This moves the current
+      identity shape toward the RFC `source content hash + IR node position` key
+      while preserving the existing source-byte/lowered-IR fingerprint,
+      path-literal-base, evaluator-option salt, synthetic builtin identity, and
+      ordered free-variable hash behavior. Full cache-key integration still
+      requires canonical strictness/escape free-variable sets, real durable value
+      hashes for all admitted values, persistent key compatibility decisions,
+      and the cached/uncached false-hit harness. The gate covers a force-cache
+      identity and shared-runtime no-hit regression for same source bytes and
+      same `IrId` under a changed node span (`C-1`/`C-2`).
 - [ ] Full cache-key integration remains: feed source content + IR node position
       from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real
