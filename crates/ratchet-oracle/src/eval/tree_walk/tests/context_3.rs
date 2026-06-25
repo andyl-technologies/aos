@@ -332,6 +332,18 @@ fn to_file_text_store_import_uses_import_cache() {
 }
 
 #[test]
+fn to_file_text_store_import_marks_impure_trace_incomplete() {
+    let outcome = eval_whnf_owned(&lower(
+        r#"let p = builtins.toFile "generated.nix" "1"; in import p"#,
+    ))
+    .expect("text-store import evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(1));
+    assert!(outcome.impure_input_trace().is_empty());
+    assert!(!outcome.impure_input_trace_complete());
+}
+
+#[test]
 fn to_file_text_store_read_file_rejects_nul_bytes() {
     let error = eval_whnf_owned(&lower(
         r#"builtins.readFile (builtins.toFile "nul" (builtins.fromJSON "\"a\\u0000b\""))"#,

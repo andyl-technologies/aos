@@ -501,10 +501,14 @@ struct ModuleSource {
 }
 
 /// In-process import cache state.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum ImportCacheEntry {
     Evaluating,
-    Ready(Value),
+    Ready {
+        value: Value,
+        trace: Option<Vec<ImpureInputFingerprint>>,
+        force_cache_trace_complete: bool,
+    },
 }
 
 /// The runtime global scope used while evaluating an imported file.
@@ -530,6 +534,7 @@ struct TextStoreEntry {
 struct ImpureInputTraceCursor {
     len: usize,
     complete: bool,
+    force_cache_epoch: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -705,6 +710,7 @@ pub struct TreeWalk {
     warning_output: Vec<EvalWarningOutput>,
     impure_input_trace: Vec<ImpureInputFingerprint>,
     impure_input_trace_complete: bool,
+    force_cache_impure_trace_epoch: u64,
     stderr: EvalStderr,
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,
     find_file_cache_hits: usize,

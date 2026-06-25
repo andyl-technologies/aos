@@ -7,6 +7,7 @@ impl TreeWalk {
         ImpureInputTraceCursor {
             len: self.impure_input_trace.len(),
             complete: self.impure_input_trace_complete,
+            force_cache_epoch: self.force_cache_impure_trace_epoch,
         }
     }
 
@@ -30,6 +31,17 @@ impl TreeWalk {
             trace: trace.to_vec(),
             complete: true,
         }
+    }
+
+    pub(super) fn force_cache_impure_input_trace_segment(
+        &self,
+        cursor: ImpureInputTraceCursor,
+    ) -> ImpureInputTraceSegment {
+        let mut segment = self.impure_input_trace_segment(cursor);
+        if cursor.force_cache_epoch != self.force_cache_impure_trace_epoch {
+            segment.complete = false;
+        }
+        segment
     }
 
     pub(super) fn record_impure_input_result(
@@ -57,6 +69,10 @@ impl TreeWalk {
     pub(super) fn mark_impure_input_trace_incomplete(&mut self) {
         self.impure_input_trace.clear();
         self.impure_input_trace_complete = false;
+    }
+
+    pub(super) fn mark_force_cache_impure_input_trace_incomplete(&mut self) {
+        self.force_cache_impure_trace_epoch = self.force_cache_impure_trace_epoch.wrapping_add(1);
     }
 
     pub(super) fn file_type_for_impure_input(file_type: fs::FileType) -> FileTypeForInput {

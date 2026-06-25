@@ -502,10 +502,12 @@ alone (`M-1`/`Q-A`).
       an inline scalar payload only when that slice is complete and cacheable,
       wiring the expression node to the observed input leaves at the same time.
       The observation whitelist admits the existing pure subset plus cacheable
-      input primops (`getEnv`, `pathExists`, `readDir`, `readFile`,
+      input primops (`import`, `getEnv`, `pathExists`, `readDir`, `readFile`,
       `readFileType`) with safe children such as path literals, so stable
-      `pathExists` thunks now create expression/input edges while `currentTime`,
-      search-path literals, and application-like forms still create no payload.
+      `pathExists` and canonical plain-file filesystem-import thunks reached
+      without symlinked path components now create expression/input edges while
+      `currentTime`, symlinked import routes, search-path literals, and
+      application-like forms still create no payload.
       Trace-backed payload records are tagged as requiring revalidation and are
       misses through the existing public lookup API; incomplete or uncacheable
       trace observations invalidate any existing inline payload for the same
@@ -526,16 +528,20 @@ alone (`M-1`/`Q-A`).
       revalidates those typed identities through an `ImpureInputRevalidator`
       before returning a scalar payload. Changed, unavailable, uncacheable, or
       identity-mismatched fresh inputs invalidate the payload and miss. Tree-walk
-      supplies a conservative options-backed revalidator for `getEnv`,
+      supplies a conservative options-backed revalidator for `import`, `getEnv`,
       `pathExists`, `readFile`, `readDir`, and `readFileType`, so stable
-      source-backed `pathExists` and `readFile`-backed thunks can hit after
-      replaying their input probes, while deleted paths or changed read bytes
-      force recomputation through the normal evaluator path. Revalidated cache
-      hits append their fresh fingerprints back into the active evaluator trace
-      so enclosing forced thunks cannot be observed as pure by losing nested
-      dependencies. `readFile` revalidation is guarded by the option-salted
-      expression identity for store-dir-dependent string context, and the older
-      public pure lookup remains pure-only. This is
+      source-backed `pathExists`, `readFile`-backed, and canonical
+      plain-file filesystem-import-backed thunks reached without symlinked path
+      components can hit after replaying their input probes, including
+      import-cache hits that replay the originally observed nested input trace.
+      Deleted paths, changed read bytes, changed import source bytes, or
+      symlinked import routes force recomputation through the normal evaluator
+      path. Revalidated cache hits append their fresh fingerprints back into the
+      active evaluator trace so enclosing forced thunks cannot be observed as
+      pure by losing nested dependencies.
+      `readFile` revalidation is guarded by the option-salted expression
+      identity for store-dir-dependent string context, and the older public pure
+      lookup remains pure-only. This is
       in-memory scalar effectful reuse only; source-less raw eval, captured
       lexical/dynamic/scoped-global thunks, ambient builtin constants,
       search-path/path/global/builtin/application/dialect nodes beyond the

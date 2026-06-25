@@ -86,6 +86,7 @@ impl TreeWalk {
             warning_output: Vec::new(),
             impure_input_trace: Vec::new(),
             impure_input_trace_complete: true,
+            force_cache_impure_trace_epoch: 0,
             stderr: EvalStderr::default(),
             find_file_cache: BTreeMap::new(),
             find_file_cache_hits: 0,
@@ -733,7 +734,9 @@ impl TreeWalk {
         };
         matches!(
             ir.symbols.resolve(symbol),
-            Some(b"getEnv" | b"pathExists" | b"readDir" | b"readFile" | b"readFileType")
+            Some(
+                b"import" | b"getEnv" | b"pathExists" | b"readDir" | b"readFile" | b"readFileType",
+            )
         )
     }
 

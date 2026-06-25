@@ -835,7 +835,7 @@ impl TreeWalk {
                     }
                 };
                 let value = result?;
-                let impure_trace = self.impure_input_trace_segment(impure_trace_cursor);
+                let impure_trace = self.force_cache_impure_input_trace_segment(impure_trace_cursor);
                 let value = guard.finish(value).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
                 })?;

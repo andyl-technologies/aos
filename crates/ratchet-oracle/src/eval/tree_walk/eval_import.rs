@@ -736,10 +736,30 @@ impl TreeWalk {
         argument_span: Span,
         cache_path: PathBuf,
         diagnostic_path: Vec<u8>,
+        current_force_cache_trace_complete: bool,
         load: impl FnOnce(&mut Self) -> Result<Value, TreeWalkError>,
     ) -> Result<Value, TreeWalkError> {
-        match self.import_cache.get(&cache_path).copied() {
-            Some(ImportCacheEntry::Ready(value)) => return Ok(value),
+        if !current_force_cache_trace_complete {
+            self.mark_force_cache_impure_input_trace_incomplete();
+        }
+        match self.import_cache.get(&cache_path).cloned() {
+            Some(ImportCacheEntry::Ready {
+                value,
+                trace,
+                force_cache_trace_complete,
+            }) => {
+                if let Some(trace) = trace {
+                    for fingerprint in trace {
+                        self.record_impure_input(fingerprint);
+                    }
+                } else {
+                    self.mark_impure_input_trace_incomplete();
+                }
+                if !force_cache_trace_complete {
+                    self.mark_force_cache_impure_input_trace_incomplete();
+                }
+                return Ok(value);
+            }
             Some(ImportCacheEntry::Evaluating) => {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::RecursiveImport {
@@ -754,11 +774,28 @@ impl TreeWalk {
 
         self.import_cache
             .insert(cache_path.clone(), ImportCacheEntry::Evaluating);
+        let trace_cursor = self.impure_input_trace_cursor();
         let result = load(self);
         match result {
             Ok(value) => {
-                self.import_cache
-                    .insert(cache_path, ImportCacheEntry::Ready(value));
+                let trace = self.impure_input_trace_segment(trace_cursor);
+                let force_cache_trace_complete = self
+                    .force_cache_impure_input_trace_segment(trace_cursor)
+                    .complete;
+                let trace = if trace.complete && !trace.trace.is_empty() {
+                    Some(trace.trace)
+                } else {
+                    self.mark_impure_input_trace_incomplete();
+                    None
+                };
+                self.import_cache.insert(
+                    cache_path,
+                    ImportCacheEntry::Ready {
+                        value,
+                        trace,
+                        force_cache_trace_complete,
+                    },
+                );
                 Ok(value)
             }
             Err(error) => {
@@ -785,32 +822,48 @@ impl TreeWalk {
         if is_text_store {
             let cache_path = PathBuf::from(OsStr::from_bytes(&path));
             let text_path = path.clone();
-            return self.load_cached_import(argument, argument_span, cache_path, path, |eval| {
-                eval.load_and_eval_text_store_import(
+            return self.load_cached_import(
+                argument,
+                argument_span,
+                cache_path,
+                path,
+                false,
+                |eval| {
+                    eval.load_and_eval_text_store_import(
+                        id,
+                        span,
+                        argument,
+                        argument_span,
+                        &text_path,
+                        ImportGlobalScope::Fresh,
+                    )
+                },
+            );
+        }
+        let (target_path, realpath) = self.import_paths(argument, argument_span, &path)?;
+        let path_literal_base = Self::import_path_literal_base(&target_path);
+        let trace_import = Self::import_target_is_force_cache_traceable(&target_path);
+        let realpath_bytes = realpath.as_os_str().as_bytes().to_vec();
+        let import_path = realpath.clone();
+        self.load_cached_import(
+            argument,
+            argument_span,
+            realpath,
+            realpath_bytes,
+            trace_import,
+            |eval| {
+                eval.load_and_eval_import(
                     id,
                     span,
                     argument,
                     argument_span,
-                    &text_path,
+                    &import_path,
+                    &path_literal_base,
+                    trace_import,
                     ImportGlobalScope::Fresh,
                 )
-            });
-        }
-        let (target_path, realpath) = self.import_paths(argument, argument_span, &path)?;
-        let path_literal_base = Self::import_path_literal_base(&target_path);
-        let realpath_bytes = realpath.as_os_str().as_bytes().to_vec();
-        let import_path = realpath.clone();
-        self.load_cached_import(argument, argument_span, realpath, realpath_bytes, |eval| {
-            eval.load_and_eval_import(
-                id,
-                span,
-                argument,
-                argument_span,
-                &import_path,
-                &path_literal_base,
-                ImportGlobalScope::Fresh,
-            )
-        })
+            },
+        )
     }
 
     pub(super) fn eval_scoped_import_primop(
@@ -852,6 +905,7 @@ impl TreeWalk {
         }
         let (target_path, realpath) = self.import_paths(argument, argument_span, &path)?;
         let path_literal_base = Self::import_path_literal_base(&target_path);
+        let trace_import = Self::import_target_is_force_cache_traceable(&target_path);
         self.load_and_eval_import(
             id,
             span,
@@ -859,6 +913,7 @@ impl TreeWalk {
             argument_span,
             &realpath,
             &path_literal_base,
+            trace_import,
             ImportGlobalScope::Scoped(scope_value),
         )
     }
@@ -894,6 +949,20 @@ impl TreeWalk {
             .to_vec()
     }
 
+    fn import_target_is_force_cache_traceable(target: &Path) -> bool {
+        let mut prefix = PathBuf::new();
+        for component in target.components() {
+            prefix.push(component.as_os_str());
+            let Ok(metadata) = fs::symlink_metadata(&prefix) else {
+                return false;
+            };
+            if metadata.file_type().is_symlink() {
+                return false;
+            }
+        }
+        true
+    }
+
     pub(super) fn import_target_path(
         &self,
         id: IrId,
@@ -925,6 +994,7 @@ impl TreeWalk {
         argument_span: Span,
         realpath: &Path,
         path_literal_base: &[u8],
+        trace_import: bool,
         global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
         let path = realpath.as_os_str().as_bytes().to_vec();
@@ -939,6 +1009,9 @@ impl TreeWalk {
             )
         })?;
         self.record_impure_input_result(ImpureInputFingerprint::import(&path, &source));
+        if !trace_import {
+            self.mark_force_cache_impure_input_trace_incomplete();
+        }
         if let Some(cached) = self.load_parse_cached_import(
             argument,
             argument_span,

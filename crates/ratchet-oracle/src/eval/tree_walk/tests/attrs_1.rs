@@ -1303,6 +1303,463 @@ fn changed_read_file_backed_inline_thunks_miss_after_revalidation() {
 }
 
 #[test]
+fn import_backed_inline_thunks_hit_after_revalidation() {
+    let root = unique_temp_dir("force-cache-import-backed");
+    fs::write(root.join("dep.nix"), b"1").expect("import source writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let dep_path = path_bytes(&fs::canonicalize(root.join("dep.nix")).expect("dep canonicalizes"));
+    let source = "{ a = import ./dep.nix; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = eval.eval_root().expect("attrset evaluates");
+    let thunk = {
+        let attrs = eval
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    assert_eq!(
+        eval.force_value(ir.root, Span::new(0, 0), thunk)
+            .expect("import-backed force succeeds")
+            .as_int(),
+        Ok(1)
+    );
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let second_root = second.eval_root().expect("attrset evaluates again");
+    let second_thunk = {
+        let attrs = second
+            .heap()
+            .get_attrs(second_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = second
+        .force_value(ir.root, Span::new(0, 0), second_thunk)
+        .expect("import-backed force revalidates and hits");
+
+    assert_eq!(forced.as_int(), Ok(1));
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "stable import-backed payloads should hit after input revalidation"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+    let expected_trace =
+        vec![ImpureInputFingerprint::import(&dep_path, b"1").expect("fingerprint builds")];
+    assert_eq!(
+        second.impure_input_trace(),
+        expected_trace.as_slice(),
+        "cache-hit revalidation must replay the import source edge"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn changed_import_backed_inline_thunks_miss_after_revalidation() {
+    let root = unique_temp_dir("force-cache-import-backed-changed");
+    fs::write(root.join("dep.nix"), b"1").expect("import source writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = "{ a = import ./dep.nix; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = eval.eval_root().expect("attrset evaluates");
+    let thunk = {
+        let attrs = eval
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    assert_eq!(
+        eval.force_value(ir.root, Span::new(0, 0), thunk)
+            .expect("import-backed force succeeds")
+            .as_int(),
+        Ok(1)
+    );
+
+    fs::write(root.join("dep.nix"), b"2").expect("import source changes");
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let changed_root = changed.eval_root().expect("attrset evaluates again");
+    let changed_thunk = {
+        let attrs = changed
+            .heap()
+            .get_attrs(changed_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced_changed = changed
+        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .expect("changed import-backed force recomputes");
+
+    assert_eq!(forced_changed.as_int(), Ok(2));
+    assert_eq!(changed.stats().thunks_forced(), 1);
+    assert_eq!(changed.stats().cache_hits(), 0);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn import_cache_hits_keep_force_cache_impure_edges() {
+    let root = unique_temp_dir("force-cache-import-hit-backed");
+    fs::write(root.join("dep.nix"), b"1").expect("import source writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = "{ warm = import ./dep.nix; a = import ./dep.nix; }";
+    let ir = lower(source);
+    let warm = symbol_for(&ir, b"warm");
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = eval.eval_root().expect("attrset evaluates");
+    let (warm_thunk, a_thunk) = {
+        let attrs = eval
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        (
+            attrs.get(warm).expect("warm exists"),
+            attrs.get(a).expect("a exists"),
+        )
+    };
+    assert_eq!(
+        eval.force_value(ir.root, Span::new(0, 0), warm_thunk)
+            .expect("warm import force succeeds")
+            .as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        eval.force_value(ir.root, Span::new(0, 0), a_thunk)
+            .expect("cached import force succeeds")
+            .as_int(),
+        Ok(1)
+    );
+
+    fs::write(root.join("dep.nix"), b"2").expect("import source changes");
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let changed_root = changed.eval_root().expect("attrset evaluates again");
+    let changed_thunk = {
+        let attrs = changed
+            .heap()
+            .get_attrs(changed_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced_changed = changed
+        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .expect("changed import-cache-backed force recomputes");
+
+    assert_eq!(forced_changed.as_int(), Ok(2));
+    assert_eq!(changed.stats().thunks_forced(), 1);
+    assert_eq!(changed.stats().cache_hits(), 0);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn symlinked_import_cache_hits_skip_force_cache_hits() {
+    let root = unique_temp_dir("force-cache-import-cache-symlink-hit");
+    fs::create_dir(root.join("real")).expect("real import directory creates");
+    fs::create_dir(root.join("other")).expect("other import directory creates");
+    fs::write(root.join("real").join("dep.nix"), b"1").expect("real import source writes");
+    fs::write(root.join("other").join("dep.nix"), b"2").expect("other import source writes");
+    std::os::unix::fs::symlink(root.join("real"), root.join("link"))
+        .expect("import parent symlink creates");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = "{ warm = import ./real/dep.nix; a = import ./link/dep.nix; }";
+    let ir = lower(source);
+    let warm = symbol_for(&ir, b"warm");
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = eval.eval_root().expect("attrset evaluates");
+    let (warm_thunk, a_thunk) = {
+        let attrs = eval
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        (
+            attrs.get(warm).expect("warm exists"),
+            attrs.get(a).expect("a exists"),
+        )
+    };
+    assert_eq!(
+        eval.force_value(ir.root, Span::new(0, 0), warm_thunk)
+            .expect("safe import force succeeds")
+            .as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        eval.force_value(ir.root, Span::new(0, 0), a_thunk)
+            .expect("symlinked import-cache hit succeeds")
+            .as_int(),
+        Ok(1)
+    );
+
+    fs::remove_file(root.join("link")).expect("import parent symlink removes");
+    std::os::unix::fs::symlink(root.join("other"), root.join("link"))
+        .expect("import parent symlink retargets");
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let changed_root = changed.eval_root().expect("attrset evaluates again");
+    let changed_thunk = {
+        let attrs = changed
+            .heap()
+            .get_attrs(changed_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced_changed = changed
+        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .expect("retargeted symlink import-cache force recomputes");
+
+    assert_eq!(forced_changed.as_int(), Ok(2));
+    assert_eq!(changed.stats().thunks_forced(), 1);
+    assert_eq!(changed.stats().cache_hits(), 0);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn symlinked_import_backed_inline_thunks_skip_force_cache_hits() {
+    let root = unique_temp_dir("force-cache-import-symlink");
+    fs::write(root.join("one.nix"), b"1").expect("first import source writes");
+    fs::write(root.join("two.nix"), b"2").expect("second import source writes");
+    std::os::unix::fs::symlink(root.join("one.nix"), root.join("dep.nix"))
+        .expect("import symlink creates");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = "{ a = import ./dep.nix; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = eval.eval_root().expect("attrset evaluates");
+    let thunk = {
+        let attrs = eval
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    assert_eq!(
+        eval.force_value(ir.root, Span::new(0, 0), thunk)
+            .expect("symlinked import-backed force succeeds")
+            .as_int(),
+        Ok(1)
+    );
+
+    fs::remove_file(root.join("dep.nix")).expect("import symlink removes");
+    std::os::unix::fs::symlink(root.join("two.nix"), root.join("dep.nix"))
+        .expect("import symlink retargets");
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let changed_root = changed.eval_root().expect("attrset evaluates again");
+    let changed_thunk = {
+        let attrs = changed
+            .heap()
+            .get_attrs(changed_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced_changed = changed
+        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .expect("retargeted symlink import-backed force recomputes");
+
+    assert_eq!(forced_changed.as_int(), Ok(2));
+    assert_eq!(changed.stats().thunks_forced(), 1);
+    assert_eq!(changed.stats().cache_hits(), 0);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn symlinked_import_parent_inline_thunks_skip_force_cache_hits() {
+    let root = unique_temp_dir("force-cache-import-parent-symlink");
+    fs::create_dir(root.join("one")).expect("first import directory creates");
+    fs::create_dir(root.join("two")).expect("second import directory creates");
+    fs::write(root.join("one").join("dep.nix"), b"1").expect("first import source writes");
+    fs::write(root.join("two").join("dep.nix"), b"2").expect("second import source writes");
+    std::os::unix::fs::symlink(root.join("one"), root.join("link"))
+        .expect("import parent symlink creates");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = "{ a = import ./link/dep.nix; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = eval.eval_root().expect("attrset evaluates");
+    let thunk = {
+        let attrs = eval
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    assert_eq!(
+        eval.force_value(ir.root, Span::new(0, 0), thunk)
+            .expect("parent-symlinked import-backed force succeeds")
+            .as_int(),
+        Ok(1)
+    );
+
+    fs::remove_file(root.join("link")).expect("import parent symlink removes");
+    std::os::unix::fs::symlink(root.join("two"), root.join("link"))
+        .expect("import parent symlink retargets");
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let changed_root = changed.eval_root().expect("attrset evaluates again");
+    let changed_thunk = {
+        let attrs = changed
+            .heap()
+            .get_attrs(changed_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced_changed = changed
+        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .expect("retargeted parent-symlinked import-backed force recomputes");
+
+    assert_eq!(forced_changed.as_int(), Ok(2));
+    assert_eq!(changed.stats().thunks_forced(), 1);
+    assert_eq!(changed.stats().cache_hits(), 0);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn effectful_descendant_forced_inline_thunks_record_impure_edges() {
     let root = unique_temp_dir("force-cache-effectful-descendant");
     fs::write(root.join("marker"), b"present").expect("marker exists");
