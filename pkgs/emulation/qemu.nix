@@ -42,6 +42,8 @@
       patch -p1 < ${./qemu-patches/0015-crucible-blk-shmem.patch}
       patch -p1 < ${./qemu-patches/0016-crucible-blk-shmem-io-fixes.patch}
       patch -p1 < ${./qemu-patches/0017-crucible-blk-write-sentinel.patch}
+      patch -p1 < ${./qemu-patches/0018-crucible-dev-cb-api.patch}
+      patch -p1 < ${./qemu-patches/0019-crucible-9p-shmem.patch}
     ''
     else "";
 in

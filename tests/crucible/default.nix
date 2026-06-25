@@ -84,6 +84,7 @@ in {
     qemuDeterministicGetrandom = import ./phase1-qemu-deterministic-getrandom.nix {inherit pkgs lib;};
     qemuNetDeterministic = import ./phase1-qemu-net-deterministic.nix {inherit pkgs lib;};
     qemuBlockShmem = import ./phase1-qemu-block-shmem.nix {inherit pkgs lib;};
+    qemuNinePShmem = import ./phase1-qemu-9p-shmem.nix {inherit pkgs lib;};
     pluginTimeAdvance = import ./phase1-plugin-time-advance.nix {inherit pkgs lib;};
     pluginRuntimeApis = import ./phase1-plugin-runtime-apis.nix {inherit pkgs lib;};
     rrFingerprintHelpers = import ./phase1-rr-fingerprint-helpers.nix {inherit pkgs lib;};

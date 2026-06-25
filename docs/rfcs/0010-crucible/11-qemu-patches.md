@@ -1275,9 +1275,23 @@ time-control primitives the whole design rests on.
     exposes typed block submit/poll callback signatures plus
     `resolve_qemu_register_blk_cb_symbol()` for the later live block callback
     registration work.
-- [ ] **T-PATCH-13** Implement the 9p co-sim path `crucible-9p-shmem` and the
+- [x] **T-PATCH-13** Implement the 9p co-sim path `crucible-9p-shmem` and the
   device registration surface `crucible-dev-cb-api`; upstream server used when no
   callback is registered. — satisfies [PATCH-29], [PATCH-30]; spec §11.6 (E19).
+  - Completed by `0018-crucible-dev-cb-api.patch`,
+    `0019-crucible-9p-shmem.patch`,
+    `checks.crucible.phase1.qemuNinePShmem`, and `gate:patch-microtests`: QEMU
+    now exports `qemu_plugin_register_9p_cb`, falls back to the upstream 9p
+    server unless the burst-start, submit, poll, and burst-done callbacks are all
+    registered, and forwards fully registered virtio-9p traffic as raw 9p
+    request/response messages. The focused fixture compiles the actual patched
+    `hw/9pfs/virtio-9p-device.c`, proves stock QEMU lacks the 9p callback
+    surface, exercises burst start/done holding across a two-request queue
+    drain, pending poll waits with sentinel `-2`, raw request/response copying,
+    partial-registration fallback, and fail-closed oversized request/response
+    plus request-id overflow paths that clear their PDU slots before freeing
+    queue elements. This is source-level patch evidence; full guest 9p mount and
+    layer-1 workload evidence remains a later gate.
 - [ ] **T-PATCH-14** Implement the network co-sim patches
   `crucible-net-tx-callback` (TX intercept) and complete `crucible-net-flush-api`
   end-to-end plugin integration over the QEMU-side RX append/flush primitives,

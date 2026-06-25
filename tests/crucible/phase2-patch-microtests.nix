@@ -105,6 +105,20 @@
         patchName = "0017-crucible-blk-write-sentinel.patch";
       };
     }
+    {
+      patch = "0018-crucible-dev-cb-api.patch";
+      check = import ./phase1-qemu-9p-shmem.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0018-crucible-dev-cb-api.patch";
+      };
+    }
+    {
+      patch = "0019-crucible-9p-shmem.patch";
+      check = import ./phase1-qemu-9p-shmem.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0019-crucible-9p-shmem.patch";
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -222,7 +236,8 @@ in
               qemu_plugin_register_wake_fd \
               qemu_plugin_main_loop_wait \
               qemu_plugin_register_tcg_exec_cb \
-              qemu_plugin_register_blk_cb
+              qemu_plugin_register_blk_cb \
+              qemu_plugin_register_9p_cb
             do
               grep -E "[[:space:]]$symbol$" "$out/qemu-system-x86_64.dynamic-symbols"
             done
@@ -252,6 +267,7 @@ in
             qemu_plugin_time_drain_exports_present=true
             qemu_plugin_runtime_api_exports_present=true
             qemu_plugin_block_exports_present=true
+            qemu_plugin_9p_exports_present=true
             qemu_inert_gate_attr=checks.crucible.phase2.gates.qemuInert
             qemu_inert_gate_wired=true
             qemu_inert_depends_on_patch_microtests=true

@@ -1,0 +1,161 @@
+diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
+--- a/hw/9pfs/virtio-9p-device.c
++++ b/hw/9pfs/virtio-9p-device.c
+@@ -69,6 +69,100 @@ static void virtio_9p_push_and_notify(V9fsPDU *pdu)
+     virtio_notify(VIRTIO_DEVICE(v), v->vq);
+ }
+ 
++static void crucible_9p_finish_burst(bool *burst_active)
++{
++    if (*burst_active) {
++        crucible_9p_burst_done_cb(crucible_9p_userdata);
++        *burst_active = false;
++    }
++}
++
++static int virtio_9p_next_crucible_request_id(V9fsVirtioState *v,
++                                              uint32_t *request_id)
++{
++    if (v->next_crucible_9p_request_id == UINT32_MAX) {
++        return -EOVERFLOW;
++    }
++
++    *request_id = v->next_crucible_9p_request_id++;
++    return 0;
++}
++
++static int virtio_9p_forward_crucible(VirtIODevice *vdev,
++                                      V9fsVirtioState *v,
++                                      V9fsPDU *pdu,
++                                      const P9MsgHeader *hdr)
++{
++    VirtQueueElement *elem = v->elems[pdu->idx];
++    size_t request_len = le32_to_cpu(hdr->size_le);
++    size_t request_capacity = iov_size(elem->out_sg, elem->out_num);
++    size_t response_capacity = iov_size(elem->in_sg, elem->in_num);
++    g_autofree uint8_t *request = NULL;
++    g_autofree uint8_t *response = NULL;
++    uint32_t request_id;
++    int ret;
++    int64_t poll_ret;
++    size_t copied;
++
++    pdu->size = request_len;
++    pdu->id = hdr->id;
++    pdu->tag = le16_to_cpu(hdr->tag_le);
++
++    if (request_len < sizeof(*hdr) || request_len > request_capacity ||
++        response_capacity < sizeof(*hdr)) {
++        return -EINVAL;
++    }
++
++    ret = virtio_9p_next_crucible_request_id(v, &request_id);
++    if (ret < 0) {
++        return ret;
++    }
++
++    request = g_malloc(request_len);
++    response = g_malloc(response_capacity);
++
++    copied = iov_to_buf(elem->out_sg, elem->out_num, 0, request, request_len);
++    if (copied != request_len) {
++        return -EINVAL;
++    }
++
++    ret = crucible_9p_submit_cb(request_id, request, request_len,
++                                response_capacity, crucible_9p_userdata);
++    if (ret != 0) {
++        return -EIO;
++    }
++
++    while (true) {
++        poll_ret = crucible_9p_poll_cb(request_id, response,
++                                       response_capacity,
++                                       crucible_9p_userdata);
++        if (poll_ret != QEMU_PLUGIN_9P_POLL_PENDING) {
++            break;
++        }
++        qemu_plugin_main_loop_wait();
++    }
++
++    if (poll_ret == -1) {
++        return -EIO;
++    }
++    if (poll_ret < -1 || (uint64_t)poll_ret > response_capacity ||
++        (uint64_t)poll_ret > UINT32_MAX ||
++        (uint64_t)poll_ret < sizeof(*hdr)) {
++        return -EOVERFLOW;
++    }
++
++    copied = iov_from_buf(elem->in_sg, elem->in_num, 0, response,
++                          (size_t)poll_ret);
++    if (copied != (size_t)poll_ret) {
++        return -EIO;
++    }
++
++    pdu->size = (uint32_t)poll_ret;
++    virtio_9p_push_and_notify(pdu);
++    pdu_free(pdu);
++    return 0;
++}
++
+ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
+ {
+     V9fsVirtioState *v = (V9fsVirtioState *)vdev;
+@@ -77,6 +161,7 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
+     V9fsPDU *pdu;
+     ssize_t len;
+     VirtQueueElement *elem;
++    bool crucible_9p_burst_active = false;
+ 
+     while ((pdu = pdu_alloc(s))) {
+         P9MsgHeader out;
+@@ -101,13 +195,29 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
+         v->elems[pdu->idx] = elem;
+ 
++        if (crucible_9p_callbacks_ready()) {
++            if (!crucible_9p_burst_active) {
++                crucible_9p_burst_start_cb(crucible_9p_userdata);
++                crucible_9p_burst_active = true;
++            }
++            if (virtio_9p_forward_crucible(vdev, v, pdu, &out) < 0) {
++                v->elems[pdu->idx] = NULL;
++                virtio_error(vdev, "crucible 9p shmem forwarding failed");
++                goto out_free_req;
++            }
++            continue;
++        }
++
+         pdu_submit(pdu, &out);
+     }
+ 
++    crucible_9p_finish_burst(&crucible_9p_burst_active);
+     return;
+ 
+ out_free_req:
++    crucible_9p_finish_burst(&crucible_9p_burst_active);
+     virtqueue_detach_element(vq, elem, 0);
+     g_free(elem);
+ out_free_pdu:
++    crucible_9p_finish_burst(&crucible_9p_burst_active);
+     pdu_free(pdu);
+ }
+@@ -239,6 +340,7 @@ static void virtio_9p_device_realize(DeviceState *dev, Error **errp)
+         return;
+     }
+ 
++    v->next_crucible_9p_request_id = 0;
+     v->config_size = sizeof(struct virtio_9p_config) + strlen(s->fsconf.tag);
+     virtio_init(vdev, VIRTIO_ID_9P, v->config_size);
+     v->vq = virtio_add_queue(vdev, MAX_REQ, handle_9p_output);
+diff --git a/hw/9pfs/virtio-9p.h b/hw/9pfs/virtio-9p.h
+--- a/hw/9pfs/virtio-9p.h
++++ b/hw/9pfs/virtio-9p.h
+@@ -10,6 +10,7 @@ struct V9fsVirtioState {
+     VirtIODevice parent_obj;
+     VirtQueue *vq;
+     size_t config_size;
++    uint32_t next_crucible_9p_request_id;
+     VirtQueueElement *elems[MAX_REQ];
+     V9fsState state;
+ };
