@@ -4,6 +4,7 @@
 //! scheduler, temporal graph, checkpoint cache, fault engine, assertions, and
 //! event log. It deliberately contains no backend-specific driver state.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
@@ -1057,6 +1058,7 @@ pub struct State {
 pub struct TemporalGraph {
     /// The temporal graph content address.
     pub id: ContentHash,
+    recorded_configurations: BTreeMap<ContentHash, Configuration>,
     cached_snapshots: BTreeMap<ContentHash, Checkpoint>,
     baked_genesis: BTreeMap<ContentHash, GenesisCheckpoint>,
 }
@@ -1067,6 +1069,7 @@ impl TemporalGraph {
     pub fn new(id: ContentHash) -> Self {
         Self {
             id,
+            recorded_configurations: BTreeMap::new(),
             cached_snapshots: BTreeMap::new(),
             baked_genesis: BTreeMap::new(),
         }
@@ -1116,6 +1119,7 @@ impl TemporalGraph {
             });
         }
         validate_loadable_checkpoint(&checkpoint, configuration.id())?;
+        self.record_configuration(configuration.clone());
         self.cached_snapshots.insert(configuration.id(), checkpoint);
         Ok(())
     }
@@ -1152,8 +1156,153 @@ impl TemporalGraph {
     ) -> Result<(), EngineError> {
         let genesis_config = Configuration::genesis(def.clone());
         validate_loadable_checkpoint(&genesis.checkpoint, genesis_config.id())?;
+        self.record_configuration(genesis_config);
         self.baked_genesis.insert(def.id, genesis);
         Ok(())
+    }
+
+    /// Saves `configuration` as a fat checkpoint in the temporal graph.
+    ///
+    /// The checkpoint cache key is the configuration's content address. Saving
+    /// the same configuration repeatedly is idempotent and returns the existing
+    /// checkpoint instead of re-materializing a duplicate node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when materialization reaches
+    /// genesis without a baked genesis checkpoint. Returns other
+    /// [`EngineError`] variants when cached checkpoint metadata is invalid.
+    pub fn save_checkpoint(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Checkpoint, EngineError> {
+        self.record_configuration(configuration.clone());
+        if configuration.is_genesis() {
+            let genesis = self.genesis_snapshot(&configuration.def).ok_or(
+                EngineError::MissingBakedGenesis {
+                    scenario: configuration.def.id,
+                },
+            )?;
+            return Ok(genesis.checkpoint.clone());
+        }
+        if let Some(checkpoint) = self.cached_snapshot(configuration) {
+            return Ok(checkpoint.clone());
+        }
+
+        let runtime = instantiate(self, configuration)?;
+        let checkpoint = materialized_checkpoint_for_runtime(configuration, runtime);
+        self.cache_snapshot(configuration, checkpoint.clone())?;
+        Ok(checkpoint)
+    }
+
+    /// Checks a stored fat checkpoint against its thin replay derivation.
+    ///
+    /// This is the on-demand replay operation: the supplied fat checkpoint is
+    /// validated, the same configuration is reconstructed from an ancestor or
+    /// baked genesis without using the target exact snapshot, and both
+    /// checkpoint identities are compared.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointConfigurationMismatch`] or
+    /// [`EngineError::CheckpointNotLoadable`] when the fat checkpoint metadata
+    /// is invalid. Returns [`EngineError::ReplayOracleMismatch`] when the thin
+    /// derivation does not reproduce the fat checkpoint identity.
+    pub fn replay_checkpoint(
+        &self,
+        configuration: &Configuration,
+        checkpoint: &Checkpoint,
+    ) -> Result<ReplayOracleCheck, EngineError> {
+        validate_loadable_checkpoint(checkpoint, configuration.id())?;
+        let thin_runtime = instantiate_thin_replay(self, configuration)?;
+        let thin_checkpoint = if configuration.is_genesis() {
+            self.genesis_snapshot(&configuration.def)
+                .ok_or(EngineError::MissingBakedGenesis {
+                    scenario: configuration.def.id,
+                })?
+                .checkpoint
+                .clone()
+        } else {
+            materialized_checkpoint_for_runtime(configuration, thin_runtime)
+        };
+        if checkpoint.id != thin_checkpoint.id {
+            return Err(EngineError::ReplayOracleMismatch {
+                checkpoint: checkpoint.id,
+                expected: thin_checkpoint.id,
+                actual: checkpoint.id,
+            });
+        }
+
+        Ok(ReplayOracleCheck {
+            configuration: configuration.id(),
+            fat_checkpoint: checkpoint.id,
+            thin_checkpoint: thin_checkpoint.id,
+        })
+    }
+
+    /// Enumerates frontier children by applying candidate decisions with `step`.
+    ///
+    /// The temporal graph records the frontier and each unique child by content
+    /// address. Duplicate child configurations are returned once, in stable
+    /// content-address order, and previously recorded children are marked so a
+    /// search driver can avoid re-materializing them.
+    #[must_use]
+    pub fn enumerate_frontier<I>(
+        &mut self,
+        frontier: &Configuration,
+        decisions: I,
+    ) -> Vec<FrontierChild>
+    where
+        I: IntoIterator<Item = Decision>,
+    {
+        self.record_configuration(frontier.clone());
+        let mut children = BTreeMap::new();
+        for decision in decisions {
+            let configuration = step(frontier, decision.clone());
+            children.entry(configuration.id()).or_insert(FrontierChild {
+                decision,
+                configuration,
+                already_recorded: false,
+            });
+        }
+
+        children
+            .into_values()
+            .map(|mut child| {
+                child.already_recorded = !self.record_configuration(child.configuration.clone());
+                child
+            })
+            .collect()
+    }
+
+    /// Returns whether `configuration` is recorded in the temporal graph.
+    #[must_use]
+    pub fn contains_configuration(&self, configuration: &Configuration) -> bool {
+        self.recorded_configurations
+            .contains_key(&configuration.id())
+    }
+
+    /// Returns the number of deduplicated configurations recorded by the graph.
+    #[must_use]
+    pub fn recorded_configuration_count(&self) -> usize {
+        self.recorded_configurations.len()
+    }
+
+    /// Returns the number of saved non-genesis fat checkpoints in the graph.
+    #[must_use]
+    pub fn cached_snapshot_count(&self) -> usize {
+        self.cached_snapshots.len()
+    }
+
+    fn record_configuration(&mut self, configuration: Configuration) -> bool {
+        let id = configuration.id();
+        match self.recorded_configurations.entry(id) {
+            Entry::Vacant(entry) => {
+                entry.insert(configuration);
+                true
+            }
+            Entry::Occupied(_) => false,
+        }
     }
 
     /// Returns the exact loadable snapshot for `configuration`, if one exists.
@@ -1193,6 +1342,28 @@ impl TemporalGraph {
 
         Ok(None)
     }
+}
+
+/// Result of an on-demand replay-oracle check.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReplayOracleCheck {
+    /// Configuration whose fat and thin checkpoint identities were compared.
+    pub configuration: ContentHash,
+    /// Content address of the supplied fat checkpoint.
+    pub fat_checkpoint: ContentHash,
+    /// Content address of the checkpoint reconstructed by thin replay.
+    pub thin_checkpoint: ContentHash,
+}
+
+/// One unique child produced by frontier decision enumeration.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FrontierChild {
+    /// Decision applied to the frontier configuration.
+    pub decision: Decision,
+    /// Child configuration produced by `step`.
+    pub configuration: Configuration,
+    /// Whether the child was already present in the temporal graph.
+    pub already_recorded: bool,
 }
 
 /// A live runtime-state handle produced by `instantiate`.
@@ -1360,6 +1531,15 @@ pub enum EngineError {
         /// The configuration produced by replaying the suffix.
         actual: ContentHash,
     },
+    /// A fat checkpoint did not match its thin replay derivation.
+    ReplayOracleMismatch {
+        /// The fat checkpoint under test.
+        checkpoint: ContentHash,
+        /// The checkpoint identity reconstructed by thin replay.
+        expected: ContentHash,
+        /// The supplied fat checkpoint identity.
+        actual: ContentHash,
+    },
     /// A schedule prefix or suffix could not be constructed.
     SchedulePrefix(
         /// The schedule prefix error.
@@ -1398,6 +1578,9 @@ impl fmt::Display for EngineError {
             }
             Self::ReplayTargetMismatch { .. } => {
                 f.write_str("replayed suffix did not produce requested configuration")
+            }
+            Self::ReplayOracleMismatch { .. } => {
+                f.write_str("replay oracle mismatch between fat checkpoint and thin derivation")
             }
             Self::SchedulePrefix(error) => write!(f, "schedule prefix failed: {error}"),
         }
@@ -1448,6 +1631,57 @@ fn replay_suffix(
     }
 
     runtime_for_configuration(&replayed)
+}
+
+fn instantiate_thin_replay(
+    graph: &TemporalGraph,
+    config: &Configuration,
+) -> Result<RuntimeState, EngineError> {
+    if config.is_genesis() {
+        let genesis =
+            graph
+                .genesis_snapshot(&config.def)
+                .ok_or(EngineError::MissingBakedGenesis {
+                    scenario: config.def.id,
+                })?;
+        return load_snapshot(config, &genesis.checkpoint);
+    }
+
+    if let Some(ancestor) = graph.nearest_cached_ancestor(config)? {
+        let ancestor_runtime = instantiate(graph, &ancestor)?;
+        let suffix = config
+            .schedule
+            .suffix_from(ancestor.schedule.len())
+            .map_err(EngineError::SchedulePrefix)?;
+        return replay_suffix(ancestor_runtime, &ancestor, &suffix, config);
+    }
+
+    let genesis = Configuration::genesis(config.def.clone());
+    let genesis_runtime = instantiate(graph, &genesis)?;
+    let suffix = config
+        .schedule
+        .suffix_from(genesis.schedule.len())
+        .map_err(EngineError::SchedulePrefix)?;
+    replay_suffix(genesis_runtime, &genesis, &suffix, config)
+}
+
+fn materialized_checkpoint_for_runtime(
+    configuration: &Configuration,
+    runtime: RuntimeState,
+) -> Checkpoint {
+    Checkpoint::new(
+        ContentHash::from_canonical_material(
+            "crucible.model.fat-checkpoint.v1",
+            &format!(
+                "configuration={}\nruntime_configuration={}\nruntime={}\n",
+                content_hash_hex(configuration.id()),
+                content_hash_hex(runtime.configuration),
+                content_hash_hex(runtime.id),
+            ),
+        ),
+        configuration.id(),
+        CheckpointKind::Fat,
+    )
 }
 
 fn validate_loadable_checkpoint(

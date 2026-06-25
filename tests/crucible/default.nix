@@ -64,6 +64,7 @@ in {
     engineeringHygiene = import ./phase1-engineering-hygiene.nix {inherit pkgs lib;};
     executionBake = import ./phase1-execution-bake.nix {inherit pkgs lib;};
     executionDecisionTaxonomy = import ./phase1-execution-decision-taxonomy.nix {inherit pkgs lib;};
+    executionGraphOperations = import ./phase1-execution-graph-operations.nix {inherit pkgs lib;};
     executionInstantiate = import ./phase1-execution-instantiate.nix {inherit pkgs lib;};
     executionModelCore = import ./phase1-execution-model-core.nix {inherit pkgs lib;};
     executionNodeBlobRef = import ./phase1-execution-node-blob-ref.nix {inherit pkgs lib;};
