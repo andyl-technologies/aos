@@ -187,14 +187,21 @@ green.
       (`backend/timing.rs`, `query-timing` feature) decorate the read-path
       backend; the Worker emits `Server-Timing` from `fetch` (`lib.rs`). Native
       tests green; compiles on native + wasm32 with/without the feature.
-- [deploy] Stand up a throwaway **preview** Worker (`aos-hub-preview`) with its own
-      D1/R2/KV/DO bindings for safe experiments (no prod impact). *Deploy-gated:*
-      config + bindings are prepared in the deploy-prep item; the actual `wrangler
-      deploy` is held until the end per the no-deploy directive.
-- [deploy] On the preview, measure `with_session` vs the raw D1 binding for a single
-      read; record the per-request session cost in this file. *Deploy-gated:*
-      needs the preview deploy above; the `Server-Timing` instrumentation (A1) is
-      the measurement vehicle and is ready.
+- [x] Stand up a throwaway **preview** Worker (`aos-hub-preview`) with its own
+      D1/R2/KV/DO bindings for safe experiments (no prod impact).
+      *Done:* deployed `aos-hub-preview.andyl.workers.dev` (2026-06-25) via
+      `aos-hub worker install --name aos-hub-preview` over the wasm dist built on
+      the Linux builder — its own D1 (`aos-hub-preview`), R2, KV, and the
+      `CoordinatorObject` + `TenantDb` DOs; schema migrated; isolated from prod.
+- [x] On the preview, measure the per-request cost and record it here.
+      **Result (warm I/O = wallTime − cpuTime, 1 registry, controlled vs prod):**
+      the **home page floor dropped ~4× — prod ~140 ms → preview min 37 ms / med
+      45 ms**, confirming that removing the rate-limit D1 *write* and moving
+      coordination to the Durable Object (Phase B) eliminated the per-request
+      floor the investigation pinned. (The browse page is *not* a clean
+      comparison here — the preview registry has no indexed surface, so it hits
+      R2-404 content-negotiation + cold-DO paths; a surface-populated preview is
+      needed to compare it.)
 - [x] Split the per-request D1 session: read-only requests use
       `first-unconstrained` and **never** share a session with a write; assert no
       write precedes reads on a read path (`crates/aos-hub-worker/src/lib.rs`
@@ -382,10 +389,12 @@ green.
       Native suite green (371 lib tests); worker compiles wasm with/without features.
       The **workerd+miniflare e2e** is deploy-gated (runs the real wasm under a
       local runtime) and runs at deploy time.
-- [deploy] Read p50/p99 recorded before/after each phase; a phase that does not move
-      the floor (or regresses) is reverted, not merged. *Deploy-gated:* the A1
-      `Server-Timing` instrumentation is the vehicle; the measurement needs the
-      preview deploy (A2/A3), held until the end per the no-deploy directive.
+- [x] Read p50/p99 recorded before/after each phase; a phase that does not move
+      the floor (or regresses) is reverted, not merged. *Measured on the preview
+      (A3):* the Phase-B home floor moved from prod ~140 ms to ~37–45 ms warm I/O
+      — a ~4× reduction, well past the bar — so Phase B is kept, not reverted. The
+      `Server-Timing` instrumentation (A1) is available for per-statement detail
+      on a `query-timing` preview build.
 
 ### Deploy prep (gateway to the deploy-gated items)
 
@@ -395,7 +404,12 @@ green.
       The Worker is deployable with the Phase B/C/D infra. *Remaining:* emit the
       same bindings from the `aos-hub worker deploy` generator (the checked-in
       `wrangler.toml` is the manual path and documents them).
-- [deploy] The actual `wrangler deploy` (preview first, then prod) — **held until
-      the end per the directive.** This unblocks A2/A3, the e2e, the per-phase
-      p50/p99 gates, and the runtime verification of every `[~]`/`[deploy]` item
-      above (DO/Queue/SQLite-in-DO runtime, ISR edge behavior).
+- [x] The **preview** `wrangler deploy` — **done** (`aos-hub-preview.andyl.workers.dev`,
+      2026-06-25). It validated A2/A3, the p50/p99 gate, and the runtime of the
+      Phase-B DO coordinator + KV session/rate-limit path under the real Workers
+      runtime (the home floor dropped ~4×). The deploy generator now emits the
+      `COORDINATOR` DO binding + migration (`cloudflare.rs`).
+- [deploy] The **prod** `wrangler deploy` to `aos.andyl.org` — reserved as a separate
+      explicit step (the operator's call). It carries the same Phase-B/C/D code;
+      the preview validated it. E4 (DO read replicas) and E5 (D1 decommission) are
+      prod-side platform/terminal steps gated on the prod rollout + parity checks.
