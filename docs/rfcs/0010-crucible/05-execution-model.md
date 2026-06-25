@@ -935,9 +935,17 @@ information that cannot be recomputed.
     `crates/crucible/src/lib.rs` covers baked-genesis refs and uniform baked/CoW
     content comparison; `checks.crucible.phase1.executionNodeBlobRef` gates the
     task.
-- [ ] **T-EXEC-11** Implement the replay-oracle equality check
+- [x] **T-EXEC-11** Implement the replay-oracle equality check
   (`loadvm(snapshot) ≡ replay-from-ancestor`) and wire it as `gate:replay-oracle`
   in CI. — satisfies [EXEC-23]; spec §8.
+  - Completed by `crates/crucible-qemu/src/realization.rs`:
+    `check_qemu_replay_oracle` restores the exact fat snapshot with
+    snapshot-completeness probe authorization, independently realizes the same
+    configuration through the ancestor/genesis replay path, and records
+    `QemuReplayOracleValidation::{Match, Mismatch}` from the resulting runtime
+    fingerprints. `checks.crucible.phase1.gates.replayOracle` now runs both the
+    existing materialized model oracle and the QEMU `loadvm(snapshot) ≡
+    replay-from-ancestor` checker tests.
 - [ ] **T-EXEC-12** Implement divergence bisection on oracle failure (localize to
   first differing decision/instruction) and the `gate:divergence-bisect` check;
   assert no silent-repair path exists. — satisfies [EXEC-24]; spec §8.

@@ -84,8 +84,16 @@
         needle = "instantiate_qemu_vm";
       }
       {
-        label = "start/resume/fork exports";
-        needle = "fork_qemu_vm, instantiate_qemu_vm, resume_qemu_vm, start_qemu_vm";
+        label = "start export";
+        needle = "start_qemu_vm";
+      }
+      {
+        label = "resume export";
+        needle = "resume_qemu_vm";
+      }
+      {
+        label = "fork export";
+        needle = "fork_qemu_vm";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization.rs" realizationLib [

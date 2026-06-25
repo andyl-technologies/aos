@@ -152,6 +152,7 @@ in {
           "T-DET-21"
           "T-HARN-12"
           "T-EXEC-4"
+          "T-EXEC-11"
         ];
       };
       singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {
