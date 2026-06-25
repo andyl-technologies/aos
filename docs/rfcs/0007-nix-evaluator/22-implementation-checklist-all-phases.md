@@ -434,11 +434,20 @@ alone (`M-1`/`Q-A`).
       clean/dirty freshness, and local `EarlyCutoff` reconsideration that newly
       dirties direct dependents only when a recomputed `ValueHash` changes or no
       prior hash exists.
+- [x] Current demand-graph dirty-frontier scheduling substrate:
+      `DemandGraph::dirty_nodes` exposes dirty nodes in deterministic node
+      order, and `DemandGraph::ready_dirty_nodes` exposes only dirty nodes with
+      no dirty transitive dependencies, so a future evaluator scheduler can
+      recompute a frontier without bypassing early cutoff through dirty
+      intermediates. This is a graph-side scheduling view only; automatic
+      evaluator recomputation, dynamic dependency tracing, cycle diagnostics,
+      parallel scheduling, persistence, and cached/uncached harness proof remain
+      open (`S-14`/`C-20`).
 - [ ] Full demand-driven incremental graph remains: create nodes on actual
       force/eval demand, capture dependencies dynamically Adapton-style,
-      separate inner/outer observers, schedule transitive
-      propagation/recomputation, integrate impure-input leaves and persistence, and
-      prove cached/uncached `.drv` parity.
+      separate inner/outer observers, run the full ready-dirty recomputation
+      loop, integrate impure-input leaves and persistence, and prove
+      cached/uncached `.drv` parity.
 - [x] Current `cache/key.rs` standalone combiner substrate: `CacheExprIdentity`
       plus opaque `DemandCacheKey` compute one order-sensitive hot xxh3 probe
       and one BLAKE3 confirmation digest over domain/version prefixes,

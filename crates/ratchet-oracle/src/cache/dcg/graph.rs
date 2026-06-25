@@ -256,6 +256,60 @@ impl DemandGraph {
         Ok(())
     }
 
+    /// Returns dirty nodes in deterministic node order.
+    ///
+    /// This is a scheduling view only. It does not recompute nodes or mutate
+    /// freshness.
+    pub fn dirty_nodes(&self) -> impl Iterator<Item = DemandNodeId> + '_ {
+        self.nodes.iter().enumerate().filter_map(|(index, node)| {
+            if node.freshness != NodeFreshness::Dirty {
+                return None;
+            }
+            u32::try_from(index).ok().map(DemandNodeId::new)
+        })
+    }
+
+    /// Returns dirty nodes whose upstream dependencies are currently clean.
+    ///
+    /// Evaluator schedulers can repeatedly recompute this frontier, call
+    /// [`Self::reconsider_node`] for each returned node, and let early cutoff
+    /// decide whether downstream dependents become dirty. Dirty nodes with any
+    /// dirty transitive dependency are withheld so a scheduler does not bypass
+    /// cutoff by recomputing consumers before their inputs have settled.
+    pub fn ready_dirty_nodes(&self) -> impl Iterator<Item = DemandNodeId> + '_ {
+        self.nodes.iter().enumerate().filter_map(|(index, node)| {
+            if node.freshness != NodeFreshness::Dirty {
+                return None;
+            }
+            let id = u32::try_from(index).ok().map(DemandNodeId::new)?;
+            if self.has_dirty_upstream(id) {
+                return None;
+            }
+            Some(id)
+        })
+    }
+
+    fn has_dirty_upstream(&self, id: DemandNodeId) -> bool {
+        let Some(node) = self.nodes.get(id.index()) else {
+            return true;
+        };
+        let mut stack: Vec<_> = node.dependencies.iter().copied().collect();
+        let mut visited = BTreeSet::new();
+        while let Some(dependency) = stack.pop() {
+            if !visited.insert(dependency) {
+                continue;
+            }
+            let Some(node) = self.nodes.get(dependency.index()) else {
+                return true;
+            };
+            if node.freshness == NodeFreshness::Dirty {
+                return true;
+            }
+            stack.extend(node.dependencies.iter().copied());
+        }
+        false
+    }
+
     /// Reconsiders one node with a recomputed value hash.
     ///
     /// The node is marked clean and updated to `recomputed`. If the recomputed

@@ -2,8 +2,9 @@
 //!
 //! The full evaluator integration will decide when to create graph nodes and
 //! how to recompute them. This module owns the graph-shaped bookkeeping those
-//! layers need: key interning, dependency/dependent edges, dirty marking, and
-//! the local reconsideration step that applies early cutoff.
+//! layers need: key interning, dependency/dependent edges, dirty marking,
+//! dirty-frontier scheduling, and the local reconsideration step that applies
+//! early cutoff.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -951,6 +952,88 @@ mod tests {
             graph.node(clean).expect("clean exists").freshness(),
             NodeFreshness::Dirty
         );
+    }
+
+    #[test]
+    fn dirty_nodes_iterate_in_node_order() {
+        let mut graph = DemandGraph::new();
+        let first = node_with_hash(&mut graph, 1, b"first");
+        let second = node_with_hash(&mut graph, 2, b"second");
+        let third = node_with_hash(&mut graph, 3, b"third");
+        graph.mark_dirty(third).expect("third dirties");
+        graph.mark_dirty(first).expect("first dirties");
+
+        let dirty: Vec<_> = graph.dirty_nodes().collect();
+
+        assert_eq!(dirty, vec![first, third]);
+        assert_eq!(
+            graph.node(second).expect("second exists").freshness(),
+            NodeFreshness::Clean
+        );
+    }
+
+    #[test]
+    fn ready_dirty_nodes_wait_for_dirty_dependencies() {
+        let mut graph = DemandGraph::new();
+        let a = node_with_hash(&mut graph, 1, b"a-stable");
+        let b = node_with_hash(&mut graph, 2, b"b-old");
+        let c = node_with_hash(&mut graph, 3, b"c-stable");
+        graph.add_dependency(b, a).expect("b depends on a");
+        graph.add_dependency(c, b).expect("c depends on b");
+        graph.mark_dirty(b).expect("b dirties");
+        graph.mark_dirty(c).expect("c dirties");
+
+        let ready: Vec<_> = graph.ready_dirty_nodes().collect();
+
+        assert_eq!(ready, vec![b]);
+
+        graph
+            .reconsider_node(b, value_hash(b"b-new"))
+            .expect("b reconsiders");
+
+        let ready: Vec<_> = graph.ready_dirty_nodes().collect();
+
+        assert_eq!(ready, vec![c]);
+    }
+
+    #[test]
+    fn ready_dirty_nodes_wait_for_dirty_transitive_dependencies() {
+        let mut graph = DemandGraph::new();
+        let a = node_with_hash(&mut graph, 1, b"a-old");
+        let b = node_with_hash(&mut graph, 2, b"b-stable");
+        let c = node_with_hash(&mut graph, 3, b"c-stale");
+        graph.add_dependency(b, a).expect("b depends on a");
+        graph.add_dependency(c, b).expect("c depends on b");
+        graph.mark_dirty(a).expect("a dirties");
+        graph.mark_dirty(c).expect("c dirties");
+
+        let ready: Vec<_> = graph.ready_dirty_nodes().collect();
+
+        assert_eq!(ready, vec![a]);
+
+        graph
+            .reconsider_node(a, value_hash(b"a-new"))
+            .expect("a reconsiders");
+
+        let ready: Vec<_> = graph.ready_dirty_nodes().collect();
+
+        assert_eq!(ready, vec![b]);
+    }
+
+    #[test]
+    fn ready_dirty_nodes_are_empty_for_dirty_cycle() {
+        let mut graph = DemandGraph::new();
+        let a = node_with_hash(&mut graph, 1, b"a");
+        let b = node_with_hash(&mut graph, 2, b"b");
+        graph.add_dependency(a, b).expect("a depends on b");
+        graph.add_dependency(b, a).expect("b depends on a");
+        graph.mark_dirty(a).expect("a dirties");
+        graph.mark_dirty(b).expect("b dirties");
+
+        let ready: Vec<_> = graph.ready_dirty_nodes().collect();
+
+        assert!(ready.is_empty());
+        assert_eq!(graph.dirty_nodes().collect::<Vec<_>>(), vec![a, b]);
     }
 
     #[test]
