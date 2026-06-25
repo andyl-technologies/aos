@@ -1099,9 +1099,27 @@ alone (`M-1`/`Q-A`).
       `PersistCache::record_node_trace` and `lookup_node_trace` expose the
       sidecar through the opened cache root. This is a simple append-only log
       only; LMDB/redb node tables, transactionality with node metadata or value
-      blobs, automatic evaluator writeback, durable hit selection, revalidation,
-      currentTime taint propagation through persisted dependents, automatic
-      compaction/GC, mmap reads, and cached/uncached harness proof remain open
+      blobs, automatic evaluator writeback beyond the force-cache bridge below,
+      durable hit selection, revalidation, currentTime taint propagation through
+      persisted dependents, automatic compaction/GC, mmap reads, and
+      cached/uncached harness proof remain open (`C-13`/`R-10`/`S-14`).
+- [x] Current force-cache persistent trace writeback:
+      after tree-walk `force_value` gets an accepted cacheable impure
+      forced-expression observation and successfully materializes its value
+      payload, it encodes the same trace segment as `PersistNodeTracePayload`
+      and appends it through `PersistCache::record_node_trace` using the same
+      expression metadata key that links the materialized payload. Trace-write
+      failure clears the just-linked durable value metadata so an impure value
+      is not left live without a persisted trace; pure observations write no
+      trace, and rejected or unsupported observations can clear the durable
+      value link without deleting older trace log records. The trace log still
+      has no value-hash/generation association, so future durable hit selection
+      must add that pairing or treat trace records as advisory-only. This is
+      accepted-impure trace writeback only; evaluator durable hit selection,
+      revalidation, trace tombstones, transactionality with value
+      materialization, currentTime taint propagation through persisted
+      dependents, automatic compaction/GC, mmap reads, and cached/uncached
+      harness proof remain open
       (`C-13`/`R-10`/`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact

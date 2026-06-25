@@ -56,7 +56,8 @@ use crate::cache::{
     EvalCacheRuntime, FileTypeForInput, ImpureInputFingerprint, ImpureInputIdentity,
     ImpureInputKind, ImpureInputMode, ImpureInputRevalidator, ImpureInputTraceSource,
     InputFingerprintError, MaterializationDecision, ParseCache, ParseCacheError, ParseFileKey,
-    PersistCache, PersistNodeMetadataKey, ValueHash, lowered_ir_fingerprint,
+    PersistCache, PersistNodeMetadataKey, PersistNodeTracePayload, ValueHash,
+    lowered_ir_fingerprint,
 };
 use crate::compile::{
     FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,

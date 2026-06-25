@@ -3100,6 +3100,12 @@ fn synthetic_builtin_attr_current_system_thunks_hit_with_matching_option_salt() 
     );
 }
 
+fn persistent_path_exists_trace_payload(path: &[u8], exists: bool) -> PersistNodeTracePayload {
+    let input =
+        ImpureInputFingerprint::path_exists(path, exists).expect("pathExists fingerprint builds");
+    PersistNodeTracePayload::from_impure_trace([&input]).expect("trace payload builds")
+}
+
 #[test]
 fn synthetic_builtin_attr_forces_record_persistent_current_demand() {
     let persist_root = unique_temp_dir("force-cache-persistent-demand");
@@ -3181,6 +3187,13 @@ fn synthetic_builtin_attr_forces_record_persistent_current_demand() {
         Some(expected_payload),
         "cold force writes the persistent value payload"
     );
+    assert_eq!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds"),
+        None,
+        "pure force observations do not write persistent verifying traces"
+    );
     drop(persist);
 
     let mut second = TreeWalk::with_options_and_source_and_eval_cache(
@@ -3226,6 +3239,7 @@ fn rejected_force_observation_clears_persistent_value_link() {
         PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
     let stale_payload = CachedExpressionValue::immediate(Value::int(123))
         .expect("stale scalar payload is cacheable");
+    let stale_trace_payload = persistent_path_exists_trace_payload(b"/tmp/stale-input", true);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     {
         let mut runtime = cache.lock().expect("cache lock is valid");
@@ -3249,6 +3263,9 @@ fn rejected_force_observation_clears_persistent_value_link() {
             MaterializationDecision::Materialize,
         )
         .expect("stale persistent payload materializes");
+    persist
+        .record_node_trace(key, &stale_trace_payload)
+        .expect("stale persistent trace records");
     drop(persist);
 
     let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
@@ -3300,6 +3317,13 @@ fn rejected_force_observation_clears_persistent_value_link() {
         None,
         "rejected observation clears the stale persistent value link"
     );
+    assert_eq!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds"),
+        Some(stale_trace_payload),
+        "rejected observations do not append a replacement persistent trace"
+    );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");
 }
@@ -3325,14 +3349,15 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
         metadata_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
     };
+    let trace_input = ImpureInputFingerprint::path_exists(b"/tmp/aos-cacheable-input", true)
+        .expect("pathExists fingerprint builds");
+    let expected_trace_payload =
+        PersistNodeTracePayload::from_impure_trace([&trace_input]).expect("trace payload builds");
     evaluator.observe_forced_inline_expression_result(
         Some(subject),
         Value::bool(true),
         ImpureInputTraceSegment {
-            trace: vec![
-                ImpureInputFingerprint::path_exists(b"/tmp/aos-cacheable-input", true)
-                    .expect("pathExists fingerprint builds"),
-            ],
+            trace: vec![trace_input],
             complete: true,
         },
     );
@@ -3346,6 +3371,13 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
             .expect("persistent payload lookup succeeds"),
         Some(expected_payload),
         "cacheable impure observations write the persistent value payload"
+    );
+    assert_eq!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds"),
+        Some(expected_trace_payload),
+        "cacheable impure observations write the persistent verifying trace"
     );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");
