@@ -231,8 +231,15 @@ pub async fn run_push(
                 upload_pack_entries(backend, &[pack_path], &[pack_narinfo]).await?;
             }
         } else {
-            // Upload NAR + narinfo individually.
-            backend.put_nar(&nar_filename, &compressed).await?;
+            // Large NARs upload via multipart: they bypass the single-request
+            // body cap (so a >100 MiB NAR is uploadable) and keep server memory
+            // bounded to one part. Small NARs go as a single PUT.
+            const MULTIPART_THRESHOLD: usize = 16 * 1024 * 1024;
+            if compressed.len() > MULTIPART_THRESHOLD && backend.supports_multipart() {
+                upload_nar_multipart(backend, &nar_filename, &compressed).await?;
+            } else {
+                backend.put_nar(&nar_filename, &compressed).await?;
+            }
             backend.put_narinfo(hash, &narinfo_text).await?;
         }
 
@@ -254,6 +261,39 @@ pub async fn run_push(
         elapsed.as_secs_f64()
     ));
 
+    Ok(())
+}
+
+/// Upload one compressed NAR to a multipart-capable backend.
+///
+/// Initiates the upload, pushes each part of the backend's suggested size (at
+/// least the R2/S3 5 MiB floor), then completes — so a NAR far larger than a
+/// single request body uploads as several sub-cap parts and the server holds
+/// only one part at a time.
+///
+/// # Errors
+///
+/// Returns an error if any of initiate/upload-part/complete fails.
+async fn upload_nar_multipart(
+    backend: &dyn CacheBackend,
+    nar_filename: &str,
+    compressed: &[u8],
+) -> Result<()> {
+    let nar_path = format!("nar/{nar_filename}");
+    let (upload_id, part_size) = backend.initiate_multipart(&nar_path).await?;
+    // Honor the 5 MiB minimum part size R2/S3 require for all but the last part.
+    let part_size = (part_size as usize).max(5 * 1024 * 1024);
+    let mut parts = Vec::new();
+    for (idx, chunk) in compressed.chunks(part_size).enumerate() {
+        let part_number = (idx + 1) as u32;
+        let tag = backend
+            .upload_part(&nar_path, &upload_id, part_number, chunk)
+            .await?;
+        parts.push(tag);
+    }
+    backend
+        .complete_multipart(&nar_path, &upload_id, &parts)
+        .await?;
     Ok(())
 }
 
