@@ -527,14 +527,15 @@ alone (`M-1`/`Q-A`).
       before returning a scalar payload. Changed, unavailable, uncacheable, or
       identity-mismatched fresh inputs invalidate the payload and miss. Tree-walk
       supplies a conservative options-backed revalidator for `getEnv`,
-      `pathExists`, `readDir`, and `readFileType`, so stable source-backed
-      `pathExists` thunks can hit after replaying their input probe, while
-      deleted or changed paths force recomputation through the normal evaluator
-      path. Revalidated cache hits append their fresh fingerprints back into the
-      active evaluator trace so enclosing forced thunks cannot be observed as
-      pure by losing nested dependencies. `readFile`-backed payloads remain
-      misses until revalidation identities include store-dir-dependent string
-      context, and the older public pure lookup remains pure-only. This is
+      `pathExists`, `readFile`, `readDir`, and `readFileType`, so stable
+      source-backed `pathExists` and `readFile`-backed thunks can hit after
+      replaying their input probes, while deleted paths or changed read bytes
+      force recomputation through the normal evaluator path. Revalidated cache
+      hits append their fresh fingerprints back into the active evaluator trace
+      so enclosing forced thunks cannot be observed as pure by losing nested
+      dependencies. `readFile` revalidation is guarded by the option-salted
+      expression identity for store-dir-dependent string context, and the older
+      public pure lookup remains pure-only. This is
       in-memory scalar effectful reuse only; source-less raw eval, captured
       lexical/dynamic/scoped-global thunks, ambient builtin constants,
       search-path/path/global/builtin/application/dialect nodes beyond the

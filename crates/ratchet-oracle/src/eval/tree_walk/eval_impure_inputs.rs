@@ -114,6 +114,21 @@ impl<'a> TreeWalkImpureInputRevalidator<'a> {
         ImpureInputFingerprint::import(path, &source).ok()
     }
 
+    fn revalidate_read_file(
+        &self,
+        identity: &ImpureInputIdentity,
+    ) -> Option<ImpureInputFingerprint> {
+        let path = identity.subject();
+        if !self.filesystem_path_is_allowed(path) {
+            return None;
+        }
+        let contents = fs::read(Path::new(OsStr::from_bytes(path))).ok()?;
+        if contents.contains(&0) {
+            return None;
+        }
+        ImpureInputFingerprint::read_file(path, &contents).ok()
+    }
+
     fn revalidate_read_dir(
         &self,
         identity: &ImpureInputIdentity,
@@ -210,11 +225,7 @@ impl ImpureInputRevalidator for TreeWalkImpureInputRevalidator<'_> {
     ) -> Option<ImpureInputFingerprint> {
         let fingerprint = match identity.kind() {
             ImpureInputKind::Import => self.revalidate_import(identity),
-            // `builtins.readFile` results carry store-dir-dependent string
-            // context. Reusing expressions that depend on that context needs a
-            // context-aware identity, so tree-walk treats readFile-backed
-            // payloads as misses for now.
-            ImpureInputKind::ReadFile => None,
+            ImpureInputKind::ReadFile => self.revalidate_read_file(identity),
             ImpureInputKind::ReadDir => self.revalidate_read_dir(identity),
             ImpureInputKind::ReadFileType => self.revalidate_read_file_type(identity),
             ImpureInputKind::PathExists => self.revalidate_path_exists(identity),
