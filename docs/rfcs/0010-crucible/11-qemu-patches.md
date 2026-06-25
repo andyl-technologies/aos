@@ -1389,9 +1389,18 @@ time-control primitives the whole design rests on.
     the ceiling. The focused C fixture compares batching-on and batching-off
     icount traces, verifies special-exit breaks, confirms timer refresh between
     slots, and exercises the shmem ceiling guard without any wall-clock input.
-- [ ] **T-PATCH-18** Keep the diagnostic-only patches (`crucible-tcg-exec-diag`,
+- [x] **T-PATCH-18** Keep the diagnostic-only patches (`crucible-tcg-exec-diag`,
   `crucible-virtserial-socket`) out of the shipped package and inert-by-default in
   dev builds. — satisfies [PATCH-10], [PATCH-36]; spec §11.3, §11.8.
+  - Completed by `checks.crucible.phase1.qemuDiagnosticPatchesDevOnly`,
+    `checks.crucible.phase2.qemuPatchSeries`, and `gate:patch-microtests`: no
+    shipped QEMU patch was added. The gate asserts that neither
+    `crucible-tcg-exec-diag` nor `crucible-virtserial-socket` appears in the
+    shipped patch directory or `qemu-crucible` patch application list, records
+    `qemu_crucible_dev_variant_present=false`, and treats the optional
+    developer-only variant as inert by default because no diagnostic patch is
+    compiled or applied unless a future explicit dev package adds one behind its
+    own opt-in gate.
 - [ ] **T-PATCH-19** Implement the regeneration/drift pipeline (reproducible patch
   bytes from the tracked branch) and the QEMU-version-bump re-gate (rebase +
   re-test + re-pin build identity into the artifact). — satisfies [PATCH-37],

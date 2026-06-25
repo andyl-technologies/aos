@@ -85,6 +85,7 @@ in {
     qemuNetDeterministic = import ./phase1-qemu-net-deterministic.nix {inherit pkgs lib;};
     qemuNetTxCallback = import ./phase1-qemu-net-tx-callback.nix {inherit pkgs lib;};
     qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix {inherit pkgs lib;};
+    qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix {inherit pkgs lib;};
     qemuSimCorrectness = import ./phase1-qemu-sim-correctness.nix {inherit pkgs lib;};
     qemuSimBatchTcgExec = import ./phase1-qemu-sim-batch-tcg-exec.nix {inherit pkgs lib;};
     qemuBlockShmem = import ./phase1-qemu-block-shmem.nix {inherit pkgs lib;};

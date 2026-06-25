@@ -571,9 +571,15 @@ carries findings across an incompatible build.
 - [ ] **T-PKG-5** Implement the patch regeneration/drift pipeline (reproducible
   patch bytes from the tracked branch) and the QEMU-version-bump re-gate. —
   satisfies [PKG-15], [PKG-16]; spec §26.3.2.
-- [ ] **T-PKG-6** Keep dev-only diagnostic patches out of the shipped package
+- [x] **T-PKG-6** Keep dev-only diagnostic patches out of the shipped package
   (optional `qemu-crucible-dev` variant, inert-by-default). — satisfies [PKG-11];
   spec §26.3.
+  - Completed by `checks.crucible.phase1.qemuDiagnosticPatchesDevOnly` and
+    `gate:patch-microtests`: the shipped `qemu-crucible` package applies no
+    `crucible-tcg-exec-diag` or `crucible-virtserial-socket` patch, no
+    `qemu-crucible-dev` variant is present yet, and the diagnostic surface stays
+    absent unless a future explicit dev-only package adds an opt-in `diag=`
+    guard and its own inertness evidence.
 - [ ] **T-PKG-7** Package `crucible-qemu-plugin` as an AOS `mkCargoPackage`
   cdylib built against the same pinned plugin-API headers, co-located with
   `qemu-crucible`, embedding plugin-ABI + shmem-ABI versions. — satisfies [PKG-17],

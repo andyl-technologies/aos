@@ -216,6 +216,12 @@
       capability = "guest-to-host doorbell reuses upstream QEMU plugin memory callbacks and virtual memory reads";
       evidence = "checks.crucible.phase1.qemuDoorbellNoPatch";
     }
+    {
+      item = "T-PATCH-18";
+      enforces = "PATCH-36";
+      capability = "diagnostic-only QEMU patches are absent from the shipped qemu-crucible package";
+      evidence = "checks.crucible.phase1.qemuDiagnosticPatchesDevOnly";
+    }
   ];
 
   hasInfix = needle: haystack: let
@@ -269,6 +275,12 @@
     ]
     ++ lib.optionals (!(hasInfix "no QEMU patch was added" qemuPatchSpec)) [
       "docs/rfcs/0010-crucible/11-qemu-patches.md: T-PATCH-15 must state that no QEMU patch was added"
+    ]
+    ++ lib.optionals (!(hasInfix "- [x] **T-PATCH-18**" qemuPatchSpec)) [
+      "docs/rfcs/0010-crucible/11-qemu-patches.md: T-PATCH-18 diagnostic exclusion decision is not marked complete"
+    ]
+    ++ lib.optionals (hasInfix "crucible-tcg-exec-diag.patch" qemuNix || hasInfix "crucible-virtserial-socket.patch" qemuNix) [
+      "pkgs/emulation/qemu.nix: diagnostic-only patches must not be applied by the shipped package"
     ]
     ++ lib.optionals (!(hasInfix "The pinned QEMU version MUST be" packagingSpec && hasInfix "10.0" packagingSpec)) [
       "docs/rfcs/0010-crucible/26-packaging-aos-integration.md: PKG-9 QEMU >=10.0 requirement missing"

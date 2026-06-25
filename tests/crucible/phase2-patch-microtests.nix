@@ -10,6 +10,7 @@
   qemuPatchSeries = import ./phase2-qemu-patch-series.nix {inherit pkgs lib;};
   qemuPackage = pkgs.qemu-crucible;
   qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix {inherit pkgs lib qemuPackage;};
+  qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix {inherit pkgs lib qemuPackage;};
   patchFiles =
     builtins.sort builtins.lessThan
     (builtins.filter
@@ -312,6 +313,13 @@ in
             grep -q '^phase0_s5_virtual_read_validated=true$' "$out/qemu-doorbell-no-patch.result"
             grep -q '^phase0_s2_io_trap_surface_validated=true$' "$out/qemu-doorbell-no-patch.result"
             grep -q '^whitebox_mode_off_installs_no_trap_validated=true$' "$out/qemu-doorbell-no-patch.result"
+            cp "${qemuDiagnosticPatchesDevOnly}/result" "$out/qemu-diagnostic-patches-dev-only.result"
+            grep -q '^PASS$' "$out/qemu-diagnostic-patches-dev-only.result"
+            grep -q '^gate=gate:patch-microtests$' "$out/qemu-diagnostic-patches-dev-only.result"
+            grep -q '^qemu_diagnostic_patches_shipped=false$' "$out/qemu-diagnostic-patches-dev-only.result"
+            grep -q '^crucible_tcg_exec_diag_shipped=false$' "$out/qemu-diagnostic-patches-dev-only.result"
+            grep -q '^crucible_virtserial_socket_shipped=false$' "$out/qemu-diagnostic-patches-dev-only.result"
+            grep -q '^dev_only_diagnostic_patches_inert_by_default=true$' "$out/qemu-diagnostic-patches-dev-only.result"
 
             ${resultChecks}
 
@@ -325,6 +333,7 @@ in
             patches=${builtins.concatStringsSep "," patchFiles}
             patch_series_gate_passed=true
             qemu_doorbell_no_patch_gate_passed=true
+            qemu_diagnostic_patches_dev_only_gate_passed=true
             apply_clean_pinned_qemu=true
             apply_clean_patch_fuzz=0
             patched_qemu_package_build_passed=true
@@ -348,6 +357,7 @@ in
             every_microtest_exercises_patched_fixture=true
             every_microtest_has_stock_negative_control=true
             no_patch_decision_has_microtest_gate=true
+            diagnostic_only_patches_excluded_from_shipped_qemu=true
             qemu_package_applies_every_carried_patch=true
             RESULT
           '';
