@@ -73,8 +73,15 @@ const DECISION_RNG_MARKERS: &[&str] = &[
     "decision_recorder_records_rng_draws_and_fault_outcomes",
     "decision_recorder_keeps_per_entity_streams_stable",
     "decision_recorder_records_app_random_after_rng_draw",
+    "decision_recorder_records_app_random_guest_request_id",
     "decision_recorder_rejects_invalid_app_random_widths",
     "decision_recorder_resumes_stream_positions_from_existing_schedule",
+    "decision_recorder_derives_default_rr_preemption_without_recording_schedule",
+    "decision_recorder_records_preemption_overrides_in_schedule",
+    "decision_recorder_rejects_invalid_default_preemption_shape",
+    "decision_recorder_derives_default_rr_preemption_without_overflow",
+    "decision_recorder_serves_app_random_override_without_rerolling_stream",
+    "decision_recorder_rejects_invalid_app_random_override_values",
     "assert_decision_rng_branch_coverage(",
     "assert_per_entity_rng_forking_coverage(",
 ];
@@ -94,13 +101,6 @@ const REPRO_ARTIFACT_MARKERS: &[&str] = &[
     "assert_reproduction_artifact_error_variant_coverage(",
 ];
 
-const SPSC_RING_ACTIVATION_MARKERS: &[&str] = &[
-    "Atomic",
-    "compare_exchange",
-    "fetch_add",
-    "SpscRing",
-    "FrameRing",
-];
 const PROTOCOL_CODEC_ACTIVATION_MARKERS: &[&str] = &[
     "pub fn encode",
     "pub fn decode",
@@ -189,12 +189,15 @@ const DETERMINISM_CORE_COVERAGE_FLOOR: &[CoverageSurface] = &[
         id: "spsc-ring",
         source_path: "crates/crucible-shmem/src/lib.rs",
         test_path: "crates/crucible-shmem/tests/gate_layer1_injection.rs",
-        status: CoverageStatus::Planned,
+        status: CoverageStatus::Active,
         instrumentation: COVERAGE_MEASUREMENT_MODE,
         required_test_markers: SPSC_RING_MARKERS,
-        activation_markers: SPSC_RING_ACTIVATION_MARKERS,
-        activation_source_roots: &["crates/crucible-shmem/src"],
+        activation_markers: &[],
+        activation_source_roots: &[],
     },
+];
+
+const PLANNED_DETERMINISM_CORE_COVERAGE: &[CoverageSurface] = &[
     CoverageSurface {
         id: "protocol-codec",
         source_path: "crates/crucible-protocol/src/lib.rs",
@@ -219,7 +222,7 @@ const DETERMINISM_CORE_COVERAGE_FLOOR: &[CoverageSurface] = &[
 
 #[test]
 fn determinism_core_coverage_floor_names_required_surfaces() {
-    let actual: BTreeSet<&str> = DETERMINISM_CORE_COVERAGE_FLOOR
+    let actual: BTreeSet<&str> = all_coverage_surfaces()
         .iter()
         .map(|surface| surface.id)
         .collect();
@@ -245,8 +248,7 @@ fn determinism_core_coverage_floor_names_required_surfaces() {
 fn active_determinism_core_paths_have_branch_and_error_coverage_markers()
 -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
-    let mut failures =
-        coverage_floor_failures(DETERMINISM_CORE_COVERAGE_FLOOR, &root, &BTreeMap::new())?;
+    let mut failures = coverage_floor_failures(&all_coverage_surfaces(), &root, &BTreeMap::new())?;
     failures.extend(coverage_floor_regression_failures());
 
     assert!(
@@ -256,6 +258,14 @@ fn active_determinism_core_paths_have_branch_and_error_coverage_markers()
     );
 
     Ok(())
+}
+
+fn all_coverage_surfaces() -> Vec<CoverageSurface> {
+    DETERMINISM_CORE_COVERAGE_FLOOR
+        .iter()
+        .chain(PLANNED_DETERMINISM_CORE_COVERAGE.iter())
+        .copied()
+        .collect()
 }
 
 fn coverage_floor_failures(
