@@ -17,7 +17,7 @@ mod types;
 
 pub use compare::{
     SingleVmFingerprintMismatch, SingleVmFingerprintMismatchKind,
-    compare_single_vm_fingerprint_streams,
+    SingleVmFingerprintSampleDifference, compare_single_vm_fingerprint_streams,
 };
 pub use run::run_single_vm_fingerprint_gate;
 pub use types::{
@@ -25,6 +25,9 @@ pub use types::{
     SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionRequest,
     SingleVmFingerprintEventBoundary, SingleVmFingerprintGateError, SingleVmFingerprintGateReport,
     SingleVmFingerprintRunError, SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest,
-    SingleVmFingerprintRunner, SingleVmFingerprintSample, SingleVmFingerprintScenario,
-    SingleVmFingerprintStream, SingleVmFingerprintTrigger, SingleVmHostProfile,
+    SingleVmFingerprintRunner, SingleVmFingerprintSample, SingleVmFingerprintSampleMaterial,
+    SingleVmFingerprintScenario, SingleVmFingerprintStream, SingleVmFingerprintTrigger,
+    SingleVmHostProfile, SingleVmNvcpuFingerprintContract, SingleVmNvcpuFingerprintMaterial,
+    SingleVmQmpVcpuTopology, SingleVmRoundRobinCursor, SingleVmVcpuRegisterDigest,
+    compute_single_vm_sample_rolling_fingerprint, initial_single_vm_rolling_fingerprint,
 };

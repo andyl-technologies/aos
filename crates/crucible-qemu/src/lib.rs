@@ -131,8 +131,12 @@ pub use single_vm_fingerprint::{
     SingleVmFingerprintEventBoundary, SingleVmFingerprintGateError, SingleVmFingerprintGateReport,
     SingleVmFingerprintMismatch, SingleVmFingerprintMismatchKind, SingleVmFingerprintRunError,
     SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest, SingleVmFingerprintRunner,
-    SingleVmFingerprintSample, SingleVmFingerprintScenario, SingleVmFingerprintStream,
-    SingleVmFingerprintTrigger, SingleVmHostProfile, compare_single_vm_fingerprint_streams,
+    SingleVmFingerprintSample, SingleVmFingerprintSampleDifference,
+    SingleVmFingerprintSampleMaterial, SingleVmFingerprintScenario, SingleVmFingerprintStream,
+    SingleVmFingerprintTrigger, SingleVmHostProfile, SingleVmNvcpuFingerprintContract,
+    SingleVmNvcpuFingerprintMaterial, SingleVmQmpVcpuTopology, SingleVmRoundRobinCursor,
+    SingleVmVcpuRegisterDigest, compare_single_vm_fingerprint_streams,
+    compute_single_vm_sample_rolling_fingerprint, initial_single_vm_rolling_fingerprint,
     run_single_vm_fingerprint_gate,
 };
 #[cfg(target_os = "linux")]

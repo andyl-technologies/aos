@@ -4,13 +4,20 @@
 
 use std::collections::VecDeque;
 
+use crucible_protocol::{
+    PluginNvcpuFingerprintSnapshot, PluginRoundRobinCursorSnapshot, PluginVcpuRegisterSnapshot,
+};
 use crucible_qemu::{
     SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintBisectionError,
     SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionRequest,
     SingleVmFingerprintGateError, SingleVmFingerprintMismatchKind, SingleVmFingerprintRunError,
     SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest, SingleVmFingerprintRunner,
-    SingleVmFingerprintSample, SingleVmFingerprintScenario, SingleVmFingerprintStream,
-    SingleVmFingerprintTrigger, SingleVmHostProfile, compare_single_vm_fingerprint_streams,
+    SingleVmFingerprintSample, SingleVmFingerprintSampleDifference,
+    SingleVmFingerprintSampleMaterial, SingleVmFingerprintScenario, SingleVmFingerprintStream,
+    SingleVmFingerprintTrigger, SingleVmHostProfile, SingleVmNvcpuFingerprintContract,
+    SingleVmNvcpuFingerprintMaterial, SingleVmQmpVcpuTopology, SingleVmRoundRobinCursor,
+    SingleVmVcpuRegisterDigest, compare_single_vm_fingerprint_streams,
+    compute_single_vm_sample_rolling_fingerprint, initial_single_vm_rolling_fingerprint,
     run_single_vm_fingerprint_gate,
 };
 
@@ -76,7 +83,10 @@ fn gate_single_vm_fingerprint_reports_first_sample_window() {
 
     assert!(matches!(
         mismatch.kind,
-        SingleVmFingerprintMismatchKind::Sample { .. }
+        SingleVmFingerprintMismatchKind::Sample {
+            difference: SingleVmFingerprintSampleDifference::VcpuRegisterDigest { vcpu_id: 1 },
+            ..
+        }
     ));
     assert_eq!(mismatch.sample_index, 1);
     assert_eq!(mismatch.previous_matching_icount, Some(4096));
@@ -117,6 +127,186 @@ fn gate_single_vm_fingerprint_reports_final_mismatch_at_horizon() {
     assert_eq!(mismatch.sample_index, 3);
     assert_eq!(mismatch.previous_matching_icount, Some(12_288));
     assert_eq!(mismatch.first_different_icount, Some(12_288));
+}
+
+#[test]
+fn gate_single_vm_fingerprint_digest_includes_all_vcpus_and_rr_cursor() {
+    let definition_digest = digest(1);
+    let previous = initial_rolling(&definition_digest);
+    let baseline = material(0, 4096, 2, rr_cursor(0, 0, 8));
+    let changed_vcpu = sample_material_with_nvcpu(
+        0,
+        4096,
+        nvcpu_material_with_register_bytes([2, 99], rr_cursor(0, 0, 8)),
+    );
+    let changed_cursor = material(0, 4096, 2, rr_cursor(1, 3, 8));
+
+    let baseline_sample = sample_from_material(&definition_digest, &previous, baseline);
+    let changed_vcpu_sample = sample_from_material(&definition_digest, &previous, changed_vcpu);
+    let changed_cursor_sample = sample_from_material(&definition_digest, &previous, changed_cursor);
+    let recomputed = match compute_single_vm_sample_rolling_fingerprint(
+        &definition_digest,
+        &previous,
+        &baseline_sample,
+    ) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => panic!("sample digest should recompute: {error}"),
+    };
+
+    assert_eq!(baseline_sample.rolling_fingerprint, recomputed);
+    assert_ne!(
+        baseline_sample.rolling_fingerprint,
+        changed_vcpu_sample.rolling_fingerprint
+    );
+    assert_ne!(
+        baseline_sample.rolling_fingerprint,
+        changed_cursor_sample.rolling_fingerprint
+    );
+}
+
+#[test]
+fn gate_single_vm_fingerprint_reports_rr_cursor_component() {
+    let first = stream_with_cursors(&[rr_cursor(0, 0, 8), rr_cursor(0, 1, 8), rr_cursor(1, 0, 8)]);
+    let second = stream_with_cursors(&[rr_cursor(0, 0, 8), rr_cursor(0, 3, 8), rr_cursor(1, 0, 8)]);
+
+    let mismatch = match compare_single_vm_fingerprint_streams(&first, &second, 12_288) {
+        Ok(()) => panic!("different RR cursor positions should fail"),
+        Err(mismatch) => mismatch,
+    };
+
+    assert!(matches!(
+        mismatch.kind,
+        SingleVmFingerprintMismatchKind::Sample {
+            difference: SingleVmFingerprintSampleDifference::RoundRobinPositionInQuantum,
+            ..
+        }
+    ));
+    assert_eq!(mismatch.sample_index, 1);
+    assert_eq!(mismatch.previous_matching_icount, Some(4096));
+    assert_eq!(mismatch.first_different_icount, Some(8192));
+}
+
+#[test]
+fn gate_single_vm_fingerprint_rejects_missing_vcpu_material() {
+    let registers = vec![vcpu_register(0, 1), vcpu_register(2, 3)];
+    let error = match SingleVmNvcpuFingerprintMaterial::new(
+        registers,
+        rr_cursor(0, 0, 8),
+        digest(4),
+        digest(5),
+    ) {
+        Ok(_) => panic!("non-contiguous vCPU set should fail"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error,
+        SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+            reason: "N-vCPU fingerprint material must cover exactly vCPUs 0..N",
+        }
+    );
+}
+
+#[test]
+fn gate_single_vm_fingerprint_rejects_cursor_outside_sampled_vcpus() {
+    let cursor = rr_cursor(2, 0, 8);
+    let error = match SingleVmNvcpuFingerprintMaterial::new(
+        vec![vcpu_register(0, 1), vcpu_register(1, 2)],
+        cursor,
+        digest(4),
+        digest(5),
+    ) {
+        Ok(_) => panic!("cursor outside sampled vCPU set should fail"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error,
+        SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+            reason: "round-robin current vCPU must be inside the sampled vCPU set",
+        }
+    );
+}
+
+#[test]
+fn gate_single_vm_fingerprint_rejects_stream_missing_launched_vcpu() {
+    let scenario = scenario_nvcpu(3, 8);
+    let stream = stream(&[1, 2, 3], 9);
+    let mut runner = FakeRunner::new(vec![Ok(stream.clone()), Ok(stream)]);
+
+    let error = match run_single_vm_fingerprint_gate(&mut runner, &scenario) {
+        Ok(_) => panic!("stream with too few vCPUs should fail"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        SingleVmFingerprintGateError::InvalidStreamForRun {
+            ordinal: SingleVmFingerprintRunOrdinal::First,
+            ..
+        }
+    ));
+    assert_eq!(runner.requests.len(), 1);
+}
+
+#[test]
+fn gate_single_vm_fingerprint_rejects_cursor_quantum_drift_from_launch_contract() {
+    let scenario = scenario_nvcpu(2, 8);
+    let stream = stream_with_cursors(&[
+        rr_cursor(0, 0, 16),
+        rr_cursor(0, 1, 16),
+        rr_cursor(1, 0, 16),
+    ]);
+    let mut runner = FakeRunner::new(vec![Ok(stream.clone()), Ok(stream)]);
+
+    let error = match run_single_vm_fingerprint_gate(&mut runner, &scenario) {
+        Ok(_) => panic!("stream with wrong RR quantum should fail"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        SingleVmFingerprintGateError::InvalidStreamForRun {
+            ordinal: SingleVmFingerprintRunOrdinal::First,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn gate_single_vm_fingerprint_builds_material_from_plugin_and_qmp_inputs() {
+    let plugin_inputs = plugin_snapshot(2, 1, 3, 8, &[1, 2]);
+    let material = match SingleVmNvcpuFingerprintMaterial::from_plugin_introspection_and_qmp(
+        qmp_topology(2),
+        &plugin_inputs,
+        8,
+        digest(4),
+        digest(5),
+    ) {
+        Ok(material) => material,
+        Err(error) => panic!("plugin and QMP material should validate: {error}"),
+    };
+
+    assert_eq!(material.vcpu_registers().len(), 2);
+    assert_eq!(material.rr_cursor().current_vcpu(), 1);
+
+    let error = match SingleVmNvcpuFingerprintMaterial::from_plugin_introspection_and_qmp(
+        qmp_topology(3),
+        &plugin_inputs,
+        8,
+        digest(4),
+        digest(5),
+    ) {
+        Ok(_) => panic!("plugin material missing QMP-reported vCPU should fail"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error,
+        SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+            reason: "N-vCPU fingerprint material vCPU count must match scenario -smp N",
+        }
+    );
 }
 
 #[test]
@@ -377,10 +567,19 @@ impl SingleVmFingerprintRunner for FakeRunner {
 }
 
 fn scenario() -> SingleVmFingerprintScenario {
-    match SingleVmFingerprintScenario::new(
+    scenario_nvcpu(2, 8)
+}
+
+fn scenario_nvcpu(vcpu_count: usize, rr_switch_quantum: u64) -> SingleVmFingerprintScenario {
+    let contract = match SingleVmNvcpuFingerprintContract::new(vcpu_count, rr_switch_quantum) {
+        Ok(contract) => contract,
+        Err(error) => panic!("test N-vCPU contract should be valid: {error}"),
+    };
+    match SingleVmFingerprintScenario::new_with_nvcpu_contract(
         "contract-a-single-vm",
         digest(1),
         12_288,
+        contract,
         SingleVmHostProfile::phase1_adversarial(),
     ) {
         Ok(scenario) => scenario,
@@ -389,24 +588,172 @@ fn scenario() -> SingleVmFingerprintScenario {
 }
 
 fn stream(sample_bytes: &[u8], final_byte: u8) -> SingleVmFingerprintStream {
-    let samples = sample_bytes
-        .iter()
-        .enumerate()
-        .map(|(index, byte)| sample(index as u64, 4096 * (index as u64 + 1), *byte))
-        .collect();
+    let samples = samples_from_bytes(sample_bytes);
     match SingleVmFingerprintStream::new(digest(1), samples, 12_288, digest(final_byte), 12_288) {
         Ok(stream) => stream,
         Err(error) => panic!("test stream should be valid: {error}"),
     }
 }
 
-fn sample(seq: u64, icount: u64, rolling_byte: u8) -> SingleVmFingerprintSample {
-    SingleVmFingerprintSample {
+fn stream_with_cursors(cursors: &[SingleVmRoundRobinCursor]) -> SingleVmFingerprintStream {
+    let definition_digest = digest(1);
+    let mut previous = initial_rolling(&definition_digest);
+    let mut samples = Vec::new();
+    for (index, cursor) in cursors.iter().enumerate() {
+        let material = material(index as u64, 4096 * (index as u64 + 1), 2, *cursor);
+        let sample = sample_from_material(&definition_digest, &previous, material);
+        previous = sample.rolling_fingerprint.clone();
+        samples.push(sample);
+    }
+    match SingleVmFingerprintStream::new(digest(1), samples, 12_288, digest(9), 12_288) {
+        Ok(stream) => stream,
+        Err(error) => panic!("test stream should be valid: {error}"),
+    }
+}
+
+fn samples_from_bytes(sample_bytes: &[u8]) -> Vec<SingleVmFingerprintSample> {
+    let definition_digest = digest(1);
+    let mut previous = initial_rolling(&definition_digest);
+    let mut samples = Vec::new();
+    for (index, byte) in sample_bytes.iter().enumerate() {
+        let cursor = rr_cursor((index % 2) as u64, index as u64, 8);
+        let material = material(index as u64, 4096 * (index as u64 + 1), *byte, cursor);
+        let sample = sample_from_material(&definition_digest, &previous, material);
+        previous = sample.rolling_fingerprint.clone();
+        samples.push(sample);
+    }
+    samples
+}
+
+fn sample(seq: u64, icount: u64, state_byte: u8) -> SingleVmFingerprintSample {
+    let definition_digest = digest(1);
+    let previous = initial_rolling(&definition_digest);
+    sample_from_material(
+        &definition_digest,
+        &previous,
+        material(seq, icount, state_byte, rr_cursor(0, 0, 8)),
+    )
+}
+
+fn sample_from_material(
+    definition_digest: &[u8],
+    previous: &[u8],
+    material: SingleVmFingerprintSampleMaterial,
+) -> SingleVmFingerprintSample {
+    match SingleVmFingerprintSample::from_material(definition_digest, previous, material) {
+        Ok(sample) => sample,
+        Err(error) => panic!("test sample should be valid: {error}"),
+    }
+}
+
+fn material(
+    seq: u64,
+    icount: u64,
+    state_byte: u8,
+    rr_cursor: SingleVmRoundRobinCursor,
+) -> SingleVmFingerprintSampleMaterial {
+    sample_material_with_nvcpu(
         seq,
-        node: "node-a".to_owned(),
         icount,
-        trigger: SingleVmFingerprintTrigger::Periodic,
-        rolling_fingerprint: digest(rolling_byte),
+        nvcpu_material_with_register_bytes([0x11, state_byte], rr_cursor),
+    )
+}
+
+fn sample_material_with_nvcpu(
+    seq: u64,
+    icount: u64,
+    nvcpu_fingerprint: SingleVmNvcpuFingerprintMaterial,
+) -> SingleVmFingerprintSampleMaterial {
+    match SingleVmFingerprintSampleMaterial::new(
+        seq,
+        "node-a",
+        icount,
+        SingleVmFingerprintTrigger::Periodic,
+        nvcpu_fingerprint,
+    ) {
+        Ok(material) => material,
+        Err(error) => panic!("test material should be valid: {error}"),
+    }
+}
+
+fn nvcpu_material_with_register_bytes(
+    bytes: [u8; 2],
+    rr_cursor: SingleVmRoundRobinCursor,
+) -> SingleVmNvcpuFingerprintMaterial {
+    match SingleVmNvcpuFingerprintMaterial::new(
+        vec![vcpu_register(0, bytes[0]), vcpu_register(1, bytes[1])],
+        rr_cursor,
+        digest(0xa1),
+        digest(0xd1),
+    ) {
+        Ok(material) => material,
+        Err(error) => panic!("test N-vCPU material should be valid: {error}"),
+    }
+}
+
+fn vcpu_register(vcpu_id: u64, byte: u8) -> SingleVmVcpuRegisterDigest {
+    match SingleVmVcpuRegisterDigest::new(vcpu_id, digest(byte), 64, 100 + vcpu_id) {
+        Ok(register) => register,
+        Err(error) => panic!("test vCPU register should be valid: {error}"),
+    }
+}
+
+fn rr_cursor(
+    current_vcpu: u64,
+    position_in_quantum: u64,
+    rr_switch_quantum: u64,
+) -> SingleVmRoundRobinCursor {
+    match SingleVmRoundRobinCursor::new(current_vcpu, position_in_quantum, rr_switch_quantum, 3) {
+        Ok(cursor) => cursor,
+        Err(error) => panic!("test RR cursor should be valid: {error}"),
+    }
+}
+
+fn qmp_topology(vcpu_count: usize) -> SingleVmQmpVcpuTopology {
+    match SingleVmQmpVcpuTopology::new(vcpu_count) {
+        Ok(topology) => topology,
+        Err(error) => panic!("test QMP topology should be valid: {error}"),
+    }
+}
+
+fn plugin_snapshot(
+    vcpu_count: u32,
+    current_vcpu: u64,
+    position_in_quantum: u64,
+    rr_switch_quantum: u64,
+    digest_bytes: &[u8],
+) -> PluginNvcpuFingerprintSnapshot {
+    let registers = digest_bytes
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| plugin_register(index as u32, *byte))
+        .collect::<Vec<_>>();
+    let cursor = match PluginRoundRobinCursorSnapshot::new(
+        current_vcpu,
+        position_in_quantum,
+        rr_switch_quantum,
+        vcpu_count,
+    ) {
+        Ok(cursor) => cursor,
+        Err(error) => panic!("test plugin cursor snapshot should be valid: {error}"),
+    };
+    match PluginNvcpuFingerprintSnapshot::new(registers, cursor) {
+        Ok(snapshot) => snapshot,
+        Err(error) => panic!("test plugin snapshot should be valid: {error}"),
+    }
+}
+
+fn plugin_register(vcpu_id: u32, byte: u8) -> PluginVcpuRegisterSnapshot {
+    match PluginVcpuRegisterSnapshot::new(vcpu_id, [byte; 32], 64, 100 + u64::from(vcpu_id)) {
+        Ok(register) => register,
+        Err(error) => panic!("test plugin register snapshot should be valid: {error}"),
+    }
+}
+
+fn initial_rolling(definition_digest: &[u8]) -> Vec<u8> {
+    match initial_single_vm_rolling_fingerprint(definition_digest) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => panic!("test initial rolling fingerprint should be valid: {error}"),
     }
 }
 

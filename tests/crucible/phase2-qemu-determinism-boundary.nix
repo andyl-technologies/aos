@@ -316,7 +316,7 @@ in
             fingerprint_components=periodic-icount,architectural-registers,guest-memory,device-state
             entropy_elimination_microtests=tcg-icount,cpu-entropy,rtc,guest-entropy,run-seed,kernel-randomization,input,cow-backing,idle-warp,sim-mode
             full_qemu_inert_gate=pending-T-HARN-21
-            n_vcpu_fingerprint=pending-T-QEMU-16
+            n_vcpu_fingerprint=checks.crucible.phase2.qemuNvcpuFingerprint
             RESULT
           '';
         }

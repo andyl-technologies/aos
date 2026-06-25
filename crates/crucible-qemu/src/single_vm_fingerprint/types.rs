@@ -1,11 +1,17 @@
 //! Public data types for the single-VM fingerprint gate.
 
+use crucible::ContentHash;
+use crucible_protocol::PluginNvcpuFingerprintSnapshot;
 use thiserror::Error;
 
 use super::compare::SingleVmFingerprintMismatch;
 
 /// The byte length of canonical execution-fingerprint digests.
 pub const SINGLE_VM_FINGERPRINT_DIGEST_BYTES: usize = 32;
+
+const SINGLE_VM_FINGERPRINT_STREAM_SEED_DOMAIN: &str =
+    "crucible.qemu.single-vm-fingerprint-stream-seed.v1";
+const SINGLE_VM_FINGERPRINT_SAMPLE_DOMAIN: &str = "crucible.qemu.single-vm-fingerprint-sample.v1";
 
 /// The deterministic reason a single-VM fingerprint sample exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +31,471 @@ pub enum SingleVmFingerprintEventBoundary {
     FrameDelivery,
     /// A scheduled fault activation became visible.
     FaultActivation,
+}
+
+/// Digest of one vCPU architectural register file sampled by the host hook.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SingleVmVcpuRegisterDigest {
+    vcpu_id: u64,
+    register_digest: Vec<u8>,
+    register_file_bytes: usize,
+    retired_instruction_count: u64,
+}
+
+impl SingleVmVcpuRegisterDigest {
+    /// Builds one vCPU register-file digest record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError`] when `register_digest` is not a
+    /// canonical fingerprint digest or `register_file_bytes` is zero.
+    pub fn new(
+        vcpu_id: u64,
+        register_digest: impl Into<Vec<u8>>,
+        register_file_bytes: usize,
+        retired_instruction_count: u64,
+    ) -> Result<Self, SingleVmFingerprintGateError> {
+        if register_file_bytes == 0 {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "vCPU register file byte count must be non-zero",
+                },
+            );
+        }
+        let register_digest = register_digest.into();
+        validate_digest_len("register_digest", &register_digest)?;
+        Ok(Self {
+            vcpu_id,
+            register_digest,
+            register_file_bytes,
+            retired_instruction_count,
+        })
+    }
+
+    /// Returns the vCPU identifier.
+    #[must_use]
+    pub const fn vcpu_id(&self) -> u64 {
+        self.vcpu_id
+    }
+
+    /// Returns the digest of this vCPU's architectural register file.
+    #[must_use]
+    pub fn register_digest(&self) -> &[u8] {
+        &self.register_digest
+    }
+
+    /// Returns the number of canonical register-file bytes read.
+    #[must_use]
+    pub const fn register_file_bytes(&self) -> usize {
+        self.register_file_bytes
+    }
+
+    /// Returns the vCPU-local retired-instruction count sampled with the registers.
+    #[must_use]
+    pub const fn retired_instruction_count(&self) -> u64 {
+        self.retired_instruction_count
+    }
+}
+
+/// Round-robin cursor state included in an N-vCPU fingerprint sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SingleVmRoundRobinCursor {
+    current_vcpu: u64,
+    position_in_quantum: u64,
+    rr_switch_quantum: u64,
+}
+
+impl SingleVmRoundRobinCursor {
+    /// Builds a validated round-robin cursor snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError`] when the sampled vCPU count is
+    /// zero, the current vCPU is outside the sampled set, the switch quantum is
+    /// zero, or the cursor position is outside the current quantum.
+    pub const fn new(
+        current_vcpu: u64,
+        position_in_quantum: u64,
+        rr_switch_quantum: u64,
+        vcpu_count: usize,
+    ) -> Result<Self, SingleVmFingerprintGateError> {
+        if vcpu_count == 0 {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "N-vCPU fingerprint material must include at least one vCPU",
+                },
+            );
+        }
+        if current_vcpu >= vcpu_count as u64 {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "round-robin current vCPU must be inside the sampled vCPU set",
+                },
+            );
+        }
+        if rr_switch_quantum == 0 {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "round-robin switch quantum must be non-zero",
+                },
+            );
+        }
+        if position_in_quantum >= rr_switch_quantum {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "round-robin cursor position must be inside rr_switch_quantum",
+                },
+            );
+        }
+        Ok(Self {
+            current_vcpu,
+            position_in_quantum,
+            rr_switch_quantum,
+        })
+    }
+
+    /// Returns the currently running vCPU in the fixed RR cursor.
+    #[must_use]
+    pub const fn current_vcpu(self) -> u64 {
+        self.current_vcpu
+    }
+
+    /// Returns the node-icount position within the pinned RR quantum.
+    #[must_use]
+    pub const fn position_in_quantum(self) -> u64 {
+        self.position_in_quantum
+    }
+
+    /// Returns the pinned RR switch quantum in node-icount units.
+    #[must_use]
+    pub const fn rr_switch_quantum(self) -> u64 {
+        self.rr_switch_quantum
+    }
+}
+
+/// Black-box state material folded into one N-vCPU fingerprint sample.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SingleVmNvcpuFingerprintMaterial {
+    vcpu_registers: Vec<SingleVmVcpuRegisterDigest>,
+    rr_cursor: SingleVmRoundRobinCursor,
+    guest_memory_digest: Vec<u8>,
+    device_state_digest: Vec<u8>,
+}
+
+impl SingleVmNvcpuFingerprintMaterial {
+    /// Builds sample material from plugin introspection and QMP topology.
+    ///
+    /// `qmp_topology` is the host-observed `-smp N` topology from the typed QMP
+    /// control boundary, while `plugin_inputs` is the validated snapshot emitted
+    /// from the real plugin introspection reader. `expected_rr_switch_quantum`
+    /// is the launch-pinned node-icount quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError`] when QMP topology is invalid,
+    /// the plugin material is malformed, the plugin omitted a vCPU reported by
+    /// QMP, or the cursor quantum differs from the launch-pinned quantum.
+    pub fn from_plugin_introspection_and_qmp(
+        qmp_topology: SingleVmQmpVcpuTopology,
+        plugin_inputs: &PluginNvcpuFingerprintSnapshot,
+        expected_rr_switch_quantum: u64,
+        guest_memory_digest: impl Into<Vec<u8>>,
+        device_state_digest: impl Into<Vec<u8>>,
+    ) -> Result<Self, SingleVmFingerprintGateError> {
+        let contract = SingleVmNvcpuFingerprintContract::new(
+            qmp_topology.vcpu_count(),
+            expected_rr_switch_quantum,
+        )?;
+        let vcpu_registers = plugin_inputs
+            .vcpu_registers()
+            .iter()
+            .map(|register| {
+                SingleVmVcpuRegisterDigest::new(
+                    u64::from(register.vcpu_id()),
+                    register.register_digest().to_vec(),
+                    register.register_file_bytes(),
+                    register.retired_instruction_count(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let plugin_cursor = plugin_inputs.rr_cursor();
+        let rr_cursor = SingleVmRoundRobinCursor::new(
+            plugin_cursor.current_vcpu(),
+            plugin_cursor.position_in_quantum(),
+            plugin_cursor.rr_switch_quantum(),
+            plugin_inputs.vcpu_registers().len(),
+        )?;
+        let material = Self::new(
+            vcpu_registers,
+            rr_cursor,
+            guest_memory_digest,
+            device_state_digest,
+        )?;
+        material.validate_against_contract(contract)?;
+        Ok(material)
+    }
+
+    /// Builds canonical sample material for all vCPUs and the RR cursor.
+    ///
+    /// Register records are sorted by vCPU id and must cover exactly `0..N`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError`] when the vCPU set is empty,
+    /// duplicate, non-contiguous, inconsistent with the RR cursor, or any digest
+    /// has a non-canonical length.
+    pub fn new(
+        mut vcpu_registers: Vec<SingleVmVcpuRegisterDigest>,
+        rr_cursor: SingleVmRoundRobinCursor,
+        guest_memory_digest: impl Into<Vec<u8>>,
+        device_state_digest: impl Into<Vec<u8>>,
+    ) -> Result<Self, SingleVmFingerprintGateError> {
+        if vcpu_registers.is_empty() {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "N-vCPU fingerprint material must include at least one vCPU",
+                },
+            );
+        }
+        vcpu_registers.sort_by_key(SingleVmVcpuRegisterDigest::vcpu_id);
+        for (expected, register) in vcpu_registers.iter().enumerate() {
+            let expected = expected as u64;
+            if register.vcpu_id() != expected {
+                return Err(
+                    SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                        reason: "N-vCPU fingerprint material must cover exactly vCPUs 0..N",
+                    },
+                );
+            }
+        }
+        if rr_cursor.current_vcpu() >= vcpu_registers.len() as u64 {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "round-robin current vCPU must be inside the sampled vCPU set",
+                },
+            );
+        }
+        let guest_memory_digest = guest_memory_digest.into();
+        validate_digest_len("guest_memory_digest", &guest_memory_digest)?;
+        let device_state_digest = device_state_digest.into();
+        validate_digest_len("device_state_digest", &device_state_digest)?;
+
+        Ok(Self {
+            vcpu_registers,
+            rr_cursor,
+            guest_memory_digest,
+            device_state_digest,
+        })
+    }
+
+    /// Returns sorted register digests for every vCPU in the sampled node.
+    #[must_use]
+    pub fn vcpu_registers(&self) -> &[SingleVmVcpuRegisterDigest] {
+        &self.vcpu_registers
+    }
+
+    /// Returns the sampled round-robin cursor.
+    #[must_use]
+    pub const fn rr_cursor(&self) -> SingleVmRoundRobinCursor {
+        self.rr_cursor
+    }
+
+    /// Returns the guest-memory digest sampled with the registers.
+    #[must_use]
+    pub fn guest_memory_digest(&self) -> &[u8] {
+        &self.guest_memory_digest
+    }
+
+    /// Returns the device-state digest sampled with the registers.
+    #[must_use]
+    pub fn device_state_digest(&self) -> &[u8] {
+        &self.device_state_digest
+    }
+
+    /// Validates this material against the scenario launch contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError`] when the material omits a vCPU
+    /// from the launched `-smp N` topology or reports an RR quantum different
+    /// from the scenario's pinned `rr_switch_quantum`.
+    pub fn validate_against_contract(
+        &self,
+        contract: SingleVmNvcpuFingerprintContract,
+    ) -> Result<(), SingleVmFingerprintGateError> {
+        validate_nvcpu_fingerprint_material(self)?;
+        if self.vcpu_registers.len() != contract.vcpu_count {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "N-vCPU fingerprint material vCPU count must match scenario -smp N",
+                },
+            );
+        }
+        if self.rr_cursor.rr_switch_quantum() != contract.rr_switch_quantum {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "round-robin switch quantum must match the scenario launch profile",
+                },
+            );
+        }
+        Ok(())
+    }
+}
+
+/// QMP-observed vCPU topology for one sampled VM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SingleVmQmpVcpuTopology {
+    vcpu_count: usize,
+}
+
+impl SingleVmQmpVcpuTopology {
+    /// Builds a QMP topology snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError`] when QMP reports no vCPUs.
+    pub const fn new(vcpu_count: usize) -> Result<Self, SingleVmFingerprintGateError> {
+        if vcpu_count == 0 {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "QMP vCPU topology must report at least one vCPU",
+                },
+            );
+        }
+        Ok(Self { vcpu_count })
+    }
+
+    /// Returns the `-smp N` vCPU count observed through QMP.
+    #[must_use]
+    pub const fn vcpu_count(self) -> usize {
+        self.vcpu_count
+    }
+}
+
+/// Scenario contract for N-vCPU fingerprint samples.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SingleVmNvcpuFingerprintContract {
+    vcpu_count: usize,
+    rr_switch_quantum: u64,
+}
+
+impl SingleVmNvcpuFingerprintContract {
+    /// Builds the launch-derived N-vCPU fingerprint contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError`] when `vcpu_count` or
+    /// `rr_switch_quantum` is zero.
+    pub const fn new(
+        vcpu_count: usize,
+        rr_switch_quantum: u64,
+    ) -> Result<Self, SingleVmFingerprintGateError> {
+        if vcpu_count == 0 {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "N-vCPU fingerprint contract must include at least one vCPU",
+                },
+            );
+        }
+        if rr_switch_quantum == 0 {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "N-vCPU fingerprint contract requires non-zero rr_switch_quantum",
+                },
+            );
+        }
+        Ok(Self {
+            vcpu_count,
+            rr_switch_quantum,
+        })
+    }
+
+    /// Returns the launch-pinned `-smp N` vCPU count.
+    #[must_use]
+    pub const fn vcpu_count(self) -> usize {
+        self.vcpu_count
+    }
+
+    /// Returns the launch-pinned RR switch quantum in node-icount units.
+    #[must_use]
+    pub const fn rr_switch_quantum(self) -> u64 {
+        self.rr_switch_quantum
+    }
+}
+
+/// Full material used to compute one rolling fingerprint sample.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SingleVmFingerprintSampleMaterial {
+    seq: u64,
+    node: String,
+    icount: u64,
+    trigger: SingleVmFingerprintTrigger,
+    nvcpu_fingerprint: SingleVmNvcpuFingerprintMaterial,
+}
+
+impl SingleVmFingerprintSampleMaterial {
+    /// Builds validated material for one sample position.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError`] when `node` is empty or
+    /// `icount` is zero.
+    pub fn new(
+        seq: u64,
+        node: impl Into<String>,
+        icount: u64,
+        trigger: SingleVmFingerprintTrigger,
+        nvcpu_fingerprint: SingleVmNvcpuFingerprintMaterial,
+    ) -> Result<Self, SingleVmFingerprintGateError> {
+        let node = node.into();
+        if node.is_empty() {
+            return Err(SingleVmFingerprintGateError::InvalidStream {
+                reason: "sample node id must be non-empty",
+            });
+        }
+        if icount == 0 {
+            return Err(SingleVmFingerprintGateError::InvalidStream {
+                reason: "sample icount must be non-zero",
+            });
+        }
+        Ok(Self {
+            seq,
+            node,
+            icount,
+            trigger,
+            nvcpu_fingerprint,
+        })
+    }
+
+    /// Returns the monotonic sample number.
+    #[must_use]
+    pub const fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    /// Returns the stable node identifier.
+    #[must_use]
+    pub fn node(&self) -> &str {
+        &self.node
+    }
+
+    /// Returns the aggregate node icount at the sample point.
+    #[must_use]
+    pub const fn icount(&self) -> u64 {
+        self.icount
+    }
+
+    /// Returns the deterministic reason this sample was taken.
+    #[must_use]
+    pub const fn trigger(&self) -> SingleVmFingerprintTrigger {
+        self.trigger
+    }
+
+    /// Returns the N-vCPU material folded into the sample digest.
+    #[must_use]
+    pub const fn nvcpu_fingerprint(&self) -> &SingleVmNvcpuFingerprintMaterial {
+        &self.nvcpu_fingerprint
+    }
 }
 
 /// Deterministic host-condition labels applied around both gate runs.
@@ -103,6 +574,7 @@ pub struct SingleVmFingerprintScenario {
     pub(super) id: String,
     pub(super) fingerprint_definition_digest: Vec<u8>,
     pub(super) run_horizon_icount: u64,
+    nvcpu_contract: SingleVmNvcpuFingerprintContract,
     host_profile: SingleVmHostProfile,
 }
 
@@ -118,6 +590,29 @@ impl SingleVmFingerprintScenario {
         id: impl Into<String>,
         fingerprint_definition_digest: impl Into<Vec<u8>>,
         run_horizon_icount: u64,
+        host_profile: SingleVmHostProfile,
+    ) -> Result<Self, SingleVmFingerprintGateError> {
+        Self::new_with_nvcpu_contract(
+            id,
+            fingerprint_definition_digest,
+            run_horizon_icount,
+            SingleVmNvcpuFingerprintContract::new(1, 1)?,
+            host_profile,
+        )
+    }
+
+    /// Builds a fixed scenario with an explicit N-vCPU launch contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError`] when the scenario id is empty,
+    /// the run horizon is zero, or the fingerprint-definition digest is not the
+    /// canonical digest width.
+    pub fn new_with_nvcpu_contract(
+        id: impl Into<String>,
+        fingerprint_definition_digest: impl Into<Vec<u8>>,
+        run_horizon_icount: u64,
+        nvcpu_contract: SingleVmNvcpuFingerprintContract,
         host_profile: SingleVmHostProfile,
     ) -> Result<Self, SingleVmFingerprintGateError> {
         let id = id.into();
@@ -141,6 +636,7 @@ impl SingleVmFingerprintScenario {
             id,
             fingerprint_definition_digest,
             run_horizon_icount,
+            nvcpu_contract,
             host_profile,
         })
     }
@@ -161,6 +657,24 @@ impl SingleVmFingerprintScenario {
     #[must_use]
     pub fn run_horizon_icount(&self) -> u64 {
         self.run_horizon_icount
+    }
+
+    /// Returns the scenario's launch-derived N-vCPU fingerprint contract.
+    #[must_use]
+    pub const fn nvcpu_contract(&self) -> SingleVmNvcpuFingerprintContract {
+        self.nvcpu_contract
+    }
+
+    /// Returns the launch-pinned expected vCPU count.
+    #[must_use]
+    pub const fn expected_vcpu_count(&self) -> usize {
+        self.nvcpu_contract.vcpu_count()
+    }
+
+    /// Returns the launch-pinned RR switch quantum.
+    #[must_use]
+    pub const fn expected_rr_switch_quantum(&self) -> u64 {
+        self.nvcpu_contract.rr_switch_quantum()
     }
 
     /// Returns the deterministic host-condition profile for both runs.
@@ -376,8 +890,50 @@ pub struct SingleVmFingerprintSample {
     pub icount: u64,
     /// The deterministic reason the sample was taken.
     pub trigger: SingleVmFingerprintTrigger,
+    /// Host-observed N-vCPU register, RR cursor, memory, and device material.
+    pub nvcpu_fingerprint: SingleVmNvcpuFingerprintMaterial,
     /// Rolling fingerprint bytes after incorporating this sample.
     pub rolling_fingerprint: Vec<u8>,
+}
+
+impl SingleVmFingerprintSample {
+    /// Builds a sample by folding canonical material into the rolling digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError`] when the definition digest,
+    /// previous rolling fingerprint, or sample material is invalid.
+    pub fn from_material(
+        definition_digest: &[u8],
+        previous_rolling_fingerprint: &[u8],
+        material: SingleVmFingerprintSampleMaterial,
+    ) -> Result<Self, SingleVmFingerprintGateError> {
+        let rolling_fingerprint = compute_single_vm_sample_rolling_fingerprint_from_material(
+            definition_digest,
+            previous_rolling_fingerprint,
+            &material,
+        )?;
+        Ok(Self {
+            seq: material.seq,
+            node: material.node,
+            icount: material.icount,
+            trigger: material.trigger,
+            nvcpu_fingerprint: material.nvcpu_fingerprint,
+            rolling_fingerprint,
+        })
+    }
+
+    /// Returns the canonical sample material without the rolling digest.
+    #[must_use]
+    pub fn material(&self) -> SingleVmFingerprintSampleMaterial {
+        SingleVmFingerprintSampleMaterial {
+            seq: self.seq,
+            node: self.node.clone(),
+            icount: self.icount,
+            trigger: self.trigger,
+            nvcpu_fingerprint: self.nvcpu_fingerprint.clone(),
+        }
+    }
 }
 
 /// The ordered fingerprint stream for one single-VM run.
@@ -410,7 +966,7 @@ impl SingleVmFingerprintStream {
     ) -> Result<Self, SingleVmFingerprintGateError> {
         let definition_digest = definition_digest.into();
         validate_digest_len("definition_digest", &definition_digest)?;
-        validate_samples(&samples, run_horizon_icount)?;
+        validate_samples(&definition_digest, &samples, run_horizon_icount, None)?;
         validate_final_icount(final_icount, run_horizon_icount)?;
         let final_fingerprint = final_fingerprint.into();
         validate_digest_len("final_fingerprint", &final_fingerprint)?;
@@ -526,6 +1082,12 @@ pub enum SingleVmFingerprintGateError {
         /// Human-readable validation failure.
         reason: &'static str,
     },
+    /// N-vCPU sample material is ambiguous or incomplete.
+    #[error("invalid single-VM N-vCPU fingerprint material: {reason}")]
+    InvalidNvcpuFingerprintMaterial {
+        /// Human-readable validation failure.
+        reason: &'static str,
+    },
     /// A digest does not use the canonical fixed length.
     #[error("{field} digest length {len} is not {SINGLE_VM_FINGERPRINT_DIGEST_BYTES} bytes")]
     InvalidDigestLength {
@@ -588,9 +1150,195 @@ pub enum SingleVmFingerprintGateError {
     },
 }
 
+/// Computes the definition-specific initial rolling fingerprint.
+///
+/// # Errors
+///
+/// Returns [`SingleVmFingerprintGateError::InvalidDigestLength`] when
+/// `definition_digest` is not the canonical digest width.
+pub fn initial_single_vm_rolling_fingerprint(
+    definition_digest: &[u8],
+) -> Result<Vec<u8>, SingleVmFingerprintGateError> {
+    validate_digest_len("definition_digest", definition_digest)?;
+    let material = format!("definition_digest={}", lower_hex(definition_digest));
+    Ok(
+        ContentHash::from_canonical_material(SINGLE_VM_FINGERPRINT_STREAM_SEED_DOMAIN, &material)
+            .bytes
+            .to_vec(),
+    )
+}
+
+/// Computes the rolling digest for a sample's canonical N-vCPU material.
+///
+/// # Errors
+///
+/// Returns [`SingleVmFingerprintGateError`] when either input digest is not the
+/// canonical width or the sample material is invalid.
+pub fn compute_single_vm_sample_rolling_fingerprint(
+    definition_digest: &[u8],
+    previous_rolling_fingerprint: &[u8],
+    sample: &SingleVmFingerprintSample,
+) -> Result<Vec<u8>, SingleVmFingerprintGateError> {
+    compute_single_vm_sample_rolling_fingerprint_from_material(
+        definition_digest,
+        previous_rolling_fingerprint,
+        &sample.material(),
+    )
+}
+
+fn compute_single_vm_sample_rolling_fingerprint_from_material(
+    definition_digest: &[u8],
+    previous_rolling_fingerprint: &[u8],
+    material: &SingleVmFingerprintSampleMaterial,
+) -> Result<Vec<u8>, SingleVmFingerprintGateError> {
+    validate_digest_len("definition_digest", definition_digest)?;
+    validate_digest_len("previous_rolling_fingerprint", previous_rolling_fingerprint)?;
+    validate_nvcpu_fingerprint_material(&material.nvcpu_fingerprint)?;
+
+    let canonical_material =
+        sample_canonical_material(definition_digest, previous_rolling_fingerprint, material);
+    Ok(ContentHash::from_canonical_material(
+        SINGLE_VM_FINGERPRINT_SAMPLE_DOMAIN,
+        &canonical_material,
+    )
+    .bytes
+    .to_vec())
+}
+
+fn sample_canonical_material(
+    definition_digest: &[u8],
+    previous_rolling_fingerprint: &[u8],
+    material: &SingleVmFingerprintSampleMaterial,
+) -> String {
+    let mut lines = vec![
+        "crucible.qemu.single-vm-fingerprint-sample.v1".to_owned(),
+        format!("definition_digest={}", lower_hex(definition_digest)),
+        format!(
+            "previous_rolling_fingerprint={}",
+            lower_hex(previous_rolling_fingerprint)
+        ),
+        format!("seq={}", material.seq),
+        format!("node={}", material.node),
+        format!("icount={}", material.icount),
+        format!("trigger={}", trigger_token(material.trigger)),
+        format!(
+            "vcpu_count={}",
+            material.nvcpu_fingerprint.vcpu_registers.len()
+        ),
+    ];
+    for (index, register) in material.nvcpu_fingerprint.vcpu_registers.iter().enumerate() {
+        lines.push(format!("vcpu[{index}].id={}", register.vcpu_id));
+        lines.push(format!(
+            "vcpu[{index}].register_digest={}",
+            lower_hex(&register.register_digest)
+        ));
+        lines.push(format!(
+            "vcpu[{index}].register_file_bytes={}",
+            register.register_file_bytes
+        ));
+        lines.push(format!(
+            "vcpu[{index}].retired_instruction_count={}",
+            register.retired_instruction_count
+        ));
+    }
+
+    let cursor = material.nvcpu_fingerprint.rr_cursor;
+    lines.push(format!("rr_current_vcpu={}", cursor.current_vcpu));
+    lines.push(format!(
+        "rr_position_in_quantum={}",
+        cursor.position_in_quantum
+    ));
+    lines.push(format!("rr_switch_quantum={}", cursor.rr_switch_quantum));
+    lines.push(format!(
+        "guest_memory_digest={}",
+        lower_hex(&material.nvcpu_fingerprint.guest_memory_digest)
+    ));
+    lines.push(format!(
+        "device_state_digest={}",
+        lower_hex(&material.nvcpu_fingerprint.device_state_digest)
+    ));
+    lines.join("\n")
+}
+
+fn validate_nvcpu_fingerprint_material(
+    material: &SingleVmNvcpuFingerprintMaterial,
+) -> Result<(), SingleVmFingerprintGateError> {
+    if material.vcpu_registers.is_empty() {
+        return Err(
+            SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                reason: "N-vCPU fingerprint material must include at least one vCPU",
+            },
+        );
+    }
+    for (expected, register) in material.vcpu_registers.iter().enumerate() {
+        if register.vcpu_id != expected as u64 {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "N-vCPU fingerprint material must cover exactly vCPUs 0..N",
+                },
+            );
+        }
+        if register.register_file_bytes == 0 {
+            return Err(
+                SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                    reason: "vCPU register file byte count must be non-zero",
+                },
+            );
+        }
+        validate_digest_len("register_digest", &register.register_digest)?;
+    }
+    if material.rr_cursor.current_vcpu >= material.vcpu_registers.len() as u64 {
+        return Err(
+            SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                reason: "round-robin current vCPU must be inside the sampled vCPU set",
+            },
+        );
+    }
+    if material.rr_cursor.rr_switch_quantum == 0 {
+        return Err(
+            SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                reason: "round-robin switch quantum must be non-zero",
+            },
+        );
+    }
+    if material.rr_cursor.position_in_quantum >= material.rr_cursor.rr_switch_quantum {
+        return Err(
+            SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial {
+                reason: "round-robin cursor position must be inside rr_switch_quantum",
+            },
+        );
+    }
+    validate_digest_len("guest_memory_digest", &material.guest_memory_digest)?;
+    validate_digest_len("device_state_digest", &material.device_state_digest)?;
+    Ok(())
+}
+
+fn trigger_token(trigger: SingleVmFingerprintTrigger) -> &'static str {
+    match trigger {
+        SingleVmFingerprintTrigger::Periodic => "periodic",
+        SingleVmFingerprintTrigger::Event(event) => match event {
+            SingleVmFingerprintEventBoundary::HorizonAdvance => "horizon-advance",
+            SingleVmFingerprintEventBoundary::FrameDelivery => "frame-delivery",
+            SingleVmFingerprintEventBoundary::FaultActivation => "fault-activation",
+        },
+    }
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
 pub(super) fn validate_samples(
+    definition_digest: &[u8],
     samples: &[SingleVmFingerprintSample],
     run_horizon_icount: u64,
+    nvcpu_contract: Option<SingleVmNvcpuFingerprintContract>,
 ) -> Result<(), SingleVmFingerprintGateError> {
     if samples.is_empty() {
         return Err(SingleVmFingerprintGateError::InvalidStream {
@@ -598,6 +1346,8 @@ pub(super) fn validate_samples(
         });
     }
     let mut previous_icount = None;
+    let mut previous_rolling_fingerprint =
+        initial_single_vm_rolling_fingerprint(definition_digest)?;
     for (index, sample) in samples.iter().enumerate() {
         if sample.seq != index as u64 {
             return Err(SingleVmFingerprintGateError::InvalidStream {
@@ -620,7 +1370,24 @@ pub(super) fn validate_samples(
             });
         }
         validate_digest_len("rolling_fingerprint", &sample.rolling_fingerprint)?;
+        validate_nvcpu_fingerprint_material(&sample.nvcpu_fingerprint)?;
+        if let Some(contract) = nvcpu_contract {
+            sample
+                .nvcpu_fingerprint
+                .validate_against_contract(contract)?;
+        }
+        let expected_rolling_fingerprint = compute_single_vm_sample_rolling_fingerprint(
+            definition_digest,
+            &previous_rolling_fingerprint,
+            sample,
+        )?;
+        if sample.rolling_fingerprint != expected_rolling_fingerprint {
+            return Err(SingleVmFingerprintGateError::InvalidStream {
+                reason: "sample rolling fingerprint must include canonical N-vCPU material",
+            });
+        }
         previous_icount = Some(sample.icount);
+        previous_rolling_fingerprint = sample.rolling_fingerprint.clone();
     }
     if previous_icount != Some(run_horizon_icount) {
         return Err(SingleVmFingerprintGateError::InvalidStream {
