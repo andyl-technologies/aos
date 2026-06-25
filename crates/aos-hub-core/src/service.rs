@@ -4902,6 +4902,166 @@ impl RpcService {
         }
     }
 
+    /// Resolve and authorize a writable surface for an upload to `(slug, path)`,
+    /// returning the backend writer.
+    ///
+    /// Shared by the multipart upload methods ([`initiate_upload`](Self::initiate_upload),
+    /// [`upload_part`](Self::upload_part), [`complete_upload`](Self::complete_upload),
+    /// [`abort_upload`](Self::abort_upload)) so every multipart call enforces the
+    /// *same* path-safety, authorization, and storage resolution as the
+    /// single-`PUT` facade: a managed cache (its own slug namespace) requires
+    /// cache-admin; a registry requires `Publish`. Re-resolving per call is what
+    /// lets the protocol stay stateless (each request re-authorizes and rebuilds
+    /// the writer; the backend holds the in-flight multipart state).
+    ///
+    /// Multipart is used only for large, content-addressed `nar/**` objects,
+    /// which are never the mutable pointers the single-`PUT` path gates with a
+    /// publish lease/quota-reservation/re-index, so those steps do not apply
+    /// here. (A registry's per-write quota is still enforced at the single-`PUT`
+    /// boundary for the small objects that flow through it.)
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FacadeWrite`] denial: `BadPath` for a non-machine/unsafe
+    /// path, the auth denial for a missing/insufficient credential, `NotFound`
+    /// for a deleted cache, `NotWritable` when the surface has no writable root,
+    /// or an internal error on a store/db failure.
+    async fn resolve_upload_writer(
+        &self,
+        auth: Option<&str>,
+        slug: &str,
+        path: &str,
+    ) -> Result<Box<dyn crate::surface_write::SurfaceWrite>, FacadeWrite> {
+        if !keymap::is_machine_path(path) {
+            return Err(FacadeWrite::BadPath("not a machine path"));
+        }
+        if crate::url_guard::validate_http_surface_path(path).is_err() {
+            return Err(FacadeWrite::BadPath("unsafe surface path"));
+        }
+        match self.db.cache_by_slug(slug).await {
+            Ok(Some(cache)) => {
+                if cache.deleted_at.is_some() {
+                    return Err(FacadeWrite::NotFound);
+                }
+                if let Err(deny) = self.require_cache_admin(auth, cache.org_id).await {
+                    return Err(auth_denial_to_facade_write(deny));
+                }
+                return self
+                    .surface_write
+                    .cache_writer(&cache)
+                    .await
+                    .map_err(|_| FacadeWrite::NotWritable("cache surface is not writable"));
+            }
+            Ok(None) => {}
+            Err(err) => return Err(internal_write(err)),
+        }
+        let registry = self.resolve_writable(slug).await?;
+        let _token_id = self.authorize_publish(&registry, auth)?;
+        self.surface_write
+            .writer(&registry)
+            .await
+            .map_err(|_| FacadeWrite::NotWritable("registry surface is not writable"))
+    }
+
+    /// Begin a multipart upload of `path` under `slug`, returning the backend's
+    /// opaque `upload_id`.
+    ///
+    /// Authorizes exactly as the single-`PUT` path
+    /// ([`resolve_upload_writer`](Self::resolve_upload_writer)); the client then
+    /// streams parts via [`upload_part`](Self::upload_part) and finalizes with
+    /// [`complete_upload`](Self::complete_upload), each echoing this `upload_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FacadeWrite`] denial (see
+    /// [`resolve_upload_writer`](Self::resolve_upload_writer)) or an internal
+    /// error when the backend cannot begin a multipart upload.
+    pub async fn initiate_upload(
+        &self,
+        auth: Option<&str>,
+        slug: &str,
+        path: &str,
+    ) -> Result<String, FacadeWrite> {
+        let writer = self.resolve_upload_writer(auth, slug, path).await?;
+        writer.create_multipart(path).await.map_err(internal_write)
+    }
+
+    /// Upload one part (`part_number`, 1-based) of the in-progress multipart
+    /// upload `upload_id` for `(slug, path)`, returning its
+    /// [`PartTag`](crate::surface_write::PartTag).
+    ///
+    /// Re-authorizes the caller and rebuilds the backend writer, then streams
+    /// the single sub-cap part straight to the backend — peak memory is one part.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FacadeWrite`] denial or an internal error when the part
+    /// cannot be uploaded.
+    pub async fn upload_part(
+        &self,
+        auth: Option<&str>,
+        slug: &str,
+        path: &str,
+        upload_id: &str,
+        part_number: u32,
+        body: &[u8],
+    ) -> Result<crate::surface_write::PartTag, FacadeWrite> {
+        let writer = self.resolve_upload_writer(auth, slug, path).await?;
+        writer
+            .upload_part(path, upload_id, part_number, body)
+            .await
+            .map_err(internal_write)
+    }
+
+    /// Finalize the multipart upload `upload_id` for `(slug, path)`, assembling
+    /// `parts` into the object.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FacadeWrite`] denial or an internal error when assembly
+    /// fails. On success returns [`FacadeWrite::Created`].
+    pub async fn complete_upload(
+        &self,
+        auth: Option<&str>,
+        slug: &str,
+        path: &str,
+        upload_id: &str,
+        parts: &[crate::surface_write::PartTag],
+    ) -> FacadeWrite {
+        let writer = match self.resolve_upload_writer(auth, slug, path).await {
+            Ok(writer) => writer,
+            Err(deny) => return deny,
+        };
+        match writer.complete_multipart(path, upload_id, parts).await {
+            Ok(()) => FacadeWrite::Created,
+            Err(err) => internal_write(err),
+        }
+    }
+
+    /// Abort the multipart upload `upload_id` for `(slug, path)`, freeing backend
+    /// state. Best-effort; an unknown upload is not an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FacadeWrite`] denial, or an internal error only on a fatal
+    /// backend failure.
+    pub async fn abort_upload(
+        &self,
+        auth: Option<&str>,
+        slug: &str,
+        path: &str,
+        upload_id: &str,
+    ) -> FacadeWrite {
+        let writer = match self.resolve_upload_writer(auth, slug, path).await {
+            Ok(writer) => writer,
+            Err(deny) => return deny,
+        };
+        match writer.abort_multipart(path, upload_id).await {
+            Ok(()) => FacadeWrite::Created,
+            Err(err) => internal_write(err),
+        }
+    }
+
     /// Handle a facade `HEAD` of one surface path for a managed registry.
     ///
     /// Lets an uploader skip files it has already pushed:
