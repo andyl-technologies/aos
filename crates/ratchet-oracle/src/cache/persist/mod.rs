@@ -78,6 +78,8 @@ pub const PERSIST_NODE_TRACE_PAYLOAD_VERSION: u32 = 1;
 pub const PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN: usize = 28;
 /// The fixed encoded bytes in one node verifying-trace input record.
 pub const PERSIST_NODE_TRACE_INPUT_FIXED_LEN: usize = 42;
+/// The fixed header bytes in one node trace log record.
+pub const PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN: usize = PERSIST_NODE_METADATA_INDEX_KEY_LEN + 8;
 
 static SCHEMA_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 static INDEX_REWRITE_ID: AtomicU64 = AtomicU64::new(0);
@@ -108,20 +110,21 @@ pub use error::{
     PersistCachedExpressionValueIndexedLoadError, PersistCachedExpressionValueIndexedWriteError,
     PersistError, PersistFileArtifactHydrationError, PersistFileArtifactIndexError,
     PersistFileArtifactIndexedHydrationError, PersistFileArtifactIndexedWriteError,
-    PersistNodeMetadataIndexError, PersistNodeTracePayloadError, PersistPackFormatError,
-    PersistParseArtifactHydrationError, PersistParseArtifactIndexError,
-    PersistParseArtifactIndexedHydrationError, PersistParseArtifactIndexedWriteError,
-    PersistParseArtifactMaterializationError, PersistParseBytesIndexedLoadError,
-    PersistParseFileIndexedHydrationError, PersistParseFileIndexedLoadError,
-    PersistParseSourceIndexedLoadError,
+    PersistNodeMetadataIndexError, PersistNodeTraceLogError, PersistNodeTraceLogFormatError,
+    PersistNodeTracePayloadError, PersistPackFormatError, PersistParseArtifactHydrationError,
+    PersistParseArtifactIndexError, PersistParseArtifactIndexedHydrationError,
+    PersistParseArtifactIndexedWriteError, PersistParseArtifactMaterializationError,
+    PersistParseBytesIndexedLoadError, PersistParseFileIndexedHydrationError,
+    PersistParseFileIndexedLoadError, PersistParseSourceIndexedLoadError,
 };
 pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,
     PersistBlobPackHeader, PersistBlobRecordHeader, PersistBlobStore, PersistFileArtifactIndex,
     PersistFileArtifactIndexEntry, PersistFileArtifactIndexValue, PersistFileArtifactKey,
     PersistNodeMetadataIndex, PersistNodeMetadataIndexEntry, PersistNodeMetadataIndexValue,
-    PersistNodeMetadataKey, PersistNodeTracePayload, PersistParseArtifactIndex,
-    PersistParseArtifactIndexEntry, PersistParseArtifactIndexValue, PersistParseArtifactKey,
+    PersistNodeMetadataKey, PersistNodeTraceLog, PersistNodeTraceLogEntry, PersistNodeTracePayload,
+    PersistParseArtifactIndex, PersistParseArtifactIndexEntry, PersistParseArtifactIndexValue,
+    PersistParseArtifactKey,
 };
 pub use layout::PersistLayout;
 pub use materialization::{

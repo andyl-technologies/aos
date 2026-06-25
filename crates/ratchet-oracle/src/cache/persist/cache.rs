@@ -17,6 +17,7 @@ pub struct PersistCache {
     file_artifact_index: PersistFileArtifactIndex,
     parse_artifact_index: PersistParseArtifactIndex,
     node_metadata_index: PersistNodeMetadataIndex,
+    node_trace_log: PersistNodeTraceLog,
 }
 
 impl PersistCache {
@@ -96,6 +97,14 @@ impl PersistCache {
                 path: node_metadata_index_path,
                 source,
             })?;
+        let node_trace_log_path = layout.node_trace_log_path();
+        let node_trace_log =
+            PersistNodeTraceLog::open(node_trace_log_path.clone()).map_err(|source| {
+                PersistError::OpenNodeTraceLog {
+                    path: node_trace_log_path,
+                    source,
+                }
+            })?;
         Ok(Self {
             layout,
             value_pack,
@@ -105,6 +114,7 @@ impl PersistCache {
             file_artifact_index,
             parse_artifact_index,
             node_metadata_index,
+            node_trace_log,
         })
     }
 
@@ -146,6 +156,11 @@ impl PersistCache {
     /// Returns the fixed-record index for durable demand-node metadata.
     pub const fn node_metadata_index(&self) -> &PersistNodeMetadataIndex {
         &self.node_metadata_index
+    }
+
+    /// Returns the append-only log for durable demand-node traces.
+    pub const fn node_trace_log(&self) -> &PersistNodeTraceLog {
+        &self.node_trace_log
     }
 
     /// Returns the fixed-record blob index for `store`.
@@ -276,6 +291,39 @@ impl PersistCache {
         key: PersistNodeMetadataKey,
     ) -> Result<Option<PersistNodeMetadataIndexValue>, PersistNodeMetadataIndexError> {
         self.node_metadata_index.lookup(key)
+    }
+
+    /// Appends a durable verifying-trace payload for one demand node.
+    ///
+    /// The trace log is append-only and newest-record-wins on lookup. This
+    /// fixed-file sidecar has no cross-process write lock; callers must
+    /// serialize concurrent writes to the same log.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTraceLogError`] if the trace log cannot be opened,
+    /// validated, written, flushed, or decoded during validation.
+    pub fn record_node_trace(
+        &self,
+        key: PersistNodeMetadataKey,
+        payload: &PersistNodeTracePayload,
+    ) -> Result<(), PersistNodeTraceLogError> {
+        self.node_trace_log.append_trace(key, payload)
+    }
+
+    /// Looks up the newest durable verifying-trace payload for one demand node.
+    ///
+    /// Missing trace records return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTraceLogError`] if the trace log cannot be opened,
+    /// read, or decoded.
+    pub fn lookup_node_trace(
+        &self,
+        key: PersistNodeMetadataKey,
+    ) -> Result<Option<PersistNodeTracePayload>, PersistNodeTraceLogError> {
+        self.node_trace_log.lookup(key)
     }
 
     /// Appends materialization reuse counters for one demand node.

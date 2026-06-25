@@ -1570,6 +1570,295 @@ fn node_trace_input_mode_from_tag(
     }
 }
 
+/// A complete key/payload record in the node trace log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersistNodeTraceLogEntry {
+    key: PersistNodeMetadataKey,
+    payload: PersistNodeTracePayload,
+}
+
+impl PersistNodeTraceLogEntry {
+    /// Creates a node trace log entry.
+    pub fn new(key: PersistNodeMetadataKey, payload: PersistNodeTracePayload) -> Self {
+        Self { key, payload }
+    }
+
+    /// Returns the node metadata key this trace belongs to.
+    pub const fn key(&self) -> PersistNodeMetadataKey {
+        self.key
+    }
+
+    /// Returns the persisted node trace payload.
+    pub const fn payload(&self) -> &PersistNodeTracePayload {
+        &self.payload
+    }
+
+    /// Consumes the entry and returns its persisted node trace payload.
+    pub fn into_payload(self) -> PersistNodeTracePayload {
+        self.payload
+    }
+}
+
+/// An append-only log for persisted node verifying traces.
+///
+/// This is a simple durable substrate for the future `nodes/` table. Each
+/// record stores a [`PersistNodeMetadataKey`] plus a variable-length
+/// [`PersistNodeTracePayload`]. Lookups scan linearly and return the newest
+/// matching trace for the requested node key.
+#[derive(Clone, Debug)]
+pub struct PersistNodeTraceLog {
+    path: PathBuf,
+}
+
+impl PersistNodeTraceLog {
+    /// Opens or initializes a node trace log file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTraceLogError`] if parent directories or the log
+    /// file cannot be created/opened, or if an existing log contains malformed
+    /// variable-length records.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistNodeTraceLogError> {
+        let path = path.into();
+        ensure_node_trace_log_file(&path)?;
+        Ok(Self { path })
+    }
+
+    /// Returns this log file's filesystem path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Appends one node trace entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTraceLogError`] if the log cannot be opened,
+    /// validated, written, or flushed, or if the payload cannot be encoded.
+    pub fn append_entry(
+        &self,
+        entry: PersistNodeTraceLogEntry,
+    ) -> Result<(), PersistNodeTraceLogError> {
+        self.append_trace(entry.key, &entry.payload)
+    }
+
+    /// Appends one node trace payload for `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTraceLogError`] if the log cannot be opened,
+    /// validated, written, or flushed, or if the payload cannot be encoded.
+    pub fn append_trace(
+        &self,
+        key: PersistNodeMetadataKey,
+        payload: &PersistNodeTracePayload,
+    ) -> Result<(), PersistNodeTraceLogError> {
+        ensure_node_trace_log_file(&self.path)?;
+        let payload_bytes = payload
+            .encode()
+            .map_err(|source| PersistNodeTraceLogError::Encode { source })?;
+        let payload_len = u64::try_from(payload_bytes.len()).map_err(|_| {
+            PersistNodeTraceLogError::PayloadTooLarge {
+                len: payload_bytes.len(),
+            }
+        })?;
+        let record_len = PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN
+            .checked_add(payload_bytes.len())
+            .ok_or(PersistNodeTraceLogError::PayloadTooLarge {
+                len: payload_bytes.len(),
+            })?;
+        let mut record = Vec::new();
+        record
+            .try_reserve_exact(record_len)
+            .map_err(|_| PersistNodeTraceLogError::RecordAllocationFailed { len: record_len })?;
+        record.extend_from_slice(&encode_node_trace_log_record_header(key, payload_len));
+        record.extend_from_slice(&payload_bytes);
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| PersistNodeTraceLogError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        file.write_all(&record)
+            .and_then(|()| file.flush())
+            .map_err(|source| PersistNodeTraceLogError::Write {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
+    /// Looks up the newest trace payload recorded for `key`.
+    ///
+    /// Missing trace records return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTraceLogError`] if the log cannot be opened, read,
+    /// or decoded.
+    pub fn lookup(
+        &self,
+        key: PersistNodeMetadataKey,
+    ) -> Result<Option<PersistNodeTracePayload>, PersistNodeTraceLogError> {
+        ensure_node_trace_log_file(&self.path)?;
+        let mut found = None;
+        scan_node_trace_log_entries(&self.path, |entry| {
+            if entry.key() == key {
+                found = Some(entry.into_payload());
+            }
+            Ok(())
+        })?;
+        Ok(found)
+    }
+}
+
+fn encode_node_trace_log_record_header(
+    key: PersistNodeMetadataKey,
+    payload_len: u64,
+) -> [u8; PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN] {
+    let mut bytes = [0; PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN];
+    bytes[..PERSIST_NODE_METADATA_INDEX_KEY_LEN].copy_from_slice(&key.index_bytes());
+    bytes[PERSIST_NODE_METADATA_INDEX_KEY_LEN..].copy_from_slice(&payload_len.to_le_bytes());
+    bytes
+}
+
+fn ensure_node_trace_log_file(path: &Path) -> Result<(), PersistNodeTraceLogError> {
+    ensure_node_trace_log_parent(path)?;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)
+        .map_err(|source| PersistNodeTraceLogError::Open {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    scan_node_trace_log_entries(path, |_| Ok(()))
+}
+
+fn ensure_node_trace_log_parent(path: &Path) -> Result<(), PersistNodeTraceLogError> {
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return Ok(());
+    };
+    fs::create_dir_all(parent).map_err(|source| PersistNodeTraceLogError::CreateParent {
+        path: parent.to_path_buf(),
+        source,
+    })
+}
+
+fn scan_node_trace_log_entries<F>(path: &Path, mut visit: F) -> Result<(), PersistNodeTraceLogError>
+where
+    F: FnMut(PersistNodeTraceLogEntry) -> Result<(), PersistNodeTraceLogError>,
+{
+    let mut file = OpenOptions::new().read(true).open(path).map_err(|source| {
+        PersistNodeTraceLogError::Open {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    let len = file
+        .metadata()
+        .map_err(|source| PersistNodeTraceLogError::Metadata {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    let mut offset = 0;
+    while offset < len {
+        let remaining = len - offset;
+        if remaining < PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN as u64 {
+            return Err(node_trace_log_format_error(
+                path,
+                PersistNodeTraceLogFormatError::ShortRecordHeader {
+                    expected: PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN as u64,
+                    actual: remaining,
+                },
+            ));
+        }
+
+        let mut header = [0; PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN];
+        file.read_exact(&mut header)
+            .map_err(|source| PersistNodeTraceLogError::Read {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let key = PersistNodeMetadataKey::decode_index_bytes(
+            &header[..PERSIST_NODE_METADATA_INDEX_KEY_LEN],
+        )
+        .map_err(|source| {
+            node_trace_log_format_error(path, PersistNodeTraceLogFormatError::Key { source })
+        })?;
+        let payload_len = read_u64(&header[PERSIST_NODE_METADATA_INDEX_KEY_LEN..]);
+        let payload_start = offset
+            .checked_add(PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN as u64)
+            .ok_or_else(|| {
+                node_trace_log_format_error(
+                    path,
+                    PersistNodeTraceLogFormatError::RecordBoundsOverflow {
+                        record_offset: offset,
+                        payload_len,
+                    },
+                )
+            })?;
+        let payload_end = payload_start.checked_add(payload_len).ok_or_else(|| {
+            node_trace_log_format_error(
+                path,
+                PersistNodeTraceLogFormatError::RecordBoundsOverflow {
+                    record_offset: offset,
+                    payload_len,
+                },
+            )
+        })?;
+        if payload_end > len {
+            return Err(node_trace_log_format_error(
+                path,
+                PersistNodeTraceLogFormatError::ShortRecordPayload {
+                    expected: payload_end,
+                    actual: len,
+                },
+            ));
+        }
+
+        let payload_len_usize = usize::try_from(payload_len).map_err(|_| {
+            node_trace_log_format_error(
+                path,
+                PersistNodeTraceLogFormatError::PayloadLengthOverflow { len: payload_len },
+            )
+        })?;
+        let mut payload_bytes = Vec::new();
+        payload_bytes
+            .try_reserve_exact(payload_len_usize)
+            .map_err(|_| PersistNodeTraceLogError::PayloadAllocationFailed {
+                len: payload_len_usize,
+            })?;
+        payload_bytes.resize(payload_len_usize, 0);
+        file.read_exact(&mut payload_bytes)
+            .map_err(|source| PersistNodeTraceLogError::Read {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let payload = PersistNodeTracePayload::decode(&payload_bytes).map_err(|source| {
+            node_trace_log_format_error(path, PersistNodeTraceLogFormatError::Payload { source })
+        })?;
+        visit(PersistNodeTraceLogEntry::new(key, payload))?;
+        offset = payload_end;
+    }
+    Ok(())
+}
+
+fn node_trace_log_format_error(
+    path: &Path,
+    source: PersistNodeTraceLogFormatError,
+) -> PersistNodeTraceLogError {
+    PersistNodeTraceLogError::Format {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
 /// A fixed-record index file for durable demand-node metadata.
 ///
 /// This is a simple durable substrate for tests and future cache integration.

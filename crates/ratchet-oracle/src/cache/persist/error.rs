@@ -298,6 +298,132 @@ pub enum PersistNodeTracePayloadError {
     },
 }
 
+/// Node trace log bytes had an invalid on-disk shape.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum PersistNodeTraceLogFormatError {
+    /// A trace log record was shorter than the fixed header length.
+    #[error("persistent node trace log record has {actual} bytes, expected at least {expected}")]
+    ShortRecordHeader {
+        /// The required fixed record header length.
+        expected: u64,
+        /// The available bytes.
+        actual: u64,
+    },
+    /// A trace log record payload length cannot fit in the local address space.
+    #[error("persistent node trace log payload length {len} does not fit in usize")]
+    PayloadLengthOverflow {
+        /// The decoded payload length.
+        len: u64,
+    },
+    /// A trace log record range cannot be represented.
+    #[error(
+        "persistent node trace log record at offset {record_offset} with payload length {payload_len} overflows"
+    )]
+    RecordBoundsOverflow {
+        /// The record offset.
+        record_offset: u64,
+        /// The decoded payload length.
+        payload_len: u64,
+    },
+    /// A trace log record payload was shorter than its declared length.
+    #[error("persistent node trace log payload ends at {expected}, past log length {actual}")]
+    ShortRecordPayload {
+        /// The byte offset one past the declared payload.
+        expected: u64,
+        /// The current log length.
+        actual: u64,
+    },
+    /// A trace log record key could not be decoded.
+    #[error("failed to decode persistent node trace log key")]
+    Key {
+        /// The underlying key format error.
+        source: PersistPackFormatError,
+    },
+    /// A trace log record payload could not be decoded.
+    #[error("failed to decode persistent node trace log payload")]
+    Payload {
+        /// The underlying payload format error.
+        source: PersistNodeTracePayloadError,
+    },
+}
+
+/// Variable-length node trace log IO failed.
+#[derive(Debug, Error)]
+pub enum PersistNodeTraceLogError {
+    /// The log parent directory could not be created.
+    #[error("failed to create persistent node trace log parent {path:?}")]
+    CreateParent {
+        /// The parent directory path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The log file could not be opened.
+    #[error("failed to open persistent node trace log {path:?}")]
+    Open {
+        /// The log file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// Log file metadata could not be read.
+    #[error("failed to read persistent node trace log metadata {path:?}")]
+    Metadata {
+        /// The log file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The log file could not be read.
+    #[error("failed to read persistent node trace log {path:?}")]
+    Read {
+        /// The log file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The log file could not be written.
+    #[error("failed to write persistent node trace log {path:?}")]
+    Write {
+        /// The log file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// A node trace payload could not be encoded for appending.
+    #[error("failed to encode persistent node trace log payload")]
+    Encode {
+        /// The underlying payload encoding error.
+        source: PersistNodeTracePayloadError,
+    },
+    /// A node trace payload length is too large for the log record format.
+    #[error("persistent node trace log payload length {len} is too large")]
+    PayloadTooLarge {
+        /// The oversized payload length.
+        len: usize,
+    },
+    /// A node trace log record could not reserve contiguous output storage.
+    #[error("failed to reserve persistent node trace log record with {len} bytes")]
+    RecordAllocationFailed {
+        /// The requested encoded record byte length.
+        len: usize,
+    },
+    /// A node trace payload could not reserve storage while reading.
+    #[error("failed to reserve persistent node trace log payload with {len} bytes")]
+    PayloadAllocationFailed {
+        /// The requested payload byte length.
+        len: usize,
+    },
+    /// The log file has malformed variable-length record bytes.
+    #[error("persistent node trace log {path:?} has invalid format: {source}")]
+    Format {
+        /// The log file path.
+        path: PathBuf,
+        /// The format error.
+        source: PersistNodeTraceLogFormatError,
+    },
+}
+
 /// Fixed-record blob index file IO failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexError {
@@ -1152,5 +1278,13 @@ pub enum PersistError {
         path: PathBuf,
         /// The underlying index error.
         source: PersistNodeMetadataIndexError,
+    },
+    /// The demand-node trace log file could not be initialized.
+    #[error("failed to initialize persistent node trace log {path}")]
+    OpenNodeTraceLog {
+        /// The node trace log file path.
+        path: PathBuf,
+        /// The underlying log error.
+        source: PersistNodeTraceLogError,
     },
 }

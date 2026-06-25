@@ -2,8 +2,22 @@
 
 use super::*;
 use crate::cache::cutoff::CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION;
-use crate::cache::{CachedExpressionValue, CachedExpressionValuePayloadError, ValueHash};
+use crate::cache::{
+    CacheableInputFingerprint, CachedExpressionValue, CachedExpressionValuePayloadError,
+    ImpureInputKind, ValueHash,
+};
 use crate::value::Value;
+
+fn test_node_trace_payload(subject: &[u8], hash_byte: u8) -> PersistNodeTracePayload {
+    let input = CacheableInputFingerprint::from_observation_hash(
+        ImpureInputKind::ReadFile,
+        ImpureInputMode::Default,
+        subject,
+        DurableBlake3Hash::from_bytes([hash_byte; 32]),
+    )
+    .expect("persisted readFile input builds");
+    PersistNodeTracePayload::from_cacheable_inputs([input]).expect("trace payload builds")
+}
 
 fn noncanonical_context_string_payload() -> Vec<u8> {
     let mut encoded = Vec::new();
@@ -269,6 +283,58 @@ fn cache_node_metadata_index_records_and_looks_up_entries() {
             .expect("node metadata index metadata")
             .len(),
         PERSIST_NODE_METADATA_INDEX_ENTRY_LEN as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_node_trace_log_records_and_looks_up_payloads() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let other_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let first = test_node_trace_payload(b"/src/first", 1);
+    let latest = test_node_trace_payload(b"/src/latest", 2);
+
+    assert_eq!(
+        cache.node_trace_log().path(),
+        cache.layout().node_trace_log_path().as_path()
+    );
+    assert_eq!(
+        cache
+            .lookup_node_trace(key)
+            .expect("empty trace lookup succeeds"),
+        None
+    );
+
+    cache
+        .record_node_trace(key, &first)
+        .expect("first node trace records");
+    cache
+        .record_node_trace(key, &latest)
+        .expect("latest node trace records");
+
+    assert_eq!(
+        cache
+            .lookup_node_trace(key)
+            .expect("node trace lookup succeeds"),
+        Some(latest.clone())
+    );
+    assert_eq!(
+        cache
+            .lookup_node_trace(other_key)
+            .expect("node trace miss succeeds"),
+        None
+    );
+    assert_eq!(
+        fs::metadata(cache.node_trace_log().path())
+            .expect("node trace log metadata")
+            .len(),
+        (PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN * 2) as u64
+            + first.encode().expect("first payload encodes").len() as u64
+            + latest.encode().expect("latest payload encodes").len() as u64
     );
 
     let _ = fs::remove_dir_all(root);

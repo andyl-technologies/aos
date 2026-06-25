@@ -7,6 +7,17 @@ use crate::cache::{
     InputFingerprintError,
 };
 
+fn test_node_trace_payload(subject: &[u8], hash_byte: u8) -> PersistNodeTracePayload {
+    let input = CacheableInputFingerprint::from_observation_hash(
+        ImpureInputKind::ReadFile,
+        ImpureInputMode::Default,
+        subject,
+        DurableBlake3Hash::from_bytes([hash_byte; 32]),
+    )
+    .expect("persisted readFile input builds");
+    PersistNodeTracePayload::from_cacheable_inputs([input]).expect("trace payload builds")
+}
+
 #[test]
 fn blob_packfile_paths_are_store_separated() {
     let layout = PersistLayout::new(temp_root());
@@ -62,6 +73,10 @@ fn blob_index_paths_are_store_separated() {
         layout.node_metadata_index_path(),
         layout.nodes_dir().join("metadata.index")
     );
+    assert_eq!(
+        layout.node_trace_log_path(),
+        layout.nodes_dir().join("traces.log")
+    );
     assert_ne!(layout.value_index_path(), layout.file_index_path());
     assert_ne!(layout.file_artifact_index_path(), layout.file_index_path());
     assert_ne!(
@@ -71,6 +86,10 @@ fn blob_index_paths_are_store_separated() {
     assert_ne!(
         layout.node_metadata_index_path(),
         layout.parse_artifact_index_path()
+    );
+    assert_ne!(
+        layout.node_trace_log_path(),
+        layout.node_metadata_index_path()
     );
 }
 
@@ -1179,6 +1198,134 @@ fn node_trace_payload_rejects_malformed_input_records() {
             remaining: b"trailing".len(),
         }
     );
+}
+
+#[test]
+fn node_trace_log_appends_and_finds_latest_matching_entry() {
+    let root = temp_root();
+    let log_path = root.join("nodes").join("traces.log");
+    let log = PersistNodeTraceLog::open(&log_path).expect("trace log opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let other_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let first = test_node_trace_payload(b"/src/first", 1);
+    let other = test_node_trace_payload(b"/src/other", 2);
+    let latest = test_node_trace_payload(b"/src/latest", 3);
+
+    assert_eq!(log.path(), log_path.as_path());
+    assert_eq!(log.lookup(key).expect("empty lookup succeeds"), None);
+
+    log.append_trace(key, &first).expect("first trace appends");
+    log.append_entry(PersistNodeTraceLogEntry::new(other_key, other.clone()))
+        .expect("other trace appends");
+    log.append_trace(key, &latest)
+        .expect("latest trace appends");
+
+    let first_payload = first.encode().expect("first payload encodes");
+    let other_payload = other.encode().expect("other payload encodes");
+    let latest_payload = latest.encode().expect("latest payload encodes");
+    let log_bytes = fs::read(log.path()).expect("trace log reads");
+    let mut expected_first_record = Vec::new();
+    expected_first_record.extend_from_slice(&key.index_bytes());
+    expected_first_record.extend_from_slice(&(first_payload.len() as u64).to_le_bytes());
+    expected_first_record.extend_from_slice(&first_payload);
+
+    assert!(log_bytes.starts_with(&expected_first_record));
+    assert_eq!(
+        log.lookup(key).expect("key lookup succeeds"),
+        Some(latest.clone())
+    );
+    assert_eq!(
+        log.lookup(other_key).expect("other lookup succeeds"),
+        Some(other.clone())
+    );
+    assert_eq!(
+        fs::metadata(log.path()).expect("trace log metadata").len(),
+        (PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN * 3) as u64
+            + first_payload.len() as u64
+            + other_payload.len() as u64
+            + latest_payload.len() as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn node_trace_log_open_rejects_truncated_record_header() {
+    let root = temp_root();
+    let log_path = root.join("nodes").join("traces.log");
+    fs::create_dir_all(log_path.parent().expect("log parent")).expect("parent creates");
+    fs::write(&log_path, b"partial").expect("partial log writes");
+
+    let error = PersistNodeTraceLog::open(&log_path).expect_err("truncated log errors");
+
+    assert!(matches!(
+        error,
+        PersistNodeTraceLogError::Format {
+            source: PersistNodeTraceLogFormatError::ShortRecordHeader {
+                expected,
+                actual,
+            },
+            ..
+        } if expected == PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN as u64 && actual == 7
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn node_trace_log_open_rejects_truncated_record_payload() {
+    let root = temp_root();
+    let log_path = root.join("nodes").join("traces.log");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&key.index_bytes());
+    encoded.extend_from_slice(&999u64.to_le_bytes());
+    encoded.extend_from_slice(b"short");
+    fs::create_dir_all(log_path.parent().expect("log parent")).expect("parent creates");
+    fs::write(&log_path, encoded).expect("truncated log writes");
+
+    let error = PersistNodeTraceLog::open(&log_path).expect_err("truncated payload errors");
+
+    assert!(matches!(
+        error,
+        PersistNodeTraceLogError::Format {
+            source: PersistNodeTraceLogFormatError::ShortRecordPayload {
+                expected,
+                actual,
+            },
+            ..
+        } if expected == PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN as u64 + 999
+            && actual == PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN as u64 + 5
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn node_trace_log_open_rejects_malformed_record_payload() {
+    let root = temp_root();
+    let log_path = root.join("nodes").join("traces.log");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let payload = b"not-a-node-trace-payload-with-enough-bytes";
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&key.index_bytes());
+    encoded.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    encoded.extend_from_slice(payload);
+    fs::create_dir_all(log_path.parent().expect("log parent")).expect("parent creates");
+    fs::write(&log_path, encoded).expect("malformed log writes");
+
+    let error = PersistNodeTraceLog::open(&log_path).expect_err("malformed payload errors");
+
+    assert!(matches!(
+        error,
+        PersistNodeTraceLogError::Format {
+            source: PersistNodeTraceLogFormatError::Payload { .. },
+            ..
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

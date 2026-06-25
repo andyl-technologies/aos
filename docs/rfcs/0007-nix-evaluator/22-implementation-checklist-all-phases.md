@@ -1085,11 +1085,23 @@ alone (`M-1`/`Q-A`).
       persisted fingerprints without re-reading the host. The codec preserves
       trace order, rejects uncacheable `currentTime`, impossible kind/mode
       pairs, malformed tags, truncated payloads, and trailing bytes, and
-      exposes stable payload constants for future sidecars. This is
-      payload-format substrate only; `nodes/` trace sidecar storage, evaluator
-      durable hit selection, revalidation, currentTime taint propagation
-      through persisted dependents, mmap reads, GC/repack, and cached/uncached
-      harness proof remain open
+      exposes stable payload constants for node-trace sidecars. This is
+      payload-format substrate only; cache-level sidecar storage is covered
+      below, while evaluator durable hit selection, revalidation, currentTime
+      taint propagation through persisted dependents, mmap reads, GC/repack,
+      and cached/uncached harness proof remain open
+      (`C-13`/`R-10`/`S-14`).
+- [x] Current node verifying-trace sidecar substrate:
+      `PersistLayout::node_trace_log_path` adds `nodes/traces.log`;
+      `PersistNodeTraceLog` appends variable-length records keyed by
+      `PersistNodeMetadataKey`, validates existing log records on open, and
+      returns the newest payload for a node key through linear lookup.
+      `PersistCache::record_node_trace` and `lookup_node_trace` expose the
+      sidecar through the opened cache root. This is a simple append-only log
+      only; LMDB/redb node tables, transactionality with node metadata or value
+      blobs, automatic evaluator writeback, durable hit selection, revalidation,
+      currentTime taint propagation through persisted dependents, automatic
+      compaction/GC, mmap reads, and cached/uncached harness proof remain open
       (`C-13`/`R-10`/`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact

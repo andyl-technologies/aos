@@ -71,6 +71,11 @@ impl PersistLayout {
         self.nodes_dir().join("metadata.index")
     }
 
+    /// Returns the append-only node verifying-trace log path.
+    pub fn node_trace_log_path(&self) -> PathBuf {
+        self.nodes_dir().join("traces.log")
+    }
+
     /// Returns the append-only packfile path for serialized value blobs.
     pub fn value_packfile_path(&self) -> PathBuf {
         self.blob_packfile_path(PersistBlobStore::Values)
