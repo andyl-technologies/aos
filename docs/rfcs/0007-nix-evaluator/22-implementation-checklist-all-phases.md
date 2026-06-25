@@ -1137,6 +1137,22 @@ alone (`M-1`/`Q-A`).
       propagation through persisted dependents, automatic compaction/GC, mmap
       reads, and cached/uncached harness proof remain open
       (`C-13`/`R-10`/`S-14`).
+- [x] Current force-cache durable hit selection:
+      tree-walk forced-expression lookup now tries the trace-verified
+      persistent node-value load after an in-memory force-cache miss, rehydrates
+      replayable payloads into the current evaluator heap, records fresh
+      revalidated impure inputs into the enclosing evaluation trace, records
+      current-run persistent demand, and counts the result as a cache hit.
+      Missing/stale traces, value-hash mismatches, unavailable persistent
+      roots, persistent read errors, stale impure observations, missing value
+      blobs, and unsupported payload rehydration all fall back to ordinary
+      forcing. This is trace-backed forced-expression hit selection only:
+      in-memory demand-graph insertion, dirty propagation beyond revalidation
+      miss fallback, pure no-trace persistent hits, context-bearing paths or
+      composite values, trace tombstones, transactionality with value
+      materialization, currentTime taint propagation through persisted
+      dependents, automatic compaction/GC, mmap reads, and cached/uncached
+      harness proof remain open (`C-13`/`R-10`/`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips

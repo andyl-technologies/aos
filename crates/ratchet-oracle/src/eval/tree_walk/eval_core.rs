@@ -741,6 +741,9 @@ impl TreeWalk {
             Ok(None) => {
                 drop(revalidator);
                 drop(cache);
+                if let Some(value) = self.lookup_persist_forced_expression_result(&subject) {
+                    return Some(value);
+                }
                 self.increment_eval_cache_miss();
                 None
             }
@@ -754,6 +757,47 @@ impl TreeWalk {
                 None
             }
         }
+    }
+
+    fn lookup_persist_forced_expression_result(
+        &mut self,
+        subject: &ForceCacheSubject,
+    ) -> Option<Value> {
+        if !self.options.eval_cache_enabled() {
+            return None;
+        }
+        let Some(identity) = subject.metadata_identity else {
+            return None;
+        };
+        self.open_persist_eval_cache();
+        let persist_cache = self.persist_cache.as_ref()?;
+        let key = PersistNodeMetadataKey::for_expression(
+            identity,
+            subject.free_var_value_hashes.iter().copied(),
+        );
+        let mut revalidator = TreeWalkImpureInputRevalidator::new(&self.options);
+        let payload = match persist_cache
+            .load_cached_expression_node_value_with_trace_revalidation(key, &mut revalidator)
+        {
+            Ok(Some(payload)) => payload,
+            Ok(None) => return None,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent forced expression lookup failed"
+                );
+                return None;
+            }
+        };
+        let trace = revalidator.into_revalidated_trace();
+        let value = self.value_for_cached_expression_payload(payload)?;
+        for fingerprint in trace {
+            self.record_impure_input(fingerprint);
+        }
+        self.record_forced_expression_demand(subject);
+        self.increment_eval_cache_hit();
+        Some(value)
     }
 
     fn value_for_cached_expression_payload(
