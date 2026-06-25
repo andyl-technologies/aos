@@ -2688,7 +2688,265 @@ fn effectful_descendant_forced_inline_thunks_record_impure_edges() {
 }
 
 #[test]
-fn ambient_builtin_constants_wait_for_impure_input_edges() {
+fn ambient_current_system_forced_inline_thunks_hit_with_matching_option_salt() {
+    let source = "{ a = builtins.currentSystem; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options.clone(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut first, &ir, a);
+    assert_eq!(
+        first
+            .heap()
+            .get_string(forced)
+            .expect("currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut second =
+        TreeWalk::with_options_and_source_and_eval_cache(&ir, options, "expr.nix", source, cache);
+    let forced = force_attr_a(&mut second, &ir, a);
+    assert_eq!(
+        second
+            .heap()
+            .get_string(forced)
+            .expect("cached currentSystem result rehydrates")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "matching currentSystem option salt should permit a string payload hit"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+}
+
+#[test]
+fn ambient_current_system_forced_inline_thunks_include_current_system_in_cache_identity() {
+    let source = "{ a = builtins.currentSystem; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (system, expected) in [
+        (b"x86_64-linux".as_slice(), b"x86_64-linux".as_slice()),
+        (b"aarch64-linux".as_slice(), b"aarch64-linux".as_slice()),
+    ] {
+        let options =
+            TreeWalkOptions::with_current_system(system.to_vec()).expect("currentSystem is valid");
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "expr.nix",
+            source,
+            cache.clone(),
+        );
+        let forced = force_attr_a(&mut evaluator, &ir, a);
+        assert_eq!(
+            evaluator
+                .heap()
+                .get_string(forced)
+                .expect("currentSystem result is a string")
+                .bytes(),
+            expected
+        );
+        assert_eq!(
+            evaluator.stats().cache_hits(),
+            0,
+            "different currentSystem values must not share one payload"
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "different currentSystem values should allocate separate expression nodes"
+    );
+}
+
+#[test]
+fn ambient_store_dir_forced_inline_thunks_hit_and_miss_by_store_dir_salt() {
+    let root = unique_temp_dir("force-cache-ambient-store-dir");
+    let first_store = root.join("store-a");
+    let second_store = root.join("store-b");
+    let source = "{ a = builtins.storeDir; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .set_store_dir(path_bytes(&first_store))
+        .expect("store dir is absolute");
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options.clone(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut first, &ir, a);
+    assert_eq!(
+        first
+            .heap()
+            .get_string(forced)
+            .expect("storeDir result is a string")
+            .bytes(),
+        path_bytes(&first_store).as_slice()
+    );
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut second, &ir, a);
+    assert_eq!(
+        second
+            .heap()
+            .get_string(forced)
+            .expect("cached storeDir result rehydrates")
+            .bytes(),
+        path_bytes(&first_store).as_slice()
+    );
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "matching storeDir option salt should permit a string payload hit"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_store_dir(path_bytes(&second_store))
+        .expect("store dir is absolute");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut changed, &ir, a);
+    assert_eq!(
+        changed
+            .heap()
+            .get_string(forced)
+            .expect("changed storeDir result is a string")
+            .bytes(),
+        path_bytes(&second_store).as_slice()
+    );
+    assert_eq!(
+        changed.stats().cache_hits(),
+        0,
+        "different storeDir values must not share one payload"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "different storeDir values should allocate separate expression nodes"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_less_current_system_thunks_hit_with_matching_option_salt() {
+    let source = "{ a = builtins.currentSystem; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+
+    let mut first = TreeWalk::with_options_and_eval_cache(&ir, options.clone(), cache.clone());
+    let forced = force_attr_a(&mut first, &ir, a);
+    assert_eq!(
+        first
+            .heap()
+            .get_string(forced)
+            .expect("currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut second = TreeWalk::with_options_and_eval_cache(&ir, options, cache);
+    let forced = force_attr_a(&mut second, &ir, a);
+    assert_eq!(
+        second
+            .heap()
+            .get_string(forced)
+            .expect("cached source-less currentSystem result rehydrates")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "matching source-less currentSystem option salt should permit a string payload hit"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+}
+
+#[test]
+fn source_less_current_system_thunks_include_current_system_in_cache_identity() {
+    let source = "{ a = builtins.currentSystem; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (system, expected) in [
+        (b"x86_64-linux".as_slice(), b"x86_64-linux".as_slice()),
+        (b"aarch64-linux".as_slice(), b"aarch64-linux".as_slice()),
+    ] {
+        let options =
+            TreeWalkOptions::with_current_system(system.to_vec()).expect("currentSystem is valid");
+        let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache.clone());
+        let forced = force_attr_a(&mut evaluator, &ir, a);
+        assert_eq!(
+            evaluator
+                .heap()
+                .get_string(forced)
+                .expect("currentSystem result is a string")
+                .bytes(),
+            expected
+        );
+        assert_eq!(
+            evaluator.stats().cache_hits(),
+            0,
+            "different source-less currentSystem values must not share one payload"
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "different source-less currentSystem values should allocate separate expression nodes"
+    );
+}
+
+#[test]
+fn ambient_current_time_forced_inline_thunks_record_uncacheable_trace_without_payload() {
     let source = "{ a = builtins.currentTime; }";
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
@@ -2714,10 +2972,36 @@ fn ambient_builtin_constants_wait_for_impure_input_edges() {
         .expect("thunk force succeeds");
 
     assert_eq!(forced.as_int(), Ok(1_700_000_000));
+    assert_eq!(
+        evaluator.impure_input_trace(),
+        [ImpureInputFingerprint::current_time()].as_slice()
+    );
     let runtime = cache.lock().expect("cache lock is valid");
     assert!(
         runtime.cache().expect("cache is enabled").is_empty(),
-        "ambient builtin constants need impure-input dependency edges before memoization"
+        "currentTime remains uncacheable even when the force body is observed"
+    );
+}
+
+#[test]
+fn source_less_current_time_thunks_record_uncacheable_trace_without_payload() {
+    let source = "{ a = builtins.currentTime; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let options = TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
+    let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache.clone());
+    let forced = force_attr_a(&mut evaluator, &ir, a);
+
+    assert_eq!(forced.as_int(), Ok(1_700_000_000));
+    assert_eq!(
+        evaluator.impure_input_trace(),
+        [ImpureInputFingerprint::current_time()].as_slice()
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "source-less currentTime remains uncacheable even when the force body is observed"
     );
 }
 

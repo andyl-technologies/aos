@@ -487,6 +487,8 @@ struct TreeWalkModule {
 struct ForceCacheOptionsIdentity {
     store_dir: Vec<u8>,
     home_dir: Option<Vec<u8>>,
+    current_system: Option<Vec<u8>>,
+    current_time: Option<i64>,
     eval_mode: EvalMode,
 }
 

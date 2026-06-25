@@ -10,6 +10,8 @@ impl ForceCacheOptionsIdentity {
         Self {
             store_dir: options.store_dir().to_vec(),
             home_dir: options.home_dir().map(<[u8]>::to_vec),
+            current_system: options.current_system().map(<[u8]>::to_vec),
+            current_time: options.current_time(),
             eval_mode: options.eval_mode(),
         }
     }
@@ -25,6 +27,24 @@ impl ForceCacheOptionsIdentity {
             }
             None => {
                 hasher.update(b"no-home-dir");
+            }
+        }
+        match &self.current_system {
+            Some(current_system) => {
+                hasher.update(b"current-system");
+                TreeWalk::update_cache_identity_chunk(hasher, current_system)?;
+            }
+            None => {
+                hasher.update(b"no-current-system");
+            }
+        }
+        match self.current_time {
+            Some(current_time) => {
+                hasher.update(b"current-time");
+                hasher.update(&current_time.to_le_bytes());
+            }
+            None => {
+                hasher.update(b"no-current-time");
             }
         }
         hasher.update(b"eval-mode");
@@ -744,7 +764,7 @@ impl TreeWalk {
             if !node.effect.is_speculable() {
                 return false;
             }
-            if !Self::node_kind_is_force_cache_safe(node.kind) {
+            if !Self::node_is_force_cache_lookup_safe(ir, node) {
                 return false;
             }
             if !Self::push_ir_children(ir, node, &mut stack) {
@@ -779,6 +799,13 @@ impl TreeWalk {
         )
     }
 
+    fn node_is_force_cache_lookup_safe(ir: &Ir, node: &IrNode) -> bool {
+        if node.kind == IrKind::BuiltinAttr {
+            return Self::builtin_attr_is_force_cache_lookup_safe(ir, node);
+        }
+        Self::node_kind_is_force_cache_safe(node.kind)
+    }
+
     fn subtree_is_force_observation_safe(ir: &Ir, root: IrId) -> bool {
         let mut visited = BTreeSet::new();
         let mut stack = vec![root];
@@ -800,6 +827,9 @@ impl TreeWalk {
     }
 
     fn node_is_force_observation_safe(ir: &Ir, node: &IrNode) -> bool {
+        if node.kind == IrKind::BuiltinAttr {
+            return Self::builtin_attr_is_force_cache_observation_safe(ir, node);
+        }
         if node.effect.is_speculable() {
             return Self::node_kind_is_force_observation_safe(node.kind);
         }
@@ -808,6 +838,37 @@ impl TreeWalk {
 
     fn node_kind_is_force_observation_safe(kind: IrKind) -> bool {
         Self::node_kind_is_force_cache_safe(kind)
+    }
+
+    fn builtin_attr_execution(ir: &Ir, node: &IrNode) -> Option<BuiltinExecution> {
+        let IrData::Symbol(symbol) = node.data else {
+            return None;
+        };
+        let builtin = lookup_builtin_by_symbol(&ir.symbols, symbol)?;
+        Some(builtin.execution())
+    }
+
+    fn builtin_attr_is_force_cache_lookup_safe(ir: &Ir, node: &IrNode) -> bool {
+        matches!(
+            Self::builtin_attr_execution(ir, node),
+            Some(
+                BuiltinExecution::TrueValue
+                    | BuiltinExecution::FalseValue
+                    | BuiltinExecution::NullValue
+                    | BuiltinExecution::CurrentSystemValue
+                    | BuiltinExecution::StoreDirValue
+                    | BuiltinExecution::NixVersionValue
+                    | BuiltinExecution::LangVersionValue,
+            )
+        )
+    }
+
+    fn builtin_attr_is_force_cache_observation_safe(ir: &Ir, node: &IrNode) -> bool {
+        Self::builtin_attr_is_force_cache_lookup_safe(ir, node)
+            || matches!(
+                Self::builtin_attr_execution(ir, node),
+                Some(BuiltinExecution::CurrentTimeValue)
+            )
     }
 
     fn primop_has_cacheable_impure_input_trace(ir: &Ir, node: &IrNode) -> bool {

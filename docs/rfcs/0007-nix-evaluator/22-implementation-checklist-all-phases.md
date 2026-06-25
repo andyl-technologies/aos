@@ -474,7 +474,7 @@ alone (`M-1`/`Q-A`).
       decision. This is
       observation/reconsideration only: source-less raw eval outside the
       lowered-IR-backed node-thunk subset, captured dynamic/scoped-global
-      thunks, ambient builtin constants,
+      thunks, ambient builtin values outside the admitted constant subset,
       search-path/global/builtin/primop/application/dialect nodes pending
       explicit option and impure-input keys, synthetic apply/select/builtin-attr
       thunks, canonical free-variable hashes, general memo lookup,
@@ -494,7 +494,7 @@ alone (`M-1`/`Q-A`).
       payloads, and stale payloads are misses. This is a scalar/string/context-free path
       pure/local hit path only: source-less raw eval outside the
       lowered-IR-backed node-thunk subset, captured dynamic/scoped-global
-      thunks, ambient builtin constants,
+      thunks, ambient builtin values outside the admitted constant subset,
       search-path/global/builtin/primop/application/dialect nodes pending
       explicit option and impure-input keys, synthetic apply/select/builtin-attr
       thunks, canonical free-variable hashes, captured context-bearing strings, context-bearing paths,
@@ -524,7 +524,8 @@ alone (`M-1`/`Q-A`).
       This is edge wiring and payload storage only; source-less raw eval
       outside the lowered-IR-backed node-thunk subset, captured
       dynamic/scoped-global thunks,
-      ambient builtin constants, search-path/global/builtin/
+      ambient builtin values outside the admitted constant subset,
+      search-path/global/builtin/
       application/dialect nodes beyond the traceable primop subset, canonical
       free-variable hashes, typed input-identity retention, force-time input
       revalidation, captured context-bearing strings, context-bearing paths, lists/attrs and other
@@ -555,7 +556,7 @@ alone (`M-1`/`Q-A`).
       lookup remains immediate-value-only. This is in-memory scalar/string/context-free path
       effectful reuse only; source-less raw eval outside the
       lowered-IR-backed node-thunk subset, captured dynamic/scoped-global
-      thunks, ambient builtin constants,
+      thunks, ambient builtin values outside the admitted constant subset,
       search-path/global/builtin/application/dialect nodes beyond the
       traceable primop subset, canonical free-variable hashes, persistent
       input-identity retention, captured context-bearing strings, context-bearing paths, lists/attrs and
@@ -563,31 +564,47 @@ alone (`M-1`/`Q-A`).
       scheduling, persistent graph/value cache integration, `derivationStrict`
       SHA-256 short-circuiting, and cached/uncached harness proof remain open
       (`R-10`/`S-14`).
-- [x] Current force-cache evaluator option identity salt: source-backed force
-      expression identities now hash the module's `store_dir`, `home_dir`, and
-      `eval_mode` alongside source name, source bytes, path-literal base, and
-      IR node id. This prevents the current advisory force cache from sharing
-      inline payloads across evaluator configurations that can change
-      path/context or impurity-policy behavior. It is deliberately conservative
-      and may miss across option changes that do not affect a specific
-      expression; full cache-key integration, canonical free-variable hashes,
-      fine-grained option dependency tracking, persistent keys, and
+- [x] Current force-cache evaluator option identity salt: force expression
+      identities now hash the module's `store_dir`, `home_dir`, configured
+      `current_system`, configured `current_time`, and `eval_mode` alongside
+      source name or lowered-IR fingerprint, path-literal base, and IR node id.
+      This prevents the current advisory force cache from sharing inline
+      payloads across evaluator configurations that can change path/context,
+      ambient builtin constants, or impurity-policy behavior. It is deliberately
+      conservative and may miss across option changes that do not affect a
+      specific expression; full cache-key integration, canonical free-variable
+      hashes, fine-grained option dependency tracking, persistent keys, and
       cached/uncached harness proof remain open (`C-1`/`C-2`/`R-10`).
+- [x] Current ambient builtin constant force-cache substrate: tree-walk admits
+      only symbol-checked `BuiltinAttr` constants for force-cache
+      lookup/observation: immediate true/false/null, `currentSystem`,
+      `storeDir`, `nixVersion`, and `langVersion`; `currentTime` is
+      observation-only and remains uncacheable through its existing impure
+      trace. Matching configured `currentSystem` and `storeDir` thunks can now
+      hit as context-free string payloads, while changed `currentSystem` or
+      `storeDir` options miss through the expanded option identity salt. This
+      deliberately skips the recursive `builtins` attrset, `nixPath`,
+      derivation, first-class primops, broad synthetic builtin-attr thunks,
+      persistence, and cached/uncached harness proof. The gate covers
+      source-backed and source-less currentSystem hit/miss, storeDir hit/miss,
+      and source-backed/source-less currentTime uncacheable-trace force-cache
+      tests (`C-1`/`C-2`/`R-10`).
 - [x] Current source-less lowered-IR force-cache identity substrate:
       `cache::parse::lowered_ir_fingerprint` hashes the stable `ir.bin` and
       `symbols.bin` artifact encodings under the parse-cache schema version,
       and tree-walk uses that digest when a module has no source provenance
-      before applying the same path-literal-base, `store_dir`, `home_dir`, and
-      `eval_mode` salts. This lets caller-owned in-memory cache runtimes share
-      conservative source-less lowered-IR node-thunk payloads without requiring
-      source bytes, while still separating equal-shaped IR whose symbol tables
-      differ and equal source-less expressions under different path bases. It
-      is a source-independent identity substrate only; broader source-less raw
-      eval surfaces, synthetic apply/select/builtin-attr thunks, composite
-      payloads, persistence, fine-grained option dependency tracking, and
-      cached/uncached harness proof remain open. The gate covers lowered-IR
-      fingerprint tests plus source-less hit/miss, source/source-less domain
-      separation, path/store/home/eval-mode salt, readFile revalidation, and
+      before applying the same path-literal-base, `store_dir`, `home_dir`,
+      configured `current_system`, configured `current_time`, and `eval_mode`
+      salts. This lets caller-owned in-memory cache runtimes share conservative
+      source-less lowered-IR node-thunk payloads without requiring source bytes,
+      while still separating equal-shaped IR whose symbol tables differ and
+      equal source-less expressions under different path bases. It is a
+      source-independent identity substrate only; broader source-less raw eval
+      surfaces, synthetic apply/select/builtin-attr thunks, composite payloads,
+      persistence, fine-grained option dependency tracking, and cached/uncached
+      harness proof remain open. The gate covers lowered-IR fingerprint tests
+      plus source-less hit/miss, source/source-less domain separation,
+      path/store/home/current-system/eval-mode salt, readFile revalidation, and
       captured-free-variable tests (`C-1`/`C-2`/`S-14`).
 - [x] Current inline/string/path captured-free-variable force-cache key substrate: tree-walk
       now builds one force-cache subject for each source-backed or
