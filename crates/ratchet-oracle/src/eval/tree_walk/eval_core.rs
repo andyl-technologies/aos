@@ -374,6 +374,7 @@ impl TreeWalk {
         &mut self,
         body: Option<EvalNodeRef>,
         value: Value,
+        trace: ImpureInputTraceSegment,
     ) {
         if !matches!(
             value.tag(),
@@ -385,7 +386,12 @@ impl TreeWalk {
         let Some(body) = body else {
             return;
         };
-        let Some(identity) = self.cache_identity_for_node(body) else {
+        let identity = if trace.is_empty_complete() {
+            self.cache_identity_for_node(body)
+        } else {
+            self.cache_observation_identity_for_node(body)
+        };
+        let Some(identity) = identity else {
             return;
         };
 
@@ -396,16 +402,33 @@ impl TreeWalk {
             );
             return;
         };
-        if let Err(error) = cache.observe_inline_expression_result(
-            identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-            value,
-        ) {
-            tracing::warn!(
-                target: "aos_nix::cache",
-                error = %error,
-                "tree-walk evaluator forced expression observation failed"
-            );
+        let observation = if trace.is_empty_complete() {
+            cache
+                .observe_inline_expression_result(
+                    identity,
+                    std::iter::empty::<DurableBlake3Hash>(),
+                    value,
+                )
+                .map(|_| None)
+        } else {
+            cache
+                .observe_inline_expression_result_with_impure_inputs(
+                    identity,
+                    std::iter::empty::<DurableBlake3Hash>(),
+                    value,
+                    &trace,
+                )
+                .map(Some)
+        };
+        match observation {
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator forced expression observation failed"
+                );
+            }
         }
     }
 
@@ -465,6 +488,17 @@ impl TreeWalk {
         ))
     }
 
+    fn cache_observation_identity_for_node(&self, body: EvalNodeRef) -> Option<CacheExprIdentity> {
+        let module = self.modules.get(body.module().index())?;
+        if !Self::subtree_is_force_observation_safe(&module.ir, body.id()) {
+            return None;
+        }
+        Some(CacheExprIdentity::new(
+            Self::cache_source_identity_hash(module)?,
+            body.id(),
+        ))
+    }
+
     fn subtree_is_speculable(ir: &Ir, root: IrId) -> bool {
         let mut visited = BTreeSet::new();
         let mut stack = vec![root];
@@ -509,6 +543,47 @@ impl TreeWalk {
                 | IrKind::Select
                 | IrKind::HasAttr
                 | IrKind::ThunkAlloc
+        )
+    }
+
+    fn subtree_is_force_observation_safe(ir: &Ir, root: IrId) -> bool {
+        let mut visited = BTreeSet::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id.as_u32()) {
+                continue;
+            }
+            let Some(node) = ir.arena.node(id) else {
+                return false;
+            };
+            if !Self::node_is_force_observation_safe(ir, node) {
+                return false;
+            }
+            if !Self::push_ir_children(ir, node, &mut stack) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn node_is_force_observation_safe(ir: &Ir, node: &IrNode) -> bool {
+        if node.effect.is_speculable() {
+            return Self::node_kind_is_force_observation_safe(node.kind);
+        }
+        node.kind == IrKind::PrimOp && Self::primop_has_cacheable_impure_input_trace(ir, node)
+    }
+
+    fn node_kind_is_force_observation_safe(kind: IrKind) -> bool {
+        Self::node_kind_is_force_cache_safe(kind) || kind == IrKind::Path
+    }
+
+    fn primop_has_cacheable_impure_input_trace(ir: &Ir, node: &IrNode) -> bool {
+        let IrData::PrimOp { symbol, .. } = node.data else {
+            return false;
+        };
+        matches!(
+            ir.symbols.resolve(symbol),
+            Some(b"getEnv" | b"pathExists" | b"readDir" | b"readFile" | b"readFileType")
         )
     }
 

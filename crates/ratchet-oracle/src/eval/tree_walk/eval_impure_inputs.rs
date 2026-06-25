@@ -3,6 +3,35 @@
 use super::*;
 
 impl TreeWalk {
+    pub(super) fn impure_input_trace_cursor(&self) -> ImpureInputTraceCursor {
+        ImpureInputTraceCursor {
+            len: self.impure_input_trace.len(),
+            complete: self.impure_input_trace_complete,
+        }
+    }
+
+    pub(super) fn impure_input_trace_segment(
+        &self,
+        cursor: ImpureInputTraceCursor,
+    ) -> ImpureInputTraceSegment {
+        if !cursor.complete || !self.impure_input_trace_complete {
+            return ImpureInputTraceSegment {
+                trace: Vec::new(),
+                complete: false,
+            };
+        }
+        let Some(trace) = self.impure_input_trace.get(cursor.len..) else {
+            return ImpureInputTraceSegment {
+                trace: Vec::new(),
+                complete: false,
+            };
+        };
+        ImpureInputTraceSegment {
+            trace: trace.to_vec(),
+            complete: true,
+        }
+    }
+
     pub(super) fn record_impure_input_result(
         &mut self,
         fingerprint: Result<ImpureInputFingerprint, InputFingerprintError>,

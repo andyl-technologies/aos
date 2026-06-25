@@ -53,8 +53,8 @@ use super::thunk::{ForceClaim, ForceError, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, AttrPosition, FlatAttrs};
 use crate::cache::{
     CacheExprIdentity, CachedParse, DirEntryInput, DurableBlake3Hash, EvalCacheRuntime,
-    FileTypeForInput, ImpureInputFingerprint, ImpureInputMode, InputFingerprintError, ParseCache,
-    ParseCacheError,
+    FileTypeForInput, ImpureInputFingerprint, ImpureInputMode, ImpureInputTraceSource,
+    InputFingerprintError, ParseCache, ParseCacheError,
 };
 use crate::compile::{
     FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,
@@ -509,6 +509,34 @@ impl ImportGlobalScope {
 struct TextStoreEntry {
     contents: Vec<u8>,
     references: StringContext,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ImpureInputTraceCursor {
+    len: usize,
+    complete: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ImpureInputTraceSegment {
+    trace: Vec<ImpureInputFingerprint>,
+    complete: bool,
+}
+
+impl ImpureInputTraceSegment {
+    fn is_empty_complete(&self) -> bool {
+        self.complete && self.trace.is_empty()
+    }
+}
+
+impl ImpureInputTraceSource for ImpureInputTraceSegment {
+    fn impure_input_trace(&self) -> &[ImpureInputFingerprint] {
+        &self.trace
+    }
+
+    fn impure_input_trace_complete(&self) -> bool {
+        self.complete
+    }
 }
 
 #[derive(Clone, Debug)]

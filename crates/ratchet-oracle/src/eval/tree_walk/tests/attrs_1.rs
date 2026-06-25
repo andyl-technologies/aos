@@ -836,8 +836,22 @@ fn source_backed_forced_inline_thunks_include_path_base_in_cache_identity() {
     fs::remove_dir_all(root).expect("temp tree removed");
 }
 
+fn cache_nodes_with_dependencies(cache: &EvalCache) -> usize {
+    (0..cache.len())
+        .filter(|index| {
+            let raw = u32::try_from(*index).expect("test graph has u32-addressable nodes");
+            !cache
+                .graph()
+                .node(crate::cache::DemandNodeId::new(raw))
+                .expect("node exists")
+                .dependencies()
+                .is_empty()
+        })
+        .count()
+}
+
 #[test]
-fn effectful_forced_inline_thunks_wait_for_impure_input_edges() {
+fn effectful_forced_inline_thunks_record_impure_edges_but_wait_for_revalidation_hits() {
     let root = unique_temp_dir("force-cache-effectful");
     fs::write(root.join("marker"), b"present").expect("marker exists");
     let root = fs::canonicalize(&root).expect("root canonicalizes");
@@ -869,17 +883,57 @@ fn effectful_forced_inline_thunks_wait_for_impure_input_edges() {
         .expect("thunk force succeeds");
 
     assert_eq!(forced.as_bool(), Ok(true));
-    let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "effectful thunks need impure-input dependency edges before memoization"
+    {
+        let runtime = cache.lock().expect("cache lock is valid");
+        let cache = runtime.cache().expect("cache is enabled");
+        assert_eq!(
+            cache.len(),
+            2,
+            "pathExists force results now create an expression node and input leaf"
+        );
+        assert_eq!(
+            cache_nodes_with_dependencies(cache),
+            1,
+            "the expression node must depend on the observed pathExists leaf"
+        );
+    }
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        cache.clone(),
     );
+    let second_root = second.eval_root().expect("attrset evaluates again");
+    let second_thunk = {
+        let attrs = second
+            .heap()
+            .get_attrs(second_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced_again = second
+        .force_value(ir.root, Span::new(0, 0), second_thunk)
+        .expect("second force still evaluates without revalidation lookup");
+
+    assert_eq!(forced_again.as_bool(), Ok(true));
+    assert_eq!(
+        second.stats().thunks_forced(),
+        1,
+        "effectful memo payloads are not returned until lookup revalidates inputs"
+    );
+    assert_eq!(second.stats().cache_hits(), 0);
 
     fs::remove_dir_all(root).expect("temp tree removed");
 }
 
 #[test]
-fn effectful_descendant_forced_inline_thunks_wait_for_impure_input_edges() {
+fn effectful_descendant_forced_inline_thunks_record_impure_edges() {
     let root = unique_temp_dir("force-cache-effectful-descendant");
     fs::write(root.join("marker"), b"present").expect("marker exists");
     let root = fs::canonicalize(&root).expect("root canonicalizes");
@@ -912,9 +966,16 @@ fn effectful_descendant_forced_inline_thunks_wait_for_impure_input_edges() {
 
     assert_eq!(forced.as_int(), Ok(1));
     let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "effectful descendants need impure-input dependency edges before memoization"
+    let cache = runtime.cache().expect("cache is enabled");
+    assert_eq!(
+        cache.len(),
+        2,
+        "effectful descendants now create an expression node and input leaf"
+    );
+    assert_eq!(
+        cache_nodes_with_dependencies(cache),
+        1,
+        "the expression node must depend on the descendant pathExists leaf"
     );
 
     fs::remove_dir_all(root).expect("temp tree removed");

@@ -748,6 +748,7 @@ impl TreeWalk {
                 }
 
                 self.increment_thunks_forced();
+                let impure_trace_cursor = self.impure_input_trace_cursor();
                 let result = match thunk.kind() {
                     EvalThunkKind::Node {
                         body,
@@ -832,11 +833,12 @@ impl TreeWalk {
                     }
                 };
                 let value = result?;
+                let impure_trace = self.impure_input_trace_segment(impure_trace_cursor);
                 let value = guard.finish(value).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
                 })?;
                 self.lazy_identity_thunks.remove(&forced_payload);
-                self.observe_forced_inline_expression_result(observed_body, value);
+                self.observe_forced_inline_expression_result(observed_body, value, impure_trace);
                 Ok(value)
             }
         }
