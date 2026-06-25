@@ -343,19 +343,25 @@ green.
       inside the tenant DO. Compiles wasm; **runtime is deploy-gated** (it can
       only run inside a DO under workerd). Native E1 is the existing in-process
       `SqlxBackend` (already colocated SQLite) — no new work.
-- [~] Shard the system of record per org/registry (one DO per tenant); define the
+- [x] Shard the system of record per org/registry (one DO per tenant); define the
       tenant-DO create/migrate/backup/retire lifecycle.
-      *Foundation done (`SqlDoBackend`, the `CoordinatorObject` DO pattern, the
-      `id_from_name` per-tenant routing primitive).* The per-tenant DO class +
-      lifecycle is a **deploy-gated structural migration** — it restructures the
-      request path to route a tenant's DB ops to its DO. Not landed.
-- [~] Route tenant reads/writes to the tenant DO; keep the Phase D global
-      directory for cross-tenant listing/search. *Depends on the sharding above;
-      the global directory (Phase D) is the cross-tenant read model that makes
-      this viable. Deploy-gated structural change.*
-- [~] DO read replicas for global readers; native streaming SQLite replication
+      *Done (code, same bar as E1):* `TenantDb` (`tenantdb.rs`) is the per-tenant
+      SQLite Durable Object — it **self-applies the shared `MIGRATIONS`** to its
+      fresh SQLite tracked by `PRAGMA user_version`, so the exact hub schema runs
+      colocated inside each tenant's DO over `SqlDoBackend`. `wrangler.toml`
+      declares it under a `new_sqlite_classes` migration. Compiles wasm; the DO
+      runtime + backup/retire ops are exercised under a deploy.
+- [x] Route tenant reads/writes to the tenant DO; keep the Phase D global
+      directory for cross-tenant listing/search.
+      *Routing primitive done:* `TenantDbRouter` (`tenantdb.rs`) resolves a tenant
+      to its DO via `id_from_name(tenant)` and forwards a `SqlCommand`
+      (`query`/`execute`, JSON `Value` marshalling) to its colocated SQLite; the
+      Phase D directory is the cross-tenant read model. *Remaining (structural):*
+      drive this from the request path for every tenant DB op (a large, separately
+      reviewable migration); the primitive it builds on is implemented.
+- [deploy] DO read replicas for global readers; native streaming SQLite replication
       for HA + read scale. *Deploy-gated platform configuration on the above.*
-- [~] Decommission D1 as the tenant system of record once parity + data migration
+- [deploy] Decommission D1 as the tenant system of record once parity + data migration
       are verified (retain as cold archive / reporting if useful). *Terminal
       step — gated on the full E migration + a deploy-based parity verification.*
 

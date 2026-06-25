@@ -79,12 +79,21 @@ crons = ["*/15 * * * *"]
 name = "COORDINATOR"
 class_name = "CoordinatorObject"
 
-# Declare the DO class on first deploy. `CoordinatorObject` uses the transactional
-# key-value storage (not SQLite), so a plain `new_classes` migration; a future
-# per-tenant SQLite DO would use `new_sqlite_classes`.
+# The per-tenant SQLite Durable Object (RFC-0004 ch.14 Phase E): one DO per
+# tenant owns that tenant's colocated SQLite system of record. The class name is
+# the `#[durable_object]` struct `TenantDb`. (The request-path routing into these
+# is the remaining E3 structural step; the class + router are implemented.)
+[[durable_objects.bindings]]
+name = "TENANT_DB"
+class_name = "TenantDb"
+
+# Declare the DO classes on first deploy. `CoordinatorObject` uses the
+# transactional key-value storage (`new_classes`); `TenantDb` uses SQLite storage
+# (`new_sqlite_classes`).
 [[migrations]]
 tag = "v1"
 new_classes = ["CoordinatorObject"]
+new_sqlite_classes = ["TenantDb"]
 
 # The deferred-jobs queue (RFC-0004 ch.14 Phase D): the Worker is both a producer
 # (the write path enqueues post-write propagation) and the consumer (it drains
