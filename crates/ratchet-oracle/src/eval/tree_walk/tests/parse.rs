@@ -302,6 +302,10 @@ fn ordinary_filesystem_import_uses_configured_parse_cache() {
         .expect("attrNames result concatenates to string");
     assert_eq!(string.bytes(), b"zOnly");
     assert_eq!(first.import_parse_cache_stats(), (0, 1));
+    assert_eq!(first.stats().force_cache_hits(), 0);
+    assert_eq!(first.stats().force_cache_misses(), 0);
+    assert_eq!(first.stats().cache_hits(), 0);
+    assert_eq!(first.stats().cache_misses(), 1);
     assert!(
         fs::read_dir(&cache_root)
             .expect("cache directory exists")
@@ -318,6 +322,10 @@ fn ordinary_filesystem_import_uses_configured_parse_cache() {
         .expect("cached attrNames result concatenates to string");
     assert_eq!(string.bytes(), b"zOnly");
     assert_eq!(second.import_parse_cache_stats(), (1, 0));
+    assert_eq!(second.stats().force_cache_hits(), 0);
+    assert_eq!(second.stats().force_cache_misses(), 0);
+    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().cache_misses(), 0);
 
     fs::remove_dir_all(root).expect("temp directory removes");
 }

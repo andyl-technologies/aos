@@ -120,6 +120,8 @@ pub struct EvalStats {
     pub(crate) gc_pause_us: u64,
     pub(crate) tier_promotions: u64,
     pub(crate) deopts: u64,
+    pub(crate) force_cache_hits: u64,
+    pub(crate) force_cache_misses: u64,
     pub(crate) cache_hits: u64,
     pub(crate) cache_misses: u64,
     pub(crate) early_cutoffs: u64,
@@ -184,12 +186,28 @@ impl EvalStats {
         self.deopts
     }
 
-    /// Returns the number of evaluator cache hits.
+    /// Returns the number of advisory force-cache hits.
+    pub const fn force_cache_hits(&self) -> u64 {
+        self.force_cache_hits
+    }
+
+    /// Returns the number of advisory force-cache misses.
+    pub const fn force_cache_misses(&self) -> u64 {
+        self.force_cache_misses
+    }
+
+    /// Returns the number of advisory force-cache probes.
+    pub const fn force_cache_probes(&self) -> u64 {
+        self.force_cache_hits
+            .saturating_add(self.force_cache_misses)
+    }
+
+    /// Returns the aggregate number of evaluator cache hits.
     pub const fn cache_hits(&self) -> u64 {
         self.cache_hits
     }
 
-    /// Returns the number of evaluator cache misses.
+    /// Returns the aggregate number of evaluator cache misses.
     pub const fn cache_misses(&self) -> u64 {
         self.cache_misses
     }

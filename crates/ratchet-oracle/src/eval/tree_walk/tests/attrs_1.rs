@@ -854,6 +854,9 @@ fn source_backed_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() 
         .expect("first force succeeds");
     assert_eq!(forced.as_int(), Ok(3));
     assert_eq!(first.stats().thunks_forced(), 1);
+    assert_eq!(first.stats().force_cache_hits(), 0);
+    assert_eq!(first.stats().force_cache_misses(), 1);
+    assert_eq!(first.stats().force_cache_probes(), 1);
     assert_eq!(first.stats().cache_misses(), 1);
 
     let mut second = TreeWalk::with_options_and_source_and_eval_cache(
@@ -881,6 +884,9 @@ fn source_backed_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() 
         "cache hits publish the scalar without evaluating the thunk body"
     );
     assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().force_cache_hits(), 1);
+    assert_eq!(second.stats().force_cache_misses(), 0);
+    assert_eq!(second.stats().force_cache_probes(), 1);
 
     let thunk = second
         .heap()

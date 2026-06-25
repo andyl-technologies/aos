@@ -109,6 +109,9 @@ fn eval_outcome_reports_mirrored_stats() {
     assert_eq!(stats.gc_pause_us(), 0);
     assert_eq!(stats.tier_promotions(), 0);
     assert_eq!(stats.deopts(), 0);
+    assert_eq!(stats.force_cache_hits(), 0);
+    assert_eq!(stats.force_cache_misses(), 0);
+    assert_eq!(stats.force_cache_probes(), 0);
     assert_eq!(stats.early_cutoffs(), 0);
 }
 
@@ -130,6 +133,9 @@ fn eval_stats_are_emitted_through_tracing() {
         .expect("stats event recorded");
     assert!(stats_event.contains("thunks_allocated="));
     assert!(stats_event.contains("thunks_forced="));
+    assert!(stats_event.contains("force_cache_hits="));
+    assert!(stats_event.contains("force_cache_misses="));
+    assert!(stats_event.contains("force_cache_probes="));
     assert!(stats_event.contains("cache_hits="));
     assert!(stats_event.contains("early_cutoffs=0"));
     assert!(stats_event.contains("heap_used_bytes="));

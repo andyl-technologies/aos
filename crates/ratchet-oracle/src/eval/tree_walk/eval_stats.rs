@@ -17,14 +17,16 @@ impl TreeWalk {
             gc_pause_us: self.stats.gc_pause_us,
             tier_promotions: self.stats.tier_promotions,
             deopts: self.stats.deopts,
+            force_cache_hits: self.stats.force_cache_hits,
+            force_cache_misses: self.stats.force_cache_misses,
             cache_hits: self
                 .stats
-                .cache_hits
+                .force_cache_hits
                 .saturating_add(self.import_parse_cache_hits as u64)
                 .saturating_add(self.find_file_cache_hits as u64),
             cache_misses: self
                 .stats
-                .cache_misses
+                .force_cache_misses
                 .saturating_add(self.import_parse_cache_misses as u64)
                 .saturating_add(self.find_file_cache_misses as u64),
             early_cutoffs: self.stats.early_cutoffs,
@@ -48,6 +50,9 @@ impl TreeWalk {
             gc_pause_us = stats.gc_pause_us(),
             tier_promotions = stats.tier_promotions(),
             deopts = stats.deopts(),
+            force_cache_hits = stats.force_cache_hits(),
+            force_cache_misses = stats.force_cache_misses(),
+            force_cache_probes = stats.force_cache_probes(),
             cache_hits = stats.cache_hits(),
             cache_misses = stats.cache_misses(),
             early_cutoffs = stats.early_cutoffs(),
@@ -71,10 +76,10 @@ impl TreeWalk {
     }
 
     pub(super) fn increment_eval_cache_hit(&mut self) {
-        self.stats.cache_hits = self.stats.cache_hits.saturating_add(1);
+        self.stats.force_cache_hits = self.stats.force_cache_hits.saturating_add(1);
     }
 
     pub(super) fn increment_eval_cache_miss(&mut self) {
-        self.stats.cache_misses = self.stats.cache_misses.saturating_add(1);
+        self.stats.force_cache_misses = self.stats.force_cache_misses.saturating_add(1);
     }
 }

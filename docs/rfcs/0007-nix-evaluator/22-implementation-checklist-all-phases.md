@@ -723,9 +723,20 @@ alone (`M-1`/`Q-A`).
       into the existing admission decision when the caller supplies
       value-hash cost information. This is policy vocabulary only; evaluator
       subject selection, cardinality-analysis signal bridges,
-      hit/overhead tracing, `force_memoized` use,
+      policy-driven `force_memoized` admission,
       persistence/materialization decisions, and measured AOS tuning remain open
       (`M-11`).
+- [x] Current force-cache hit/overhead stats precursor: `EvalStats` reports
+      force-cache-specific hits, misses, and probes separately from aggregate
+      evaluator cache hits/misses, and the stats tracing event emits
+      `force_cache_hits`, `force_cache_misses`, and `force_cache_probes`.
+      The aggregate `cache_hits`/`cache_misses` fields retain their existing
+      broad meaning by combining force-cache counts with import parse-cache and
+      find-file cache counts. This is coarse telemetry only; it does not select
+      memoization subjects, sample value-hash costs, attribute wall-clock
+      overhead to individual nodes, or tune policy thresholds from AOS workloads
+      (`M-11`). The gate covers stats trace tests plus source-backed
+      force-cache hit/miss tests.
 - [x] Current `cache/cutoff.rs` standalone decision primitive: typed
       `ValueHash` plus `EarlyCutoff::decide(previous, recomputed)` returns
       `CutOff` only when a prior value hash exists and equals the recomputed
