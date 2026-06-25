@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 
 use super::parse::{
-    PARSE_CACHE_SCHEMA_VERSION, ParseArtifactBundle, ParseCacheEntry, ParseCacheError,
+    PARSE_CACHE_SCHEMA_VERSION, ParseArtifactBundle, ParseCache, ParseCacheEntry, ParseCacheError,
     ParseCacheKey, ParseFileKey,
 };
 use super::{

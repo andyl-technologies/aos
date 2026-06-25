@@ -623,6 +623,36 @@ impl PersistCache {
         Ok(Some(index_entry))
     }
 
+    /// Derives parse identities from source bytes and hydrates the parse cache.
+    ///
+    /// This source-shaped adapter derives `ParseFileKey` from `realpath` and
+    /// `source`, derives `ParseCacheKey` through `parse_cache`, and hydrates
+    /// the parse cache's normal entry directory when the persistent
+    /// file-artifact index has a matching bundle. Missing index entries return
+    /// `Ok(None)`.
+    ///
+    /// `realpath` must already be the canonical path used for file-artifact
+    /// identity; this helper does not canonicalize or read source files.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexedHydrationError`] if the
+    /// file-artifact index cannot be read, or if a matching indexed artifact
+    /// cannot be read from the `files/` pack, decoded, validated, or written
+    /// into the parse cache entry.
+    pub fn hydrate_parse_cache_entry_from_source_index(
+        &self,
+        parse_cache: &ParseCache,
+        realpath: impl AsRef<Path>,
+        source: &[u8],
+    ) -> Result<Option<PersistFileArtifactIndexEntry>, PersistFileArtifactIndexedHydrationError>
+    {
+        let file_key = ParseFileKey::for_source(realpath.as_ref(), source);
+        let parse_key = parse_cache.key_for_source(source);
+        let entry = parse_cache.entry_for_key(parse_key);
+        self.hydrate_file_artifact_bundle_from_index(&file_key, parse_key, &entry)
+    }
+
     /// Applies `decision` to an existing parse-cache artifact entry.
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns a skipped result

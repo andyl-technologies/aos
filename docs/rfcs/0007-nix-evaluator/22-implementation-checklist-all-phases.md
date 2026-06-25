@@ -996,6 +996,15 @@ alone (`M-1`/`Q-A`).
       durable hit selection, source/key equality proof, mmap reads, full
       artifact semantic validation beyond existing decoders, GC/repack, and
       harness proof remain open (`C-13`).
+- [x] Current source-derived indexed parse-cache hydration adapter:
+      `PersistCache::hydrate_parse_cache_entry_from_source_index` derives both
+      `ParseFileKey` and `ParseCacheKey` from one caller-supplied realpath/source
+      byte pair, uses the normal `ParseCache` entry path for that source, and
+      delegates matching durable file-artifact mappings to validated indexed
+      hydration. This is explicit source-shaped hydration only; canonical path
+      resolution, automatic parse-cache integration, durable hit selection,
+      mmap reads, full artifact semantic validation beyond existing decoders,
+      GC/repack, and harness proof remain open (`C-13`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus

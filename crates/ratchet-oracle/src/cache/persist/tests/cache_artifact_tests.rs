@@ -720,6 +720,120 @@ fn cache_file_artifact_hydrates_parse_entry_from_index_lookup() {
 }
 
 #[test]
+fn cache_source_index_hydrates_normal_parse_cache_entry() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let realpath = std::path::Path::new("/src/default.nix");
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let file_key = ParseFileKey::for_source(realpath, source);
+    let materialized = persist
+        .materialize_parse_artifact_entry_indexed(
+            &file_key,
+            parsed.key,
+            &parsed.entry,
+            MaterializationDecision::Materialize,
+        )
+        .expect("entry materializes");
+    let expected_entry = materialized
+        .index_entry()
+        .expect("entry should materialize");
+    fs::remove_dir_all(parsed.entry.dir()).expect("parse-cache entry removes");
+
+    let result = persist
+        .hydrate_parse_cache_entry_from_source_index(&parse_cache, realpath, source)
+        .expect("source-indexed entry hydrates");
+
+    let hydrated = parse_cache.entry_for_source(source);
+    assert_eq!(result, Some(expected_entry));
+    assert!(hydrated.is_complete());
+    assert_eq!(
+        hydrated
+            .read_artifact_bundle()
+            .expect("hydrated bundle reads"),
+        bundle
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_source_index_misses_when_source_bytes_change() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let changed_source = b"let x = 2; in x";
+    let realpath = std::path::Path::new("/src/default.nix");
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses");
+    let file_key = ParseFileKey::for_source(realpath, source);
+    persist
+        .materialize_parse_artifact_entry_indexed(
+            &file_key,
+            parsed.key,
+            &parsed.entry,
+            MaterializationDecision::Materialize,
+        )
+        .expect("entry materializes");
+
+    let result = persist
+        .hydrate_parse_cache_entry_from_source_index(&parse_cache, realpath, changed_source)
+        .expect("source-indexed miss succeeds");
+
+    assert_eq!(result, None);
+    assert!(!parse_cache.entry_for_source(changed_source).dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_source_index_misses_when_realpath_changes() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let realpath = std::path::Path::new("/src/default.nix");
+    let other_realpath = std::path::Path::new("/src/other.nix");
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses");
+    let file_key = ParseFileKey::for_source(realpath, source);
+    persist
+        .materialize_parse_artifact_entry_indexed(
+            &file_key,
+            parsed.key,
+            &parsed.entry,
+            MaterializationDecision::Materialize,
+        )
+        .expect("entry materializes");
+    fs::remove_dir_all(parsed.entry.dir()).expect("parse-cache entry removes");
+
+    let result = persist
+        .hydrate_parse_cache_entry_from_source_index(&parse_cache, other_realpath, source)
+        .expect("source-indexed miss succeeds");
+
+    assert_eq!(result, None);
+    assert!(!parse_cache.entry_for_source(source).dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_file_artifact_hydration_from_index_reports_lookup_errors() {
     let root = temp_root();
     let persist = PersistCache::open(&root).expect("cache opens");
