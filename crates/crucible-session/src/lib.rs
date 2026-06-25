@@ -316,6 +316,7 @@ fn usize_to_u64(value: usize) -> u64 {
 pub struct Engine<L> {
     configuration: Configuration,
     runtime: Option<RuntimeState>,
+    runtime_instantiated: bool,
     state: EngineState,
     graph: TemporalGraph,
     quantum_loop: L,
@@ -331,6 +332,7 @@ impl<L> Engine<L> {
         Self {
             configuration,
             runtime: None,
+            runtime_instantiated: false,
             state: EngineState::Loaded,
             graph,
             quantum_loop,
@@ -424,9 +426,57 @@ impl<L: QuantumLoop> Engine<L> {
 
         let runtime = instantiate(&self.graph, &self.configuration)?;
         self.runtime = Some(runtime);
+        self.runtime_instantiated = true;
         self.state = EngineState::Paused {
             reason: PauseReason::Instantiated,
         };
+        Ok(self.snapshot())
+    }
+
+    /// Drops the cached runtime while preserving the source-of-truth state.
+    ///
+    /// The runtime is a rebuildable cache. Evicting it must not change the
+    /// engine's boundary snapshot, configuration, frontier, log length, or
+    /// quantum count.
+    pub fn evict_runtime_cache(&mut self) -> EngineSnapshot {
+        self.runtime = None;
+        self.snapshot()
+    }
+
+    /// Rebuilds the cached runtime from the source-of-truth configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::InvalidEngineState`] when the runtime has not
+    /// been initially instantiated. Returns [`SessionError::Engine`] when the
+    /// execution model cannot instantiate the current configuration from the
+    /// temporal graph.
+    pub fn reinstantiate_runtime_cache(&mut self) -> Result<EngineSnapshot, SessionError> {
+        if !self.runtime_instantiated {
+            return Err(self.invalid_engine_state("reinstantiate_runtime_cache"));
+        }
+
+        let runtime = instantiate(&self.graph, &self.configuration)?;
+        self.runtime = Some(runtime);
+        Ok(self.snapshot())
+    }
+
+    /// Drops and rebuilds the cached runtime at the current boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::InvalidEngineState`] when the runtime has not
+    /// been initially instantiated. Returns [`SessionError::Engine`] when the
+    /// execution model cannot instantiate the current configuration from the
+    /// temporal graph.
+    pub fn refresh_runtime_cache(&mut self) -> Result<EngineSnapshot, SessionError> {
+        if !self.runtime_instantiated {
+            return Err(self.invalid_engine_state("refresh_runtime_cache"));
+        }
+
+        let runtime = instantiate(&self.graph, &self.configuration)?;
+        self.runtime = None;
+        self.runtime = Some(runtime);
         Ok(self.snapshot())
     }
 
@@ -523,6 +573,7 @@ impl<L: QuantumLoop> Engine<L> {
 
         self.configuration = outcome.configuration.clone();
         self.runtime = Some(runtime);
+        self.runtime_instantiated = true;
         self.frontier = outcome.frontier;
         self.event_log_len = self
             .event_log_len
@@ -851,6 +902,179 @@ mod tests {
                 operation: "instantiate_runtime",
             }
         ));
+    }
+
+    #[test]
+    fn engine_runtime_cache_reinstantiates_without_observable_change_at_pause_boundary() {
+        let scenario = generated_scenario(19);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, StubLoop);
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+        let before_snapshot = engine.snapshot();
+        let before_runtime = match engine.runtime().cloned() {
+            Some(runtime) => runtime,
+            None => panic!("started engine should have a runtime cache"),
+        };
+
+        let evicted_snapshot = engine.evict_runtime_cache();
+
+        assert_eq!(evicted_snapshot, before_snapshot);
+        assert_eq!(engine.snapshot(), before_snapshot);
+        assert_eq!(engine.runtime(), None);
+
+        let rebuilt_snapshot = match engine.reinstantiate_runtime_cache() {
+            Ok(snapshot) => snapshot,
+            Err(error) => panic!("runtime cache should reinstantiate at pause boundary: {error}"),
+        };
+
+        assert_eq!(rebuilt_snapshot, before_snapshot);
+        assert_eq!(engine.snapshot(), before_snapshot);
+        assert_eq!(engine.runtime(), Some(&before_runtime));
+
+        let refreshed_snapshot = match engine.refresh_runtime_cache() {
+            Ok(snapshot) => snapshot,
+            Err(error) => panic!("runtime cache should refresh at pause boundary: {error}"),
+        };
+
+        assert_eq!(refreshed_snapshot, before_snapshot);
+        assert_eq!(engine.snapshot(), before_snapshot);
+        assert_eq!(engine.runtime(), Some(&before_runtime));
+    }
+
+    #[test]
+    fn engine_runtime_cache_reinstantiates_after_running_quantum_boundary() {
+        let scenario = generated_scenario(20);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, AppendingLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("continue should enter running state: {error}");
+        }
+        if let Err(error) = engine.step_quantum() {
+            panic!("running engine should complete a quantum: {error}");
+        }
+        let before_snapshot = engine.snapshot();
+        let before_runtime = match engine.runtime().cloned() {
+            Some(runtime) => runtime,
+            None => panic!("running engine should have a runtime cache"),
+        };
+
+        let evicted_snapshot = engine.evict_runtime_cache();
+
+        assert_eq!(before_snapshot.state, EngineState::Running);
+        assert_eq!(before_snapshot.configuration.schedule.len(), 1);
+        assert_eq!(evicted_snapshot, before_snapshot);
+        assert_eq!(engine.snapshot(), before_snapshot);
+        assert_eq!(engine.runtime(), None);
+
+        let rebuilt_snapshot = match engine.reinstantiate_runtime_cache() {
+            Ok(snapshot) => snapshot,
+            Err(error) => panic!("runtime cache should reinstantiate after quantum: {error}"),
+        };
+
+        assert_eq!(rebuilt_snapshot, before_snapshot);
+        assert_eq!(engine.snapshot(), before_snapshot);
+        assert_eq!(engine.runtime(), Some(&before_runtime));
+    }
+
+    #[test]
+    fn engine_runtime_cache_reinstantiate_rejects_loaded_state_without_mutation() {
+        let scenario = generated_scenario(21);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, StubLoop);
+        let before_snapshot = engine.snapshot();
+
+        let rebuild_error = match engine.reinstantiate_runtime_cache() {
+            Ok(_) => panic!("loaded engine should reject runtime cache reinstantiate"),
+            Err(error) => error,
+        };
+
+        assert_eq!(engine.snapshot(), before_snapshot);
+        assert_eq!(engine.runtime(), None);
+        assert!(matches!(
+            rebuild_error,
+            SessionError::InvalidEngineState {
+                state: EngineState::Loaded,
+                operation: "reinstantiate_runtime_cache",
+            }
+        ));
+
+        let refresh_error = match engine.refresh_runtime_cache() {
+            Ok(_) => panic!("loaded engine should reject runtime cache refresh"),
+            Err(error) => error,
+        };
+
+        assert_eq!(engine.snapshot(), before_snapshot);
+        assert_eq!(engine.runtime(), None);
+        assert!(matches!(
+            refresh_error,
+            SessionError::InvalidEngineState {
+                state: EngineState::Loaded,
+                operation: "refresh_runtime_cache",
+            }
+        ));
+    }
+
+    #[test]
+    fn engine_runtime_cache_reinstantiate_rejects_never_instantiated_stopped_state() {
+        let scenario = generated_scenario(22);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, StubLoop);
+        if let Err(error) = engine.apply_command(SessionCommand::Stop) {
+            panic!("loaded engine should stop without instantiating runtime: {error}");
+        }
+        let before_snapshot = engine.snapshot();
+
+        let rebuild_error = match engine.reinstantiate_runtime_cache() {
+            Ok(_) => panic!("never-instantiated stopped engine should reject cache rebuild"),
+            Err(error) => error,
+        };
+
+        assert_eq!(engine.snapshot(), before_snapshot);
+        assert_eq!(engine.runtime(), None);
+        assert!(matches!(
+            rebuild_error,
+            SessionError::InvalidEngineState {
+                state: EngineState::Stopped {
+                    outcome: Outcome::Stopped
+                },
+                operation: "reinstantiate_runtime_cache",
+            }
+        ));
+    }
+
+    #[test]
+    fn engine_runtime_cache_refresh_preserves_cache_when_reinstantiate_fails() {
+        let scenario = generated_scenario(23);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, StubLoop);
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+        let before_snapshot = engine.snapshot();
+        let before_runtime = match engine.runtime().cloned() {
+            Some(runtime) => runtime,
+            None => panic!("started engine should have a runtime cache"),
+        };
+        engine.graph = TemporalGraph::empty();
+
+        let refresh_error = match engine.refresh_runtime_cache() {
+            Ok(_) => panic!("runtime refresh should fail without a replay source"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(refresh_error, SessionError::Engine(_)));
+        assert_eq!(engine.snapshot(), before_snapshot);
+        assert_eq!(engine.runtime(), Some(&before_runtime));
     }
 
     #[tokio::test]

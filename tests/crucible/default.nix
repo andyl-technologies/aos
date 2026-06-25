@@ -63,6 +63,7 @@ in {
     documentationHygiene = import ./phase1-documentation-hygiene.nix {inherit pkgs lib;};
     engineeringHygiene = import ./phase1-engineering-hygiene.nix {inherit pkgs lib;};
     executionBake = import ./phase1-execution-bake.nix {inherit pkgs lib;};
+    executionCacheEviction = import ./phase1-execution-cache-eviction.nix {inherit pkgs lib;};
     executionDecisionTaxonomy = import ./phase1-execution-decision-taxonomy.nix {inherit pkgs lib;};
     executionEngineStateMachine = import ./phase1-execution-engine-state-machine.nix {inherit pkgs lib;};
     executionGraphOperations = import ./phase1-execution-graph-operations.nix {inherit pkgs lib;};
