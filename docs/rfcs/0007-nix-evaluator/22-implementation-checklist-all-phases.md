@@ -932,9 +932,18 @@ alone (`M-1`/`Q-A`).
       counters on a miss, appends a saturated current-demand increment, and
       returns the recorded value. This is caller-driven, append-only, and
       requires callers to serialize writes for the same node key; evaluator
-      demand accounting, atomic writer coordination, automatic process-boundary
-      updates, LMDB/redb node tables, compaction/GC, and AOS tuning remain open
-      (`C-13`/`C-14`/`S-14`).
+      demand accounting, atomic writer coordination, automatic run-boundary
+      orchestration, LMDB/redb node tables, compaction/GC, and AOS tuning
+      remain open (`C-13`/`C-14`/`S-14`).
+- [x] Current explicit node reuse run-boundary adapter:
+      `PersistCache::advance_node_materialization_reuse_run` looks up the
+      newest counters for one node key, returns `None` without writing on a
+      miss, and otherwise appends `MaterializationReuse::advance_run` so
+      current-run observations become prior-run reuse signal for later runs.
+      This is caller-driven, append-only, and requires callers to serialize
+      writes for the same node key; evaluator demand accounting, automatic
+      process-boundary orchestration, atomic writer coordination, LMDB/redb node
+      tables, compaction/GC, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit materialization-to-pack adapter:
       `PersistCache::materialize_blob` consumes a caller-supplied
       `MaterializationDecision`, skips without hashing/writing on

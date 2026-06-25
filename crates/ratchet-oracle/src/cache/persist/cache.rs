@@ -337,6 +337,30 @@ impl PersistCache {
         Ok(reuse)
     }
 
+    /// Advances persisted reuse counters for one demand node to the next run.
+    ///
+    /// Missing index entries return `Ok(None)` without appending an empty
+    /// record. Existing entries append the counters returned by
+    /// [`MaterializationReuse::advance_run`] and return that recorded value.
+    /// Callers must serialize writes for the same node key for the same reason
+    /// as [`Self::record_node_current_demand`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, read, decoded, written, or flushed.
+    pub fn advance_node_materialization_reuse_run(
+        &self,
+        key: PersistNodeMetadataKey,
+    ) -> Result<Option<MaterializationReuse>, PersistNodeMetadataIndexError> {
+        let Some(reuse) = self.lookup_node_materialization_reuse(key)? else {
+            return Ok(None);
+        };
+        let advanced = reuse.advance_run();
+        self.record_node_materialization_reuse(key, advanced)?;
+        Ok(Some(advanced))
+    }
+
     /// Looks up a blob location through the sidecar index selected by `key`.
     ///
     /// # Errors

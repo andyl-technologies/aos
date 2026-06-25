@@ -327,6 +327,51 @@ fn cache_node_current_demand_updates_latest_reuse_counters() {
 }
 
 #[test]
+fn cache_node_materialization_reuse_advances_run_boundaries() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let missing =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"missing input"));
+
+    assert_eq!(
+        cache
+            .advance_node_materialization_reuse_run(missing)
+            .expect("missing advance succeeds"),
+        None
+    );
+    assert_eq!(
+        fs::metadata(cache.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        0
+    );
+
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(u64::MAX - 1, 2))
+        .expect("reuse records");
+    let advanced = cache
+        .advance_node_materialization_reuse_run(key)
+        .expect("advance records");
+
+    assert_eq!(advanced, Some(MaterializationReuse::new(u64::MAX, 0)));
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(key)
+            .expect("node reuse lookup succeeds"),
+        advanced
+    );
+    assert_eq!(
+        fs::metadata(cache.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 2) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_materialization_decision_can_skip_without_writing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
