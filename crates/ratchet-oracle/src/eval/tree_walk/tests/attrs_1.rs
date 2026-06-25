@@ -678,6 +678,20 @@ fn forcing_attr_value_thunks_memoizes_whnf_results() {
     assert_eq!(forced_again.as_int(), Ok(3));
 }
 
+fn force_attr_a(evaluator: &mut TreeWalk, ir: &Ir, a: Symbol) -> Value {
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("attr force succeeds")
+}
+
 #[test]
 fn source_backed_forced_inline_thunks_update_shared_eval_cache() {
     let source = "{ a = 1 + 2; }";
@@ -784,6 +798,296 @@ fn source_backed_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() 
         .expect("published cache hit reuses thunk cell");
     assert_eq!(forced_again.as_int(), Ok(3));
     assert_eq!(second.stats().thunk_cache_hits(), 1);
+}
+
+#[test]
+fn source_and_source_less_forced_inline_thunks_use_separate_cache_domains() {
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut source_backed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut source_backed, &ir, a);
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(source_backed.stats().cache_misses(), 1);
+
+    let mut source_less =
+        TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache.clone());
+    let forced = force_attr_a(&mut source_less, &ir, a);
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(
+        source_less.stats().cache_hits(),
+        0,
+        "source-less lowered-IR identity must not hit a source-backed node"
+    );
+    assert_eq!(source_less.stats().thunks_forced(), 1);
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "source-backed and source-less domains should allocate separate demand nodes"
+    );
+}
+
+#[test]
+fn source_less_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() {
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first =
+        TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache.clone());
+    let root = first.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = first.heap().get_attrs(root).expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = first
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("first force succeeds");
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(first.stats().thunks_forced(), 1);
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut second =
+        TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache.clone());
+    let root = second.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = second
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = second
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("second force succeeds from lowered-IR cache identity");
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "source-less cache hits publish the scalar without evaluating the thunk body"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "the same lowered IR fingerprint and node should reuse one demand node"
+    );
+}
+
+#[test]
+fn source_less_forced_inline_thunks_include_lowered_ir_in_cache_identity() {
+    let first_ir = lower("{ a = 1 + 2; }");
+    let second_ir = lower("{ a = 1 + 3; }");
+    let first_a = symbol_for(&first_ir, b"a");
+    let second_a = symbol_for(&second_ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first =
+        TreeWalk::with_options_and_eval_cache(&first_ir, TreeWalkOptions::new(), cache.clone());
+    let root = first.eval_root().expect("first attrset evaluates");
+    let thunk_value = {
+        let attrs = first.heap().get_attrs(root).expect("attrset is heap-owned");
+        attrs.get(first_a).expect("a exists")
+    };
+    let forced = first
+        .force_value(first_ir.root, Span::new(0, 0), thunk_value)
+        .expect("first force succeeds");
+    assert_eq!(forced.as_int(), Ok(3));
+
+    let mut second =
+        TreeWalk::with_options_and_eval_cache(&second_ir, TreeWalkOptions::new(), cache.clone());
+    let root = second.eval_root().expect("second attrset evaluates");
+    let thunk_value = {
+        let attrs = second
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(second_a).expect("a exists")
+    };
+    let forced = second
+        .force_value(second_ir.root, Span::new(0, 0), thunk_value)
+        .expect("second force succeeds");
+    assert_eq!(forced.as_int(), Ok(4));
+    assert_eq!(
+        second.stats().cache_hits(),
+        0,
+        "different lowered IR artifacts must not reuse one cache entry"
+    );
+    assert_eq!(second.stats().thunks_forced(), 1);
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "different lowered IR fingerprints should allocate separate demand nodes"
+    );
+}
+
+#[test]
+fn source_less_forced_inline_thunks_include_path_base_in_cache_identity() {
+    let root = unique_temp_dir("source-less-force-cache-path-base");
+    let first_dir = root.join("first");
+    let second_dir = root.join("second");
+    fs::create_dir_all(&first_dir).expect("first dir exists");
+    fs::create_dir_all(&second_dir).expect("second dir exists");
+    let first_dir = fs::canonicalize(&first_dir).expect("first dir canonicalizes");
+    let second_dir = fs::canonicalize(&second_dir).expect("second dir canonicalizes");
+    let source = "{ a = ./target; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for path_base in [&first_dir, &second_dir] {
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(path_base))
+            .expect("path base is absolute");
+        let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache.clone());
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("thunk force succeeds");
+        assert_eq!(
+            path_value_bytes(&evaluator, forced),
+            path_bytes(&path_base.join("target"))
+        );
+        assert_eq!(
+            evaluator.stats().cache_hits(),
+            0,
+            "different path bases must not reuse a path payload"
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "same lowered IR under different path bases must not reuse one demand node"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_less_forced_inline_thunks_include_store_dir_in_cache_identity() {
+    let root = unique_temp_dir("source-less-force-cache-store-dir");
+    let first_store = root.join("store-a");
+    let second_store = root.join("store-b");
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for store_dir in [&first_store, &second_store] {
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_store_dir(path_bytes(store_dir))
+            .expect("store dir is absolute");
+        let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache.clone());
+        let forced = force_attr_a(&mut evaluator, &ir, a);
+        assert_eq!(forced.as_int(), Ok(3));
+        assert_eq!(
+            evaluator.stats().cache_hits(),
+            0,
+            "different source-less store dirs must not reuse one demand node"
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "same lowered IR under different store dirs must not reuse one demand node"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_less_forced_inline_thunks_include_home_dir_in_cache_identity() {
+    let root = unique_temp_dir("source-less-force-cache-home-dir");
+    let first_home = root.join("home-a");
+    let second_home = root.join("home-b");
+    fs::create_dir_all(&first_home).expect("first home exists");
+    fs::create_dir_all(&second_home).expect("second home exists");
+    fs::write(first_home.join("marker"), b"present").expect("first marker exists");
+    let first_home = fs::canonicalize(&first_home).expect("first home canonicalizes");
+    let second_home = fs::canonicalize(&second_home).expect("second home canonicalizes");
+    let source = "{ a = builtins.pathExists ~/marker; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (home_dir, expected) in [(&first_home, true), (&second_home, false)] {
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_home_dir(path_bytes(home_dir))
+            .expect("home dir is absolute");
+        let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache.clone());
+        let forced = force_attr_a(&mut evaluator, &ir, a);
+        assert_eq!(forced.as_bool(), Ok(expected));
+        assert_eq!(
+            evaluator.stats().cache_hits(),
+            0,
+            "different source-less home dirs must not reuse one demand node"
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        4,
+        "different source-less home dirs should produce separate expression and input nodes"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_less_forced_inline_thunks_include_eval_mode_in_cache_identity() {
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for mode in [EvalMode::Impure, EvalMode::Pure] {
+        let options = TreeWalkOptions::with_eval_mode(mode);
+        let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache.clone());
+        let forced = force_attr_a(&mut evaluator, &ir, a);
+        assert_eq!(forced.as_int(), Ok(3));
+        assert_eq!(
+            evaluator.stats().cache_hits(),
+            0,
+            "different source-less eval modes must not reuse one demand node"
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "same lowered IR under different eval modes must not reuse one demand node"
+    );
 }
 
 #[test]
@@ -1457,6 +1761,78 @@ fn changed_read_file_string_payload_thunks_miss_after_revalidation() {
     let changed_string = changed
         .heap()
         .get_string(forced_changed)
+        .expect("changed readFile result is a string");
+
+    assert_eq!(changed_string.bytes(), b"changed");
+    assert_eq!(changed.stats().thunks_forced(), 1);
+    assert_eq!(changed.stats().cache_hits(), 0);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_less_read_file_string_payload_thunks_hit_and_miss_after_revalidation() {
+    let root = unique_temp_dir("source-less-force-cache-read-file-string-payload");
+    fs::write(root.join("target"), b"payload").expect("target writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let target_path = path_bytes(&root.join("target"));
+    let source = "{ a = builtins.readFile ./target; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_eval_cache(&ir, options, cache.clone());
+    let forced = force_attr_a(&mut eval, &ir, a);
+    assert_eq!(
+        eval.heap()
+            .get_string(forced)
+            .expect("readFile result is a string")
+            .bytes(),
+        b"payload"
+    );
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut second = TreeWalk::with_options_and_eval_cache(&ir, second_options, cache.clone());
+    let second_forced = force_attr_a(&mut second, &ir, a);
+    let second_string = second
+        .heap()
+        .get_string(second_forced)
+        .expect("cached string payload rehydrates into second heap");
+
+    assert_eq!(second_string.bytes(), b"payload");
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "stable source-less readFile payloads should hit after input revalidation"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+    let expected_trace = vec![
+        ImpureInputFingerprint::read_file(&target_path, b"payload").expect("fingerprint builds"),
+    ];
+    assert_eq!(
+        second.impure_input_trace(),
+        expected_trace.as_slice(),
+        "source-less cache-hit revalidation must replay readFile edges"
+    );
+
+    fs::write(root.join("target"), b"changed").expect("target changes");
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut changed = TreeWalk::with_options_and_eval_cache(&ir, changed_options, cache.clone());
+    let changed_forced = force_attr_a(&mut changed, &ir, a);
+    let changed_string = changed
+        .heap()
+        .get_string(changed_forced)
         .expect("changed readFile result is a string");
 
     assert_eq!(changed_string.bytes(), b"changed");
@@ -2962,6 +3338,47 @@ fn lowered_captured_inline_forced_thunks_use_free_variable_hashes() {
         runtime.cache().expect("cache is enabled").len(),
         2,
         "different inline lambda arguments should create distinct demand nodes"
+    );
+}
+
+#[test]
+fn source_less_lowered_captured_inline_forced_thunks_use_free_variable_hashes() {
+    let source = "let f = x: { a = x + 2; }; in [ (f 1).a (f 5).a ]";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator =
+        TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache.clone());
+    let root = evaluator.eval_root().expect("list evaluates");
+    let elements = {
+        let list = evaluator
+            .heap()
+            .get_list(root)
+            .expect("root list is heap-owned");
+        [
+            list.get(0).expect("first result exists"),
+            list.get(1).expect("second result exists"),
+        ]
+    };
+
+    let first = evaluator
+        .force_value(ir.root, Span::new(0, 0), elements[0])
+        .expect("first captured attr force succeeds");
+    assert_eq!(first.as_int(), Ok(3));
+    let second = evaluator
+        .force_value(ir.root, Span::new(0, 0), elements[1])
+        .expect("second captured attr force succeeds");
+
+    assert_eq!(second.as_int(), Ok(7));
+    assert_eq!(
+        evaluator.stats().cache_hits(),
+        0,
+        "source-less lowered attr bodies with different lambda arguments must not cache hit"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "different source-less inline lambda arguments should create distinct demand nodes"
     );
 }
 

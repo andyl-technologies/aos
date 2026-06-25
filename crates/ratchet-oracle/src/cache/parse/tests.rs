@@ -61,6 +61,11 @@ fn bundle_with_meta(bundle: &ParseArtifactBundle, meta: ParseCacheMeta) -> Parse
     )
 }
 
+fn lowered_ir_for_source(source: &str) -> Ir {
+    let resolved = resolve(parse_str(source).expect("source parses")).expect("scope resolves");
+    nix_lower(file_local_resolved(&resolved).expect("symbols remap")).expect("resolved AST lowers")
+}
+
 #[test]
 fn keys_depend_on_source_schema_and_flags() {
     let flags = ParseCacheFlags::new();
@@ -80,6 +85,43 @@ fn keys_depend_on_source_schema_and_flags() {
         )
     );
     assert_eq!(key.to_hex().len(), 64);
+}
+
+#[test]
+fn lowered_ir_fingerprint_is_stable_for_same_artifact() {
+    let ir = lowered_ir_for_source("{ a = 1 + 2; }");
+
+    assert_eq!(
+        lowered_ir_fingerprint(&ir).expect("fingerprint computes"),
+        lowered_ir_fingerprint(&ir).expect("fingerprint computes again")
+    );
+}
+
+#[test]
+fn lowered_ir_fingerprint_depends_on_symbol_artifact() {
+    let first = lowered_ir_for_source(r#"{ a = "x"; }"#);
+    let second = lowered_ir_for_source(r#"{ a = "y"; }"#);
+    assert_eq!(
+        encode_lowered_ir(&first).expect("first IR encodes"),
+        encode_lowered_ir(&second).expect("second IR encodes"),
+        "the IR artifact alone should not distinguish equal-shaped string symbols"
+    );
+
+    assert_ne!(
+        lowered_ir_fingerprint(&first).expect("first fingerprint computes"),
+        lowered_ir_fingerprint(&second).expect("second fingerprint computes")
+    );
+}
+
+#[test]
+fn lowered_ir_fingerprint_depends_on_ir_artifact() {
+    let first = lowered_ir_for_source("{ a = 1; }");
+    let second = lowered_ir_for_source("{ a = 1 + 2; }");
+
+    assert_ne!(
+        lowered_ir_fingerprint(&first).expect("first fingerprint computes"),
+        lowered_ir_fingerprint(&second).expect("second fingerprint computes")
+    );
 }
 
 #[test]

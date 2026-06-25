@@ -58,9 +58,10 @@ impl TreeWalk {
     /// Creates a tree-walk evaluator over `ir` with caller-owned cache state.
     ///
     /// The cache runtime stays advisory. Disabled runtimes are no-ops; enabled
-    /// runtimes record source-backed forced inline thunk results and may reuse
-    /// clean pure inline-scalar force results for a conservative IR subset.
-    /// They do not perform general memo lookup or persistence.
+    /// runtimes record source-backed or lowered-IR-backed forced inline thunk
+    /// results and may reuse clean pure inline-scalar force results for a
+    /// conservative IR subset. They do not perform general memo lookup or
+    /// persistence.
     pub fn with_options_and_eval_cache(
         ir: &Ir,
         options: TreeWalkOptions,
@@ -128,8 +129,9 @@ impl TreeWalk {
     /// Creates a source-backed tree-walk evaluator with caller-owned cache state.
     ///
     /// This is the cache-sharing variant of [`Self::with_options_and_source`].
-    /// Source provenance is also used as the first expression-identity
-    /// component for advisory demand-graph observations.
+    /// Source provenance is used instead of the lowered-IR fingerprint as the
+    /// first expression-identity component for advisory demand-graph
+    /// observations.
     pub fn with_options_and_source_and_eval_cache(
         ir: &Ir,
         options: TreeWalkOptions,
@@ -713,7 +715,7 @@ impl TreeWalk {
             return None;
         }
         Some(CacheExprIdentity::new(
-            Self::cache_source_identity_hash(module)?,
+            Self::cache_module_identity_hash(module)?,
             body.id(),
         ))
     }
@@ -724,7 +726,7 @@ impl TreeWalk {
             return None;
         }
         Some(CacheExprIdentity::new(
-            Self::cache_source_identity_hash(module)?,
+            Self::cache_module_identity_hash(module)?,
             body.id(),
         ))
     }
@@ -955,12 +957,22 @@ impl TreeWalk {
         true
     }
 
-    fn cache_source_identity_hash(module: &TreeWalkModule) -> Option<DurableBlake3Hash> {
-        let source = module.source.as_ref()?;
+    fn cache_module_identity_hash(module: &TreeWalkModule) -> Option<DurableBlake3Hash> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
-        Self::update_cache_identity_chunk(&mut hasher, &source.name)?;
-        Self::update_cache_identity_chunk(&mut hasher, &source.bytes)?;
+        match &module.source {
+            Some(source) => {
+                hasher.update(b"source-v1");
+                Self::update_cache_identity_chunk(&mut hasher, &source.name)?;
+                Self::update_cache_identity_chunk(&mut hasher, &source.bytes)?;
+            }
+            None => {
+                hasher.update(b"lowered-ir-v1");
+                let ir_hash = lowered_ir_fingerprint(&module.ir).ok()?;
+                let ir_hash_bytes = ir_hash.as_bytes();
+                Self::update_cache_identity_chunk(&mut hasher, &ir_hash_bytes)?;
+            }
+        }
         match &module.path_literal_base {
             Some(path_literal_base) => {
                 hasher.update(b"path-literal-base");

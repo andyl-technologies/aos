@@ -83,10 +83,9 @@ pub fn eval_whnf_owned_with_options_and_realizer(
 /// Evaluates an IR root with explicit options, IFD, and caller-owned cache state.
 ///
 /// The supplied cache runtime remains advisory: enabled runtimes may observe
-/// source-backed forced inline thunk results and reuse clean pure inline-scalar
-/// force results for a conservative IR subset when source provenance is
-/// available. They do not perform general memo lookup or persistence through
-/// this entry point.
+/// source-backed or lowered-IR-backed forced inline thunk results and reuse
+/// clean pure inline-scalar force results for a conservative IR subset. They do
+/// not perform general memo lookup or persistence through this entry point.
 ///
 /// # Errors
 ///

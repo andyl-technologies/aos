@@ -29,7 +29,7 @@ pub use key::{CacheExprIdentity, CacheKeyError, DemandCacheKey};
 pub use parse::{
     CachedFileParse, CachedParse, FileParseMemo, PARSE_CACHE_SCHEMA_VERSION, ParseArtifactBundle,
     ParseCache, ParseCacheEntry, ParseCacheError, ParseCacheFlags, ParseCacheKey, ParseCacheMeta,
-    ParseFileKey,
+    ParseFileKey, lowered_ir_fingerprint,
 };
 pub use persist::{
     PERSIST_BLOB_INDEX_ENTRY_LEN, PERSIST_BLOB_INDEX_KEY_LEN, PERSIST_BLOB_INDEX_VALUE_LEN,

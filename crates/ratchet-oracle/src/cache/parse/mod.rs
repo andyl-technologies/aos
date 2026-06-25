@@ -45,6 +45,7 @@ use aos_nix_dialect::nix_lower;
 pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 8;
 
 const KEY_PERSONALIZATION: &[u8] = b"aos-nix-parse-cache-key-v1";
+const LOWERED_IR_FINGERPRINT_DOMAIN: &[u8] = b"aos-nix-lowered-ir-fingerprint-v1";
 const FLAG_ENCODING_VERSION: u8 = 1;
 const IR_MAGIC: &[u8; 8] = b"AOSNIXIR";
 const RESOLVED_MAGIC: &[u8; 8] = b"AOSNIXRS";
@@ -111,6 +112,33 @@ impl fmt::Display for ParseCacheKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.to_hex())
     }
+}
+
+/// Computes a durable fingerprint for a lowered IR artifact and its symbols.
+///
+/// This hashes the same stable `ir.bin` and `symbols.bin` encodings that the
+/// parse cache stores, salted with the parse-cache schema version. It is used
+/// when callers need a source-independent identity for an already-lowered
+/// expression.
+///
+/// # Errors
+///
+/// Returns [`ParseCacheError`] if the lowered IR or symbol-table artifact cannot
+/// be encoded.
+pub fn lowered_ir_fingerprint(ir: &Ir) -> Result<DurableBlake3Hash, ParseCacheError> {
+    let ir_bytes = encode_lowered_ir(ir)?;
+    let symbol_bytes = encode_symbols(&ir.symbols)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(LOWERED_IR_FINGERPRINT_DOMAIN);
+    hasher.update(&PARSE_CACHE_SCHEMA_VERSION.to_le_bytes());
+    update_fingerprint_chunk(&mut hasher, &ir_bytes);
+    update_fingerprint_chunk(&mut hasher, &symbol_bytes);
+    Ok(DurableBlake3Hash::from_hasher(hasher))
+}
+
+fn update_fingerprint_chunk(hasher: &mut blake3::Hasher, chunk: &[u8]) {
+    hasher.update(&(chunk.len() as u128).to_le_bytes());
+    hasher.update(chunk);
 }
 
 /// A canonical import/file-resolution memo key.
