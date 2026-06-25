@@ -156,6 +156,48 @@
       enforces = "PATCH-31,E18,SHM-17";
       capability = "guest network TX callback interception with upstream fallback";
     }
+    {
+      file = "0021-crucible-sim-loop-fix.patch";
+      catalogName = "crucible-sim-loop-fix";
+      class = "D";
+      enforces = "PATCH-34,DET-1,NG-1";
+      capability = "sim-mode single-vCPU loop and exit-request bookkeeping";
+    }
+    {
+      file = "0022-crucible-sim-first-exit.patch";
+      catalogName = "crucible-sim-first-exit";
+      class = "D";
+      enforces = "PATCH-34,DET-1,INV-10";
+      capability = "sim-mode first-exit phase normalization";
+    }
+    {
+      file = "0023-crucible-sim-skip-second-events.patch";
+      catalogName = "crucible-sim-skip-second-events";
+      class = "D";
+      enforces = "PATCH-34,DET-1";
+      capability = "sim-mode redundant post-wait events pass suppression";
+    }
+    {
+      file = "0024-crucible-sim-poll-immediate.patch";
+      catalogName = "crucible-sim-poll-immediate";
+      class = "D";
+      enforces = "PATCH-34,DET-13,E19";
+      capability = "sim-mode time-control-guarded shmem drain and one-shot re-poll before coroutine yield";
+    }
+    {
+      file = "0025-crucible-sim-idle-callbacks.patch";
+      catalogName = "crucible-sim-idle-callbacks";
+      class = "D";
+      enforces = "PATCH-34,TIME-24,INV-8";
+      capability = "sim-mode vCPU idle and resume callback boundaries";
+    }
+    {
+      file = "0026-crucible-sim-shmem-dispatch.patch";
+      catalogName = "crucible-sim-shmem-dispatch";
+      class = "F";
+      enforces = "PATCH-34,SHM-1";
+      capability = "sim-mode shmem callback bridge for current-icount publish, max-advance reads, and TCG budget clamp";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

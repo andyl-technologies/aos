@@ -45,6 +45,12 @@
       patch -p1 < ${./qemu-patches/0018-crucible-dev-cb-api.patch}
       patch -p1 < ${./qemu-patches/0019-crucible-9p-shmem.patch}
       patch -p1 < ${./qemu-patches/0020-crucible-net-tx-callback.patch}
+      patch -p1 < ${./qemu-patches/0021-crucible-sim-loop-fix.patch}
+      patch -p1 < ${./qemu-patches/0022-crucible-sim-first-exit.patch}
+      patch -p1 < ${./qemu-patches/0023-crucible-sim-skip-second-events.patch}
+      patch -p1 < ${./qemu-patches/0024-crucible-sim-poll-immediate.patch}
+      patch -p1 < ${./qemu-patches/0025-crucible-sim-idle-callbacks.patch}
+      patch -p1 < ${./qemu-patches/0026-crucible-sim-shmem-dispatch.patch}
     ''
     else "";
 in

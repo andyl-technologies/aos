@@ -957,20 +957,26 @@ patches are dev-only and **not shipped**.
 
 ### crucible-sim-skip-second-events — drop the redundant second events pass (D)
 
-- **Enforces:** [DET-1] (and perf). Removes a redundant `sim_process_events()`
-  call after `sim_wait_io_event()`: the plugin's time-control advance already
-  fires virtual-clock timers inline, so timers are dispatched before control
-  returns to the loop; the AIO/GLib polls the second call would do happen on the
-  next iteration anyway. Halves the fixed per-`tcg_cpu_exec` overhead.
+- **Enforces:** [DET-1] (and perf). Removes the redundant no-work
+  `sim_process_events()` call after `sim_wait_io_event()`: the plugin's
+  time-control advance already fires virtual-clock timers inline, so timers are
+  dispatched before control returns to the loop; the AIO/GLib polls the second
+  call would do happen on the next iteration anyway. The pass still runs when a
+  CPU has queued work, stop, or unplug state, so QMP quit and process
+  termination remain serviced.
 - **Micro-test:** assert the per-exec timer-dispatch behavior is unchanged
-  (bit-identical icount trace) with the second pass removed.
+  (bit-identical icount trace) with the no-work second pass removed, and that
+  pending CPU lifecycle work still reaches `qemu_wait_io_event_common`.
 
 ### crucible-sim-poll-immediate — immediate shmem poll (D)
 
-- **Enforces:** [DET-13], E19. Arms the shmem poll timer for "now + 0" rather than
-  "now + 1 us" so any `main_loop_wait(nonblocking=true)` fires the poll regardless
-  of wall-clock progress, closing the wall-clock-sensitive window in which a
-  device IRQ would otherwise propagate on a later iteration.
+- **Enforces:** [DET-13], E19. When a shmem response is pending under the sim
+  accelerator and plugin time control is active, runs one nonblocking main-loop
+  drain and re-polls the shmem completion callback before yielding the
+  coroutine. This closes the wall-clock-sensitive window in which a device IRQ
+  would otherwise propagate on a later iteration while still falling back to the
+  normal yield path if the response remains pending or the drain API fails
+  closed outside its permitted BQL/time-control context.
 - **Micro-test:** with a response present in shmem, assert the poll fires on the
   next drain and the IRQ propagates at a deterministic icount across two runs.
 
@@ -1003,11 +1009,14 @@ patches are dev-only and **not shipped**.
 ### crucible-sim-shmem-dispatch — shmem co-sim dispatch glue (F)
 
 - **Enforces:** [SHM-1]. A small dispatch stub (`tcg-accel-ops-sim-shmem.c`)
-  connecting the sim accelerator to the shmem region's per-node clock publish /
-  ceiling read, so the accelerator participates in the SPSC handshake of
-  [`13-shmem-abi.md`](13-shmem-abi.md) §13.6.
-- **Micro-test:** assert the accelerator publishes `current_icount` and honors
-  `max_advance_icount` exactly as the ABI requires (it stops at the ceiling).
+  connecting the sim accelerator to plugin-owned shmem callbacks for per-node
+  clock publish / ceiling read, so the accelerator participates in the SPSC
+  handshake of [`13-shmem-abi.md`](13-shmem-abi.md) §13.6 while the plugin owns
+  the actual ABI acquire/release operations.
+- **Micro-test:** assert the bridge is inert until callbacks are registered, then
+  publishes `current_icount`, clamps the per-run TCG budget to
+  `max_advance_icount`, and parks on the scheduler wake path when no registered
+  budget remains.
 
 - **[PATCH-34]** The sim-correctness patches (`crucible-sim-loop-fix`,
   `crucible-sim-first-exit`, `crucible-sim-skip-second-events`,
@@ -1324,8 +1333,8 @@ time-control primitives the whole design rests on.
     `checks.crucible.phase0.s5VirtualMemory`, the existing Phase 0 I/O-trap
     plugin evidence, `checks.crucible.phase2.qemuPatchSeries`, and
     `checks.crucible.phase2.gates.patchMicrotests`: no QEMU patch was added,
-    and the carried patch count remains 20. The pinned QEMU 10.0
-    plugin header already exposes `qemu_plugin_register_vcpu_tb_trans_cb`,
+    for the doorbell path. The pinned QEMU 10.0 plugin header already exposes
+    `qemu_plugin_register_vcpu_tb_trans_cb`,
     `qemu_plugin_register_vcpu_mem_cb`, `qemu_plugin_get_hwaddr`,
     `qemu_plugin_hwaddr_is_io`, `qemu_plugin_read_register`, and
     `qemu_plugin_read_memory_vaddr`. The white-box doorbell crate now labels its
@@ -1340,11 +1349,32 @@ time-control primitives the whole design rests on.
     no trap when disabled, and any future host-to-guest write/reply surface
     remains outside this no-patch guest-to-host decision until a separate
     spike-gated lifecycle item adopts it.
-- [ ] **T-PATCH-16** Implement the sim-correctness patches
+- [x] **T-PATCH-16** Implement the sim-correctness patches
   (`crucible-sim-loop-fix`, `crucible-sim-first-exit`,
   `crucible-sim-skip-second-events`, `crucible-sim-poll-immediate`,
   `crucible-sim-idle-callbacks`, `crucible-sim-shmem-dispatch`) with bit-exact
   cross-run micro-tests. — satisfies [PATCH-34]; spec §11.8.
+  - Completed by `0021-crucible-sim-loop-fix.patch`,
+    `0022-crucible-sim-first-exit.patch`,
+    `0023-crucible-sim-skip-second-events.patch`,
+    `0024-crucible-sim-poll-immediate.patch`,
+    `0025-crucible-sim-idle-callbacks.patch`,
+    `0026-crucible-sim-shmem-dispatch.patch`,
+    `checks.crucible.phase1.qemuSimCorrectness`, and
+    `gate:patch-microtests`. The patch stack now names the sim-mode loop
+    bookkeeping, first-exit normalization, lifecycle-safe redundant-event-pass
+    suppression, immediate shmem drain/re-poll, idle/resume callback boundary,
+    and shmem
+    current-icount / max-advance callback bridge plus callback-registration
+    guard and per-run budget clamp explicitly. The shared focused
+    gate applies the full carried QEMU patch stack against the pinned QEMU
+    source, verifies each named sim-correctness surface, runs a focused C
+    fixture for the new loop/re-poll/time-control-guard/idle/shmem inertness,
+    ceiling, and budget-clamp behavior, consumes
+    `checks.crucible.phase1.simAccel` for the bit-identical cross-run fixed
+    icount TB trace, consumes `checks.crucible.phase1.pluginTimeAdvance` for the
+    drain/BQL fail-closed evidence, and publishes one per-patch
+    `gate:patch-microtests` result for each T-PATCH-16 patch.
 - [ ] **T-PATCH-17** Implement `crucible-sim-batch-tcg-exec` as a
   determinism-preserving perf patch (fixed N, ceiling/timer discipline) gated by a
   bit-identical batching-on-vs-off icount diff. — satisfies [PATCH-35]; spec

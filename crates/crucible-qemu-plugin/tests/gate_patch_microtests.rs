@@ -28,6 +28,12 @@ const EXPECTED_PATCHES: &[&str] = &[
     "0018-crucible-dev-cb-api.patch",
     "0019-crucible-9p-shmem.patch",
     "0020-crucible-net-tx-callback.patch",
+    "0021-crucible-sim-loop-fix.patch",
+    "0022-crucible-sim-first-exit.patch",
+    "0023-crucible-sim-skip-second-events.patch",
+    "0024-crucible-sim-poll-immediate.patch",
+    "0025-crucible-sim-idle-callbacks.patch",
+    "0026-crucible-sim-shmem-dispatch.patch",
 ];
 
 #[test]
@@ -80,9 +86,15 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "qemu_plugin_register_wake_fd");
     assert_contains(&aggregate, "qemu_plugin_main_loop_wait");
     assert_contains(&aggregate, "qemu_plugin_register_tcg_exec_cb");
+    assert_contains(&aggregate, "qemu_plugin_register_vcpu_idle_resume_cb");
+    assert_contains(&aggregate, "qemu_plugin_register_sim_shmem_dispatch_cb");
     assert_contains(&aggregate, "qemu_plugin_register_blk_cb");
     assert_contains(&aggregate, "qemu_plugin_register_9p_cb");
     assert_contains(&aggregate, "qemu_plugin_register_net_tx_cb");
+    assert_contains(
+        &aggregate,
+        "qemu_plugin_sim_correctness_exports_present=true",
+    );
     assert_contains(&aggregate, "qemu_inert_gate_wired=true");
     assert_contains(&aggregate, "qemu_inert_depends_on_patch_microtests=true");
     assert_contains(
@@ -109,6 +121,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(
         &default_checks,
         "qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix",
+    );
+    assert_contains(
+        &default_checks,
+        "qemuSimCorrectness = import ./phase1-qemu-sim-correctness.nix",
     );
     assert_contains(
         &default_checks,
@@ -302,6 +318,36 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             "tests/crucible/phase1-qemu-net-tx-callback.c",
             "0020-crucible-net-tx-callback.patch",
         ),
+        (
+            "tests/crucible/phase1-qemu-sim-correctness.nix",
+            "tests/crucible/phase1-qemu-sim-correctness.c",
+            "0021-crucible-sim-loop-fix.patch",
+        ),
+        (
+            "tests/crucible/phase1-qemu-sim-correctness.nix",
+            "tests/crucible/phase1-qemu-sim-correctness.c",
+            "0022-crucible-sim-first-exit.patch",
+        ),
+        (
+            "tests/crucible/phase1-qemu-sim-correctness.nix",
+            "tests/crucible/phase1-qemu-sim-correctness.c",
+            "0023-crucible-sim-skip-second-events.patch",
+        ),
+        (
+            "tests/crucible/phase1-qemu-sim-correctness.nix",
+            "tests/crucible/phase1-qemu-sim-correctness.c",
+            "0024-crucible-sim-poll-immediate.patch",
+        ),
+        (
+            "tests/crucible/phase1-qemu-sim-correctness.nix",
+            "tests/crucible/phase1-qemu-sim-correctness.c",
+            "0025-crucible-sim-idle-callbacks.patch",
+        ),
+        (
+            "tests/crucible/phase1-qemu-sim-correctness.nix",
+            "tests/crucible/phase1-qemu-sim-correctness.c",
+            "0026-crucible-sim-shmem-dispatch.patch",
+        ),
     ];
 
     for (nix_path, c_path, patch) in per_patch_checks {
@@ -320,6 +366,22 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
         } else if nix_path == "tests/crucible/phase1-qemu-net-tx-callback.nix" {
             assert_contains(&nix_source, "patch=${patchName}");
             assert_contains(&nix_source, patch);
+        } else if nix_path == "tests/crucible/phase1-qemu-sim-correctness.nix" {
+            assert_contains(&nix_source, "patch=${patchName}");
+            assert_contains(&nix_source, patch);
+            assert_contains(&nix_source, "sim_correctness_fixture_exercised=true");
+            assert_contains(&nix_source, "sim_poll_immediate_repoll_microtest=true");
+            assert_contains(
+                &nix_source,
+                "sim_poll_immediate_requires_time_control=true",
+            );
+            assert_contains(
+                &nix_source,
+                "sim_poll_immediate_drain_bql_guard_validated=true",
+            );
+            assert_contains(&nix_source, "sim_idle_callbacks_missed_wake_microtest=true");
+            assert_contains(&nix_source, "sim_shmem_dispatch_ceiling_microtest=true");
+            assert_contains(&nix_source, "sim_shmem_budget_clamp_microtest=true");
         } else {
             assert_contains(&nix_source, &format!("patch={patch}"));
         }
