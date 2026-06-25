@@ -360,7 +360,14 @@ mod entry {
                 Arc::clone(&reindexer),
                 Some(Arc::clone(&sealer)),
             )
-            .with_origin_fetch(Arc::new(crate::surface::WorkerOriginFetch)),
+            .with_origin_fetch(Arc::new(crate::surface::WorkerOriginFetch))
+            // RFC-0004 ch.14 Phase C: read-through cache hot point-key state
+            // (sessions/tokens/config/routing) off the D1 read path via Workers
+            // KV (the `SESSIONS` namespace). When the binding is absent the
+            // service falls back to the database (the pre-Phase-C path).
+            .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
+                env.kv(crate::handlers::bindings::KV_SESSIONS)?,
+            ))),
         );
 
         // Seed the editable site chrome (title/banner/footer) from D1 once per

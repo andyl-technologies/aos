@@ -239,8 +239,16 @@ green.
 
 ### Phase C — Hot point-reads to KV / LMDB
 
-- [ ] Sessions → `KvStore` (wire the already-bound `SESSIONS` KV; LMDB native).
+- [x] Sessions → `KvStore` (wire the already-bound `SESSIONS` KV; LMDB native).
       Revocation via short TTL + delete; read-your-writes not required.
+      *Done:* `cache::read_through`/`invalidate` (`cache.rs`, tested) + a `kv`
+      field/`with_kv` on `RpcService`; `resolve_session_cached` /
+      `invalidate_session_cache` serve the session lookup off KV with a 60 s TTL
+      and an exact `expires_at` recheck (and skip `validate_session`'s
+      `last_seen_at` write on a hit). Worker wires `WorkerKv` over `SESSIONS`; the
+      browse read path (`session_indicator`) uses it. *Remaining (follow-up):*
+      explicit invalidation at the console logout site and caching the console's
+      own session reads — TTL already bounds revocation lag to ≤60 s.
 - [ ] API tokens → `KvStore` read cache with D1 as source-on-miss; invalidate on
       revoke.
 - [ ] `instance_config` + site chrome → `KvStore`; push-update on save.

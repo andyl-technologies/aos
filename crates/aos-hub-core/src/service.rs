@@ -810,6 +810,76 @@ pub struct RpcService {
     /// only engaged when the cache's primary frontend's
     /// [`ProxyConfig::stream`](crate::db::ProxyConfig::stream) is set.
     pub origin_fetch: Option<Arc<dyn crate::fetch::OriginFetch>>,
+    /// The hot-state key-value store ([`KvStore`](crate::kv::KvStore)) for
+    /// read-through caching of point-key lookups — sessions, tokens, instance
+    /// config, frontend routing, trust rosters (RFC-0004 ch.14 Phase C).
+    ///
+    /// `None` (the default) routes every such read straight to the database, the
+    /// pre-Phase-C behavior; wired per shell via [`with_kv`](Self::with_kv) — the
+    /// Worker a Workers KV store (`WorkerKv`), the native hub an in-process or
+    /// embedded store. When present, the cache-aside read path
+    /// ([`crate::cache::read_through`]) serves hot keys off KV with a short TTL
+    /// and invalidates on write, keeping these reads off the D1 session cost.
+    pub kv: Option<Arc<dyn crate::kv::KvStore>>,
+}
+
+/// The KV key a session resolution is cached under: `sess:` + the SHA-256 hex of
+/// the cookie secret (never the raw secret, which must not appear in a key).
+fn session_cache_key(secret: &str) -> String {
+    format!("sess:{}", crate::auth::token::sha256_hex(secret))
+}
+
+/// The serializable projection of a [`ResolvedSession`](crate::web::session::ResolvedSession)
+/// stored in KV (RFC-0004 ch.14 Phase C).
+///
+/// Mirrors `SessionAuth`'s integer fields plus the user's email — everything the
+/// resolution carries except the secret (re-attached on read). Kept local to the
+/// service so the `db` types need no serde derives.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedSession {
+    user_id: i64,
+    auth_level: i64,
+    last_authenticated_at: i64,
+    expires_at: i64,
+    email: String,
+}
+
+impl CachedSession {
+    /// Projects a freshly-resolved session into its cacheable form.
+    fn from_resolved(rs: &crate::web::session::ResolvedSession) -> CachedSession {
+        CachedSession {
+            user_id: rs.auth.user_id,
+            auth_level: rs.auth.auth_level,
+            last_authenticated_at: rs.auth.last_authenticated_at,
+            expires_at: rs.auth.expires_at,
+            email: rs.email.clone(),
+        }
+    }
+
+    /// Rebuilds a [`ResolvedSession`](crate::web::session::ResolvedSession) from a
+    /// cached projection, or `None` when it has expired as of `now`.
+    ///
+    /// The expiry recheck makes the short cache TTL safe: an entry that expires
+    /// mid-window is never served, exactly as `validate_session` would reject it.
+    fn into_resolved(
+        self,
+        secret: &str,
+        now: i64,
+    ) -> Option<crate::web::session::ResolvedSession> {
+        if self.expires_at <= now {
+            return None;
+        }
+        Some(crate::web::session::ResolvedSession {
+            secret: secret.to_string(),
+            auth: crate::db::SessionAuth {
+                user_id: self.user_id,
+                auth_level: self.auth_level,
+                last_authenticated_at: self.last_authenticated_at,
+                expires_at: self.expires_at,
+            },
+            email: self.email,
+        })
+    }
 }
 
 impl RpcService {
@@ -838,6 +908,75 @@ impl RpcService {
             reindexer,
             sealer,
             origin_fetch: None,
+            kv: None,
+        }
+    }
+
+    /// Attach a [`KvStore`](crate::kv::KvStore) for read-through caching of hot
+    /// point-key state, returning the modified service.
+    ///
+    /// Without it, sessions/tokens/config/routing reads go straight to the
+    /// database; with it, those reads are served cache-aside off KV with a short
+    /// TTL and invalidated on write (RFC-0004 ch.14 Phase C).
+    #[must_use]
+    pub fn with_kv(mut self, kv: Arc<dyn crate::kv::KvStore>) -> Self {
+        self.kv = Some(kv);
+        self
+    }
+
+    /// Resolves a session from its cookie secret, read-through cached in KV when
+    /// a [`KvStore`](crate::kv::KvStore) is attached (RFC-0004 ch.14 Phase C).
+    ///
+    /// On the hot path — the session lookup runs on **every** authenticated
+    /// request — this serves the resolution from KV (sub-ms, off the D1 session
+    /// cost) for [`HOT_TTL_SECS`](crate::cache::HOT_TTL_SECS), and additionally
+    /// avoids the `last_seen_at` write `validate_session` performs on a cache
+    /// hit. Expiry is still enforced exactly: the cached `expires_at` is
+    /// re-checked against the current clock, so an expired session is never
+    /// served from cache even within the TTL window. Revocation lag is bounded
+    /// to the TTL (≤60 s) plus any explicit [`invalidate_session_cache`] on
+    /// logout — the eventual-consistency contract this tier accepts.
+    ///
+    /// With no `kv` attached this is exactly
+    /// [`resolve_session`](crate::web::session::resolve_session) against the
+    /// database (the pre-Phase-C path).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a KV read failure or a database failure while loading
+    /// the session.
+    pub async fn resolve_session_cached(
+        &self,
+        secret: &str,
+    ) -> anyhow::Result<Option<crate::web::session::ResolvedSession>> {
+        let Some(kv) = &self.kv else {
+            return crate::web::session::resolve_session(&self.db, secret).await;
+        };
+        let key = session_cache_key(secret);
+        let db = &self.db;
+        let cached: Option<CachedSession> = crate::cache::read_through(
+            kv.as_ref(),
+            &key,
+            Some(crate::cache::HOT_TTL_SECS),
+            || async move {
+                Ok(crate::web::session::resolve_session(db, secret)
+                    .await?
+                    .map(|rs| CachedSession::from_resolved(&rs)))
+            },
+        )
+        .await?;
+        let now = clock::now_unix_secs();
+        Ok(cached.and_then(|c| c.into_resolved(secret, now)))
+    }
+
+    /// Invalidates the KV-cached session resolution for `secret` (delete-on-write).
+    ///
+    /// Call on logout / session revocation so the change is observed at the next
+    /// read rather than after the TTL. A no-op when no [`KvStore`](crate::kv::KvStore)
+    /// is attached.
+    pub async fn invalidate_session_cache(&self, secret: &str) {
+        if let Some(kv) = &self.kv {
+            crate::cache::invalidate(kv.as_ref(), &session_cache_key(secret)).await;
         }
     }
 

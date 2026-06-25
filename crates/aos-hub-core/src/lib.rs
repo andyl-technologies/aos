@@ -49,6 +49,7 @@
 
 pub mod auth;
 pub mod backend;
+pub mod cache;
 pub mod binding;
 pub mod binding_provision;
 pub mod cache_scan;
