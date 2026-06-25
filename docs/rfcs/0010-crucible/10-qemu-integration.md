@@ -892,12 +892,31 @@ determinism contract (04).
   ordered batch, and uses the existing `PluginDeviceIoFreeze` submit/complete
   state machine to hold HZ ticks across device-I/O bursts. The bounded
   real-time async wait remains tracked by [T-QEMU-14].
-- [ ] **T-QEMU-14** Implement the async driver bridging the synchronous node-step
+- [x] **T-QEMU-14** Implement the async driver bridging the synchronous node-step
   to bounded async socket/QMP/process I/O on a real-time host runtime decoupled
   from virtual time, with shmem-only hot path, inter-quantum yields, bounded
   per-await timeouts → crash/escalate, and no host-timing influence on any
   ordering-significant decision. — satisfies [QEMU-39], [QEMU-40], [QEMU-41],
   [QEMU-42]; spec §10.9.
+  Completed as the `crucible-qemu` bounded async driver boundary: the
+  `QemuHostIoRuntime` trait owns real-time child awaits and explicit
+  control-plane yields, `QemuAsyncDriverPolicy` requires nonzero timeouts for
+  handshake, QMP command, process-event, and advance-completion waits, and
+  `run_bounded_qemu_node_step` starts exactly one split shared-memory quantum,
+  awaits the plugin completion with the configured budget, finishes the quantum
+  from shmem, and yields before returning. `QemuNode::advance_to_ceiling` is
+  wired through that driver using the concrete `QemuQuantumShmemHotPath`
+  start/finish adapter, so the scheduler-facing path cannot bypass the bounded
+  wait. Advance and lifecycle timeouts are converted into typed crashed-node
+  status (`BoundedAwaitTimeout`) and shutdown escalation instead of a retry or
+  hang, including QMP timeout channel errors observed through the node wrapper.
+  `QmpClient` requires a timeout-capable stream, applies one total deadline to
+  each greeting or command exchange, caps JSON-line bytes and skipped async
+  events, and installs read/write timeouts before stream operations. The driver
+  asserts that quantum operations are shared-memory-only, rejects per-quantum QMP
+  or plugin-IPC operations, and the gate forbids wall-clock reads, randomness,
+  sleeps, and nondeterministic select APIs in the ordering-significant driver
+  path.
 - [ ] **T-QEMU-15** Extend the launch-config builder and validator for
   multi-vCPU single-threaded round-robin: emit `-accel tcg,thread=single` with
   `-smp N`, set the round-robin switch boundary to the scenario's

@@ -193,6 +193,7 @@ in {
     qemuPluginRoundRobin = import ./phase2-plugin-round-robin.nix {inherit pkgs lib;};
     qemuPluginPreemption = import ./phase2-plugin-preemption.nix {inherit pkgs lib;};
     qemuPluginVcpuIntrospection = import ./phase2-plugin-vcpu-introspection.nix {inherit pkgs lib;};
+    qemuAsyncDriver = import ./phase2-qemu-async-driver.nix {inherit pkgs lib;};
     qemuCrashDetection = import ./phase2-qemu-crash-detection.nix {inherit pkgs lib;};
     qemuDeterminismBoundary = import ./phase2-qemu-determinism-boundary.nix {inherit pkgs lib;};
     qemuLaunchBuilder = import ./phase2-qemu-launch-builder.nix {inherit pkgs lib;};

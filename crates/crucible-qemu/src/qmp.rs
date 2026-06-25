@@ -6,15 +6,18 @@
 //! waiting for a command response, and exposes no public arbitrary-command
 //! execution path.
 
-use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{self, BufReader, ErrorKind, Read, Write};
+use std::net::TcpStream;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crucible::{Checkpoint, ContentHash};
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::QemuLoadvmCommandAuthorization;
+use crate::{QemuLoadvmCommandAuthorization, QemuNodeChannelError};
 
 /// QMP command name used for capability negotiation.
 pub const QMP_CAPABILITIES_COMMAND: &str = "qmp_capabilities";
@@ -32,6 +35,52 @@ pub const QMP_SNAPSHOT_VMSTATE_DEVICE: &str = "vmstate";
 pub const QMP_JOB_QUERY_LIMIT: usize = 1200;
 /// Default delay between `query-jobs` polls for a snapshot operation.
 pub const QMP_JOB_QUERY_INTERVAL: Duration = Duration::from_millis(250);
+/// Default timeout for the initial QMP greeting.
+pub const QMP_GREETING_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default timeout for one QMP command read or write.
+pub const QMP_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default maximum bytes in one QMP JSON line.
+pub const QMP_MAX_LINE_BYTES: usize = 1024 * 1024;
+/// Default maximum asynchronous QMP event objects skipped while awaiting a command.
+pub const QMP_MAX_ASYNC_EVENTS_PER_COMMAND: usize = 1024;
+
+/// Stream contract required by the bounded QMP client.
+pub trait QmpTimeoutStream: Read + Write {
+    /// Installs the read timeout used by the next QMP receive operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] when the stream cannot install the timeout.
+    fn set_qmp_read_timeout(&mut self, timeout: Duration) -> io::Result<()>;
+
+    /// Installs the write timeout used by the next QMP send operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] when the stream cannot install the timeout.
+    fn set_qmp_write_timeout(&mut self, timeout: Duration) -> io::Result<()>;
+}
+
+impl QmpTimeoutStream for TcpStream {
+    fn set_qmp_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.set_read_timeout(Some(timeout))
+    }
+
+    fn set_qmp_write_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.set_write_timeout(Some(timeout))
+    }
+}
+
+#[cfg(unix)]
+impl QmpTimeoutStream for UnixStream {
+    fn set_qmp_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.set_read_timeout(Some(timeout))
+    }
+
+    fn set_qmp_write_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.set_write_timeout(Some(timeout))
+    }
+}
 
 /// Typed minimal QMP client over an established stream.
 #[derive(Debug)]
@@ -39,11 +88,12 @@ pub struct QmpClient<S> {
     stream: BufReader<S>,
     greeting: QmpGreeting,
     job_poll_policy: QmpJobPollPolicy,
+    io_timeout_policy: QmpIoTimeoutPolicy,
 }
 
 impl<S> QmpClient<S>
 where
-    S: Read + Write,
+    S: QmpTimeoutStream,
 {
     /// Connects a client to an established QMP stream and negotiates capabilities.
     ///
@@ -53,7 +103,11 @@ where
     /// greeting is not a QMP greeting, when the capabilities request cannot be
     /// written, or when QMP reports an error response.
     pub fn connect(stream: S) -> Result<Self, QmpError> {
-        Self::connect_with_job_poll_policy(stream, QmpJobPollPolicy::default())
+        Self::connect_with_policies(
+            stream,
+            QmpJobPollPolicy::default(),
+            QmpIoTimeoutPolicy::default(),
+        )
     }
 
     /// Connects a client with an explicit snapshot-job polling policy.
@@ -67,6 +121,23 @@ where
         stream: S,
         job_poll_policy: QmpJobPollPolicy,
     ) -> Result<Self, QmpError> {
+        Self::connect_with_policies(stream, job_poll_policy, QmpIoTimeoutPolicy::default())
+    }
+
+    /// Connects a client with explicit snapshot-job and stream timeout policies.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when either timeout is zero, when the greeting cannot
+    /// be read or decoded, when the greeting is not a QMP greeting, when the
+    /// capabilities request cannot be written, or when QMP reports an error
+    /// response.
+    pub fn connect_with_policies(
+        stream: S,
+        job_poll_policy: QmpJobPollPolicy,
+        io_timeout_policy: QmpIoTimeoutPolicy,
+    ) -> Result<Self, QmpError> {
+        io_timeout_policy.validate()?;
         let mut client = Self {
             stream: BufReader::new(stream),
             greeting: QmpGreeting {
@@ -74,6 +145,7 @@ where
                 capabilities_present: false,
             },
             job_poll_policy,
+            io_timeout_policy,
         };
         client.greeting = client.read_greeting()?;
         client.send_command(QmpCommand::Capabilities)?;
@@ -144,7 +216,8 @@ where
     }
 
     fn read_greeting(&mut self) -> Result<QmpGreeting, QmpError> {
-        let response = self.read_json_line("read QMP greeting")?;
+        let deadline = QmpOperationDeadline::new(self.io_timeout_policy.greeting_timeout);
+        let response = self.read_json_line("read QMP greeting", &deadline)?;
         let Some(qmp) = response.get("QMP") else {
             return Err(QmpError::UnexpectedGreeting {
                 response: response.to_string(),
@@ -181,17 +254,27 @@ where
         command: QmpCommand<'_>,
     ) -> Result<QmpCommandReturn, QmpError> {
         let kind = command.kind();
-        self.write_json_line(kind.wire_name(), command.request())?;
-        self.read_command_response(kind)
+        let deadline = QmpOperationDeadline::new(self.io_timeout_policy.command_timeout);
+        self.write_json_line(kind.wire_name(), command.request(), &deadline)?;
+        self.read_command_response(kind, &deadline)
     }
 
     fn read_command_response(
         &mut self,
         command: QmpCommandKind,
+        deadline: &QmpOperationDeadline,
     ) -> Result<QmpCommandReturn, QmpError> {
+        let mut skipped_events = 0usize;
         loop {
-            let response = self.read_json_line(command.wire_name())?;
+            let response = self.read_json_line(command.wire_name(), deadline)?;
             if response.get("event").is_some() {
+                skipped_events = skipped_events.saturating_add(1);
+                if skipped_events > self.io_timeout_policy.max_async_events_per_command {
+                    return Err(QmpError::AsyncEventLimitExceeded {
+                        command,
+                        limit: self.io_timeout_policy.max_async_events_per_command,
+                    });
+                }
                 continue;
             }
             if let Some(value) = response.get("return") {
@@ -251,41 +334,120 @@ where
         })
     }
 
-    fn read_json_line(&mut self, operation: &'static str) -> Result<Value, QmpError> {
-        let mut line = String::new();
-        let read = self
-            .stream
-            .read_line(&mut line)
-            .map_err(|error| QmpError::from_io(operation, error))?;
-        if read == 0 {
-            return Err(QmpError::Io {
-                operation,
-                kind: ErrorKind::UnexpectedEof,
-            });
+    fn read_json_line(
+        &mut self,
+        operation: &'static str,
+        deadline: &QmpOperationDeadline,
+    ) -> Result<Value, QmpError> {
+        let mut line = Vec::new();
+        loop {
+            if line.len() == self.io_timeout_policy.max_line_bytes {
+                return Err(QmpError::LineTooLong {
+                    operation,
+                    max_bytes: self.io_timeout_policy.max_line_bytes,
+                });
+            }
+            let remaining = deadline.remaining(operation)?;
+            self.stream
+                .get_mut()
+                .set_qmp_read_timeout(remaining)
+                .map_err(|error| QmpError::from_io("set QMP read timeout", error))?;
+            let mut byte = [0u8; 1];
+            let read = self.stream.read(&mut byte).map_err(|error| {
+                QmpError::from_io_with_timeout(operation, deadline.timeout, error)
+            })?;
+            if read == 0 {
+                return Err(QmpError::Io {
+                    operation,
+                    kind: ErrorKind::UnexpectedEof,
+                });
+            }
+            line.push(byte[0]);
+            if byte[0] == b'\n' {
+                break;
+            }
         }
-        serde_json::from_str(&line).map_err(|error| QmpError::Json {
+        serde_json::from_slice(&line).map_err(|error| QmpError::Json {
             operation,
             message: error.to_string(),
         })
     }
 
-    fn write_json_line(&mut self, operation: &'static str, request: Value) -> Result<(), QmpError> {
-        let line = serde_json::to_string(&request).map_err(|error| QmpError::Json {
+    fn write_json_line(
+        &mut self,
+        operation: &'static str,
+        request: Value,
+        deadline: &QmpOperationDeadline,
+    ) -> Result<(), QmpError> {
+        let mut line = serde_json::to_vec(&request).map_err(|error| QmpError::Json {
             operation,
             message: error.to_string(),
         })?;
-        self.stream
-            .get_mut()
-            .write_all(line.as_bytes())
-            .map_err(|error| QmpError::from_io("write QMP request", error))?;
-        self.stream
-            .get_mut()
-            .write_all(b"\r\n")
-            .map_err(|error| QmpError::from_io("write QMP request newline", error))?;
-        self.stream
-            .get_mut()
-            .flush()
-            .map_err(|error| QmpError::from_io("flush QMP request", error))
+        line.extend_from_slice(b"\r\n");
+        let mut written = 0usize;
+        while written < line.len() {
+            let remaining = deadline.remaining(operation)?;
+            self.stream
+                .get_mut()
+                .set_qmp_write_timeout(remaining)
+                .map_err(|error| QmpError::from_io("set QMP write timeout", error))?;
+            let count = self
+                .stream
+                .get_mut()
+                .write(&line[written..])
+                .map_err(|error| {
+                    QmpError::from_io_with_timeout("write QMP request", deadline.timeout, error)
+                })?;
+            if count == 0 {
+                return Err(QmpError::Io {
+                    operation: "write QMP request",
+                    kind: ErrorKind::WriteZero,
+                });
+            }
+            written = written.saturating_add(count);
+        }
+        self.stream.get_mut().flush().map_err(|error| {
+            QmpError::from_io_with_timeout("flush QMP request", deadline.timeout, error)
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct QmpOperationDeadline {
+    started_at: Instant,
+    timeout: Duration,
+}
+
+impl QmpOperationDeadline {
+    #[allow(clippy::disallowed_methods)]
+    fn new(timeout: Duration) -> Self {
+        // QMP lifecycle I/O uses host realtime only to bound child liveness; the
+        // resulting timestamp is never folded into virtual-time ordering state.
+        Self {
+            started_at: Instant::now(),
+            timeout,
+        }
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    fn remaining(&self, operation: &'static str) -> Result<Duration, QmpError> {
+        // See `new`: this deadline gates a host control-plane wait, not guest
+        // ordering or replay-visible state.
+        let elapsed = self.started_at.elapsed();
+        let Some(remaining) = self.timeout.checked_sub(elapsed) else {
+            return Err(QmpError::Timeout {
+                operation,
+                timeout: self.timeout,
+            });
+        };
+        if remaining.is_zero() {
+            Err(QmpError::Timeout {
+                operation,
+                timeout: self.timeout,
+            })
+        } else {
+            Ok(remaining)
+        }
     }
 }
 
@@ -314,6 +476,95 @@ impl Default for QmpJobPollPolicy {
         Self {
             max_polls: QMP_JOB_QUERY_LIMIT,
             poll_interval: QMP_JOB_QUERY_INTERVAL,
+        }
+    }
+}
+
+/// Timeout policy for blocking QMP stream operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpIoTimeoutPolicy {
+    /// Timeout for the initial QMP greeting read.
+    pub greeting_timeout: Duration,
+    /// Timeout for each command write and response read.
+    pub command_timeout: Duration,
+    /// Maximum bytes accepted before a QMP newline.
+    pub max_line_bytes: usize,
+    /// Maximum asynchronous event objects skipped while awaiting one command.
+    pub max_async_events_per_command: usize,
+}
+
+impl QmpIoTimeoutPolicy {
+    /// Builds a QMP I/O timeout policy from explicit budgets.
+    #[must_use]
+    pub const fn new(greeting_timeout: Duration, command_timeout: Duration) -> Self {
+        Self {
+            greeting_timeout,
+            command_timeout,
+            max_line_bytes: QMP_MAX_LINE_BYTES,
+            max_async_events_per_command: QMP_MAX_ASYNC_EVENTS_PER_COMMAND,
+        }
+    }
+
+    /// Uses one QMP command budget for both greeting and command I/O.
+    #[must_use]
+    pub const fn from_command_timeout(command_timeout: Duration) -> Self {
+        Self::new(command_timeout, command_timeout)
+    }
+
+    /// Returns this policy with a custom QMP line-size bound.
+    #[must_use]
+    pub const fn with_max_line_bytes(mut self, max_line_bytes: usize) -> Self {
+        self.max_line_bytes = max_line_bytes;
+        self
+    }
+
+    /// Returns this policy with a custom asynchronous event bound.
+    #[must_use]
+    pub const fn with_max_async_events_per_command(
+        mut self,
+        max_async_events_per_command: usize,
+    ) -> Self {
+        self.max_async_events_per_command = max_async_events_per_command;
+        self
+    }
+
+    /// Validates that all QMP stream operations have nonzero timeouts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError::UnboundedTimeout`] when either timeout is zero.
+    pub fn validate(self) -> Result<(), QmpError> {
+        if self.greeting_timeout.is_zero() {
+            return Err(QmpError::UnboundedTimeout {
+                operation: "read QMP greeting",
+            });
+        }
+        if self.command_timeout.is_zero() {
+            return Err(QmpError::UnboundedTimeout {
+                operation: "QMP command",
+            });
+        }
+        if self.max_line_bytes == 0 {
+            return Err(QmpError::InvalidBound {
+                operation: "QMP line bytes",
+            });
+        }
+        if self.max_async_events_per_command == 0 {
+            return Err(QmpError::InvalidBound {
+                operation: "QMP async events",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Default for QmpIoTimeoutPolicy {
+    fn default() -> Self {
+        Self {
+            greeting_timeout: QMP_GREETING_TIMEOUT,
+            command_timeout: QMP_COMMAND_TIMEOUT,
+            max_line_bytes: QMP_MAX_LINE_BYTES,
+            max_async_events_per_command: QMP_MAX_ASYNC_EVENTS_PER_COMMAND,
         }
     }
 }
@@ -398,6 +649,26 @@ impl QmpSnapshotTag {
 /// Typed errors returned by the minimal QMP client.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QmpError {
+    /// A QMP stream operation had no timeout budget.
+    #[error("{operation} has zero QMP timeout")]
+    UnboundedTimeout {
+        /// Operation with an invalid timeout.
+        operation: &'static str,
+    },
+    /// A QMP bound was invalid.
+    #[error("{operation} has zero QMP bound")]
+    InvalidBound {
+        /// Operation with an invalid bound.
+        operation: &'static str,
+    },
+    /// A bounded QMP stream operation timed out.
+    #[error("{operation} timed out after {timeout:?}")]
+    Timeout {
+        /// Operation being attempted.
+        operation: &'static str,
+        /// Timeout budget assigned to the operation.
+        timeout: Duration,
+    },
     /// A QMP stream operation failed.
     #[error("{operation} failed with {kind:?}")]
     Io {
@@ -458,6 +729,22 @@ pub enum QmpError {
         /// Number of `query-jobs` polls attempted.
         polls: usize,
     },
+    /// A QMP JSON line exceeded the configured byte bound before newline.
+    #[error("QMP line for {operation} exceeded {max_bytes} bytes")]
+    LineTooLong {
+        /// Operation awaiting a line.
+        operation: &'static str,
+        /// Maximum configured line size.
+        max_bytes: usize,
+    },
+    /// Too many asynchronous event objects arrived while awaiting one command response.
+    #[error("QMP command {command:?} exceeded {limit} skipped async events")]
+    AsyncEventLimitExceeded {
+        /// Command awaiting a response.
+        command: QmpCommandKind,
+        /// Maximum events skipped for the command.
+        limit: usize,
+    },
     /// QMP returned neither an event, a return object, nor an error object.
     #[error("unexpected QMP response for {command:?}: {response}")]
     UnexpectedResponse {
@@ -473,6 +760,28 @@ impl QmpError {
         Self::Io {
             operation,
             kind: error.kind(),
+        }
+    }
+
+    fn from_io_with_timeout(operation: &'static str, timeout: Duration, error: io::Error) -> Self {
+        match error.kind() {
+            ErrorKind::TimedOut | ErrorKind::WouldBlock => Self::Timeout { operation, timeout },
+            kind => Self::Io { operation, kind },
+        }
+    }
+}
+
+impl From<QmpError> for QemuNodeChannelError {
+    fn from(error: QmpError) -> Self {
+        match error {
+            QmpError::Timeout { operation, timeout } => {
+                QemuNodeChannelError::bounded_await_timeout(
+                    operation,
+                    format!("QMP operation timed out after {timeout:?}"),
+                    timeout,
+                )
+            }
+            other => QemuNodeChannelError::new("qmp", other.to_string()),
         }
     }
 }

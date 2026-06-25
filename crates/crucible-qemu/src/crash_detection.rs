@@ -8,6 +8,7 @@
 
 use std::io::{self, ErrorKind};
 use std::process::{Child, ExitStatus};
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
@@ -138,6 +139,28 @@ pub enum QemuCrashCause {
     PluginIpcClosed(QemuChannelFailure),
     /// The QMP channel closed or failed.
     QmpDisconnected(QemuChannelFailure),
+    /// A bounded await on child infrastructure timed out.
+    BoundedAwaitTimeout(QemuBoundedAwaitTimeout),
+}
+
+/// Timeout details for a bounded child-infrastructure await.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuBoundedAwaitTimeout {
+    /// Operation whose bounded wait expired.
+    pub operation: String,
+    /// Timeout budget assigned to the operation.
+    pub timeout: Duration,
+}
+
+impl QemuBoundedAwaitTimeout {
+    /// Builds bounded-await timeout details.
+    #[must_use]
+    pub fn new(operation: impl Into<String>, timeout: Duration) -> Self {
+        Self {
+            operation: operation.into(),
+            timeout,
+        }
+    }
 }
 
 /// Process-exit details captured for an unexpected child exit.
@@ -280,6 +303,18 @@ impl QemuCrashDetector {
         self.crashed(QemuCrashCause::QmpDisconnected(QemuChannelFailure::new(
             operation, detail,
         )))
+    }
+
+    /// Reports a bounded child-infrastructure await timeout as an infrastructure crash.
+    #[must_use]
+    pub fn bounded_await_timeout(
+        &self,
+        operation: impl Into<String>,
+        timeout: Duration,
+    ) -> QemuNodeRunStatus {
+        self.crashed(QemuCrashCause::BoundedAwaitTimeout(
+            QemuBoundedAwaitTimeout::new(operation, timeout),
+        ))
     }
 
     /// Converts a QMP I/O operation failure into an infrastructure crash.
