@@ -3,7 +3,7 @@
   lib,
 }: let
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  patchName = "0001-add-crucible-rr-fingerprint-helpers.patch";
+  patchName = "0001-crucible-rr-fingerprint-helpers.patch";
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-rr-fingerprint-helpers.c;
@@ -35,7 +35,7 @@
   qemuNixRequirements = [
     {
       label = "RR fingerprint helper patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch}";
+      needle = "patch -p1 < \${./qemu-patches/0001-crucible-rr-fingerprint-helpers.patch}";
     }
   ];
 
@@ -153,7 +153,7 @@ in
           script = ''
             set -eu
 
-            mkdir -p accel/tcg exec hw/boards include/qemu include/sysemu \
+            mkdir -p accel/tcg exec hw/boards include/qemu include/system \
               migration plugins qapi qemu sysemu system tcg
             for header in \
               exec/cpu-common.h \
@@ -162,20 +162,26 @@ in
               exec/ram_addr.h \
               exec/ramblock.h \
               exec/ramlist.h \
+              exec/target_page.h \
+              exec/translation-block.h \
               exec/translator.h \
               hw/boards.h \
               migration/blocker.h \
               migration/qemu-file-types.h \
               migration/vmstate.h \
+              plugins/plugin.h \
               qapi/error.h \
               qemu/cutils.h \
               qemu/error-report.h \
+              qemu/log.h \
+              qemu/main-loop.h \
               qemu/osdep.h \
+              qemu/plugin.h \
               qemu/plugin-memory.h \
               qemu/timer.h \
-              sysemu/cpus.h \
-              sysemu/cpu-timers.h \
-              sysemu/runstate.h \
+              system/cpus.h \
+              system/cpu-timers.h \
+              system/runstate.h \
               tcg/tcg.h
             do
               : > "$header"
@@ -187,6 +193,8 @@ in
             static bool icount_sleep = true;
             /* Arbitrarily pick 1MIPS as the minimum allowable speed.  */
             #define MAX_ICOUNT_SHIFT 10
+
+            bool icount_align_option;
 
             /* Do not count executed instructions */
             ICountMode use_icount = ICOUNT_DISABLED;
@@ -250,9 +258,17 @@ in
             cat > accel/tcg/tcg-accel-ops-rr.c <<'QEMU_FIXTURE'
             static void rr_wait_io_event(void)
             {
+                CPUState *cpu;
+
                 while (all_cpu_threads_idle()) {
                     rr_stop_kick_timer();
                     qemu_cond_wait_bql(first_cpu->halt_cond);
+                }
+
+                rr_start_kick_timer();
+
+                CPU_FOREACH(cpu) {
+                    qemu_wait_io_event_common(cpu);
                 }
             }
             QEMU_FIXTURE
@@ -263,7 +279,7 @@ in
             #include "migration/vmstate.h"
             #include "qapi/error.h"
             #include "qemu/error-report.h"
-            #include "sysemu/cpus.h"
+            #include "system/cpus.h"
 
             static const VMStateDescription icount_vmstate_timers = {
                 .name = "icount",
@@ -299,6 +315,7 @@ in
 
             /**
              * qemu_plugin_scoreboard_new() - alloc a new scoreboard
+             *
              * @element_size: size (in bytes) for one entry
              */
             struct qemu_plugin_scoreboard;
@@ -307,7 +324,7 @@ in
             #endif
             QEMU_FIXTURE
 
-            cat > include/sysemu/cpu-timers.h <<'QEMU_FIXTURE'
+            cat > include/system/cpu-timers.h <<'QEMU_FIXTURE'
             #ifndef CPU_TIMERS_H
             #define CPU_TIMERS_H
             bool icount_configure(QemuOpts *opts, Error **errp);
@@ -321,20 +338,16 @@ in
             QEMU_FIXTURE
 
             cat > plugins/api.c <<'QEMU_FIXTURE'
-            #ifndef CONFIG_USER_ONLY
-            #include "qemu/timer.h"
+            #include "qemu/main-loop.h"
+            #include "qemu/plugin.h"
+            #include "qemu/log.h"
             #include "tcg/tcg.h"
-            #include "exec/exec-all.h"
             #include "exec/gdbstub.h"
+            #include "exec/target_page.h"
+            #include "exec/translation-block.h"
             #include "exec/translator.h"
             #include "disas/disas.h"
-            #include "qapi/error.h"
-            #include "migration/blocker.h"
-            #include "exec/ram_addr.h"
-            #include "qemu/plugin-memory.h"
-            #include "hw/boards.h"
-            #else
-            #endif
+            #include "plugin.h"
 
             int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
             {
@@ -355,13 +368,14 @@ in
                 "-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr=record|replay,rrfile=<filename>[,rrsnapshot=<snapshot>]]\n" \
                 "                enable virtual instruction counter with 2^N clock ticks per\n" \
                 "                instruction, enable aligning the host and virtual clocks\n" \
-                "                or disable real time cpu sleeping, and optionally enable\n", QEMU_ARCH_ALL)
+                "                or disable real time cpu sleeping, and optionally enable\n" \
                 "                record-and-replay mode\n", QEMU_ARCH_ALL)
             SRST
             ``-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr=record|replay,rrfile=filename[,rrsnapshot=snapshot]]``
                 Enable virtual instruction counter. The virtual cpu will execute one
                 instruction every 2^N ns of virtual time. If ``auto`` is specified
                 then the virtual cpu speed will be automatically adjusted to keep
+                option. Whenever the guest clock is behind the host clock and if
                 ``align=on`` is specified then we print a message to the user to
                 inform about the delay. Currently this option does not work when
                 ``shift`` is ``auto``. Note: The sync algorithm will work for those
@@ -415,7 +429,7 @@ in
 
             patch --batch --fuzz=0 -p1 < "$patchSourcePath"
             cp include/qemu/qemu-plugin.h qemu/qemu-plugin.h
-            cp include/sysemu/cpu-timers.h sysemu/cpu-timers.h
+            cp include/system/cpu-timers.h system/cpu-timers.h
             cp "$microtestSourcePath" phase1-rr-fingerprint-helpers.c
             cc -std=c11 -O2 -Wall -Wextra -Werror \
               -Wno-unused-parameter -Wno-unused-variable \
@@ -454,7 +468,7 @@ in
             check=checks.crucible.phase1.rrFingerprintHelpers
             gate=gate:patch-microtests
             tasks=T-HARN-20
-            patch=0001-add-crucible-rr-fingerprint-helpers.patch
+            patch=0001-crucible-rr-fingerprint-helpers.patch
             patched_fixture_exercised=true
             stock_negative_control=true
             rr_switch_quantum_configured=true

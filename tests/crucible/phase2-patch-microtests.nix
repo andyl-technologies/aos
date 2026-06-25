@@ -14,7 +14,7 @@
 
   perPatchMicrotests = [
     {
-      patch = "0001-add-crucible-rr-fingerprint-helpers.patch";
+      patch = "0001-crucible-rr-fingerprint-helpers.patch";
       check = import ./phase1-rr-fingerprint-helpers.nix {inherit pkgs lib;};
     }
     {
@@ -26,7 +26,7 @@
       check = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
     }
     {
-      patch = "0004-crucible-deterministic-qemu-entropy.patch";
+      patch = "0004-crucible-det-glib-prng.patch";
       check = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;};
     }
     {

@@ -177,6 +177,7 @@ DETERMINISM (source elimination)                       class  enforces
   (crucible-replay-start) ....... NOT CARRIED (see §11.4)    —    NG-6 (PATCH-43)
 
 PLUGIN TIME CONTROL (API surface)                      class  enforces
+  crucible-rr-fingerprint-helpers phase-1 fp helper ABI F    DET-29, QEMU-43
   crucible-plugin-time-advance .. request+advance vtime     D    TIME-23, TIME-27
   crucible-plugin-advance-drain . drain BHs after advance   D    DET-1,  INV-10
   crucible-plugin-drain-mainloop  drain main loop in cb      D    DET-1,  INV-10
@@ -1087,13 +1088,17 @@ time-control primitives the whole design rests on.
 > populate the QEMU-integration slice of Phase 1 (foundation) and feed
 > `gate:qemu-inert` / `gate:patch-microtests`.
 
-- [ ] **T-PATCH-1** Establish the rebasable, ordered series against the pinned
+- [x] **T-PATCH-1** Establish the rebasable, ordered series against the pinned
   QEMU (≥ 10.0): tracked single-purpose commits, stable `crucible-*.patch` names,
   significant ordering (sim-accel first); require each patch to state its
   determinism invariant/capability in its commit message and the §11.3 catalog,
   classified determinism-critical vs feature; forbid any record/replay-start
   scaffolding in the series. — satisfies [PATCH-6], [PATCH-7], [PATCH-9],
   [PATCH-40], [PATCH-43]; spec §11.1.3, §11.1.4, §11.4, §11.10.
+  - Completed by `checks.crucible.phase2.qemuPatchSeries`: the carried stack is
+    pinned to QEMU 10.0.0, uses stable `NNNN-crucible-*.patch` filenames, records
+    per-patch class/invariant metadata, checks package wiring, and rejects added
+    record/replay-start scaffolding.
 - [ ] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
   micro-test + `gate:qemu-inert` + `gate:patch-microtests` aggregate, on every
   series/pin change. — satisfies [PATCH-4], [PATCH-5], [PATCH-8], [PATCH-38];

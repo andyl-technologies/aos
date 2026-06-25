@@ -124,7 +124,7 @@ series ([`11-qemu-patches.md`](11-qemu-patches.md)). The whole point is that the
   version providing the plugin time-control API the design rests on. The exact
   pinned tag and source hash MUST be recorded inline in the package and in
   [`31-decision-register.md`](31-decision-register.md). The production QEMU package
-  ([`pkgs/emulation/qemu.nix`](../../../pkgs/emulation/qemu.nix), currently 9.2.4)
+  ([`pkgs/emulation/qemu.nix`](../../../pkgs/emulation/qemu.nix), currently 10.0.0)
   MUST be advanced to the same pin (or a compatible one) so production and patched
   QEMU share a single source, satisfying the "same source" half of [INV-7].
   *Gate:* `gate:qemu-inert`. *Spec:* §26.3; satisfies [G-7], [PATCH-40].

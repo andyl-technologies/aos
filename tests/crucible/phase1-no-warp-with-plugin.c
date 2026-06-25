@@ -192,7 +192,7 @@ async_run_on_cpu(CPUState *cpu,
   callback(cpu, data);
 }
 
-#include "plugins/api.c"
+#include "plugins/api-system.c"
 #include "accel/tcg/icount-common.c"
 
 static void
