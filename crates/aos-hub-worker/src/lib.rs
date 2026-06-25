@@ -113,6 +113,8 @@ pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 pub mod consoleports;
 #[cfg(target_arch = "wasm32")]
+pub mod coordinatorobj;
+#[cfg(target_arch = "wasm32")]
 pub mod d1backend;
 #[cfg(target_arch = "wasm32")]
 pub mod handlers;
@@ -122,6 +124,8 @@ pub mod indexer;
 pub mod surface;
 #[cfg(target_arch = "wasm32")]
 pub mod tracinglog;
+#[cfg(target_arch = "wasm32")]
+pub mod workerkv;
 #[cfg(target_arch = "wasm32")]
 pub mod workerlease;
 #[cfg(target_arch = "wasm32")]

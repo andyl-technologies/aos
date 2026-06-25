@@ -24,4 +24,7 @@ pub mod bindings {
     pub const R2: &str = super::R2_BINDING;
     /// The KV namespace binding name for sessions (`[[kv_namespaces]]`).
     pub const KV_SESSIONS: &str = "SESSIONS";
+    /// The Durable Object binding name for the coordinator (rate-limit/lease/
+    /// floor), `[[durable_objects.bindings]]`. RFC-0004 ch.14 Phase B.
+    pub const COORDINATOR: &str = "COORDINATOR";
 }

@@ -199,10 +199,20 @@ green.
 
 ### Phase B — Get writes off the read path (KV + DO ports)
 
-- [ ] Define a `KvStore` port in `aos-hub-core` (`get`/`put`/`delete`/TTL) with a
+- [x] Define a `KvStore` port in `aos-hub-core` (`get`/`put`/`delete`/TTL) with a
       Workers KV impl (Worker) and an LMDB impl (native).
-- [ ] Define a `Coordinator` port (atomic counter, lease, monotonic floor) with a
+      *Done:* `aos_hub_core::kv::{KvStore, InMemoryKv}` (`kv.rs`, tested) +
+      `WorkerKv` over Workers KV (`workerkv.rs`, compiles wasm). Native impl is
+      in-process (`InMemoryKv`) — the LMDB **persistent** variant is a drop-in
+      behind the same port (deferred, mirrors how `InMemoryLease` is the native
+      lease today); a no-new-C-dep sqlite-backed variant is also available.
+- [x] Define a `Coordinator` port (atomic counter, lease, monotonic floor) with a
       Durable Object impl (Worker) and an in-process/LMDB-txn impl (native).
+      *Done:* `aos_hub_core::coordinator::{Coordinator, InMemoryCoordinator}`
+      (`coordinator.rs`, tested) + the `CoordinatorObject` Durable Object and
+      `WorkerCoordinator` client (`coordinatorobj.rs`, compiles wasm). DO runtime
+      behavior is verified on deploy (needs the `[[durable_objects.bindings]]`
+      wrangler config — added in the deploy-prep item).
 - [ ] Reimplement the rate limiter over `Coordinator` (DO on Worker, in-process on
       native); delete `D1RateLimiter` and remove all `rate_limits` writes from read
       paths.
