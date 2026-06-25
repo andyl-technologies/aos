@@ -32,6 +32,115 @@ fn native_instantiation_imports_file_attr_path() -> Result<()> {
 }
 
 #[test]
+fn native_file_instantiation_materializes_persistent_root_parse_cache() -> Result<()> {
+    use crate::cache::{ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey};
+
+    let root = unique_temp_dir("aos-nix-native-instantiate-persist-root");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let store = root.join("store");
+    let parse_root = root.join("parse");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join("default.nix");
+    fs::write(
+        &file,
+        r#"{
+          pkgs.hello = derivationStrict {
+            name = "base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+          };
+        }"#,
+    )?;
+    let source = fs::read(&file)?;
+    let realpath = fs::canonicalize(&file)?;
+    let mut options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+    options.set_parse_cache_root(&parse_root);
+    options.set_persist_cache_root(&persist_root);
+    let native = NixNative::with_options(0, options)?;
+
+    let path = native.instantiate(&file, "pkgs.hello")?;
+
+    assert!(path.starts_with(&store), "{}", path.display());
+    let parse_cache = ParseCache::new(&parse_root);
+    assert!(parse_cache.entry_for_source(&source).is_complete());
+    let file_key = ParseFileKey::for_source(&realpath, &source);
+    let artifact_key =
+        PersistFileArtifactKey::from_parse_file_key(&file_key, parse_cache.key_for_source(&source));
+    assert!(
+        PersistCache::open(&persist_root)?
+            .lookup_file_artifact(artifact_key)?
+            .is_some(),
+        "file-backed native root parse artifact should be written durably"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_file_instantiation_hydrates_persistent_root_parse_cache() -> Result<()> {
+    use crate::cache::{
+        MaterializationDecision, ParseCache, ParseCacheMeta, ParseFileKey, PersistCache,
+    };
+
+    let root = unique_temp_dir("aos-nix-native-instantiate-persist-root-hit");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let store = root.join("store");
+    let seed_parse_root = root.join("seed-parse");
+    let second_parse_root = root.join("second-parse");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join("default.nix");
+    fs::write(
+        &file,
+        r#"{
+          pkgs.hello = derivationStrict {
+            name = "base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+          };
+        }"#,
+    )?;
+    let source = fs::read(&file)?;
+    let realpath = fs::canonicalize(&file)?;
+    let marker = "persist-seed-marker.nix";
+    let seed_parse = ParseCache::new(&seed_parse_root);
+    let parsed = seed_parse.load_or_parse_bytes(&source, Some(marker.to_owned()))?;
+    let file_key = ParseFileKey::for_source(&realpath, &source);
+    PersistCache::open(&persist_root)?.materialize_parse_artifact_entry_indexed(
+        &file_key,
+        parsed.key,
+        &parsed.entry,
+        MaterializationDecision::Materialize,
+    )?;
+
+    let mut second_options =
+        TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+    second_options.set_parse_cache_root(&second_parse_root);
+    second_options.set_persist_cache_root(&persist_root);
+    let second = NixNative::with_options(0, second_options)?;
+    let second_path = second.instantiate(&file, "pkgs.hello")?;
+
+    assert!(second_path.starts_with(&store), "{}", second_path.display());
+    let hydrated_entry = ParseCache::new(&second_parse_root).entry_for_source(&source);
+    assert!(
+        hydrated_entry.is_complete(),
+        "persistent native root hit should hydrate the fresh parse-cache entry"
+    );
+    let meta = fs::read_to_string(hydrated_entry.meta_path())?;
+    let meta = ParseCacheMeta::from_toml(&meta)?;
+    assert_eq!(meta.source_hint.as_deref(), Some(marker));
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_instantiation_imports_directory_default_file() -> Result<()> {
     let (native, root, store) = native_with_temp_store("aos-nix-native-instantiate-dir")?;
     let dir = root.join("src");

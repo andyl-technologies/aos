@@ -17,7 +17,10 @@ use anyhow::Result;
 
 #[cfg(test)]
 use crate::cache::EvalCache;
-use crate::cache::{EvalCacheRuntime, ParseCache, ParseCacheError};
+use crate::cache::{
+    EvalCacheRuntime, MaterializationDecision, ParseCache, ParseCacheError, ParseFileKey,
+    PersistCache,
+};
 #[cfg(test)]
 use crate::compile::EffectClass;
 use crate::compile::{Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, resolve};
@@ -329,6 +332,7 @@ impl NixNative {
         let ir = self.lower_native_source_bytes(
             &source,
             Some(source_name_text.to_string()),
+            Some(file.as_path()),
             None,
             diagnostic_source,
         )?;
@@ -395,20 +399,50 @@ impl NixNative {
         source_map: Option<WrappedSourceMap>,
         diagnostic_source: Option<NativeDiagnosticSource<'_>>,
     ) -> Result<Ir> {
-        self.lower_native_source_bytes(source.as_bytes(), None, source_map, diagnostic_source)
+        self.lower_native_source_bytes(source.as_bytes(), None, None, source_map, diagnostic_source)
     }
 
     fn lower_native_source_bytes(
         &self,
         source: &[u8],
         source_hint: Option<String>,
+        source_path: Option<&Path>,
         source_map: Option<WrappedSourceMap>,
         diagnostic_source: Option<NativeDiagnosticSource<'_>>,
     ) -> Result<Ir> {
         if let Some(root) = self.options.parse_cache_root() {
             let cache = ParseCache::new(root);
+            let persist_cache = self
+                .options
+                .persist_cache_root()
+                .and_then(|root| source_path.map(|source_path| (root, source_path)))
+                .and_then(|(root, source_path)| {
+                    PersistCache::open(root)
+                        .ok()
+                        .map(|persist_cache| (persist_cache, source_path))
+                });
+            if let Some((persist_cache, source_path)) = &persist_cache {
+                if let Some(cached) = persist_cache
+                    .load_parse_cache_source_from_index(&cache, source_path, source)
+                    .ok()
+                    .flatten()
+                {
+                    return Ok(cached.ir);
+                }
+            }
             match cache.load_or_parse_bytes(source, source_hint) {
                 Ok(cached) => {
+                    if cached.stored {
+                        if let Some((persist_cache, source_path)) = &persist_cache {
+                            let file_key = ParseFileKey::for_source(source_path, source);
+                            let _ = persist_cache.materialize_parse_artifact_entry_indexed(
+                                &file_key,
+                                cached.key,
+                                &cached.entry,
+                                MaterializationDecision::Materialize,
+                            );
+                        }
+                    }
                     return Ok(cached.ir);
                 }
                 Err(error) => {

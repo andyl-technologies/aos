@@ -65,6 +65,36 @@ fn native_expression_eval_uses_configured_parse_cache() -> Result<()> {
 }
 
 #[test]
+fn native_expression_eval_does_not_use_persistent_file_cache_without_source_path() -> Result<()> {
+    let root = unique_temp_dir("native-expression-no-persist-file-cache");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let cache_root = root.join("parse");
+    let persist_root = root.join("persist");
+    let mut options = TreeWalkOptions::new();
+    options.set_parse_cache_root(&cache_root);
+    options.set_persist_cache_root(&persist_root);
+    let native = NixNative::with_options(0, options)?;
+    let expr = "1 + 1";
+
+    assert_eq!(native.eval_expr(expr)?, "2");
+
+    let cache = ParseCache::new(&cache_root);
+    assert!(
+        cache
+            .entry_for_source(json_wrapper_source(expr).as_bytes())
+            .is_complete()
+    );
+    assert!(
+        !persist_root.exists(),
+        "raw expression eval should not synthesize a persistent file key"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_expression_eval_ingests_impure_trace_when_eval_cache_enabled() -> Result<()> {
     let root = unique_temp_dir("native-expression-eval-cache");
     fs::create_dir_all(&root)?;

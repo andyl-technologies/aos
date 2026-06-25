@@ -1051,9 +1051,9 @@ alone (`M-1`/`Q-A`).
       the persistent root is unavailable, misses, or has stale/corrupt indexed
       artifacts. The persistent root opens lazily on the first eligible import;
       scoped imports and text-store imports still bypass this path. This is
-      evaluator import hit selection only; source root/native expression
-      durable lookup, mmap reads, full artifact semantic validation beyond
-      existing decoders, GC/repack, and harness proof remain open
+      evaluator import hit selection only; file-backed native source roots,
+      raw native expressions, mmap reads, full artifact semantic validation
+      beyond existing decoders, GC/repack, and harness proof remain open
       (`C-13`/`R-10`).
 - [x] Current ordinary filesystem import durable parse-cache writeback:
       unscoped filesystem imports with configured `parse_cache_root` and
@@ -1063,10 +1063,22 @@ alone (`M-1`/`Q-A`).
       durable misses or stale/corrupt durable entries fall back to normal parse
       loading. Writeback opens the persistent root through the same lazy
       advisory path as durable hit selection and ignores persistent write
-      failures. This is ordinary import writeback only; source root/native
-      expression durable lookup/writeback, mmap reads, full artifact semantic
+      failures. This is ordinary import writeback only; file-backed native
+      source roots, raw native expressions, mmap reads, full artifact semantic
       validation beyond existing decoders, GC/repack, and harness proof remain
       open (`C-13`/`C-14`/`R-10`).
+- [x] Current file-backed native root durable parse-cache integration:
+      `NixNative::lower_native_source_bytes` now accepts an optional canonical
+      source path from file-backed instantiation roots and, when both
+      `parse_cache_root` and `persist_cache_root` are configured, tries
+      `PersistCache::load_parse_cache_source_from_index` before ordinary
+      `ParseCache::load_or_parse_bytes`, then writes successfully stored
+      fallback parses to the persistent file-artifact index. Raw
+      `eval_expr`/`instantiate_expr` sources do not synthesize file-artifact
+      keys. This is native file-root lookup/writeback only; raw expression
+      durable identities, AOS `AOS_NIX_CACHE` mapping for `persist_cache_root`,
+      mmap reads, full artifact semantic validation beyond existing decoders,
+      GC/repack, and harness proof remain open (`C-13`/`C-14`/`R-10`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus
