@@ -5,7 +5,7 @@
 //! combiner required by decision C-1; the demand graph decides when to allocate
 //! nodes and which canonical free-variable hashes to pass.
 
-use std::hash::Hasher;
+use std::hash::{Hash, Hasher};
 
 use thiserror::Error;
 use xxhash_rust::xxh3::Xxh3;
@@ -15,6 +15,9 @@ use crate::compile::IrId;
 
 const KEY_DOMAIN_VERSION: &[u8] = b"aos-nix-demand-cache-key-v1";
 const IMPURE_INPUT_KEY_DOMAIN_VERSION: &[u8] = b"aos-nix-impure-input-cache-key-v1";
+const KEY_CONFIRMATION_DOMAIN_VERSION: &[u8] = b"aos-nix-demand-cache-key-confirm-v1";
+const IMPURE_INPUT_CONFIRMATION_DOMAIN_VERSION: &[u8] =
+    b"aos-nix-impure-input-cache-key-confirm-v1";
 
 /// The stable identity of one lowered expression within a source artifact.
 ///
@@ -51,9 +54,20 @@ impl CacheExprIdentity {
 /// An in-process demand-cache key for `H(expr_identity || env)`.
 ///
 /// Keys are deliberately opaque: callers can compare or hash them for maps, but
-/// cannot serialize them as durable cache addresses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DemandCacheKey(HotXxh3Hash);
+/// cannot serialize them as durable cache addresses. Equality includes a
+/// durable confirmation hash so the hot xxh3 component is only a lookup
+/// accelerator, not an authority for cache reuse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DemandCacheKey {
+    hot: HotXxh3Hash,
+    confirmation: DurableBlake3Hash,
+}
+
+impl Hash for DemandCacheKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.hot.hash(state);
+    }
+}
 
 impl DemandCacheKey {
     /// Creates a demand-cache key for an impure input identity.
@@ -65,14 +79,21 @@ impl DemandCacheKey {
         let mut hasher = Xxh3::new();
         hasher.write(IMPURE_INPUT_KEY_DOMAIN_VERSION);
         hasher.write(&identity_hash.as_bytes());
-        Self(HotXxh3Hash::from_xxh3(hasher.finish()))
+        let mut confirmation = blake3::Hasher::new();
+        confirmation.update(IMPURE_INPUT_CONFIRMATION_DOMAIN_VERSION);
+        confirmation.update(&identity_hash.as_bytes());
+        Self {
+            hot: HotXxh3Hash::from_xxh3(hasher.finish()),
+            confirmation: DurableBlake3Hash::from_hasher(confirmation),
+        }
     }
 
     /// Combines an expression identity with canonical free-variable value hashes.
     ///
     /// `free_var_value_hashes` must already be in canonical slot order. The
-    /// combiner preserves that order, length-prefixes every value hash, and
-    /// hashes the complete stream once with xxh3.
+    /// combiner preserves that order and length-prefixes every value hash. It
+    /// computes both a hot xxh3 probe and a BLAKE3 confirmation digest over the
+    /// complete stream.
     ///
     /// # Errors
     ///
@@ -89,6 +110,14 @@ impl DemandCacheKey {
             .into_iter()
             .map(DurableBlake3Hash::as_bytes);
         combine_value_hash_chunks(identity, hashes)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn from_raw_parts_for_test(
+        hot: HotXxh3Hash,
+        confirmation: DurableBlake3Hash,
+    ) -> Self {
+        Self { hot, confirmation }
     }
 }
 
@@ -111,13 +140,22 @@ where
     I: IntoIterator<Item = B>,
     B: AsRef<[u8]>,
 {
-    let mut hasher = Xxh3::new();
-    hasher.write(KEY_DOMAIN_VERSION);
-    identity.write_to(&mut hasher);
+    let mut hot = Xxh3::new();
+    hot.write(KEY_DOMAIN_VERSION);
+    identity.write_to(&mut hot);
+    let mut confirmation = blake3::Hasher::new();
+    confirmation.update(KEY_CONFIRMATION_DOMAIN_VERSION);
+    confirmation.update(&identity.source_hash().as_bytes());
+    confirmation.update(&identity.node().as_u32().to_le_bytes());
     for chunk in chunks {
-        write_len_prefixed(&mut hasher, chunk.as_ref())?;
+        let chunk = chunk.as_ref();
+        write_len_prefixed(&mut hot, chunk)?;
+        write_len_prefixed_blake3(&mut confirmation, chunk)?;
     }
-    Ok(DemandCacheKey(HotXxh3Hash::from_xxh3(hasher.finish())))
+    Ok(DemandCacheKey {
+        hot: HotXxh3Hash::from_xxh3(hot.finish()),
+        confirmation: DurableBlake3Hash::from_hasher(confirmation),
+    })
 }
 
 fn write_len_prefixed(hasher: &mut Xxh3, chunk: &[u8]) -> Result<(), CacheKeyError> {
@@ -125,6 +163,17 @@ fn write_len_prefixed(hasher: &mut Xxh3, chunk: &[u8]) -> Result<(), CacheKeyErr
         .map_err(|_| CacheKeyError::ChunkLengthOverflow { len: chunk.len() })?;
     hasher.write(&len.to_le_bytes());
     hasher.write(chunk);
+    Ok(())
+}
+
+fn write_len_prefixed_blake3(
+    hasher: &mut blake3::Hasher,
+    chunk: &[u8],
+) -> Result<(), CacheKeyError> {
+    let len = u64::try_from(chunk.len())
+        .map_err(|_| CacheKeyError::ChunkLengthOverflow { len: chunk.len() })?;
+    hasher.update(&len.to_le_bytes());
+    hasher.update(chunk);
     Ok(())
 }
 

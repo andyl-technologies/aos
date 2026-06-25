@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! HotXxh3Hash        -> evaluator-local map keys and cons-table probes
-//! DurableBlake3Hash  -> durable evaluator cache content addresses
+//! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
 //! Nix-observed hashes stay in the store/hash builtin adapters, not here
 //! ```
 
@@ -37,11 +37,13 @@ impl HotXxh3Hash {
     }
 }
 
-/// A durable BLAKE3 hash used for evaluator cache content addresses.
+/// A BLAKE3 digest used for evaluator cache content addresses and confirmations.
 ///
-/// This type is for internal evaluator caches only. Nix-observed store paths,
-/// `.drv` hashes, fixed-output hashes, and hash builtins must continue to use
-/// their store/hash-specific APIs.
+/// This type is for internal evaluator caches only. Some values become durable
+/// content addresses, while others remain in-process confirmation digests for
+/// hot lookup keys. Nix-observed store paths, `.drv` hashes, fixed-output
+/// hashes, and hash builtins must continue to use their store/hash-specific
+/// APIs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DurableBlake3Hash([u8; 32]);
 

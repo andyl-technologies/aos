@@ -142,7 +142,7 @@ pub enum DemandGraphError {
 mod tests {
     use super::*;
     use crate::cache::{
-        CacheExprIdentity, DurableBlake3Hash, ImpureInputFingerprint, UncacheableInput,
+        CacheExprIdentity, DurableBlake3Hash, HotXxh3Hash, ImpureInputFingerprint, UncacheableInput,
     };
     use crate::compile::IrId;
     use crate::value::{HeapObject, Value, ValueTag};
@@ -593,6 +593,27 @@ mod tests {
             graph.node(first).expect("node exists").value_hash(),
             Some(value_hash(b"first"))
         );
+    }
+
+    #[test]
+    fn matching_hot_hashes_still_confirm_full_demand_keys() {
+        let mut graph = DemandGraph::new();
+        let hot = HotXxh3Hash::from_xxh3(7);
+        let first_key =
+            DemandCacheKey::from_raw_parts_for_test(hot, durable_hash(b"first-confirmation"));
+        let second_key =
+            DemandCacheKey::from_raw_parts_for_test(hot, durable_hash(b"second-confirmation"));
+        let first = graph
+            .get_or_insert_node(first_key, Some(value_hash(b"first")))
+            .expect("first node inserts");
+        let second = graph
+            .get_or_insert_node(second_key, Some(value_hash(b"second")))
+            .expect("second node inserts despite matching hot hash");
+
+        assert_ne!(first, second);
+        assert_eq!(graph.len(), 2);
+        assert_eq!(graph.node_id_for_key(first_key), Some(first));
+        assert_eq!(graph.node_id_for_key(second_key), Some(second));
     }
 
     #[test]

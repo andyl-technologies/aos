@@ -440,12 +440,12 @@ alone (`M-1`/`Q-A`).
       propagation/recomputation, integrate impure-input leaves and persistence, and
       prove cached/uncached `.drv` parity.
 - [x] Current `cache/key.rs` standalone combiner substrate: `CacheExprIdentity`
-      plus opaque `DemandCacheKey` compute one order-sensitive xxh3 key over a
-      domain/version prefix, expression identity bytes, and caller-supplied
-      free-variable value hashes encoded as length-prefixed chunks. This checks
-      the C-1 combiner rule only, not demand-graph integration, canonical
-      free-variable set/order production, real durable value-hash production, or
-      false-hit harness coverage.
+      plus opaque `DemandCacheKey` compute one order-sensitive hot xxh3 probe
+      and one BLAKE3 confirmation digest over domain/version prefixes,
+      expression identity bytes, and caller-supplied free-variable value hashes
+      encoded as length-prefixed chunks. This checks the C-1 combiner rule only,
+      not canonical free-variable set/order production, real durable value-hash
+      production, or differential harness coverage.
 - [x] Current expression-node allocation/keying substrate:
       `DemandGraph::get_or_insert_expression_node` and
       `EvalCache::get_or_insert_expression_node` centralize graph insertion for
@@ -563,18 +563,21 @@ alone (`M-1`/`Q-A`).
 - [x] Current inline captured-free-variable force-cache key substrate: tree-walk
       now builds one force-cache subject for each source-backed node thunk,
       including ordered durable hashes for referenced captured lexical slots
-      when every captured slot value is already an inline scalar supported by
-      `ValueHash::from_inline_value`. Lookup and observation feed those hashes
-      into the existing ordered/length-prefixed demand-key combiner, so repeated
-      captured inline thunks hit only when their free-variable value hashes match
-      and miss when those captured values differ. This deliberately skips dynamic
-      `with` scopes, scoped-import globals, captured
-      heap/string/path/list/attrs/lambda/primop/thunk values, captured bodies
-      with nested lexical-frame introducers, source-less/apply/select/builtin-attr
-      thunks, full strictness/escape free-variable analysis, heap/composite value
-      hashes, persistence, and cached/uncached harness proof. The gate covers
-      captured inline hit/miss tests, lowered lambda-argument coverage, and
-      representative captured unsupported free-variable skips (`C-1`/`C-2`).
+      when every captured slot value is either an inline scalar supported by
+      `ValueHash::from_inline_value` or a context-free string hashed in a
+      separate durable force-capture domain. Lookup and observation feed those
+      hashes into the existing ordered/length-prefixed demand-key combiner, so
+      repeated captured inline/string thunks hit only when their free-variable
+      value hashes match and miss when those captured values differ. This
+      deliberately skips dynamic `with` scopes, scoped-import globals, captured
+      context-bearing strings, paths, lists, attrs, lambdas, primops, thunks,
+      captured bodies with nested lexical-frame introducers,
+      source-less/apply/select/builtin-attr thunks, full strictness/escape
+      free-variable analysis, heap/composite value hashes, persistence, and
+      cached/uncached harness proof. The gate covers captured inline/string
+      hit/miss tests, lowered lambda-argument coverage, context-bearing string
+      skips, and representative captured unsupported free-variable skips
+      (`C-1`/`C-2`).
 - [ ] Full cache-key integration remains: feed source content + IR node position
       from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real

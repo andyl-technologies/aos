@@ -1956,7 +1956,7 @@ fn pipe_forced_inline_thunks_wait_for_application_cache_keys() {
 }
 
 #[test]
-fn captured_forced_inline_thunks_wait_for_free_variable_hashes() {
+fn captured_context_free_let_string_thunks_use_free_variable_hashes() {
     let source = r#"let x = "s"; in { a = x == x; }"#;
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
@@ -1982,9 +1982,131 @@ fn captured_forced_inline_thunks_wait_for_free_variable_hashes() {
 
     assert_eq!(forced.as_bool(), Ok(true));
     let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "captured context-free let strings should create a demand node"
+    );
+}
+
+#[test]
+fn captured_context_free_string_thunks_use_free_variable_hashes() {
+    let source = r#"let f = x: { a = x == "s"; }; in [ (f "s").a (f "t").a ]"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "string-captures.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("list evaluates");
+    let elements = {
+        let list = evaluator
+            .heap()
+            .get_list(root)
+            .expect("root list is heap-owned");
+        [
+            list.get(0).expect("first result exists"),
+            list.get(1).expect("second result exists"),
+        ]
+    };
+
+    let first = evaluator
+        .force_value(ir.root, Span::new(0, 0), elements[0])
+        .expect("first captured string attr force succeeds");
+    assert_eq!(first.as_bool(), Ok(true));
+    let second = evaluator
+        .force_value(ir.root, Span::new(0, 0), elements[1])
+        .expect("second captured string attr force succeeds");
+
+    assert_eq!(second.as_bool(), Ok(false));
+    assert_eq!(
+        evaluator.stats().cache_hits(),
+        0,
+        "different captured string values must not cache hit"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "different captured strings should create distinct demand nodes"
+    );
+}
+
+#[test]
+fn captured_context_free_string_thunks_hit_when_hashes_match() {
+    let source = r#"let f = x: { a = x == "s"; }; in { a = (f "s").a; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "string-captures.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("captured string force succeeds");
+        assert_eq!(forced.as_bool(), Ok(true));
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching captured string hashes should share one demand node"
+    );
+}
+
+#[test]
+fn captured_context_bearing_string_thunks_wait_for_canonical_value_hashes() {
+    let source = r#"
+      let s = builtins.appendContext "s" {
+        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source" = { path = true; };
+      };
+      in builtins.seq s { a = s == s; }
+    "#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "context-string-captures.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured context-bearing string force succeeds");
+
+    assert_eq!(forced.as_bool(), Ok(true));
+    let runtime = cache.lock().expect("cache lock is valid");
     assert!(
         runtime.cache().expect("cache is enabled").is_empty(),
-        "captured non-inline thunks need canonical value hashes before observation"
+        "captured context-bearing strings need canonical context value hashes before observation"
     );
 }
 

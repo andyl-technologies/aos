@@ -3,6 +3,7 @@
 use super::*;
 
 const FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION: &[u8] = b"aos-nix-force-expression-identity-v1";
+const FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-force-captured-value-hash-v1";
 
 impl ForceCacheOptionsIdentity {
     fn new(options: &TreeWalkOptions) -> Self {
@@ -558,10 +559,31 @@ impl TreeWalk {
         hashes.try_reserve_exact(slots.len()).ok()?;
         for (frame_index, slot) in slots {
             let value = frames.get(frame_index)?.get(slot).ok()?;
-            let hash = ValueHash::from_inline_value(value).ok()?.as_durable_hash();
+            let hash = self.force_cache_free_var_value_hash(value)?;
             hashes.push(hash);
         }
         Some(hashes)
+    }
+
+    fn force_cache_free_var_value_hash(&self, value: Value) -> Option<DurableBlake3Hash> {
+        if let Ok(hash) = ValueHash::from_inline_value(value) {
+            return Some(hash.as_durable_hash());
+        }
+        let bytes = match value.tag() {
+            ValueTag::String => {
+                let string = self.heap.get_string(value).ok()?;
+                if string.has_context() {
+                    return None;
+                }
+                string.bytes()
+            }
+            _ => return None,
+        };
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
+        hasher.update(b"string");
+        Self::update_cache_identity_chunk(&mut hasher, bytes)?;
+        Some(DurableBlake3Hash::from_hasher(hasher))
     }
 
     fn captured_free_variable_slots(
