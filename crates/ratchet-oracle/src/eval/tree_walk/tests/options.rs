@@ -84,6 +84,22 @@ fn eval_cache_option_defaults_off_and_can_be_enabled() {
 }
 
 #[test]
+fn force_cache_materialization_costs_can_be_configured() {
+    let costs = MaterializationCosts::new(20, 3, 4, 5);
+    let mut options = TreeWalkOptions::new();
+
+    assert_eq!(
+        options.force_cache_materialization_costs(),
+        MaterializationCosts::new(4, 1, 1, 1)
+    );
+    options.set_force_cache_materialization_costs(costs);
+    assert_eq!(options.force_cache_materialization_costs(), costs);
+
+    let options = TreeWalkOptions::with_force_cache_materialization_costs(costs);
+    assert_eq!(options.force_cache_materialization_costs(), costs);
+}
+
+#[test]
 fn unary_type_predicate_primops_classify_whnf_values() {
     assert_eq!(eval("builtins.isAttrs { a = 1; }").as_bool(), Ok(true));
     assert_eq!(eval("builtins.isAttrs [ 1 ]").as_bool(), Ok(false));

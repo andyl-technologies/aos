@@ -171,18 +171,27 @@ impl TreeWalkOptions {
     ///
     /// Ordinary filesystem-backed imports may lazily hydrate durable parse
     /// artifacts from this root, and may write back newly parsed import
-    /// artifacts to it, when [`Self::parse_cache_root`] is also configured.
-    /// Scoped imports and text-store imports do not use this cache.
+    /// artifacts to it when [`Self::parse_cache_root`] is also configured.
+    /// Forced-expression cache observation may also use this root for demand
+    /// accounting and threshold-driven durable value/trace writeback when
+    /// [`Self::eval_cache_enabled`] is true.
     pub fn with_persist_cache_root(persist_cache_root: impl Into<PathBuf>) -> Self {
         let mut options = Self::default();
         options.set_persist_cache_root(persist_cache_root);
         options
     }
 
-    /// Creates evaluator options with advisory eval-cache trace ingestion configured.
+    /// Creates evaluator options with advisory eval-cache observation configured.
     pub fn with_eval_cache_enabled(eval_cache_enabled: bool) -> Self {
         let mut options = Self::default();
         options.set_eval_cache_enabled(eval_cache_enabled);
+        options
+    }
+
+    /// Creates evaluator options with durable force-cache materialization costs.
+    pub fn with_force_cache_materialization_costs(costs: MaterializationCosts) -> Self {
+        let mut options = Self::default();
+        options.set_force_cache_materialization_costs(costs);
         options
     }
 
@@ -529,7 +538,9 @@ impl TreeWalkOptions {
     /// This enables advisory durable import parse-cache hit lookup and
     /// writeback only when a normal parse-cache root is also configured,
     /// because hydrated artifacts are read back through the parse-cache entry
-    /// layout before evaluation.
+    /// layout before evaluation. It also supplies the persistent root for
+    /// forced-expression demand accounting and threshold-driven value/trace
+    /// writeback when eval-cache observation is enabled.
     pub fn set_persist_cache_root(&mut self, persist_cache_root: impl Into<PathBuf>) {
         self.persist_cache_root = Some(persist_cache_root.into());
     }
@@ -539,14 +550,19 @@ impl TreeWalkOptions {
         self.persist_cache_root = None;
     }
 
-    /// Enables or disables advisory incremental eval-cache trace ingestion.
+    /// Enables or disables advisory incremental eval-cache observation.
     ///
-    /// This only controls whether native evaluator handles own an in-memory
-    /// [`crate::cache::EvalCache`] and ingest completed evaluator traces into
-    /// it. It does not enable memo lookup, persistence, or demand-node
-    /// allocation in the tree-walk evaluator.
+    /// This controls in-memory [`crate::cache::EvalCache`] observation and,
+    /// when a persistent-cache root is configured, gates forced-expression
+    /// demand accounting plus durable payload writeback. It does not enable the
+    /// future full demand-graph evaluator or general memo lookup.
     pub fn set_eval_cache_enabled(&mut self, eval_cache_enabled: bool) {
         self.eval_cache_enabled = eval_cache_enabled;
+    }
+
+    /// Replaces the durable materialization costs for forced-expression payloads.
+    pub fn set_force_cache_materialization_costs(&mut self, costs: MaterializationCosts) {
+        self.force_cache_materialization_costs = costs;
     }
 
     /// Returns the configured Nix store directory.
@@ -670,9 +686,14 @@ impl TreeWalkOptions {
         self.persist_cache_root.as_deref()
     }
 
-    /// Returns whether advisory incremental eval-cache trace ingestion is enabled.
+    /// Returns whether advisory incremental eval-cache observation is enabled.
     pub const fn eval_cache_enabled(&self) -> bool {
         self.eval_cache_enabled
+    }
+
+    /// Returns the durable materialization costs for forced-expression payloads.
+    pub const fn force_cache_materialization_costs(&self) -> MaterializationCosts {
+        self.force_cache_materialization_costs
     }
 }
 

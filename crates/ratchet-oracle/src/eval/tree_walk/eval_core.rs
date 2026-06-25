@@ -573,6 +573,30 @@ impl TreeWalk {
         let Some(identity) = subject.metadata_identity else {
             return None;
         };
+        self.open_persist_eval_cache();
+        let Some(persist_cache) = &self.persist_cache else {
+            return None;
+        };
+        let key = PersistNodeMetadataKey::for_expression(
+            identity,
+            subject.free_var_value_hashes.iter().copied(),
+        );
+        let signals = match persist_cache
+            .node_materialization_signals(key, self.options.force_cache_materialization_costs())
+        {
+            Ok(signals) => signals,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent force materialization signals failed"
+                );
+                return None;
+            }
+        };
+        if signals.decide() == MaterializationDecision::KeepInMemory {
+            return None;
+        }
         let value_hash = match payload.value_hash() {
             Ok(value_hash) => value_hash,
             Err(error) => {
@@ -584,20 +608,11 @@ impl TreeWalk {
                 return None;
             }
         };
-        self.open_persist_eval_cache();
-        let Some(persist_cache) = &self.persist_cache else {
-            return None;
-        };
-        let key = PersistNodeMetadataKey::for_expression(
-            identity,
-            subject.free_var_value_hashes.iter().copied(),
-        );
-        match persist_cache.materialize_cached_expression_node_value_indexed(
-            key,
-            payload,
-            MaterializationDecision::Materialize,
-        ) {
-            Ok(_) => Some(value_hash),
+        match persist_cache
+            .materialize_cached_expression_node_value_indexed_with_signals(key, payload, signals)
+        {
+            Ok(PersistMaterialization::Materialized(_)) => Some(value_hash),
+            Ok(PersistMaterialization::Skipped) => None,
             Err(error) => {
                 tracing::warn!(
                     target: "aos_nix::cache",

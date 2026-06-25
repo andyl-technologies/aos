@@ -55,9 +55,9 @@ use crate::cache::{
     CacheExprIdentity, CachedExpressionValue, CachedParse, DirEntryInput, DurableBlake3Hash,
     EvalCacheRuntime, FileTypeForInput, ImpureInputFingerprint, ImpureInputIdentity,
     ImpureInputKind, ImpureInputMode, ImpureInputRevalidator, ImpureInputTraceSource,
-    InputFingerprintError, MaterializationDecision, ParseCache, ParseCacheError, ParseFileKey,
-    PersistCache, PersistNodeMetadataKey, PersistNodeTracePayload, ValueHash,
-    lowered_ir_fingerprint,
+    InputFingerprintError, MaterializationCosts, MaterializationDecision, ParseCache,
+    ParseCacheError, ParseFileKey, PersistCache, PersistMaterialization, PersistNodeMetadataKey,
+    PersistNodeTracePayload, ValueHash, lowered_ir_fingerprint,
 };
 use crate::compile::{
     FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,
@@ -138,6 +138,8 @@ const HASH_ALGO_ATTR: &[u8] = b"hashAlgo";
 const TO_HASH_FORMAT_ATTR: &[u8] = b"toHashFormat";
 const DEFAULT_STORE_DIR: &[u8] = b"/nix/store";
 const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
+const DEFAULT_FORCE_CACHE_MATERIALIZATION_COSTS: MaterializationCosts =
+    MaterializationCosts::new(4, 1, 1, 1);
 const PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-output:";
 const UPSTREAM_OUTPUT_PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-upstream-output:";
 const DERIVATION_EXTENSION: &str = ".drv";
@@ -333,6 +335,7 @@ pub struct TreeWalkOptions {
     parse_cache_root: Option<PathBuf>,
     persist_cache_root: Option<PathBuf>,
     eval_cache_enabled: bool,
+    force_cache_materialization_costs: MaterializationCosts,
     #[cfg(test)]
     fetch_tree_url_responses: BTreeMap<Vec<u8>, Vec<u8>>,
 }
@@ -361,6 +364,7 @@ impl Default for TreeWalkOptions {
             parse_cache_root: None,
             persist_cache_root: None,
             eval_cache_enabled: false,
+            force_cache_materialization_costs: DEFAULT_FORCE_CACHE_MATERIALIZATION_COSTS,
             #[cfg(test)]
             fetch_tree_url_responses: BTreeMap::new(),
         }

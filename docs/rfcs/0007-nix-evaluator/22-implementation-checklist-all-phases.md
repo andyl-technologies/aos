@@ -1101,21 +1101,26 @@ alone (`M-1`/`Q-A`).
       node/value transactionality, lazy-element list or lazy-binding attrset values, mmap
       reads, cost measurement, GC/repack, and cached/uncached harness proof
       remain open (`C-13`/`C-14`/`S-14`).
-- [x] Current force-cache persistent value writeback:
+- [x] Current threshold-driven force-cache persistent value writeback:
       tree-walk `force_value` now materializes replayable forced-expression
-      payloads through `PersistCache::materialize_cached_expression_node_value_indexed`
-      after the in-memory force-cache observation accepts a node payload. Pure
-      complete observations materialize after successful expression-node
-      reconsideration; impure observations materialize only when the trace is
-      cacheable and returns an expression node. Rejected impure observations and
-      unsupported recomputed payloads clear any existing durable node-value link
-      after the in-memory force-cache has rejected the observation or had an
-      opportunity to invalidate any runtime payload. The writeback lazily opens
-      the configured persistent cache root, skips disabled runtimes, unavailable
-      persistent roots, and advisory write errors, and currently uses explicit
-      `MaterializationDecision::Materialize` as a precursor to threshold-driven
-      evaluator policy. This is cold-force durable writeback/clear only;
-      evaluator durable hit selection, cost measurement, lazy-element list or lazy-binding attrset values, mmap
+      payloads through `PersistCache::node_materialization_signals` and
+      `materialize_cached_expression_node_value_indexed_with_signals` after the
+      in-memory force-cache observation accepts a node payload. The evaluator
+      supplies `TreeWalkOptions::force_cache_materialization_costs`; persisted
+      prior-run demand supplies the cross-run reuse bit, so cold same-run demand
+      records metadata but skips durable value and trace writes until a
+      run-boundary advance makes that demand prior history. Pure complete
+      observations materialize only after successful expression-node
+      reconsideration and a positive threshold decision; impure observations do
+      the same only when the trace is cacheable and returns an expression node.
+      Rejected impure observations and unsupported recomputed payloads clear any
+      existing durable node-value link after the in-memory force-cache has
+      rejected the observation or had an opportunity to invalidate any runtime
+      payload. The writeback lazily opens the configured persistent cache root,
+      skips disabled runtimes, unavailable persistent roots, negative threshold
+      decisions, and advisory write errors. This is threshold-driven force
+      payload writeback/clear only; evaluator-wide durable hit selection,
+      measured cost collection or AOS tuning, lazy-element list or lazy-binding attrset values, mmap
       reads, GC/repack, and cached/uncached harness proof
       remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current node verifying-trace payload codec:

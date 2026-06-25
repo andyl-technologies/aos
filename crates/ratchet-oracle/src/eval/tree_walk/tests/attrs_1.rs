@@ -698,6 +698,44 @@ fn force_attr(evaluator: &mut TreeWalk, ir: &Ir, attr: Symbol, label: &str) -> V
         .expect("attr force succeeds")
 }
 
+fn seed_prior_persistent_demand_for_attr(
+    evaluator: &mut TreeWalk,
+    ir: &Ir,
+    attr: Symbol,
+    persist_root: &std::path::Path,
+    label: &str,
+) -> Value {
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(attr).unwrap_or_else(|| panic!("{label} exists"))
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .unwrap_or_else(|_| panic!("{label} remains a suspended thunk"));
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .unwrap_or_else(|| panic!("{label} force-cache subject builds"))
+    };
+    let identity = subject
+        .metadata_identity
+        .unwrap_or_else(|| panic!("{label} has persistent metadata identity"));
+    let key = PersistNodeMetadataKey::for_expression(
+        identity,
+        subject.free_var_value_hashes.iter().copied(),
+    );
+    PersistCache::open(persist_root)
+        .expect("persistent cache opens")
+        .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
+        .expect("prior-run demand records");
+    thunk_value
+}
+
 #[test]
 fn source_backed_forced_inline_thunks_update_shared_eval_cache() {
     let source = "{ a = 1 + 2; }";
@@ -1567,7 +1605,10 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
         source,
         Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
     );
-    let forced = force_attr_a(&mut first, &ir, a);
+    let thunk_value = seed_prior_persistent_demand_for_attr(&mut first, &ir, a, &persist_root, "a");
+    let forced = first
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("attr force succeeds");
     assert_eq!(forced.as_bool(), Ok(true));
     assert_eq!(first.stats().cache_misses(), 1);
     drop(first);
@@ -1675,7 +1716,10 @@ fn changed_effectful_forced_inline_thunks_miss_persistent_cache_after_revalidati
         source,
         Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
     );
-    let forced = force_attr_a(&mut first, &ir, a);
+    let thunk_value = seed_prior_persistent_demand_for_attr(&mut first, &ir, a, &persist_root, "a");
+    let forced = first
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("attr force succeeds");
     assert_eq!(forced.as_bool(), Ok(true));
     drop(first);
 
@@ -3552,7 +3596,7 @@ fn persistent_empty_trace_payload() -> PersistNodeTracePayload {
 }
 
 #[test]
-fn synthetic_builtin_attr_forces_record_persistent_current_demand() {
+fn synthetic_builtin_attr_cold_force_records_demand_without_materializing() {
     let persist_root = unique_temp_dir("force-cache-persistent-demand");
     let source = "let b = builtins; in { a = b.currentSystem; }";
     let ir = lower(source);
@@ -3606,10 +3650,6 @@ fn synthetic_builtin_attr_forces_record_persistent_current_demand() {
     assert_eq!(first.stats().cache_misses(), 1);
     drop(first);
 
-    let expected_payload = CachedExpressionValue::context_free_string(b"x86_64-linux".to_vec());
-    let expected_value_hash = expected_payload
-        .value_hash()
-        .expect("expected payload hashes");
     let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
     assert_eq!(
         persist
@@ -3622,26 +3662,22 @@ fn synthetic_builtin_attr_forces_record_persistent_current_demand() {
         persist
             .lookup_node_materialized_value_hash(key)
             .expect("value hash lookup succeeds"),
-        Some(expected_value_hash),
-        "cold force links the persistent value payload"
+        None,
+        "cold force records demand without linking a persistent value payload"
     );
     assert_eq!(
         persist
             .load_cached_expression_node_value_indexed(key)
             .expect("persistent payload load succeeds"),
-        Some(expected_payload),
-        "cold force writes the persistent value payload"
+        None,
+        "cold force keeps the value in memory until prior-run demand exists"
     );
     assert_eq!(
         persist
             .lookup_node_trace(key)
             .expect("persistent trace lookup succeeds"),
-        Some(PersistNodeTraceLogEntry::new(
-            key,
-            expected_value_hash,
-            persistent_empty_trace_payload()
-        )),
-        "pure force observations write a zero-input persistent verifying trace"
+        None,
+        "cold force skips the persistent trace when the value is not materialized"
     );
     drop(persist);
 
@@ -3671,6 +3707,13 @@ fn synthetic_builtin_attr_forces_record_persistent_current_demand() {
             .expect("metadata lookup succeeds"),
         Some(MaterializationReuse::new(0, 2)),
         "in-memory hits also record current-run demand"
+    );
+    assert_eq!(
+        persist
+            .lookup_node_materialized_value_hash(key)
+            .expect("value hash lookup succeeds"),
+        None,
+        "same-run demand does not predict cross-run reuse until run advancement"
     );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");
@@ -3716,6 +3759,10 @@ fn synthetic_builtin_attr_hits_persistent_current_system_with_empty_trace() {
         .expect("synthetic currentSystem identity builds");
     let key =
         PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    PersistCache::open(&persist_root)
+        .expect("persistent cache opens")
+        .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
+        .expect("prior-run demand records");
     let forced = first
         .force_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("currentSystem force succeeds");
@@ -3781,7 +3828,7 @@ fn synthetic_builtin_attr_hits_persistent_current_system_with_empty_trace() {
         persist
             .lookup_node_materialization_reuse(key)
             .expect("metadata lookup succeeds"),
-        Some(MaterializationReuse::new(0, 2)),
+        Some(MaterializationReuse::new(1, 2)),
         "persistent pure hits also record current-run demand"
     );
     drop(persist);
@@ -3941,6 +3988,10 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
         metadata_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
     };
+    PersistCache::open(&persist_root)
+        .expect("persistent cache opens")
+        .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
+        .expect("prior-run demand records");
     let trace_input = ImpureInputFingerprint::path_exists(b"/tmp/aos-cacheable-input", true)
         .expect("pathExists fingerprint builds");
     let expected_trace_payload =
@@ -3977,6 +4028,92 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
             expected_trace_payload
         )),
         "cacheable impure observations write the value-associated persistent verifying trace"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn unprofitable_force_observation_skips_persistent_value_link_with_prior_demand() {
+    let persist_root = unique_temp_dir("force-cache-persistent-unprofitable-writeback");
+    let source = "let b = builtins; in { a = b.currentSystem; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let current_system = symbol_for(&ir, b"currentSystem");
+    let builtin = lookup_builtin(b"currentSystem").expect("currentSystem builtin is registered");
+    let mut options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    options.set_force_cache_materialization_costs(MaterializationCosts::new(3, 1, 1, 1));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "synthetic-builtins.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let select_id = evaluator
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a remains a suspended select thunk")
+        .body()
+        .expect("a thunk has a lowered select body");
+    let identity = evaluator
+        .cache_synthetic_builtin_attr_identity(
+            EvalNodeRef::new(EvalModuleId::ROOT, select_id),
+            current_system,
+            builtin,
+        )
+        .expect("synthetic currentSystem identity builds");
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    PersistCache::open(&persist_root)
+        .expect("persistent cache opens")
+        .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
+        .expect("prior-run demand records");
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("currentSystem force succeeds");
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(forced)
+            .expect("currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    drop(evaluator);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
+    assert_eq!(
+        persist
+            .lookup_node_materialization_reuse(key)
+            .expect("metadata lookup succeeds"),
+        Some(MaterializationReuse::new(1, 1)),
+        "production forcing records current demand before the negative threshold skips writeback"
+    );
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "unprofitable observations do not write persistent value payloads"
+    );
+    assert_eq!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds"),
+        None,
+        "unprofitable observations do not write persistent verifying traces"
     );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");
