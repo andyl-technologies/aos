@@ -822,18 +822,93 @@ fn percent_decode_path(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// One resolved frontend in the per-host routing projection (RFC-0004 ch.14
+/// Phase C): the bound target's slug + the surface gates, with its `base_path`.
+///
+/// The host→target resolution (the `frontends_by_domain` D1 read plus the
+/// per-frontend `cache_by_id`/`registry_by_id` slug lookups) is the expensive
+/// part; the `base_path` prefix match against the request path is pure. So the
+/// list of these per host is read-through cached under `fe:{host}`, and the
+/// per-request match runs over it with no database round-trip.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FrontendRouteEntry {
+    /// The frontend's path prefix under the domain (matched on a segment
+    /// boundary).
+    base_path: String,
+    /// The bound target's internal slug.
+    slug: String,
+    /// Whether the target is a cache (`true`) or a registry (`false`).
+    is_cache: bool,
+    /// The advertised surface subset.
+    serves_git: bool,
+    serves_cache: bool,
+    serves_web: bool,
+}
+
+/// The per-host frontend routing entries, read-through cached in KV when a
+/// store is attached, else resolved live.
+///
+/// Returns an empty list when the host binds no frontend (or the read fails),
+/// which the caller treats as "not a frontend domain".
+async fn frontend_routes(svc: &RpcService, host: &str) -> Vec<FrontendRouteEntry> {
+    let load = || async {
+        let Ok(frontends) = svc.db.frontends_by_domain(host).await else {
+            return Ok(None);
+        };
+        let mut entries = Vec::new();
+        for fe in frontends {
+            let (slug, is_cache) = if let Some(cache_id) = fe.cache_id {
+                match svc.db.cache_by_id(cache_id).await {
+                    Ok(Some(cache)) => (cache.slug, true),
+                    _ => continue,
+                }
+            } else if let Some(registry_id) = fe.registry_id {
+                match svc.db.registry_by_id(registry_id).await {
+                    Ok(Some(reg)) => (reg.slug, false),
+                    _ => continue,
+                }
+            } else {
+                continue;
+            };
+            entries.push(FrontendRouteEntry {
+                base_path: fe.base_path,
+                slug,
+                is_cache,
+                serves_git: fe.serves_git,
+                serves_cache: fe.serves_cache,
+                serves_web: fe.serves_web,
+            });
+        }
+        Ok(Some(entries))
+    };
+    match &svc.kv {
+        Some(kv) => crate::cache::read_through(
+            kv.as_ref(),
+            &format!("fe:{host}"),
+            Some(crate::cache::HOT_TTL_SECS),
+            load,
+        )
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default(),
+        None => load().await.ok().flatten().unwrap_or_default(),
+    }
+}
+
 /// Resolve an incoming `(host, path)` to the registry/cache a serving frontend
 /// binds, or `None` when the host is not a frontend domain.
 ///
 /// Picks the frontend whose `base_path` most specifically prefixes `path`
 /// (longest first), strips that prefix, and resolves the bound target's slug.
+/// The host→target resolution is served from the KV routing projection
+/// ([`frontend_routes`]) when a store is attached, off the D1 read path.
 async fn resolve_frontend_route(
     svc: &RpcService,
     host: &str,
     path: &str,
 ) -> Option<ResolvedFrontend> {
-    let frontends = svc.db.frontends_by_domain(host).await.ok()?;
-    for fe in frontends {
+    for fe in frontend_routes(svc, host).await {
         let base = fe.base_path.trim_matches('/');
         let trimmed = path.trim_start_matches('/');
         // Match the base path on a *segment* boundary, so base `v1` matches
@@ -850,22 +925,13 @@ async fn resolve_frontend_route(
         let Some(surface_path) = rest else {
             continue;
         };
-        let (slug, kind) = if let Some(cache_id) = fe.cache_id {
-            match svc.db.cache_by_id(cache_id).await {
-                Ok(Some(cache)) => (cache.slug, FrontendKind::Cache),
-                _ => continue,
-            }
-        } else if let Some(registry_id) = fe.registry_id {
-            match svc.db.registry_by_id(registry_id).await {
-                Ok(Some(reg)) => (reg.slug, FrontendKind::Registry),
-                _ => continue,
-            }
-        } else {
-            continue;
-        };
         return Some(ResolvedFrontend {
-            slug,
-            kind,
+            slug: fe.slug,
+            kind: if fe.is_cache {
+                FrontendKind::Cache
+            } else {
+                FrontendKind::Registry
+            },
             surface_path: surface_path.to_string(),
             serves_git: fe.serves_git,
             serves_cache: fe.serves_cache,

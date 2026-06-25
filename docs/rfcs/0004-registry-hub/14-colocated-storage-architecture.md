@@ -273,11 +273,12 @@ green.
       settings under `cfg:instance` (60 s TTL, the accepted staleness for chrome /
       signup policy). Read-site adoption is incremental (the worker already
       isolate-caches chrome).
-- [~] `frontends` host→registry routing table → `KvStore`; rebuild on frontend
-      change (`rewrite_for_frontend` reads KV, not D1). *Infra ready;* needs a
-      serde projection of `FrontendRecord` (avoids a `ProxyConfig` derive
-      cascade); benefits only proxied **foreign** domains (the instance's own
-      host short-circuits before the lookup).
+- [x] `frontends` host→registry routing table → `KvStore`; rebuild on frontend
+      change (`rewrite_for_frontend` reads KV, not D1). *Done:* `resolve_frontend_route`
+      now resolves over a per-host routing projection (`FrontendRouteEntry`,
+      `fe:{host}`, 60 s TTL) — the `frontends_by_domain` read + the slug lookups
+      are cached, the path match is pure. Benefits proxied **foreign** domains
+      (the instance host still short-circuits before the lookup). Core suite green.
 - [x] `key_rosters` (trust anchors) → `KvStore`. *Done:* `list_roster_cached` /
       `invalidate_roster_cache` (`roster:{registry_id}`, 60 s TTL), **wired into
       the registry-home hot path** (`browse.rs` `registry_home`'s `join5`).
