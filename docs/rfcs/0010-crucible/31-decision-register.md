@@ -669,6 +669,11 @@ genuinely unresolved and is tracked as a spike in
   target architecture decision rather than an enabled implementation surface.
   Crucible keeps default deterministic interleaving only until the patch-series
   injection capability lands and S12 is rerun.
+- **Engine schedule surface:** T-EXEC-19 now implements the Rust execution-model
+  recording discipline: nonzero RR-boundary default preemptions are derived
+  without schedule entries, while explorer-supplied `Decision::Preemption`
+  values are explicit replay material. This does not enable the QEMU
+  commanded-injection surface.
 
 ### D-26 — App-controlled randomness as an optional white-box exploration dimension
 
@@ -1563,9 +1568,9 @@ register.
 
 - **RISK-26 / T-RISK-18 — S12 `Decision::Preemption`**
   - **Status:** PASS WITH FALLBACK; no known commanded preemption exploration
-    surface is available in the current QEMU/plugin/Rust implementation, so
-    `Decision::Preemption` remains disabled and only the default deterministic
-    interleaving is enabled.
+    surface is available in the current QEMU/plugin implementation, so
+    branchable `Decision::Preemption` exploration remains disabled and only the
+    default deterministic interleaving is enabled.
   - **Check:** `checks.crucible.phase0.s12PreemptionDecision`.
   - **Result:**
     `preemption_surface_scan_scope=qemu_nix_all_qemu_patches_trace_plugin_crates`,
@@ -1605,6 +1610,8 @@ register.
   - **Fallback:** keep `Decision::Preemption` exploration disabled and ship only
     default deterministic interleaving until preemption injection lands in the
     AOS QEMU patch series; rerun S12 before enabling the explorer branch.
+    T-EXEC-19 supplies the engine schedule representation for that future branch,
+    but does not change this fallback.
 
 - **RISK-27 / T-RISK-19 — S13 `rr_switch_quantum` default**
   - **Status:** PASS WITH FALLBACK; the throughput side of the default-only RR

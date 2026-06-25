@@ -907,14 +907,27 @@ information that cannot be recomputed.
 - [ ] **T-EXEC-18** Run the model determinism tests under adversarial host
   conditions (load, task reordering, varied core counts) and assert identical
   fingerprints. — satisfies [EXEC-32]; spec §11.
-- [ ] **T-EXEC-19** Implement the `Decision::Preemption` variant
+- [x] **T-EXEC-19** Implement the `Decision::Preemption` variant
   (`VcpuSwitch` / `InterruptAt`, `PreemptionKind`) with the
   default-recomputable / override-stored discipline: prove the default RR/timer
   preemption sequence is recomputable from `(def, Seed, schedule)` and
   audit-only, and that an explorer-supplied preemption (including `InterruptAt`
   at N = 1) is stored and replayed. — satisfies [EXEC-33], [G-11]; spec §12.
-- [ ] **T-EXEC-20** Implement the `Decision::AppRandom` variant: record
+  - Completed by `crates/crucible/src/decision.rs`: `default_rr_preemption`
+    derives nonzero RR-boundary default switches without appending a schedule
+    entry, while `record_preemption_override` stores explorer-supplied
+    `VcpuSwitch` and single-vCPU `InterruptAt` choices as
+    `Decision::Preemption`. The coverage floor now requires default derivation,
+    invalid-boundary/overflow coverage, and override-recording markers.
+- [x] **T-EXEC-20** Implement the `Decision::AppRandom` variant: record
   `stream`/`request_id`/`width`/`value` for each served app draw; on replay
   re-derive a non-overridden draw from the seeded stream and serve an overridden
   draw from the recorded value (never re-roll); test stream isolation under
   unrelated `World` edits. — satisfies [EXEC-34]; spec §12.
+  - Completed by `crates/crucible/src/decision.rs`: `serve_app_random` records
+    the seeded `RngDraw` plus `Decision::AppRandom`, `serve_app_random_request`
+    preserves a caller-supplied request id for doorbell/protocol requests,
+    hydrated replay resumes stream positions from the recorded schedule, and
+    `serve_app_random_override` serves recorded values without advancing or
+    re-rolling the seeded stream. The coverage floor now requires the app-random
+    request-id, resume, override, and invalid override-value tests.

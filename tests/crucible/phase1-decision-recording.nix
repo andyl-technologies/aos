@@ -1,6 +1,8 @@
 {
   pkgs,
   lib,
+  attrPath ? "checks.crucible.phase1.decisionRecording",
+  taskIds ? ["T-DET-16" "T-EXEC-19" "T-EXEC-20"],
 }: let
   root = ../..;
   decisionRust = builtins.readFile ../../crates/crucible/src/decision.rs;
@@ -108,6 +110,22 @@
         needle = "Decision::AppRandom";
       }
       {
+        label = "app-random request-id path";
+        needle = "pub fn serve_app_random_request";
+      }
+      {
+        label = "app-random override path";
+        needle = "pub fn serve_app_random_override";
+      }
+      {
+        label = "default RR preemption derivation";
+        needle = "pub fn default_rr_preemption";
+      }
+      {
+        label = "preemption override recording";
+        needle = "pub fn record_preemption_override";
+      }
+      {
         label = "schedule append path";
         needle = "self.configuration = step(&self.configuration, decision);";
       }
@@ -122,6 +140,30 @@
       {
         label = "resume coverage marker";
         needle = "decision_recorder_resumes_stream_positions_from_existing_schedule";
+      }
+      {
+        label = "app-random request-id coverage marker";
+        needle = "decision_recorder_records_app_random_guest_request_id";
+      }
+      {
+        label = "preemption default coverage marker";
+        needle = "decision_recorder_derives_default_rr_preemption_without_recording_schedule";
+      }
+      {
+        label = "preemption override coverage marker";
+        needle = "decision_recorder_records_preemption_overrides_in_schedule";
+      }
+      {
+        label = "preemption invalid-shape coverage marker";
+        needle = "decision_recorder_rejects_invalid_default_preemption_shape";
+      }
+      {
+        label = "preemption overflow coverage marker";
+        needle = "decision_recorder_derives_default_rr_preemption_without_overflow";
+      }
+      {
+        label = "app-random override coverage marker";
+        needle = "decision_recorder_serves_app_random_override_without_rerolling_stream";
       }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" libRust [
@@ -175,11 +217,15 @@
       }
       {
         label = "host wall clock";
-        needle = "SystemTime";
+        needle = "SystemTime::now";
       }
       {
         label = "host monotonic clock";
-        needle = "Instant";
+        needle = "Instant::now";
+      }
+      {
+        label = "host monotonic clock import";
+        needle = "std::time::Instant";
       }
       {
         label = "ordering-significant unordered map";
@@ -215,12 +261,15 @@ in
             mkdir -p "$out"
             cat > "$out/result" <<'RESULT'
             PASS
-            check=checks.crucible.phase1.decisionRecording
-            tasks=T-DET-16
+            check=${attrPath}
+            tasks=${builtins.concatStringsSep "," taskIds}
             crate=crucible
             recorder=DecisionRecorder
             rng_source=crucible-sim::DecisionRng
-            schedule_records=rng-draw,fault-fires,app-random
+            schedule_records=rng-draw,fault-fires,app-random,preemption-override
+            default_preemption=derived-audit-only
+            app_random_request_id=caller-supplied
+            app_random_override=recorded-value-no-reroll
             engine_ambient_randomness=false
             RESULT
           '';

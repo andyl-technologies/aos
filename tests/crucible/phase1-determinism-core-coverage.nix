@@ -26,140 +26,47 @@
       builtins.substring index needleLen haystack == needle)
     indexes;
 
+  firstSplitSegment = separator: value: builtins.elemAt (lib.splitString separator value) 0;
+  hasPrefix = prefix: value:
+    builtins.substring 0 (builtins.stringLength prefix) value == prefix;
   scrubCommentsAndStrings = content: let
-    length = builtins.stringLength content;
-    charAt = index: builtins.substring index 1 content;
-    indexes = builtins.genList (index: index) length;
-    step = state: index:
-      if state.skip
-      then
-        state
-        // {
-          skip = false;
-        }
-      else let
-        ch = charAt index;
-        next =
-          if (index + 1) < length
-          then charAt (index + 1)
-          else "";
-      in
-        if state.mode == "code"
-        then
-          if ch == "/" && next == "/"
-          then
-            state
-            // {
-              out = state.out + "  ";
-              mode = "line";
-              skip = true;
-            }
-          else if ch == "/" && next == "*"
-          then
-            state
-            // {
-              out = state.out + "  ";
-              mode = "block";
-              depth = 1;
-              skip = true;
-            }
-          else if ch == "\""
-          then
-            state
-            // {
-              out = state.out + " ";
-              mode = "string";
-            }
-          else
-            state
-            // {
-              out = state.out + ch;
-            }
-        else if state.mode == "line"
-        then
-          if ch == "\n"
-          then
-            state
-            // {
-              out = state.out + "\n";
-              mode = "code";
-            }
-          else
-            state
-            // {
-              out = state.out + " ";
-            }
-        else if state.mode == "block"
-        then
-          if ch == "/" && next == "*"
-          then
-            state
-            // {
-              out = state.out + "  ";
-              depth = state.depth + 1;
-              skip = true;
-            }
-          else if ch == "*" && next == "/"
-          then
-            state
-            // {
-              out = state.out + "  ";
-              mode =
-                if state.depth == 1
-                then "code"
-                else "block";
-              depth =
-                if state.depth == 1
-                then 0
-                else state.depth - 1;
-              skip = true;
-            }
-          else
-            state
-            // {
-              out = state.out + (
-                if ch == "\n"
-                then "\n"
-                else " "
-              );
-            }
-        else if ch == "\\" && next != ""
-        then
-          state
-          // {
-            out = state.out + " " + (
-              if next == "\n"
-              then "\n"
-              else " "
-            );
-            skip = true;
-          }
-        else if ch == "\""
-        then
-          state
-          // {
-            out = state.out + " ";
-            mode = "code";
-          }
-        else
-          state
-          // {
-            out = state.out + (
-              if ch == "\n"
-              then "\n"
-              else " "
-            );
-          };
+    scrubLine = state: line: let
+      withoutLineComment = firstSplitSegment "//" line;
+      blockStarts = hasInfix "/*" withoutLineComment;
+      blockEnds = hasInfix "*/" withoutLineComment;
+      withoutBlockComment =
+        if state.inBlockComment
+        then ""
+        else if blockStarts
+        then firstSplitSegment "/*" withoutLineComment
+        else withoutLineComment;
+      trimmed = lib.trim withoutBlockComment;
+      stringOnly =
+        hasPrefix "\"" trimmed
+        || hasPrefix "r\"" trimmed
+        || hasPrefix "r#" trimmed;
+    in {
+      inBlockComment =
+        if state.inBlockComment
+        then !blockEnds
+        else blockStarts && !blockEnds;
+      lines =
+        state.lines
+        ++ [
+          (
+            if stringOnly
+            then ""
+            else withoutBlockComment
+          )
+        ];
+    };
     result =
-      builtins.foldl' step {
-        out = "";
-        mode = "code";
-        depth = 0;
-        skip = false;
-      }
-      indexes;
+      builtins.foldl' scrubLine {
+        inBlockComment = false;
+        lines = [];
+      } (lib.splitString "\n" content);
   in
-    result.out;
+    builtins.concatStringsSep "\n" result.lines;
 
   coverageInstrumentationProfile = "crucible-determinism-core-coverage";
   coverageMeasurement = pkgs.mkDerivation {
@@ -240,6 +147,13 @@
             -p crucible-sim \
             --lib \
             -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target_dir" \
+            -p crucible-shmem \
+            --test gate_layer1_injection \
+            -- --test-threads=1
 
           profraw_count="$(find "$TMPDIR/profraw" -name '*.profraw' | wc -l)"
           [ "$profraw_count" -gt 0 ] || {
@@ -290,8 +204,15 @@
           require_covered_function decision_recorder_records_rng_draws_and_fault_outcomes
           require_covered_function decision_recorder_keeps_per_entity_streams_stable
           require_covered_function decision_recorder_records_app_random_after_rng_draw
+          require_covered_function decision_recorder_records_app_random_guest_request_id
           require_covered_function decision_recorder_rejects_invalid_app_random_widths
           require_covered_function decision_recorder_resumes_stream_positions_from_existing_schedule
+          require_covered_function decision_recorder_derives_default_rr_preemption_without_recording_schedule
+          require_covered_function decision_recorder_records_preemption_overrides_in_schedule
+          require_covered_function decision_recorder_rejects_invalid_default_preemption_shape
+          require_covered_function decision_recorder_derives_default_rr_preemption_without_overflow
+          require_covered_function decision_recorder_serves_app_random_override_without_rerolling_stream
+          require_covered_function decision_recorder_rejects_invalid_app_random_override_values
           require_covered_function sim_backend_rejects_backward_advance_and_post_shutdown_mutation
           require_covered_function sim_backend_rejects_unknown_checkpoint_deterministically
           require_covered_function stable_hasher_is_repeatable
@@ -299,6 +220,8 @@
           require_covered_function stable_hasher_covers_chunk_remainder_and_bool_inputs
           require_covered_function replay_oracle_accepts_matching_corpus
           require_covered_function replay_oracle_reports_first_mismatch
+          require_covered_function assert_spsc_ring_loom_model
+          require_covered_function assert_spsc_ring_proptest_properties
 
           line_for() {
             file="$1"
@@ -462,8 +385,28 @@
             "crucible/src/decision.rs" \
             "crucible/src/decision.rs" \
             1 \
-            "return Err(DecisionRecordError::InvalidAppRandomWidth { width });" \
+            "fn validate_app_random_width(width: u8) -> Result<(), DecisionRecordError>" \
             "decision recorder invalid app-random width branch"
+          require_line_marker_after \
+            "crucible/src/decision.rs" \
+            "crucible/src/decision.rs" \
+            1 \
+            "pub fn serve_app_random_override" \
+            "Decision::AppRandom" \
+            "decision recorder app-random override decision"
+          require_line_marker_after \
+            "crucible/src/decision.rs" \
+            "crucible/src/decision.rs" \
+            1 \
+            "pub fn record_preemption_override" \
+            "Decision::Preemption" \
+            "decision recorder preemption override decision"
+          require_line_marker \
+            "crucible/src/decision.rs" \
+            "crucible/src/decision.rs" \
+            1 \
+            "pub fn default_rr_preemption" \
+            "decision recorder default preemption derivation"
           require_line_marker \
             "crucible/src/sim_backend.rs" \
             "crucible/src/sim_backend.rs" \
@@ -527,13 +470,6 @@
     ];
   };
 
-  spscRingActivationMarkers = [
-    "Atomic"
-    "compare_exchange"
-    "fetch_add"
-    "SpscRing"
-    "FrameRing"
-  ];
   protocolCodecActivationMarkers = [
     "pub fn encode"
     "pub fn decode"
@@ -640,28 +576,35 @@
         "decision_recorder_records_rng_draws_and_fault_outcomes"
         "decision_recorder_keeps_per_entity_streams_stable"
         "decision_recorder_records_app_random_after_rng_draw"
+        "decision_recorder_records_app_random_guest_request_id"
         "decision_recorder_rejects_invalid_app_random_widths"
         "decision_recorder_resumes_stream_positions_from_existing_schedule"
+        "decision_recorder_derives_default_rr_preemption_without_recording_schedule"
+        "decision_recorder_records_preemption_overrides_in_schedule"
+        "decision_recorder_rejects_invalid_default_preemption_shape"
+        "decision_recorder_derives_default_rr_preemption_without_overflow"
+        "decision_recorder_serves_app_random_override_without_rerolling_stream"
+        "decision_recorder_rejects_invalid_app_random_override_values"
         "assert_decision_rng_branch_coverage("
         "assert_per_entity_rng_forking_coverage("
       ];
     }
-  ];
-
-  plannedSurfaces = [
     {
       id = "spsc-ring";
       sourcePath = "crates/crucible-shmem/src/lib.rs";
       testPath = "crates/crucible-shmem/tests/gate_layer1_injection.rs";
-      status = "planned";
+      status = "active";
       instrumentation = "separate-deterministic-build";
-      activationMarkers = spscRingActivationMarkers;
-      activationSourceRoots = ["crates/crucible-shmem/src"];
+      activationMarkers = [];
+      activationSourceRoots = [];
       requiredMarkers = [
         "assert_spsc_ring_loom_model("
         "assert_spsc_ring_proptest_properties("
       ];
     }
+  ];
+
+  plannedSurfaces = [
     {
       id = "protocol-codec";
       sourcePath = "crates/crucible-protocol/src/lib.rs";
@@ -848,8 +791,15 @@
       "decision_recorder_records_rng_draws_and_fault_outcomes"
       "decision_recorder_keeps_per_entity_streams_stable"
       "decision_recorder_records_app_random_after_rng_draw"
+      "decision_recorder_records_app_random_guest_request_id"
       "decision_recorder_rejects_invalid_app_random_widths"
       "decision_recorder_resumes_stream_positions_from_existing_schedule"
+      "decision_recorder_derives_default_rr_preemption_without_recording_schedule"
+      "decision_recorder_records_preemption_overrides_in_schedule"
+      "decision_recorder_rejects_invalid_default_preemption_shape"
+      "decision_recorder_derives_default_rr_preemption_without_overflow"
+      "decision_recorder_serves_app_random_override_without_rerolling_stream"
+      "decision_recorder_rejects_invalid_app_random_override_values"
     ];
   in
     lib.concatMap (
