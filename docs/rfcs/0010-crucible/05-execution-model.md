@@ -993,9 +993,18 @@ information that cannot be recomputed.
     the live mirror without issuing query commands, and
     `checks.crucible.phase1.executionLiveSnapshot` gates the mirror API,
     metadata, RFC linkage, and latency check.
-- [ ] **T-EXEC-16** Make the `Engine` able to drop and re-`instantiate` its
+- [x] **T-EXEC-16** Make the `Engine` able to drop and re-`instantiate` its
   runtime at any quantum boundary with no observable change (cache-eviction
   safety). — satisfies [EXEC-30]; spec §10.
+  - Completed by `crates/crucible-session/src/lib.rs`: `Engine::evict_runtime_cache`
+    drops only the rebuildable `RuntimeState`, `Engine::reinstantiate_runtime_cache`
+    rebuilds it from the source-of-truth `Configuration` and `TemporalGraph`
+    without changing the boundary snapshot, and `Engine::refresh_runtime_cache`
+    performs an atomic drop-and-rebuild refresh for cache pressure. Focused
+    tests cover paused and running quantum boundaries, never-instantiated
+    guards, and refresh failure atomicity, and
+    `checks.crucible.phase1.executionCacheEviction` gates the API, no-observable
+    change assertions, RFC linkage, and replay-oracle cache semantics.
 - [ ] **T-EXEC-17** Implement the same-configuration-twice fingerprint test as the
   unified validator of start/resume/fork/snapshot-completeness and wire it to
   `gate:single-vm-fingerprint`. — satisfies [EXEC-31]; spec §11.
