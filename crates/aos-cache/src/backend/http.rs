@@ -41,6 +41,11 @@ pub struct HttpBackend {
     /// Whether the target is an AOS server (a provisioning token was
     /// supplied), enabling the AOS-specific API paths.
     is_aos: bool,
+    /// Latches once a presigned-mint attempt comes back unsupported (no route,
+    /// cache not found, or not presign-configured), so the remaining NAR uploads
+    /// skip the mint RPC and go straight to the facade instead of paying a
+    /// failed round-trip each.
+    mint_disabled: std::sync::atomic::AtomicBool,
 }
 
 /// OAuth2 token-endpoint response; only the access token is consumed.
@@ -97,6 +102,7 @@ impl HttpBackend {
             origin,
             headers,
             is_aos,
+            mint_disabled: std::sync::atomic::AtomicBool::new(false),
         };
 
         // If we have an AOS token, authenticate to get a JWT.
@@ -281,6 +287,12 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn mint_upload_url(&self, path: &str) -> Result<Option<String>> {
+        use std::sync::atomic::Ordering;
+        // Once a mint attempt comes back unsupported, skip the RPC for the rest
+        // of the push and go straight to the facade.
+        if self.mint_disabled.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
         // Only attempt against an authenticated AOS hub: a provisioning-token
         // backend (`is_aos`) or one carrying an explicit `Authorization` header.
         // An unauthenticated plain-HTTP cache cannot presign, so skip the RPC.
@@ -313,31 +325,33 @@ impl CacheBackend for HttpBackend {
         req.headers
             .push(("Content-Type".to_string(), "application/json".to_string()));
         let req = self.add_headers(req);
-        let result = self
-            .engine
-            .execute(req)
-            .await
-            .context("minting presigned upload URL")?;
-        // A non-presignable cache (or a non-AOS origin) yields a non-2xx or an
-        // empty `upload_url`: fall back to the facade rather than failing.
-        if result.status >= 400 {
-            return Ok(None);
-        }
-        let Some(body) = result.body else {
-            return Ok(None);
+        // A cache that can't presign (no route, cache not found, or not
+        // presign-configured) must not fail the push: latch mint off and fall
+        // back to the facade.
+        let result = match self.engine.execute(req).await {
+            Ok(result) if result.status < 400 => result,
+            _ => {
+                self.mint_disabled.store(true, Ordering::Relaxed);
+                return Ok(None);
+            }
         };
-        #[derive(Deserialize)]
-        struct MintResponse {
-            #[serde(default)]
-            upload_url: String,
+        let url = result
+            .body
+            .as_deref()
+            .and_then(|body| {
+                #[derive(Deserialize)]
+                struct MintResponse {
+                    #[serde(default)]
+                    upload_url: String,
+                }
+                serde_json::from_slice::<MintResponse>(body).ok()
+            })
+            .map(|resp| resp.upload_url)
+            .filter(|u| !u.is_empty());
+        if url.is_none() {
+            self.mint_disabled.store(true, Ordering::Relaxed);
         }
-        let resp: MintResponse =
-            serde_json::from_slice(&body).context("parsing mint-upload-credentials response")?;
-        if resp.upload_url.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(resp.upload_url))
-        }
+        Ok(url)
     }
 
     async fn put_to_url(&self, url: &str, data: &[u8]) -> Result<()> {
