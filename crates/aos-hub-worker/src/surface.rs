@@ -880,11 +880,32 @@ struct R2Write {
 impl SurfaceWrite for R2Write {
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let key = keymap::r2_key(&self.prefix, path);
-        self.bucket
-            .put(&key, bytes.to_vec())
-            .execute()
+        // Call the R2 binding's `put` directly with only `(key, value)`, rather
+        // than via worker-rs `Bucket::put(key, value).execute()`. The 0.8
+        // `PutOptionsBuilder` serializes an options object whose keys (notably
+        // `md5`) are present and set via an unconditional `Reflect::set`, and the
+        // current workerd/R2 rejects the wrong-typed value ("Incorrect type for
+        // the 'md5' field on 'PutOptions'"), failing every write with a 500 —
+        // the same class of 0.8 R2 option-serialization bug bypassed for the
+        // read path in [`r2_get`]. Passing no options object avoids it.
+        use js_sys::{Function, Promise, Reflect, Uint8Array};
+        use wasm_bindgen::{JsCast, JsValue};
+        use wasm_bindgen_futures::JsFuture;
+
+        let jsbucket: &JsValue = self.bucket.as_ref();
+        let put_fn: Function = Reflect::get(jsbucket, &JsValue::from_str("put"))
+            .map_err(|e| anyhow::anyhow!("R2 put {key}: put method: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| anyhow::anyhow!("R2 put {key}: put is not a function: {e:?}"))?;
+        let value = Uint8Array::from(bytes);
+        let promise: Promise = put_fn
+            .call2(jsbucket, &JsValue::from_str(&key), value.as_ref())
+            .map_err(|e| anyhow::anyhow!("R2 put {key}: call: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| anyhow::anyhow!("R2 put {key}: put did not return a promise: {e:?}"))?;
+        JsFuture::from(promise)
             .await
-            .map_err(|err| anyhow::anyhow!("R2 put {key}: {err}"))?;
+            .map_err(|e| anyhow::anyhow!("R2 put {key}: {e:?}"))?;
         Ok(())
     }
 
