@@ -28,12 +28,9 @@ pub enum LaunchProfileError {
         /// The rejected accelerator string.
         accelerator: String,
     },
-    /// The launch requested more than one vCPU before the RR-TCG profile lands.
-    #[error("T-DET-1 launch profile requires `-smp 1`, got {requested}")]
-    SmpNotSingleVcpu {
-        /// The requested vCPU count.
-        requested: u16,
-    },
+    /// The launch requested zero vCPUs.
+    #[error("launch profile requires at least one vCPU")]
+    SmpVcpuCountZero,
     /// The launch requested adaptive host-speed icount.
     #[error("icount shift must be fixed; `shift=auto` is forbidden")]
     IcountShiftAuto,
@@ -298,6 +295,14 @@ pub enum QemuPreSpawnLaunchValidationError {
         /// Rejected value.
         value: String,
     },
+    /// A comma-delimited QEMU option repeated a deterministic sub-option key.
+    #[error("QEMU `{option}` must specify `{key}` at most once")]
+    DuplicateSubOption {
+        /// The parent QEMU option.
+        option: &'static str,
+        /// The duplicated sub-option key.
+        key: &'static str,
+    },
     /// The RR switch quantum was not pinned.
     #[error("QEMU `-icount` must pin `rr_switch_quantum` in node icount")]
     RrSwitchQuantumUnpinned,
@@ -454,7 +459,7 @@ fn validate_pre_spawn_accelerator(
         });
     }
 
-    match comma_value(&lower, "thread") {
+    match unique_comma_value(&lower, "-accel", "thread")? {
         Some("single") => Ok(()),
         Some("multi") => Err(QemuPreSpawnLaunchValidationError::MultiThreadTcg {
             accelerator: accelerator.to_owned(),
@@ -469,7 +474,7 @@ fn validate_pre_spawn_accelerator(
 
 fn validate_machine_acceleration(machine: &str) -> Result<(), QemuPreSpawnLaunchValidationError> {
     let lower = machine.to_ascii_lowercase();
-    if let Some(accel) = comma_value(&lower, "accel")
+    if let Some(accel) = unique_comma_value(&lower, "-machine", "accel")?
         && accel != "tcg"
     {
         return Err(
@@ -482,7 +487,7 @@ fn validate_machine_acceleration(machine: &str) -> Result<(), QemuPreSpawnLaunch
 }
 
 fn validate_pre_spawn_icount_shift(icount: &str) -> Result<u8, QemuPreSpawnLaunchValidationError> {
-    let Some(shift) = comma_value(icount, "shift") else {
+    let Some(shift) = unique_comma_value(icount, "-icount", "shift")? else {
         return Err(QemuPreSpawnLaunchValidationError::IcountShiftMissing);
     };
     if shift == "auto" {
@@ -507,7 +512,7 @@ fn validate_required_icount_value(
     key: &'static str,
     expected: &'static str,
 ) -> Result<(), QemuPreSpawnLaunchValidationError> {
-    match comma_value(icount, key) {
+    match unique_comma_value(icount, "-icount", key)? {
         Some(value) if value == expected => Ok(()),
         Some(value) => Err(QemuPreSpawnLaunchValidationError::IcountOptionInvalid {
             key,
@@ -521,8 +526,12 @@ fn validate_required_icount_value(
 fn validate_pre_spawn_rr_switch_quantum(
     icount: &str,
 ) -> Result<u64, QemuPreSpawnLaunchValidationError> {
-    let Some(value) = comma_value(icount, "rr_switch_quantum")
-        .or_else(|| comma_value(icount, "crucible-rr-quantum-icount"))
+    let Some(value) = unique_comma_value_any(
+        icount,
+        "-icount",
+        &["rr_switch_quantum", "crucible-rr-quantum-icount"],
+        "rr_switch_quantum",
+    )?
     else {
         return Err(QemuPreSpawnLaunchValidationError::RrSwitchQuantumUnpinned);
     };
@@ -538,8 +547,8 @@ fn validate_pre_spawn_rr_switch_quantum(
 }
 
 fn validate_pre_spawn_smp(smp: &str) -> Result<u16, QemuPreSpawnLaunchValidationError> {
-    let cpus =
-        comma_value(smp, "cpus").unwrap_or_else(|| smp.split(',').next().unwrap_or_default());
+    let cpus = unique_comma_value(smp, "-smp", "cpus")?
+        .unwrap_or_else(|| smp.split(',').next().unwrap_or_default());
     let Ok(cpus) = cpus.parse::<u16>() else {
         return Err(QemuPreSpawnLaunchValidationError::SmpInvalid {
             value: smp.to_owned(),
@@ -720,6 +729,39 @@ fn comma_value<'a>(value: &'a str, key: &str) -> Option<&'a str> {
             .strip_prefix(key)
             .and_then(|suffix| suffix.strip_prefix('='))
     })
+}
+
+fn unique_comma_value<'a>(
+    value: &'a str,
+    option: &'static str,
+    key: &'static str,
+) -> Result<Option<&'a str>, QemuPreSpawnLaunchValidationError> {
+    unique_comma_value_any(value, option, &[key], key)
+}
+
+fn unique_comma_value_any<'a>(
+    value: &'a str,
+    option: &'static str,
+    keys: &[&'static str],
+    key_label: &'static str,
+) -> Result<Option<&'a str>, QemuPreSpawnLaunchValidationError> {
+    let mut matched = None;
+    for part in value.split(',') {
+        let part = part.trim();
+        for key in keys {
+            if let Some(sub_value) = part
+                .strip_prefix(key)
+                .and_then(|suffix| suffix.strip_prefix('='))
+                && matched.replace(sub_value).is_some()
+            {
+                return Err(QemuPreSpawnLaunchValidationError::DuplicateSubOption {
+                    option,
+                    key: key_label,
+                });
+            }
+        }
+    }
+    Ok(matched)
 }
 
 pub(super) fn validate_fixed_text(

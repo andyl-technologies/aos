@@ -13,7 +13,7 @@
 
   shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   headerGenerator = builtins.readFile ../../crates/crucible-shmem/src/abi_header.rs;
-  generatorBin = builtins.readFile ../../crates/crucible-shmem/src/bin/crucible-shmem-abi-header.rs;
+  generatorBin = builtins.readFile ../../crates/crucible-shmem/examples/crucible-shmem-abi-header.rs;
   generatedHeader = builtins.readFile ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
   headerTest = builtins.readFile ../../crates/crucible-shmem/tests/generated_abi_header.rs;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
@@ -91,7 +91,7 @@
         needle = "offsetof({c_type}, {field})";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/bin/crucible-shmem-abi-header.rs" generatorBin [
+    ++ failuresFor "crates/crucible-shmem/examples/crucible-shmem-abi-header.rs" generatorBin [
       {
         label = "command line header generator";
         needle = "crucible_shmem::generated_c_header()";
@@ -236,7 +236,7 @@ in
               --target-dir "$TMPDIR/crucible-shmem-generated-header-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-shmem \
-              --bin crucible-shmem-abi-header \
+              --example crucible-shmem-abi-header \
               --quiet \
               > "$TMPDIR/crucible_shmem_abi.h.regenerated"
 

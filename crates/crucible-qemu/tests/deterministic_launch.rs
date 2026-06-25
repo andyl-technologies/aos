@@ -160,6 +160,67 @@ fn pre_spawn_launch_validation_accepts_canonical_arguments() {
 }
 
 #[test]
+fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed() {
+    let profile = deterministic(
+        LaunchProfileCandidate::default()
+            .with_smp_vcpus(4)
+            .with_rr_switch_quantum(8192),
+    );
+    let args = profile.canonical_qemu_args();
+
+    assert_eq!(profile.smp_vcpus(), 4);
+    assert_eq!(profile.rr_switch_quantum(), 8192);
+    assert!(
+        args.windows(2)
+            .any(|window| window == ["-accel", "tcg,thread=single"])
+    );
+    assert!(args.windows(2).any(|window| window == ["-smp", "4"]));
+    assert!(args.windows(2).any(|window| window
+        == [
+            "-icount",
+            "shift=0,sleep=off,align=off,rr_switch_quantum=8192"
+        ]));
+
+    let validation = validate_pre_spawn_qemu_launch_args(&args)
+        .unwrap_or_else(|error| panic!("multi-vCPU RR launch args should validate: {error}"));
+    assert_eq!(validation.accelerator(), "tcg,thread=single");
+    assert_eq!(validation.smp_vcpus(), 4);
+    assert_eq!(validation.rr_switch_quantum(), 8192);
+
+    let mut alias_args = args.clone();
+    replace_option_value(
+        &mut alias_args,
+        "-icount",
+        "shift=0,sleep=off,align=off,crucible-rr-quantum-icount=8192",
+    );
+    let alias_validation = validate_pre_spawn_qemu_launch_args(&alias_args)
+        .unwrap_or_else(|error| panic!("RFC alias RR quantum args should validate: {error}"));
+    assert_eq!(alias_validation.smp_vcpus(), 4);
+    assert_eq!(alias_validation.rr_switch_quantum(), 8192);
+
+    let material = profile.scenario_hash_material();
+    assert!(material.contains("smp_vcpus=4"));
+    assert!(material.contains("rr_switch_quantum=8192"));
+    assert!(material.contains("rr_switch_quantum_units=node-icount"));
+    assert!(material.contains("rr_vcpu_rotation=ascending-vcpu-id"));
+
+    let different_vcpu_count = deterministic(
+        LaunchProfileCandidate::default()
+            .with_smp_vcpus(2)
+            .with_rr_switch_quantum(8192),
+    )
+    .scenario_hash_material();
+    let different_quantum = deterministic(
+        LaunchProfileCandidate::default()
+            .with_smp_vcpus(4)
+            .with_rr_switch_quantum(4096),
+    )
+    .scenario_hash_material();
+    assert_ne!(material, different_vcpu_count);
+    assert_ne!(material, different_quantum);
+}
+
+#[test]
 fn pre_spawn_launch_validation_rejects_kvm_and_non_tcg() {
     assert_eq!(
         validate_pre_spawn_qemu_launch_args(&qemu_args(["-enable-kvm"])),
@@ -254,6 +315,16 @@ fn pre_spawn_launch_validation_rejects_bad_icount_and_mttcg() {
     );
 
     let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(&mut args, "-accel", "tcg,thread=single,thread=multi");
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::DuplicateSubOption {
+            option: "-accel",
+            key: "thread",
+        })
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
     replace_option_value(&mut args, "-accel", "tcg");
     assert_eq!(
         validate_pre_spawn_qemu_launch_args(&args),
@@ -269,6 +340,34 @@ fn pre_spawn_launch_validation_rejects_bad_icount_and_mttcg() {
     assert_eq!(
         validate_pre_spawn_qemu_launch_args(&args),
         Err(QemuPreSpawnLaunchValidationError::RrSwitchQuantumUnpinned)
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(
+        &mut args,
+        "-icount",
+        "shift=0,sleep=off,align=off,rr_switch_quantum=4096,rr_switch_quantum=8192",
+    );
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::DuplicateSubOption {
+            option: "-icount",
+            key: "rr_switch_quantum",
+        })
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(
+        &mut args,
+        "-icount",
+        "shift=0,sleep=off,align=off,rr_switch_quantum=4096,crucible-rr-quantum-icount=4096",
+    );
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::DuplicateSubOption {
+            option: "-icount",
+            key: "rr_switch_quantum",
+        })
     );
 }
 
@@ -593,9 +692,9 @@ fn launch_profile_rejects_mutating_or_interactive_state() {
     );
     assert_eq!(
         LaunchProfileCandidate::default()
-            .with_smp_vcpus(2)
+            .with_smp_vcpus(0)
             .try_into_deterministic(),
-        Err(LaunchProfileError::SmpNotSingleVcpu { requested: 2 })
+        Err(LaunchProfileError::SmpVcpuCountZero)
     );
     assert_eq!(
         LaunchProfileCandidate::default()
@@ -644,6 +743,7 @@ fn launch_profile_rejects_per_node_icount_shift_mismatch() {
     let profile = default_profile();
 
     assert_eq!(profile.icount_shift(), 0);
+    assert_eq!(profile.smp_vcpus(), 1);
     assert_eq!(profile.rr_switch_quantum(), 4096);
     assert_eq!(
         profile.validate_node_icount_shifts(&[
@@ -882,6 +982,8 @@ fn launch_hash_material_records_every_determinism_field() {
     .scenario_hash_material();
     let rr_quantum = deterministic(LaunchProfileCandidate::default().with_rr_switch_quantum(8192))
         .scenario_hash_material();
+    let smp_vcpus =
+        deterministic(LaunchProfileCandidate::default().with_smp_vcpus(2)).scenario_hash_material();
     let machine = deterministic(LaunchProfileCandidate::default().with_machine_type("pc-q35-9.1"))
         .scenario_hash_material();
     let memory = deterministic(LaunchProfileCandidate::default().with_memory_mib(1024))
@@ -900,6 +1002,7 @@ fn launch_hash_material_records_every_determinism_field() {
 
     assert_ne!(material, shifted);
     assert_ne!(material, rr_quantum);
+    assert_ne!(material, smp_vcpus);
     assert_ne!(material, machine);
     assert_ne!(material, memory);
     assert_ne!(material, epoch);

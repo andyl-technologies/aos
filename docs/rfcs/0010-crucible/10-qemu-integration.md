@@ -917,13 +917,20 @@ determinism contract (04).
   or plugin-IPC operations, and the gate forbids wall-clock reads, randomness,
   sleeps, and nondeterministic select APIs in the ordering-significant driver
   path.
-- [ ] **T-QEMU-15** Extend the launch-config builder and validator for
+- [x] **T-QEMU-15** Extend the launch-config builder and validator for
   multi-vCPU single-threaded round-robin: emit `-accel tcg,thread=single` with
   `-smp N`, set the round-robin switch boundary to the scenario's
   content-addressed `rr_switch_quantum` (node-icount) via the patch-series flag
   (`crucible-rr-quantum-icount`, 11), reject `thread=multi` and an unpinned
   quantum loudly, and fold N + the pinned `rr_switch_quantum` into the scenario
   content hash. — satisfies [QEMU-5], [QEMU-43]; spec §10.2.
+  **Completed:** `DeterministicLaunchProfile` now accepts `smp_vcpus >= 1`,
+  emits `-accel tcg,thread=single` with `-smp N`, pins the
+  `rr_switch_quantum` node-icount boundary in `-icount`, and folds both
+  `smp_vcpus=N` and `rr_switch_quantum` plus the ascending vCPU rotation into
+  scenario material. The pre-spawn validator rejects MTTCG and unpinned or zero
+  RR quantum before QEMU is spawned, while accepting the RFC alias
+  `crucible-rr-quantum-icount` for patched QEMU command lines.
 - [ ] **T-QEMU-16** Extend the single-VM fingerprint hook to N-vCPU nodes: read
   all N vCPUs' register files plus the round-robin cursor (current vCPU +
   position within `rr_switch_quantum`) via the plugin's per-vCPU introspection
