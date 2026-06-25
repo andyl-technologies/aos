@@ -802,6 +802,49 @@ impl WhiteBoxPolicy {
     }
 }
 
+/// A homogeneous content-addressed VM-state reference for one node.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum NodeBlobRef {
+    /// The baked ready-point VM blob for a node in the world's genesis.
+    Baked(ContentHash),
+    /// A copy-on-write delta layered over a parent VM blob.
+    CowDelta {
+        /// The parent VM blob content address.
+        parent: ContentHash,
+        /// The delta content address.
+        delta: ContentHash,
+        /// The resolved VM-state content address after applying `delta`.
+        resolved: ContentHash,
+    },
+}
+
+impl NodeBlobRef {
+    /// Builds a baked ready-point VM blob reference.
+    #[must_use]
+    pub fn baked(blob: ContentHash) -> Self {
+        Self::Baked(blob)
+    }
+
+    /// Builds a copy-on-write delta VM blob reference.
+    #[must_use]
+    pub fn cow_delta(parent: ContentHash, delta: ContentHash, resolved: ContentHash) -> Self {
+        Self::CowDelta {
+            parent,
+            delta,
+            resolved,
+        }
+    }
+
+    /// Returns the resolved VM-state content address denoted by this blob reference.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        match self {
+            Self::Baked(blob) => *blob,
+            Self::CowDelta { resolved, .. } => *resolved,
+        }
+    }
+}
+
 /// A vCPU identifier within one node.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VcpuId {
@@ -941,8 +984,40 @@ pub struct Checkpoint {
     pub id: ContentHash,
     /// The configuration this checkpoint materializes.
     pub configuration: ContentHash,
+    /// Per-node VM-state blob references.
+    pub node_blobs: BTreeMap<NodeId, NodeBlobRef>,
     /// Whether this is a fat or thin checkpoint.
     pub kind: CheckpointKind,
+}
+
+impl Checkpoint {
+    /// Builds a checkpoint handle with no recorded VM blob references.
+    #[must_use]
+    pub fn new(id: ContentHash, configuration: ContentHash, kind: CheckpointKind) -> Self {
+        Self::with_node_blobs(id, configuration, kind, BTreeMap::new())
+    }
+
+    /// Builds a checkpoint handle with explicit per-node VM blob references.
+    #[must_use]
+    pub fn with_node_blobs(
+        id: ContentHash,
+        configuration: ContentHash,
+        kind: CheckpointKind,
+        node_blobs: BTreeMap<NodeId, NodeBlobRef>,
+    ) -> Self {
+        Self {
+            id,
+            configuration,
+            node_blobs,
+            kind,
+        }
+    }
+
+    /// Returns the VM-state blob reference for `node`, when one is recorded.
+    #[must_use]
+    pub fn node_blob(&self, node: &NodeId) -> Option<&NodeBlobRef> {
+        self.node_blobs.get(node)
+    }
 }
 
 /// The storage shape of a checkpoint.
@@ -1213,14 +1288,15 @@ pub fn bake(world: &World) -> Result<GenesisCheckpoint, EngineError> {
     );
 
     Ok(GenesisCheckpoint {
-        checkpoint: Checkpoint {
-            id: ContentHash::from_canonical_material(
+        checkpoint: Checkpoint::with_node_blobs(
+            ContentHash::from_canonical_material(
                 "crucible.model.baked-genesis-checkpoint.v1",
                 &material,
             ),
-            configuration: genesis.id(),
-            kind: CheckpointKind::Fat,
-        },
+            genesis.id(),
+            CheckpointKind::Fat,
+            baked_node_blobs(world),
+        ),
     })
 }
 
@@ -1426,6 +1502,23 @@ fn canonical_world_nodes(nodes: &[WorldNode]) -> Vec<WorldNode> {
     nodes
 }
 
+fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
+    canonical_world_nodes(&world.nodes)
+        .into_iter()
+        .map(|node| {
+            let blob = ContentHash::from_canonical_material(
+                "crucible.model.node-baked-blob.v1",
+                &format!(
+                    "world_id={}\n{}",
+                    content_hash_hex(world.id),
+                    world_node_material(&node)
+                ),
+            );
+            (node.id, NodeBlobRef::baked(blob))
+        })
+        .collect()
+}
+
 fn world_hash_material(world: &World) -> String {
     let nodes = canonical_world_nodes(&world.nodes);
     format!(
@@ -1439,12 +1532,19 @@ fn world_nodes_material(nodes: &[WorldNode]) -> String {
     let mut lines = Vec::with_capacity(nodes.len().saturating_mul(5) + 1);
     lines.push(format!("nodes={}", nodes.len()));
     for node in nodes {
-        lines.push(format!("node_id_len={}", node.id.name.len()));
-        lines.push(format!("node_id={}", node.id.name));
-        lines.push(ready_point_material(&node.ready_point));
-        lines.push(format!("white_box={}", white_box_material(node.white_box)));
+        lines.push(world_node_material(node));
     }
     lines.join("\n")
+}
+
+fn world_node_material(node: &WorldNode) -> String {
+    format!(
+        "node_id_len={}\nnode_id={}\n{}\nwhite_box={}",
+        node.id.name.len(),
+        node.id.name,
+        ready_point_material(&node.ready_point),
+        white_box_material(node.white_box)
+    )
 }
 
 fn ready_point_material(ready_point: &ReadyPoint) -> String {

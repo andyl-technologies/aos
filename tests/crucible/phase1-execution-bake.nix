@@ -88,11 +88,15 @@
       }
       {
         label = "fat genesis checkpoint";
-        needle = "kind: CheckpointKind::Fat";
+        needle = "CheckpointKind::Fat";
       }
       {
         label = "checkpoint names genesis configuration";
-        needle = "configuration: genesis.id()";
+        needle = "genesis.id()";
+      }
+      {
+        label = "baked genesis carries node blob refs";
+        needle = "baked_node_blobs(world)";
       }
       {
         label = "world hash material helper";

@@ -31,11 +31,11 @@ pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use model::{
     AppRandomDecision, Checkpoint, CheckpointKind, ChoiceTag, ClockDriftRate, Configuration,
     ContentHash, Decision, DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId,
-    GenesisCheckpoint, Icount, IrqVector, NodeClockSkew, NodeCounter, NodeId, OverrideDecision,
-    PreemptionDecision, PreemptionKind, ReadyPoint, RngDecision, RngStreamId, RuntimeState,
-    ScenarioDef, Schedule, ScheduleError, SchedulingPoint, Shift, SimDuration, SimInstant,
-    SimOffset, State, TemporalGraph, TimeConversionError, VcpuId, VirtualInstant, VirtualTime,
-    WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
+    GenesisCheckpoint, Icount, IrqVector, NodeBlobRef, NodeClockSkew, NodeCounter, NodeId,
+    OverrideDecision, PreemptionDecision, PreemptionKind, ReadyPoint, RngDecision, RngStreamId,
+    RuntimeState, ScenarioDef, Schedule, ScheduleError, SchedulingPoint, Shift, SimDuration,
+    SimInstant, SimOffset, State, TemporalGraph, TimeConversionError, VcpuId, VirtualInstant,
+    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
@@ -982,6 +982,73 @@ mod tests {
     }
 
     #[test]
+    fn baked_genesis_records_node_blob_refs_uniformly() {
+        let node = ready_node(
+            "node",
+            ReadyPoint::FixedIcount {
+                icount: Icount { retired: 64 },
+            },
+        );
+        let world = world_from_nodes(vec![node.clone()]);
+        let baked = match bake(&world) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("world with ready-point node should bake: {error}"),
+        };
+        let Some(blob) = baked.checkpoint.node_blob(&node.id) else {
+            panic!("baked genesis should carry a blob ref for the node");
+        };
+
+        assert_eq!(baked.checkpoint.node_blobs.len(), 1);
+        assert!(matches!(blob, NodeBlobRef::Baked(_)));
+        assert_eq!(
+            Some(blob),
+            baked.checkpoint.node_blobs.get(&node_id("node"))
+        );
+    }
+
+    #[test]
+    fn node_blob_refs_are_uniform_for_baked_and_cow_delta_state() {
+        let node = node_id("node");
+        let baked_blob = ContentHash::from_canonical_material("crucible.test.node-blob", "baked");
+        let delta = ContentHash::from_canonical_material("crucible.test.node-blob", "delta");
+        let resolved = ContentHash::from_canonical_material("crucible.test.node-blob", "resolved");
+        let cow_blob = NodeBlobRef::cow_delta(baked_blob, delta, resolved);
+        let materialized_blob = NodeBlobRef::baked(resolved);
+        let genesis = Configuration::genesis(generated_scenario(71));
+        let descendant = Configuration {
+            def: genesis.def.clone(),
+            schedule: generated_schedule(71, 1),
+        };
+        let genesis_checkpoint = Checkpoint::with_node_blobs(
+            ContentHash::from_canonical_material("crucible.test.checkpoint", "genesis"),
+            genesis.id(),
+            CheckpointKind::Fat,
+            std::collections::BTreeMap::from([(node.clone(), NodeBlobRef::baked(baked_blob))]),
+        );
+        let descendant_checkpoint = Checkpoint::with_node_blobs(
+            ContentHash::from_canonical_material("crucible.test.checkpoint", "descendant"),
+            descendant.id(),
+            CheckpointKind::Fat,
+            std::collections::BTreeMap::from([(node.clone(), cow_blob.clone())]),
+        );
+
+        assert!(matches!(
+            genesis_checkpoint.node_blob(&node),
+            Some(NodeBlobRef::Baked(_))
+        ));
+        assert!(matches!(
+            descendant_checkpoint.node_blob(&node),
+            Some(NodeBlobRef::CowDelta { resolved: hash, .. }) if *hash == resolved
+        ));
+        assert_eq!(
+            descendant_checkpoint
+                .node_blob(&node)
+                .map(NodeBlobRef::content_hash),
+            Some(materialized_blob.content_hash())
+        );
+    }
+
+    #[test]
     fn instantiate_requires_baked_genesis_when_no_cached_path() {
         let scenario = generated_scenario(59);
         let config = Configuration {
@@ -1009,16 +1076,8 @@ mod tests {
             schedule: generated_schedule(61, 2),
         };
         let other = Configuration::genesis(scenario);
-        let mismatched = Checkpoint {
-            id: config.id(),
-            configuration: other.id(),
-            kind: CheckpointKind::Fat,
-        };
-        let thin = Checkpoint {
-            id: config.id(),
-            configuration: config.id(),
-            kind: CheckpointKind::Thin,
-        };
+        let mismatched = Checkpoint::new(config.id(), other.id(), CheckpointKind::Fat);
+        let thin = Checkpoint::new(config.id(), config.id(), CheckpointKind::Thin);
 
         let mismatch_error = match TemporalGraph::empty().with_cached_snapshot(&config, mismatched)
         {
@@ -1077,11 +1136,7 @@ mod tests {
             checkpoint: fat_checkpoint_for(&descendant),
         };
         let thin = GenesisCheckpoint {
-            checkpoint: Checkpoint {
-                id: genesis.id(),
-                configuration: genesis.id(),
-                kind: CheckpointKind::Thin,
-            },
+            checkpoint: Checkpoint::new(genesis.id(), genesis.id(), CheckpointKind::Thin),
         };
 
         let mismatch_error = match TemporalGraph::empty().with_baked_genesis(&scenario, mismatched)
@@ -1130,11 +1185,11 @@ mod tests {
             }
 
             fn snapshot(&mut self) -> Result<Checkpoint, BackendError> {
-                Ok(Checkpoint {
-                    id: ContentHash::default(),
-                    configuration: ContentHash::default(),
-                    kind: CheckpointKind::Fat,
-                })
+                Ok(Checkpoint::new(
+                    ContentHash::default(),
+                    ContentHash::default(),
+                    CheckpointKind::Fat,
+                ))
             }
 
             fn restore(&mut self, _checkpoint: &Checkpoint) -> Result<(), BackendError> {
@@ -1356,14 +1411,14 @@ mod tests {
     }
 
     fn fat_checkpoint_for(configuration: &Configuration) -> Checkpoint {
-        Checkpoint {
-            id: ContentHash::from_canonical_material(
+        Checkpoint::new(
+            ContentHash::from_canonical_material(
                 "crucible.test.fat-checkpoint",
                 &format!("{:?}", configuration.id().bytes),
             ),
-            configuration: configuration.id(),
-            kind: CheckpointKind::Fat,
-        }
+            configuration.id(),
+            CheckpointKind::Fat,
+        )
     }
 
     fn genesis_checkpoint_for(configuration: &Configuration) -> GenesisCheckpoint {

@@ -3,11 +3,12 @@
 #![forbid(unsafe_code)]
 
 use std::error::Error;
+use std::io::{Error as IoError, ErrorKind};
 
 use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
-    DeliveryOrderDecision, EventKey, FaultDecision, FaultId, NodeId, RngDecision, RngStreamId,
-    ScenarioDef, Schedule, State, VirtualTime, reduce, step,
+    DeliveryOrderDecision, EventKey, FaultDecision, FaultId, NodeBlobRef, NodeId, RngDecision,
+    RngStreamId, ScenarioDef, Schedule, State, VirtualTime, reduce, step,
 };
 use crucible_harness::replay_oracle::{
     ReplayOracleCheckpointKind, ReplayOracleMaterializedCase, ReplayOracleMismatch,
@@ -38,17 +39,19 @@ impl SimDouble {
         let schedule_delta = schedule_delta(&ancestor.schedule, &configuration.schedule)?;
         let state =
             assert_twice_reduce_canonical_digest(&configuration.def, &configuration.schedule)?;
-        let checkpoint = Checkpoint {
-            id: test_double_checkpoint_hash(
+        let node_blobs = materialized_node_blobs(ancestor.content_hash(), &schedule_delta, &state);
+        let checkpoint = Checkpoint::with_node_blobs(
+            test_double_checkpoint_hash(
                 &checkpoint_id,
                 configuration,
                 ancestor.content_hash(),
                 &schedule_delta,
                 &state,
             ),
-            configuration: configuration.content_hash(),
-            kind: CheckpointKind::Fat,
-        };
+            configuration.content_hash(),
+            CheckpointKind::Fat,
+            node_blobs,
+        );
 
         Ok(MaterializedCheckpoint {
             checkpoint_id,
@@ -79,6 +82,26 @@ impl SimDouble {
             schedule: thin_schedule,
         };
         let thin_state = reduce(&thin_configuration.def, &thin_configuration.schedule)?;
+        let fat_blob_hash = checkpoint
+            .checkpoint
+            .node_blob(&oracle_node_id())
+            .map(NodeBlobRef::content_hash)
+            .ok_or_else(|| {
+                IoError::new(
+                    ErrorKind::InvalidData,
+                    "materialized checkpoint missing oracle node blob",
+                )
+            })?;
+        let thin_blob_hash =
+            materialized_node_blobs(checkpoint.ancestor.content_hash(), thin_delta, &thin_state)
+                .get(&oracle_node_id())
+                .map(NodeBlobRef::content_hash)
+                .ok_or_else(|| {
+                    IoError::new(
+                        ErrorKind::InvalidData,
+                        "thin replay missing oracle node blob",
+                    )
+                })?;
         let thin_checkpoint_hash = test_double_checkpoint_hash(
             &checkpoint.checkpoint_id,
             &thin_configuration,
@@ -98,8 +121,8 @@ impl SimDouble {
             thin_ancestor_hash: hash_bytes(checkpoint.ancestor.content_hash()),
             fat_schedule_delta_hash: hash_bytes(checkpoint.schedule_delta.content_hash()),
             thin_schedule_delta_hash: hash_bytes(thin_delta.content_hash()),
-            fat_hash: hash_bytes(checkpoint.state.id),
-            thin_hash: hash_bytes(thin_state.id),
+            fat_hash: hash_bytes(fat_blob_hash),
+            thin_hash: hash_bytes(thin_blob_hash),
         })
     }
 }
@@ -213,6 +236,10 @@ fn assert_replay_oracle_fixed_checkpoint_corpus()
         };
         let materialized =
             double.materialize_fat_checkpoint(format!("cp-{index}"), ancestor, configuration)?;
+        assert!(matches!(
+            materialized.checkpoint.node_blob(&oracle_node_id()),
+            Some(NodeBlobRef::CowDelta { resolved, .. }) if *resolved == materialized.state.id
+        ));
         cases.push(double.replay_case(&materialized)?);
     }
 
@@ -372,6 +399,31 @@ fn replay_schedule(ancestor: &Schedule, delta: &Schedule) -> Schedule {
         schedule = schedule.appended(decision.clone());
     }
     schedule
+}
+
+fn materialized_node_blobs(
+    ancestor_hash: ContentHash,
+    schedule_delta: &Schedule,
+    state: &State,
+) -> std::collections::BTreeMap<NodeId, NodeBlobRef> {
+    let delta_hash = ContentHash::from_canonical_material(
+        "crucible.test.replay-oracle.node-blob.delta",
+        &format!(
+            "ancestor={}\ndelta={}",
+            hash_hex(ancestor_hash),
+            hash_hex(schedule_delta.content_hash())
+        ),
+    );
+    std::collections::BTreeMap::from([(
+        oracle_node_id(),
+        NodeBlobRef::cow_delta(ancestor_hash, delta_hash, state.id),
+    )])
+}
+
+fn oracle_node_id() -> NodeId {
+    NodeId {
+        name: String::from("oracle"),
+    }
 }
 
 fn test_double_checkpoint_hash(

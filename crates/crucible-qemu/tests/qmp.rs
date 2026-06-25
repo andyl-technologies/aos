@@ -466,11 +466,11 @@ fn assert_timeout_budget(timeouts: &[Duration], budget: Duration) {
 }
 
 fn checkpoint_with_hash_byte(byte: u8) -> Checkpoint {
-    Checkpoint {
-        id: content_hash_with_byte(byte),
-        configuration: content_hash_with_byte(byte.wrapping_add(1)),
-        kind: CheckpointKind::Fat,
-    }
+    Checkpoint::new(
+        content_hash_with_byte(byte),
+        content_hash_with_byte(byte.wrapping_add(1)),
+        CheckpointKind::Fat,
+    )
 }
 
 fn content_hash_with_byte(byte: u8) -> ContentHash {
