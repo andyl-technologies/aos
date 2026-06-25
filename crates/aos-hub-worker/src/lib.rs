@@ -235,15 +235,26 @@ mod entry {
         env: &Env,
         request_origin: &str,
         session: &Rc<worker::D1DatabaseSession>,
+        // RFC-0004 ch.14 Phase A: the per-request span accumulator the read
+        // path's `Backend` records into (preview-only; see the `query-timing`
+        // feature). Threaded in rather than constructed here so the `fetch`
+        // handler can read the spans back after dispatch to emit `Server-Timing`.
+        #[cfg(feature = "query-timing")] timings: &aos_hub_core::backend::QueryTimings,
     ) -> Result<(Router, Arc<RpcService>, ConsoleDeps)> {
         // Every D1 backend this request builds — the read path, the rate limiter,
         // and the publish lease — shares the one per-request session, so the whole
         // request reads against a single consistency floor (and a publish's
         // writes advance the same bookmark the response threads back). See the
         // `fetch` handler and `crate::d1backend::open_session`.
-        let db = Arc::new(Database::attach(Box::new(crate::d1backend::D1Backend::new(
-            Rc::clone(session),
-        ))));
+        let backend = crate::d1backend::D1Backend::new(Rc::clone(session));
+        // Wrap the read-path backend in the timing decorator when the preview's
+        // `query-timing` feature is on; otherwise attach the bare D1 backend.
+        #[cfg(feature = "query-timing")]
+        let db = Arc::new(Database::attach(Box::new(
+            aos_hub_core::backend::TimingBackend::new(backend, timings.clone()),
+        )));
+        #[cfg(not(feature = "query-timing"))]
+        let db = Arc::new(Database::attach(Box::new(backend)));
 
         let secret = env.secret(HUB_JWT_SECRET)?.to_string();
         if secret.is_empty() {
@@ -548,9 +559,28 @@ mod entry {
         )
         .map_err(|err| worker::Error::RustError(format!("D1 session: {err:#}")))?;
 
-        let (router, service, console_deps) =
-            router_from(&env, &request_origin, &session).await?;
+        // RFC-0004 ch.14 Phase A: open the per-request query-timing accumulator
+        // (preview-only) and hand it to the read-path backend, then read the
+        // spans back after dispatch to emit `Server-Timing`.
+        #[cfg(feature = "query-timing")]
+        let timings = aos_hub_core::backend::QueryTimings::new();
+        let (router, service, console_deps) = router_from(
+            &env,
+            &request_origin,
+            &session,
+            #[cfg(feature = "query-timing")]
+            &timings,
+        )
+        .await?;
         let mut resp = crate::bridge::dispatch(router, &service, console_deps, req).await?;
+
+        // Surface the per-statement D1 timings as a `Server-Timing` header so
+        // `wrangler tail` / the browser network panel show the per-request D1
+        // session cost (the floor RFC-0004 ch.14 targets). Preview-only.
+        #[cfg(feature = "query-timing")]
+        if let Some(header) = timings.server_timing_header() {
+            resp.headers_mut().append("server-timing", &header)?;
+        }
 
         // Thread the session's resulting bookmark back so the client's next
         // request reads at least as fresh — but never on a publicly-cacheable

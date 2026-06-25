@@ -14,6 +14,14 @@ description = "The Cloudflare Workers read-path target for the AOS registry hub 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+# Per-statement query timing (RFC-0004 ch.14 Phase A): wraps the request's D1
+# backend in `aos_hub_core::backend::TimingBackend` and emits a `Server-Timing`
+# response header so the per-request D1 session cost is visible in `wrangler
+# tail` / the network panel. For the preview Worker only — off in production.
+query-timing = ["aos-hub-core/query-timing"]
+
 [dependencies]
 # The pure, wasm-clean registry reader — the exact verifier the native hub
 # indexer and `apm` run. Reused here for object/tag/refs parsing and Ed25519

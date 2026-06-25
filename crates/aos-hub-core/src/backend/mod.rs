@@ -289,6 +289,15 @@ mod sqlx;
 #[cfg(not(target_arch = "wasm32"))]
 pub use sqlx::SqlxBackend;
 
+// Per-statement query timing (RFC-0004 ch.14 Phase A): a `Backend` decorator
+// that records each statement's wall-clock duration for a `Server-Timing`
+// header, so the per-request D1 session cost is measurable at the call site.
+// Feature-gated (`query-timing`, off by default) so production pays nothing.
+#[cfg(feature = "query-timing")]
+mod timing;
+#[cfg(feature = "query-timing")]
+pub use timing::{QuerySpan, QueryTimings, TimingBackend};
+
 /// Redacts the password from a `postgres://`/`mysql://` connection URL so it
 /// is safe to embed in an error chain or log line.
 ///
