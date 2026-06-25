@@ -119,6 +119,11 @@ enum Command {
         #[command(subcommand)]
         command: TokenCommand,
     },
+    /// Manage IAM memberships (a principal's role at a scope).
+    Member {
+        #[command(subcommand)]
+        command: MemberCommand,
+    },
     /// Print recent audit entries at (or below) a scope.
     Audit {
         /// Scope path to filter on (use "" for instance-wide).
@@ -660,6 +665,30 @@ enum TokenCommand {
         /// Service account that owns the token (auto-created in the org).
         #[arg(long, default_value = "publisher")]
         owner: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum MemberCommand {
+    /// Grant (or update) a service account's role at a scope.
+    ///
+    /// The service account is created in the org if absent. `scope` is a
+    /// canonical scope string: `""` (instance root), an org slug (`andyl`), or a
+    /// registry path (`andyl/main`); a broader scope grants the role over every
+    /// resource beneath it. This is the admin escape hatch for issuing tokens
+    /// that need more than `publish`/`read` (e.g. `registry.configure` for a
+    /// cache push or a registry storage migration): grant the token's owner
+    /// service account a covering role here, then `token mint --owner <name>`.
+    Grant {
+        /// Owning org slug (the service account's org).
+        org: String,
+        /// Service account name within the org (auto-created if absent).
+        service_account: String,
+        /// Role to grant: owner | admin | maintainer | publisher | reader.
+        role: String,
+        /// Canonical scope to grant at (defaults to the org slug).
+        #[arg(long)]
+        scope: Option<String>,
     },
 }
 
@@ -2128,6 +2157,36 @@ async fn main() -> Result<()> {
                 } => mint_token(&db, &path, &permissions, expires_days, &owner).await?,
             }
         }
+        Command::Member { command } => {
+            let db = open_db(&cli.root, &cli.target).await?;
+            match command {
+                MemberCommand::Grant {
+                    org,
+                    service_account,
+                    role,
+                    scope,
+                } => {
+                    // Validate the role up front so a typo can't persist a
+                    // membership that `effective_scopes` later silently drops.
+                    aos_hub_core::domain::Role::parse(&role)
+                        .with_context(|| format!("unknown role '{role}'"))?;
+                    let org_rec = db
+                        .org_by_slug(&org)
+                        .await?
+                        .with_context(|| format!("no org '{org}'"))?;
+                    let sa_id = match db.service_account_by_name(org_rec.id, &service_account).await? {
+                        Some(id) => id,
+                        None => db.create_service_account(org_rec.id, &service_account).await?,
+                    };
+                    let scope = scope.unwrap_or_else(|| org.clone());
+                    db.grant_membership("service_account", sa_id, &scope, &role)
+                        .await?;
+                    println!(
+                        "granted '{role}' at scope '{scope}' to service account '{org}/{service_account}' (id {sa_id})"
+                    );
+                }
+            }
+        }
         Command::Audit { scope } => {
             let db = open_db(&cli.root, &cli.target).await?;
             for entry in db.list_audit(&scope).await? {
@@ -2846,16 +2905,33 @@ async fn mint_token(
     expires_days: Option<i64>,
     owner: &str,
 ) -> Result<()> {
-    let (org_slug, project_path, name) = parse_canonical_path(path)?;
+    // A path with no `/` is an org-scoped (admin) token: its scope is the org
+    // itself, spanning every registry and cache beneath it — needed for
+    // org-level operations such as a managed-cache push (which gates on
+    // `RegistryConfigure` at the org scope). Otherwise it is the usual registry
+    // canonical path (`org/[project/]name`).
+    let (org_slug, canonical): (String, String) = match path.trim_matches('/').split_once('/') {
+        None => {
+            let org = path.trim_matches('/').to_string();
+            if org.is_empty() {
+                anyhow::bail!("token path must be an org or org/project/name");
+            }
+            (org.clone(), org)
+        }
+        Some(_) => {
+            let (org_slug, project_path, name) = parse_canonical_path(path)?;
+            let canonical = if project_path.is_empty() {
+                format!("{org_slug}/{name}")
+            } else {
+                format!("{org_slug}/{project_path}/{name}")
+            };
+            (org_slug.to_string(), canonical)
+        }
+    };
     let org = db
-        .org_by_slug(org_slug)
+        .org_by_slug(&org_slug)
         .await?
         .with_context(|| format!("no org '{org_slug}'"))?;
-    let canonical = if project_path.is_empty() {
-        format!("{org_slug}/{name}")
-    } else {
-        format!("{org_slug}/{project_path}/{name}")
-    };
 
     let mut perms = Vec::new();
     for verb in permissions {
