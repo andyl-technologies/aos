@@ -153,7 +153,13 @@ fn accepts_html(headers: &HeaderMap) -> bool {
 /// the page chrome reflects the login state. An anonymous or invalid cookie (or
 /// any database error) yields the anonymous indicator.
 async fn session_indicator(svc: &RpcService, headers: &HeaderMap) -> SessionIndicator {
-    match session::resolve_session_from_headers(&svc.db, headers).await {
+    // RFC-0004 ch.14 Phase C: resolve through the KV read-through cache when one
+    // is attached (off the D1 read path), else straight from the database.
+    let resolved = match session::session_secret_from_headers(headers) {
+        Some(secret) => svc.resolve_session_cached(&secret).await,
+        None => Ok(None),
+    };
+    match resolved {
         Ok(Some(resolved)) => SessionIndicator::signed_in(resolved.email),
         _ => SessionIndicator::default(),
     }
