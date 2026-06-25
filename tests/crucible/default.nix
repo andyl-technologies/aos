@@ -168,6 +168,7 @@ in {
           "T-DET-20"
           "T-HARN-9"
           "T-HARN-10"
+          "T-EXEC-12"
         ];
       };
     };

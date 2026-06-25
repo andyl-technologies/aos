@@ -10,6 +10,12 @@ use crucible_harness::divergence::{
 use crucible_harness::fingerprint::{
     FingerprintSample, FingerprintSampleTrigger, FingerprintStream,
 };
+use crucible_harness::replay_oracle::{
+    ReplayOracleCheckpointKind, ReplayOracleDivergenceError, ReplayOracleDivergenceInputs,
+    ReplayOracleMaterializedCase, ReplayOracleSamplingConfig, ReplayOracleSearchBisectionError,
+    ReplayOracleSearchDivergenceMaterialization, ReplayOracleSearchMaterialization,
+    check_sampled_search_replay_oracle_with_bisection,
+};
 
 const SEEDED_DIVERGENCE_ICOUNT: u64 = 17;
 
@@ -248,6 +254,81 @@ fn gate_divergence_bisect_rejects_matching_streams_without_repair() {
     ));
 }
 
+#[test]
+fn gate_divergence_bisect_localizes_replay_oracle_mismatch() {
+    let (fat_stream, thin_stream) = seeded_streams();
+    let fat_decisions = left_decisions();
+    let thin_decisions = right_decisions();
+    let materializations = [ReplayOracleSearchDivergenceMaterialization::new(
+        ReplayOracleSearchMaterialization::new(9, replay_oracle_case()),
+        ReplayOracleDivergenceInputs {
+            fat_stream: &fat_stream,
+            thin_stream: &thin_stream,
+            fat_decisions: &fat_decisions,
+            thin_decisions: &thin_decisions,
+        },
+    )];
+    let config = replay_oracle_sampling_config();
+    let error = match check_sampled_search_replay_oracle_with_bisection(
+        &materializations,
+        &config,
+        |_, icount| icount < SEEDED_DIVERGENCE_ICOUNT,
+        |_, side, icount| state_dump(side, icount),
+    ) {
+        Ok(_) => panic!("oracle mismatch should fail after divergence bisection"),
+        Err(error) => error,
+    };
+    let ReplayOracleSearchBisectionError::Mismatch { localized } = error else {
+        panic!("oracle mismatch should return a localized mismatch");
+    };
+
+    assert_eq!(localized.mismatch.checkpoint_id, "cp-oracle");
+    assert_eq!(localized.bisection.sequence, 9);
+    assert_eq!(
+        localized.divergence.first_different_icount,
+        SEEDED_DIVERGENCE_ICOUNT
+    );
+    assert_eq!(localized.divergence.node.as_deref(), Some("node-a"));
+    let Some(decision) = localized.divergence.first_different_decision else {
+        panic!("oracle mismatch must localize the first differing decision");
+    };
+    assert_eq!(decision.index, 2);
+}
+
+#[test]
+fn gate_divergence_bisect_rejects_oracle_mismatch_without_divergent_streams() {
+    let (fat_stream, _) = seeded_streams();
+    let decisions = left_decisions();
+    let materializations = [ReplayOracleSearchDivergenceMaterialization::new(
+        ReplayOracleSearchMaterialization::new(9, replay_oracle_case()),
+        ReplayOracleDivergenceInputs {
+            fat_stream: &fat_stream,
+            thin_stream: &fat_stream,
+            fat_decisions: &decisions,
+            thin_decisions: &decisions,
+        },
+    )];
+    let config = replay_oracle_sampling_config();
+    let result = check_sampled_search_replay_oracle_with_bisection(
+        &materializations,
+        &config,
+        |_, icount| icount < SEEDED_DIVERGENCE_ICOUNT,
+        |_, side, icount| state_dump(side, icount),
+    );
+
+    assert!(matches!(
+        result,
+        Err(ReplayOracleSearchBisectionError::LocalizationFailure {
+            failure
+        }) if matches!(
+            &failure.source,
+            ReplayOracleDivergenceError::Divergence {
+                source: DivergenceBisectionError::MatchingStreams
+            }
+        )
+    ));
+}
+
 fn seeded_bisection_report() -> DivergenceBisectionReport {
     let (left_stream, right_stream) = seeded_streams();
     match bisect_diverging_runs(
@@ -260,6 +341,30 @@ fn seeded_bisection_report() -> DivergenceBisectionReport {
     ) {
         Ok(report) => report,
         Err(error) => panic!("seeded divergence should bisect cleanly: {error}"),
+    }
+}
+
+fn replay_oracle_case() -> ReplayOracleMaterializedCase {
+    ReplayOracleMaterializedCase {
+        checkpoint_id: String::from("cp-oracle"),
+        kind: ReplayOracleCheckpointKind::Fat,
+        fat_checkpoint_hash: b"checkpoint".to_vec(),
+        thin_checkpoint_hash: b"checkpoint".to_vec(),
+        fat_configuration_hash: b"configuration".to_vec(),
+        thin_configuration_hash: b"configuration".to_vec(),
+        fat_ancestor_hash: b"ancestor".to_vec(),
+        thin_ancestor_hash: b"ancestor".to_vec(),
+        fat_schedule_delta_hash: b"delta".to_vec(),
+        thin_schedule_delta_hash: b"delta".to_vec(),
+        fat_hash: b"fat-runtime".to_vec(),
+        thin_hash: b"thin-runtime".to_vec(),
+    }
+}
+
+fn replay_oracle_sampling_config() -> ReplayOracleSamplingConfig {
+    match ReplayOracleSamplingConfig::new(1, 1, "oracle-bisect") {
+        Ok(config) => config,
+        Err(error) => panic!("test sampling config should be valid: {error}"),
     }
 }
 
