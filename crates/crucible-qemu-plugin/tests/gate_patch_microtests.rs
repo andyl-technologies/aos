@@ -59,11 +59,19 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         &aggregate,
         "qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix",
     );
+    assert_contains(
+        &aggregate,
+        "qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix",
+    );
     assert_contains(&aggregate, "tar -xf ${qemuPackage.src}");
     assert_contains(&aggregate, "patch --batch --forward --fuzz=0 -p1");
     assert_contains(&aggregate, "test -x ${qemuPackage}/bin/qemu-system-x86_64");
     assert_contains(&aggregate, "patch_series_gate_passed=true");
     assert_contains(&aggregate, "qemu_doorbell_no_patch_gate_passed=true");
+    assert_contains(
+        &aggregate,
+        "qemu_diagnostic_patches_dev_only_gate_passed=true",
+    );
     assert_contains(&aggregate, "phase0_s5_virtual_read_validated=true");
     assert_contains(&aggregate, "phase0_s2_io_trap_surface_validated=true");
     assert_contains(
@@ -108,6 +116,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         "every_microtest_has_stock_negative_control=true",
     );
     assert_contains(&aggregate, "no_patch_decision_has_microtest_gate=true");
+    assert_contains(
+        &aggregate,
+        "diagnostic_only_patches_excluded_from_shipped_qemu=true",
+    );
 
     let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
     assert_contains(&default_checks, "patchMicrotestsCheck = import");
@@ -122,6 +134,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(
         &default_checks,
         "qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix",
+    );
+    assert_contains(
+        &default_checks,
+        "qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix",
     );
     assert_contains(
         &default_checks,
