@@ -285,8 +285,11 @@ green.
       Non-sensitive, read on verify/browse.
 - [~] Short-lived auth artifacts (`oidc_flows`, `magic_links`, `device_codes`,
       `webauthn_challenges`) → `KvStore` TTL, with single-use claims via
-      `Coordinator` where atomicity matters. *Infra ready:* `KvStore` TTL fits the
-      lifetimes; single-use claims map to `Coordinator::acquire_lease` (one-shot).
+      `Coordinator` where atomicity matters. *Primitives in place* (`KvStore` TTL
+      for the lifetimes; `Coordinator::acquire_lease` as the one-shot single-use
+      claim); the remaining work is **structural** (relocating each auth flow's
+      store off D1 — security-sensitive issue/consume paths), not a read cache, so
+      it is intentionally not batched in here. Per-flow relocation is follow-up.
 
   *Note (C2–C6): the read-through infra + `kv`/`with_kv` + the `CachedSession`
   template are landed and tested; each remaining key is a localized application
