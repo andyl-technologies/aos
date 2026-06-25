@@ -4,13 +4,14 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
-use aos_nix::compile::{lower, resolve};
+use aos_nix::compile::resolve;
 use aos_nix::eval::{
     TreeWalkOptions, eval_raw_bytes_with_options, eval_raw_bytes_with_options_source,
     eval_whnf_owned_with_options,
 };
 use aos_nix::syntax::parse_bytes;
 use aos_nix::{NativeEvalError, NixNative};
+use aos_nix_dialect::nix_lower as lower;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum LangCategory {
@@ -93,6 +94,7 @@ const LANG_VERSION_SKIP_RULES: &[LangVersionSkipRule] = &[];
 const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[];
 const PINNED_LANG_2_24_12_PASS_COUNT: usize = 208;
 const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 1;
+const LANG_CURRENT_SYSTEM: &[u8] = b"x86_64-linux";
 const LANG_CASE_STACK_SIZE: usize = 32 * 1024 * 1024;
 const STACK_SAFE_RECURSION_LAMBDA_MAX_CALL_DEPTH: usize = 512;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
@@ -895,6 +897,9 @@ fn base_eval_options(lang_dir: &Path) -> std::result::Result<TreeWalkOptions, St
     options
         .set_home_dir(b"/fake-home".to_vec())
         .map_err(|error| error.to_string())?;
+    options
+        .set_current_system(LANG_CURRENT_SYSTEM.to_vec())
+        .map_err(|error| error.to_string())?;
     options.set_env_var(b"TEST_VAR".to_vec(), b"foo".to_vec());
     if let Some(parent) = lang_dir.parent() {
         options
@@ -1001,7 +1006,7 @@ fn run_non_eval_fail_bad_drv_path(lang_dir: &Path) -> Result<CaseOutcome> {
     let path = lang_dir.join("non-eval-fail-bad-drvPath.nix");
     let mut options = TreeWalkOptions::new();
     options
-        .set_current_system(b"x86_64-linux".to_vec())
+        .set_current_system(LANG_CURRENT_SYSTEM.to_vec())
         .context("configuring currentSystem for non-eval lang case")?;
     let native = NixNative::with_options(0, options).context("constructing native evaluator")?;
     let error = native

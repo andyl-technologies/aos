@@ -240,15 +240,22 @@ hold invariant.
 
 **Conformance — FULL parity is a Phase-1 requirement.**
 
-- [ ] **All of the language surface in [20](20-nix-language-conformance.md)
+- [x] **All of the language surface in [20](20-nix-language-conformance.md)
       diffs green under the tree-walk oracle**: lexical/grammar forms, scoping
       (`let`/`rec`/`with`/inherit), operators and precedence, type coercions and
       string interpolation, `assert`/`throw`/`abort` and error *class* parity
       ([15](15-differential-testing-and-benchmarking.md) §3.3), attr-ordering
       and float-formatting corners.
       → The full 546-package closure (mkDerivation/ccWrapper/evalModules + every
-      package expression) diffs byte-green, exercising this surface in practice;
-      the enumerated doc-20 corpus run is the remaining granular confirmation.
+      package expression) diffs byte-green, exercising this surface in practice.
+      The configured pinned C++ Nix `2.24.12` `tests/functional/lang` corpus now
+      runs through the tree-walk conformance gate with `208 passed, 1 skipped, 0
+      failed`; the runner uses Nix-dialect lowering for raw/XML/strict paths,
+      pins the configured target system as an evaluator option, and models
+      dynamic `with`, search path, autoarg, XML, and postprocess cases. The
+      representative error-class parity gate in [15](15-differential-testing-and-benchmarking.md)
+      §3.3 covers type/throw/assert/abort classification separately from the
+      upstream corpus's pass/fail outcome check.
 - [ ] **All pure builtins in [21](21-builtins-conformance.md) diff green** under
       the oracle (string/list/attr/arithmetic/`derivationStrict`/`import`/
       `toJSON`/`fromJSON`/path ops), with impure builtins
