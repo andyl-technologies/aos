@@ -30,6 +30,11 @@ path = "tests/gate_replay_oracle.rs"
 required-features = ["test-double"]
 
 [[test]]
+name = "gate_single_vm_fingerprint"
+path = "tests/gate_single_vm_fingerprint.rs"
+required-features = ["test-double"]
+
+[[test]]
 name = "gate_content_address"
 path = "tests/gate_content_address.rs"
 required-features = ["test-double"]

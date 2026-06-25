@@ -136,6 +136,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
             ),
             (
                 "gate:single-vm-fingerprint",
+                "crucible",
+                "gate_single_vm_fingerprint"
+            ),
+            (
+                "gate:single-vm-fingerprint",
                 "crucible-qemu",
                 "gate_single_vm_fingerprint"
             ),
