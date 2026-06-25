@@ -480,6 +480,14 @@ impl TreeWalk {
                 let bytes = try_clone_bytes(string.bytes()).ok()?;
                 Some(CachedExpressionValue::context_free_string(bytes))
             }
+            ValueTag::Path => {
+                let path = self.heap.get_path(value).ok()?;
+                if path.has_context() {
+                    return None;
+                }
+                let bytes = try_clone_bytes(path.bytes()).ok()?;
+                Some(CachedExpressionValue::path(bytes))
+            }
             _ => None,
         }
     }
@@ -549,8 +557,12 @@ impl TreeWalk {
         if let Some(value) = payload.immediate_value() {
             return Some(value);
         }
-        let bytes = try_clone_bytes(payload.context_free_string_bytes()?).ok()?;
-        self.heap.alloc_string(NixString::from_bytes(bytes)).ok()
+        if let Some(bytes) = payload.context_free_string_bytes() {
+            let bytes = try_clone_bytes(bytes).ok()?;
+            return self.heap.alloc_string(NixString::from_bytes(bytes)).ok();
+        }
+        let bytes = try_clone_bytes(payload.path_bytes()?).ok()?;
+        self.heap.alloc_path(NixString::from_bytes(bytes)).ok()
     }
 
     pub(super) fn force_cache_subject_for_thunk(
@@ -597,21 +609,31 @@ impl TreeWalk {
         if let Ok(hash) = ValueHash::from_inline_value(value) {
             return Some(hash.as_durable_hash());
         }
-        let bytes = match value.tag() {
+        match value.tag() {
             ValueTag::String => {
                 let string = self.heap.get_string(value).ok()?;
                 if string.has_context() {
                     return None;
                 }
-                string.bytes()
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"string");
+                Self::update_cache_identity_chunk(&mut hasher, string.bytes())?;
+                return Some(DurableBlake3Hash::from_hasher(hasher));
+            }
+            ValueTag::Path => {
+                let path = self.heap.get_path(value).ok()?;
+                if path.has_context() {
+                    return None;
+                }
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"path");
+                Self::update_cache_identity_chunk(&mut hasher, path.bytes())?;
+                return Some(DurableBlake3Hash::from_hasher(hasher));
             }
             _ => return None,
-        };
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
-        hasher.update(b"string");
-        Self::update_cache_identity_chunk(&mut hasher, bytes)?;
-        Some(DurableBlake3Hash::from_hasher(hasher))
+        }
     }
 
     fn captured_free_variable_slots(
@@ -732,6 +754,7 @@ impl TreeWalk {
                 | IrKind::Null
                 | IrKind::Str
                 | IrKind::Uri
+                | IrKind::Path
                 | IrKind::LocalVar
                 | IrKind::List
                 | IrKind::AttrSet
@@ -775,7 +798,7 @@ impl TreeWalk {
     }
 
     fn node_kind_is_force_observation_safe(kind: IrKind) -> bool {
-        Self::node_kind_is_force_cache_safe(kind) || kind == IrKind::Path
+        Self::node_kind_is_force_cache_safe(kind)
     }
 
     fn primop_has_cacheable_impure_input_trace(ir: &Ir, node: &IrNode) -> bool {

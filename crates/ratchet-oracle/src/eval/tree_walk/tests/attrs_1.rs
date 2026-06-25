@@ -1613,6 +1613,160 @@ fn changed_import_backed_inline_thunks_miss_after_revalidation() {
 }
 
 #[test]
+fn import_backed_path_payload_thunks_hit_after_revalidation() {
+    let root = unique_temp_dir("force-cache-import-backed-path");
+    let imported_source = br#"/tmp + "/imported-path""#;
+    fs::write(root.join("dep.nix"), imported_source).expect("import source writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let dep_path = path_bytes(&fs::canonicalize(root.join("dep.nix")).expect("dep canonicalizes"));
+    let source = "{ a = import ./dep.nix; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = eval.eval_root().expect("attrset evaluates");
+    let thunk = {
+        let attrs = eval
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let first = eval
+        .force_value(ir.root, Span::new(0, 0), thunk)
+        .expect("import-backed path force succeeds");
+    let first_path = eval.heap().get_path(first).expect("first result is a path");
+    assert_eq!(first_path.bytes(), b"/tmp/imported-path");
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let second_root = second.eval_root().expect("attrset evaluates again");
+    let second_thunk = {
+        let attrs = second
+            .heap()
+            .get_attrs(second_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = second
+        .force_value(ir.root, Span::new(0, 0), second_thunk)
+        .expect("import-backed path force revalidates and hits");
+    let path = second
+        .heap()
+        .get_path(forced)
+        .expect("cached value is rehydrated into this evaluator heap");
+
+    assert_eq!(path.bytes(), b"/tmp/imported-path");
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "stable import-backed path payloads should hit after input revalidation"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+    let expected_trace = vec![
+        ImpureInputFingerprint::import(&dep_path, imported_source).expect("fingerprint builds"),
+    ];
+    assert_eq!(
+        second.impure_input_trace(),
+        expected_trace.as_slice(),
+        "cache-hit revalidation must replay the import source edge"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn changed_import_backed_path_payload_thunks_miss_after_revalidation() {
+    let root = unique_temp_dir("force-cache-import-backed-path-changed");
+    fs::write(root.join("dep.nix"), br#"/tmp + "/imported-path""#).expect("import source writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = "{ a = import ./dep.nix; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = eval.eval_root().expect("attrset evaluates");
+    let thunk = {
+        let attrs = eval
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let first = eval
+        .force_value(ir.root, Span::new(0, 0), thunk)
+        .expect("import-backed path force succeeds");
+    let first_path = eval.heap().get_path(first).expect("first result is a path");
+    assert_eq!(first_path.bytes(), b"/tmp/imported-path");
+
+    fs::write(root.join("dep.nix"), br#"/tmp + "/changed-path""#).expect("import source changes");
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let changed_root = changed.eval_root().expect("attrset evaluates again");
+    let changed_thunk = {
+        let attrs = changed
+            .heap()
+            .get_attrs(changed_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced_changed = changed
+        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .expect("changed import-backed path force recomputes");
+    let changed_path = changed
+        .heap()
+        .get_path(forced_changed)
+        .expect("changed result is a path");
+
+    assert_eq!(changed_path.bytes(), b"/tmp/changed-path");
+    assert_eq!(changed.stats().thunks_forced(), 1);
+    assert_eq!(changed.stats().cache_hits(), 0);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn import_cache_hits_keep_force_cache_impure_edges() {
     let root = unique_temp_dir("force-cache-import-hit-backed");
     fs::write(root.join("dep.nix"), b"1").expect("import source writes");
@@ -2163,6 +2317,53 @@ fn context_free_string_result_thunks_hit_after_heap_rehydration() {
 }
 
 #[test]
+fn path_result_thunks_hit_after_heap_rehydration() {
+    let source = r#"{ a = /tmp + "/cached-path"; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "path-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("path thunk force succeeds");
+        let path = evaluator
+            .heap()
+            .get_path(forced)
+            .expect("cached value is rehydrated into this evaluator heap");
+
+        assert_eq!(path.bytes(), b"/tmp/cached-path");
+        assert!(!path.has_context());
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+        assert_eq!(
+            evaluator.stats().thunks_forced(),
+            if expected_hit { 0 } else { 1 }
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching path results should share one demand node"
+    );
+}
+
+#[test]
 fn captured_context_free_let_string_thunks_use_free_variable_hashes() {
     let source = r#"let x = "s"; in { a = x == x; }"#;
     let ir = lower(source);
@@ -2276,6 +2477,168 @@ fn captured_context_free_string_thunks_hit_when_hashes_match() {
         runtime.cache().expect("cache is enabled").len(),
         1,
         "matching captured string hashes should share one demand node"
+    );
+}
+
+#[test]
+fn captured_path_thunks_use_free_variable_hashes() {
+    let source = r#"let f = x: { a = x == /tmp/a; }; in [ (f /tmp/a).a (f /tmp/b).a ]"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "path-captures.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("list evaluates");
+    let elements = {
+        let list = evaluator
+            .heap()
+            .get_list(root)
+            .expect("root list is heap-owned");
+        [
+            list.get(0).expect("first result exists"),
+            list.get(1).expect("second result exists"),
+        ]
+    };
+
+    let first = evaluator
+        .force_value(ir.root, Span::new(0, 0), elements[0])
+        .expect("first captured path attr force succeeds");
+    assert_eq!(first.as_bool(), Ok(true));
+    let second = evaluator
+        .force_value(ir.root, Span::new(0, 0), elements[1])
+        .expect("second captured path attr force succeeds");
+
+    assert_eq!(second.as_bool(), Ok(false));
+    assert_eq!(
+        evaluator.stats().cache_hits(),
+        0,
+        "different captured path values must not cache hit"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "different captured paths should create distinct demand nodes"
+    );
+}
+
+#[test]
+fn captured_path_thunks_hit_when_hashes_match() {
+    let source = r#"let f = x: { a = x == /tmp/a; }; in { a = (f /tmp/a).a; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "path-captures.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("captured path force succeeds");
+        assert_eq!(forced.as_bool(), Ok(true));
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching captured path hashes should share one demand node"
+    );
+}
+
+#[test]
+fn captured_string_and_path_values_do_not_share_free_variable_hashes() {
+    let source = r#"let f = x: { a = x == x; }; in [ (f "/tmp/a").a (f /tmp/a).a ]"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "string-path-captures.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("list evaluates");
+    let elements = {
+        let list = evaluator
+            .heap()
+            .get_list(root)
+            .expect("root list is heap-owned");
+        [
+            list.get(0).expect("first result exists"),
+            list.get(1).expect("second result exists"),
+        ]
+    };
+
+    let first = evaluator
+        .force_value(ir.root, Span::new(0, 0), elements[0])
+        .expect("captured string attr force succeeds");
+    assert_eq!(first.as_bool(), Ok(true));
+    let second = evaluator
+        .force_value(ir.root, Span::new(0, 0), elements[1])
+        .expect("captured path attr force succeeds");
+
+    assert_eq!(second.as_bool(), Ok(true));
+    assert_eq!(
+        evaluator.stats().cache_hits(),
+        0,
+        "captured strings and paths with identical bytes must not cache hit"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "captured string and path values should create distinct demand nodes"
+    );
+}
+
+#[test]
+fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
+    let source = "let f = x: { a = x == x; }; in { a = (f []).a; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "unsupported-captures.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured unsupported heap value force succeeds");
+
+    assert_eq!(forced.as_bool(), Ok(true));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "captured lists need canonical composite value hashes before observation"
     );
 }
 

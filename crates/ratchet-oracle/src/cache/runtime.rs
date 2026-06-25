@@ -116,6 +116,13 @@ impl CachedExpressionValue {
         }
     }
 
+    /// Creates a cached Nix path payload from canonical path bytes.
+    pub fn path(bytes: Vec<u8>) -> Self {
+        Self {
+            payload: InlineValuePayload::Path(bytes),
+        }
+    }
+
     /// Returns the immediate scalar value, if this payload is immediate.
     pub fn immediate_value(&self) -> Option<Value> {
         self.payload.immediate_value()
@@ -125,9 +132,22 @@ impl CachedExpressionValue {
     pub fn context_free_string_bytes(&self) -> Option<&[u8]> {
         match &self.payload {
             InlineValuePayload::ContextFreeString(bytes) => Some(bytes),
+            InlineValuePayload::Path(_)
+            | InlineValuePayload::Int(_)
+            | InlineValuePayload::Float(_)
+            | InlineValuePayload::Bool(_)
+            | InlineValuePayload::Null => None,
+        }
+    }
+
+    /// Returns the cached path bytes, if this payload is a path.
+    pub fn path_bytes(&self) -> Option<&[u8]> {
+        match &self.payload {
+            InlineValuePayload::Path(bytes) => Some(bytes),
             InlineValuePayload::Int(_)
             | InlineValuePayload::Float(_)
             | InlineValuePayload::Bool(_)
+            | InlineValuePayload::ContextFreeString(_)
             | InlineValuePayload::Null => None,
         }
     }
@@ -739,6 +759,7 @@ enum InlineValuePayload {
     Bool(bool),
     Null,
     ContextFreeString(Vec<u8>),
+    Path(Vec<u8>),
 }
 
 impl InlineValuePayload {
@@ -776,7 +797,7 @@ impl InlineValuePayload {
             Self::Float(bits) => Some(Value::float(f64::from_bits(*bits))),
             Self::Bool(value) => Some(Value::bool(*value)),
             Self::Null => Some(Value::null()),
-            Self::ContextFreeString(_) => None,
+            Self::ContextFreeString(_) | Self::Path(_) => None,
         }
     }
 
@@ -787,6 +808,7 @@ impl InlineValuePayload {
             Self::Bool(value) => ValueHash::from_inline_value(Value::bool(*value)),
             Self::Null => ValueHash::from_inline_value(Value::null()),
             Self::ContextFreeString(bytes) => Ok(ValueHash::from_context_free_string_bytes(bytes)),
+            Self::Path(bytes) => Ok(ValueHash::from_path_bytes(bytes)),
         }
     }
 }
@@ -2086,6 +2108,35 @@ mod tests {
             payload.context_free_string_bytes(),
             Some(b"cached string".as_slice())
         );
+        assert!(payload.immediate_value().is_none());
+        assert!(
+            immediate.is_none(),
+            "generic Value lookup must not return heap-backed payload pointers"
+        );
+    }
+
+    #[test]
+    fn eval_cache_looks_up_path_payloads() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+
+        cache
+            .observe_inline_expression_payload(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::path(b"/tmp/cached-path".to_vec()),
+            )
+            .expect("path payload observes");
+        let payload = cache
+            .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("payload lookup succeeds")
+            .expect("memoized path payload is present");
+        let immediate = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("immediate lookup succeeds");
+
+        assert_eq!(payload.path_bytes(), Some(b"/tmp/cached-path".as_slice()));
+        assert!(payload.context_free_string_bytes().is_none());
         assert!(payload.immediate_value().is_none());
         assert!(
             immediate.is_none(),

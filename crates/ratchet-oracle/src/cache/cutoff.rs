@@ -13,6 +13,7 @@ use crate::value::{Value, ValueError, ValueTag};
 const INLINE_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-inline-value-hash-v1";
 const CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION: &[u8] =
     b"aos-nix-context-free-string-value-hash-v1";
+const PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-path-value-hash-v1";
 
 /// A durable hash of a canonical evaluated value.
 ///
@@ -100,6 +101,19 @@ impl ValueHash {
         let mut hasher = blake3::Hasher::new();
         hasher.update(CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"string");
+        hasher.update(&(bytes.len() as u128).to_le_bytes());
+        hasher.update(bytes);
+        Self(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    /// Hashes a Nix path value's raw bytes as a canonical value precursor.
+    ///
+    /// This is separate from context-free string hashing because Nix paths and
+    /// strings are distinct WHNF value tags even when their byte payloads match.
+    pub fn from_path_bytes(bytes: &[u8]) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(PATH_VALUE_HASH_DOMAIN_VERSION);
+        hasher.update(b"path");
         hasher.update(&(bytes.len() as u128).to_le_bytes());
         hasher.update(bytes);
         Self(DurableBlake3Hash::from_hasher(hasher))
@@ -212,6 +226,21 @@ mod tests {
         assert_eq!(same, ValueHash::from_context_free_string_bytes(b"same"));
         assert_ne!(empty, same);
         assert_ne!(same, ValueHash::from_context_free_string_bytes(b"same\0"));
+        assert_ne!(
+            same,
+            ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"same"))
+        );
+    }
+
+    #[test]
+    fn path_hashes_include_type_length_and_payload() {
+        let empty = ValueHash::from_path_bytes(b"");
+        let same = ValueHash::from_path_bytes(b"same");
+
+        assert_eq!(same, ValueHash::from_path_bytes(b"same"));
+        assert_ne!(empty, same);
+        assert_ne!(same, ValueHash::from_path_bytes(b"same\0"));
+        assert_ne!(same, ValueHash::from_context_free_string_bytes(b"same"));
         assert_ne!(
             same,
             ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"same"))
