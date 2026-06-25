@@ -44,7 +44,7 @@ fn mismatched_schema_discards_payload_and_rewrites_version() {
     assert!(layout.files_dir().is_dir());
     assert_eq!(
         fs::read_to_string(layout.schema_path()).expect("schema reads"),
-        "format = \"aos-nix-eval-cache\"\nschema_version = 1\n"
+        "format = \"aos-nix-eval-cache\"\nschema_version = 2\n"
     );
 
     let _ = fs::remove_dir_all(root);
@@ -74,7 +74,7 @@ fn wrong_schema_format_errors_without_discarding_payload() {
     let value_file = sentinel(layout.values_dir().join("value"));
     fs::write(
         layout.schema_path(),
-        "format = \"other-cache\"\nschema_version = 1\n",
+        "format = \"other-cache\"\nschema_version = 2\n",
     )
     .expect("schema rewrites");
 

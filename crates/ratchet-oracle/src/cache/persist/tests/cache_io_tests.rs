@@ -310,6 +310,57 @@ fn cache_node_materialization_reuse_records_and_looks_up_counters() {
 }
 
 #[test]
+fn cache_node_metadata_preserves_reuse_and_materialized_value_hash() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(2, 3))
+        .expect("node reuse records");
+    cache
+        .record_node_materialized_value_hash(key, value_hash)
+        .expect("value hash records");
+
+    let metadata = cache
+        .lookup_node_metadata(key)
+        .expect("node metadata lookup succeeds")
+        .expect("node metadata exists");
+    assert_eq!(
+        metadata.materialization_reuse(),
+        MaterializationReuse::new(2, 3)
+    );
+    assert_eq!(metadata.materialized_value_hash(), Some(value_hash));
+
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(5, 6))
+        .expect("node reuse update records");
+    let metadata = cache
+        .lookup_node_metadata(key)
+        .expect("node metadata lookup succeeds")
+        .expect("node metadata exists");
+    assert_eq!(
+        metadata.materialization_reuse(),
+        MaterializationReuse::new(5, 6)
+    );
+    assert_eq!(
+        cache
+            .lookup_node_materialized_value_hash(key)
+            .expect("value hash lookup succeeds"),
+        Some(value_hash)
+    );
+    assert_eq!(
+        fs::metadata(cache.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 3) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_current_demand_updates_latest_reuse_counters() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -431,6 +482,7 @@ fn cache_node_materialization_reuse_advances_run_boundaries() {
     let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
     let missing =
         PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"missing input"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
 
     assert_eq!(
         cache
@@ -448,6 +500,9 @@ fn cache_node_materialization_reuse_advances_run_boundaries() {
     cache
         .record_node_materialization_reuse(key, MaterializationReuse::new(u64::MAX - 1, 2))
         .expect("reuse records");
+    cache
+        .record_node_materialized_value_hash(key, value_hash)
+        .expect("value hash records");
     let advanced = cache
         .advance_node_materialization_reuse_run(key)
         .expect("advance records");
@@ -460,10 +515,16 @@ fn cache_node_materialization_reuse_advances_run_boundaries() {
         advanced
     );
     assert_eq!(
+        cache
+            .lookup_node_materialized_value_hash(key)
+            .expect("value hash lookup succeeds"),
+        Some(value_hash)
+    );
+    assert_eq!(
         fs::metadata(cache.node_metadata_index().path())
             .expect("node metadata index metadata")
             .len(),
-        (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 2) as u64
+        (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 3) as u64
     );
 
     let _ = fs::remove_dir_all(root);
@@ -479,6 +540,10 @@ fn cache_all_node_materialization_reuse_advances_changed_latest_entries() {
         PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"second"));
     let third_key =
         PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"third"));
+    let first_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"first value"));
+    let third_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"third value"));
 
     cache
         .record_node_materialization_reuse(first_key, MaterializationReuse::new(1, 2))
@@ -490,8 +555,14 @@ fn cache_all_node_materialization_reuse_advances_changed_latest_entries() {
         .record_node_materialization_reuse(first_key, MaterializationReuse::new(4, 5))
         .expect("first latest reuse records");
     cache
+        .record_node_materialized_value_hash(first_key, first_hash)
+        .expect("first value hash records");
+    cache
         .record_node_materialization_reuse(third_key, MaterializationReuse::new(u64::MAX - 1, 3))
         .expect("third reuse records");
+    cache
+        .record_node_materialized_value_hash(third_key, third_hash)
+        .expect("third value hash records");
 
     let advanced = cache
         .advance_all_node_materialization_reuse_runs()
@@ -505,11 +576,17 @@ fn cache_all_node_materialization_reuse_advances_changed_latest_entries() {
     );
     assert!(advanced.contains(&PersistNodeMetadataIndexEntry::new(
         first_key,
-        PersistNodeMetadataIndexValue::new(MaterializationReuse::new(9, 0))
+        PersistNodeMetadataIndexValue::with_materialized_value_hash(
+            MaterializationReuse::new(9, 0),
+            first_hash
+        )
     )));
     assert!(advanced.contains(&PersistNodeMetadataIndexEntry::new(
         third_key,
-        PersistNodeMetadataIndexValue::new(MaterializationReuse::new(u64::MAX, 0))
+        PersistNodeMetadataIndexValue::with_materialized_value_hash(
+            MaterializationReuse::new(u64::MAX, 0),
+            third_hash
+        )
     )));
     assert_eq!(
         cache
@@ -518,10 +595,22 @@ fn cache_all_node_materialization_reuse_advances_changed_latest_entries() {
         Some(MaterializationReuse::new(9, 0))
     );
     assert_eq!(
+        cache
+            .lookup_node_materialized_value_hash(first_key)
+            .expect("first value hash lookup succeeds"),
+        Some(first_hash)
+    );
+    assert_eq!(
+        cache
+            .lookup_node_materialized_value_hash(third_key)
+            .expect("third value hash lookup succeeds"),
+        Some(third_hash)
+    );
+    assert_eq!(
         fs::metadata(cache.node_metadata_index().path())
             .expect("node metadata index metadata")
             .len(),
-        (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 6) as u64
+        (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 8) as u64
     );
 
     let _ = fs::remove_dir_all(root);
@@ -534,6 +623,9 @@ fn cache_node_metadata_compacts_to_latest_entries() {
     let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
     let other_key =
         PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+    let other_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"other value"));
 
     cache
         .record_node_materialization_reuse(key, MaterializationReuse::new(1, 2))
@@ -542,8 +634,14 @@ fn cache_node_metadata_compacts_to_latest_entries() {
         .record_node_materialization_reuse(other_key, MaterializationReuse::new(3, 4))
         .expect("other reuse records");
     cache
+        .record_node_materialized_value_hash(other_key, other_value_hash)
+        .expect("other value hash records");
+    cache
         .record_node_materialization_reuse(key, MaterializationReuse::new(5, 6))
         .expect("latest reuse records");
+    cache
+        .record_node_materialized_value_hash(key, value_hash)
+        .expect("value hash records");
 
     assert_eq!(cache.compact_node_metadata().expect("metadata compacts"), 2);
     assert_eq!(
@@ -557,6 +655,18 @@ fn cache_node_metadata_compacts_to_latest_entries() {
             .lookup_node_materialization_reuse(other_key)
             .expect("other node reuse lookup succeeds"),
         Some(MaterializationReuse::new(3, 4))
+    );
+    assert_eq!(
+        cache
+            .lookup_node_materialized_value_hash(key)
+            .expect("value hash lookup succeeds"),
+        Some(value_hash)
+    );
+    assert_eq!(
+        cache
+            .lookup_node_materialized_value_hash(other_key)
+            .expect("other value hash lookup succeeds"),
+        Some(other_value_hash)
     );
     assert_eq!(
         fs::metadata(cache.node_metadata_index().path())
@@ -761,6 +871,113 @@ fn cache_cached_expression_payload_materializes_and_loads_by_value_hash() {
 }
 
 #[test]
+fn cache_cached_expression_node_payload_materialization_can_skip_without_writing() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let payload = CachedExpressionValue::context_free_string(b"cached string".to_vec());
+
+    let result = cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::KeepInMemory,
+        )
+        .expect("skip succeeds");
+
+    assert_eq!(result, PersistMaterialization::Skipped);
+    assert_eq!(
+        cache
+            .lookup_node_metadata(node_key)
+            .expect("node metadata lookup succeeds"),
+        None
+    );
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata")
+            .len(),
+        PERSIST_BLOB_PACK_HEADER_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_node_payload_materializes_and_loads_by_node_key() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+
+    cache
+        .record_node_materialization_reuse(node_key, MaterializationReuse::new(2, 3))
+        .expect("reuse records");
+    let result = cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+
+    assert!(matches!(result, PersistMaterialization::Materialized(_)));
+    let metadata = cache
+        .lookup_node_metadata(node_key)
+        .expect("node metadata lookup succeeds")
+        .expect("node metadata exists");
+    assert_eq!(
+        metadata.materialization_reuse(),
+        MaterializationReuse::new(2, 3)
+    );
+    assert_eq!(metadata.materialized_value_hash(), Some(value_hash));
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_indexed(node_key)
+            .expect("node payload loads")
+            .expect("node payload exists"),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_node_payload_load_misses_without_linked_value() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let missing =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"missing"));
+    let reuse_only =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"reuse-only"));
+
+    cache
+        .record_node_materialization_reuse(reuse_only, MaterializationReuse::new(2, 3))
+        .expect("reuse records");
+
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_indexed(missing)
+            .expect("missing node lookup succeeds"),
+        None
+    );
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_indexed(reuse_only)
+            .expect("reuse-only node lookup succeeds"),
+        None
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_cached_expression_payload_load_rejects_noncanonical_indexed_bytes() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -818,6 +1035,47 @@ fn cache_cached_expression_payload_materialization_signals_drive_writes() {
             .load_cached_expression_value_indexed(value_hash)
             .expect("payload loads")
             .expect("payload exists"),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_node_payload_materialization_signals_drive_writes() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let payload = CachedExpressionValue::path(b"/nix/store/source".to_vec());
+
+    let skipped = cache
+        .materialize_cached_expression_node_value_indexed_with_signals(
+            node_key,
+            &payload,
+            profitable_materialization_signals(false),
+        )
+        .expect("skip succeeds");
+    assert_eq!(skipped, PersistMaterialization::Skipped);
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_indexed(node_key)
+            .expect("missing node payload lookup succeeds"),
+        None
+    );
+
+    let written = cache
+        .materialize_cached_expression_node_value_indexed_with_signals(
+            node_key,
+            &payload,
+            profitable_materialization_signals(true),
+        )
+        .expect("write succeeds");
+    assert!(matches!(written, PersistMaterialization::Materialized(_)));
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_indexed(node_key)
+            .expect("node payload loads")
+            .expect("node payload exists"),
         payload
     );
 

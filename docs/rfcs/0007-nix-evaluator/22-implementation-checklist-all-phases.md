@@ -910,11 +910,13 @@ alone (`M-1`/`Q-A`).
       expression nodes from `CacheExprIdentity` plus ordered free-variable value
       hashes, and for impure-input leaves from their typed input identity hash,
       in domains separate from hot `DemandCacheKey`; `PersistNodeMetadataIndexValue`
-      wraps the existing materialization reuse counters, and
+      wraps materialization reuse counters plus an optional materialized
+      cached-expression `ValueHash` with canonical absent/present encoding, and
       `PersistNodeMetadataIndexEntry` frames key/value records. This is
-      codec-only; fixed-record index storage and force-cache demand accounting
-      are covered by following rows, while LMDB/redb node tables,
-      process-boundary updates, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
+      codec-only; fixed-record index storage, force-cache demand accounting,
+      and cache-level node-value link helpers are covered by following rows,
+      while LMDB/redb node tables, process-boundary updates, and AOS tuning
+      remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current demand-node metadata index substrate:
       `PersistLayout::node_metadata_index_path` adds `nodes/metadata.index`,
       `PersistNodeMetadataIndex` appends fixed-width metadata records and
@@ -931,7 +933,9 @@ alone (`M-1`/`Q-A`).
       counters over the raw metadata index, and
       `record_node_current_demand` reads the newest counters, starts from empty
       counters on a miss, appends a saturated current-demand increment, and
-      returns the recorded value. This is caller-driven, append-only, and
+      returns the recorded value. Reuse updates preserve any existing
+      materialized cached-expression value-hash link in the same metadata
+      record. This is caller-driven, append-only, and
       requires callers to serialize writes for the same node key; evaluator
       call-site integration is covered by the force-cache accounting row below,
       while atomic writer coordination, automatic run-boundary orchestration,
@@ -941,9 +945,10 @@ alone (`M-1`/`Q-A`).
       `PersistCache::advance_node_materialization_reuse_run` looks up the
       newest counters for one node key, returns `None` without writing on a
       miss, and otherwise appends `MaterializationReuse::advance_run` so
-      current-run observations become prior-run reuse signal for later runs.
-      This is caller-driven, append-only, and requires callers to serialize
-      writes for the same node key; automatic process-boundary orchestration,
+      current-run observations become prior-run reuse signal for later runs
+      while preserving any materialized value-hash link. This is caller-driven,
+      append-only, and requires callers to serialize writes for the same node
+      key; automatic process-boundary orchestration,
       atomic writer coordination, LMDB/redb node tables, compaction/GC, and AOS
       tuning remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node reuse sidecar advancement:
@@ -951,15 +956,17 @@ alone (`M-1`/`Q-A`).
       metadata sidecar into deterministic newest-entry-per-key order, and
       `PersistCache::advance_all_node_materialization_reuse_runs` appends
       changed `MaterializationReuse::advance_run` records for all known node
-      keys while skipping no-op counters. This is caller-driven, append-only,
-      and requires callers to serialize sidecar writes; automatic
+      keys while preserving materialized value-hash links and skipping no-op
+      counters. This is caller-driven, append-only, and requires callers to
+      serialize sidecar writes; automatic
       process-boundary orchestration, atomic writer coordination, LMDB/redb
       node tables, automatic compaction/GC policy, and AOS tuning remain open
       (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node metadata sidecar compaction:
       `PersistNodeMetadataIndex::compact_latest_entries` rewrites
       `nodes/metadata.index` through a temporary file and rename so only the
-      newest record for each node metadata key remains in stable key order, and
+      newest record for each node metadata key remains in stable key order,
+      including any materialized value-hash link, and
       `PersistCache::compact_node_metadata` exposes that operation through the
       opened cache root. This is caller-driven and requires callers to
       serialize sidecar writes; automatic process-boundary orchestration,
@@ -1034,10 +1041,24 @@ alone (`M-1`/`Q-A`).
       decoded payload before returning it while preserving
       skip-without-hash/encode/write behavior when the materialization threshold
       fails. This is an explicit cache-level payload bridge only; automatic
-      evaluator writeback and durable hit selection, node metadata linkage from
-      expression keys to value hashes/locations, context-bearing paths,
-      composite values, mmap reads, cost measurement, GC/repack, and
+      evaluator writeback and evaluator durable hit selection, context-bearing
+      paths, composite values, mmap reads, cost measurement, GC/repack, and
       cached/uncached harness proof remain open (`C-13`/`C-14`/`S-14`).
+- [x] Current cached-expression node-value metadata linkage adapter:
+      `PersistCache::record_node_materialized_value_hash` and
+      `lookup_node_materialized_value_hash` preserve materialization reuse
+      counters while linking a demand-node metadata key to the newest
+      materialized cached-expression `ValueHash`;
+      `materialize_cached_expression_node_value_indexed`,
+      `materialize_cached_expression_node_value_indexed_with_signals`, and
+      `load_cached_expression_node_value_indexed` combine that link with the
+      indexed `values/` payload helpers. Skips do not hash, encode, write, or
+      record metadata, and node-key loads return `None` for missing metadata,
+      reuse-only metadata, or missing value blobs. This is explicit cache-level
+      linkage only; automatic evaluator writeback, evaluator durable hit
+      selection, node/value transactionality, context-bearing paths, composite
+      values, mmap reads, cost measurement, GC/repack, and cached/uncached
+      harness proof remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips

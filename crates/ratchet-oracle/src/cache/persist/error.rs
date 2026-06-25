@@ -174,6 +174,15 @@ pub enum PersistPackFormatError {
         /// The available bytes.
         actual: usize,
     },
+    /// A demand-node metadata value carried an unknown optional value-hash tag.
+    #[error("persistent node metadata value hash has invalid tag {tag}")]
+    InvalidNodeMetadataValueHashTag {
+        /// The unknown value-hash presence tag.
+        tag: u8,
+    },
+    /// A demand-node metadata value carried bytes in an absent value-hash slot.
+    #[error("persistent node metadata value hash absent slot is not zeroed")]
+    NonZeroNodeMetadataValueHashPadding,
     /// A file-artifact index value pointed at a non-file blob store.
     #[error("persistent file artifact index value points at {store:?}, expected Files")]
     InvalidFileArtifactBlobStore {
@@ -467,6 +476,35 @@ pub enum PersistCachedExpressionValueIndexedWriteError {
     },
 }
 
+/// Indexed cached-expression payload materialization plus node-link recording failed.
+#[derive(Debug, Error)]
+pub enum PersistCachedExpressionNodeValueIndexedWriteError {
+    /// The cached payload could not be hashed as a durable value.
+    #[error("failed to hash cached expression node payload for persistent materialization")]
+    Hash {
+        /// The underlying value-hash error.
+        source: ValueHashError,
+    },
+    /// The cached payload could not be encoded as stable value-store bytes.
+    #[error("failed to encode cached expression node payload for persistent materialization")]
+    Encode {
+        /// The underlying payload encoding error.
+        source: CachedExpressionValuePayloadError,
+    },
+    /// The encoded cached payload could not be written to the indexed `values/` pack.
+    #[error("failed to write indexed cached expression node payload")]
+    Write {
+        /// The underlying indexed blob write error.
+        source: PersistBlobIndexedWriteError,
+    },
+    /// The materialized value hash could not be recorded for the node.
+    #[error("failed to record cached expression node payload metadata")]
+    Metadata {
+        /// The underlying node metadata index error.
+        source: PersistNodeMetadataIndexError,
+    },
+}
+
 /// Indexed cached-expression payload load failed.
 #[derive(Debug, Error)]
 pub enum PersistCachedExpressionValueIndexedLoadError {
@@ -497,6 +535,23 @@ pub enum PersistCachedExpressionValueIndexedLoadError {
         expected: ValueHash,
         /// The value hash recomputed from the decoded payload.
         actual: ValueHash,
+    },
+}
+
+/// Indexed cached-expression payload load through node metadata failed.
+#[derive(Debug, Error)]
+pub enum PersistCachedExpressionNodeValueIndexedLoadError {
+    /// The node metadata could not be read.
+    #[error("failed to read cached expression node payload metadata")]
+    Metadata {
+        /// The underlying node metadata index error.
+        source: PersistNodeMetadataIndexError,
+    },
+    /// The linked cached-expression payload could not be loaded.
+    #[error("failed to load cached expression node payload")]
+    Value {
+        /// The underlying indexed payload load error.
+        source: PersistCachedExpressionValueIndexedLoadError,
     },
 }
 

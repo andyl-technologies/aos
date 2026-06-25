@@ -25,7 +25,7 @@ use super::{
 /// The persistent eval-cache schema format marker.
 pub const PERSIST_CACHE_FORMAT: &str = "aos-nix-eval-cache";
 /// The persistent eval-cache schema version.
-pub const PERSIST_CACHE_SCHEMA_VERSION: u32 = 1;
+pub const PERSIST_CACHE_SCHEMA_VERSION: u32 = 2;
 /// The fixed magic bytes at the start of every immutable blob packfile.
 pub const PERSIST_BLOB_PACK_MAGIC: [u8; 16] = *b"AOS-NIX-BLOBPACK";
 /// The immutable blob packfile format version.
@@ -59,8 +59,11 @@ pub const PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN: usize =
     PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN + PERSIST_PARSE_ARTIFACT_INDEX_VALUE_LEN;
 /// The encoded length of a demand-node metadata index key.
 pub const PERSIST_NODE_METADATA_INDEX_KEY_LEN: usize = 33;
+/// The encoded length of an optional materialized value-hash metadata field.
+pub const PERSIST_NODE_METADATA_VALUE_HASH_LEN: usize = 33;
 /// The encoded length of a demand-node metadata index value.
-pub const PERSIST_NODE_METADATA_INDEX_VALUE_LEN: usize = PERSIST_MATERIALIZATION_REUSE_LEN;
+pub const PERSIST_NODE_METADATA_INDEX_VALUE_LEN: usize =
+    PERSIST_MATERIALIZATION_REUSE_LEN + PERSIST_NODE_METADATA_VALUE_HASH_LEN;
 /// The encoded length of a complete demand-node metadata index entry.
 pub const PERSIST_NODE_METADATA_INDEX_ENTRY_LEN: usize =
     PERSIST_NODE_METADATA_INDEX_KEY_LEN + PERSIST_NODE_METADATA_INDEX_VALUE_LEN;
@@ -73,6 +76,8 @@ const PERSIST_FILE_ARTIFACT_INDEX_TAG: u8 = 3;
 const PERSIST_FILE_ARTIFACT_KEY_PERSONALIZATION: &[u8] = b"aos-nix-persist-file-artifact-key-v1";
 const PERSIST_PARSE_ARTIFACT_INDEX_TAG: u8 = 4;
 const PERSIST_NODE_METADATA_INDEX_TAG: u8 = 5;
+const PERSIST_NODE_METADATA_VALUE_HASH_NONE_TAG: u8 = 0;
+const PERSIST_NODE_METADATA_VALUE_HASH_PRESENT_TAG: u8 = 1;
 const PERSIST_NODE_METADATA_EXPRESSION_KEY_PERSONALIZATION: &[u8] =
     b"aos-nix-persist-node-expression-key-v1";
 const PERSIST_NODE_METADATA_IMPURE_INPUT_KEY_PERSONALIZATION: &[u8] =
@@ -89,15 +94,16 @@ mod pack;
 pub use cache::PersistCache;
 pub use error::{
     PersistBlobIndexError, PersistBlobIndexedReadError, PersistBlobIndexedWriteError,
-    PersistBlobPackError, PersistCachedExpressionValueIndexedLoadError,
-    PersistCachedExpressionValueIndexedWriteError, PersistError, PersistFileArtifactHydrationError,
-    PersistFileArtifactIndexError, PersistFileArtifactIndexedHydrationError,
-    PersistFileArtifactIndexedWriteError, PersistNodeMetadataIndexError, PersistPackFormatError,
-    PersistParseArtifactHydrationError, PersistParseArtifactIndexError,
-    PersistParseArtifactIndexedHydrationError, PersistParseArtifactIndexedWriteError,
-    PersistParseArtifactMaterializationError, PersistParseBytesIndexedLoadError,
-    PersistParseFileIndexedHydrationError, PersistParseFileIndexedLoadError,
-    PersistParseSourceIndexedLoadError,
+    PersistBlobPackError, PersistCachedExpressionNodeValueIndexedLoadError,
+    PersistCachedExpressionNodeValueIndexedWriteError,
+    PersistCachedExpressionValueIndexedLoadError, PersistCachedExpressionValueIndexedWriteError,
+    PersistError, PersistFileArtifactHydrationError, PersistFileArtifactIndexError,
+    PersistFileArtifactIndexedHydrationError, PersistFileArtifactIndexedWriteError,
+    PersistNodeMetadataIndexError, PersistPackFormatError, PersistParseArtifactHydrationError,
+    PersistParseArtifactIndexError, PersistParseArtifactIndexedHydrationError,
+    PersistParseArtifactIndexedWriteError, PersistParseArtifactMaterializationError,
+    PersistParseBytesIndexedLoadError, PersistParseFileIndexedHydrationError,
+    PersistParseFileIndexedLoadError, PersistParseSourceIndexedLoadError,
 };
 pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,

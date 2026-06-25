@@ -1109,11 +1109,15 @@ impl PersistNodeMetadataKey {
 
 /// A stable value for durable demand-node metadata.
 ///
-/// The current substrate stores materialization reuse counters only. Future
-/// node metadata can extend this record behind a schema bump.
+/// This fixed-width value stores the cross-run materialization reuse counters
+/// plus the newest materialized cached-expression value hash for the node, when
+/// one is known. The value hash links a demand-node metadata key to the indexed
+/// `values/` pack; the pack's own content-addressed index remains the source of
+/// the payload location.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PersistNodeMetadataIndexValue {
     materialization_reuse: MaterializationReuse,
+    materialized_value_hash: Option<ValueHash>,
 }
 
 impl PersistNodeMetadataIndexValue {
@@ -1121,6 +1125,18 @@ impl PersistNodeMetadataIndexValue {
     pub const fn new(materialization_reuse: MaterializationReuse) -> Self {
         Self {
             materialization_reuse,
+            materialized_value_hash: None,
+        }
+    }
+
+    /// Creates node metadata from reuse counters and a materialized value hash.
+    pub const fn with_materialized_value_hash(
+        materialization_reuse: MaterializationReuse,
+        value_hash: ValueHash,
+    ) -> Self {
+        Self {
+            materialization_reuse,
+            materialized_value_hash: Some(value_hash),
         }
     }
 
@@ -1129,9 +1145,47 @@ impl PersistNodeMetadataIndexValue {
         self.materialization_reuse
     }
 
+    /// Returns the newest materialized cached-expression value hash, if any.
+    pub const fn materialized_value_hash(self) -> Option<ValueHash> {
+        self.materialized_value_hash
+    }
+
+    /// Returns this metadata with updated materialization reuse counters.
+    pub const fn with_materialization_reuse(
+        self,
+        materialization_reuse: MaterializationReuse,
+    ) -> Self {
+        Self {
+            materialization_reuse,
+            materialized_value_hash: self.materialized_value_hash,
+        }
+    }
+
+    /// Returns this metadata with an updated materialized value hash.
+    pub const fn with_value_hash(self, value_hash: ValueHash) -> Self {
+        Self {
+            materialization_reuse: self.materialization_reuse,
+            materialized_value_hash: Some(value_hash),
+        }
+    }
+
     /// Encodes this value as stable node metadata index bytes.
     pub fn encode_index_value(self) -> [u8; PERSIST_NODE_METADATA_INDEX_VALUE_LEN] {
-        self.materialization_reuse.encode_persist_metadata()
+        let mut bytes = [0; PERSIST_NODE_METADATA_INDEX_VALUE_LEN];
+        bytes[..PERSIST_MATERIALIZATION_REUSE_LEN]
+            .copy_from_slice(&self.materialization_reuse.encode_persist_metadata());
+        let value_hash_offset = PERSIST_MATERIALIZATION_REUSE_LEN;
+        match self.materialized_value_hash {
+            Some(value_hash) => {
+                bytes[value_hash_offset] = PERSIST_NODE_METADATA_VALUE_HASH_PRESENT_TAG;
+                bytes[value_hash_offset + 1..]
+                    .copy_from_slice(&value_hash.as_durable_hash().as_bytes());
+            }
+            None => {
+                bytes[value_hash_offset] = PERSIST_NODE_METADATA_VALUE_HASH_NONE_TAG;
+            }
+        }
+        bytes
     }
 
     /// Decodes stable node metadata index bytes.
@@ -1139,7 +1193,8 @@ impl PersistNodeMetadataIndexValue {
     /// # Errors
     ///
     /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
-    /// [`PERSIST_NODE_METADATA_INDEX_VALUE_LEN`].
+    /// [`PERSIST_NODE_METADATA_INDEX_VALUE_LEN`] or if the optional value-hash
+    /// field is not canonical.
     pub fn decode_index_value(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
         if bytes.len() < PERSIST_NODE_METADATA_INDEX_VALUE_LEN {
             return Err(PersistPackFormatError::ShortNodeMetadataIndexValue {
@@ -1147,9 +1202,32 @@ impl PersistNodeMetadataIndexValue {
                 actual: bytes.len(),
             });
         }
-        Ok(Self::new(MaterializationReuse::decode_persist_metadata(
-            bytes,
-        )?))
+        let materialization_reuse = MaterializationReuse::decode_persist_metadata(
+            &bytes[..PERSIST_MATERIALIZATION_REUSE_LEN],
+        )?;
+        let value_hash_offset = PERSIST_MATERIALIZATION_REUSE_LEN;
+        let value_hash_payload =
+            &bytes[value_hash_offset + 1..PERSIST_NODE_METADATA_INDEX_VALUE_LEN];
+        let materialized_value_hash = match bytes[value_hash_offset] {
+            PERSIST_NODE_METADATA_VALUE_HASH_NONE_TAG => {
+                if value_hash_payload.iter().any(|byte| *byte != 0) {
+                    return Err(PersistPackFormatError::NonZeroNodeMetadataValueHashPadding);
+                }
+                None
+            }
+            PERSIST_NODE_METADATA_VALUE_HASH_PRESENT_TAG => {
+                let mut hash = [0; 32];
+                hash.copy_from_slice(value_hash_payload);
+                Some(ValueHash::from_canonical_value_hash(
+                    DurableBlake3Hash::from_bytes(hash),
+                ))
+            }
+            tag => return Err(PersistPackFormatError::InvalidNodeMetadataValueHashTag { tag }),
+        };
+        Ok(Self {
+            materialization_reuse,
+            materialized_value_hash,
+        })
     }
 }
 

@@ -280,6 +280,10 @@ impl PersistCache {
 
     /// Appends materialization reuse counters for one demand node.
     ///
+    /// Existing materialized value-hash metadata for the same node is
+    /// preserved in the appended record. Missing metadata starts from an empty
+    /// value-hash link.
+    ///
     /// # Errors
     ///
     /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
@@ -289,10 +293,11 @@ impl PersistCache {
         key: PersistNodeMetadataKey,
         reuse: MaterializationReuse,
     ) -> Result<(), PersistNodeMetadataIndexError> {
-        self.record_node_metadata(PersistNodeMetadataIndexEntry::new(
-            key,
-            PersistNodeMetadataIndexValue::new(reuse),
-        ))
+        let value = self
+            .lookup_node_metadata(key)?
+            .unwrap_or_else(|| PersistNodeMetadataIndexValue::new(MaterializationReuse::default()))
+            .with_materialization_reuse(reuse);
+        self.record_node_metadata(PersistNodeMetadataIndexEntry::new(key, value))
     }
 
     /// Looks up materialization reuse counters for one demand node.
@@ -312,14 +317,54 @@ impl PersistCache {
             .map(PersistNodeMetadataIndexValue::materialization_reuse))
     }
 
+    /// Records the newest materialized value hash for one demand node.
+    ///
+    /// Existing materialization reuse counters for the same node are preserved
+    /// in the appended metadata record. Missing metadata starts from empty
+    /// reuse counters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, read, decoded, written, or flushed.
+    pub fn record_node_materialized_value_hash(
+        &self,
+        key: PersistNodeMetadataKey,
+        value_hash: ValueHash,
+    ) -> Result<(), PersistNodeMetadataIndexError> {
+        let value = self
+            .lookup_node_metadata(key)?
+            .unwrap_or_else(|| PersistNodeMetadataIndexValue::new(MaterializationReuse::default()))
+            .with_value_hash(value_hash);
+        self.record_node_metadata(PersistNodeMetadataIndexEntry::new(key, value))
+    }
+
+    /// Looks up the newest materialized value hash for one demand node.
+    ///
+    /// Missing node metadata and metadata without a materialized value hash
+    /// both return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, read, or decoded.
+    pub fn lookup_node_materialized_value_hash(
+        &self,
+        key: PersistNodeMetadataKey,
+    ) -> Result<Option<ValueHash>, PersistNodeMetadataIndexError> {
+        Ok(self
+            .lookup_node_metadata(key)?
+            .and_then(PersistNodeMetadataIndexValue::materialized_value_hash))
+    }
+
     /// Records one current-run demand observation for a demand node.
     ///
     /// The helper reads the latest persisted counters, starts from empty
-    /// counters on a miss, appends the updated counters, and returns the value
-    /// that was recorded. Callers must serialize writes for the same node key:
-    /// this fixed-record sidecar stores absolute counters, so concurrent
-    /// read-modify-append calls can overwrite one another under newest-record
-    /// lookup semantics.
+    /// counters on a miss, appends the updated counters while preserving any
+    /// materialized value-hash link, and returns the value that was recorded.
+    /// Callers must serialize writes for the same node key: this fixed-record
+    /// sidecar stores absolute counters, so concurrent read-modify-append calls
+    /// can overwrite one another under newest-record lookup semantics.
     ///
     /// # Errors
     ///
@@ -381,9 +426,10 @@ impl PersistCache {
     ///
     /// Missing index entries return `Ok(None)` without appending an empty
     /// record. Existing entries append the counters returned by
-    /// [`MaterializationReuse::advance_run`] and return that recorded value.
-    /// Callers must serialize writes for the same node key for the same reason
-    /// as [`Self::record_node_current_demand`].
+    /// [`MaterializationReuse::advance_run`], preserve any materialized
+    /// value-hash link, and return the recorded reuse counters. Callers must
+    /// serialize writes for the same node key for the same reason as
+    /// [`Self::record_node_current_demand`].
     ///
     /// # Errors
     ///
@@ -404,10 +450,10 @@ impl PersistCache {
     /// Advances persisted reuse counters for all known demand nodes.
     ///
     /// This reads the newest metadata value for every node key, appends
-    /// [`MaterializationReuse::advance_run`] for entries whose counters change,
-    /// and returns the entries that were appended in stable key order. Callers
-    /// must serialize writes to the node metadata sidecar while this method
-    /// runs.
+    /// [`MaterializationReuse::advance_run`] for entries whose counters change
+    /// while preserving any materialized value-hash link, and returns the
+    /// entries that were appended in stable key order. Callers must serialize
+    /// writes to the node metadata sidecar while this method runs.
     ///
     /// # Errors
     ///
@@ -425,7 +471,7 @@ impl PersistCache {
             }
             let advanced_entry = PersistNodeMetadataIndexEntry::new(
                 entry.key(),
-                PersistNodeMetadataIndexValue::new(advanced),
+                entry.value().with_materialization_reuse(advanced),
             );
             self.record_node_metadata(advanced_entry)?;
             recorded.push(advanced_entry);
@@ -600,6 +646,99 @@ impl PersistCache {
             );
         }
         Ok(Some(value))
+    }
+
+    /// Materializes a cached expression payload and links it from node metadata.
+    ///
+    /// [`MaterializationDecision::KeepInMemory`] returns
+    /// [`PersistMaterialization::Skipped`] without hashing, encoding, writing,
+    /// or updating node metadata. [`MaterializationDecision::Materialize`]
+    /// writes the payload through the indexed `values/` pack and then records
+    /// the resulting [`ValueHash`] in the demand-node metadata sidecar while
+    /// preserving existing reuse counters for `node_key`.
+    ///
+    /// This helper is explicit and non-transactional: if the value-pack write
+    /// succeeds but the node metadata write fails, the indexed value remains
+    /// addressable by value hash but is not linked from `node_key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistCachedExpressionNodeValueIndexedWriteError`] when
+    /// materialization is requested and the payload cannot be hashed, encoded,
+    /// indexed, or linked from node metadata.
+    pub fn materialize_cached_expression_node_value_indexed(
+        &self,
+        node_key: PersistNodeMetadataKey,
+        value: &CachedExpressionValue,
+        decision: MaterializationDecision,
+    ) -> Result<PersistMaterialization, PersistCachedExpressionNodeValueIndexedWriteError> {
+        let MaterializationDecision::Materialize = decision else {
+            return Ok(PersistMaterialization::Skipped);
+        };
+        let value_hash = value
+            .value_hash()
+            .map_err(|source| PersistCachedExpressionNodeValueIndexedWriteError::Hash { source })?;
+        let payload = value.encode_persistent_payload().map_err(|source| {
+            PersistCachedExpressionNodeValueIndexedWriteError::Encode { source }
+        })?;
+        let blob_key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+        let materialization = self
+            .materialize_blob_indexed(blob_key, &payload, MaterializationDecision::Materialize)
+            .map_err(
+                |source| PersistCachedExpressionNodeValueIndexedWriteError::Write { source },
+            )?;
+        self.record_node_materialized_value_hash(node_key, value_hash)
+            .map_err(
+                |source| PersistCachedExpressionNodeValueIndexedWriteError::Metadata { source },
+            )?;
+        Ok(materialization)
+    }
+
+    /// Applies materialization threshold signals to a node-linked payload write.
+    ///
+    /// The signals are evaluated with [`MaterializationSignals::decide`] and
+    /// then applied through
+    /// [`Self::materialize_cached_expression_node_value_indexed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistCachedExpressionNodeValueIndexedWriteError`] when the
+    /// signals choose materialization and the payload cannot be hashed,
+    /// encoded, indexed, or linked from node metadata.
+    pub fn materialize_cached_expression_node_value_indexed_with_signals(
+        &self,
+        node_key: PersistNodeMetadataKey,
+        value: &CachedExpressionValue,
+        signals: MaterializationSignals,
+    ) -> Result<PersistMaterialization, PersistCachedExpressionNodeValueIndexedWriteError> {
+        self.materialize_cached_expression_node_value_indexed(node_key, value, signals.decide())
+    }
+
+    /// Loads a cached expression payload through one demand-node metadata key.
+    ///
+    /// Missing node metadata, metadata without a materialized value hash, and
+    /// missing indexed value blobs all return `Ok(None)`. Present value blobs
+    /// are decoded and rehashed by [`Self::load_cached_expression_value_indexed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistCachedExpressionNodeValueIndexedLoadError`] if node
+    /// metadata cannot be read or the linked value payload cannot be loaded.
+    pub fn load_cached_expression_node_value_indexed(
+        &self,
+        node_key: PersistNodeMetadataKey,
+    ) -> Result<Option<CachedExpressionValue>, PersistCachedExpressionNodeValueIndexedLoadError>
+    {
+        let Some(value_hash) =
+            self.lookup_node_materialized_value_hash(node_key)
+                .map_err(
+                    |source| PersistCachedExpressionNodeValueIndexedLoadError::Metadata { source },
+                )?
+        else {
+            return Ok(None);
+        };
+        self.load_cached_expression_value_indexed(value_hash)
+            .map_err(|source| PersistCachedExpressionNodeValueIndexedLoadError::Value { source })
     }
 
     /// Applies `decision` to `payload` in the packfile selected by `key`.

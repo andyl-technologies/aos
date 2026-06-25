@@ -1,4 +1,5 @@
-//! Tests for the on-disk format primitives: blob/file-artifact keys, index encodings, and reuse metadata.
+//! Tests for the on-disk format primitives: blob/file-artifact keys, index
+//! encodings, and node metadata.
 
 use super::*;
 
@@ -838,6 +839,7 @@ fn node_metadata_index_values_round_trip_reuse_metadata() {
     encoded.extend_from_slice(b"trailing node metadata bytes");
 
     assert_eq!(value.materialization_reuse(), reuse);
+    assert_eq!(value.materialized_value_hash(), None);
     assert_eq!(
         value.encode_index_value().len(),
         PERSIST_NODE_METADATA_INDEX_VALUE_LEN
@@ -847,6 +849,20 @@ fn node_metadata_index_values_round_trip_reuse_metadata() {
             .expect("node metadata value decodes"),
         value
     );
+}
+
+#[test]
+fn node_metadata_index_values_round_trip_materialized_value_hash() {
+    let reuse = MaterializationReuse::new(2, 3);
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+    let value = PersistNodeMetadataIndexValue::with_materialized_value_hash(reuse, value_hash);
+
+    let decoded = PersistNodeMetadataIndexValue::decode_index_value(&value.encode_index_value())
+        .expect("node metadata value decodes");
+
+    assert_eq!(decoded.materialization_reuse(), reuse);
+    assert_eq!(decoded.materialized_value_hash(), Some(value_hash));
+    assert_eq!(decoded, value);
 }
 
 #[test]
@@ -864,9 +880,35 @@ fn node_metadata_index_values_reject_short_prefix() {
 }
 
 #[test]
+fn node_metadata_index_values_reject_malformed_value_hash_field() {
+    let mut invalid_tag =
+        PersistNodeMetadataIndexValue::new(MaterializationReuse::new(2, 3)).encode_index_value();
+    invalid_tag[PERSIST_MATERIALIZATION_REUSE_LEN] = 99;
+    let error = PersistNodeMetadataIndexValue::decode_index_value(&invalid_tag)
+        .expect_err("invalid value hash tag errors");
+    assert_eq!(
+        error,
+        PersistPackFormatError::InvalidNodeMetadataValueHashTag { tag: 99 }
+    );
+
+    let mut nonzero_absent =
+        PersistNodeMetadataIndexValue::new(MaterializationReuse::new(2, 3)).encode_index_value();
+    nonzero_absent[PERSIST_MATERIALIZATION_REUSE_LEN + 1] = 1;
+    let error = PersistNodeMetadataIndexValue::decode_index_value(&nonzero_absent)
+        .expect_err("nonzero absent value hash errors");
+    assert_eq!(
+        error,
+        PersistPackFormatError::NonZeroNodeMetadataValueHashPadding
+    );
+}
+
+#[test]
 fn node_metadata_index_entries_round_trip_key_value_records() {
     let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
-    let value = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(2, 3));
+    let value = PersistNodeMetadataIndexValue::with_materialized_value_hash(
+        MaterializationReuse::new(2, 3),
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value")),
+    );
     let entry = PersistNodeMetadataIndexEntry::new(key, value);
     let mut encoded = entry.encode_index_entry().to_vec();
     encoded.extend_from_slice(b"trailing index bytes");
