@@ -65,6 +65,13 @@
       enforces = "DET-8,TIME-20,E5";
       capability = "sim RTC and realtime reads use fixed epoch plus virtual time";
     }
+    {
+      file = "0008-crucible-det-getrandom.patch";
+      catalogName = "crucible-det-getrandom";
+      class = "D";
+      enforces = "DET-21,DET-19,E9";
+      capability = "sim unseeded guest-random fails closed before host crypto";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

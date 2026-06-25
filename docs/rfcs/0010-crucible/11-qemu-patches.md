@@ -369,24 +369,26 @@ determinism-critical.
 
 ### crucible-det-getrandom — deterministic guest-random / hardware RNG
 
-- **Enforces:** [DET-21], [DET-19]; eliminates E9 (QEMU's `qemu_guest_getrandom`)
-  and reinforces E1 (no hardware entropy reaches the host).
-- **Mechanism:** routes `qemu_guest_getrandom` (and the path that feeds emulated
-  RNG / `fw_cfg` randomness) through a deterministic stream seeded from the run
-  seed in sim mode, rather than the host CSPRNG. Combined with a fixed `-cpu`
-  model that does not advertise `RDRAND`/`RDSEED`, no true hardware entropy can
-  enter `T`.
-- **Micro-test:** in sim mode, two runs produce identical `qemu_guest_getrandom`
-  output; out of sim mode it draws from host entropy as upstream.
-- **Inertness:** [PATCH-3](b) — gated on the `deterministic` predicate.
+- **Enforces:** [DET-21], [DET-19]; eliminates E9 (QEMU's
+  `qemu_guest_getrandom` host-entropy fallback under sim).
+- **Mechanism:** preserves QEMU's `-seed` deterministic guest-random path and
+  adds a sim-only fail-closed guard for unseeded `qemu_guest_getrandom`, before
+  the host-crypto fallback can run. Combined with `crucible-det-glib-prng`,
+  seeded sim runs draw from the run-seed-derived GLib stream; unseeded sim runs
+  must provide `-seed` instead of silently using host entropy.
+- **Micro-test:** seeded draws produce identical guest-random streams with zero
+  host entropy calls; sim without `-seed` fails closed before host crypto; non-sim
+  unseeded random remains the upstream host-crypto path.
+- **Inertness:** [PATCH-3](b) — guarded by `current_accel_name() == "sim"` and
+  only reached when `-seed` has not selected QEMU's deterministic path.
 - **Risk:** D.
 
 - **[PATCH-16]** The series MUST route QEMU's guest-random / hardware-RNG entropy
-  through a deterministic, run-seed-derived stream in sim mode, with no path by
-  which the guest obtains true host hardware entropy; out of sim mode the
-  host-entropy path MUST be unchanged. *Gate:* `gate:layer0-determinism`,
-  `gate:qemu-inert`. *Spec:* §11.4; satisfies [DET-21], [DET-19], [DET-18] (E9),
-  [INV-7].
+  through a deterministic, run-seed-derived stream in sim mode when `-seed` is
+  provided, and MUST fail closed before host crypto if sim guest-random is used
+  without `-seed`; out of sim mode the unseeded host-entropy path MUST be
+  unchanged. *Gate:* `gate:layer0-determinism`, `gate:qemu-inert`. *Spec:* §11.4;
+  satisfies [DET-21], [DET-19], [DET-18] (E9), [INV-7].
 
 ### crucible-net-deterministic — icount-timed network delivery
 
@@ -1161,10 +1163,18 @@ time-control primitives the whole design rests on.
     fixed epoch plus virtual time even when launch parsing initially configured
     a host-backed RTC clock. Non-sim remains upstream host-clock behavior, with a
     stock negative control proving upstream would read host time.
-- [ ] **T-PATCH-7** Implement the entropy patches `crucible-det-glib-prng` and
-  `crucible-det-getrandom`, gated on the `deterministic` predicate, with
-  reintroduce-to-red micro-tests. — satisfies [PATCH-15], [PATCH-16]; spec §11.4
-  (E9, E1).
+- [x] **T-PATCH-7** Implement the entropy patches `crucible-det-glib-prng` and
+  `crucible-det-getrandom`, with reintroduce-to-red micro-tests. — satisfies
+  [PATCH-15], [PATCH-16]; spec §11.4 (E9).
+  - Completed by `0005-crucible-det-glib-prng.patch`,
+    `0008-crucible-det-getrandom.patch`, and the paired
+    `checks.crucible.phase1.qemuDeterministicEntropy` /
+    `checks.crucible.phase1.qemuDeterministicGetrandom` leaves: the global GLib
+    PRNG is seeded from the run seed, guest-random thread seed handoff uses the
+    deterministic stream, seeded guest `qemu_guest_getrandom` draws perform zero
+    host entropy calls, sim unseeded `qemu_guest_getrandom` fails closed before
+    host crypto, and non-sim unseeded guest random remains the upstream
+    host-crypto path.
 - [ ] **T-PATCH-8** Implement `crucible-net-deterministic`: plugin-callable
   icount-timed RX delivery, with a skewed-producer cross-run micro-test. —
   satisfies [PATCH-17]; spec §11.4 (E18).

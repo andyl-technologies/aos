@@ -11,6 +11,7 @@
   qemuPatch5Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0005-crucible-det-glib-prng.patch;
   qemuPatch6Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0006-crucible-clock-deadline.patch;
   qemuPatch7Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0007-crucible-block-rtc-read.patch;
+  qemuPatch8Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0008-crucible-det-getrandom.patch;
   qemuNixHash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu.nix;
   qemuPatch1Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0001-crucible-sim-accel.patch;
   qemuPatch2Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0002-crucible-rr-fingerprint-helpers.patch;
@@ -19,6 +20,7 @@
   qemuPatch5Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0005-crucible-det-glib-prng.patch;
   qemuPatch6Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0006-crucible-clock-deadline.patch;
   qemuPatch7Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0007-crucible-block-rtc-read.patch;
+  qemuPatch8Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0008-crucible-det-getrandom.patch;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-s9-qemu-build-identity";
@@ -33,6 +35,7 @@ in
     qemuPatch5 = qemuPatch5Source;
     qemuPatch6 = qemuPatch6Source;
     qemuPatch7 = qemuPatch7Source;
+    qemuPatch8 = qemuPatch8Source;
     passAsFile = [
       "qemuNix"
       "qemuPatch1"
@@ -42,6 +45,7 @@ in
       "qemuPatch5"
       "qemuPatch6"
       "qemuPatch7"
+      "qemuPatch8"
     ];
 
     buildDeps = [
@@ -71,6 +75,8 @@ in
     PATCH_0006_HASH = qemuPatch6Hash;
     PATCH_0007_NAME = "0007-crucible-block-rtc-read.patch";
     PATCH_0007_HASH = qemuPatch7Hash;
+    PATCH_0008_NAME = "0008-crucible-det-getrandom.patch";
+    PATCH_0008_HASH = qemuPatch8Hash;
 
     phases = [
       {
@@ -118,6 +124,7 @@ in
           cp "$qemuPatch5Path" "$PATCH_0005_NAME"
           cp "$qemuPatch6Path" "$PATCH_0006_NAME"
           cp "$qemuPatch7Path" "$PATCH_0007_NAME"
+          cp "$qemuPatch8Path" "$PATCH_0008_NAME"
 
           require_fixed qemu.nix 'pname ? "qemu"'
           require_fixed qemu.nix 'enablePlugins ? false'
@@ -129,6 +136,7 @@ in
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0005-crucible-det-glib-prng.patch}'
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0006-crucible-clock-deadline.patch}'
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0007-crucible-block-rtc-read.patch}'
+          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0008-crucible-det-getrandom.patch}'
           require_fixed qemu.nix '--target-list=x86_64-softmmu'
           require_fixed qemu.nix 'https://download.qemu.org/qemu-'
           require_fixed qemu.nix '.tar.xz'
@@ -158,8 +166,12 @@ in
           require_fixed "$PATCH_0007_NAME" 'qemu_rtc_enable_sim_virtual_clock();'
           require_fixed "$PATCH_0007_NAME" 'rtc_clock = QEMU_CLOCK_VIRTUAL'
           require_fixed "$PATCH_0007_NAME" 'fixed epoch plus'
+          require_fixed "$PATCH_0008_NAME" 'crucible_guest_random_sim_requires_seed'
+          require_fixed "$PATCH_0008_NAME" 'current_accel_name'
+          require_fixed "$PATCH_0008_NAME" '-accel sim requires -seed for deterministic guest random'
+          require_fixed "$PATCH_0008_NAME" 'qemu_guest_getrandom'
 
-          patch_count=7
+          patch_count=8
           patch_series_hash=$(
             {
               printf '%s  %s\n' "$PATCH_0001_HASH" "$PATCH_0001_NAME"
@@ -169,6 +181,7 @@ in
               printf '%s  %s\n' "$PATCH_0005_HASH" "$PATCH_0005_NAME"
               printf '%s  %s\n' "$PATCH_0006_HASH" "$PATCH_0006_NAME"
               printf '%s  %s\n' "$PATCH_0007_HASH" "$PATCH_0007_NAME"
+              printf '%s  %s\n' "$PATCH_0008_HASH" "$PATCH_0008_NAME"
             } \
               | sha256sum \
               | gawk '{ print $1 }'
@@ -194,6 +207,8 @@ in
             echo "patch_0006_hash=$PATCH_0006_HASH"
             echo "patch_0007_name=$PATCH_0007_NAME"
             echo "patch_0007_hash=$PATCH_0007_HASH"
+            echo "patch_0008_name=$PATCH_0008_NAME"
+            echo "patch_0008_hash=$PATCH_0008_HASH"
             echo "patch_series_hash=$patch_series_hash"
             echo "plugins_enabled=true"
             echo "s1_horizon_extended_hash=$s1_horizon_extended_hash"
@@ -254,6 +269,7 @@ in
           no_warp_with_plugin_patch_present=true
           qemu_rtc_patch_present=true
           qemu_internal_entropy_patch_present=true
+          qemu_guest_random_patch_present=true
           full_upstream_inertness_comparison=false
           qemu_inert_gate_status=fallback_pending_upstream_comparison
           fallback_adopted=pin_build_id_and_regate_on_change
@@ -269,6 +285,7 @@ in
           cp "$PATCH_0005_NAME" "$out/$PATCH_0005_NAME"
           cp "$PATCH_0006_NAME" "$out/$PATCH_0006_NAME"
           cp "$PATCH_0007_NAME" "$out/$PATCH_0007_NAME"
+          cp "$PATCH_0008_NAME" "$out/$PATCH_0008_NAME"
           {
             echo PASS_WITH_FALLBACK
             echo spike=qemu-build-identity-and-inertness
@@ -294,6 +311,8 @@ in
             echo patch_0006_hash="$PATCH_0006_HASH"
             echo patch_0007_name="$PATCH_0007_NAME"
             echo patch_0007_hash="$PATCH_0007_HASH"
+            echo patch_0008_name="$PATCH_0008_NAME"
+            echo patch_0008_hash="$PATCH_0008_HASH"
             echo patch_series_hash="$patch_series_hash"
             echo plugins_enabled=true
             echo patch_apply_list_matches="$patch_apply_list_matches"
@@ -303,6 +322,7 @@ in
             echo no_warp_with_plugin_patch_present="$no_warp_with_plugin_patch_present"
             echo qemu_rtc_patch_present="$qemu_rtc_patch_present"
             echo qemu_internal_entropy_patch_present="$qemu_internal_entropy_patch_present"
+            echo qemu_guest_random_patch_present="$qemu_guest_random_patch_present"
             echo s1_result_consumed=true
             echo s1_result_status=PASS
             echo s1_source=checks.crucible.phase0.s1Fingerprint
