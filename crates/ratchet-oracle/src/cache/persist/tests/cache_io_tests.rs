@@ -4,18 +4,85 @@ use super::*;
 use crate::cache::cutoff::CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION;
 use crate::cache::{
     CacheableInputFingerprint, CachedExpressionValue, CachedExpressionValuePayloadError,
-    ImpureInputKind, ValueHash,
+    ImpureInputFingerprint, ImpureInputIdentity, ImpureInputKind, ImpureInputRevalidator,
+    ValueHash,
 };
 use crate::value::Value;
 
-fn test_node_trace_payload(subject: &[u8], hash_byte: u8) -> PersistNodeTracePayload {
-    let input = CacheableInputFingerprint::from_observation_hash(
+#[derive(Clone, Debug)]
+struct StaticRevalidator {
+    trace: Vec<ImpureInputFingerprint>,
+    calls: usize,
+}
+
+impl StaticRevalidator {
+    fn new(trace: Vec<ImpureInputFingerprint>) -> Self {
+        Self { trace, calls: 0 }
+    }
+
+    const fn calls(&self) -> usize {
+        self.calls
+    }
+}
+
+impl ImpureInputRevalidator for StaticRevalidator {
+    fn revalidate_impure_input(
+        &mut self,
+        identity: &ImpureInputIdentity,
+    ) -> Option<ImpureInputFingerprint> {
+        self.calls = self.calls.saturating_add(1);
+        self.trace.iter().find_map(|fingerprint| {
+            let cacheable = fingerprint.as_cacheable()?;
+            if cacheable.identity() == identity {
+                Some(fingerprint.clone())
+            } else {
+                None
+            }
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FixedRevalidator {
+    fingerprint: ImpureInputFingerprint,
+    calls: usize,
+}
+
+impl FixedRevalidator {
+    const fn new(fingerprint: ImpureInputFingerprint) -> Self {
+        Self {
+            fingerprint,
+            calls: 0,
+        }
+    }
+
+    const fn calls(&self) -> usize {
+        self.calls
+    }
+}
+
+impl ImpureInputRevalidator for FixedRevalidator {
+    fn revalidate_impure_input(
+        &mut self,
+        _identity: &ImpureInputIdentity,
+    ) -> Option<ImpureInputFingerprint> {
+        self.calls = self.calls.saturating_add(1);
+        Some(self.fingerprint.clone())
+    }
+}
+
+fn test_read_file_fingerprint(subject: &[u8], hash_byte: u8) -> CacheableInputFingerprint {
+    CacheableInputFingerprint::from_observation_hash(
         ImpureInputKind::ReadFile,
         ImpureInputMode::Default,
         subject,
         DurableBlake3Hash::from_bytes([hash_byte; 32]),
     )
-    .expect("persisted readFile input builds");
+    .expect("persisted readFile input builds")
+}
+
+fn test_node_trace_payload(subject: &[u8], hash_byte: u8) -> PersistNodeTracePayload {
+    let input = test_read_file_fingerprint(subject, hash_byte);
     PersistNodeTracePayload::from_cacheable_inputs([input]).expect("trace payload builds")
 }
 
@@ -1067,6 +1134,205 @@ fn cache_cached_expression_node_payload_materializes_and_loads_by_node_key() {
             .expect("node payload exists"),
         payload
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_node_payload_load_with_trace_revalidation_hits_matching_trace() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let input = test_read_file_fingerprint(b"/tmp/source", 7);
+    let trace_payload =
+        PersistNodeTracePayload::from_cacheable_inputs([input.clone()]).expect("trace builds");
+
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    cache
+        .record_node_trace(node_key, value_hash, &trace_payload)
+        .expect("trace records");
+
+    let mut revalidator = StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(input)]);
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(node_key, &mut revalidator)
+            .expect("trace-verified payload lookup succeeds"),
+        Some(payload)
+    );
+    assert_eq!(revalidator.calls(), 1);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_node_payload_trace_revalidation_misses_without_matching_trace() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let other_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"other value"));
+    let input = test_read_file_fingerprint(b"/tmp/source", 7);
+    let trace_payload =
+        PersistNodeTracePayload::from_cacheable_inputs([input.clone()]).expect("trace builds");
+
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+
+    let mut missing_trace_revalidator =
+        StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(input.clone())]);
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(
+                node_key,
+                &mut missing_trace_revalidator,
+            )
+            .expect("missing trace lookup succeeds"),
+        None
+    );
+    assert_eq!(missing_trace_revalidator.calls(), 0);
+
+    cache
+        .record_node_trace(node_key, other_value_hash, &trace_payload)
+        .expect("mismatched trace records");
+    let mut mismatched_trace_revalidator =
+        StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(input)]);
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(
+                node_key,
+                &mut mismatched_trace_revalidator,
+            )
+            .expect("mismatched trace lookup succeeds"),
+        None
+    );
+    assert_eq!(mismatched_trace_revalidator.calls(), 0);
+    assert_eq!(
+        cache
+            .lookup_node_materialized_value_hash(node_key)
+            .expect("value hash lookup succeeds"),
+        Some(value_hash)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_node_payload_trace_revalidation_misses_on_stale_inputs() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let input = test_read_file_fingerprint(b"/tmp/source", 7);
+    let changed_input = test_read_file_fingerprint(b"/tmp/source", 8);
+    let other_identity_input = test_read_file_fingerprint(b"/tmp/other-source", 7);
+    let trace_payload =
+        PersistNodeTracePayload::from_cacheable_inputs([input.clone()]).expect("trace builds");
+
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    cache
+        .record_node_trace(node_key, value_hash, &trace_payload)
+        .expect("trace records");
+
+    let mut changed_revalidator =
+        StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(changed_input)]);
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(
+                node_key,
+                &mut changed_revalidator,
+            )
+            .expect("changed trace lookup succeeds"),
+        None
+    );
+    assert_eq!(changed_revalidator.calls(), 1);
+
+    let mut unavailable_revalidator = StaticRevalidator::new(Vec::new());
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(
+                node_key,
+                &mut unavailable_revalidator,
+            )
+            .expect("unavailable trace lookup succeeds"),
+        None
+    );
+    assert_eq!(unavailable_revalidator.calls(), 1);
+
+    let mut different_identity_revalidator =
+        FixedRevalidator::new(ImpureInputFingerprint::Cacheable(other_identity_input));
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(
+                node_key,
+                &mut different_identity_revalidator,
+            )
+            .expect("different-identity trace lookup succeeds"),
+        None
+    );
+    assert_eq!(different_identity_revalidator.calls(), 1);
+
+    let mut uncacheable_revalidator = FixedRevalidator::new(ImpureInputFingerprint::current_time());
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(
+                node_key,
+                &mut uncacheable_revalidator,
+            )
+            .expect("uncacheable trace lookup succeeds"),
+        None
+    );
+    assert_eq!(uncacheable_revalidator.calls(), 1);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_node_payload_trace_revalidation_misses_without_value_blob() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+    let input = test_read_file_fingerprint(b"/tmp/source", 7);
+    let trace_payload =
+        PersistNodeTracePayload::from_cacheable_inputs([input.clone()]).expect("trace builds");
+
+    cache
+        .record_node_materialized_value_hash(node_key, value_hash)
+        .expect("node value hash records");
+    cache
+        .record_node_trace(node_key, value_hash, &trace_payload)
+        .expect("trace records");
+
+    let mut revalidator = StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(input)]);
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(node_key, &mut revalidator)
+            .expect("missing value blob lookup succeeds"),
+        None
+    );
+    assert_eq!(revalidator.calls(), 1);
 
     let _ = fs::remove_dir_all(root);
 }

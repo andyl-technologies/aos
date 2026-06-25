@@ -19,8 +19,9 @@ use super::parse::{
 use super::{
     CacheExprIdentity, CacheableInputFingerprint, CachedExpressionValue,
     CachedExpressionValuePayloadError, DurableBlake3Hash, ImpureInputFingerprint, ImpureInputKind,
-    ImpureInputMode, InputFingerprintError, MaterializationCosts, MaterializationDecision,
-    MaterializationReuse, MaterializationSignals, UncacheableInput, ValueHash, ValueHashError,
+    ImpureInputMode, ImpureInputRevalidator, InputFingerprintError, MaterializationCosts,
+    MaterializationDecision, MaterializationReuse, MaterializationSignals, UncacheableInput,
+    ValueHash, ValueHashError,
 };
 
 /// The persistent eval-cache schema format marker.
@@ -110,15 +111,16 @@ pub use error::{
     PersistBlobIndexError, PersistBlobIndexedReadError, PersistBlobIndexedWriteError,
     PersistBlobPackError, PersistCachedExpressionNodeValueIndexedLoadError,
     PersistCachedExpressionNodeValueIndexedWriteError,
-    PersistCachedExpressionValueIndexedLoadError, PersistCachedExpressionValueIndexedWriteError,
-    PersistError, PersistFileArtifactHydrationError, PersistFileArtifactIndexError,
-    PersistFileArtifactIndexedHydrationError, PersistFileArtifactIndexedWriteError,
-    PersistNodeMetadataIndexError, PersistNodeTraceLogError, PersistNodeTraceLogFormatError,
-    PersistNodeTracePayloadError, PersistPackFormatError, PersistParseArtifactHydrationError,
-    PersistParseArtifactIndexError, PersistParseArtifactIndexedHydrationError,
-    PersistParseArtifactIndexedWriteError, PersistParseArtifactMaterializationError,
-    PersistParseBytesIndexedLoadError, PersistParseFileIndexedHydrationError,
-    PersistParseFileIndexedLoadError, PersistParseSourceIndexedLoadError,
+    PersistCachedExpressionNodeValueTraceLoadError, PersistCachedExpressionValueIndexedLoadError,
+    PersistCachedExpressionValueIndexedWriteError, PersistError, PersistFileArtifactHydrationError,
+    PersistFileArtifactIndexError, PersistFileArtifactIndexedHydrationError,
+    PersistFileArtifactIndexedWriteError, PersistNodeMetadataIndexError, PersistNodeTraceLogError,
+    PersistNodeTraceLogFormatError, PersistNodeTracePayloadError, PersistPackFormatError,
+    PersistParseArtifactHydrationError, PersistParseArtifactIndexError,
+    PersistParseArtifactIndexedHydrationError, PersistParseArtifactIndexedWriteError,
+    PersistParseArtifactMaterializationError, PersistParseBytesIndexedLoadError,
+    PersistParseFileIndexedHydrationError, PersistParseFileIndexedLoadError,
+    PersistParseSourceIndexedLoadError,
 };
 pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,

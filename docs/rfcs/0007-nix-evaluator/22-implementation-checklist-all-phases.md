@@ -1124,6 +1124,19 @@ alone (`M-1`/`Q-A`).
       dependents, automatic compaction/GC, mmap reads, and cached/uncached
       harness proof remain open
       (`C-13`/`R-10`/`S-14`).
+- [x] Current value-associated trace revalidation load adapter:
+      `PersistCache::load_cached_expression_node_value_with_trace_revalidation`
+      reads the newest node metadata value link and newest trace record,
+      returns a miss when either is missing or their `ValueHash` values differ,
+      revalidates each persisted cacheable impure input through caller-supplied
+      `ImpureInputRevalidator`, and loads the indexed `values/` payload only
+      after every fresh identity and observation hash still matches. This is
+      cache-level durable-hit substrate only: evaluator hit selection,
+      in-memory demand-graph insertion, dirty propagation, trace tombstones,
+      transactionality with value materialization, currentTime taint
+      propagation through persisted dependents, automatic compaction/GC, mmap
+      reads, and cached/uncached harness proof remain open
+      (`C-13`/`R-10`/`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips

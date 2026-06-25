@@ -772,6 +772,29 @@ pub enum PersistCachedExpressionNodeValueIndexedLoadError {
     },
 }
 
+/// Trace-verified indexed cached-expression payload load failed.
+#[derive(Debug, Error)]
+pub enum PersistCachedExpressionNodeValueTraceLoadError {
+    /// The node metadata could not be read.
+    #[error("failed to read trace-verified cached expression node payload metadata")]
+    Metadata {
+        /// The underlying node metadata index error.
+        source: PersistNodeMetadataIndexError,
+    },
+    /// The node trace log could not be read.
+    #[error("failed to read cached expression node trace")]
+    Trace {
+        /// The underlying node trace log error.
+        source: PersistNodeTraceLogError,
+    },
+    /// The linked cached-expression payload could not be loaded.
+    #[error("failed to load trace-verified cached expression node payload")]
+    Value {
+        /// The underlying indexed payload load error.
+        source: PersistCachedExpressionValueIndexedLoadError,
+    },
+}
+
 /// Indexed file-artifact materialization failed.
 #[derive(Debug, Error)]
 pub enum PersistFileArtifactIndexedWriteError {

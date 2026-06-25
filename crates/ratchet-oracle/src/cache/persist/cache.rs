@@ -818,6 +818,55 @@ impl PersistCache {
             .map_err(|source| PersistCachedExpressionNodeValueIndexedLoadError::Value { source })
     }
 
+    /// Loads a node-linked payload after value-associated trace revalidation.
+    ///
+    /// This helper is for trace-backed durable hit selection. Missing node
+    /// metadata, missing trace records, trace records whose associated
+    /// [`ValueHash`] differs from the current node metadata link, stale input
+    /// observations, and missing indexed value blobs all return `Ok(None)`.
+    /// The revalidator is called only after the node metadata value hash and
+    /// trace-record value hash match.
+    ///
+    /// This does not insert the value into the in-memory demand graph or choose
+    /// evaluator hits; it only proves that the persistent node metadata, trace,
+    /// and value payload agree at this cache boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistCachedExpressionNodeValueTraceLoadError`] if node
+    /// metadata, the trace log, or the linked value payload cannot be read.
+    pub fn load_cached_expression_node_value_with_trace_revalidation<R>(
+        &self,
+        node_key: PersistNodeMetadataKey,
+        revalidator: &mut R,
+    ) -> Result<Option<CachedExpressionValue>, PersistCachedExpressionNodeValueTraceLoadError>
+    where
+        R: ImpureInputRevalidator + ?Sized,
+    {
+        let Some(value_hash) =
+            self.lookup_node_materialized_value_hash(node_key)
+                .map_err(
+                    |source| PersistCachedExpressionNodeValueTraceLoadError::Metadata { source },
+                )?
+        else {
+            return Ok(None);
+        };
+        let Some(trace) = self
+            .lookup_node_trace(node_key)
+            .map_err(|source| PersistCachedExpressionNodeValueTraceLoadError::Trace { source })?
+        else {
+            return Ok(None);
+        };
+        if trace.value_hash() != value_hash {
+            return Ok(None);
+        }
+        if !revalidate_persist_node_trace_payload(trace.payload(), revalidator) {
+            return Ok(None);
+        }
+        self.load_cached_expression_value_indexed(value_hash)
+            .map_err(|source| PersistCachedExpressionNodeValueTraceLoadError::Value { source })
+    }
+
     /// Applies `decision` to `payload` in the packfile selected by `key`.
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns
@@ -1855,6 +1904,30 @@ impl PersistCache {
     ) -> Result<PersistParseArtifactMaterialization, PersistParseArtifactMaterializationError> {
         self.materialize_parse_cache_entry_indexed(parse_key, entry, signals.decide())
     }
+}
+
+fn revalidate_persist_node_trace_payload<R>(
+    payload: &PersistNodeTracePayload,
+    revalidator: &mut R,
+) -> bool
+where
+    R: ImpureInputRevalidator + ?Sized,
+{
+    for expected in payload.inputs() {
+        let Some(fresh) = revalidator.revalidate_impure_input(expected.identity()) else {
+            return false;
+        };
+        let Some(fresh) = fresh.as_cacheable() else {
+            return false;
+        };
+        if fresh.identity() != expected.identity() {
+            return false;
+        }
+        if fresh.observation_hash() != expected.observation_hash() {
+            return false;
+        }
+    }
+    true
 }
 
 fn validate_parse_cache_entry_key(
