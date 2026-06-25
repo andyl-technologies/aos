@@ -58,6 +58,13 @@
       enforces = "TIME-24,TIME-25";
       capability = "plugin-visible exact next virtual timer deadline";
     }
+    {
+      file = "0007-crucible-block-rtc-read.patch";
+      catalogName = "crucible-block-rtc-read";
+      class = "D";
+      enforces = "DET-8,TIME-20,E5";
+      capability = "sim RTC and realtime reads use fixed epoch plus virtual time";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

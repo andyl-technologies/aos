@@ -146,13 +146,15 @@ argued most carefully because they touch shared, always-compiled files — are:
   function; gated on `-accel sim` with `use_icount == ICOUNT_PRECISE`.
 - `crucible-no-warp-with-plugin` (§11.4) — edits the upstream warp timer; gated on
   `-accel sim` with `qemu_plugin_has_time_control()`.
+- `crucible-block-rtc-read` (§11.4) — edits the upstream RTC/timedate read path;
+  enabled only by `-accel sim`.
 - `crucible-det-getrandom` and `crucible-det-glib-prng` (§11.4) — edit QEMU's
   entropy paths; gated on a `deterministic` predicate set only under sim mode.
 
 Every *other* patch is either a new file (the sim accelerator, the shmem device
 drivers) or a pure additive plugin-API export, both of which are inert by
 construction (the file is not compiled into a used object / the export is never
-called) and therefore lower-risk. The four edits above are the only places a bug
+called) and therefore lower-risk. The five edits above are the only places a bug
 could leak into production behavior, so they carry the heaviest gating.
 
 ## 11.3 The patch catalog
@@ -1149,9 +1151,16 @@ time-control primitives the whole design rests on.
     exercises both reintroduce-to-red fixtures, and
     `checks.crucible.phase2.gates.qemuInert` verifies the normal patched QEMU
     surface remains inert.
-- [ ] **T-PATCH-6** Implement `crucible-block-rtc-read`: guest RTC/realtime reads
+- [x] **T-PATCH-6** Implement `crucible-block-rtc-read`: guest RTC/realtime reads
   resolve to the icount-derived virtual clock + fixed epoch in sim mode only. —
   satisfies [PATCH-14]; spec §11.4 (E5).
+  - Completed by `0007-crucible-block-rtc-read.patch` and
+    `checks.crucible.phase1.blockRtcRead`: sim initialization forces `rtc_clock`
+    to `QEMU_CLOCK_VIRTUAL`, covering direct CMOS RTC reads as well as
+    `qemu_get_timedate` and `qemu_timedate_diff`, so guest-visible realtime is
+    fixed epoch plus virtual time even when launch parsing initially configured
+    a host-backed RTC clock. Non-sim remains upstream host-clock behavior, with a
+    stock negative control proving upstream would read host time.
 - [ ] **T-PATCH-7** Implement the entropy patches `crucible-det-glib-prng` and
   `crucible-det-getrandom`, gated on the `deterministic` predicate, with
   reintroduce-to-red micro-tests. — satisfies [PATCH-15], [PATCH-16]; spec §11.4
