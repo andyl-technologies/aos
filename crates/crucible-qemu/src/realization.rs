@@ -6,8 +6,8 @@
 //! the required priority order while keeping the true cold boot inside `bake`.
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, RuntimeState, ScenarioDef,
-    ScheduleError, World,
+    Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EngineError, RuntimeState,
+    ScenarioDef, ScheduleError, World,
 };
 use thiserror::Error;
 
@@ -361,12 +361,15 @@ pub fn instantiate_qemu_vm(
 ///
 /// # Errors
 ///
-/// Returns [`QemuVmRealizationError`] when cold boot, setup, ready-point
-/// execution, or genesis snapshot creation fails.
+/// Returns [`QemuVmRealizationError`] when world ready-point validation, cold
+/// boot, setup, ready-point execution, or genesis snapshot creation fails.
 pub fn bake_qemu_genesis_vm(
     world: &World,
     executor: &mut impl QemuVmBakeExecutor,
 ) -> Result<QemuBakedGenesisSnapshot, QemuVmRealizationError> {
+    world
+        .validate_ready_point_policies()
+        .map_err(|source| QemuVmRealizationError::ReadyPointPolicy { source })?;
     executor.cold_boot_to_ready_and_savevm(world)
 }
 
@@ -679,6 +682,12 @@ pub enum QemuVmRealizationError {
         /// Underlying policy error.
         source: QemuSavevmPolicyError,
     },
+    /// A world has invalid ready-point policy configuration.
+    #[error("invalid world ready-point configuration: {source}")]
+    ReadyPointPolicy {
+        /// Underlying model validation error.
+        source: EngineError,
+    },
 }
 
 impl PartialEq for QemuVmRealizationError {
@@ -694,7 +703,9 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use crucible::{RngDecision, RngStreamId, Schedule};
+    use crucible::{
+        NodeId, ReadyPoint, RngDecision, RngStreamId, Schedule, WhiteBoxPolicy, WorldNode,
+    };
 
     use super::*;
     use crate::{QemuLoadvmCommandPurpose, QemuSavevmFallback};
@@ -1342,6 +1353,35 @@ mod tests {
     }
 
     #[test]
+    fn qemu_bake_rejects_agent_signal_without_white_box_opt_in() {
+        let world = World {
+            id: hash("world", "qemu-invalid-agent-ready"),
+            nodes: vec![WorldNode {
+                id: NodeId {
+                    name: String::from("agent"),
+                },
+                ready_point: ReadyPoint::AgentSignal,
+                white_box: WhiteBoxPolicy::Disabled,
+            }],
+        };
+        let log = shared_log();
+        let mut executor = scripted_executor(Rc::clone(&log));
+
+        let error = match bake_qemu_genesis_vm(&world, &mut executor) {
+            Ok(_) => panic!("invalid agent-signal ready point should not bake"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            QemuVmRealizationError::ReadyPointPolicy {
+                source: EngineError::WhiteBoxReadyPointWithoutOptIn { .. }
+            }
+        ));
+        assert_eq!(logged(&log), Vec::<RealizationCall>::new());
+    }
+
+    #[test]
     fn qemu_instantiate_rejects_non_prefix_cached_ancestor() {
         let world = world("non-prefix");
         let def = scenario("non-prefix");
@@ -1593,9 +1633,7 @@ mod tests {
     }
 
     fn world(name: &str) -> World {
-        World {
-            id: hash("world", name),
-        }
+        World::from_content_hash(hash("world", name))
     }
 
     fn scenario(name: &str) -> ScenarioDef {

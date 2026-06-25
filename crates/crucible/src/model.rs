@@ -4,7 +4,7 @@
 //! scheduler, temporal graph, checkpoint cache, fault engine, assertions, and
 //! event log. It deliberately contains no backend-specific driver state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::ops;
@@ -51,6 +51,53 @@ impl ScenarioDef {
 }
 
 impl World {
+    /// Builds an opaque world handle from an already-computed content address.
+    ///
+    /// This is the compatibility path for backend tests and adapters that do
+    /// not yet carry full spatial-graph node material.
+    #[must_use]
+    pub fn from_content_hash(id: ContentHash) -> Self {
+        Self {
+            id,
+            nodes: Vec::new(),
+        }
+    }
+
+    /// Builds a canonical world from node ready-point configuration.
+    ///
+    /// Nodes are sorted by [`NodeId`] before hashing so authoring order does not
+    /// affect the world identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::DuplicateWorldNodeId`] when a node id appears
+    /// more than once, or [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when
+    /// a node selects [`ReadyPoint::AgentSignal`] without enabling
+    /// [`WhiteBoxPolicy::Enabled`].
+    pub fn from_nodes(nodes: Vec<WorldNode>) -> Result<Self, EngineError> {
+        let nodes = canonical_world_nodes(&nodes);
+        validate_world_nodes(&nodes)?;
+        Ok(Self {
+            id: ContentHash::from_canonical_material(
+                "crucible.model.world.v1",
+                &world_nodes_material(&nodes),
+            ),
+            nodes,
+        })
+    }
+
+    /// Validates the world's ready-point policy configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::DuplicateWorldNodeId`] when a node id appears
+    /// more than once, or [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when
+    /// a node selects [`ReadyPoint::AgentSignal`] without enabling
+    /// [`WhiteBoxPolicy::Enabled`].
+    pub fn validate_ready_point_policies(&self) -> Result<(), EngineError> {
+        validate_world_nodes(&self.nodes)
+    }
+
     /// Builds the canonical genesis scenario definition for this world.
     ///
     /// The full `ScenarioDef` schema will carry `World`, plan, properties, and
@@ -704,6 +751,57 @@ pub struct NodeId {
     pub name: String,
 }
 
+/// One node's model-level ready-point configuration inside a [`World`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct WorldNode {
+    /// Stable node identity within the world.
+    pub id: NodeId,
+    /// The deterministic point where this node reaches `t = 0`.
+    pub ready_point: ReadyPoint,
+    /// Whether this node opts into the white-box guest-host channel.
+    pub white_box: WhiteBoxPolicy,
+}
+
+/// The deterministic ready-point policy used by `bake`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ReadyPoint {
+    /// Snapshot after retiring exactly this many guest instructions.
+    FixedIcount {
+        /// The target retired-instruction count.
+        icount: Icount,
+    },
+    /// Snapshot after the first network-idle quiescence window.
+    NetworkIdle {
+        /// Required idle span before the node is considered ready.
+        window: SimDuration,
+    },
+    /// Snapshot when a marker appears on the guest console.
+    ConsoleMarker {
+        /// Marker matched on the guest console stream.
+        marker: String,
+    },
+    /// Snapshot when the optional in-guest agent signals readiness.
+    AgentSignal,
+}
+
+/// Whether a node opts into the white-box guest-host channel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum WhiteBoxPolicy {
+    /// The guest-host channel is disabled.
+    #[default]
+    Disabled,
+    /// The guest-host channel is enabled.
+    Enabled,
+}
+
+impl WhiteBoxPolicy {
+    /// Returns whether this policy enables the white-box channel.
+    #[must_use]
+    pub fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
 /// A vCPU identifier within one node.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VcpuId {
@@ -868,6 +966,8 @@ pub struct GenesisCheckpoint {
 pub struct World {
     /// The world content address.
     pub id: ContentHash,
+    /// Canonicalized node ready-point configuration for this world.
+    pub nodes: Vec<WorldNode>,
 }
 
 /// An abstract reduced state handle.
@@ -1103,12 +1203,13 @@ pub fn instantiate(
 /// Backend-specific bake implementations may still return backend errors while
 /// starting guests to their ready point and saving VM state.
 pub fn bake(world: &World) -> Result<GenesisCheckpoint, EngineError> {
+    world.validate_ready_point_policies()?;
     let def = world.scenario_def();
     let genesis = Configuration::genesis(def);
     let material = format!(
-        "world_id={}\ngenesis_configuration={}",
-        content_hash_hex(world.id),
-        content_hash_hex(genesis.id())
+        "{}\ngenesis_configuration={}",
+        world_hash_material(world),
+        content_hash_hex(genesis.id()),
     );
 
     Ok(GenesisCheckpoint {
@@ -1157,6 +1258,16 @@ pub enum EngineError {
         /// The genesis configuration that must use the baked genesis cache.
         configuration: ContentHash,
     },
+    /// A world contains duplicate node identifiers.
+    DuplicateWorldNodeId {
+        /// The duplicate node id.
+        node: NodeId,
+    },
+    /// An agent-signal ready point was configured without white-box opt-in.
+    WhiteBoxReadyPointWithoutOptIn {
+        /// The node whose ready-point configuration is invalid.
+        node: NodeId,
+    },
     /// A runtime was replayed from a configuration it does not materialize.
     RuntimeConfigurationMismatch {
         /// The runtime-state id whose metadata was invalid.
@@ -1201,6 +1312,10 @@ impl fmt::Display for EngineError {
             }
             Self::GenesisSnapshotMustBeBaked { .. } => {
                 f.write_str("genesis snapshots must be registered as baked genesis checkpoints")
+            }
+            Self::DuplicateWorldNodeId { .. } => f.write_str("world contains a duplicate node id"),
+            Self::WhiteBoxReadyPointWithoutOptIn { .. } => {
+                f.write_str("agent-signal ready point requires white-box opt-in")
             }
             Self::RuntimeConfigurationMismatch { .. } => {
                 f.write_str("runtime configuration does not match replay start configuration")
@@ -1287,8 +1402,72 @@ fn checkpoint_kind_label(kind: CheckpointKind) -> &'static str {
     }
 }
 
+fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
+    let mut seen = BTreeSet::new();
+    for node in nodes {
+        if !seen.insert(node.id.clone()) {
+            return Err(EngineError::DuplicateWorldNodeId {
+                node: node.id.clone(),
+            });
+        }
+        if matches!(node.ready_point, ReadyPoint::AgentSignal) && !node.white_box.is_enabled() {
+            return Err(EngineError::WhiteBoxReadyPointWithoutOptIn {
+                node: node.id.clone(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn canonical_world_nodes(nodes: &[WorldNode]) -> Vec<WorldNode> {
+    let mut nodes = nodes.to_vec();
+    nodes.sort_by(|left, right| left.id.cmp(&right.id));
+    nodes
+}
+
 fn world_hash_material(world: &World) -> String {
-    format!("world_id={}", content_hash_hex(world.id))
+    let nodes = canonical_world_nodes(&world.nodes);
+    format!(
+        "world_id={}\n{}",
+        content_hash_hex(world.id),
+        world_nodes_material(&nodes)
+    )
+}
+
+fn world_nodes_material(nodes: &[WorldNode]) -> String {
+    let mut lines = Vec::with_capacity(nodes.len().saturating_mul(5) + 1);
+    lines.push(format!("nodes={}", nodes.len()));
+    for node in nodes {
+        lines.push(format!("node_id_len={}", node.id.name.len()));
+        lines.push(format!("node_id={}", node.id.name));
+        lines.push(ready_point_material(&node.ready_point));
+        lines.push(format!("white_box={}", white_box_material(node.white_box)));
+    }
+    lines.join("\n")
+}
+
+fn ready_point_material(ready_point: &ReadyPoint) -> String {
+    match ready_point {
+        ReadyPoint::FixedIcount { icount } => {
+            format!("ready_point=fixed-icount\nready_icount={}", icount.retired)
+        }
+        ReadyPoint::NetworkIdle { window } => {
+            format!("ready_point=network-idle\nidle_window_ns={}", window.nanos)
+        }
+        ReadyPoint::ConsoleMarker { marker } => format!(
+            "ready_point=console-marker\nmarker_len={}\nmarker={marker}",
+            marker.len()
+        ),
+        ReadyPoint::AgentSignal => String::from("ready_point=agent-signal"),
+    }
+}
+
+fn white_box_material(policy: WhiteBoxPolicy) -> &'static str {
+    match policy {
+        WhiteBoxPolicy::Disabled => "disabled",
+        WhiteBoxPolicy::Enabled => "enabled",
+    }
 }
 
 fn content_hash_hex(hash: ContentHash) -> String {

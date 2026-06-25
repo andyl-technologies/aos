@@ -903,10 +903,20 @@ information that cannot be recomputed.
     coordinator remains the only production cold-boot executor call site, and
     `checks.crucible.phase1.executionBake` runs both bake and hot-genesis tests
     plus the production cold-boot lint.
-- [ ] **T-EXEC-9** Implement the ready-point policy set (fixed icount /
+- [x] **T-EXEC-9** Implement the ready-point policy set (fixed icount /
   network-idle / console marker / agent signal) in `World` config and pin that
   `bake` reaches a content-identical genesis snapshot per policy. — satisfies
   [EXEC-20]; spec §6.
+  - Completed by `crates/crucible/src/model.rs`: `World::from_nodes` builds
+    canonical `WorldNode` ready-point configuration, exposes the fixed-icount,
+    network-idle, console-marker, and agent-signal `ReadyPoint` variants, and
+    validates that `AgentSignal` requires `WhiteBoxPolicy::Enabled`. `bake` and
+    `crates/crucible-qemu/src/realization.rs` QEMU bake both validate the world;
+    model bake hashes canonical ready-point material into the genesis checkpoint
+    input. `crates/crucible/src/lib.rs` covers canonical node ordering,
+    ready-point material sensitivity, white-box opt-in rejection, and
+    content-identical repeated bake output for each ready-point policy;
+    `checks.crucible.phase1.executionReadyPoint` gates the task.
 - [ ] **T-EXEC-10** Implement the homogeneous `NodeBlobRef` (baked vs CoW-delta)
   so no code path distinguishes initial from materialized VM state. — satisfies
   [EXEC-21], [EXEC-22]; spec §7.
