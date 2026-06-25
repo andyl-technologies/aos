@@ -135,6 +135,20 @@
       enforces = "PATCH-28,E19";
       capability = "pending sentinel distinct from zero-length success";
     }
+    {
+      file = "0018-crucible-dev-cb-api.patch";
+      catalogName = "crucible-dev-cb-api";
+      class = "F";
+      enforces = "PATCH-30,PLUG,SHM-17";
+      capability = "plugin 9p burst/submit/poll callback registration ABI";
+    }
+    {
+      file = "0019-crucible-9p-shmem.patch";
+      catalogName = "crucible-9p-shmem";
+      class = "F";
+      enforces = "PATCH-29,E19";
+      capability = "virtio-9p raw-message shmem forwarding path with upstream fallback";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

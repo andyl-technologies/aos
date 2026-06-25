@@ -77,6 +77,8 @@ pub const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL: &str = "qemu_plugin_register_wake
 pub const QEMU_PLUGIN_MAIN_LOOP_WAIT_SYMBOL: &str = "qemu_plugin_main_loop_wait";
 /// QEMU plugin API symbol used to register shmem block submit/poll callbacks.
 pub const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL: &str = "qemu_plugin_register_blk_cb";
+/// QEMU plugin API symbol used to register shmem 9p burst/submit/poll callbacks.
+pub const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL: &str = "qemu_plugin_register_9p_cb";
 /// Minimum supported vCPU count under single-threaded round-robin TCG.
 pub const MIN_SUPPORTED_VCPU_COUNT: u32 = 1;
 const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C: &[u8] = b"qemu_plugin_clock_deadline_ns\0";
@@ -91,6 +93,7 @@ const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL_C: &[u8] = b"qemu_plugin_register_wake
 const QEMU_PLUGIN_MAIN_LOOP_WAIT_SYMBOL_C: &[u8] = b"qemu_plugin_main_loop_wait\0";
 const QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_tcg_exec_cb\0";
 const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_cb\0";
+const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_9p_cb\0";
 
 #[cfg(test)]
 static TEST_CLOCK_DEADLINE_SYMBOL: std::sync::Mutex<Option<QemuClockDeadlineFn>> =
@@ -269,6 +272,20 @@ pub type QemuBlkPollCbFn = extern "C" fn(u32, *mut u8, usize, *mut c_void) -> i6
 /// QEMU shmem block callback registration exported by `crucible-blk-shmem`.
 pub type QemuRegisterBlkCbFn =
     extern "C" fn(Option<QemuBlkSubmitCbFn>, Option<QemuBlkPollCbFn>, *mut c_void);
+/// 9p burst callback body passed to QEMU's virtio-9p device.
+pub type QemuNinePBurstCbFn = extern "C" fn(*mut c_void);
+/// 9p submit callback body passed to QEMU's virtio-9p device.
+pub type QemuNinePSubmitCbFn = extern "C" fn(u32, *const u8, usize, usize, *mut c_void) -> c_int;
+/// 9p completion poll callback body passed to QEMU's virtio-9p device.
+pub type QemuNinePPollCbFn = extern "C" fn(u32, *mut u8, usize, *mut c_void) -> i64;
+/// QEMU shmem 9p callback registration exported by `crucible-dev-cb-api`.
+pub type QemuRegisterNinePCbFn = extern "C" fn(
+    Option<QemuNinePBurstCbFn>,
+    Option<QemuNinePSubmitCbFn>,
+    Option<QemuNinePPollCbFn>,
+    Option<QemuNinePBurstCbFn>,
+    *mut c_void,
+);
 
 /// Required runtime APIs added by the T-PATCH-11 QEMU patch group.
 #[derive(Clone, Copy, Debug)]
@@ -1310,6 +1327,36 @@ pub fn resolve_qemu_register_blk_cb_symbol() -> Option<QemuRegisterBlkCbFn> {
 #[cfg(not(unix))]
 #[must_use]
 pub const fn resolve_qemu_register_blk_cb_symbol() -> Option<QemuRegisterBlkCbFn> {
+    None
+}
+
+/// Resolves QEMU's shmem 9p callback registration export from the loaded process.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_9p_cb_symbol() -> Option<QemuRegisterNinePCbFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
+    // either null or a process symbol address. QEMU's patch defines this symbol
+    // with the exact `QemuRegisterNinePCbFn` ABI; callers fail closed when absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: Non-null `symbol` was resolved for
+        // `qemu_plugin_register_9p_cb`, whose patched QEMU declaration
+        // matches `QemuRegisterNinePCbFn`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterNinePCbFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's shmem 9p callback registration export from the loaded process.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_9p_cb_symbol() -> Option<QemuRegisterNinePCbFn> {
     None
 }
 

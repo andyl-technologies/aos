@@ -25,6 +25,8 @@ const EXPECTED_PATCHES: &[&str] = &[
     "0015-crucible-blk-shmem.patch",
     "0016-crucible-blk-shmem-io-fixes.patch",
     "0017-crucible-blk-write-sentinel.patch",
+    "0018-crucible-dev-cb-api.patch",
+    "0019-crucible-9p-shmem.patch",
 ];
 
 #[test]
@@ -60,12 +62,14 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "qemu_plugin_time_drain_exports_present=true");
     assert_contains(&aggregate, "qemu_plugin_runtime_api_exports_present=true");
     assert_contains(&aggregate, "qemu_plugin_block_exports_present=true");
+    assert_contains(&aggregate, "qemu_plugin_9p_exports_present=true");
     assert_contains(&aggregate, "qemu_plugin_icount_raw");
     assert_contains(&aggregate, "qemu_plugin_force_vcpu_exit");
     assert_contains(&aggregate, "qemu_plugin_register_wake_fd");
     assert_contains(&aggregate, "qemu_plugin_main_loop_wait");
     assert_contains(&aggregate, "qemu_plugin_register_tcg_exec_cb");
     assert_contains(&aggregate, "qemu_plugin_register_blk_cb");
+    assert_contains(&aggregate, "qemu_plugin_register_9p_cb");
     assert_contains(&aggregate, "qemu_inert_gate_wired=true");
     assert_contains(&aggregate, "qemu_inert_depends_on_patch_microtests=true");
     assert_contains(
@@ -86,6 +90,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     );
     assert_contains(
         &default_checks,
+        "qemuNinePShmem = import ./phase1-qemu-9p-shmem.nix",
+    );
+    assert_contains(
+        &default_checks,
         "qemuInert = import ./phase2-qemu-inert.nix",
     );
     assert_contains(
@@ -101,12 +109,14 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&abi, "pub type QemuMainLoopWaitFn");
     assert_contains(&abi, "pub type QemuRegisterTcgExecCbFn");
     assert_contains(&abi, "pub type QemuRegisterBlkCbFn");
+    assert_contains(&abi, "pub type QemuRegisterNinePCbFn");
     assert_contains(&abi, "resolve_qemu_icount_raw_symbol");
     assert_contains(&abi, "resolve_qemu_force_vcpu_exit_symbol");
     assert_contains(&abi, "resolve_qemu_register_wake_fd_symbol");
     assert_contains(&abi, "resolve_qemu_main_loop_wait_symbol");
     assert_contains(&abi, "resolve_qemu_register_tcg_exec_cb_symbol");
     assert_contains(&abi, "resolve_qemu_register_blk_cb_symbol");
+    assert_contains(&abi, "resolve_qemu_register_9p_cb_symbol");
     assert_contains(&abi, "PluginRuntimeApis::require");
     assert_contains(&abi, "install_required_runtime_api_scaffold_from_qemu_info");
     assert_contains(&abi, "crucible_qemu_plugin_inert_vcpu_init_cb");
@@ -223,6 +233,16 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             "tests/crucible/phase1-qemu-block-shmem.c",
             "0017-crucible-blk-write-sentinel.patch",
         ),
+        (
+            "tests/crucible/phase1-qemu-9p-shmem.nix",
+            "tests/crucible/phase1-qemu-9p-shmem.c",
+            "0018-crucible-dev-cb-api.patch",
+        ),
+        (
+            "tests/crucible/phase1-qemu-9p-shmem.nix",
+            "tests/crucible/phase1-qemu-9p-shmem.c",
+            "0019-crucible-9p-shmem.patch",
+        ),
     ];
 
     for (nix_path, c_path, patch) in per_patch_checks {
@@ -233,6 +253,9 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             assert_contains(&nix_source, "patch=${patchName}");
             assert_contains(&nix_source, patch);
         } else if nix_path == "tests/crucible/phase1-qemu-block-shmem.nix" {
+            assert_contains(&nix_source, "patch=${patchName}");
+            assert_contains(&nix_source, patch);
+        } else if nix_path == "tests/crucible/phase1-qemu-9p-shmem.nix" {
             assert_contains(&nix_source, "patch=${patchName}");
             assert_contains(&nix_source, patch);
         } else {
