@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 
 use super::parse::{
-    PARSE_CACHE_SCHEMA_VERSION, ParseArtifactBundle, ParseCache, ParseCacheEntry, ParseCacheError,
-    ParseCacheKey, ParseFileKey,
+    CachedParse, PARSE_CACHE_SCHEMA_VERSION, ParseArtifactBundle, ParseCache, ParseCacheEntry,
+    ParseCacheError, ParseCacheKey, ParseFileKey,
 };
 use super::{
     DurableBlake3Hash, MaterializationDecision, MaterializationReuse, MaterializationSignals,
@@ -69,6 +69,7 @@ pub use error::{
     PersistFileArtifactIndexError, PersistFileArtifactIndexedHydrationError,
     PersistFileArtifactIndexedWriteError, PersistPackFormatError,
     PersistParseArtifactMaterializationError, PersistParseFileIndexedHydrationError,
+    PersistParseFileIndexedLoadError,
 };
 pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,

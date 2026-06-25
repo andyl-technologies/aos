@@ -689,6 +689,52 @@ impl PersistCache {
             .map_err(|source| PersistParseFileIndexedHydrationError::Hydrate { source })
     }
 
+    /// Canonicalizes a source path and loads an indexed parse-cache hit.
+    ///
+    /// This is an explicit load adapter over
+    /// [`Self::hydrate_parse_cache_entry_from_source_index`] and
+    /// [`ParseCache::load_cached_bytes`]. It canonicalizes `path`, reads the
+    /// canonical source bytes, hydrates the normal parse-cache entry from the
+    /// persistent file-artifact index, and returns the hydrated entry as a
+    /// [`CachedParse`] hit. Missing file-artifact index entries return
+    /// `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseFileIndexedLoadError`] if `path` cannot be
+    /// canonicalized, the canonical source file cannot be read, the
+    /// file-artifact index cannot be read, a matching indexed artifact cannot
+    /// be hydrated, or the hydrated parse-cache entry cannot be read back as a
+    /// [`CachedParse`].
+    pub fn load_parse_cache_file_from_index(
+        &self,
+        parse_cache: &ParseCache,
+        path: impl AsRef<Path>,
+    ) -> Result<Option<CachedParse>, PersistParseFileIndexedLoadError> {
+        let requested = path.as_ref();
+        let realpath = fs::canonicalize(requested).map_err(|source| {
+            PersistParseFileIndexedLoadError::CanonicalizeSource {
+                path: requested.to_path_buf(),
+                source,
+            }
+        })?;
+        let source =
+            fs::read(&realpath).map_err(|source| PersistParseFileIndexedLoadError::ReadSource {
+                path: realpath.clone(),
+                source,
+            })?;
+        if self
+            .hydrate_parse_cache_entry_from_source_index(parse_cache, &realpath, &source)
+            .map_err(|source| PersistParseFileIndexedLoadError::Hydrate { source })?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        parse_cache
+            .load_cached_bytes(&source)
+            .map_err(|source| PersistParseFileIndexedLoadError::Load { source })
+    }
+
     /// Applies `decision` to an existing parse-cache artifact entry.
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns a skipped result

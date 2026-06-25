@@ -1023,6 +1023,14 @@ alone (`M-1`/`Q-A`).
       durable hit selection, mmap reads, full artifact semantic validation
       beyond existing decoders, GC/repack, and harness proof remain open
       (`C-13`).
+- [x] Current file-derived indexed parse-cache load adapter:
+      `PersistCache::load_parse_cache_file_from_index` canonicalizes and reads a
+      requested source file, hydrates the matching durable file-artifact entry
+      into the normal `ParseCache` layout, then returns it through
+      `ParseCache::load_cached_bytes` as a `CachedParse` hit. This is explicit
+      caller-driven durable hit loading only; automatic evaluator/import
+      selection, mmap reads, full artifact semantic validation beyond existing
+      decoders, GC/repack, and harness proof remain open (`C-13`/`R-10`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus
