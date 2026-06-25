@@ -1375,10 +1375,20 @@ time-control primitives the whole design rests on.
     icount TB trace, consumes `checks.crucible.phase1.pluginTimeAdvance` for the
     drain/BQL fail-closed evidence, and publishes one per-patch
     `gate:patch-microtests` result for each T-PATCH-16 patch.
-- [ ] **T-PATCH-17** Implement `crucible-sim-batch-tcg-exec` as a
+- [x] **T-PATCH-17** Implement `crucible-sim-batch-tcg-exec` as a
   determinism-preserving perf patch (fixed N, ceiling/timer discipline) gated by a
   bit-identical batching-on-vs-off icount diff. — satisfies [PATCH-35]; spec
   §11.8.
+  - Completed by `0027-crucible-sim-batch-tcg-exec.patch`,
+    `checks.crucible.phase1.qemuSimBatchTcgExec`, and `gate:patch-microtests`.
+    The RR loop now uses a fixed four-slot sim-only TCG batch helper while
+    retaining the single-exec path outside sim mode. The helper breaks on
+    `EXCP_HALTED`, `EXCP_DEBUG`, and `EXCP_ATOMIC`, refreshes virtual timers and
+    icount budget between batch slots, reuses the T-PATCH-16 shmem
+    max-advance clamp before each slot, and parks on the scheduler wake path at
+    the ceiling. The focused C fixture compares batching-on and batching-off
+    icount traces, verifies special-exit breaks, confirms timer refresh between
+    slots, and exercises the shmem ceiling guard without any wall-clock input.
 - [ ] **T-PATCH-18** Keep the diagnostic-only patches (`crucible-tcg-exec-diag`,
   `crucible-virtserial-socket`) out of the shipped package and inert-by-default in
   dev builds. — satisfies [PATCH-10], [PATCH-36]; spec §11.3, §11.8.

@@ -34,6 +34,7 @@ const EXPECTED_PATCHES: &[&str] = &[
     "0024-crucible-sim-poll-immediate.patch",
     "0025-crucible-sim-idle-callbacks.patch",
     "0026-crucible-sim-shmem-dispatch.patch",
+    "0027-crucible-sim-batch-tcg-exec.patch",
 ];
 
 #[test]
@@ -125,6 +126,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(
         &default_checks,
         "qemuSimCorrectness = import ./phase1-qemu-sim-correctness.nix",
+    );
+    assert_contains(
+        &default_checks,
+        "qemuSimBatchTcgExec = import ./phase1-qemu-sim-batch-tcg-exec.nix",
     );
     assert_contains(
         &default_checks,
@@ -348,6 +353,11 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             "tests/crucible/phase1-qemu-sim-correctness.c",
             "0026-crucible-sim-shmem-dispatch.patch",
         ),
+        (
+            "tests/crucible/phase1-qemu-sim-batch-tcg-exec.nix",
+            "tests/crucible/phase1-qemu-sim-batch-tcg-exec.c",
+            "0027-crucible-sim-batch-tcg-exec.patch",
+        ),
     ];
 
     for (nix_path, c_path, patch) in per_patch_checks {
@@ -382,6 +392,20 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             assert_contains(&nix_source, "sim_idle_callbacks_missed_wake_microtest=true");
             assert_contains(&nix_source, "sim_shmem_dispatch_ceiling_microtest=true");
             assert_contains(&nix_source, "sim_shmem_budget_clamp_microtest=true");
+        } else if nix_path == "tests/crucible/phase1-qemu-sim-batch-tcg-exec.nix" {
+            assert_contains(&nix_source, "patch=${patchName}");
+            assert_contains(&nix_source, patch);
+            assert_contains(&nix_source, "sim_batch_tcg_exec_fixed_limit=true");
+            assert_contains(
+                &nix_source,
+                "sim_batch_tcg_exec_on_off_icount_trace_identical=true",
+            );
+            assert_contains(
+                &nix_source,
+                "sim_batch_tcg_exec_breaks_on_halted_debug_atomic=true",
+            );
+            assert_contains(&nix_source, "sim_batch_tcg_exec_timer_between_slots=true");
+            assert_contains(&nix_source, "sim_batch_tcg_exec_shmem_ceiling_guard=true");
         } else {
             assert_contains(&nix_source, &format!("patch={patch}"));
         }

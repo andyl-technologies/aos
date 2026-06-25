@@ -51,6 +51,7 @@
       patch -p1 < ${./qemu-patches/0024-crucible-sim-poll-immediate.patch}
       patch -p1 < ${./qemu-patches/0025-crucible-sim-idle-callbacks.patch}
       patch -p1 < ${./qemu-patches/0026-crucible-sim-shmem-dispatch.patch}
+      patch -p1 < ${./qemu-patches/0027-crucible-sim-batch-tcg-exec.patch}
     ''
     else "";
 in

@@ -169,6 +169,13 @@
         patchName = "0026-crucible-sim-shmem-dispatch.patch";
       };
     }
+    {
+      patch = "0027-crucible-sim-batch-tcg-exec.patch";
+      check = import ./phase1-qemu-sim-batch-tcg-exec.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0027-crucible-sim-batch-tcg-exec.patch";
+      };
+    }
   ];
 
   microtestPatchNames =

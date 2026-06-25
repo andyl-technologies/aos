@@ -198,6 +198,13 @@
       enforces = "PATCH-34,SHM-1";
       capability = "sim-mode shmem callback bridge for current-icount publish, max-advance reads, and TCG budget clamp";
     }
+    {
+      file = "0027-crucible-sim-batch-tcg-exec.patch";
+      catalogName = "crucible-sim-batch-tcg-exec";
+      class = "F";
+      enforces = "PATCH-35,DET-1,INV-10";
+      capability = "sim-mode fixed-count TCG exec batching with timer refresh and shmem ceiling discipline";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
