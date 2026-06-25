@@ -887,10 +887,22 @@ information that cannot be recomputed.
     equivalence against direct instantiate calls and rejects out-of-range fork
     prefixes, and `checks.crucible.phase1.executionStartResumeFork` gates the
     surface.
-- [ ] **T-EXEC-8** Implement `bake`: cold-boot each node once to its ready point,
+- [x] **T-EXEC-8** Implement `bake`: cold-boot each node once to its ready point,
   snapshot, content-address as the shared genesis checkpoint; assert it is the
   only cold-boot in the codebase (lint). — satisfies [EXEC-18], [EXEC-19];
   spec §6.
+  - Completed by `crates/crucible/src/model.rs`: `bake` now derives the model
+    genesis definition from `World::scenario_def()`, content-addresses a fat
+    genesis checkpoint from the world and genesis configuration ids, and feeds
+    `TemporalGraph::with_baked_genesis` without weakening checkpoint/configuration
+    validation. `crates/crucible/src/lib.rs` covers deterministic sharing for the
+    same world-derived model definition, different checkpoint ids for different
+    worlds, and first-run genesis realization through baked checkpoint load. The
+    full `ScenarioDef = (World, Plan, Properties, Seed)` schema will broaden this
+    bridge from the current opaque `ScenarioDef::id` scaffold. The QEMU bake
+    coordinator remains the only production cold-boot executor call site, and
+    `checks.crucible.phase1.executionBake` runs both bake and hot-genesis tests
+    plus the production cold-boot lint.
 - [ ] **T-EXEC-9** Implement the ready-point policy set (fixed icount /
   network-idle / console marker / agent signal) in `World` config and pin that
   `bake` reaches a content-identical genesis snapshot per policy. — satisfies

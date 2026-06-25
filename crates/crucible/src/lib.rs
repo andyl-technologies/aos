@@ -663,6 +663,59 @@ mod tests {
     }
 
     #[test]
+    fn bake_content_addresses_world_as_shared_fat_genesis_checkpoint() {
+        let world = generated_world(71);
+        let same_world = generated_world(71);
+        let other_world = generated_world(72);
+        let def = world.scenario_def();
+        let genesis = Configuration::genesis(def.clone());
+
+        let baked = match bake(&world) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),
+        };
+        let baked_again = match bake(&same_world) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("same world bake should be deterministic: {error}"),
+        };
+        let other_baked = match bake(&other_world) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("other world bake should produce a checkpoint: {error}"),
+        };
+
+        assert_eq!(world, same_world);
+        assert_eq!(world.scenario_def(), same_world.scenario_def());
+        assert_eq!(baked, baked_again);
+        assert_ne!(baked.checkpoint.id, other_baked.checkpoint.id);
+        assert_ne!(def, other_world.scenario_def());
+        assert_eq!(baked.checkpoint.configuration, genesis.id());
+        assert_eq!(baked.checkpoint.kind, CheckpointKind::Fat);
+    }
+
+    #[test]
+    fn baked_world_genesis_instantiates_as_first_resume() {
+        let world = generated_world(73);
+        let def = world.scenario_def();
+        let genesis = Configuration::genesis(def.clone());
+        let baked = match bake(&world) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),
+        };
+        let graph = match TemporalGraph::empty().with_baked_genesis(&def, baked) {
+            Ok(graph) => graph,
+            Err(error) => panic!("baked world genesis should register: {error}"),
+        };
+
+        let runtime = match instantiate(&graph, &genesis) {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("baked world genesis should instantiate by load: {error}"),
+        };
+
+        assert_eq!(runtime.configuration, genesis.id());
+        assert_eq!(runtime.id, reduced_state_id(&genesis));
+    }
+
+    #[test]
     fn instantiate_requires_baked_genesis_when_no_cached_path() {
         let scenario = generated_scenario(59);
         let config = Configuration {
@@ -917,6 +970,15 @@ mod tests {
             "crucible.test.configuration.generated",
             &format!("node=a\nseed={seed}\nimage=generated-{seed:04}"),
         )
+    }
+
+    fn generated_world(seed: u64) -> World {
+        World {
+            id: ContentHash::from_canonical_material(
+                "crucible.test.world.generated",
+                &format!("nodes=a,b\nlinks=a-b\nseed={seed}"),
+            ),
+        }
     }
 
     fn generated_schedule(seed: u64, len: u64) -> Schedule {
