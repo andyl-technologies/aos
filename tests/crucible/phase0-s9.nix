@@ -18,6 +18,9 @@
   qemuPatch12Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0012-crucible-plugin-vcpu-exit.patch;
   qemuPatch13Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0013-crucible-plugin-wake-fd.patch;
   qemuPatch14Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0014-crucible-plugin-tcg-exec-cb.patch;
+  qemuPatch15Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0015-crucible-blk-shmem.patch;
+  qemuPatch16Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0016-crucible-blk-shmem-io-fixes.patch;
+  qemuPatch17Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0017-crucible-blk-write-sentinel.patch;
   qemuNixHash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu.nix;
   qemuPatch1Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0001-crucible-sim-accel.patch;
   qemuPatch2Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0002-crucible-rr-fingerprint-helpers.patch;
@@ -33,6 +36,9 @@
   qemuPatch12Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0012-crucible-plugin-vcpu-exit.patch;
   qemuPatch13Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0013-crucible-plugin-wake-fd.patch;
   qemuPatch14Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0014-crucible-plugin-tcg-exec-cb.patch;
+  qemuPatch15Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0015-crucible-blk-shmem.patch;
+  qemuPatch16Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0016-crucible-blk-shmem-io-fixes.patch;
+  qemuPatch17Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0017-crucible-blk-write-sentinel.patch;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-s9-qemu-build-identity";
@@ -54,6 +60,9 @@ in
     qemuPatch12 = qemuPatch12Source;
     qemuPatch13 = qemuPatch13Source;
     qemuPatch14 = qemuPatch14Source;
+    qemuPatch15 = qemuPatch15Source;
+    qemuPatch16 = qemuPatch16Source;
+    qemuPatch17 = qemuPatch17Source;
     passAsFile = [
       "qemuNix"
       "qemuPatch1"
@@ -70,6 +79,9 @@ in
       "qemuPatch12"
       "qemuPatch13"
       "qemuPatch14"
+      "qemuPatch15"
+      "qemuPatch16"
+      "qemuPatch17"
     ];
 
     buildDeps = [
@@ -113,6 +125,12 @@ in
     PATCH_0013_HASH = qemuPatch13Hash;
     PATCH_0014_NAME = "0014-crucible-plugin-tcg-exec-cb.patch";
     PATCH_0014_HASH = qemuPatch14Hash;
+    PATCH_0015_NAME = "0015-crucible-blk-shmem.patch";
+    PATCH_0015_HASH = qemuPatch15Hash;
+    PATCH_0016_NAME = "0016-crucible-blk-shmem-io-fixes.patch";
+    PATCH_0016_HASH = qemuPatch16Hash;
+    PATCH_0017_NAME = "0017-crucible-blk-write-sentinel.patch";
+    PATCH_0017_HASH = qemuPatch17Hash;
 
     phases = [
       {
@@ -167,6 +185,9 @@ in
           cp "$qemuPatch12Path" "$PATCH_0012_NAME"
           cp "$qemuPatch13Path" "$PATCH_0013_NAME"
           cp "$qemuPatch14Path" "$PATCH_0014_NAME"
+          cp "$qemuPatch15Path" "$PATCH_0015_NAME"
+          cp "$qemuPatch16Path" "$PATCH_0016_NAME"
+          cp "$qemuPatch17Path" "$PATCH_0017_NAME"
 
           require_fixed qemu.nix 'pname ? "qemu"'
           require_fixed qemu.nix 'enablePlugins ? false'
@@ -185,6 +206,9 @@ in
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0012-crucible-plugin-vcpu-exit.patch}'
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0013-crucible-plugin-wake-fd.patch}'
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0014-crucible-plugin-tcg-exec-cb.patch}'
+          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0015-crucible-blk-shmem.patch}'
+          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0016-crucible-blk-shmem-io-fixes.patch}'
+          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0017-crucible-blk-write-sentinel.patch}'
           require_fixed qemu.nix '--target-list=x86_64-softmmu'
           require_fixed qemu.nix 'https://download.qemu.org/qemu-'
           require_fixed qemu.nix '.tar.xz'
@@ -251,8 +275,18 @@ in
           require_fixed "$PATCH_0014_NAME" 'qemu_plugin_tcg_exec_cb_t'
           require_fixed "$PATCH_0014_NAME" 'qemu_plugin_maybe_fire_tcg_exec_cb(cpu)'
           require_fixed "$PATCH_0014_NAME" 'qemu_plugin_icount_raw()'
+          require_fixed "$PATCH_0015_NAME" 'block/crucible-shmem.c'
+          require_fixed "$PATCH_0015_NAME" '.format_name            = "crucible-shmem"'
+          require_fixed "$PATCH_0015_NAME" "'crucible-shmem.c',"
+          require_fixed "$PATCH_0015_NAME" 'qemu_plugin_register_blk_cb'
+          require_fixed "$PATCH_0015_NAME" 'qemu_plugin_blk_submit_cb_t'
+          require_fixed "$PATCH_0015_NAME" 'qemu_plugin_blk_poll_cb_t'
+          require_fixed "$PATCH_0015_NAME" '#include "qemu/cutils.h"'
+          require_fixed "$PATCH_0016_NAME" 'aio_co_schedule(bdrv_get_aio_context(bs), qemu_coroutine_self())'
+          require_fixed "$PATCH_0016_NAME" 'qemu_coroutine_yield()'
+          require_fixed "$PATCH_0017_NAME" '#define QEMU_PLUGIN_BLK_POLL_PENDING (-2)'
 
-          patch_count=14
+          patch_count=17
           patch_series_hash=$(
             {
               printf '%s  %s\n' "$PATCH_0001_HASH" "$PATCH_0001_NAME"
@@ -269,6 +303,9 @@ in
               printf '%s  %s\n' "$PATCH_0012_HASH" "$PATCH_0012_NAME"
               printf '%s  %s\n' "$PATCH_0013_HASH" "$PATCH_0013_NAME"
               printf '%s  %s\n' "$PATCH_0014_HASH" "$PATCH_0014_NAME"
+              printf '%s  %s\n' "$PATCH_0015_HASH" "$PATCH_0015_NAME"
+              printf '%s  %s\n' "$PATCH_0016_HASH" "$PATCH_0016_NAME"
+              printf '%s  %s\n' "$PATCH_0017_HASH" "$PATCH_0017_NAME"
             } \
               | sha256sum \
               | gawk '{ print $1 }'
@@ -308,6 +345,12 @@ in
             echo "patch_0013_hash=$PATCH_0013_HASH"
             echo "patch_0014_name=$PATCH_0014_NAME"
             echo "patch_0014_hash=$PATCH_0014_HASH"
+            echo "patch_0015_name=$PATCH_0015_NAME"
+            echo "patch_0015_hash=$PATCH_0015_HASH"
+            echo "patch_0016_name=$PATCH_0016_NAME"
+            echo "patch_0016_hash=$PATCH_0016_HASH"
+            echo "patch_0017_name=$PATCH_0017_NAME"
+            echo "patch_0017_hash=$PATCH_0017_HASH"
             echo "patch_series_hash=$patch_series_hash"
             echo "plugins_enabled=true"
             echo "s1_horizon_extended_hash=$s1_horizon_extended_hash"
@@ -376,6 +419,9 @@ in
           qemu_plugin_vcpu_exit_patch_present=true
           qemu_plugin_wake_fd_patch_present=true
           qemu_plugin_tcg_exec_cb_patch_present=true
+          qemu_block_shmem_patch_present=true
+          qemu_block_shmem_io_fixes_patch_present=true
+          qemu_block_write_sentinel_patch_present=true
           full_upstream_inertness_comparison=false
           qemu_inert_gate_status=fallback_pending_upstream_comparison
           fallback_adopted=pin_build_id_and_regate_on_change
@@ -398,6 +444,9 @@ in
           cp "$PATCH_0012_NAME" "$out/$PATCH_0012_NAME"
           cp "$PATCH_0013_NAME" "$out/$PATCH_0013_NAME"
           cp "$PATCH_0014_NAME" "$out/$PATCH_0014_NAME"
+          cp "$PATCH_0015_NAME" "$out/$PATCH_0015_NAME"
+          cp "$PATCH_0016_NAME" "$out/$PATCH_0016_NAME"
+          cp "$PATCH_0017_NAME" "$out/$PATCH_0017_NAME"
           {
             echo PASS_WITH_FALLBACK
             echo spike=qemu-build-identity-and-inertness
@@ -437,6 +486,12 @@ in
             echo patch_0013_hash="$PATCH_0013_HASH"
             echo patch_0014_name="$PATCH_0014_NAME"
             echo patch_0014_hash="$PATCH_0014_HASH"
+            echo patch_0015_name="$PATCH_0015_NAME"
+            echo patch_0015_hash="$PATCH_0015_HASH"
+            echo patch_0016_name="$PATCH_0016_NAME"
+            echo patch_0016_hash="$PATCH_0016_HASH"
+            echo patch_0017_name="$PATCH_0017_NAME"
+            echo patch_0017_hash="$PATCH_0017_HASH"
             echo patch_series_hash="$patch_series_hash"
             echo plugins_enabled=true
             echo patch_apply_list_matches="$patch_apply_list_matches"
@@ -454,6 +509,9 @@ in
             echo qemu_plugin_vcpu_exit_patch_present="$qemu_plugin_vcpu_exit_patch_present"
             echo qemu_plugin_wake_fd_patch_present="$qemu_plugin_wake_fd_patch_present"
             echo qemu_plugin_tcg_exec_cb_patch_present="$qemu_plugin_tcg_exec_cb_patch_present"
+            echo qemu_block_shmem_patch_present="$qemu_block_shmem_patch_present"
+            echo qemu_block_shmem_io_fixes_patch_present="$qemu_block_shmem_io_fixes_patch_present"
+            echo qemu_block_write_sentinel_patch_present="$qemu_block_write_sentinel_patch_present"
             echo s1_result_consumed=true
             echo s1_result_status=PASS
             echo s1_source=checks.crucible.phase0.s1Fingerprint

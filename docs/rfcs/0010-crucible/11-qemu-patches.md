@@ -1253,10 +1253,28 @@ time-control primitives the whole design rests on.
     `SetupAck(0)`, and calls
     `qemu_plugin_register_tcg_exec_cb` when coverage mode requests the
     exec-slice callback capability.
-- [ ] **T-PATCH-12** Implement the block co-sim patches `crucible-blk-shmem`,
+- [x] **T-PATCH-12** Implement the block co-sim patches `crucible-blk-shmem`,
   `crucible-blk-shmem-io-fixes`, `crucible-blk-write-sentinel` over shmem with
   deterministic-completion micro-tests. — satisfies [PATCH-26], [PATCH-27],
   [PATCH-28]; spec §11.6 (E19).
+  - Completed by `0015-crucible-blk-shmem.patch`,
+    `0016-crucible-blk-shmem-io-fixes.patch`, and
+    `0017-crucible-blk-write-sentinel.patch`, with
+    `checks.crucible.phase1.qemuBlockShmem` and `gate:patch-microtests`: QEMU now
+    carries a `crucible-shmem` block driver that registers
+    `qemu_plugin_register_blk_cb`, forwards read/write/flush requests through
+    plugin submit/poll callbacks, yields pending coroutines through
+    `aio_co_schedule(...); qemu_coroutine_yield();`, and uses `-2` as the
+    explicit pending sentinel so `0` remains zero-length write/flush success. The
+    focused fixture compiles the actual patched `block/crucible-shmem.c` from an
+    extracted QEMU tree, proves stock QEMU lacks the block callback surface,
+    exercises deterministic pending counts for read/write completions, validates
+    zero-length flush success, and rejects error, overflow, and out-of-range
+    completions. The ext4 guest workload remains later layer-gate evidence rather
+    than a claim of this source-level patch fixture. The Rust plugin ABI now
+    exposes typed block submit/poll callback signatures plus
+    `resolve_qemu_register_blk_cb_symbol()` for the later live block callback
+    registration work.
 - [ ] **T-PATCH-13** Implement the 9p co-sim path `crucible-9p-shmem` and the
   device registration surface `crucible-dev-cb-api`; upstream server used when no
   callback is registered. — satisfies [PATCH-29], [PATCH-30]; spec §11.6 (E19).

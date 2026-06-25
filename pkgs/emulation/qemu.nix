@@ -39,6 +39,9 @@
       patch -p1 < ${./qemu-patches/0012-crucible-plugin-vcpu-exit.patch}
       patch -p1 < ${./qemu-patches/0013-crucible-plugin-wake-fd.patch}
       patch -p1 < ${./qemu-patches/0014-crucible-plugin-tcg-exec-cb.patch}
+      patch -p1 < ${./qemu-patches/0015-crucible-blk-shmem.patch}
+      patch -p1 < ${./qemu-patches/0016-crucible-blk-shmem-io-fixes.patch}
+      patch -p1 < ${./qemu-patches/0017-crucible-blk-write-sentinel.patch}
     ''
     else "";
 in

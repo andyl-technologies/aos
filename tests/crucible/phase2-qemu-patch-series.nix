@@ -114,6 +114,27 @@
       enforces = "coverage,INV-7";
       capability = "post-tcg_cpu_exec coverage callback with disabled NULL-check";
     }
+    {
+      file = "0015-crucible-blk-shmem.patch";
+      catalogName = "crucible-blk-shmem";
+      class = "F";
+      enforces = "PATCH-26,E19";
+      capability = "crucible-shmem block driver and plugin submit/poll callback ABI";
+    }
+    {
+      file = "0016-crucible-blk-shmem-io-fixes.patch";
+      catalogName = "crucible-blk-shmem-io-fixes";
+      class = "D";
+      enforces = "PATCH-27,E19";
+      capability = "bounded coroutine reschedule cadence for deterministic block completions";
+    }
+    {
+      file = "0017-crucible-blk-write-sentinel.patch";
+      catalogName = "crucible-blk-write-sentinel";
+      class = "D";
+      enforces = "PATCH-28,E19";
+      capability = "pending sentinel distinct from zero-length success";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

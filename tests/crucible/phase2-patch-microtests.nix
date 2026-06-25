@@ -84,6 +84,27 @@
         patchName = "0014-crucible-plugin-tcg-exec-cb.patch";
       };
     }
+    {
+      patch = "0015-crucible-blk-shmem.patch";
+      check = import ./phase1-qemu-block-shmem.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0015-crucible-blk-shmem.patch";
+      };
+    }
+    {
+      patch = "0016-crucible-blk-shmem-io-fixes.patch";
+      check = import ./phase1-qemu-block-shmem.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0016-crucible-blk-shmem-io-fixes.patch";
+      };
+    }
+    {
+      patch = "0017-crucible-blk-write-sentinel.patch";
+      check = import ./phase1-qemu-block-shmem.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0017-crucible-blk-write-sentinel.patch";
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -134,18 +155,19 @@
       "tests/crucible/default.nix: phase2 gate:qemu-inert is not wired into the patch CI dependency surface"
     ];
 
-  resultChecks = lib.concatMapStringsSep "\n" (test: ''
-    result="${test.check}/result"
-    cp "$result" "$out/per-patch/${test.patch}.result"
-    grep -q '^PASS$' "$result"
-    grep -q '^gate=gate:patch-microtests$' "$result"
-    grep -q '^patch=${test.patch}$' "$result"
-    grep -q '^patched_fixture_exercised=true$' "$result"
-    grep -q '^stock_negative_control=true$' "$result"
-    grep -q '^qemu_package=${qemuPackage}$' "$result"
-    grep -q '^qemu_package_version=${qemuPackage.version}$' "$result"
-  '')
-  perPatchMicrotests;
+  resultChecks =
+    lib.concatMapStringsSep "\n" (test: ''
+      result="${test.check}/result"
+      cp "$result" "$out/per-patch/${test.patch}.result"
+      grep -q '^PASS$' "$result"
+      grep -q '^gate=gate:patch-microtests$' "$result"
+      grep -q '^patch=${test.patch}$' "$result"
+      grep -q '^patched_fixture_exercised=true$' "$result"
+      grep -q '^stock_negative_control=true$' "$result"
+      grep -q '^qemu_package=${qemuPackage}$' "$result"
+      grep -q '^qemu_package_version=${qemuPackage.version}$' "$result"
+    '')
+    perPatchMicrotests;
 in
   if staticFailures != []
   then throw "crucible phase2 patch-microtests gate failed:\n${builtins.concatStringsSep "\n" staticFailures}"
@@ -199,7 +221,8 @@ in
               qemu_plugin_force_vcpu_exit \
               qemu_plugin_register_wake_fd \
               qemu_plugin_main_loop_wait \
-              qemu_plugin_register_tcg_exec_cb
+              qemu_plugin_register_tcg_exec_cb \
+              qemu_plugin_register_blk_cb
             do
               grep -E "[[:space:]]$symbol$" "$out/qemu-system-x86_64.dynamic-symbols"
             done
@@ -228,6 +251,7 @@ in
             qemu_plugin_net_exports_present=true
             qemu_plugin_time_drain_exports_present=true
             qemu_plugin_runtime_api_exports_present=true
+            qemu_plugin_block_exports_present=true
             qemu_inert_gate_attr=checks.crucible.phase2.gates.qemuInert
             qemu_inert_gate_wired=true
             qemu_inert_depends_on_patch_microtests=true

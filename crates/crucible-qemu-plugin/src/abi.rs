@@ -75,6 +75,8 @@ pub const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL: &str = "qemu_plugin_force_vcpu_exi
 pub const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL: &str = "qemu_plugin_register_wake_fd";
 /// QEMU plugin API symbol used to block through QEMU's main loop.
 pub const QEMU_PLUGIN_MAIN_LOOP_WAIT_SYMBOL: &str = "qemu_plugin_main_loop_wait";
+/// QEMU plugin API symbol used to register shmem block submit/poll callbacks.
+pub const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL: &str = "qemu_plugin_register_blk_cb";
 /// Minimum supported vCPU count under single-threaded round-robin TCG.
 pub const MIN_SUPPORTED_VCPU_COUNT: u32 = 1;
 const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C: &[u8] = b"qemu_plugin_clock_deadline_ns\0";
@@ -88,6 +90,7 @@ const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL_C: &[u8] = b"qemu_plugin_force_vcpu_exi
 const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL_C: &[u8] = b"qemu_plugin_register_wake_fd\0";
 const QEMU_PLUGIN_MAIN_LOOP_WAIT_SYMBOL_C: &[u8] = b"qemu_plugin_main_loop_wait\0";
 const QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_tcg_exec_cb\0";
+const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_cb\0";
 
 #[cfg(test)]
 static TEST_CLOCK_DEADLINE_SYMBOL: std::sync::Mutex<Option<QemuClockDeadlineFn>> =
@@ -259,6 +262,13 @@ pub type QemuMainLoopWaitFn = extern "C" fn();
 pub type QemuTcgExecCbFn = extern "C" fn(c_uint, u64, *mut c_void);
 /// QEMU TCG-exec callback registration exported by `crucible-plugin-tcg-exec-cb`.
 pub type QemuRegisterTcgExecCbFn = extern "C" fn(Option<QemuTcgExecCbFn>, *mut c_void);
+/// Block submit callback body passed to QEMU's shmem block driver.
+pub type QemuBlkSubmitCbFn = extern "C" fn(u32, u32, u64, *const u8, usize, *mut c_void) -> c_int;
+/// Block completion poll callback body passed to QEMU's shmem block driver.
+pub type QemuBlkPollCbFn = extern "C" fn(u32, *mut u8, usize, *mut c_void) -> i64;
+/// QEMU shmem block callback registration exported by `crucible-blk-shmem`.
+pub type QemuRegisterBlkCbFn =
+    extern "C" fn(Option<QemuBlkSubmitCbFn>, Option<QemuBlkPollCbFn>, *mut c_void);
 
 /// Required runtime APIs added by the T-PATCH-11 QEMU patch group.
 #[derive(Clone, Copy, Debug)]
@@ -1270,6 +1280,36 @@ pub fn resolve_qemu_register_tcg_exec_cb_symbol() -> Option<QemuRegisterTcgExecC
 #[cfg(not(unix))]
 #[must_use]
 pub const fn resolve_qemu_register_tcg_exec_cb_symbol() -> Option<QemuRegisterTcgExecCbFn> {
+    None
+}
+
+/// Resolves QEMU's shmem block callback registration export from the loaded process.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_blk_cb_symbol() -> Option<QemuRegisterBlkCbFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
+    // either null or a process symbol address. QEMU's patch defines this symbol
+    // with the exact `QemuRegisterBlkCbFn` ABI; callers fail closed when absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: Non-null `symbol` was resolved for
+        // `qemu_plugin_register_blk_cb`, whose patched QEMU declaration
+        // matches `QemuRegisterBlkCbFn`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterBlkCbFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's shmem block callback registration export from the loaded process.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_blk_cb_symbol() -> Option<QemuRegisterBlkCbFn> {
     None
 }
 
