@@ -986,7 +986,8 @@ Frontend is the **P1** foundation (decision `S-11`): every item below lands unde
       side child pool for variable-arity children — no `Box`/`Rc` (§4.1) —
       **P1**, `S-11`; parser acceptance differential tests vs the rnix oracle
       (`C-7`) via `parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus`
-      and the automatically enumerated local fixture/fuzz-seed corpus.
+      plus the automatically enumerated local fixture/fuzz-seed corpus and real
+      workspace `.nix` source tree.
 - [x] Recursive-descent statement skeleton (`let`/`with`/`assert`/`if`, lambda patterns, attrset/list bodies) (§4.2) — **P1**.
 - [x] Bounded-lookahead lambda-vs-attrset disambiguation reproducing C++ Nix's yacc ambiguity (§4.2) — **P1**; dedicated parity tests.
 - [x] Pratt operator sub-parser with the exact Nix binding-power table, incl. non-associative chaining rejection and `+` overload deferral (§4.3) — **P1**; full precedence/associativity conformance (§8, doc 20).

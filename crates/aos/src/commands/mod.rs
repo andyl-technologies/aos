@@ -17,6 +17,7 @@ pub mod graph;
 pub mod lint;
 pub mod nix_bench;
 pub mod nix_diff;
+pub mod nix_fuzz_corpus;
 pub mod nix_measure;
 pub mod package;
 pub mod prefetch;

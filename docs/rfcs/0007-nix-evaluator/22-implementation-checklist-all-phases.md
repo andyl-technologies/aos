@@ -228,9 +228,11 @@ hold invariant.
       `parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus` plus
       automatically enumerated local language fixtures, source-seed fuzz
       corpora, and the real workspace `.nix` source tree (package/module/system
-      files); automatic fuzz-corpus population from the full §2.7 corpus and
-      full parity-fuzzer budget/quiescence remain. This is a standing-harness
-      robustness item, not the falsifiable byte-green gate, which is met.
+      files); `aos nix-fuzz-corpus` now populates ignored parity-fuzzer source
+      seeds from the full §2.7 package/toolchain/system corpus and configured
+      generated conformance corpus. Full parity-fuzzer budget/quiescence remains.
+      This is a standing-harness robustness item, not the falsifiable byte-green
+      gate, which is met.
 
 **Conformance — FULL parity is a Phase-1 requirement.**
 

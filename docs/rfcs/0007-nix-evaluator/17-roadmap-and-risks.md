@@ -593,9 +593,10 @@ AOS package set. Build it in this order.
       `parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus` plus
       automatically enumerated local language fixtures, source-seed fuzz
       corpora, and the real workspace `.nix` source tree (package/module/system
-      files); automatic fuzz-corpus population from the full §2.7 corpus, full
-      parity-fuzzer budget/quiescence, and full conformance diff-green remain
-      acceptance gates.
+      files); `aos nix-fuzz-corpus` now populates ignored parity-fuzzer source
+      seeds from the full §2.7 package/toolchain/system corpus and configured
+      generated conformance corpus. Full parity-fuzzer budget/quiescence and
+      full conformance diff-green remain acceptance gates.
 
 **Phase-1 exit criteria.** The `.drv`-diff harness is byte-green on the full AOS
 closure under the tree-walk oracle; the baseline eval-time and `NIX_SHOW_STATS`

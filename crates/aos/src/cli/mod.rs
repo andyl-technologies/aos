@@ -256,6 +256,18 @@ pub enum Commands {
         #[arg(long, default_value_t = crate::commands::nix_bench::default_regression_threshold())]
         regression_threshold: f64,
     },
+    /// Generate cargo-fuzz source seeds
+    NixFuzzCorpus {
+        /// Nix file to import (default: repository default.nix)
+        #[arg(long)]
+        file: Option<std::path::PathBuf>,
+        /// Seed output directory
+        #[arg(long, value_name = "DIR")]
+        output_dir: Option<std::path::PathBuf>,
+        /// Remove generated-* files in the output directory
+        #[arg(long)]
+        clean: bool,
+    },
     /// Run the RFC 0007 opening measurement gate
     NixMeasure {
         /// Attribute to measure (repeatable)
@@ -679,6 +691,55 @@ mod tests {
                 assert_eq!(regression_threshold, 0.2);
             }
             _ => panic!("expected nix-bench command"),
+        }
+    }
+
+    #[test]
+    fn nix_fuzz_corpus_parses_defaults() {
+        let cli = parse_cli(["aos", "nix-fuzz-corpus"]);
+
+        match cli.command {
+            Commands::NixFuzzCorpus {
+                file,
+                output_dir,
+                clean,
+            } => {
+                assert_eq!(file, None);
+                assert_eq!(output_dir, None);
+                assert!(!clean);
+            }
+            _ => panic!("expected nix-fuzz-corpus command"),
+        }
+    }
+
+    #[test]
+    fn nix_fuzz_corpus_parses_explicit_options() {
+        let cli = parse_cli([
+            "aos",
+            "nix-fuzz-corpus",
+            "--file",
+            "default.nix",
+            "--output-dir",
+            "fuzz/corpus/parity_json/generated",
+            "--clean",
+        ]);
+
+        match cli.command {
+            Commands::NixFuzzCorpus {
+                file,
+                output_dir,
+                clean,
+            } => {
+                assert_eq!(file, Some(std::path::PathBuf::from("default.nix")));
+                assert_eq!(
+                    output_dir,
+                    Some(std::path::PathBuf::from(
+                        "fuzz/corpus/parity_json/generated"
+                    ))
+                );
+                assert!(clean);
+            }
+            _ => panic!("expected nix-fuzz-corpus command"),
         }
     }
 

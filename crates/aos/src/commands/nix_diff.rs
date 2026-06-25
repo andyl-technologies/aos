@@ -557,6 +557,117 @@ struct CorpusEntry {
     attr: String,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum FuzzSourceFileKind {
+    Direct,
+    GeneratedConformance,
+}
+
+/// Source seed rendered from a `nix-diff` corpus attribute.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct FuzzSourceSeed {
+    /// Human-readable seed name, usually the attribute path.
+    pub(crate) name: String,
+    /// Literal Nix source for a `# aos-nix-fuzz-source` corpus file.
+    pub(crate) source: String,
+    pub(crate) source_file: PathBuf,
+    pub(crate) source_file_kind: FuzzSourceFileKind,
+    pub(crate) root_args: String,
+}
+
+impl FuzzSourceSeed {
+    pub(crate) fn with_source_file(&self, source_file: PathBuf) -> Result<Self> {
+        Ok(Self {
+            name: self.name.clone(),
+            source: render_fuzz_source_expr(&source_file, &self.name, &self.root_args)?,
+            source_file,
+            source_file_kind: self.source_file_kind,
+            root_args: self.root_args.clone(),
+        })
+    }
+}
+
+/// Renders source seeds from the same corpus used by `aos nix-diff`.
+///
+/// The generated source imports `file` and selects each corpus attribute by
+/// string path, so attributes containing dashes remain valid seeds.
+///
+/// # Errors
+///
+/// Returns an error if the corpus cannot be enumerated through the C++ Nix
+/// oracle, a generated conformance corpus cannot be written, or the selected
+/// Nix file path is not valid UTF-8.
+pub(crate) fn fuzz_source_seeds(
+    oracle: &NixCli,
+    file: &Path,
+    include_packages: bool,
+    include_systems: bool,
+    eval_config: &NixEvalConfig,
+) -> Result<Vec<FuzzSourceSeed>> {
+    corpus_entries(oracle, file, include_packages, include_systems)?
+        .entries
+        .iter()
+        .map(|entry| render_fuzz_source_seed(entry, eval_config))
+        .collect()
+}
+
+fn render_fuzz_source_seed(
+    entry: &CorpusEntry,
+    eval_config: &NixEvalConfig,
+) -> Result<FuzzSourceSeed> {
+    let root_args = render_fuzz_root_args(eval_config);
+    let source = render_fuzz_source_expr(&entry.file, &entry.attr, &root_args)?;
+    Ok(FuzzSourceSeed {
+        name: entry.attr.clone(),
+        source,
+        source_file: absolute_path_for_nix(&entry.file)?,
+        source_file_kind: fuzz_source_file_kind(entry),
+        root_args,
+    })
+}
+
+fn render_fuzz_source_expr(file: &Path, attr: &str, root_args: &str) -> Result<String> {
+    let file = absolute_path_for_nix(file)?;
+    let file = file
+        .to_str()
+        .with_context(|| format!("nix file path is not valid UTF-8: {}", file.display()))?;
+    let attr_path = attr
+        .split('.')
+        .map(nix_string_literal)
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(format!(
+        r#"let
+  loaded = import (builtins.toPath {});
+  root = if builtins.isFunction loaded then loaded {} else loaded;
+  path = [ {} ];
+in
+  builtins.foldl' (value: name: builtins.getAttr name value) root path
+"#,
+        nix_string_literal(file),
+        root_args,
+        attr_path
+    ))
+}
+
+fn render_fuzz_root_args(eval_config: &NixEvalConfig) -> String {
+    let Some(current_system) = eval_config.current_system() else {
+        return "{}".to_string();
+    };
+    format!("{{ system = {}; }}", nix_string_literal(current_system))
+}
+
+fn fuzz_source_file_kind(entry: &CorpusEntry) -> FuzzSourceFileKind {
+    if entry
+        .attr
+        .starts_with(&format!("{CONFORMANCE_CORPUS_ATTRSET}."))
+    {
+        FuzzSourceFileKind::GeneratedConformance
+    } else {
+        FuzzSourceFileKind::Direct
+    }
+}
+
 fn corpus_entries(
     oracle: &NixCli,
     file: &Path,
@@ -715,11 +826,8 @@ struct RenderedConformanceCase {
 
 fn render_conformance_file(cases: &[RenderedConformanceCase]) -> String {
     let mut file = String::from(
-        r#"let
-  system =
-    if builtins ? currentSystem
-    then builtins.currentSystem
-    else "x86_64-linux";
+        r#"{ system ? builtins.currentSystem }:
+let
   mkCase = name: value:
     let
       json = builtins.tryEval (builtins.toJSON value);
@@ -3022,6 +3130,33 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn fuzz_source_seed_uses_string_attr_path_segments() -> Result<()> {
+        let entry = CorpusEntry {
+            file: PathBuf::from("/repo/default.nix"),
+            attr: "pkgs.rust-1_74".to_string(),
+        };
+        let config = NixEvalConfig::with_current_system("x86_64-linux")?;
+
+        let seed = render_fuzz_source_seed(&entry, &config)?;
+
+        assert_eq!(seed.name, "pkgs.rust-1_74");
+        assert!(
+            seed.source
+                .contains("builtins.toPath \"/repo/default.nix\"")
+        );
+        assert!(
+            seed.source
+                .contains("loaded { system = \"x86_64-linux\"; }")
+        );
+        assert!(seed.source.contains("path = [ \"pkgs\" \"rust-1_74\" ];"));
+        assert!(
+            seed.source
+                .contains("builtins.foldl' (value: name: builtins.getAttr name value) root path")
+        );
+        Ok(())
+    }
+
     fn fixture_lang_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
@@ -3059,6 +3194,7 @@ mod tests {
             .map(|entry| entry.file.clone())
             .ok_or_else(|| anyhow::anyhow!("generated fixture corpus should have entries"))?;
         let generated_text = fs::read_to_string(&generated_file)?;
+        assert!(generated_text.starts_with("{ system ? builtins.currentSystem }:\nlet\n"));
         assert!(generated_text.contains("conformance = {"));
         assert!(generated_text.contains("eval-okay-number = mkCase"));
         assert!(generated_text.contains("builtins.tryEval (builtins.toJSON value)"));

@@ -215,6 +215,22 @@ async fn run(cli: &Cli) -> Result<()> {
         );
     }
 
+    if let Commands::NixFuzzCorpus {
+        file,
+        output_dir,
+        clean,
+    } = &cli.command
+    {
+        return run_nix_fuzz_corpus_threaded(
+            printer,
+            cli.verbose,
+            eval_config,
+            file.clone(),
+            output_dir.clone(),
+            *clean,
+        );
+    }
+
     if let Commands::NixMeasure {
         attr,
         file,
@@ -330,6 +346,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Cache { .. } => unreachable!(),
         Commands::NixDiff { .. } => unreachable!(),
         Commands::NixBench { .. } => unreachable!(),
+        Commands::NixFuzzCorpus { .. } => unreachable!(),
         Commands::NixMeasure { .. } => unreachable!(),
     }
 }
@@ -443,6 +460,37 @@ fn run_nix_bench_threaded(
     match handle.join() {
         Ok(result) => result,
         Err(_) => anyhow::bail!("nix-bench worker thread panicked"),
+    }
+}
+
+fn run_nix_fuzz_corpus_threaded(
+    printer: Printer,
+    verbose: u8,
+    eval_config: NixEvalConfig,
+    file: Option<PathBuf>,
+    output_dir: Option<PathBuf>,
+    clean: bool,
+) -> Result<()> {
+    const NIX_FUZZ_CORPUS_STACK_SIZE: usize = 32 * 1024 * 1024;
+
+    let handle = std::thread::Builder::new()
+        .name("aos-nix-fuzz-corpus".to_string())
+        .stack_size(NIX_FUZZ_CORPUS_STACK_SIZE)
+        .spawn(move || {
+            commands::nix_fuzz_corpus::run(
+                &printer,
+                verbose,
+                eval_config,
+                file.as_deref(),
+                output_dir.as_deref(),
+                clean,
+            )
+        })
+        .context("spawning nix-fuzz-corpus worker thread")?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!("nix-fuzz-corpus worker thread panicked"),
     }
 }
 
