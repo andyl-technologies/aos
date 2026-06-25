@@ -452,6 +452,14 @@ alone (`M-1`/`Q-A`).
       graph-side diagnostic only; SCC-specific errors, evaluator scheduling
       integration, dynamic dependency tracing, persistence, and cached/uncached
       harness proof remain open (`S-14`/`C-20`).
+- [x] Current EvalCache dirty-frontier adapter:
+      `EvalCache::dirty_frontier` exposes the graph-side `DirtyFrontier`
+      snapshot through caller-owned evaluator cache state, and
+      `EvalCacheRuntime::dirty_frontier` reports `None` when cache observation
+      is disabled or the same read-only snapshot when enabled. This is a
+      read-only adapter only; evaluator recomputation, node lifecycle
+      integration, dynamic dependency tracing, persistence, and cached/uncached
+      harness proof remain open (`S-14`/`C-20`).
 - [ ] Full demand-driven incremental graph remains: create nodes on actual
       force/eval demand, capture dependencies dynamically Adapton-style,
       separate inner/outer observers, run the full ready-dirty recomputation

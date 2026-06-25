@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use super::{
     CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey, DemandGraph, DemandGraphError,
-    DemandNodeId, DurableBlake3Hash, ImpureInputFingerprint, ImpureInputIdentity,
+    DemandNodeId, DirtyFrontier, DurableBlake3Hash, ImpureInputFingerprint, ImpureInputIdentity,
     ImpureTraceObservation, ImpureTraceStatus, NodeFreshness, Reconsideration, UncacheableInput,
     ValueHash, ValueHashError,
 };
@@ -215,6 +215,14 @@ impl EvalCache {
     /// Consumes this cache into its demand graph.
     pub fn into_graph(self) -> DemandGraph {
         self.graph
+    }
+
+    /// Returns a deterministic scheduling snapshot for dirty graph nodes.
+    ///
+    /// This is a read-only adapter over [`DemandGraph::dirty_frontier`]. It
+    /// does not recompute nodes, mutate freshness, or schedule evaluator work.
+    pub fn dirty_frontier(&self) -> DirtyFrontier {
+        self.graph.dirty_frontier()
     }
 
     /// Looks up a clean memoized expression payload.
@@ -894,6 +902,15 @@ impl EvalCacheRuntime {
         }
     }
 
+    /// Returns a dirty-frontier snapshot when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `None`; enabled runtimes delegate to
+    /// [`EvalCache::dirty_frontier`]. This method is read-only and does not
+    /// validate or recompute graph nodes.
+    pub fn dirty_frontier(&self) -> Option<DirtyFrontier> {
+        self.cache().map(EvalCache::dirty_frontier)
+    }
+
     /// Observes evaluator impure-input traces when cache observation is enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without examining `source` or
@@ -1468,6 +1485,59 @@ mod tests {
                 .freshness(),
             NodeFreshness::Dirty
         );
+    }
+
+    #[test]
+    fn eval_cache_exposes_dirty_frontier() {
+        let mut graph = DemandGraph::new();
+        let a = node_with_hash(&mut graph, 1, b"a-old");
+        let b = node_with_hash(&mut graph, 2, b"b-stable");
+        let c = node_with_hash(&mut graph, 3, b"c-stale");
+        graph.add_dependency(b, a).expect("b depends on a");
+        graph.add_dependency(c, b).expect("c depends on b");
+        graph.mark_dirty(a).expect("a dirties");
+        graph.mark_dirty(c).expect("c dirties");
+        let cache = EvalCache::from_graph(graph);
+
+        let frontier = cache.dirty_frontier();
+
+        assert_eq!(frontier.ready_nodes(), &[a]);
+        let [blocked] = frontier.blocked_nodes() else {
+            panic!("c is blocked by dirty upstream a");
+        };
+        assert_eq!(blocked.node(), c);
+        assert_eq!(blocked.blockers(), &[a]);
+    }
+
+    #[test]
+    fn eval_cache_runtime_dirty_frontier_is_disabled_noop() {
+        let runtime = EvalCacheRuntime::disabled();
+
+        assert_eq!(runtime.dirty_frontier(), None);
+    }
+
+    #[test]
+    fn enabled_eval_cache_runtime_delegates_dirty_frontier() {
+        let mut graph = DemandGraph::new();
+        let a = node_with_hash(&mut graph, 1, b"a-old");
+        let b = node_with_hash(&mut graph, 2, b"b-stable");
+        let c = node_with_hash(&mut graph, 3, b"c-stale");
+        graph.add_dependency(b, a).expect("b depends on a");
+        graph.add_dependency(c, b).expect("c depends on b");
+        graph.mark_dirty(a).expect("a dirties");
+        graph.mark_dirty(c).expect("c dirties");
+        let runtime = EvalCacheRuntime::Enabled(EvalCache::from_graph(graph));
+
+        let frontier = runtime
+            .dirty_frontier()
+            .expect("enabled runtime returns a frontier");
+
+        assert_eq!(frontier.ready_nodes(), &[a]);
+        let [blocked] = frontier.blocked_nodes() else {
+            panic!("c is blocked by dirty upstream a");
+        };
+        assert_eq!(blocked.node(), c);
+        assert_eq!(blocked.blockers(), &[a]);
     }
 
     #[test]
