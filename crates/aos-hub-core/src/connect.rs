@@ -388,6 +388,12 @@ async fn facade_put(
 /// one bounded-memory request.
 const MULTIPART_PART_SIZE: u64 = 16 * 1024 * 1024;
 
+/// Maximum buffered facade request body (32 MiB): comfortably above the
+/// 16 MiB multipart part size (with headroom) yet far below the Worker isolate
+/// memory, so a single buffered part can never pressure it. Lifts axum's 2 MiB
+/// `DefaultBodyLimit`, which otherwise 413s every part.
+const MAX_FACADE_BODY_BYTES: usize = 32 * 1024 * 1024;
+
 /// Multipart query parameters parsed off a facade request's query string.
 ///
 /// The facade overloads the `/{slug}/{*path}` route with the S3-style multipart
@@ -1424,6 +1430,12 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
                 },
             ),
         );
+        // Raise axum's 2 MiB default body limit for the worker facade: a
+        // multipart *part* (the client chunks at the server-suggested 16 MiB)
+        // must not be rejected. Multipart bounds each request — and thus the
+        // buffered body — to one part, so this is a safety ceiling, not the
+        // steady state; NARs larger than it upload as several parts.
+        r = r.layer(axum::extract::DefaultBodyLimit::max(MAX_FACADE_BODY_BYTES));
     }
     // `POST /oauth2/token` provisioning-secret -> JWT exchange. The native hub
     // mounts its own rate-limited fragment in `server.rs`; the Worker has none,
