@@ -10,3 +10,4 @@ workspace = true
 [dependencies]
 crucible = { path = "../crucible" }
 thiserror = { workspace = true }
+tokio = { workspace = true }

@@ -970,9 +970,17 @@ information that cannot be recomputed.
     `step` while deduplicating recorded configurations by content address.
     `checks.crucible.phase1.executionGraphOperations` gates the model APIs,
     focused temporal-graph tests, and RFC linkage.
-- [ ] **T-EXEC-14** Implement the `Engine` async state machine (closed run-states,
+- [x] **T-EXEC-14** Implement the `Engine` async state machine (closed run-states,
   poll-then-step actor loop) inside the `Session` actor with bounded quanta and
   inter-quantum yields. — satisfies [EXEC-27], [EXEC-28]; spec §10.
+  - Completed by `crates/crucible-session/src/lib.rs`: `Engine` now owns the
+    source-of-truth `Configuration`, rebuildable `RuntimeState` cache,
+    `TemporalGraph`, closed `EngineState` set, and the `QuantumLoop` boundary.
+    `SessionActor::run` consumes a Tokio mailbox, services pending commands
+    before stepping while running, advances exactly one scheduler quantum per
+    loop iteration, and calls `tokio::task::yield_now().await` after each
+    quantum. `checks.crucible.phase1.executionEngineStateMachine` gates the
+    state-machine surface and focused session actor tests.
 - [ ] **T-EXEC-15** Implement the lock-free run-state mirror so observers read
   virtual time / log length / run-state without the engine lock; add a
   `gate:control-responsive` latency check. — satisfies [EXEC-29]; spec §10.
