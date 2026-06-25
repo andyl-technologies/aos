@@ -136,7 +136,7 @@
       package = "crucible-session";
       testTarget = "gate_control_responsive";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:control-responsive";

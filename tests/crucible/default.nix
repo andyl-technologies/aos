@@ -67,6 +67,7 @@ in {
     executionEngineStateMachine = import ./phase1-execution-engine-state-machine.nix {inherit pkgs lib;};
     executionGraphOperations = import ./phase1-execution-graph-operations.nix {inherit pkgs lib;};
     executionInstantiate = import ./phase1-execution-instantiate.nix {inherit pkgs lib;};
+    executionLiveSnapshot = import ./phase1-execution-live-snapshot.nix {inherit pkgs lib;};
     executionModelCore = import ./phase1-execution-model-core.nix {inherit pkgs lib;};
     executionNodeBlobRef = import ./phase1-execution-node-blob-ref.nix {inherit pkgs lib;};
     executionReadyPoint = import ./phase1-execution-ready-point.nix {inherit pkgs lib;};

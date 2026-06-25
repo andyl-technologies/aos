@@ -981,9 +981,18 @@ information that cannot be recomputed.
     loop iteration, and calls `tokio::task::yield_now().await` after each
     quantum. `checks.crucible.phase1.executionEngineStateMachine` gates the
     state-machine surface and focused session actor tests.
-- [ ] **T-EXEC-15** Implement the lock-free run-state mirror so observers read
+- [x] **T-EXEC-15** Implement the lock-free run-state mirror so observers read
   virtual time / log length / run-state without the engine lock; add a
   `gate:control-responsive` latency check. — satisfies [EXEC-29]; spec §10.
+  - Completed by `crates/crucible-session/src/lib.rs`: `LiveSnapshot`
+    publishes `LiveStateKind`, virtual time, event-log length, and monotone
+    quanta counters through atomics written by the `SessionActor` after command
+    transitions and scheduler quanta, while observers read through
+    `LiveSnapshot::read` without entering the mailbox. The session-side
+    `gate_control_responsive` integration test observes monotone progress from
+    the live mirror without issuing query commands, and
+    `checks.crucible.phase1.executionLiveSnapshot` gates the mirror API,
+    metadata, RFC linkage, and latency check.
 - [ ] **T-EXEC-16** Make the `Engine` able to drop and re-`instantiate` its
   runtime at any quantum boundary with no observable change (cache-eviction
   safety). — satisfies [EXEC-30]; spec §10.

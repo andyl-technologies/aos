@@ -153,7 +153,7 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible-session",
         test_target: "gate_control_responsive",
         required_features: &[],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:control-responsive",
