@@ -827,13 +827,73 @@ impl TreeWalk {
             }
         };
         let trace = revalidator.into_revalidated_trace();
-        let value = self.value_for_cached_expression_payload(payload)?;
+        let value = self.value_for_cached_expression_payload(payload.clone())?;
+        self.observe_persist_forced_expression_runtime_hit(subject, payload, &trace);
         for fingerprint in trace {
             self.record_impure_input(fingerprint);
         }
         self.record_forced_expression_demand(subject);
         self.increment_eval_cache_hit();
         Some(value)
+    }
+
+    fn observe_persist_forced_expression_runtime_hit(
+        &mut self,
+        subject: &ForceCacheSubject,
+        payload: CachedExpressionValue,
+        trace: &[ImpureInputFingerprint],
+    ) {
+        let Some(identity) = subject.lookup_identity else {
+            return;
+        };
+        let Ok(mut cache) = self.eval_cache.lock() else {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                "tree-walk evaluator cache lock was poisoned; skipping persistent forced expression runtime observation"
+            );
+            return;
+        };
+        if !cache.is_enabled() {
+            return;
+        }
+        let observation = if trace.is_empty() {
+            cache
+                .observe_inline_expression_payload(
+                    identity,
+                    subject.free_var_value_hashes.iter().copied(),
+                    payload,
+                )
+                .map(|_| ())
+        } else {
+            let mut runtime_trace = Vec::new();
+            if runtime_trace.try_reserve_exact(trace.len()).is_err() {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    "tree-walk evaluator persistent forced expression runtime trace allocation failed"
+                );
+                return;
+            }
+            runtime_trace.extend_from_slice(trace);
+            let source = ImpureInputTraceSegment {
+                trace: runtime_trace,
+                complete: true,
+            };
+            cache
+                .observe_inline_expression_payload_with_impure_inputs(
+                    identity,
+                    subject.free_var_value_hashes.iter().copied(),
+                    payload,
+                    &source,
+                )
+                .map(|_| ())
+        };
+        if let Err(error) = observation {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator persistent forced expression runtime observation failed"
+            );
+        }
     }
 
     fn value_for_cached_expression_payload(

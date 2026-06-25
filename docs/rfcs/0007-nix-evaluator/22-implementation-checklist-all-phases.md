@@ -1142,18 +1142,19 @@ alone (`M-1`/`Q-A`).
       persistent node-value load after an in-memory force-cache miss; pure
       values hit through the same path by using a zero-input trace record
       rather than trace absence. Hits rehydrate replayable payloads into the
-      current evaluator heap, record fresh revalidated impure inputs into the
-      enclosing evaluation trace when present, record current-run persistent
-      demand, and count the result as a cache hit. Missing/stale traces,
-      value-hash mismatches, unavailable persistent roots, persistent read
-      errors, stale impure observations, missing value blobs, and unsupported
-      payload rehydration all fall back to ordinary forcing. This is replayable
-      forced-expression hit selection only:
-      in-memory demand-graph insertion, dirty propagation beyond revalidation
-      miss fallback, context-bearing paths or composite values, trace
-      tombstones, transactionality with value materialization, currentTime taint
-      propagation through persisted dependents, automatic compaction/GC, mmap
-      reads, and cached/uncached harness proof remain open
+      current evaluator heap, seed the caller-owned in-memory runtime with the
+      payload and any revalidated input edges, record fresh revalidated impure
+      inputs into the enclosing evaluation trace when present, record
+      current-run persistent demand, and count the result as a cache hit.
+      Missing/stale traces, value-hash mismatches, unavailable persistent roots,
+      persistent read errors, stale impure observations, missing value blobs,
+      and unsupported payload rehydration all fall back to ordinary forcing.
+      This is replayable forced-expression hit selection only:
+      dirty propagation beyond revalidation miss fallback, context-bearing paths
+      or composite values, trace tombstones, transactionality with value
+      materialization, currentTime taint propagation through persisted
+      dependents, automatic compaction/GC, mmap reads, and cached/uncached
+      harness proof remain open
       (`C-13`/`R-10`/`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact

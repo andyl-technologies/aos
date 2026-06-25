@@ -1486,6 +1486,7 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
     assert_eq!(first.stats().cache_misses(), 1);
     drop(first);
 
+    let shared_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let mut second_options = TreeWalkOptions::with_eval_cache_enabled(true);
     second_options
         .set_path_literal_base(path_bytes(&root))
@@ -1496,7 +1497,7 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
         second_options,
         "default.nix",
         source,
-        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+        shared_runtime.clone(),
     );
     let forced_again = force_attr_a(&mut second, &ir, a);
 
@@ -1517,8 +1518,52 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
         expected_trace.as_slice(),
         "persistent hit revalidation must remain visible to enclosing force traces"
     );
+    drop(second);
 
-    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+    {
+        let runtime = shared_runtime.lock().expect("cache lock is valid");
+        let cache = runtime.cache().expect("cache is enabled");
+        assert_eq!(
+            cache.len(),
+            2,
+            "persistent hits should seed the in-memory expression node and input leaf"
+        );
+        assert_eq!(
+            cache_nodes_with_dependencies(cache),
+            1,
+            "the seeded expression node must keep its revalidated input edge"
+        );
+    }
+
+    fs::remove_dir_all(&persist_root).expect("persistent temp tree removed");
+
+    let mut third_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    third_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut third = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        third_options,
+        "default.nix",
+        source,
+        shared_runtime,
+    );
+    let forced_from_memory = force_attr_a(&mut third, &ir, a);
+
+    assert_eq!(forced_from_memory.as_bool(), Ok(true));
+    assert_eq!(
+        third.stats().thunks_forced(),
+        0,
+        "persistent-hit runtime seeding should allow later in-memory reuse"
+    );
+    assert_eq!(third.stats().cache_hits(), 1);
+    assert_eq!(third.stats().cache_misses(), 0);
+    assert_eq!(
+        third.impure_input_trace(),
+        expected_trace.as_slice(),
+        "seeded runtime hits must still revalidate into the enclosing trace"
+    );
+
     fs::remove_dir_all(root).expect("temp tree removed");
 }
 
@@ -3522,12 +3567,13 @@ fn synthetic_builtin_attr_hits_persistent_current_system_with_empty_trace() {
     );
     drop(persist);
 
+    let shared_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let mut second = TreeWalk::with_options_and_source_and_eval_cache(
         &ir,
-        options,
+        options.clone(),
         "synthetic-builtins.nix",
         source,
-        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+        shared_runtime.clone(),
     );
     let forced = force_attr_a(&mut second, &ir, a);
     assert_eq!(
@@ -3542,6 +3588,15 @@ fn synthetic_builtin_attr_hits_persistent_current_system_with_empty_trace() {
     assert_eq!(second.stats().cache_misses(), 0);
     drop(second);
 
+    {
+        let runtime = shared_runtime.lock().expect("cache lock is valid");
+        assert_eq!(
+            runtime.cache().expect("cache is enabled").len(),
+            1,
+            "pure persistent hits should seed an in-memory expression node"
+        );
+    }
+
     let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
     assert_eq!(
         persist
@@ -3550,8 +3605,36 @@ fn synthetic_builtin_attr_hits_persistent_current_system_with_empty_trace() {
         Some(MaterializationReuse::new(0, 2)),
         "persistent pure hits also record current-run demand"
     );
+    drop(persist);
 
-    fs::remove_dir_all(persist_root).expect("temp tree removed");
+    fs::remove_dir_all(&persist_root).expect("temp tree removed");
+
+    let mut third_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    third_options.set_eval_cache_enabled(true);
+    let mut third = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        third_options,
+        "synthetic-builtins.nix",
+        source,
+        shared_runtime,
+    );
+    let forced = force_attr_a(&mut third, &ir, a);
+    assert_eq!(
+        third
+            .heap()
+            .get_string(forced)
+            .expect("seeded currentSystem result rehydrates")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(
+        third.stats().thunks_forced(),
+        2,
+        "the seeded pure hit should avoid forcing the reified builtin attr thunk"
+    );
+    assert_eq!(third.stats().cache_hits(), 1);
+    assert_eq!(third.stats().cache_misses(), 0);
 }
 
 #[test]
