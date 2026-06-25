@@ -1080,11 +1080,16 @@ pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
     build(service, true, false)
 }
 
-/// Lifetime, in seconds, of an access JWT minted at `POST /oauth2/token`.
+/// Lifetime, in seconds, of an access JWT minted at `POST /oauth2/token`
+/// (1 hour).
 ///
 /// Matches the native hub's access-token TTL so the Worker and native
-/// deployments issue equivalently short-lived tokens.
-const ACCESS_TOKEN_TTL_SECS: i64 = 900;
+/// deployments issue equivalently short-lived tokens. One hour gives bulk
+/// publish operations (a large `aos cache push`) comfortable headroom while
+/// keeping the bearer's leak window short; a client running longer than this
+/// re-exchanges its provisioning token for a fresh access JWT (the provisioning
+/// token is the durable credential — there is no separate OAuth refresh token).
+const ACCESS_TOKEN_TTL_SECS: i64 = 3600;
 
 /// OAuth2 token-exchange response: `access_token`, `token_type` (`"Bearer"`),
 /// and `expires_in` (seconds) — the same shape the native hub's
