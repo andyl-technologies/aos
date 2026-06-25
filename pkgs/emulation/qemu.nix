@@ -31,6 +31,7 @@
       patch -p1 < ${./qemu-patches/0004-crucible-no-warp-with-plugin.patch}
       patch -p1 < ${./qemu-patches/0005-crucible-det-glib-prng.patch}
       patch -p1 < ${./qemu-patches/0006-crucible-clock-deadline.patch}
+      patch -p1 < ${./qemu-patches/0007-crucible-block-rtc-read.patch}
     ''
     else "";
 in

@@ -40,6 +40,10 @@
       patch = "0006-crucible-clock-deadline.patch";
       check = import ./phase1-clock-deadline.nix {inherit pkgs lib qemuPackage;};
     }
+    {
+      patch = "0007-crucible-block-rtc-read.patch";
+      check = import ./phase1-block-rtc-read.nix {inherit pkgs lib qemuPackage;};
+    }
   ];
 
   microtestPatchNames =

@@ -59,6 +59,7 @@ in {
     deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
     determinismReview = import ./phase1-determinism-review.nix {inherit pkgs lib;};
     clockDeadline = import ./phase1-clock-deadline.nix {inherit pkgs lib;};
+    blockRtcRead = import ./phase1-block-rtc-read.nix {inherit pkgs lib;};
     documentationHygiene = import ./phase1-documentation-hygiene.nix {inherit pkgs lib;};
     engineeringHygiene = import ./phase1-engineering-hygiene.nix {inherit pkgs lib;};
     executionDecisionTaxonomy = import ./phase1-execution-decision-taxonomy.nix {inherit pkgs lib;};

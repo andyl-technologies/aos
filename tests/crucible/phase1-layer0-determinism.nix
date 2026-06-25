@@ -13,6 +13,7 @@
   timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix {inherit pkgs lib;};
   noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
   icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
+  blockRtcRead = import ./phase1-block-rtc-read.nix {inherit pkgs lib;};
   singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {inherit pkgs lib;};
 
   simGate = builtins.readFile ../../crates/crucible-sim/tests/gate_layer0_determinism.rs;
@@ -244,7 +245,7 @@ in
               "cpu=qemu64,-rdrand,-rdseed" \
               "accelerator=tcg,thread=single" \
               "smp_vcpus=1" \
-              "icount=shift=0,sleep=off,align=off" \
+              "icount=shift=0,sleep=off,align=off,rr_switch_quantum=4096" \
               "rtc=base=2026-01-01T00:00:00,clock=vm" \
               "timers=virtual-clock-driven" \
               "interrupt_timing=icount-tb-boundaries" \
@@ -304,6 +305,13 @@ in
               "tasks=T-DET-2" \
               "qemu_mode=ICOUNT_PRECISE" \
               "realtime_deadline_in_precise_budget=false"
+            require_leaf ${blockRtcRead} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-8" \
+              "guest_realtime_source=fixed_epoch_plus_virtual_clock" \
+              "direct_cmos_rtc_source=fixed_epoch_plus_virtual_clock" \
+              "non_sim_realtime_source=upstream" \
+              "residual_host_clock_read_under_sim=false"
             require_leaf ${singleVmFingerprint} \
               "gate=gate:single-vm-fingerprint" \
               "real_qemu_source=checks.crucible.phase0.s1Fingerprint" \
@@ -330,7 +338,7 @@ in
             evidence.E2=noWarpWithPlugin.wall_clock_warp_under_time_control
             evidence.E3=icountNoRealtime.realtime_deadline_in_precise_budget
             evidence.E4=deterministicLaunch.tsc_source
-            evidence.E5=deterministicLaunch.rtc+virtual_time_ns
+            evidence.E5=deterministicLaunch.rtc+blockRtcRead.guest_realtime_source+blockRtcRead.direct_cmos_rtc_source
             evidence.E6=deterministicLaunch.timers
             evidence.E7=deterministicLaunch.interrupt_timing
             evidence.E8=guestEntropyLaunch.firmware_seed_source+guest_csprng_same_seed_reproducible
@@ -341,7 +349,7 @@ in
             evidence.E15=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E16=deterministicLaunch.machine_reset+ram_reset
             evidence.E17=deterministicLaunch.input_policy+contractAIsolation.recorded_inputs_enforced
-            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,timeContractADeterminism,timeMultiVcpuAggregateClock,noWarpWithPlugin,icountNoRealtime,singleVmFingerprint
+            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,timeContractADeterminism,timeMultiVcpuAggregateClock,noWarpWithPlugin,icountNoRealtime,blockRtcRead,singleVmFingerprint
             RESULT
           '';
         }

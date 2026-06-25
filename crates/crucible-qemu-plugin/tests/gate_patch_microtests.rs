@@ -14,6 +14,7 @@ const EXPECTED_PATCHES: &[&str] = &[
     "0004-crucible-no-warp-with-plugin.patch",
     "0005-crucible-det-glib-prng.patch",
     "0006-crucible-clock-deadline.patch",
+    "0007-crucible-block-rtc-read.patch",
 ];
 
 #[test]
@@ -109,6 +110,11 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             "tests/crucible/phase1-clock-deadline.nix",
             "tests/crucible/phase1-clock-deadline.c",
             "0006-crucible-clock-deadline.patch",
+        ),
+        (
+            "tests/crucible/phase1-block-rtc-read.nix",
+            "tests/crucible/phase1-block-rtc-read.c",
+            "0007-crucible-block-rtc-read.patch",
         ),
     ];
 
