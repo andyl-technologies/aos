@@ -314,6 +314,26 @@ impl PersistCache {
         self.node_trace_log.append_trace(key, value_hash, payload)
     }
 
+    /// Appends a trace tombstone for one demand node.
+    ///
+    /// The tombstone becomes the newest trace record for `key`, so durable
+    /// trace-verified loads miss even if older trace records still carry the
+    /// same materialized value hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTraceLogError`] if the trace log cannot be opened,
+    /// validated, written, flushed, or decoded during validation.
+    pub fn record_node_trace_tombstone(
+        &self,
+        key: PersistNodeMetadataKey,
+    ) -> Result<(), PersistNodeTraceLogError> {
+        let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(
+            b"aos-nix-node-trace-tombstone-v1",
+        ));
+        self.record_node_trace(key, value_hash, &PersistNodeTracePayload::tombstone())
+    }
+
     /// Looks up the newest durable verifying-trace record for one demand node.
     ///
     /// Missing trace records return `Ok(None)`.
@@ -822,10 +842,10 @@ impl PersistCache {
     ///
     /// This helper is for trace-backed durable hit selection. Missing node
     /// metadata, missing trace records, trace records whose associated
-    /// [`ValueHash`] differs from the current node metadata link, stale input
-    /// observations, and missing indexed value blobs all return `Ok(None)`.
-    /// The revalidator is called only after the node metadata value hash and
-    /// trace-record value hash match.
+    /// [`ValueHash`] differs from the current node metadata link, tombstone
+    /// trace records, stale input observations, and missing indexed value blobs
+    /// all return `Ok(None)`. The revalidator is called only after the node
+    /// metadata value hash and trace-record value hash match.
     ///
     /// This does not insert the value into the in-memory demand graph or choose
     /// evaluator hits; it only proves that the persistent node metadata, trace,
@@ -858,6 +878,9 @@ impl PersistCache {
             return Ok(None);
         };
         if trace.value_hash() != value_hash {
+            return Ok(None);
+        }
+        if trace.payload().is_tombstone() {
             return Ok(None);
         }
         if !revalidate_persist_node_trace_payload(trace.payload(), revalidator) {
@@ -1913,6 +1936,9 @@ fn revalidate_persist_node_trace_payload<R>(
 where
     R: ImpureInputRevalidator + ?Sized,
 {
+    if payload.is_tombstone() {
+        return false;
+    }
     for expected in payload.inputs() {
         let Some(fresh) = revalidator.revalidate_impure_input(expected.identity()) else {
             return false;

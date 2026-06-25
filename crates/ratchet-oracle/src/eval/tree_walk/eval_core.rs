@@ -705,6 +705,13 @@ impl TreeWalk {
                 "tree-walk evaluator persistent force payload clear failed"
             );
         }
+        if let Err(error) = persist_cache.record_node_trace_tombstone(key) {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator persistent force trace tombstone write failed"
+            );
+        }
     }
 
     fn force_cache_payload_for_value(&self, value: Value) -> Option<CachedExpressionValue> {

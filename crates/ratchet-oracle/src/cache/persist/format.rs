@@ -1289,17 +1289,27 @@ impl PersistNodeMetadataIndexEntry {
 
 /// A stable payload for one persisted node verifying trace.
 ///
-/// The payload preserves the evaluator trace order and stores only cacheable
+/// Ordinary payloads preserve evaluator trace order and store only cacheable
 /// impure-input fingerprints: each record carries the typed input identity
-/// parts plus the observed-result hash. The eventual persistent demand-graph
-/// sidecar can attach these bytes to an expression node and replay the
-/// fingerprints during durable-hit revalidation.
+/// parts plus the observed-result hash. Tombstone payloads carry no inputs and
+/// explicitly invalidate older trace records for the same node. The eventual
+/// persistent demand-graph sidecar can attach ordinary payload bytes to an
+/// expression node and replay the fingerprints during durable-hit revalidation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersistNodeTracePayload {
     inputs: Vec<CacheableInputFingerprint>,
+    tombstone: bool,
 }
 
 impl PersistNodeTracePayload {
+    /// Creates a tombstone payload that invalidates older trace records for a node.
+    pub fn tombstone() -> Self {
+        Self {
+            inputs: Vec::new(),
+            tombstone: true,
+        }
+    }
+
     /// Creates a node trace payload from cacheable input fingerprints.
     ///
     /// # Errors
@@ -1325,7 +1335,10 @@ impl PersistNodeTracePayload {
             }
             stored.push(input);
         }
-        Ok(Self { inputs: stored })
+        Ok(Self {
+            inputs: stored,
+            tombstone: false,
+        })
     }
 
     /// Creates a node trace payload from an evaluator impure-input trace.
@@ -1362,7 +1375,15 @@ impl PersistNodeTracePayload {
                 }
             }
         }
-        Ok(Self { inputs })
+        Ok(Self {
+            inputs,
+            tombstone: false,
+        })
+    }
+
+    /// Returns whether this payload tombstones older traces for the same node.
+    pub const fn is_tombstone(&self) -> bool {
+        self.tombstone
     }
 
     /// Returns the cacheable input fingerprints in trace order.
@@ -1378,11 +1399,15 @@ impl PersistNodeTracePayload {
     /// subject length cannot be represented in the on-disk format, or if
     /// encoded output storage cannot be reserved.
     pub fn encode(&self) -> Result<Vec<u8>, PersistNodeTracePayloadError> {
-        let count = u64::try_from(self.inputs.len()).map_err(|_| {
-            PersistNodeTracePayloadError::EncodedInputCountOverflow {
-                inputs: self.inputs.len(),
-            }
-        })?;
+        let count = if self.tombstone {
+            PERSIST_NODE_TRACE_PAYLOAD_TOMBSTONE_COUNT
+        } else {
+            u64::try_from(self.inputs.len()).map_err(|_| {
+                PersistNodeTracePayloadError::EncodedInputCountOverflow {
+                    inputs: self.inputs.len(),
+                }
+            })?
+        };
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN)
@@ -1392,6 +1417,10 @@ impl PersistNodeTracePayload {
         bytes.extend_from_slice(&PERSIST_NODE_TRACE_PAYLOAD_MAGIC);
         bytes.extend_from_slice(&PERSIST_NODE_TRACE_PAYLOAD_VERSION.to_le_bytes());
         bytes.extend_from_slice(&count.to_le_bytes());
+
+        if self.tombstone {
+            return Ok(bytes);
+        }
 
         for input in &self.inputs {
             let identity = input.identity();
@@ -1437,11 +1466,24 @@ impl PersistNodeTracePayload {
         }
 
         let version = read_u32(&bytes[16..20]);
-        if version != PERSIST_NODE_TRACE_PAYLOAD_VERSION {
+        if !(PERSIST_NODE_TRACE_PAYLOAD_MIN_VERSION..=PERSIST_NODE_TRACE_PAYLOAD_VERSION)
+            .contains(&version)
+        {
             return Err(PersistNodeTracePayloadError::UnsupportedVersion { version });
         }
 
         let count = read_u64(&bytes[20..28]);
+        if count == PERSIST_NODE_TRACE_PAYLOAD_TOMBSTONE_COUNT {
+            if version < 2 {
+                return Err(PersistNodeTracePayloadError::InputCountOverflow { count });
+            }
+            if bytes.len() != PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN {
+                return Err(PersistNodeTracePayloadError::TrailingBytes {
+                    remaining: bytes.len() - PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN,
+                });
+            }
+            return Ok(Self::tombstone());
+        }
         let count_usize = usize::try_from(count)
             .map_err(|_| PersistNodeTracePayloadError::InputCountOverflow { count })?;
         let fixed_records_len = count_usize
@@ -1524,7 +1566,10 @@ impl PersistNodeTracePayload {
             });
         }
 
-        Ok(Self { inputs })
+        Ok(Self {
+            inputs,
+            tombstone: false,
+        })
     }
 }
 
@@ -1598,6 +1643,9 @@ impl PersistNodeTraceLogEntry {
     }
 
     /// Returns the materialized value hash this trace verifies.
+    ///
+    /// Tombstone entries carry a synthetic hash because they invalidate older
+    /// trace records rather than verifying a materialized value.
     pub const fn value_hash(&self) -> ValueHash {
         self.value_hash
     }
@@ -1616,10 +1664,11 @@ impl PersistNodeTraceLogEntry {
 /// An append-only log for persisted node verifying traces.
 ///
 /// This is a simple durable substrate for the future `nodes/` table. Each
-/// record stores a [`PersistNodeMetadataKey`], the materialized [`ValueHash`]
-/// the trace verifies, and a variable-length [`PersistNodeTracePayload`].
-/// Lookups scan linearly and return the newest matching trace record for the
-/// requested node key.
+/// ordinary record stores a [`PersistNodeMetadataKey`], the materialized
+/// [`ValueHash`] the trace verifies, and a variable-length
+/// [`PersistNodeTracePayload`]. Tombstone records use the same envelope with a
+/// synthetic hash and a tombstone payload. Lookups scan linearly and return the
+/// newest matching trace record for the requested node key.
 #[derive(Clone, Debug)]
 pub struct PersistNodeTraceLog {
     path: PathBuf,

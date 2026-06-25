@@ -1121,12 +1121,16 @@ alone (`M-1`/`Q-A`).
 - [x] Current node verifying-trace payload codec:
       `PersistNodeTracePayload` frames complete cacheable impure-input traces
       as versioned little-endian bytes with a magic header, typed input
-      kind/mode tags, raw identity subjects, and observed-result hashes.
-      `CacheableInputFingerprint::from_observation_hash` reconstructs the
-      persisted fingerprints without re-reading the host. The codec preserves
-      trace order, rejects uncacheable `currentTime`, impossible kind/mode
-      pairs, malformed tags, truncated payloads, and trailing bytes, and
-      exposes stable payload constants for node-trace sidecars. This is
+      kind/mode tags, raw identity subjects, and observed-result hashes, plus a
+      schema-version-4 tombstone marker for explicitly invalidating older trace
+      records. `CacheableInputFingerprint::from_observation_hash` reconstructs
+      the persisted fingerprints without re-reading the host. The standalone
+      payload decoder preserves trace order, accepts version-1 trace
+      payload bytes for direct decoding, rejects version-1 tombstone sentinels,
+      rejects uncacheable `currentTime`, impossible kind/mode pairs, malformed
+      tags, truncated payloads, and trailing bytes, and exposes stable payload
+      constants for node-trace sidecars. This is payload-format compatibility
+      only, not a non-destructive schema-3 cache-root migration. This is
       payload-format substrate only; cache-level sidecar storage is covered
       below, while evaluator durable hit selection, revalidation, currentTime
       taint propagation through persisted dependents, mmap reads, GC/repack,
@@ -1138,13 +1142,14 @@ alone (`M-1`/`Q-A`).
       `PersistNodeMetadataKey` and carrying the materialized `ValueHash` plus
       `PersistNodeTracePayload`, validates existing log records on open, and
       returns the newest record for a node key through linear lookup.
-      `PersistCache::record_node_trace` and `lookup_node_trace` expose the
-      sidecar through the opened cache root. This schema-version-3 log is a
-      simple append-only substrate only; LMDB/redb node tables, transactionality
-      with node metadata or value blobs, automatic evaluator writeback beyond
-      the force-cache bridge below, durable hit selection, revalidation,
-      currentTime taint propagation through persisted dependents, automatic
-      compaction/GC, mmap reads, and cached/uncached harness proof remain open
+      `PersistCache::record_node_trace`, `record_node_trace_tombstone`, and
+      `lookup_node_trace` expose the sidecar through the opened cache root.
+      This schema-version-4 log is a simple append-only substrate only;
+      LMDB/redb node tables, transactionality with node metadata or value
+      blobs, automatic evaluator writeback beyond the force-cache bridge below,
+      durable hit selection, revalidation, currentTime taint propagation through
+      persisted dependents, automatic compaction/GC, mmap reads, and
+      cached/uncached harness proof remain open
       (`C-13`/`R-10`/`S-14`).
 - [x] Current force-cache persistent trace writeback:
       after tree-walk `force_value` gets an accepted forced-expression
@@ -1154,29 +1159,28 @@ alone (`M-1`/`Q-A`).
       that links the materialized payload plus the payload's `ValueHash`.
       Trace-write failure clears the just-linked durable value metadata so a
       value is not left live without a persisted trace; pure observations write
-      a zero-input trace payload, and rejected or unsupported observations can
-      clear the durable value link without deleting older value-associated
-      trace log records. Future durable hit selection can require the node
-      metadata value hash to match the trace record value hash before
-      revalidation, but the sidecar is still non-transactional. This is
-      accepted trace writeback only; evaluator durable hit selection,
-      revalidation, trace tombstones, transactionality with value
-      materialization, currentTime taint propagation through persisted
-      dependents, automatic compaction/GC, mmap reads, and cached/uncached
-      harness proof remain open
+      a zero-input trace payload, while cacheable impure observations write
+      their observed trace segment. Rejected or unsupported observations clear
+      the durable value link and append a trace tombstone so older
+      value-associated trace log records cannot become live again through a
+      later same-hash relink. The sidecar is still non-transactional. This is
+      trace writeback/tombstoning only; evaluator durable hit selection,
+      revalidation, transactionality with value materialization, currentTime
+      taint propagation through persisted dependents, automatic compaction/GC,
+      mmap reads, and cached/uncached harness proof remain open
       (`C-13`/`R-10`/`S-14`).
 - [x] Current value-associated trace revalidation load adapter:
       `PersistCache::load_cached_expression_node_value_with_trace_revalidation`
       reads the newest node metadata value link and newest trace record,
-      returns a miss when either is missing or their `ValueHash` values differ,
-      revalidates each persisted cacheable impure input through caller-supplied
-      `ImpureInputRevalidator`, and loads the indexed `values/` payload only
-      after every fresh identity and observation hash still matches. This is
-      cache-level durable-hit substrate only: evaluator hit selection,
-      in-memory demand-graph insertion, dirty propagation, trace tombstones,
-      transactionality with value materialization, currentTime taint
-      propagation through persisted dependents, automatic compaction/GC, mmap
-      reads, and cached/uncached harness proof remain open
+      returns a miss when either is missing, their `ValueHash` values differ,
+      or the newest trace is a tombstone, revalidates each persisted cacheable
+      impure input through caller-supplied `ImpureInputRevalidator`, and loads
+      the indexed `values/` payload only after every fresh identity and
+      observation hash still matches. This is cache-level durable-hit substrate
+      only: no evaluator hit selection, in-memory demand-graph insertion, dirty
+      propagation, transactionality with value materialization, currentTime
+      taint propagation through persisted dependents, automatic compaction/GC,
+      mmap reads, and cached/uncached harness proof remain open
       (`C-13`/`R-10`/`S-14`).
 - [x] Current force-cache durable hit selection:
       tree-walk forced-expression lookup now tries the trace-verified
@@ -1187,12 +1191,12 @@ alone (`M-1`/`Q-A`).
       payload and any revalidated input edges, record fresh revalidated impure
       inputs into the enclosing evaluation trace when present, record
       current-run persistent demand, and count the result as a cache hit.
-      Missing/stale traces, value-hash mismatches, unavailable persistent roots,
-      persistent read errors, stale impure observations, missing value blobs,
-      and unsupported payload rehydration all fall back to ordinary forcing.
-      This is replayable forced-expression hit selection only:
-      dirty propagation beyond revalidation miss fallback, lazy-element list or lazy-binding attrset values,
-      trace tombstones, transactionality with value
+      Missing/stale/tombstoned traces, value-hash mismatches, unavailable
+      persistent roots, persistent read errors, stale impure observations,
+      missing value blobs, and unsupported payload rehydration all fall back to
+      ordinary forcing. This is replayable forced-expression hit selection only:
+      no dirty propagation beyond revalidation miss fallback, lazy-element list
+      or lazy-binding attrset values, transactionality with value
       materialization, currentTime taint propagation through persisted
       dependents, automatic compaction/GC, mmap reads, and cached/uncached
       harness proof remain open

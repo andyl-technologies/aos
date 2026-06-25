@@ -997,7 +997,7 @@ fn node_trace_payload_uses_stable_wire_bytes() {
     let encoded = payload.encode().expect("payload encodes");
     let mut expected = Vec::new();
     expected.extend_from_slice(b"AOS-NIX-NTRACE01");
-    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend_from_slice(&2u32.to_le_bytes());
     expected.extend_from_slice(&2u64.to_le_bytes());
     expected.push(2);
     expected.push(1);
@@ -1016,6 +1016,43 @@ fn node_trace_payload_uses_stable_wire_bytes() {
     assert_eq!(encoded[29], 1);
     assert_eq!(encoded[72], 5);
     assert_eq!(encoded[73], 2);
+}
+
+#[test]
+fn node_trace_payload_decodes_version_one_payloads() {
+    let payload =
+        PersistNodeTracePayload::from_cacheable_inputs(Vec::new()).expect("empty payload builds");
+    let mut encoded = payload.encode().expect("empty payload encodes");
+    encoded[16..20].copy_from_slice(&1u32.to_le_bytes());
+
+    let decoded = PersistNodeTracePayload::decode(&encoded).expect("v1 payload decodes");
+
+    assert_eq!(decoded.inputs(), &[]);
+    assert!(!decoded.is_tombstone());
+}
+
+#[test]
+fn node_trace_payload_tombstone_uses_stable_wire_bytes() {
+    let payload = PersistNodeTracePayload::tombstone();
+
+    let encoded = payload.encode().expect("tombstone encodes");
+    let decoded = PersistNodeTracePayload::decode(&encoded).expect("tombstone decodes");
+
+    assert_eq!(encoded.len(), PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN);
+    assert_eq!(encoded[0..16], *b"AOS-NIX-NTRACE01");
+    assert_eq!(&encoded[16..20], 2u32.to_le_bytes().as_slice());
+    assert_eq!(&encoded[20..28], u64::MAX.to_le_bytes().as_slice());
+    assert!(decoded.is_tombstone());
+    assert_eq!(decoded.inputs(), &[]);
+
+    let mut old_tombstone = encoded;
+    old_tombstone[16..20].copy_from_slice(&1u32.to_le_bytes());
+    let error =
+        PersistNodeTracePayload::decode(&old_tombstone).expect_err("v1 tombstone sentinel errors");
+    assert_eq!(
+        error,
+        PersistNodeTracePayloadError::InputCountOverflow { count: u64::MAX }
+    );
 }
 
 #[test]
@@ -1062,6 +1099,7 @@ fn node_trace_payload_round_trips_cacheable_input_records() {
     assert_eq!(encoded.len(), expected_len);
     assert_eq!(&encoded[..16], PERSIST_NODE_TRACE_PAYLOAD_MAGIC.as_slice());
     assert_eq!(decoded.inputs(), expected_inputs.as_slice());
+    assert!(!decoded.is_tombstone());
     assert_eq!(decoded, payload);
 }
 
@@ -1077,10 +1115,7 @@ fn node_trace_payload_rejects_count_without_enough_fixed_records() {
 
     assert_eq!(
         error,
-        PersistNodeTracePayloadError::ShortPayload {
-            expected: usize::MAX,
-            actual: PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN,
-        }
+        PersistNodeTracePayloadError::InputCountOverflow { count: u64::MAX }
     );
 }
 

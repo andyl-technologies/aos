@@ -1395,6 +1395,102 @@ fn cache_cached_expression_node_payload_trace_revalidation_misses_without_matchi
 }
 
 #[test]
+fn cache_cached_expression_node_payload_trace_tombstone_suppresses_older_records() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let input = test_read_file_fingerprint(b"/tmp/source", 7);
+    let trace_payload =
+        PersistNodeTracePayload::from_cacheable_inputs([input.clone()]).expect("trace builds");
+
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    cache
+        .record_node_trace(node_key, value_hash, &trace_payload)
+        .expect("trace records");
+    cache
+        .record_node_trace_tombstone(node_key)
+        .expect("trace tombstone records");
+    cache
+        .record_node_materialized_value_hash(node_key, value_hash)
+        .expect("node value relinks");
+
+    let latest = cache
+        .lookup_node_trace(node_key)
+        .expect("trace lookup succeeds")
+        .expect("trace tombstone exists");
+    assert!(latest.payload().is_tombstone());
+
+    let mut revalidator = StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(input)]);
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(node_key, &mut revalidator)
+            .expect("tombstoned trace lookup succeeds"),
+        None
+    );
+    assert_eq!(
+        revalidator.calls(),
+        0,
+        "tombstoned traces must miss before input revalidation"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_node_payload_trace_tombstone_misses_with_matching_value_hash() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let input = test_read_file_fingerprint(b"/tmp/source", 7);
+
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    cache
+        .record_node_trace(node_key, value_hash, &PersistNodeTracePayload::tombstone())
+        .expect("matching-hash trace tombstone records");
+    cache
+        .record_node_materialized_value_hash(node_key, value_hash)
+        .expect("node value relinks");
+
+    let latest = cache
+        .lookup_node_trace(node_key)
+        .expect("trace lookup succeeds")
+        .expect("trace tombstone exists");
+    assert_eq!(latest.value_hash(), value_hash);
+    assert!(latest.payload().is_tombstone());
+
+    let mut revalidator = StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(input)]);
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(node_key, &mut revalidator)
+            .expect("matching-hash tombstoned trace lookup succeeds"),
+        None
+    );
+    assert_eq!(
+        revalidator.calls(),
+        0,
+        "matching-hash tombstones must miss before input revalidation"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_cached_expression_node_payload_trace_revalidation_misses_on_stale_inputs() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

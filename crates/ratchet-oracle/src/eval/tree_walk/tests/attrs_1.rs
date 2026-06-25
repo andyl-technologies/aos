@@ -1805,6 +1805,99 @@ fn effectful_forced_inline_thunks_ignore_untraced_persistent_value_link() {
 }
 
 #[test]
+fn tombstoned_effectful_forced_inline_thunks_miss_persistent_cache() {
+    let persist_root = unique_temp_dir("force-cache-persistent-effectful-tombstone");
+    let root = unique_temp_dir("force-cache-persistent-effectful-tombstone-source");
+    fs::write(root.join("marker"), b"present").expect("marker exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = "{ a = builtins.pathExists ./marker; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+
+    let mut seed_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    seed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    seed_options.set_persist_cache_root(&persist_root);
+    let mut seed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        seed_options,
+        "default.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let seed_root = seed.eval_root().expect("attrset evaluates");
+    let seed_thunk_value = {
+        let attrs = seed
+            .heap()
+            .get_attrs(seed_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = seed
+            .heap()
+            .get_thunk(seed_thunk_value)
+            .expect("a remains a suspended thunk");
+        seed.force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("force-cache subject builds")
+    };
+    let identity = subject
+        .metadata_identity
+        .expect("effectful thunk has metadata identity");
+    let key = PersistNodeMetadataKey::for_expression(
+        identity,
+        subject.free_var_value_hashes.iter().copied(),
+    );
+    let payload = CachedExpressionValue::immediate(Value::bool(true)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let marker_path = path_bytes(&root.join("marker"));
+    let trace_payload = persistent_path_exists_trace_payload(&marker_path, true);
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    persist
+        .record_node_trace(key, value_hash, &trace_payload)
+        .expect("stale trace records");
+    persist
+        .record_node_trace_tombstone(key)
+        .expect("trace tombstone records");
+    drop(seed);
+    drop(persist);
+
+    let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    options.set_persist_cache_root(&persist_root);
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let forced = force_attr_a(&mut eval, &ir, a);
+
+    assert_eq!(forced.as_bool(), Ok(true));
+    assert_eq!(
+        eval.stats().thunks_forced(),
+        1,
+        "tombstoned impure persistent values must recompute"
+    );
+    assert_eq!(eval.stats().cache_hits(), 0);
+    assert_eq!(eval.stats().cache_misses(), 1);
+
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn read_file_backed_inline_thunks_hit_after_revalidation() {
     let root = unique_temp_dir("force-cache-read-file-backed");
     fs::write(root.join("marker"), b"present").expect("marker exists");
@@ -3814,16 +3907,14 @@ fn rejected_force_observation_clears_persistent_value_link() {
         None,
         "rejected observation clears the stale persistent value link"
     );
-    assert_eq!(
-        persist
-            .lookup_node_trace(key)
-            .expect("persistent trace lookup succeeds"),
-        Some(PersistNodeTraceLogEntry::new(
-            key,
-            stale_value_hash,
-            stale_trace_payload
-        )),
-        "rejected observations do not append a replacement persistent trace"
+    let trace = persist
+        .lookup_node_trace(key)
+        .expect("persistent trace lookup succeeds")
+        .expect("persistent trace tombstone records");
+    assert_eq!(trace.key(), key);
+    assert!(
+        trace.payload().is_tombstone(),
+        "rejected observations tombstone stale persistent traces"
     );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");
@@ -3903,6 +3994,8 @@ fn unsupported_force_payload_clears_persistent_value_link() {
         PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
     let stale_payload = CachedExpressionValue::immediate(Value::int(123))
         .expect("stale scalar payload is cacheable");
+    let stale_value_hash = stale_payload.value_hash().expect("stale payload hashes");
+    let stale_trace_payload = persistent_path_exists_trace_payload(b"/tmp/stale-input", true);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
 
     let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
@@ -3913,6 +4006,9 @@ fn unsupported_force_payload_clears_persistent_value_link() {
             MaterializationDecision::Materialize,
         )
         .expect("stale persistent payload materializes");
+    persist
+        .record_node_trace(key, stale_value_hash, &stale_trace_payload)
+        .expect("stale persistent trace records");
     drop(persist);
 
     let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
@@ -3955,6 +4051,15 @@ fn unsupported_force_payload_clears_persistent_value_link() {
             .expect("persistent payload lookup succeeds"),
         None,
         "unsupported recomputation clears the stale persistent value link"
+    );
+    assert!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds")
+            .expect("persistent trace tombstone records")
+            .payload()
+            .is_tombstone(),
+        "unsupported recomputation tombstones stale persistent traces"
     );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");
