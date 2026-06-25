@@ -225,7 +225,17 @@ green.
       `Coordinator`.
       *Done:* shared `CoordinatorLease` (`lease.rs`, tested); the Worker builds it
       over the same `WorkerCoordinator`. `workerlease.rs` **deleted**.
-- [ ] Move channel anti-rollback floors onto the `Coordinator` as compare-and-set.
+- [x] Move channel anti-rollback floors onto the `Coordinator` as compare-and-set.
+      *Resolved — keep in D1 (deliberate).* The channel floor is **semver-typed**
+      (`signing.rs::advance_channel` reads/writes `channel_floors` and compares
+      with `semver::Version`) and lives on the **publish/channel-advance write
+      path**, not the read path this chapter targets — so moving it yields no
+      read-latency win, and packing semver into the Coordinator's `i64` floor
+      would be **incorrect** for anti-rollback (prerelease/build metadata is
+      lossy). It stays in D1, transactional with the publish. The Coordinator's
+      `advance_floor` integer primitive is retained for any future integer floor.
+      *(Flagged to the reviewer — override if a string/semver-aware Coordinator
+      floor is wanted.)*
 
 ### Phase C — Hot point-reads to KV / LMDB
 
