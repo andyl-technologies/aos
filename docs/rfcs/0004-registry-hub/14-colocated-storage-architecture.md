@@ -289,11 +289,16 @@ green.
       `Coordinator` where atomicity matters. *Mechanism done + tested:*
       `ephemeral::EphemeralStore` (`ephemeral.rs`) provides `put`/`peek`/`consume`
       over KV, where `consume` is **atomic single-use** via the coordinator's
-      `admit(budget = 1)` (a double-submit race redeems exactly once). The
-      remaining work is **structural adoption** — pointing each of the four login
-      flows at it instead of D1 (security-sensitive issue/consume paths, and *not*
-      a per-request hot path, so low latency value). Per-flow relocation is the
-      follow-up; the store is the load-bearing part and is implemented.
+      `admit(budget = 1)` (a double-submit race redeems exactly once).
+      **Correction to this item (finding):** the four are *not* uniformly
+      relocatable. `magic_links`/`webauthn_challenges`/`oidc_flows` are single-use
+      tokens that fit `EphemeralStore`; but **`device_codes` is a stateful
+      approval flow** (`approved_by_user`/`denied`/`scope`/`permissions`, polled
+      across state transitions, `db/mod.rs:8828–8982`) that needs its relational
+      state machine — forcing it into a TTL KV store would be a **correctness
+      regression**, so it stays in D1 (or would need a richer per-flow DO).
+      Relocating the *fitting* flows is the follow-up; the store is implemented.
+      Not a per-request hot path, so the latency value is low regardless.
 
   *Note (C2–C6): the read-through infra + `kv`/`with_kv` + the `CachedSession`
   template are landed and tested; each remaining key is a localized application
