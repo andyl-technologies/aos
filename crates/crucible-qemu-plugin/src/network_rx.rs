@@ -5,7 +5,10 @@
 //! delivery gate, queues frame payloads through a lossless backend, and flushes
 //! the backend once the ordered batch has been queued.
 
-use std::{fmt, os::raw::c_int};
+use std::{
+    fmt,
+    os::raw::{c_int, c_void},
+};
 
 use thiserror::Error;
 
@@ -17,6 +20,9 @@ pub const QEMU_PLUGIN_NET_SEND_SYMBOL: &str = "qemu_plugin_net_send";
 pub const QEMU_PLUGIN_NET_FLUSH_SYMBOL: &str = "qemu_plugin_net_flush";
 /// QEMU patch export used only for diagnostics around guest RX readiness.
 pub const QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL: &str = "qemu_plugin_net_can_receive";
+const QEMU_PLUGIN_NET_SEND_SYMBOL_C: &[u8] = b"qemu_plugin_net_send\0";
+const QEMU_PLUGIN_NET_FLUSH_SYMBOL_C: &[u8] = b"qemu_plugin_net_flush\0";
+const QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL_C: &[u8] = b"qemu_plugin_net_can_receive\0";
 
 /// QEMU's lossless network RX queue function.
 ///
@@ -29,6 +35,99 @@ pub type QemuPluginNetSendFn = extern "C" fn(*const u8, usize) -> c_int;
 /// The patched QEMU API exports `qemu_plugin_net_flush` as a no-argument function
 /// returning zero on success and nonzero on loud failure.
 pub type QemuPluginNetFlushFn = extern "C" fn() -> c_int;
+/// QEMU's network RX readiness diagnostic function.
+pub type QemuPluginNetCanReceiveFn = extern "C" fn() -> c_int;
+
+/// Resolves QEMU's lossless network RX queue export from the loaded process.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_net_send_symbol() -> Option<QemuPluginNetSendFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
+    // either null or a process symbol address. The QEMU patch defines this
+    // symbol with the exact `QemuPluginNetSendFn` ABI; callers fail closed when
+    // it is absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_NET_SEND_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: Non-null `symbol` was resolved for `qemu_plugin_net_send`,
+        // whose patched QEMU declaration matches `QemuPluginNetSendFn`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuPluginNetSendFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's lossless network RX queue export from the loaded process.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_net_send_symbol() -> Option<QemuPluginNetSendFn> {
+    None
+}
+
+/// Resolves QEMU's lossless network RX flush export from the loaded process.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_net_flush_symbol() -> Option<QemuPluginNetFlushFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
+    // either null or a process symbol address. The QEMU patch defines this
+    // symbol with the exact `QemuPluginNetFlushFn` ABI; callers fail closed when
+    // it is absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_NET_FLUSH_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: Non-null `symbol` was resolved for `qemu_plugin_net_flush`,
+        // whose patched QEMU declaration matches `QemuPluginNetFlushFn`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuPluginNetFlushFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's lossless network RX flush export from the loaded process.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_net_flush_symbol() -> Option<QemuPluginNetFlushFn> {
+    None
+}
+
+/// Resolves QEMU's network RX readiness diagnostic export from the loaded process.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_net_can_receive_symbol() -> Option<QemuPluginNetCanReceiveFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
+    // either null or a process symbol address. The QEMU patch defines this
+    // symbol with the exact `QemuPluginNetCanReceiveFn` ABI; callers fail closed
+    // when it is absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: Non-null `symbol` was resolved for
+        // `qemu_plugin_net_can_receive`, whose patched QEMU declaration matches
+        // `QemuPluginNetCanReceiveFn`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuPluginNetCanReceiveFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's network RX readiness diagnostic export from the loaded process.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_net_can_receive_symbol() -> Option<QemuPluginNetCanReceiveFn> {
+    None
+}
 
 /// Registration-time-fixed network RX injection state.
 #[derive(Debug, Default)]

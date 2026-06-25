@@ -1292,11 +1292,30 @@ time-control primitives the whole design rests on.
     plus request-id overflow paths that clear their PDU slots before freeing
     queue elements. This is source-level patch evidence; full guest 9p mount and
     layer-1 workload evidence remains a later gate.
-- [ ] **T-PATCH-14** Implement the network co-sim patches
-  `crucible-net-tx-callback` (TX intercept) and complete `crucible-net-flush-api`
-  end-to-end plugin integration over the QEMU-side RX append/flush primitives,
-  with no-loss / deterministic-delivery micro-tests. — satisfies [PATCH-31],
-  [PATCH-32]; spec §11.6 (E18).
+- [x] **T-PATCH-14** Implement the network co-sim patches
+  `crucible-net-tx-callback` (TX intercept) and complete
+  `crucible-net-flush-api` QEMU patch ABI/Rust resolver integration over the
+  QEMU-side RX append/flush primitives, with no-loss /
+  deterministic-delivery micro-tests. — satisfies [PATCH-31], [PATCH-32];
+  spec §11.6 (E18).
+  - Completed by `0020-crucible-net-tx-callback.patch`,
+    `checks.crucible.phase1.qemuNetTxCallback`,
+    `checks.crucible.phase1.qemuNetDeterministic`, and
+    `gate:patch-microtests`: QEMU now exports
+    `qemu_plugin_register_net_tx_cb`, preserves the upstream backend when no TX
+    callback is registered, and routes flat and iov guest TX frames to the
+    callback instead of the backend when registered. The focused TX fixture
+    proves stock QEMU lacks the callback surface, exercises userdata delivery,
+    exact flat/iov frame capture, registered-backend bypass for guest NIC
+    senders, non-NIC upstream fallback, oversized iov fail-loud behavior,
+    fail-loud callback rejection, and link-down fallback semantics. The RX half
+    remains the `qemu_plugin_net_send`/`qemu_plugin_net_flush` lossless queue
+    from `crucible-net-deterministic`; the reused RX fixture proves not-ready
+    frames are retained until a deterministic flush icount, flush failure is
+    loud, and skewed producer host timing does not change guest-visible
+    delivery. The Rust plugin now exports typed resolvers for TX callback
+    registration and the RX send/flush/can-receive patch symbols; live install
+    registration remains owned by the later plugin lifecycle gates.
 - [ ] **T-PATCH-15** Confirm (or spike) that the guest↔host doorbell needs **no
   new patch**: reuse the existing port-I/O/MMIO trap + plugin mem-read; any patch
   added is white-box-only, inert, and spike-gated. — satisfies [PATCH-33]; spec

@@ -23,6 +23,7 @@
   qemuPatch17Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0017-crucible-blk-write-sentinel.patch;
   qemuPatch18Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0018-crucible-dev-cb-api.patch;
   qemuPatch19Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0019-crucible-9p-shmem.patch;
+  qemuPatch20Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0020-crucible-net-tx-callback.patch;
   qemuNixHash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu.nix;
   qemuPatch1Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0001-crucible-sim-accel.patch;
   qemuPatch2Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0002-crucible-rr-fingerprint-helpers.patch;
@@ -43,6 +44,7 @@
   qemuPatch17Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0017-crucible-blk-write-sentinel.patch;
   qemuPatch18Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0018-crucible-dev-cb-api.patch;
   qemuPatch19Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0019-crucible-9p-shmem.patch;
+  qemuPatch20Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0020-crucible-net-tx-callback.patch;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-s9-qemu-build-identity";
@@ -69,6 +71,7 @@ in
     qemuPatch17 = qemuPatch17Source;
     qemuPatch18 = qemuPatch18Source;
     qemuPatch19 = qemuPatch19Source;
+    qemuPatch20 = qemuPatch20Source;
     passAsFile = [
       "qemuNix"
       "qemuPatch1"
@@ -90,6 +93,7 @@ in
       "qemuPatch17"
       "qemuPatch18"
       "qemuPatch19"
+      "qemuPatch20"
     ];
 
     buildDeps = [
@@ -143,6 +147,8 @@ in
     PATCH_0018_HASH = qemuPatch18Hash;
     PATCH_0019_NAME = "0019-crucible-9p-shmem.patch";
     PATCH_0019_HASH = qemuPatch19Hash;
+    PATCH_0020_NAME = "0020-crucible-net-tx-callback.patch";
+    PATCH_0020_HASH = qemuPatch20Hash;
 
     phases = [
       {
@@ -202,6 +208,7 @@ in
           cp "$qemuPatch17Path" "$PATCH_0017_NAME"
           cp "$qemuPatch18Path" "$PATCH_0018_NAME"
           cp "$qemuPatch19Path" "$PATCH_0019_NAME"
+          cp "$qemuPatch20Path" "$PATCH_0020_NAME"
 
           require_fixed qemu.nix 'pname ? "qemu"'
           require_fixed qemu.nix 'enablePlugins ? false'
@@ -225,6 +232,7 @@ in
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0017-crucible-blk-write-sentinel.patch}'
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0018-crucible-dev-cb-api.patch}'
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0019-crucible-9p-shmem.patch}'
+          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0020-crucible-net-tx-callback.patch}'
           require_fixed qemu.nix '--target-list=x86_64-softmmu'
           require_fixed qemu.nix 'https://download.qemu.org/qemu-'
           require_fixed qemu.nix '.tar.xz'
@@ -307,8 +315,11 @@ in
           require_fixed "$PATCH_0019_NAME" 'virtio_9p_forward_crucible'
           require_fixed "$PATCH_0019_NAME" 'crucible_9p_callbacks_ready()'
           require_fixed "$PATCH_0019_NAME" 'next_crucible_9p_request_id'
+          require_fixed "$PATCH_0020_NAME" 'qemu_plugin_register_net_tx_cb'
+          require_fixed "$PATCH_0020_NAME" 'qemu_plugin_net_tx_cb_t'
+          require_fixed "$PATCH_0020_NAME" 'crucible_net_tx_submit'
 
-          patch_count=19
+          patch_count=20
           patch_series_hash=$(
             {
               printf '%s  %s\n' "$PATCH_0001_HASH" "$PATCH_0001_NAME"
@@ -330,6 +341,7 @@ in
               printf '%s  %s\n' "$PATCH_0017_HASH" "$PATCH_0017_NAME"
               printf '%s  %s\n' "$PATCH_0018_HASH" "$PATCH_0018_NAME"
               printf '%s  %s\n' "$PATCH_0019_HASH" "$PATCH_0019_NAME"
+              printf '%s  %s\n' "$PATCH_0020_HASH" "$PATCH_0020_NAME"
             } \
               | sha256sum \
               | gawk '{ print $1 }'
@@ -379,6 +391,8 @@ in
             echo "patch_0018_hash=$PATCH_0018_HASH"
             echo "patch_0019_name=$PATCH_0019_NAME"
             echo "patch_0019_hash=$PATCH_0019_HASH"
+            echo "patch_0020_name=$PATCH_0020_NAME"
+            echo "patch_0020_hash=$PATCH_0020_HASH"
             echo "patch_series_hash=$patch_series_hash"
             echo "plugins_enabled=true"
             echo "s1_horizon_extended_hash=$s1_horizon_extended_hash"
@@ -452,6 +466,7 @@ in
           qemu_block_write_sentinel_patch_present=true
           qemu_dev_cb_api_patch_present=true
           qemu_9p_shmem_patch_present=true
+          qemu_net_tx_callback_patch_present=true
           full_upstream_inertness_comparison=false
           qemu_inert_gate_status=fallback_pending_upstream_comparison
           fallback_adopted=pin_build_id_and_regate_on_change
@@ -479,6 +494,7 @@ in
           cp "$PATCH_0017_NAME" "$out/$PATCH_0017_NAME"
           cp "$PATCH_0018_NAME" "$out/$PATCH_0018_NAME"
           cp "$PATCH_0019_NAME" "$out/$PATCH_0019_NAME"
+          cp "$PATCH_0020_NAME" "$out/$PATCH_0020_NAME"
           {
             echo PASS_WITH_FALLBACK
             echo spike=qemu-build-identity-and-inertness
@@ -528,6 +544,8 @@ in
             echo patch_0018_hash="$PATCH_0018_HASH"
             echo patch_0019_name="$PATCH_0019_NAME"
             echo patch_0019_hash="$PATCH_0019_HASH"
+            echo patch_0020_name="$PATCH_0020_NAME"
+            echo patch_0020_hash="$PATCH_0020_HASH"
             echo patch_series_hash="$patch_series_hash"
             echo plugins_enabled=true
             echo patch_apply_list_matches="$patch_apply_list_matches"
@@ -550,6 +568,7 @@ in
             echo qemu_block_write_sentinel_patch_present="$qemu_block_write_sentinel_patch_present"
             echo qemu_dev_cb_api_patch_present="$qemu_dev_cb_api_patch_present"
             echo qemu_9p_shmem_patch_present="$qemu_9p_shmem_patch_present"
+            echo qemu_net_tx_callback_patch_present="$qemu_net_tx_callback_patch_present"
             echo s1_result_consumed=true
             echo s1_result_status=PASS
             echo s1_source=checks.crucible.phase0.s1Fingerprint

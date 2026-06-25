@@ -83,6 +83,7 @@ in {
     qemuDeterministicEntropy = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;};
     qemuDeterministicGetrandom = import ./phase1-qemu-deterministic-getrandom.nix {inherit pkgs lib;};
     qemuNetDeterministic = import ./phase1-qemu-net-deterministic.nix {inherit pkgs lib;};
+    qemuNetTxCallback = import ./phase1-qemu-net-tx-callback.nix {inherit pkgs lib;};
     qemuBlockShmem = import ./phase1-qemu-block-shmem.nix {inherit pkgs lib;};
     qemuNinePShmem = import ./phase1-qemu-9p-shmem.nix {inherit pkgs lib;};
     pluginTimeAdvance = import ./phase1-plugin-time-advance.nix {inherit pkgs lib;};

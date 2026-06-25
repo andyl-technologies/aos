@@ -149,6 +149,13 @@
       enforces = "PATCH-29,E19";
       capability = "virtio-9p raw-message shmem forwarding path with upstream fallback";
     }
+    {
+      file = "0020-crucible-net-tx-callback.patch";
+      catalogName = "crucible-net-tx-callback";
+      class = "F";
+      enforces = "PATCH-31,E18,SHM-17";
+      capability = "guest network TX callback interception with upstream fallback";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
