@@ -205,3 +205,41 @@ the access-token TTL raised to 1 h.
    binding with sealed credentials (currently `public`, no creds), i.e. an R2
    S3 API token must be configured. Also fix the generic-mode existence check so
    query-missing dedups instead of re-uploading the whole closure each run.
+
+## Status update (2026-06-25, pt.2) — fast upload path: parallel + presigned direct-to-R2
+
+The cache upload path is rebuilt for throughput, for all users:
+
+1. **`run_push` is now genuinely parallel.** It previously acquired a semaphore
+   permit but awaited each path inline — `--jobs` was a no-op and uploads ran
+   sequentially. Rewritten as `buffer_unordered(jobs)` with compression on
+   blocking threads.
+
+2. **Presigned direct-to-origin upload.** When a cache is backed by a
+   presignable public S3/R2 binding, the client mints a presigned PUT URL
+   (`MintCacheUploadCredentials`, camelCase Connect-JSON) and PUTs the NAR bytes
+   **straight to R2** — the Worker is out of the byte path. The narinfo still
+   goes through the facade so the hub index/GC/pins stay authoritative. Falls
+   back to the (now-parallel) facade PUT when the cache isn't presignable
+   (latched, so no per-NAR failed round-trip).
+
+**Measured (full AOS set, 8.79 GiB, aos.andyl.org):**
+| path | full-set time | rate |
+|---|---|---|
+| original (sequential facade) | 1052 s | 8.5 MiB/s |
+| parallel facade | (dev-shell 230→65 s) | ~15 MiB/s |
+| **parallel + presigned direct-to-R2** | **83 s** | **~108 MiB/s agg; ~1.8 Gbit/s during the pure-upload phase** |
+
+~12.6× faster end to end. Serving verified intact (Worker 302→presigned R2 GET).
+
+**Deployment.** The `default` cache was made presignable: a private `andyl/r2presign`
+R2 binding (virtual-hosted endpoint `aos-hub-surfaces.<acct>.r2.cloudflarestorage.com`,
+AES-GCM-sealed credentials), with `default.storage_binding_id` repointed to it.
+No Worker redeploy was needed — `presign_cache` was already live.
+
+### Remaining levers to saturate 3 Gbit
+1. **Batch mint + batch narinfo register.** Each path still makes 2 Worker
+   round-trips (~300 ms each: mint + narinfo). Batching both into one RPC apiece
+   removes the per-path Worker latency, leaving only the direct R2 PUTs.
+2. **Faster metadata gathering.** ~40 s of the 83 s is `nix path-info` over the
+   371-path closure, before any upload.
