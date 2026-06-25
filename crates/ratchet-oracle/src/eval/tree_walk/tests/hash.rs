@@ -1,6 +1,11 @@
 //! Tree-walk evaluator tests: hash.
 
 use super::*;
+use crate::cache::{
+    PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags, ParseCacheKey, ParseFileKey,
+    PersistCache, PersistFileArtifactKey,
+};
+use crate::string::NixString;
 
 #[test]
 fn hash_string_primop_hashes_bytes() {
@@ -26,6 +31,173 @@ fn hash_string_primop_hashes_bytes() {
         ),
         b"local"
     );
+}
+
+#[test]
+fn configured_import_cache_preserves_hash_builtin_surface() {
+    fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+        !needle.is_empty()
+            && haystack
+                .windows(needle.len())
+                .any(|window| window == needle)
+    }
+
+    fn evaluate_hash_surface(source: &str, options: TreeWalkOptions) -> (Vec<u8>, (usize, usize)) {
+        let ir = lower(source);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        let value = evaluator.eval_root().expect("hash expression evaluates");
+        let import_stats = evaluator.import_parse_cache_stats();
+        let output = evaluator
+            .heap()
+            .get_string(value)
+            .expect("hash result is a string")
+            .bytes()
+            .to_vec();
+        (output, import_stats)
+    }
+
+    let root = fs::canonicalize(unique_temp_dir("import-cache-hash-surface-parity"))
+        .expect("temp directory canonicalizes");
+    let first_parse_root = root.join("first-parse-cache");
+    let second_parse_root = root.join("second-parse-cache");
+    let persist_root = root.join("persist-cache");
+    let import_path = root.join("imported.nix");
+    let imported_source = br#""hash-surface-value""#;
+    fs::write(&import_path, imported_source).expect("import source writes");
+    let import_realpath = fs::canonicalize(&import_path).expect("import path canonicalizes");
+    let source = format!(
+        r#"let imported = import {}; in builtins.hashString "sha256" imported"#,
+        import_path.display()
+    );
+
+    let mut uncached_options = TreeWalkOptions::new();
+    uncached_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    let (uncached_output, uncached_stats) = evaluate_hash_surface(&source, uncached_options);
+    assert_eq!(uncached_stats, (0, 0));
+
+    let mut miss_options = TreeWalkOptions::new();
+    miss_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    miss_options.set_parse_cache_root(&first_parse_root);
+    miss_options.set_persist_cache_root(&persist_root);
+    let (miss_output, miss_stats) = evaluate_hash_surface(&source, miss_options);
+    assert_eq!(miss_stats, (0, 1));
+    assert_eq!(miss_output, uncached_output);
+
+    let mut hit_options = TreeWalkOptions::new();
+    hit_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    hit_options.set_parse_cache_root(&second_parse_root);
+    hit_options.set_persist_cache_root(&persist_root);
+    let (hit_output, hit_stats) = evaluate_hash_surface(&source, hit_options);
+    assert_eq!(hit_stats, (1, 0));
+    assert_eq!(hit_output, uncached_output);
+    assert!(
+        ParseCache::new(&second_parse_root)
+            .entry_for_source(imported_source)
+            .is_complete(),
+        "persistent hit should hydrate the runtime parse-cache entry"
+    );
+
+    let root_parse_key = ParseCacheKey::for_source(
+        source.as_bytes(),
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let root_parse_key_hex_canary = root_parse_key.to_hex();
+    let root_parse_key_raw_canary = root_parse_key.as_bytes();
+    let root_parse_key_nixbase32_canary = nix_compat::nixbase32::encode(&root_parse_key_raw_canary);
+    let imported_parse_key = ParseCacheKey::for_source(
+        imported_source,
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let imported_parse_key_hex_canary = imported_parse_key.to_hex();
+    let imported_parse_key_raw_canary = imported_parse_key.as_bytes();
+    let imported_parse_key_nixbase32_canary =
+        nix_compat::nixbase32::encode(&imported_parse_key_raw_canary);
+    let file_key = ParseFileKey::for_source(&import_realpath, imported_source);
+    let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, imported_parse_key);
+    assert!(
+        PersistCache::open(&persist_root)
+            .expect("persistent cache opens")
+            .lookup_file_artifact(artifact_key)
+            .expect("persistent file-artifact lookup succeeds")
+            .is_some(),
+        "hash canary import should materialize a persistent file-artifact mapping"
+    );
+    let file_content_hash_hex_canary = file_key.content_hash_hex();
+    let file_content_hash_raw_canary = file_key.content_hash().as_bytes();
+    let file_content_hash_nixbase32_canary =
+        nix_compat::nixbase32::encode(&file_content_hash_raw_canary);
+    let hot_canary = NixString::from_bytes(b"hash-surface-value".to_vec())
+        .structural_hash_xxh3()
+        .raw_for_tests();
+    let hot_decimal_canary = hot_canary.to_string();
+    let hot_hex_canary = format!("{hot_canary:016x}");
+    let hot_little_endian_canary = hot_canary.to_le_bytes();
+    let hot_big_endian_canary = hot_canary.to_be_bytes();
+
+    let canaries = [
+        (
+            "root parse-cache BLAKE3 hex",
+            root_parse_key_hex_canary.as_bytes(),
+        ),
+        (
+            "root parse-cache BLAKE3 raw bytes",
+            root_parse_key_raw_canary.as_slice(),
+        ),
+        (
+            "root parse-cache BLAKE3 Nix base32",
+            root_parse_key_nixbase32_canary.as_bytes(),
+        ),
+        (
+            "import parse-cache BLAKE3 hex",
+            imported_parse_key_hex_canary.as_bytes(),
+        ),
+        (
+            "import parse-cache BLAKE3 raw bytes",
+            imported_parse_key_raw_canary.as_slice(),
+        ),
+        (
+            "import parse-cache BLAKE3 Nix base32",
+            imported_parse_key_nixbase32_canary.as_bytes(),
+        ),
+        (
+            "file-content BLAKE3 hex",
+            file_content_hash_hex_canary.as_bytes(),
+        ),
+        (
+            "file-content BLAKE3 raw bytes",
+            file_content_hash_raw_canary.as_slice(),
+        ),
+        (
+            "file-content BLAKE3 Nix base32",
+            file_content_hash_nixbase32_canary.as_bytes(),
+        ),
+        ("hot xxh3 decimal", hot_decimal_canary.as_bytes()),
+        ("hot xxh3 hex", hot_hex_canary.as_bytes()),
+        (
+            "hot xxh3 little-endian bytes",
+            hot_little_endian_canary.as_slice(),
+        ),
+        (
+            "hot xxh3 big-endian bytes",
+            hot_big_endian_canary.as_slice(),
+        ),
+    ];
+    for (canary_name, canary) in canaries {
+        assert!(
+            !contains_bytes(&uncached_output, canary),
+            "{canary_name} leaked into hash builtin output: {uncached_output:?}"
+        );
+    }
+
+    fs::remove_dir_all(root).expect("temp directory removes");
 }
 
 #[test]

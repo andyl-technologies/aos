@@ -807,6 +807,15 @@ alone (`M-1`/`Q-A`).
       path, then requires identical `.drv` paths and ATerm bytes across all
       three runs. This is selected current-substrate coverage only, not the
       full cached/uncached closure parity gate (`S-15`).
+- [x] Current hash-builtin cache-surface canary:
+      `configured_import_cache_preserves_hash_builtin_surface` evaluates
+      `builtins.hashString "sha256" (import file)` with import caching disabled,
+      with configured parse/persist roots on a miss/write path, and with a later
+      persistent-hit path, then requires identical SHA-256 hash-string output
+      across all three runs and scans that output for the selected internal
+      parse/import/file-content BLAKE3 and hot xxh3 canaries. This samples one
+      hash-builtin surface only, not the full hash/fetch builtin leak-invariant
+      gate (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
