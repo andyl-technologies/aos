@@ -273,6 +273,89 @@ fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
 }
 
 #[test]
+fn configured_import_cache_preserves_drv_surfaces() {
+    fn evaluate_derivation_surface(
+        source: &str,
+        options: TreeWalkOptions,
+    ) -> (String, Vec<u8>, (usize, usize)) {
+        let ir = lower(source);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        let _value = evaluator.eval_root().expect("derivation evaluates");
+        let import_stats = evaluator.import_parse_cache_stats();
+        let derivations = evaluator
+            .derivation_snapshot()
+            .expect("derivation snapshot succeeds");
+        let derivation = derivations
+            .iter()
+            .next()
+            .expect("static derivation is recorded");
+        let aterm = derivation
+            .aterm_bytes()
+            .expect("static derivation has ATerm bytes")
+            .to_vec();
+        (derivation.absolute_path().to_owned(), aterm, import_stats)
+    }
+
+    let root = fs::canonicalize(unique_temp_dir("import-cache-drv-surface-parity"))
+        .expect("temp directory canonicalizes");
+    let first_parse_root = root.join("first-parse-cache");
+    let second_parse_root = root.join("second-parse-cache");
+    let persist_root = root.join("persist-cache");
+    let import_path = root.join("imported.nix");
+    let imported_source = br#""surface-value""#;
+    fs::write(&import_path, imported_source).expect("import source writes");
+    let source = format!(
+        r#"let
+             imported = import {};
+           in derivationStrict {{
+             name = "cache-surface-parity";
+             system = "x86_64-linux";
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             args = [ imported ];
+           }}"#,
+        import_path.display()
+    );
+
+    let mut uncached_options = TreeWalkOptions::new();
+    uncached_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    let (uncached_path, uncached_aterm, uncached_stats) =
+        evaluate_derivation_surface(&source, uncached_options);
+    assert_eq!(uncached_stats, (0, 0));
+
+    let mut miss_options = TreeWalkOptions::new();
+    miss_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    miss_options.set_parse_cache_root(&first_parse_root);
+    miss_options.set_persist_cache_root(&persist_root);
+    let (miss_path, miss_aterm, miss_stats) = evaluate_derivation_surface(&source, miss_options);
+    assert_eq!(miss_stats, (0, 1));
+    assert_eq!(miss_path, uncached_path);
+    assert_eq!(miss_aterm, uncached_aterm);
+
+    let mut hit_options = TreeWalkOptions::new();
+    hit_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    hit_options.set_parse_cache_root(&second_parse_root);
+    hit_options.set_persist_cache_root(&persist_root);
+    let (hit_path, hit_aterm, hit_stats) = evaluate_derivation_surface(&source, hit_options);
+    assert_eq!(hit_stats, (1, 0));
+    assert_eq!(hit_path, uncached_path);
+    assert_eq!(hit_aterm, uncached_aterm);
+    assert!(
+        ParseCache::new(&second_parse_root)
+            .entry_for_source(imported_source)
+            .is_complete(),
+        "persistent hit should hydrate the runtime parse-cache entry"
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
 fn derivation_strict_rejects_non_utf8_structural_fields() {
     for source in [
             b"derivationStrict {\n  name = \"x\";\n  system = \"x86_64-linux\";\n  builder = \"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-\xff-builder\";\n}"

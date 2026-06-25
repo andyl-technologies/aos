@@ -800,6 +800,13 @@ alone (`M-1`/`Q-A`).
       miss/write and persistent file-artifact mapping occurred. This is a
       selected current-substrate regression canary, not the full type-enforced
       P2 leak-invariant harness (`S-15`).
+- [x] Current imported-derivation cache-surface parity canary:
+      `configured_import_cache_preserves_drv_surfaces` evaluates the same
+      imported-file derivation with import caching disabled, with configured
+      parse/persist roots on a miss/write path, and with a later persistent-hit
+      path, then requires identical `.drv` paths and ATerm bytes across all
+      three runs. This is selected current-substrate coverage only, not the
+      full cached/uncached closure parity gate (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
