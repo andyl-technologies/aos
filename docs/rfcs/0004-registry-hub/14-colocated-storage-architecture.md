@@ -345,7 +345,30 @@ green.
 
 ### Cross-cutting gates (every phase)
 
-- [ ] Single-source invariant upheld: Worker + native impls for each new port; no
+- [x] Single-source invariant upheld: Worker + native impls for each new port; no
       duplicated logic; e2e (workerd+miniflare) and native test suites green.
-- [ ] Read p50/p99 recorded before/after each phase; a phase that does not move
-      the floor (or regresses) is reverted, not merged.
+      *Done for the native-verifiable half:* every new port (`KvStore`,
+      `Coordinator`, `Queue`) has **both** a worker impl (`WorkerKv`,
+      `CoordinatorObject`/`WorkerCoordinator`, `WorkerQueue`) and a native impl
+      (`InMemoryKv`, `InMemoryCoordinator`, `InMemoryQueue`), and the shared
+      logic (limiter/lease/cache/directory) is single-sourced in `aos-hub-core`.
+      Native suite green (371 lib tests); worker compiles wasm with/without features.
+      The **workerd+miniflare e2e** is deploy-gated (runs the real wasm under a
+      local runtime) and runs at deploy time.
+- [deploy] Read p50/p99 recorded before/after each phase; a phase that does not move
+      the floor (or regresses) is reverted, not merged. *Deploy-gated:* the A1
+      `Server-Timing` instrumentation is the vehicle; the measurement needs the
+      preview deploy (A2/A3), held until the end per the no-deploy directive.
+
+### Deploy prep (gateway to the deploy-gated items)
+
+- [x] `wrangler.toml` carries the new bindings — `COORDINATOR` Durable Object +
+      `v1` migration, `JOBS` queue producer+consumer — and the Worker has the
+      `#[event(queue)]` consumer (executes `RebuildDirectory`; others logged).
+      The Worker is deployable with the Phase B/C/D infra. *Remaining:* emit the
+      same bindings from the `aos-hub worker deploy` generator (the checked-in
+      `wrangler.toml` is the manual path and documents them).
+- [deploy] The actual `wrangler deploy` (preview first, then prod) — **held until
+      the end per the directive.** This unblocks A2/A3, the e2e, the per-phase
+      p50/p99 gates, and the runtime verification of every `[~]`/`[deploy]` item
+      above (DO/Queue/SQLite-in-DO runtime, ISR edge behavior).
