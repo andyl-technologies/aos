@@ -1,6 +1,8 @@
 //! Tree-walk evaluator tests: derivation 2.
 
 use super::*;
+use crate::cache::{PARSE_CACHE_SCHEMA_VERSION, ParseCacheFlags, ParseCacheKey};
+use crate::string::NixString;
 
 #[test]
 fn derivation_strict_supports_ignore_nulls() {
@@ -100,6 +102,80 @@ fn derivation_strict_preserves_non_utf8_environment_values() {
             .any(|window| window == b"raw-\xff-byte"),
         "{aterm:?}"
     );
+}
+
+#[test]
+fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
+    fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+        !needle.is_empty()
+            && haystack
+                .windows(needle.len())
+                .any(|window| window == needle)
+    }
+
+    let source = r#"let
+             forced = 1 + 2;
+           in derivationStrict {
+             name = "leak-canary";
+             system = "x86_64-linux";
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             args = [ (toString forced) ];
+           }"#;
+    let outcome = eval_whnf_owned(&lower(source)).expect("canary derivation evaluates");
+    let derivation = outcome
+        .derivations()
+        .iter()
+        .next()
+        .expect("static derivation is recorded");
+    let aterm = derivation
+        .aterm_bytes()
+        .expect("static derivation has ATerm bytes");
+
+    let parse_key = ParseCacheKey::for_source(
+        source.as_bytes(),
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let parse_key_hex_canary = parse_key.to_hex();
+    let parse_key_raw_canary = parse_key.as_bytes();
+    let hot_canary = NixString::from_bytes(b"leak-canary".to_vec())
+        .structural_hash_xxh3()
+        .raw_for_tests();
+    let hot_decimal_canary = hot_canary.to_string();
+    let hot_hex_canary = format!("{hot_canary:016x}");
+    let hot_little_endian_canary = hot_canary.to_le_bytes();
+    let hot_big_endian_canary = hot_canary.to_be_bytes();
+
+    let surfaces = [
+        ("ATerm bytes", aterm),
+        (".drv path", derivation.absolute_path().as_bytes()),
+    ];
+    let canaries = [
+        ("parse-cache BLAKE3 hex", parse_key_hex_canary.as_bytes()),
+        (
+            "parse-cache BLAKE3 raw bytes",
+            parse_key_raw_canary.as_slice(),
+        ),
+        ("hot xxh3 decimal", hot_decimal_canary.as_bytes()),
+        ("hot xxh3 hex", hot_hex_canary.as_bytes()),
+        (
+            "hot xxh3 little-endian bytes",
+            hot_little_endian_canary.as_slice(),
+        ),
+        (
+            "hot xxh3 big-endian bytes",
+            hot_big_endian_canary.as_slice(),
+        ),
+    ];
+
+    for (surface_name, surface) in surfaces {
+        for (canary_name, canary) in canaries {
+            assert!(
+                !contains_bytes(surface, canary),
+                "{canary_name} leaked into {surface_name}: {surface:?}"
+            );
+        }
+    }
 }
 
 #[test]

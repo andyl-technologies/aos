@@ -787,6 +787,14 @@ alone (`M-1`/`Q-A`).
       SHA-256 and hash/fetch builtins use their requested Nix hash APIs rather
       than evaluator-local xxh3/BLAKE3 digests. This is the current substrate
       only, not the full P2 cache hashing layer (`S-15`).
+- [x] Current Nix-observed hash leak canary:
+      `internal_cache_hash_canaries_do_not_reach_drv_surfaces` evaluates a
+      static derivation while computing the actual current parse-cache BLAKE3
+      key for that source and the evaluator-local xxh3 structural hash for the
+      derivation name string, then checks both recorded `.drv` ATerm bytes and
+      the `.drv` store path for absence of those internal digest renderings and
+      raw digest bytes. This is a selected current-substrate regression canary,
+      not the full type-enforced P2 leak-invariant harness (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot

@@ -35,6 +35,12 @@ impl HotXxh3Hash {
     pub(crate) const fn from_xxh3(raw: u64) -> Self {
         Self(raw)
     }
+
+    /// Returns the raw hash value for tests that inspect surface leaks.
+    #[cfg(test)]
+    pub(crate) const fn raw_for_tests(self) -> u64 {
+        self.0
+    }
 }
 
 /// A BLAKE3 digest used for evaluator cache content addresses and confirmations.
