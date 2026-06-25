@@ -34,6 +34,15 @@ the invariants, and the resolved decisions; the topic files hold the detail:
   manifest is trustworthy without its own signature, the measured-vs-derived
   boundary, host.nix signing, the generation-attestation record, and the
   secrets-out-of-manifest interface to the forthcoming secret-management system.
+- [`provisioning.md`](provisioning.md) — removing Ignition: systemd-native
+  substrate (`systemd-repart`/`cryptenroll`/`tmpfiles`/`sysusers`), the
+  idempotent-vs-one-shot principle and its guarded-unit rendering, the
+  `aos metadata` agent (literal-Nix user-data, transport-only, the platform
+  parity surface), and the convention substrate.
+- [`orchestration.md`](orchestration.md) — compiling the eval output into a
+  systemd unit/target graph: runtime units in `/run/systemd/system`, templated
+  per-package fetch/install instances, `Wants=`-driven degraded boot, the
+  recovery ladder, and the single atomic-commit point.
 - [`operability.md`](operability.md) — `apm switch --dry-run` + the off-host CI
   preflight, eval-failure observability, GC of config closures, the
   flat-merge ↔ module-eval parity gate, and the perf budget + test plan.
@@ -86,8 +95,10 @@ Two-stage evaluation:
 - **Stage 2 — activation (on-host, eval-only, config-producing).** APM resolves
   the desired package set, then runs one `lib.evalModules` over (a) the **base
   module library shipped in the image**, (b) every resolved package's `config`
-  module, and (c) the operator's leaf **`host.nix`** delivered by a forked
-  Ignition. The evaluation emits a pure-data **manifest** (`/etc` entries,
+  module, and (c) the operator's leaf **`host.nix`** — delivered as **literal
+  Nix in the cloud user-data** and fetched by the `aos metadata` agent (Ignition
+  is removed; see [`provisioning.md`](provisioning.md)). The evaluation emits a
+  pure-data **manifest** (`/etc` entries,
   rendered unit texts, networking files). APM **materializes** that manifest
   imperatively into a content-addressed generation and runs the *existing*
   atomic switch (`activate.sh.in`, `mount --move --beneath`).
@@ -105,7 +116,7 @@ STAGE 1 (off-host, builds)                STAGE 2 (on-host, eval-only)
 ──────────────────────────                ───────────────────────────
 pkgs/*.nix (mkDerivation)                 base lib (in measured image) ─┐
   ├─ out    : binary closure  ──NAR──►    config modules (downloaded)  ─┼─► evalModules ─► MANIFEST
-  └─ config : config module   ──NAR──►    host.nix (Ignition user-data)─┘   (pure, no I/O)   │
+  └─ config : config module   ──NAR──►    host.nix (literal-Nix user-data)┘  (pure, no I/O)   │
        (refs paths as strings)                                                                │
                                           APM materializes (mkfs.erofs /etc, symlinks) ◄──────┘
                                             └─► content-addressed config-generation
@@ -124,10 +135,12 @@ pkgs/*.nix (mkDerivation)                 base lib (in measured image) ─┐
    closures (binary `out` + `config`) via the existing realization-graph
    machinery; it never substitutes a build for a download.
 
-3. **Ignition is the primary source of host configuration.** Operator intent
-   arrives as a signed leaf `host.nix` that participates in the same
-   `evalModules` as base and package modules — at the *evaluation* layer, not
-   merely as an `/etc` overlay layer.
+3. **Cloud user-data is the primary source of host configuration, as literal
+   Nix.** Operator intent arrives as a signed leaf `host.nix` carried verbatim in
+   the cloud user-data (no JSON, no Ignition) and participates in the same
+   `evalModules` as base and package modules — at the *evaluation* layer. The
+   operator never authors systemd units or files in a provisioning format;
+   everything is Nix.
 
 4. **Configuration is packed into nix-store-addressed generations** that switch
    atomically and roll back. A config-generation is `(image_gen_parent,
@@ -161,6 +174,10 @@ pkgs/*.nix (mkDerivation)                 base lib (in measured image) ─┐
 | D10 | Conflicts | Multiple **declarers** of an owned root → rejected at publish (single-provider). Shared scalars typed `uniq`/`mergeEqualOption` so equal-priority disagreement is a **loud error**, not silent last-wins. |
 | D11 | Enablement & conscription | **Foreign conscription forbidden; provider enablement allowed.** A package may write/enable only within roots it **owns or is a registered provider/contributor of**; it may not enable a *foreign* service it merely depends on (`redis-exporter` cannot start `redis` — it declares a resolve-time assertion `redis.enable` that fails loudly). A registered provider may enable the sub-features it ships within its root (`nginx-full` setting `nginx.modules.http3.enable`). Top-level `{service}.enable` stays operator-owned in `host.nix` (installing ≠ starting; `apm install` injects the operator's enable); the operator always overrides (priority 75). Enforced via per-def file provenance + the owner/provider registry. |
 | D16 | Variants & alternatives | A logical service (`nginx`) is a shared root; concrete variants (`nginx-full`, `nginx-minimal`, `nginx-light`) are mutually-exclusive **alternative providers** (`Provides`/`Conflicts` on the virtual root), so exactly one declares/implements `nginx.*` in any resolved set — single-declarer (D10) holds per-set. The operator selects by installing the variant and enables via `nginx.enable`. |
+| D17 | Ignition removed; systemd-native substrate | Ignition is **removed**. Substrate is provisioned by **`systemd-repart`** (idempotent partition/grow — subsumes `aos-growfs`+`aos-gpt-relocate`), **`systemd-cryptenroll`/`cryptsetup`** (already RFC-0006's `/var` seal), `systemd-tmpfiles`, `systemd-sysusers`. Only 4 units ever shelled out to Ignition (`ignition-{fetch,disks,mount,files}`); the rest of the chain is already systemd. Requires flipping `-Drepart`/`-Dfdisk` on and un-stripping repart from the initrd. See [`provisioning.md`](provisioning.md). |
+| D18 | Idempotent vs one-shot lifecycle | **Prefer convergent tools** (repart/tmpfiles/sysusers/cryptsetup-attach — no guard, run every activation); **guard only genuinely-destructive ops** with a **state probe** (`cryptsetup isLuks`, `blkid \|\| mkfs`) preferred over a marker, `ConditionFirstBoot=` for identity ops; **never guard a convergent op**. A Nix module declares desired state; the materializer renders the correct guard — destructive → `Type=oneshot`+probe (outside reconcile), config → manifest `etc`+`units.action` (reconciled every activation). |
+| D19 | Provisioning as a systemd unit graph | The eval emits `manifest.json` + `graph.json`; a compiler writes **per-package templated instance units** (`aos-pkg-fetch@<p>`/`aos-pkg-install@<p>`) + edge dropins into `/run/systemd/system`, `daemon-reload`s, and starts `aos-config.target`. APM fetch/render are units; the config DAG becomes systemd ordering. **`Wants=`** (not `Requires=`) pulls packages so a failure **degrades** (`is-system-running=degraded`, box reachable) rather than fails the boot; `Requires=`/`BindsTo=` reserved for true substrate edges (→ rescue/emergency). The single `activate.sh.in` `mount --move --beneath` stays the lone atomic commit. See [`orchestration.md`](orchestration.md). |
+| D20 | Literal-Nix user-data; `aos metadata` agent | Cloud user-data is the operator's **literal signed `host.nix`** (or a hash+sig-pinned URL pointer when over the platform cap), not Ignition JSON. An **`aos metadata`** agent (Rust subcommand + initrd service) owns cross-cloud user-data + instance-metadata fetch, reusing `aos-net` + `security.rs` SSHSIG. It is **transport-only** in initrd (stashes untrusted bytes); the **operator-signature check defers to stage-2 `aos-eval.service`** where `trusted-config-keys.d` lives. Instance facts (SSH keys, hostname, MAC→iface) enter as `host.facts.*` (D9), not imperative writes. Phased: keep Ignition-fetch (payload-only) → `aos metadata` for offline channels → cloud IMDS, retire Ignition. |
 | D12 | Evaluator | **Stock C++ Nix for P1** (already packaged), sandboxed `--pure-eval --restrict-eval --allow-import-from-derivation=false` and bounded by a hardened transient systemd unit (`MemoryMax`/`RuntimeMaxSec`). **aos-nix for P2** behind the same seam. |
 | D13 | Manifest trust | The locally-computed manifest needs **no signature**: it is a deterministic function of authenticated inputs and is fully re-derivable. Measure the *producer* (UKI), seal-protect the *product* (`/var`), attest the *input set*. |
 | D14 | host.nix authenticity | host.nix is **operator-signed** and verified against an image-baked `trusted-config-keys.d` key (mirroring `apm-registries.nix`) before eval. Closes the unsigned-Ignition-user-data gap. |
