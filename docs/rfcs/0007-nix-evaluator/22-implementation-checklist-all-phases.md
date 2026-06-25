@@ -981,9 +981,9 @@ alone (`M-1`/`Q-A`).
       in-memory force-cache hits. Observation-only uncacheable subjects such as
       `currentTime` have no metadata identity and are not counted. This is
       current-run demand accounting only; automatic run-boundary orchestration,
-      atomic writer coordination, automatic cached-payload writeback, LMDB/redb
-      node tables, automatic compaction/GC policy, and AOS tuning remain open
-      (`C-13`/`C-14`/`S-14`).
+      atomic writer coordination, durable cached-payload hit selection,
+      LMDB/redb node tables, automatic compaction/GC policy, and AOS tuning
+      remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current node-reuse materialization decision adapter:
       `PersistCache::node_materialization_signals` and
       `node_materialization_decision` read the newest persisted
@@ -1040,25 +1040,43 @@ alone (`M-1`/`Q-A`).
       through the indexed `values/` pack by value hash, and loads rehash the
       decoded payload before returning it while preserving
       skip-without-hash/encode/write behavior when the materialization threshold
-      fails. This is an explicit cache-level payload bridge only; automatic
-      evaluator writeback and evaluator durable hit selection, context-bearing
-      paths, composite values, mmap reads, cost measurement, GC/repack, and
-      cached/uncached harness proof remain open (`C-13`/`C-14`/`S-14`).
+      fails. This is an explicit cache-level payload bridge only; evaluator
+      durable hit selection, context-bearing paths, composite values, mmap
+      reads, cost measurement, GC/repack, and cached/uncached harness proof
+      remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current cached-expression node-value metadata linkage adapter:
-      `PersistCache::record_node_materialized_value_hash` and
+      `PersistCache::record_node_materialized_value_hash`,
+      `clear_node_materialized_value_hash`, and
       `lookup_node_materialized_value_hash` preserve materialization reuse
-      counters while linking a demand-node metadata key to the newest
-      materialized cached-expression `ValueHash`;
+      counters while linking or unlinking a demand-node metadata key from the
+      newest materialized cached-expression `ValueHash`;
       `materialize_cached_expression_node_value_indexed`,
       `materialize_cached_expression_node_value_indexed_with_signals`, and
       `load_cached_expression_node_value_indexed` combine that link with the
       indexed `values/` payload helpers. Skips do not hash, encode, write, or
       record metadata, and node-key loads return `None` for missing metadata,
-      reuse-only metadata, or missing value blobs. This is explicit cache-level
-      linkage only; automatic evaluator writeback, evaluator durable hit
-      selection, node/value transactionality, context-bearing paths, composite
-      values, mmap reads, cost measurement, GC/repack, and cached/uncached
-      harness proof remain open (`C-13`/`C-14`/`S-14`).
+      reuse-only metadata, cleared metadata, or missing value blobs. This is
+      explicit cache-level linkage only; evaluator durable hit selection,
+      node/value transactionality, context-bearing paths, composite values, mmap
+      reads, cost measurement, GC/repack, and cached/uncached harness proof
+      remain open (`C-13`/`C-14`/`S-14`).
+- [x] Current force-cache persistent value writeback:
+      tree-walk `force_value` now materializes replayable forced-expression
+      payloads through `PersistCache::materialize_cached_expression_node_value_indexed`
+      after the in-memory force-cache observation accepts a node payload. Pure
+      complete observations materialize after successful expression-node
+      reconsideration; impure observations materialize only when the trace is
+      cacheable and returns an expression node. Rejected impure observations and
+      unsupported recomputed payloads clear any existing durable node-value link
+      after the in-memory force-cache has rejected the observation or had an
+      opportunity to invalidate any runtime payload. The writeback lazily opens
+      the configured persistent cache root, skips disabled runtimes, unavailable
+      persistent roots, and advisory write errors, and currently uses explicit
+      `MaterializationDecision::Materialize` as a precursor to threshold-driven
+      evaluator policy. This is cold-force durable writeback/clear only;
+      evaluator durable hit selection, cost measurement, context-bearing paths,
+      composite values, mmap reads, GC/repack, and cached/uncached harness proof
+      remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips

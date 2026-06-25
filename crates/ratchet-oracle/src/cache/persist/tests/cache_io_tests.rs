@@ -361,6 +361,55 @@ fn cache_node_metadata_preserves_reuse_and_materialized_value_hash() {
 }
 
 #[test]
+fn cache_node_metadata_clear_materialized_value_hash_preserves_reuse() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(2, 3))
+        .expect("node reuse records");
+    cache
+        .record_node_materialized_value_hash(key, value_hash)
+        .expect("value hash records");
+
+    assert!(
+        cache
+            .clear_node_materialized_value_hash(key)
+            .expect("value hash clears")
+    );
+    let metadata = cache
+        .lookup_node_metadata(key)
+        .expect("node metadata lookup succeeds")
+        .expect("node metadata exists");
+    assert_eq!(
+        metadata.materialization_reuse(),
+        MaterializationReuse::new(2, 3)
+    );
+    assert_eq!(metadata.materialized_value_hash(), None);
+    assert_eq!(
+        cache
+            .lookup_node_materialized_value_hash(key)
+            .expect("value hash lookup succeeds"),
+        None
+    );
+    assert!(
+        !cache
+            .clear_node_materialized_value_hash(key)
+            .expect("second value hash clear is a no-op")
+    );
+    assert_eq!(
+        fs::metadata(cache.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 3) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_current_demand_updates_latest_reuse_counters() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

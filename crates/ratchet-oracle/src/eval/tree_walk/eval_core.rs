@@ -7,6 +7,13 @@ const FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-force-captured
 const FORCE_SYNTHETIC_BUILTIN_ATTR_IDENTITY_DOMAIN_VERSION: &[u8] =
     b"aos-nix-force-synthetic-builtin-attr-identity-v1";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForcePayloadPersistenceAction {
+    Skip,
+    Clear,
+    Materialize,
+}
+
 impl ForceCacheOptionsIdentity {
     fn new(options: &TreeWalkOptions) -> Self {
         Self {
@@ -445,6 +452,9 @@ impl TreeWalk {
             return;
         };
         let Some(payload) = self.force_cache_payload_for_value(value) else {
+            if self.invalidate_cached_forced_expression_payload(&subject) {
+                self.clear_persist_forced_expression_payload(&subject);
+            }
             return;
         };
         let identity = if trace.is_empty_complete() {
@@ -463,26 +473,40 @@ impl TreeWalk {
             );
             return;
         };
-        let observation = if trace.is_empty_complete() {
-            cache
-                .observe_inline_expression_payload(
-                    identity,
-                    subject.free_var_value_hashes.iter().copied(),
-                    payload,
-                )
-                .map(|_| None)
+        let persistence_action = if trace.is_empty_complete() {
+            match cache.observe_inline_expression_payload(
+                identity,
+                subject.free_var_value_hashes.iter().copied(),
+                payload.clone(),
+            ) {
+                Ok(Some(_)) => Ok(ForcePayloadPersistenceAction::Materialize),
+                Ok(None) => Ok(ForcePayloadPersistenceAction::Skip),
+                Err(error) => Err(error),
+            }
         } else {
-            cache
-                .observe_inline_expression_payload_with_impure_inputs(
-                    identity,
-                    subject.free_var_value_hashes.iter().copied(),
-                    payload,
-                    &trace,
-                )
-                .map(Some)
+            match cache.observe_inline_expression_payload_with_impure_inputs(
+                identity,
+                subject.free_var_value_hashes.iter().copied(),
+                payload.clone(),
+                &trace,
+            ) {
+                Ok(Some(observation)) if observation.node().is_some() => {
+                    Ok(ForcePayloadPersistenceAction::Materialize)
+                }
+                Ok(Some(_)) => Ok(ForcePayloadPersistenceAction::Clear),
+                Ok(None) => Ok(ForcePayloadPersistenceAction::Skip),
+                Err(error) => Err(error),
+            }
         };
-        match observation {
-            Ok(_) => {}
+        drop(cache);
+        match persistence_action {
+            Ok(ForcePayloadPersistenceAction::Materialize) => {
+                self.materialize_persist_forced_expression_payload(&subject, &payload);
+            }
+            Ok(ForcePayloadPersistenceAction::Clear) => {
+                self.clear_persist_forced_expression_payload(&subject);
+            }
+            Ok(ForcePayloadPersistenceAction::Skip) => {}
             Err(error) => {
                 tracing::warn!(
                     target: "aos_nix::cache",
@@ -490,6 +514,90 @@ impl TreeWalk {
                     "tree-walk evaluator forced expression observation failed"
                 );
             }
+        }
+    }
+
+    fn invalidate_cached_forced_expression_payload(&mut self, subject: &ForceCacheSubject) -> bool {
+        let Some(identity) = subject.lookup_identity else {
+            return false;
+        };
+        let Ok(mut cache) = self.eval_cache.lock() else {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                "tree-walk evaluator cache lock was poisoned; skipping forced expression invalidation"
+            );
+            return false;
+        };
+        match cache.invalidate_inline_expression_payload(
+            identity,
+            subject.free_var_value_hashes.iter().copied(),
+        ) {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator forced expression invalidation failed"
+                );
+                false
+            }
+        }
+    }
+
+    fn materialize_persist_forced_expression_payload(
+        &mut self,
+        subject: &ForceCacheSubject,
+        payload: &CachedExpressionValue,
+    ) {
+        if !self.options.eval_cache_enabled() {
+            return;
+        }
+        let Some(identity) = subject.metadata_identity else {
+            return;
+        };
+        self.open_persist_eval_cache();
+        let Some(persist_cache) = &self.persist_cache else {
+            return;
+        };
+        let key = PersistNodeMetadataKey::for_expression(
+            identity,
+            subject.free_var_value_hashes.iter().copied(),
+        );
+        if let Err(error) = persist_cache.materialize_cached_expression_node_value_indexed(
+            key,
+            payload,
+            MaterializationDecision::Materialize,
+        ) {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator persistent force payload materialization failed"
+            );
+        }
+    }
+
+    fn clear_persist_forced_expression_payload(&mut self, subject: &ForceCacheSubject) {
+        if !self.options.eval_cache_enabled() {
+            return;
+        }
+        let Some(identity) = subject.metadata_identity else {
+            return;
+        };
+        self.open_persist_eval_cache();
+        let Some(persist_cache) = &self.persist_cache else {
+            return;
+        };
+        let key = PersistNodeMetadataKey::for_expression(
+            identity,
+            subject.free_var_value_hashes.iter().copied(),
+        );
+        if let Err(error) = persist_cache.clear_node_materialized_value_hash(key) {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator persistent force payload clear failed"
+            );
         }
     }
 

@@ -3155,6 +3155,10 @@ fn synthetic_builtin_attr_forces_record_persistent_current_demand() {
     assert_eq!(first.stats().cache_misses(), 1);
     drop(first);
 
+    let expected_payload = CachedExpressionValue::context_free_string(b"x86_64-linux".to_vec());
+    let expected_value_hash = expected_payload
+        .value_hash()
+        .expect("expected payload hashes");
     let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
     assert_eq!(
         persist
@@ -3162,6 +3166,20 @@ fn synthetic_builtin_attr_forces_record_persistent_current_demand() {
             .expect("metadata lookup succeeds"),
         Some(MaterializationReuse::new(0, 1)),
         "cold force records one current-run demand"
+    );
+    assert_eq!(
+        persist
+            .lookup_node_materialized_value_hash(key)
+            .expect("value hash lookup succeeds"),
+        Some(expected_value_hash),
+        "cold force links the persistent value payload"
+    );
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload load succeeds"),
+        Some(expected_payload),
+        "cold force writes the persistent value payload"
     );
     drop(persist);
 
@@ -3191,6 +3209,212 @@ fn synthetic_builtin_attr_forces_record_persistent_current_demand() {
             .expect("metadata lookup succeeds"),
         Some(MaterializationReuse::new(0, 2)),
         "in-memory hits also record current-run demand"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn rejected_force_observation_clears_persistent_value_link() {
+    let persist_root = unique_temp_dir("force-cache-persistent-clear-rejected");
+    let ir = lower("1");
+    let identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-force-node"),
+        IrId::new(7),
+    );
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let stale_payload = CachedExpressionValue::immediate(Value::int(123))
+        .expect("stale scalar payload is cacheable");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        runtime
+            .observe_inline_expression_payload(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                stale_payload.clone(),
+            )
+            .expect("stale runtime payload is seeded");
+    }
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .record_node_materialization_reuse(key, MaterializationReuse::new(2, 3))
+        .expect("reuse metadata records");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            key,
+            &stale_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("stale persistent payload materializes");
+    drop(persist);
+
+    let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache.clone());
+    let subject = ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        free_var_value_hashes: Vec::new(),
+    };
+    evaluator.observe_forced_inline_expression_result(
+        Some(subject),
+        Value::int(456),
+        ImpureInputTraceSegment {
+            trace: Vec::new(),
+            complete: false,
+        },
+    );
+
+    {
+        let runtime = cache.lock().expect("cache lock is valid");
+        assert!(
+            runtime
+                .lookup_inline_expression_payload(
+                    identity,
+                    std::iter::empty::<DurableBlake3Hash>(),
+                )
+                .expect("runtime lookup succeeds")
+                .is_none(),
+            "rejected observation invalidates the stale runtime payload"
+        );
+    }
+    let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
+    let metadata = persist
+        .lookup_node_metadata(key)
+        .expect("metadata lookup succeeds")
+        .expect("metadata remains present");
+    assert_eq!(
+        metadata.materialization_reuse(),
+        MaterializationReuse::new(2, 3),
+        "clearing the value link preserves reuse counters"
+    );
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "rejected observation clears the stale persistent value link"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn cacheable_impure_force_observation_writes_persistent_value_link() {
+    let persist_root = unique_temp_dir("force-cache-persistent-impure-writeback");
+    let ir = lower("1");
+    let identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-force-impure"),
+        IrId::new(9),
+    );
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache);
+    let subject = ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        free_var_value_hashes: Vec::new(),
+    };
+    evaluator.observe_forced_inline_expression_result(
+        Some(subject),
+        Value::bool(true),
+        ImpureInputTraceSegment {
+            trace: vec![
+                ImpureInputFingerprint::path_exists(b"/tmp/aos-cacheable-input", true)
+                    .expect("pathExists fingerprint builds"),
+            ],
+            complete: true,
+        },
+    );
+
+    let expected_payload =
+        CachedExpressionValue::immediate(Value::bool(true)).expect("bool payload is cacheable");
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        Some(expected_payload),
+        "cacheable impure observations write the persistent value payload"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn unsupported_force_payload_clears_persistent_value_link() {
+    let persist_root = unique_temp_dir("force-cache-persistent-clear-unsupported");
+    let ir = lower("{ }");
+    let identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-force-unsupported"),
+        IrId::new(11),
+    );
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let stale_payload = CachedExpressionValue::immediate(Value::int(123))
+        .expect("stale scalar payload is cacheable");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            key,
+            &stale_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("stale persistent payload materializes");
+    drop(persist);
+
+    let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache.clone());
+    let unsupported = evaluator.eval_root().expect("attrset evaluates");
+    let subject = ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        free_var_value_hashes: Vec::new(),
+    };
+    evaluator.observe_forced_inline_expression_result(
+        Some(subject),
+        unsupported,
+        ImpureInputTraceSegment {
+            trace: Vec::new(),
+            complete: true,
+        },
+    );
+
+    {
+        let runtime = cache.lock().expect("cache lock is valid");
+        assert!(
+            runtime
+                .lookup_inline_expression_payload(
+                    identity,
+                    std::iter::empty::<DurableBlake3Hash>(),
+                )
+                .expect("runtime lookup succeeds")
+                .is_none(),
+            "the runtime starts without a node for the durable-only stale link"
+        );
+    }
+    let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "unsupported recomputation clears the stale persistent value link"
     );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");

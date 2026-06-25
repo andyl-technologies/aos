@@ -339,6 +339,32 @@ impl PersistCache {
         self.record_node_metadata(PersistNodeMetadataIndexEntry::new(key, value))
     }
 
+    /// Clears the newest materialized value hash for one demand node.
+    ///
+    /// Existing materialization reuse counters for the same node are preserved
+    /// in the appended metadata record. Missing metadata or metadata that
+    /// already has no materialized value hash returns `Ok(false)` without
+    /// appending a record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, read, decoded, written, or flushed.
+    pub fn clear_node_materialized_value_hash(
+        &self,
+        key: PersistNodeMetadataKey,
+    ) -> Result<bool, PersistNodeMetadataIndexError> {
+        let Some(value) = self.lookup_node_metadata(key)? else {
+            return Ok(false);
+        };
+        if value.materialized_value_hash().is_none() {
+            return Ok(false);
+        }
+        let value = PersistNodeMetadataIndexValue::new(value.materialization_reuse());
+        self.record_node_metadata(PersistNodeMetadataIndexEntry::new(key, value))?;
+        Ok(true)
+    }
+
     /// Looks up the newest materialized value hash for one demand node.
     ///
     /// Missing node metadata and metadata without a materialized value hash

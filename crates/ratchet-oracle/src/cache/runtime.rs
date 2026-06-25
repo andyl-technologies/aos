@@ -648,6 +648,32 @@ impl EvalCache {
         Ok(reconsideration)
     }
 
+    /// Invalidates an existing inline expression payload.
+    ///
+    /// If the expression key already exists, the node is marked dirty and any
+    /// side payload is removed. Missing keys return `Ok(false)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails or the
+    /// existing node cannot be marked dirty.
+    pub fn invalidate_inline_expression_payload<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+    ) -> Result<bool, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
+            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        let Some(node) = self.graph.node_id_for_key(key) else {
+            return Ok(false);
+        };
+        self.invalidate_existing_inline_payload(Some(node))?;
+        Ok(true)
+    }
+
     /// Observes one recomputed immediate expression result.
     ///
     /// This compatibility path accepts only immediate scalar values.
@@ -1598,6 +1624,32 @@ impl EvalCacheRuntime {
         };
         cache
             .observe_inline_expression_payload(identity, free_var_value_hashes, value)
+            .map(Some)
+    }
+
+    /// Invalidates one inline expression payload when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity. Enabled runtimes delegate to
+    /// [`EvalCache::invalidate_inline_expression_payload`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to build the expression key or mark an existing node dirty.
+    pub fn invalidate_inline_expression_payload<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+    ) -> Result<Option<bool>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .invalidate_inline_expression_payload(identity, free_var_value_hashes)
             .map(Some)
     }
 
