@@ -228,6 +228,107 @@ fn cache_indexed_file_artifact_materialization_updates_blob_and_mapping_indexes(
 }
 
 #[test]
+fn cache_indexed_file_artifact_materialization_reuses_indexed_file_blob() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let source = b"let x = 1; in x";
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let parse_key = test_parse_key(source);
+    let payload = b"serialized IR artifact";
+    let first = cache
+        .materialize_file_artifact_indexed(
+            &file_key,
+            parse_key,
+            payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("first indexed file artifact materializes");
+    let Some(first_value) = first.index_value() else {
+        panic!("file artifact should materialize");
+    };
+    let pack_len = fs::metadata(cache.file_pack().path())
+        .expect("file pack metadata")
+        .len();
+    let blob_index_len = fs::metadata(cache.file_index().path())
+        .expect("file blob index metadata")
+        .len();
+
+    let second = cache
+        .materialize_file_artifact_indexed(
+            &file_key,
+            parse_key,
+            payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("second indexed file artifact materializes");
+
+    assert_eq!(second.index_value(), Some(first_value));
+    assert_eq!(
+        fs::metadata(cache.file_pack().path())
+            .expect("file pack metadata")
+            .len(),
+        pack_len
+    );
+    assert_eq!(
+        fs::metadata(cache.file_index().path())
+            .expect("file blob index metadata")
+            .len(),
+        blob_index_len
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_indexed_parse_artifact_materialization_reuses_indexed_file_blob() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let payload = b"serialized parse artifact";
+    let first = cache
+        .materialize_parse_artifact_indexed(
+            parse_key,
+            payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("first indexed parse artifact materializes");
+    let Some(first_value) = first.index_value() else {
+        panic!("parse artifact should materialize");
+    };
+    let pack_len = fs::metadata(cache.file_pack().path())
+        .expect("file pack metadata")
+        .len();
+    let blob_index_len = fs::metadata(cache.file_index().path())
+        .expect("file blob index metadata")
+        .len();
+
+    let second = cache
+        .materialize_parse_artifact_indexed(
+            parse_key,
+            payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("second indexed parse artifact materializes");
+
+    assert_eq!(second.index_value(), Some(first_value));
+    assert_eq!(
+        fs::metadata(cache.file_pack().path())
+            .expect("file pack metadata")
+            .len(),
+        pack_len
+    );
+    assert_eq!(
+        fs::metadata(cache.file_index().path())
+            .expect("file blob index metadata")
+            .len(),
+        blob_index_len
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_file_artifact_materialization_signals_can_skip_without_writing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

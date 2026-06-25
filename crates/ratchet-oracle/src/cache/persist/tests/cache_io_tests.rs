@@ -999,6 +999,84 @@ fn cache_indexed_materialization_decision_appends_and_indexes_when_requested() {
 }
 
 #[test]
+fn cache_indexed_materialization_reuses_verified_existing_blob() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let first = cache
+        .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
+        .expect("first indexed materialization succeeds");
+    let PersistMaterialization::Materialized(first_location) = first else {
+        panic!("first materialization should append");
+    };
+    let pack_len = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata")
+        .len();
+    let index_len = fs::metadata(cache.value_index().path())
+        .expect("value index metadata")
+        .len();
+
+    let second = cache
+        .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
+        .expect("second indexed materialization succeeds");
+
+    assert_eq!(second, PersistMaterialization::Materialized(first_location));
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata")
+            .len(),
+        pack_len
+    );
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        index_len
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_indexed_materialization_replaces_stale_index_location() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let stale_location = PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0);
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(key, stale_location))
+        .expect("stale index entry appends");
+
+    let result = cache
+        .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
+        .expect("indexed materialization repairs stale location");
+    let PersistMaterialization::Materialized(fresh_location) = result else {
+        panic!("materialization should append fresh bytes");
+    };
+
+    assert_ne!(fresh_location, stale_location);
+    assert_eq!(
+        cache
+            .lookup_blob_location(key)
+            .expect("indexed lookup succeeds"),
+        Some(fresh_location)
+    );
+    assert_eq!(
+        cache
+            .read_blob_indexed(key)
+            .expect("indexed read succeeds")
+            .expect("indexed blob exists")
+            .as_slice(),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_cached_expression_payload_materialization_can_skip_without_writing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -1066,6 +1144,45 @@ fn cache_cached_expression_payload_materializes_and_loads_by_value_hash() {
             .expect("payload loads")
             .expect("payload exists"),
         payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_payload_materialization_reuses_indexed_value_blob() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let first = cache
+        .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
+        .expect("first payload materializes");
+    let PersistMaterialization::Materialized(first_location) = first else {
+        panic!("payload should materialize");
+    };
+    let pack_len = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata")
+        .len();
+    let index_len = fs::metadata(cache.value_index().path())
+        .expect("value index metadata")
+        .len();
+
+    let second = cache
+        .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
+        .expect("second payload materializes");
+
+    assert_eq!(second, PersistMaterialization::Materialized(first_location));
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata")
+            .len(),
+        pack_len
+    );
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        index_len
     );
 
     let _ = fs::remove_dir_all(root);

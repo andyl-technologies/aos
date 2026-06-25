@@ -652,6 +652,38 @@ impl PersistCache {
             .map_err(|source| PersistBlobIndexedReadError::Read { source })
     }
 
+    /// Ensures a blob is present in the selected pack and sidecar index.
+    ///
+    /// If the sidecar index can be read and already points at a pack record
+    /// that verifies for `key` and exactly matches `payload`, the existing
+    /// location is reused without appending duplicate bytes or index records.
+    /// Missing, stale, mismatching, or unreadable indexed records append a fresh
+    /// blob and record a newer sidecar entry through
+    /// [`Self::append_blob_indexed`].
+    ///
+    /// This helper is explicit and non-transactional: if a fresh pack append
+    /// succeeds but the sidecar index write fails, the blob bytes remain in the
+    /// pack without a corresponding durable index record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexedWriteError`] if the selected packfile cannot
+    /// append or verify a fresh payload, or if the selected sidecar index cannot
+    /// write a fresh hash-to-offset record. A lookup failure falls back to the
+    /// append path so this helper preserves append-first failure semantics.
+    pub fn ensure_blob_indexed(
+        &self,
+        key: PersistBlobKey,
+        payload: &[u8],
+    ) -> Result<PersistBlobIndexEntry, PersistBlobIndexedWriteError> {
+        if let Ok(Some(location)) = self.lookup_blob_location(key) {
+            if matches!(self.read_blob(key, location), Ok(existing) if existing == payload) {
+                return Ok(PersistBlobIndexEntry::new(key, location));
+            }
+        }
+        self.append_blob_indexed(key, payload)
+    }
+
     /// Materializes a cached expression payload into the indexed `values/` pack.
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns
@@ -922,19 +954,20 @@ impl PersistCache {
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns
     /// [`PersistMaterialization::Skipped`] without hashing or writing
-    /// `payload`. [`MaterializationDecision::Materialize`] appends the payload
-    /// through [`Self::append_blob_indexed`].
+    /// `payload`. [`MaterializationDecision::Materialize`] ensures the payload
+    /// is present through [`Self::ensure_blob_indexed`].
     ///
-    /// This helper is explicit and non-transactional: if the pack append
+    /// This helper is explicit and non-transactional: if a fresh pack append
     /// succeeds but the sidecar index write fails, the blob bytes remain in the
     /// pack without a corresponding durable index record.
     ///
     /// # Errors
     ///
     /// Returns [`PersistBlobIndexedWriteError`] when `decision` is
-    /// [`MaterializationDecision::Materialize`] and the selected packfile cannot
-    /// append/verify the payload, or when the selected sidecar index cannot
-    /// write the resulting hash-to-offset record.
+    /// [`MaterializationDecision::Materialize`] and the selected packfile
+    /// cannot append/verify a fresh payload, or the selected sidecar index
+    /// cannot write a fresh hash-to-offset record. A sidecar lookup failure
+    /// falls back to the append path.
     pub fn materialize_blob_indexed(
         &self,
         key: PersistBlobKey,
@@ -943,7 +976,7 @@ impl PersistCache {
     ) -> Result<PersistMaterialization, PersistBlobIndexedWriteError> {
         match decision {
             MaterializationDecision::Materialize => self
-                .append_blob_indexed(key, payload)
+                .ensure_blob_indexed(key, payload)
                 .map(|entry| PersistMaterialization::Materialized(entry.location())),
             MaterializationDecision::KeepInMemory => Ok(PersistMaterialization::Skipped),
         }
@@ -977,9 +1010,10 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistBlobIndexedWriteError`] when the signals choose
-    /// [`MaterializationDecision::Materialize`] and the selected packfile cannot
-    /// append/verify the payload, or when the selected sidecar index cannot
-    /// write the resulting hash-to-offset record.
+    /// [`MaterializationDecision::Materialize`] and the selected packfile
+    /// cannot append/verify a fresh payload, or the selected sidecar index
+    /// cannot write a fresh hash-to-offset record. A sidecar lookup failure
+    /// falls back to the append path.
     pub fn materialize_blob_indexed_with_signals(
         &self,
         key: PersistBlobKey,
@@ -1029,8 +1063,8 @@ impl PersistCache {
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns a skipped result
     /// without hashing or writing `payload`. [`MaterializationDecision::Materialize`]
-    /// hashes `payload`, appends it to the `files/` pack through
-    /// [`Self::append_blob_indexed`], and records the file-artifact mapping
+    /// hashes `payload`, ensures it is present in the `files/` pack through
+    /// [`Self::ensure_blob_indexed`], and records the file-artifact mapping
     /// through [`Self::record_file_artifact`].
     ///
     /// This helper is explicit and non-transactional: if the blob append or
@@ -1042,7 +1076,8 @@ impl PersistCache {
     ///
     /// Returns [`PersistFileArtifactIndexedWriteError`] when `decision` is
     /// [`MaterializationDecision::Materialize`] and the `files/` blob cannot be
-    /// appended/indexed, or when the file-artifact mapping cannot be recorded.
+    /// verified/reused, appended, or indexed, or when the file-artifact mapping
+    /// cannot be recorded.
     pub fn materialize_file_artifact_indexed(
         &self,
         file_key: &ParseFileKey,
@@ -1058,7 +1093,7 @@ impl PersistCache {
             MaterializationDecision::Materialize => {
                 let blob_hash = DurableBlake3Hash::for_bytes(payload);
                 let blob_entry = self
-                    .append_blob_indexed(PersistBlobKey::for_file(blob_hash), payload)
+                    .ensure_blob_indexed(PersistBlobKey::for_file(blob_hash), payload)
                     .map_err(|source| PersistFileArtifactIndexedWriteError::Blob { source })?;
                 let index_value =
                     PersistFileArtifactIndexValue::new(blob_hash, blob_entry.location());
@@ -1114,8 +1149,8 @@ impl PersistCache {
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns a skipped result
     /// without hashing or writing `payload`. [`MaterializationDecision::Materialize`]
-    /// hashes `payload`, appends it to the `files/` pack through
-    /// [`Self::append_blob_indexed`], and records the parse-artifact mapping
+    /// hashes `payload`, ensures it is present in the `files/` pack through
+    /// [`Self::ensure_blob_indexed`], and records the parse-artifact mapping
     /// through [`Self::record_parse_artifact`].
     ///
     /// This helper is explicit and non-transactional: if the blob append or
@@ -1127,7 +1162,8 @@ impl PersistCache {
     ///
     /// Returns [`PersistParseArtifactIndexedWriteError`] when `decision` is
     /// [`MaterializationDecision::Materialize`] and the `files/` blob cannot be
-    /// appended/indexed, or when the parse-artifact mapping cannot be recorded.
+    /// verified/reused, appended, or indexed, or when the parse-artifact mapping
+    /// cannot be recorded.
     pub fn materialize_parse_artifact_indexed(
         &self,
         parse_key: ParseCacheKey,
@@ -1142,7 +1178,7 @@ impl PersistCache {
             MaterializationDecision::Materialize => {
                 let blob_hash = DurableBlake3Hash::for_bytes(payload);
                 let blob_entry = self
-                    .append_blob_indexed(PersistBlobKey::for_file(blob_hash), payload)
+                    .ensure_blob_indexed(PersistBlobKey::for_file(blob_hash), payload)
                     .map_err(|source| PersistParseArtifactIndexedWriteError::Blob { source })?;
                 let index_value =
                     PersistParseArtifactIndexValue::new(blob_hash, blob_entry.location());
@@ -1188,7 +1224,8 @@ impl PersistCache {
     ///
     /// Returns [`PersistFileArtifactIndexedWriteError`] when the signals choose
     /// [`MaterializationDecision::Materialize`] and the `files/` blob cannot be
-    /// appended/indexed, or when the file-artifact mapping cannot be recorded.
+    /// verified/reused, appended, or indexed, or when the file-artifact mapping
+    /// cannot be recorded.
     pub fn materialize_file_artifact_indexed_with_signals(
         &self,
         file_key: &ParseFileKey,
@@ -1770,12 +1807,13 @@ impl PersistCache {
     /// [`MaterializationDecision::KeepInMemory`] returns a skipped result
     /// without reading or encoding `entry`. [`MaterializationDecision::Materialize`]
     /// reads the entry as a [`ParseArtifactBundle`], encodes it as one payload,
-    /// appends it through [`Self::materialize_file_artifact_indexed`], and
-    /// records both blob and file-artifact sidecar indexes.
+    /// then delegates to [`Self::materialize_file_artifact_indexed`] so the
+    /// file blob is verified/reused or freshly indexed before the file-artifact
+    /// mapping is recorded.
     ///
     /// This helper inherits the explicit non-transactional behavior of
-    /// [`Self::materialize_file_artifact_indexed`]: a blob append/index write
-    /// can remain even when the file-artifact mapping write fails.
+    /// [`Self::materialize_file_artifact_indexed`]: a fresh blob append/index
+    /// write can remain even when the file-artifact mapping write fails.
     ///
     /// # Errors
     ///
