@@ -182,8 +182,8 @@
         needle = "validate_baked_genesis_snapshot";
       }
       {
-        label = "strict non-tip fork guard";
-        needle = "ForkPrefixNotStrict";
+        label = "fork out-of-range guard";
+        needle = "ForkPrefixOutOfRange";
       }
       {
         label = "nearest ancestor replay";
@@ -254,8 +254,8 @@
         needle = "qemu_baked_genesis_snapshot_is_shared_across_same_world_scenarios";
       }
       {
-        label = "strict fork prefix test";
-        needle = "qemu_fork_rejects_tip_as_non_tip_prefix";
+        label = "fork prefix bounds test";
+        needle = "qemu_fork_accepts_tip_and_rejects_out_of_range_prefixes";
       }
       {
         label = "bake cold boot test";

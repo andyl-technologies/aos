@@ -812,7 +812,7 @@ determinism contract (04).
   nearest-ancestor replay, or baked-genesis load in priority order, keeps runtime
   `loadvm` gated by replay-oracle admission through the savevm-completeness
   policy, validates checkpoint/configuration and baked-World identity, rejects
-  invalid ancestors and tip-as-fork requests, dispatches replay one recorded
+  invalid ancestors and out-of-range fork prefixes, dispatches replay one recorded
   decision at a time to the quantum executor, and exposes `bake_qemu_genesis_vm`
   as the only cold-boot-to-ready-point entry. The concrete shmem/QEMU quantum
   machinery remains tracked by [T-QEMU-12] and frame/device replay details remain
