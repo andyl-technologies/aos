@@ -170,8 +170,9 @@ impl TreeWalkOptions {
     /// Creates evaluator options with a configured persistent-cache root.
     ///
     /// Ordinary filesystem-backed imports may lazily hydrate durable parse
-    /// artifacts from this root when [`Self::parse_cache_root`] is also
-    /// configured. Scoped imports and text-store imports do not use this cache.
+    /// artifacts from this root, and may write back newly parsed import
+    /// artifacts to it, when [`Self::parse_cache_root`] is also configured.
+    /// Scoped imports and text-store imports do not use this cache.
     pub fn with_persist_cache_root(persist_cache_root: impl Into<PathBuf>) -> Self {
         let mut options = Self::default();
         options.set_persist_cache_root(persist_cache_root);
@@ -525,9 +526,10 @@ impl TreeWalkOptions {
 
     /// Replaces the persistent-cache root directory.
     ///
-    /// This enables advisory durable import parse-cache hit lookup only when a
-    /// normal parse-cache root is also configured, because hydrated artifacts
-    /// are read back through the parse-cache entry layout before evaluation.
+    /// This enables advisory durable import parse-cache hit lookup and
+    /// writeback only when a normal parse-cache root is also configured,
+    /// because hydrated artifacts are read back through the parse-cache entry
+    /// layout before evaluation.
     pub fn set_persist_cache_root(&mut self, persist_cache_root: impl Into<PathBuf>) {
         self.persist_cache_root = Some(persist_cache_root.into());
     }

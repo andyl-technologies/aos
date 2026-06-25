@@ -1051,10 +1051,22 @@ alone (`M-1`/`Q-A`).
       the persistent root is unavailable, misses, or has stale/corrupt indexed
       artifacts. The persistent root opens lazily on the first eligible import;
       scoped imports and text-store imports still bypass this path. This is
-      evaluator import hit selection only; automatic persistent
-      materialization/writeback, source root/native expression durable lookup,
-      mmap reads, full artifact semantic validation beyond existing decoders,
-      GC/repack, and harness proof remain open (`C-13`/`R-10`).
+      evaluator import hit selection only; source root/native expression
+      durable lookup, mmap reads, full artifact semantic validation beyond
+      existing decoders, GC/repack, and harness proof remain open
+      (`C-13`/`R-10`).
+- [x] Current ordinary filesystem import durable parse-cache writeback:
+      unscoped filesystem imports with configured `parse_cache_root` and
+      `persist_cache_root` now materialize successfully stored
+      `ParseCache::load_or_parse_bytes` results into the persistent
+      file-artifact index with `MaterializationDecision::Materialize` after
+      durable misses or stale/corrupt durable entries fall back to normal parse
+      loading. Writeback opens the persistent root through the same lazy
+      advisory path as durable hit selection and ignores persistent write
+      failures. This is ordinary import writeback only; source root/native
+      expression durable lookup/writeback, mmap reads, full artifact semantic
+      validation beyond existing decoders, GC/repack, and harness proof remain
+      open (`C-13`/`C-14`/`R-10`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus

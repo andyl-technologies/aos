@@ -1061,33 +1061,70 @@ impl TreeWalk {
         if global_scope.is_scoped() {
             return Ok(None);
         }
+
+        if let Some(cached) = self.load_persist_cached_import(realpath, source) {
+            return Ok(Some(cached));
+        }
+
         let Some(cache) = &self.parse_cache else {
             return Ok(None);
         };
 
+        let source_hint = Some(realpath.to_string_lossy().into_owned());
+        let cached = cache
+            .load_or_parse_bytes(source, source_hint)
+            .map_err(|error| {
+                Self::parse_cache_import_error(argument, argument_span, path, source, error)
+            })?;
+        self.materialize_persist_cached_import(realpath, source, &cached);
+        Ok(Some(cached))
+    }
+
+    fn load_persist_cached_import(
+        &mut self,
+        realpath: &Path,
+        source: &[u8],
+    ) -> Option<CachedParse> {
+        self.open_persist_import_cache();
+        let cache = self.parse_cache.as_ref()?;
+        let persist_cache = self.persist_cache.as_ref()?;
+        persist_cache
+            .load_parse_cache_source_from_index(cache, realpath, source)
+            .ok()
+            .flatten()
+    }
+
+    fn materialize_persist_cached_import(
+        &mut self,
+        realpath: &Path,
+        source: &[u8],
+        cached: &CachedParse,
+    ) {
+        if !cached.stored {
+            return;
+        }
+        self.open_persist_import_cache();
+        let Some(persist_cache) = &self.persist_cache else {
+            return;
+        };
+        let file_key = ParseFileKey::for_source(realpath, source);
+        let _ = persist_cache.materialize_parse_artifact_entry_indexed(
+            &file_key,
+            cached.key,
+            &cached.entry,
+            MaterializationDecision::Materialize,
+        );
+    }
+
+    fn open_persist_import_cache(&mut self) {
+        if self.parse_cache.is_none() {
+            return;
+        }
         if self.persist_cache.is_none() && !self.persist_cache_open_attempted {
             self.persist_cache_open_attempted = true;
             if let Some(root) = self.options.persist_cache_root().map(Path::to_path_buf) {
                 self.persist_cache = PersistCache::open(root).ok();
             }
         }
-
-        if let Some(persist_cache) = &self.persist_cache {
-            if let Some(cached) = persist_cache
-                .load_parse_cache_source_from_index(cache, realpath, source)
-                .ok()
-                .flatten()
-            {
-                return Ok(Some(cached));
-            }
-        }
-
-        let source_hint = Some(realpath.to_string_lossy().into_owned());
-        cache
-            .load_or_parse_bytes(source, source_hint)
-            .map(Some)
-            .map_err(|error| {
-                Self::parse_cache_import_error(argument, argument_span, path, source, error)
-            })
     }
 }

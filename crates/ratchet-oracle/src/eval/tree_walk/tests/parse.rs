@@ -422,6 +422,112 @@ fn ordinary_filesystem_import_falls_back_after_persistent_parse_cache_miss() {
 }
 
 #[test]
+fn ordinary_filesystem_import_materializes_persistent_parse_cache_after_fallback() {
+    use crate::cache::{ParseCache, PersistCache};
+
+    let root = fs::canonicalize(unique_temp_dir("import-persist-parse-cache-writeback"))
+        .expect("temp directory canonicalizes");
+    let first_parse_root = root.join("first-parse");
+    let second_parse_root = root.join("second-parse");
+    let persist_root = root.join("persist");
+    let source = b"{ zOnly = 41; }";
+    fs::write(root.join("dep.nix"), source).expect("dep writes");
+    PersistCache::open(&persist_root).expect("empty persistent cache opens");
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    first_options.set_parse_cache_root(&first_parse_root);
+    first_options.set_persist_cache_root(&persist_root);
+    let ir = lower(r#"builtins.concatStringsSep "," (builtins.attrNames (import ./dep.nix))"#);
+
+    let mut first = TreeWalk::with_options(&ir, first_options);
+    let first_value = first
+        .eval_root()
+        .expect("persistent miss falls back to parsing");
+    let first_string = first
+        .heap()
+        .get_string(first_value)
+        .expect("attrNames result concatenates to string");
+    assert_eq!(first_string.bytes(), b"zOnly");
+    assert_eq!(first.import_parse_cache_stats(), (0, 1));
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    second_options.set_parse_cache_root(&second_parse_root);
+    second_options.set_persist_cache_root(&persist_root);
+    let mut second = TreeWalk::with_options(&ir, second_options);
+    let second_value = second
+        .eval_root()
+        .expect("persistent writeback feeds later import");
+    let second_string = second
+        .heap()
+        .get_string(second_value)
+        .expect("attrNames result concatenates to string");
+
+    assert_eq!(second_string.bytes(), b"zOnly");
+    assert_eq!(second.import_parse_cache_stats(), (1, 0));
+    assert!(
+        ParseCache::new(&second_parse_root)
+            .entry_for_source(source)
+            .is_complete(),
+        "durable writeback should hydrate the later runtime parse-cache entry"
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn ordinary_filesystem_import_ignores_persistent_parse_cache_writeback_errors() {
+    use crate::cache::{ParseCache, PersistCache};
+
+    let root = fs::canonicalize(unique_temp_dir("import-persist-parse-cache-write-error"))
+        .expect("temp directory canonicalizes");
+    let cache_root = root.join("cache");
+    let persist_root = root.join("persist");
+    let source = b"{ zOnly = 41; }";
+    fs::write(root.join("dep.nix"), source).expect("dep writes");
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    let file_index_path = persist.file_index().path().to_path_buf();
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&cache_root);
+    options.set_persist_cache_root(&persist_root);
+    let ir = lower(r#"builtins.concatStringsSep "," (builtins.attrNames (import ./dep.nix))"#);
+
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    evaluator.persist_cache = Some(persist);
+    evaluator.persist_cache_open_attempted = true;
+    fs::remove_file(file_index_path.as_path()).expect("file index removes");
+    fs::create_dir(file_index_path.as_path()).expect("file index path becomes directory");
+
+    let value = evaluator
+        .eval_root()
+        .expect("persistent writeback failure stays advisory");
+    let string = evaluator
+        .heap()
+        .get_string(value)
+        .expect("attrNames result concatenates to string");
+
+    assert_eq!(string.bytes(), b"zOnly");
+    assert_eq!(evaluator.import_parse_cache_stats(), (0, 1));
+    assert!(
+        ParseCache::new(&cache_root)
+            .entry_for_source(source)
+            .is_complete(),
+        "ordinary parse-cache write should survive persistent writeback failure"
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
 fn ordinary_filesystem_import_falls_back_after_stale_persistent_parse_cache_hit() {
     use crate::cache::{
         DurableBlake3Hash, PERSIST_BLOB_PACK_HEADER_LEN, ParseCache, ParseFileKey,
