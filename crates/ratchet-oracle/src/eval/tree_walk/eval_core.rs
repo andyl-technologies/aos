@@ -1048,35 +1048,65 @@ impl TreeWalk {
         Some(hashes)
     }
 
-    fn force_cache_free_var_value_hash(&self, value: Value) -> Option<DurableBlake3Hash> {
+    pub(super) fn force_cache_free_var_value_hash(
+        &self,
+        value: Value,
+    ) -> Option<DurableBlake3Hash> {
         if let Ok(hash) = ValueHash::from_inline_value(value) {
             return Some(hash.as_durable_hash());
         }
         match value.tag() {
             ValueTag::String => {
                 let string = self.heap.get_string(value).ok()?;
-                if string.has_context() {
-                    return None;
-                }
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
                 hasher.update(b"string");
                 Self::update_cache_identity_chunk(&mut hasher, string.bytes())?;
+                if string.has_context() {
+                    Self::update_force_capture_string_context(&mut hasher, string.context())?;
+                }
                 return Some(DurableBlake3Hash::from_hasher(hasher));
             }
             ValueTag::Path => {
                 let path = self.heap.get_path(value).ok()?;
-                if path.has_context() {
-                    return None;
-                }
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
                 hasher.update(b"path");
                 Self::update_cache_identity_chunk(&mut hasher, path.bytes())?;
+                if path.has_context() {
+                    Self::update_force_capture_string_context(&mut hasher, path.context())?;
+                }
                 return Some(DurableBlake3Hash::from_hasher(hasher));
             }
             _ => return None,
         }
+    }
+
+    fn update_force_capture_string_context(
+        hasher: &mut blake3::Hasher,
+        context: &StringContext,
+    ) -> Option<()> {
+        hasher.update(b"context");
+        let len = u64::try_from(context.len()).ok()?;
+        hasher.update(&len.to_le_bytes());
+        for element in context.elements() {
+            match element.kind() {
+                ContextKind::OpaquePath => {
+                    hasher.update(b"opaque-path");
+                    Self::update_cache_identity_chunk(hasher, element.path())?;
+                }
+                ContextKind::SingleOutput => {
+                    hasher.update(b"single-output");
+                    Self::update_cache_identity_chunk(hasher, element.path())?;
+                    Self::update_cache_identity_chunk(hasher, element.output()?)?;
+                }
+                ContextKind::DeepDerivation => {
+                    hasher.update(b"deep-derivation");
+                    Self::update_cache_identity_chunk(hasher, element.path())?;
+                }
+            }
+        }
+        Some(())
     }
 
     fn captured_free_variable_slots(

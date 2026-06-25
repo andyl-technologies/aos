@@ -4713,6 +4713,13 @@ fn captured_context_free_let_string_thunks_use_free_variable_hashes() {
     );
 }
 
+fn opaque_capture_context(path: &[u8]) -> StringContext {
+    StringContext::singleton(
+        ContextElement::opaque_path(path.to_vec()).expect("opaque context path is valid"),
+    )
+    .expect("context allocates")
+}
+
 #[test]
 fn captured_context_free_string_thunks_use_free_variable_hashes() {
     let source = r#"let f = x: { a = x == "s"; }; in [ (f "s").a (f "t").a ]"#;
@@ -4959,7 +4966,120 @@ fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
 }
 
 #[test]
-fn captured_context_bearing_string_thunks_wait_for_materialized_capture_keys() {
+fn materialized_context_bearing_string_captures_use_canonical_free_variable_hashes() {
+    let ir = lower("1");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let source =
+        ContextElement::opaque_path(b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source".to_vec())
+            .expect("opaque context builds");
+    let output = ContextElement::single_output(
+        b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pkg.drv".to_vec(),
+        b"out".to_vec(),
+    )
+    .expect("output context builds");
+    let first_context = StringContext::new(vec![output.clone(), source.clone(), output.clone()]);
+    let same_context = StringContext::new(vec![source, output]);
+    let different_context =
+        opaque_capture_context(b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-other");
+    let first = evaluator
+        .heap
+        .alloc_string(NixString::new(b"s".to_vec(), first_context))
+        .expect("first context string allocates");
+    let same = evaluator
+        .heap
+        .alloc_string(NixString::new(b"s".to_vec(), same_context))
+        .expect("same context string allocates");
+    let different = evaluator
+        .heap
+        .alloc_string(NixString::new(b"s".to_vec(), different_context))
+        .expect("different context string allocates");
+    let context_free = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(b"s".to_vec()))
+        .expect("context-free string allocates");
+    let hash = evaluator
+        .force_cache_free_var_value_hash(first)
+        .expect("context-bearing string hashes");
+
+    assert_eq!(
+        hash,
+        evaluator
+            .force_cache_free_var_value_hash(same)
+            .expect("same context-bearing string hashes")
+    );
+    assert_ne!(
+        hash,
+        evaluator
+            .force_cache_free_var_value_hash(different)
+            .expect("different context-bearing string hashes")
+    );
+    assert_ne!(
+        hash,
+        evaluator
+            .force_cache_free_var_value_hash(context_free)
+            .expect("context-free string hashes")
+    );
+}
+
+#[test]
+fn materialized_context_bearing_path_captures_use_canonical_free_variable_hashes() {
+    let ir = lower("1");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let context = opaque_capture_context(b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source");
+    let different_context =
+        opaque_capture_context(b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-other");
+    let first = evaluator
+        .heap
+        .alloc_path(NixString::new(b"/tmp/seed".to_vec(), context.clone()))
+        .expect("first context path allocates");
+    let same = evaluator
+        .heap
+        .alloc_path(NixString::new(b"/tmp/seed".to_vec(), context.clone()))
+        .expect("same context path allocates");
+    let different = evaluator
+        .heap
+        .alloc_path(NixString::new(b"/tmp/seed".to_vec(), different_context))
+        .expect("different context path allocates");
+    let context_free = evaluator
+        .heap
+        .alloc_path(NixString::from_bytes(b"/tmp/seed".to_vec()))
+        .expect("context-free path allocates");
+    let context_string = evaluator
+        .heap
+        .alloc_string(NixString::new(b"/tmp/seed".to_vec(), context))
+        .expect("context string allocates");
+    let hash = evaluator
+        .force_cache_free_var_value_hash(first)
+        .expect("context-bearing path hashes");
+
+    assert_eq!(
+        hash,
+        evaluator
+            .force_cache_free_var_value_hash(same)
+            .expect("same context-bearing path hashes")
+    );
+    assert_ne!(
+        hash,
+        evaluator
+            .force_cache_free_var_value_hash(different)
+            .expect("different context-bearing path hashes")
+    );
+    assert_ne!(
+        hash,
+        evaluator
+            .force_cache_free_var_value_hash(context_free)
+            .expect("context-free path hashes")
+    );
+    assert_ne!(
+        hash,
+        evaluator
+            .force_cache_free_var_value_hash(context_string)
+            .expect("context-bearing string hashes")
+    );
+}
+
+#[test]
+fn captured_computed_context_bearing_string_thunks_wait_for_materialized_capture_keys() {
     let source = r#"
       let s = builtins.appendContext "s" {
         "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source" = { path = true; };

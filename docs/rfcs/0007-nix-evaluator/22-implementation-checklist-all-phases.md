@@ -504,7 +504,7 @@ alone (`M-1`/`Q-A`).
       search-path/global/builtin/primop/application/dialect nodes pending
       explicit option and impure-input keys, synthetic apply/select
       thunks, canonical free-variable hashes, general memo lookup,
-      captured context-bearing string/path free variables, lists/attrs and other
+      captured thunk-cell free variables, lists/attrs and other
       composite value hashing, persistence, and cached/uncached harness proof remain open
       (`S-14`/`S-15`).
 - [x] Current pure closed force-cache hit substrate: `EvalCache` keeps per-node
@@ -523,7 +523,7 @@ alone (`M-1`/`Q-A`).
       thunks, ambient/synthetic builtin values outside the admitted constant subset,
       search-path/global/builtin/primop/application/dialect nodes pending
       explicit option and impure-input keys, synthetic apply/select
-      thunks, canonical free-variable hashes, captured context-bearing string/path free variables,
+      thunks, canonical free-variable hashes, captured thunk-cell free variables,
       lists/attrs and other composite payloads,
       transitive dirty scheduling, persistence, `derivationStrict` SHA-256
       short-circuiting, and cached/uncached harness proof remain open
@@ -554,7 +554,7 @@ alone (`M-1`/`Q-A`).
       search-path/global/builtin/
       application/dialect nodes beyond the traceable primop subset, canonical
       free-variable hashes, typed input-identity retention, force-time input
-      revalidation, captured context-bearing string/path free variables, lists/attrs and other
+      revalidation, captured thunk-cell free variables, lists/attrs and other
       composite payloads, transitive dirty scheduling,
       persistence, `derivationStrict` SHA-256 short-circuiting, and
       cached/uncached harness proof remain open (`R-10`/`S-14`).
@@ -585,7 +585,7 @@ alone (`M-1`/`Q-A`).
       thunks, ambient builtin values outside the admitted constant subset,
       search-path/global/builtin/application/dialect nodes beyond the
       traceable primop subset, canonical free-variable hashes, persistent
-      input-identity retention, captured context-bearing string/path free variables, lists/attrs and
+      input-identity retention, captured thunk-cell free variables, lists/attrs and
       other composite payloads, transitive dirty
       scheduling, persistent graph/value cache integration, `derivationStrict`
       SHA-256 short-circuiting, and cached/uncached harness proof remain open
@@ -645,21 +645,24 @@ alone (`M-1`/`Q-A`).
       lowered-IR-backed node thunk,
       including ordered durable hashes for referenced captured lexical slots
       when every captured slot value is either an inline scalar supported by
-      `ValueHash::from_inline_value`, a context-free string, or a context-free
-      path hashed in one durable force-capture domain with typed string/path
-      tags. Lookup and observation feed those
-      hashes into the existing ordered/length-prefixed demand-key combiner, so
-      repeated captured inline/string/path thunks hit only when their free-variable
-      value hashes match and miss when those captured values differ. This
-      deliberately skips dynamic `with` scopes, scoped-import globals, captured
-      context-bearing strings/paths, lists, attrs, lambdas, primops, thunks,
-      captured bodies with nested lexical-frame introducers,
-      apply/select thunks, full strictness/escape
+      `ValueHash::from_inline_value`, a Nix string with or without context, or a
+      Nix path with or without context. Strings and paths are hashed in one
+      durable force-capture domain with typed string/path tags; contextual values
+      append canonical context element tags and length-prefixed path/output
+      bytes. Lookup and observation feed those hashes into the existing
+      ordered/length-prefixed demand-key combiner, so repeated captured
+      inline/string/path thunks hit only when their free-variable value hashes
+      match and miss when those captured values differ. This deliberately skips
+      dynamic `with` scopes, scoped-import globals, captured lists, attrs,
+      lambdas, primops, thunk-cell captures including computed strings/paths not
+      materialized in the captured slot, captured bodies with nested
+      lexical-frame introducers, apply/select thunks, full strictness/escape
       free-variable analysis, heap/composite value hashes, persistence, and
       cached/uncached harness proof. The gate covers captured inline/string/path
       hit/miss tests, lowered lambda-argument coverage, cross-type string/path
-      hash separation, context-bearing string skips, and representative captured
-      unsupported free-variable skips
+      hash separation, materialized context-bearing string/path capture hash
+      tests, computed context-bearing string thunk skip, and representative
+      captured unsupported free-variable skips
       (`C-1`/`C-2`).
 - [ ] Full cache-key integration remains: feed source content + IR node position
       from the evaluator into demand-graph expression nodes, reuse the
