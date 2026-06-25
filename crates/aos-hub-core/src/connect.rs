@@ -1313,6 +1313,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
         "/aos.registry.v1.CacheService/MintCacheUploadCredentials",
         mint_cache_upload_credentials
     );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.CacheService/RegisterCacheNarinfos",
+        register_cache_narinfos
+    );
     // The machine-surface facade: a catch-all `GET` (axum routes `HEAD` to it,
     // eliding the body) for the registry machine path, registered LAST. The
     // static `/aos.registry.v1.{Service}/{Method}` RPC routes above win over

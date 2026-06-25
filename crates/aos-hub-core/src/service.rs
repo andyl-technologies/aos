@@ -3529,21 +3529,99 @@ impl RpcService {
     ) -> Result<pb::MintCacheUploadCredentialsResponse, RpcError> {
         let cache = self.cache_or_not_found(&req.cache_slug).await?;
         self.require_cache_admin(auth, cache.org_id).await?;
+        let now = clock::now_unix_secs();
+        let expires_at = now + i64::from(PRESIGN_EXPIRES_SECS);
+        // Batch form: one round-trip mints a URL per path (the single-path
+        // `upload_url` is unused). A non-machine path or a non-presignable cache
+        // yields an empty URL for that entry, so the client falls back per-NAR.
+        if !req.paths.is_empty() {
+            let mut uploads = Vec::with_capacity(req.paths.len());
+            for path in &req.paths {
+                let upload_url = if keymap::is_machine_path(path) {
+                    self.presign_cache_write(&cache, path, now)
+                        .await
+                        .map_err(RpcError::internal)?
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                uploads.push(pb::PresignedUpload {
+                    path: path.clone(),
+                    upload_url,
+                    expires_at,
+                });
+            }
+            return Ok(pb::MintCacheUploadCredentialsResponse {
+                upload_url: String::new(),
+                expires_at,
+                uploads,
+            });
+        }
         // Only canonical machine paths are mintable — a presigned PUT bypasses the
         // facade's narinfo signing, so an arbitrary key would land unvalidated.
         // Mirrors the facade `put_cache_path` machine-path guard.
         if !keymap::is_machine_path(&req.path) {
             return Err(RpcError::invalid("not a cache machine path"));
         }
-        let now = clock::now_unix_secs();
         let url = self
             .presign_cache_write(&cache, &req.path, now)
             .await
             .map_err(RpcError::internal)?;
         Ok(pb::MintCacheUploadCredentialsResponse {
             upload_url: url.unwrap_or_default(),
-            expires_at: now + i64::from(PRESIGN_EXPIRES_SECS),
+            expires_at,
+            uploads: Vec::new(),
         })
+    }
+
+    /// `CacheService.RegisterCacheNarinfos` — write + index a batch of narinfos.
+    ///
+    /// Used after the NAR bytes were uploaded directly to the origin via
+    /// presigned URLs: the client sends the (small) narinfos and the hub writes
+    /// each to the surface and updates the index in one round-trip, so a bulk
+    /// push is bounded by direct-to-origin NAR throughput rather than per-object
+    /// Worker round-trips. Each narinfo goes through the same write path as a
+    /// facade `PUT` ([`Self::put_cache_path`]): auth, server-side signing for a
+    /// key-bearing cache, surface write, quota, and index write-through.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors,
+    /// [`RpcError::invalid`] for a malformed narinfo path or oversize body, and
+    /// [`RpcError::Internal`] on a surface/database failure.
+    pub async fn register_cache_narinfos(
+        &self,
+        auth: Option<&str>,
+        req: pb::RegisterCacheNarinfosRequest,
+    ) -> Result<pb::RegisterCacheNarinfosResponse, RpcError> {
+        let cache = self.cache_or_not_found(&req.cache_slug).await?;
+        // Fail fast on auth; `put_cache_path` re-checks per write (cheap).
+        self.require_cache_admin(auth, cache.org_id).await?;
+        let mut registered = 0i64;
+        for n in &req.narinfos {
+            let path = format!("{}.narinfo", n.store_hash);
+            match self
+                .put_cache_path(auth, &cache, &path, n.narinfo.as_bytes())
+                .await
+            {
+                FacadeWrite::Created | FacadeWrite::Overwritten => registered += 1,
+                FacadeWrite::BadPath(reason) => return Err(RpcError::invalid(reason)),
+                FacadeWrite::TooLarge => return Err(RpcError::invalid("narinfo too large")),
+                FacadeWrite::QuotaExceeded => {
+                    return Err(RpcError::invalid("org storage quota exceeded"));
+                }
+                FacadeWrite::NotFound => return Err(RpcError::not_found("cache")),
+                FacadeWrite::Unauthorized(reason) | FacadeWrite::NotWritable(reason) => {
+                    return Err(RpcError::invalid(reason));
+                }
+                other => {
+                    return Err(RpcError::internal(anyhow::anyhow!(
+                        "narinfo register failed: {other:?}"
+                    )));
+                }
+            }
+        }
+        Ok(pb::RegisterCacheNarinfosResponse { registered })
     }
 
     /// `CacheService.CacheClosure` — the transitive closure of a store path.

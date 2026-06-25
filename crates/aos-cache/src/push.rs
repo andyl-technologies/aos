@@ -206,33 +206,73 @@ pub async fn run_push(
         upload_pack_entries(backend, &pack_paths, &pack_narinfos).await?;
         uploaded = count;
     } else {
-        // Direct-upload mode (the common HTTP/Worker path): genuinely
-        // concurrent. Each missing path compresses on a blocking thread and
-        // uploads independently, up to `effective_jobs` in flight at once — the
-        // earlier semaphore loop awaited each path serially, so `--jobs` had no
-        // effect. NAR bytes go straight to a presigned origin URL when the cache
-        // offers one (bypassing the hub); the narinfo always goes through the
-        // facade so the hub index/GC stay authoritative.
+        // Direct-upload mode (the common HTTP/Worker path), chunked so the
+        // control-plane round-trips are batched per chunk rather than per path:
+        // compress a chunk in parallel, batch-mint its NAR URLs in ONE RPC,
+        // upload the NAR bytes (direct to the presigned origin when available,
+        // else facade/multipart), then batch-register the chunk's narinfos in ONE
+        // RPC. A presignable cache thus pays ~2 hub round-trips per chunk while
+        // the NAR bytes stream straight to the origin — the per-path mint and
+        // per-narinfo round-trips were the wall once the byte path bypassed the
+        // Worker. The narinfos still go through the hub (batched) so the index/GC
+        // stay authoritative.
         let work: Vec<&PathInfo> = infos
             .iter()
             .filter(|info| missing_hashes.contains(&narinfo::store_hash(&info.path).to_string()))
             .collect();
-        let sizes: Vec<u64> = futures::stream::iter(work)
-            .map(|info| {
-                let overall = &overall;
-                let limiter = &limiter;
-                async move {
-                    let size =
-                        upload_one(backend, info, compression, compression_level, limiter).await?;
-                    overall.inc(1);
-                    Ok::<u64, anyhow::Error>(size)
-                }
-            })
-            .buffer_unordered(effective_jobs)
-            .try_collect()
-            .await?;
-        uploaded = sizes.len() as u64;
-        total_bytes = sizes.iter().sum();
+        let mut count = 0u64;
+        for chunk in work.chunks(UPLOAD_CHUNK) {
+            // 1. Compress the chunk in parallel (compression is CPU-bound).
+            let prepared: Vec<PreparedUpload> = futures::stream::iter(chunk.iter().copied())
+                .map(|info| prepare_upload(info, compression, compression_level))
+                .buffer_unordered(effective_jobs)
+                .try_collect()
+                .await?;
+            // 2. Batch-mint presigned URLs for the chunk's NAR paths (one RPC;
+            //    empty for a non-presignable cache).
+            let nar_paths: Vec<String> = prepared.iter().map(|p| p.nar_path.clone()).collect();
+            let urls = backend.mint_upload_urls(&nar_paths).await?;
+            // 3. Upload NAR bytes concurrently: direct to the presigned origin, or
+            //    facade/multipart fallback.
+            let _uploaded: Vec<()> = futures::stream::iter(prepared.iter())
+                .map(|p| {
+                    let overall = &overall;
+                    let limiter = &limiter;
+                    let urls = &urls;
+                    async move {
+                        if limiter.is_active() {
+                            limiter.acquire(p.file_size).await;
+                        }
+                        match urls.get(&p.nar_path) {
+                            Some(url) => backend.put_to_url(url, &p.compressed).await?,
+                            None => {
+                                if p.compressed.len() > MULTIPART_THRESHOLD
+                                    && backend.supports_multipart()
+                                {
+                                    upload_nar_multipart(backend, &p.nar_filename, &p.compressed)
+                                        .await?;
+                                } else {
+                                    backend.put_nar(&p.nar_filename, &p.compressed).await?;
+                                }
+                            }
+                        }
+                        overall.inc(1);
+                        Ok::<(), anyhow::Error>(())
+                    }
+                })
+                .buffer_unordered(effective_jobs)
+                .try_collect()
+                .await?;
+            // 4. Batch-register the chunk's narinfos (one RPC).
+            let narinfos: Vec<(String, String)> = prepared
+                .iter()
+                .map(|p| (p.hash.clone(), p.narinfo_text.clone()))
+                .collect();
+            backend.register_narinfos(&narinfos).await?;
+            total_bytes += prepared.iter().map(|p| p.file_size).sum::<u64>();
+            count += prepared.len() as u64;
+        }
+        uploaded = count;
     }
 
     overall.finish_and_clear();
@@ -279,60 +319,62 @@ fn build_narinfo(
     narinfo::format(&ni)
 }
 
-/// Compresses and uploads one missing path's NAR + narinfo.
-///
-/// Compression runs on a blocking thread (it is CPU-bound) so it never stalls
-/// the async runtime when many of these run concurrently. The NAR bytes go
-/// straight to a presigned origin URL when [`mint_upload_url`] offers one
-/// (bypassing the hub entirely); otherwise they fall back to multipart or a
-/// single facade `PUT`. The narinfo is always written through the facade so the
-/// hub's index/GC remain authoritative.
-///
-/// Returns the compressed NAR size in bytes.
+/// How many paths a single upload chunk batches: the chunk's NAR URLs are
+/// minted in one RPC and its narinfos registered in one RPC, so the per-chunk
+/// hub round-trips amortize across this many paths. Also bounds how many
+/// compressed NARs are held in memory at once.
+const UPLOAD_CHUNK: usize = 48;
+
+/// Compressed NARs larger than this upload via multipart (facade fallback).
+const MULTIPART_THRESHOLD: usize = 16 * 1024 * 1024;
+
+/// A compressed NAR plus the metadata needed to upload and register it.
+struct PreparedUpload {
+    /// Store-path hash component.
+    hash: String,
+    /// The compressed NAR bytes.
+    compressed: Vec<u8>,
+    /// Compressed size in bytes.
+    file_size: u64,
+    /// `<file-hash>.nar.<ext>` filename.
+    nar_filename: String,
+    /// Cache-relative NAR object path (`nar/<filename>`).
+    nar_path: String,
+    /// The narinfo body.
+    narinfo_text: String,
+}
+
+/// Compresses one path's NAR (on a blocking thread, since compression is
+/// CPU-bound) and builds the metadata needed to upload and register it.
 ///
 /// # Errors
 ///
-/// Returns an error if compression, minting, or any upload fails.
-///
-/// [`mint_upload_url`]: CacheBackend::mint_upload_url
-async fn upload_one(
-    backend: &dyn CacheBackend,
+/// Returns an error if compression fails or its blocking task panics.
+async fn prepare_upload(
     info: &PathInfo,
     compression: &str,
     compression_level: i32,
-    limiter: &bandwidth::BandwidthLimiter,
-) -> Result<u64> {
-    /// Compressed NARs larger than this upload via multipart (facade fallback).
-    const MULTIPART_THRESHOLD: usize = 16 * 1024 * 1024;
-
+) -> Result<PreparedUpload> {
     let hash = narinfo::store_hash(&info.path).to_string();
     let path = info.path.clone();
     let comp = compression.to_string();
-    let compressed = tokio::task::spawn_blocking(move || streaming_compress(&path, &comp, compression_level))
-        .await
-        .context("compression task panicked")??;
-
+    let compressed =
+        tokio::task::spawn_blocking(move || streaming_compress(&path, &comp, compression_level))
+            .await
+            .context("compression task panicked")??;
     let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(&compressed)));
     let file_size = compressed.len() as u64;
-    if limiter.is_active() {
-        limiter.acquire(file_size).await;
-    }
     let nar_filename = format!("{}.{}", file_hash.replace(':', "-"), compression_ext(compression));
     let narinfo_text = build_narinfo(info, &file_hash, file_size, &nar_filename, compression);
-    let nar_url = format!("nar/{nar_filename}");
-
-    match backend.mint_upload_url(&nar_url).await? {
-        Some(presigned) => backend.put_to_url(&presigned, &compressed).await?,
-        None => {
-            if compressed.len() > MULTIPART_THRESHOLD && backend.supports_multipart() {
-                upload_nar_multipart(backend, &nar_filename, &compressed).await?;
-            } else {
-                backend.put_nar(&nar_filename, &compressed).await?;
-            }
-        }
-    }
-    backend.put_narinfo(&hash, &narinfo_text).await?;
-    Ok(file_size)
+    let nar_path = format!("nar/{nar_filename}");
+    Ok(PreparedUpload {
+        hash,
+        compressed,
+        file_size,
+        nar_filename,
+        nar_path,
+        narinfo_text,
+    })
 }
 
 /// Concurrent multipart parts in flight per NAR.
