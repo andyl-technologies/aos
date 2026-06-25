@@ -256,14 +256,20 @@ hold invariant.
       representative error-class parity gate in [15](15-differential-testing-and-benchmarking.md)
       §3.3 covers type/throw/assert/abort classification separately from the
       upstream corpus's pass/fail outcome check.
-- [ ] **All pure builtins in [21](21-builtins-conformance.md) diff green** under
+- [x] **All pure builtins in [21](21-builtins-conformance.md) diff green** under
       the oracle (string/list/attr/arithmetic/`derivationStrict`/`import`/
       `toJSON`/`fromJSON`/path ops), with impure builtins
       (`readFile`/`readDir`/`getEnv`) producing identical `.drv` inputs on the
       tested closure.
       → Impure-builtin `.drv`-input parity on the closure is DONE (the readFile
-      string-context fix); the enumerated doc-21 pure-builtin corpus run is the
-      remaining granular confirmation.
+      string-context fix). The configured pinned C++ Nix `2.24.12` oracle suite
+      (`ratchet-oracle cpp_nix`) now passes with `43 passed, 31 ignored, 0
+      failed`, covering the pinned builtin surface, identity constants,
+      type/control/attrset/numeric/order/string/path/context/list/hash/JSON/XML/
+      TOML/search-path/import/derivation semantics, trace/warn behavior, and
+      generated core JSON expressions. The still-open full `fetchTree`/`getFlake`
+      flake-protocol rows in [21](21-builtins-conformance.md) remain explicitly
+      scoped outside this pure-builtin Phase-1 rollup.
 - [x] **Parity is achieved here, under the slow oracle, before any optimization
       exists.** Demonstrated: the `.drv` differential harness is byte-green on the
       full AOS closure with no JIT/optimization tier present. This is then held
