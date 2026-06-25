@@ -332,6 +332,183 @@ fn cache_file_artifact_index_records_and_looks_up_entries() {
 }
 
 #[test]
+fn cache_fixed_record_indexes_compact_to_latest_entries() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"value payload"));
+    let file_blob_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"file payload"));
+    let value_first = PersistBlobLocation::new(111, 12);
+    let value_latest = PersistBlobLocation::new(222, 34);
+    let file_first = PersistBlobLocation::new(333, 56);
+    let file_latest = PersistBlobLocation::new(444, 78);
+
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(value_key, value_first))
+        .expect("first value blob index entry appends");
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(value_key, value_latest))
+        .expect("latest value blob index entry appends");
+    cache
+        .file_index()
+        .append_entry(PersistBlobIndexEntry::new(file_blob_key, file_first))
+        .expect("first file blob index entry appends");
+    cache
+        .file_index()
+        .append_entry(PersistBlobIndexEntry::new(file_blob_key, file_latest))
+        .expect("latest file blob index entry appends");
+
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let file_artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let file_artifact_first = PersistFileArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"first file artifact"),
+        PersistBlobLocation::new(555, 90),
+    );
+    let file_artifact_latest = PersistFileArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"latest file artifact"),
+        PersistBlobLocation::new(666, 12),
+    );
+    cache
+        .record_file_artifact(PersistFileArtifactIndexEntry::new(
+            file_artifact_key,
+            file_artifact_first,
+        ))
+        .expect("first file artifact entry records");
+    cache
+        .record_file_artifact(PersistFileArtifactIndexEntry::new(
+            file_artifact_key,
+            file_artifact_latest,
+        ))
+        .expect("latest file artifact entry records");
+
+    let parse_artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+    let parse_artifact_first = PersistParseArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"first parse artifact"),
+        PersistBlobLocation::new(777, 34),
+    );
+    let parse_artifact_latest = PersistParseArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"latest parse artifact"),
+        PersistBlobLocation::new(888, 56),
+    );
+    cache
+        .record_parse_artifact(PersistParseArtifactIndexEntry::new(
+            parse_artifact_key,
+            parse_artifact_first,
+        ))
+        .expect("first parse artifact entry records");
+    cache
+        .record_parse_artifact(PersistParseArtifactIndexEntry::new(
+            parse_artifact_key,
+            parse_artifact_latest,
+        ))
+        .expect("latest parse artifact entry records");
+
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        (PERSIST_BLOB_INDEX_ENTRY_LEN * 2) as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.file_index().path())
+            .expect("file index metadata")
+            .len(),
+        (PERSIST_BLOB_INDEX_ENTRY_LEN * 2) as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.file_artifact_index().path())
+            .expect("file artifact index metadata")
+            .len(),
+        (PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN * 2) as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.parse_artifact_index().path())
+            .expect("parse artifact index metadata")
+            .len(),
+        (PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN * 2) as u64
+    );
+
+    assert_eq!(
+        cache
+            .compact_blob_index(PersistBlobStore::Values)
+            .expect("value index compacts"),
+        1
+    );
+    assert_eq!(
+        cache
+            .compact_blob_index(PersistBlobStore::Files)
+            .expect("file index compacts"),
+        1
+    );
+    assert_eq!(
+        cache
+            .compact_file_artifact_index()
+            .expect("file artifact index compacts"),
+        1
+    );
+    assert_eq!(
+        cache
+            .compact_parse_artifact_index()
+            .expect("parse artifact index compacts"),
+        1
+    );
+
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.file_index().path())
+            .expect("file index metadata")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.file_artifact_index().path())
+            .expect("file artifact index metadata")
+            .len(),
+        PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.parse_artifact_index().path())
+            .expect("parse artifact index metadata")
+            .len(),
+        PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(value_key)
+            .expect("value lookup succeeds"),
+        Some(value_latest)
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(file_blob_key)
+            .expect("file lookup succeeds"),
+        Some(file_latest)
+    );
+    assert_eq!(
+        cache
+            .lookup_file_artifact(file_artifact_key)
+            .expect("file artifact lookup succeeds"),
+        Some(file_artifact_latest)
+    );
+    assert_eq!(
+        cache
+            .lookup_parse_artifact(parse_artifact_key)
+            .expect("parse artifact lookup succeeds"),
+        Some(parse_artifact_latest)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_metadata_index_records_and_looks_up_entries() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

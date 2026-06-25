@@ -386,8 +386,8 @@ impl PersistBlobIndex {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobIndexError`] if the index cannot be opened, read,
-    /// or decoded.
+    /// Returns [`PersistBlobIndexError`] if the index cannot be created,
+    /// opened, inspected, read, or decoded.
     pub fn lookup(
         &self,
         key: PersistBlobKey,
@@ -429,6 +429,110 @@ impl PersistBlobIndex {
             }
         }
         Ok(found)
+    }
+
+    /// Returns the newest entry for every blob key.
+    ///
+    /// Entries are returned in stable encoded-key order. If a key appears
+    /// multiple times in the append-only sidecar, only its newest location is
+    /// returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexError`] if the index cannot be created,
+    /// opened, inspected, read, or decoded.
+    pub fn latest_entries(&self) -> Result<Vec<PersistBlobIndexEntry>, PersistBlobIndexError> {
+        ensure_blob_index_file(&self.path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .map_err(|source| PersistBlobIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let len = file
+            .metadata()
+            .map_err(|source| PersistBlobIndexError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        validate_blob_index_len(&self.path, len)?;
+
+        let mut latest = std::collections::BTreeMap::new();
+        let records = len / PERSIST_BLOB_INDEX_ENTRY_LEN as u64;
+        let mut encoded = [0; PERSIST_BLOB_INDEX_ENTRY_LEN];
+        for _ in 0..records {
+            file.read_exact(&mut encoded)
+                .map_err(|source| PersistBlobIndexError::Read {
+                    path: self.path.clone(),
+                    source,
+                })?;
+            let entry = PersistBlobIndexEntry::decode_index_entry(&encoded).map_err(|source| {
+                PersistBlobIndexError::Format {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?;
+            latest.insert(entry.key().index_bytes(), entry);
+        }
+        Ok(latest.into_iter().map(|(_, entry)| entry).collect())
+    }
+
+    /// Rewrites the sidecar to the newest entry for every blob key.
+    ///
+    /// Entries are written in stable encoded-key order through a temporary file
+    /// that is renamed over the original index. The returned count is the
+    /// number of latest entries preserved after compaction. Callers must
+    /// exclude all concurrent sidecar writers across threads and processes
+    /// while this method runs; an append that races between the snapshot and
+    /// rename can be lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexError`] if the index cannot be created,
+    /// opened, inspected, read, decoded, written, flushed, or renamed into
+    /// place.
+    pub fn compact_latest_entries(&self) -> Result<usize, PersistBlobIndexError> {
+        let entries = self.latest_entries()?;
+        let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = self
+            .path
+            .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
+        let write_result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)
+                .map_err(|source| PersistBlobIndexError::Write {
+                    path: tmp_path.clone(),
+                    source,
+                })?;
+            for entry in &entries {
+                file.write_all(&entry.encode_index_entry())
+                    .map_err(|source| PersistBlobIndexError::Write {
+                        path: tmp_path.clone(),
+                        source,
+                    })?;
+            }
+            file.flush().map_err(|source| PersistBlobIndexError::Write {
+                path: tmp_path.clone(),
+                source,
+            })
+        })();
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(error);
+        }
+        fs::rename(&tmp_path, &self.path).map_err(|source| {
+            let _ = fs::remove_file(&tmp_path);
+            PersistBlobIndexError::Write {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        Ok(entries.len())
     }
 }
 
@@ -736,6 +840,115 @@ impl PersistFileArtifactIndex {
         }
         Ok(found)
     }
+
+    /// Returns the newest entry for every file-artifact key.
+    ///
+    /// Entries are returned in stable encoded-key order. If a key appears
+    /// multiple times in the append-only sidecar, only its newest value is
+    /// returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexError`] if the index cannot be
+    /// created, opened, inspected, read, or decoded.
+    pub fn latest_entries(
+        &self,
+    ) -> Result<Vec<PersistFileArtifactIndexEntry>, PersistFileArtifactIndexError> {
+        ensure_file_artifact_index_file(&self.path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .map_err(|source| PersistFileArtifactIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let len = file
+            .metadata()
+            .map_err(|source| PersistFileArtifactIndexError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        validate_file_artifact_index_len(&self.path, len)?;
+
+        let mut latest = std::collections::BTreeMap::new();
+        let records = len / PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN as u64;
+        let mut encoded = [0; PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN];
+        for _ in 0..records {
+            file.read_exact(&mut encoded).map_err(|source| {
+                PersistFileArtifactIndexError::Read {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?;
+            let entry =
+                PersistFileArtifactIndexEntry::decode_index_entry(&encoded).map_err(|source| {
+                    PersistFileArtifactIndexError::Format {
+                        path: self.path.clone(),
+                        source,
+                    }
+                })?;
+            latest.insert(entry.key().index_bytes(), entry);
+        }
+        Ok(latest.into_iter().map(|(_, entry)| entry).collect())
+    }
+
+    /// Rewrites the sidecar to the newest entry for every file-artifact key.
+    ///
+    /// Entries are written in stable encoded-key order through a temporary file
+    /// that is renamed over the original index. The returned count is the
+    /// number of latest entries preserved after compaction. Callers must
+    /// exclude all concurrent sidecar writers across threads and processes
+    /// while this method runs; an append that races between the snapshot and
+    /// rename can be lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexError`] if the index cannot be
+    /// created, opened, inspected, read, decoded, written, flushed, or renamed
+    /// into place.
+    pub fn compact_latest_entries(&self) -> Result<usize, PersistFileArtifactIndexError> {
+        let entries = self.latest_entries()?;
+        let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = self
+            .path
+            .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
+        let write_result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)
+                .map_err(|source| PersistFileArtifactIndexError::Write {
+                    path: tmp_path.clone(),
+                    source,
+                })?;
+            for entry in &entries {
+                file.write_all(&entry.encode_index_entry())
+                    .map_err(|source| PersistFileArtifactIndexError::Write {
+                        path: tmp_path.clone(),
+                        source,
+                    })?;
+            }
+            file.flush()
+                .map_err(|source| PersistFileArtifactIndexError::Write {
+                    path: tmp_path.clone(),
+                    source,
+                })
+        })();
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(error);
+        }
+        fs::rename(&tmp_path, &self.path).map_err(|source| {
+            let _ = fs::remove_file(&tmp_path);
+            PersistFileArtifactIndexError::Write {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        Ok(entries.len())
+    }
 }
 
 /// A stable index key for a durable frontend parse artifact.
@@ -1024,6 +1237,115 @@ impl PersistParseArtifactIndex {
             }
         }
         Ok(found)
+    }
+
+    /// Returns the newest entry for every parse-artifact key.
+    ///
+    /// Entries are returned in stable encoded-key order. If a key appears
+    /// multiple times in the append-only sidecar, only its newest value is
+    /// returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexError`] if the index cannot be
+    /// created, opened, inspected, read, or decoded.
+    pub fn latest_entries(
+        &self,
+    ) -> Result<Vec<PersistParseArtifactIndexEntry>, PersistParseArtifactIndexError> {
+        ensure_parse_artifact_index_file(&self.path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .map_err(|source| PersistParseArtifactIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let len = file
+            .metadata()
+            .map_err(|source| PersistParseArtifactIndexError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        validate_parse_artifact_index_len(&self.path, len)?;
+
+        let mut latest = std::collections::BTreeMap::new();
+        let records = len / PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN as u64;
+        let mut encoded = [0; PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN];
+        for _ in 0..records {
+            file.read_exact(&mut encoded).map_err(|source| {
+                PersistParseArtifactIndexError::Read {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?;
+            let entry =
+                PersistParseArtifactIndexEntry::decode_index_entry(&encoded).map_err(|source| {
+                    PersistParseArtifactIndexError::Format {
+                        path: self.path.clone(),
+                        source,
+                    }
+                })?;
+            latest.insert(entry.key().index_bytes(), entry);
+        }
+        Ok(latest.into_iter().map(|(_, entry)| entry).collect())
+    }
+
+    /// Rewrites the sidecar to the newest entry for every parse-artifact key.
+    ///
+    /// Entries are written in stable encoded-key order through a temporary file
+    /// that is renamed over the original index. The returned count is the
+    /// number of latest entries preserved after compaction. Callers must
+    /// exclude all concurrent sidecar writers across threads and processes
+    /// while this method runs; an append that races between the snapshot and
+    /// rename can be lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexError`] if the index cannot be
+    /// created, opened, inspected, read, decoded, written, flushed, or renamed
+    /// into place.
+    pub fn compact_latest_entries(&self) -> Result<usize, PersistParseArtifactIndexError> {
+        let entries = self.latest_entries()?;
+        let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = self
+            .path
+            .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
+        let write_result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)
+                .map_err(|source| PersistParseArtifactIndexError::Write {
+                    path: tmp_path.clone(),
+                    source,
+                })?;
+            for entry in &entries {
+                file.write_all(&entry.encode_index_entry())
+                    .map_err(|source| PersistParseArtifactIndexError::Write {
+                        path: tmp_path.clone(),
+                        source,
+                    })?;
+            }
+            file.flush()
+                .map_err(|source| PersistParseArtifactIndexError::Write {
+                    path: tmp_path.clone(),
+                    source,
+                })
+        })();
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(error);
+        }
+        fs::rename(&tmp_path, &self.path).map_err(|source| {
+            let _ = fs::remove_file(&tmp_path);
+            PersistParseArtifactIndexError::Write {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        Ok(entries.len())
     }
 }
 

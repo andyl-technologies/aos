@@ -438,6 +438,74 @@ fn file_artifact_index_appends_and_finds_latest_matching_entry() {
 }
 
 #[test]
+fn file_artifact_index_compacts_to_latest_entries() {
+    let root = temp_root();
+    let index_path = root.join("nodes").join("file-artifacts.index");
+    let index = PersistFileArtifactIndex::open(&index_path).expect("index opens");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let other_key = PersistFileArtifactKey::for_realpath_bytes(
+        b"/src/other.nix",
+        file_key.content_hash(),
+        parse_key,
+    );
+    let first = PersistFileArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"first artifact"),
+        PersistBlobLocation::new(123, 456),
+    );
+    let other = PersistFileArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"other artifact"),
+        PersistBlobLocation::new(789, 10),
+    );
+    let latest = PersistFileArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"latest artifact"),
+        PersistBlobLocation::new(999, 11),
+    );
+    index
+        .append_entry(PersistFileArtifactIndexEntry::new(key, first))
+        .expect("first entry appends");
+    index
+        .append_entry(PersistFileArtifactIndexEntry::new(other_key, other))
+        .expect("other entry appends");
+    index
+        .append_entry(PersistFileArtifactIndexEntry::new(key, latest))
+        .expect("latest entry appends");
+
+    let mut expected = vec![
+        PersistFileArtifactIndexEntry::new(key, latest),
+        PersistFileArtifactIndexEntry::new(other_key, other),
+    ];
+    expected.sort_by_key(|entry| entry.key().index_bytes());
+    assert_eq!(
+        index.latest_entries().expect("latest entries load"),
+        expected
+    );
+    assert_eq!(
+        fs::metadata(index.path()).expect("index metadata").len(),
+        (PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN * 3) as u64
+    );
+
+    assert_eq!(index.compact_latest_entries().expect("index compacts"), 2);
+
+    assert_eq!(
+        fs::metadata(index.path()).expect("index metadata").len(),
+        (PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN * 2) as u64
+    );
+    assert_eq!(
+        index.lookup(key).expect("key lookup succeeds"),
+        Some(latest)
+    );
+    assert_eq!(
+        index.lookup(other_key).expect("other lookup succeeds"),
+        Some(other)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn file_artifact_index_open_rejects_truncated_records() {
     let root = temp_root();
     let index_path = root.join("nodes").join("file-artifacts.index");
@@ -715,6 +783,68 @@ fn parse_artifact_index_appends_and_finds_latest_matching_entry() {
     assert_eq!(
         fs::metadata(index.path()).expect("index metadata").len(),
         (PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN * 3) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn parse_artifact_index_compacts_to_latest_entries() {
+    let root = temp_root();
+    let index_path = root.join("nodes").join("parse-artifacts.index");
+    let index = PersistParseArtifactIndex::open(&index_path).expect("index opens");
+    let key = PersistParseArtifactKey::from_parse_cache_key(test_parse_key(b"let x = 1; in x"));
+    let other_key =
+        PersistParseArtifactKey::from_parse_cache_key(test_parse_key(b"let x = 2; in x"));
+    let first = PersistParseArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"first artifact"),
+        PersistBlobLocation::new(123, 456),
+    );
+    let other = PersistParseArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"other artifact"),
+        PersistBlobLocation::new(789, 10),
+    );
+    let latest = PersistParseArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"latest artifact"),
+        PersistBlobLocation::new(999, 11),
+    );
+    index
+        .append_entry(PersistParseArtifactIndexEntry::new(key, first))
+        .expect("first entry appends");
+    index
+        .append_entry(PersistParseArtifactIndexEntry::new(other_key, other))
+        .expect("other entry appends");
+    index
+        .append_entry(PersistParseArtifactIndexEntry::new(key, latest))
+        .expect("latest entry appends");
+
+    let mut expected = vec![
+        PersistParseArtifactIndexEntry::new(key, latest),
+        PersistParseArtifactIndexEntry::new(other_key, other),
+    ];
+    expected.sort_by_key(|entry| entry.key().index_bytes());
+    assert_eq!(
+        index.latest_entries().expect("latest entries load"),
+        expected
+    );
+    assert_eq!(
+        fs::metadata(index.path()).expect("index metadata").len(),
+        (PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN * 3) as u64
+    );
+
+    assert_eq!(index.compact_latest_entries().expect("index compacts"), 2);
+
+    assert_eq!(
+        fs::metadata(index.path()).expect("index metadata").len(),
+        (PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN * 2) as u64
+    );
+    assert_eq!(
+        index.lookup(key).expect("key lookup succeeds"),
+        Some(latest)
+    );
+    assert_eq!(
+        index.lookup(other_key).expect("other lookup succeeds"),
+        Some(other)
     );
 
     let _ = fs::remove_dir_all(root);
@@ -1835,6 +1965,58 @@ fn blob_index_appends_and_finds_latest_matching_entry() {
     assert_eq!(
         fs::metadata(index.path()).expect("index metadata").len(),
         (PERSIST_BLOB_INDEX_ENTRY_LEN * 3) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn blob_index_compacts_to_latest_entries() {
+    let root = temp_root();
+    let index_path = root.join("values").join("index.blob");
+    let index = PersistBlobIndex::open(&index_path).expect("index opens");
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"payload"));
+    let other_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"other payload"));
+    let first = PersistBlobLocation::new(123, 456);
+    let other = PersistBlobLocation::new(789, 10);
+    let latest = PersistBlobLocation::new(999, 11);
+    index
+        .append_entry(PersistBlobIndexEntry::new(key, first))
+        .expect("first entry appends");
+    index
+        .append_entry(PersistBlobIndexEntry::new(other_key, other))
+        .expect("other entry appends");
+    index
+        .append_entry(PersistBlobIndexEntry::new(key, latest))
+        .expect("latest entry appends");
+
+    let mut expected = vec![
+        PersistBlobIndexEntry::new(key, latest),
+        PersistBlobIndexEntry::new(other_key, other),
+    ];
+    expected.sort_by_key(|entry| entry.key().index_bytes());
+    assert_eq!(
+        index.latest_entries().expect("latest entries load"),
+        expected
+    );
+    assert_eq!(
+        fs::metadata(index.path()).expect("index metadata").len(),
+        (PERSIST_BLOB_INDEX_ENTRY_LEN * 3) as u64
+    );
+
+    assert_eq!(index.compact_latest_entries().expect("index compacts"), 2);
+
+    assert_eq!(
+        fs::metadata(index.path()).expect("index metadata").len(),
+        (PERSIST_BLOB_INDEX_ENTRY_LEN * 2) as u64
+    );
+    assert_eq!(
+        index.lookup(key).expect("key lookup succeeds"),
+        Some(latest)
+    );
+    assert_eq!(
+        index.lookup(other_key).expect("other lookup succeeds"),
+        Some(other)
     );
 
     let _ = fs::remove_dir_all(root);

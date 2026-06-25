@@ -265,6 +265,36 @@ impl PersistCache {
         self.parse_artifact_index.lookup(key)
     }
 
+    /// Compacts file-artifact mappings to the newest entry for every known key.
+    ///
+    /// This delegates to [`PersistFileArtifactIndex::compact_latest_entries`].
+    /// Callers must serialize writes to the file-artifact sidecar while this
+    /// method runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexError`] if the sidecar index cannot be
+    /// created, opened, inspected, read, decoded, written, flushed, or renamed
+    /// into place.
+    pub fn compact_file_artifact_index(&self) -> Result<usize, PersistFileArtifactIndexError> {
+        self.file_artifact_index.compact_latest_entries()
+    }
+
+    /// Compacts parse-artifact mappings to the newest entry for every known key.
+    ///
+    /// This delegates to [`PersistParseArtifactIndex::compact_latest_entries`].
+    /// Callers must serialize writes to the parse-artifact sidecar while this
+    /// method runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexError`] if the sidecar index cannot
+    /// be created, opened, inspected, read, decoded, written, flushed, or
+    /// renamed into place.
+    pub fn compact_parse_artifact_index(&self) -> Result<usize, PersistParseArtifactIndexError> {
+        self.parse_artifact_index.compact_latest_entries()
+    }
+
     /// Appends durable demand-node metadata to the sidecar index.
     ///
     /// # Errors
@@ -615,6 +645,24 @@ impl PersistCache {
         key: PersistBlobKey,
     ) -> Result<Option<PersistBlobLocation>, PersistBlobIndexError> {
         self.blob_index(key.store()).lookup(key)
+    }
+
+    /// Compacts the selected blob index to the newest entry for every known key.
+    ///
+    /// This delegates to [`PersistBlobIndex::compact_latest_entries`]. Callers
+    /// must serialize writes to the selected blob-index sidecar while this
+    /// method runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexError`] if the selected index cannot be
+    /// created, opened, inspected, read, decoded, written, flushed, or renamed
+    /// into place.
+    pub fn compact_blob_index(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<usize, PersistBlobIndexError> {
+        self.blob_index(store).compact_latest_entries()
     }
 
     /// Appends a blob and records its location in the sidecar index.

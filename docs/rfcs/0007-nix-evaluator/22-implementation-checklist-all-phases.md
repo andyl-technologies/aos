@@ -998,6 +998,17 @@ alone (`M-1`/`Q-A`).
       is local best-effort duplicate suppression only; cross-process
       locking/CAS, sidecar compaction, GC/repack, mmap reads, LMDB/redb indexes,
       and harness proof remain open (`C-13`/`R-14`).
+- [x] Current explicit fixed-record sidecar compaction substrate:
+      `PersistBlobIndex`, `PersistFileArtifactIndex`, and
+      `PersistParseArtifactIndex` now expose `latest_entries` and
+      `compact_latest_entries`, scanning append-only fixed-record indexes into
+      deterministic newest-entry-per-key order and rewriting through a
+      truncated temporary file plus rename. `PersistCache::compact_blob_index`,
+      `compact_file_artifact_index`, and `compact_parse_artifact_index` expose
+      those operations through the opened cache root. This is caller-driven
+      maintenance only; automatic compaction/GC policy, cross-process
+      writer coordination, LMDB/redb indexes, pack GC/repack, mmap reads, Attic
+      transport, and harness proof remain open (`C-13`/`R-14`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and
