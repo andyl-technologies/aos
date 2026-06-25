@@ -60,6 +60,50 @@ fn native_instantiation_expr_uses_configured_parse_cache() -> Result<()> {
 }
 
 #[test]
+fn native_instantiation_expr_materializes_persistent_parse_cache() -> Result<()> {
+    use crate::cache::{PersistCache, PersistParseArtifactKey};
+
+    let root = unique_temp_dir("native-instantiation-persist-parse-cache");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let store = root.join("store");
+    let cache_root = root.join("parse");
+    let persist_root = root.join("persist");
+    let mut options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+    options.set_parse_cache_root(&cache_root);
+    options.set_persist_cache_root(&persist_root);
+    let native = NixNative::with_options(0, options)?;
+    let expr = r#"derivationStrict {
+         name = "base";
+         system = "x86_64-linux";
+         builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+       }"#;
+    let source = derivation_path_wrapper_source(expr);
+
+    let path = native.instantiate_expr(expr)?;
+
+    assert!(path.starts_with(&store), "{}", path.display());
+    let cache = ParseCache::new(&cache_root);
+    let parse_key = cache.key_for_source(source.as_bytes());
+    assert!(cache.entry_for_key(parse_key).is_complete());
+    let persist = PersistCache::open(&persist_root)?;
+    assert!(
+        persist
+            .lookup_parse_artifact(PersistParseArtifactKey::from_parse_cache_key(parse_key))?
+            .is_some(),
+        "raw instantiation should write a parse-keyed persistent artifact"
+    );
+    assert_eq!(
+        fs::metadata(persist.layout().file_artifact_index_path())?.len(),
+        0,
+        "raw instantiation should not synthesize a persistent file-artifact key"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_instantiation_reified_builtins_do_not_force_nix_path() -> Result<()> {
     let (native, root, store) = native_with_temp_store("native-reified-builtins")?;
 

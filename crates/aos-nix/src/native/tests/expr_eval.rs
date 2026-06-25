@@ -65,7 +65,9 @@ fn native_expression_eval_uses_configured_parse_cache() -> Result<()> {
 }
 
 #[test]
-fn native_expression_eval_does_not_use_persistent_file_cache_without_source_path() -> Result<()> {
+fn native_expression_eval_materializes_persistent_parse_cache_without_source_path() -> Result<()> {
+    use crate::cache::{PersistCache, PersistParseArtifactKey};
+
     let root = unique_temp_dir("native-expression-no-persist-file-cache");
     fs::create_dir_all(&root)?;
     let root = fs::canonicalize(root)?;
@@ -76,20 +78,192 @@ fn native_expression_eval_does_not_use_persistent_file_cache_without_source_path
     options.set_persist_cache_root(&persist_root);
     let native = NixNative::with_options(0, options)?;
     let expr = "1 + 1";
+    let source = json_wrapper_source(expr);
+
+    assert_eq!(native.eval_expr(expr)?, "2");
+
+    let cache = ParseCache::new(&cache_root);
+    let parse_key = cache.key_for_source(source.as_bytes());
+    assert!(cache.entry_for_key(parse_key).is_complete());
+    let persist = PersistCache::open(&persist_root)?;
+    assert!(
+        persist
+            .lookup_parse_artifact(PersistParseArtifactKey::from_parse_cache_key(parse_key))?
+            .is_some(),
+        "raw expression eval should write a parse-keyed persistent artifact"
+    );
+    assert_eq!(
+        fs::metadata(persist.layout().file_artifact_index_path())?.len(),
+        0,
+        "raw expression eval should not synthesize a persistent file-artifact key"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_expression_eval_hydrates_persistent_parse_cache_without_source_path() -> Result<()> {
+    use crate::cache::{MaterializationDecision, ParseCacheMeta, PersistCache};
+
+    let root = unique_temp_dir("native-expression-persist-parse-hit");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let seed_parse_root = root.join("seed-parse");
+    let second_parse_root = root.join("second-parse");
+    let persist_root = root.join("persist");
+    let expr = "1 + 1";
+    let source = json_wrapper_source(expr);
+    let marker = "persist-raw-expression-marker.nix";
+    let seed_parse = ParseCache::new(&seed_parse_root);
+    let parsed = seed_parse.load_or_parse_bytes(source.as_bytes(), Some(marker.to_owned()))?;
+    PersistCache::open(&persist_root)?.materialize_parse_cache_entry_indexed(
+        parsed.key,
+        &parsed.entry,
+        MaterializationDecision::Materialize,
+    )?;
+    let mut options = TreeWalkOptions::new();
+    options.set_parse_cache_root(&second_parse_root);
+    options.set_persist_cache_root(&persist_root);
+    let native = NixNative::with_options(0, options)?;
+
+    assert_eq!(native.eval_expr(expr)?, "2");
+
+    let hydrated_entry = ParseCache::new(&second_parse_root).entry_for_source(source.as_bytes());
+    assert!(
+        hydrated_entry.is_complete(),
+        "persistent raw expression hit should hydrate the fresh parse-cache entry"
+    );
+    let meta = fs::read_to_string(hydrated_entry.meta_path())?;
+    let meta = ParseCacheMeta::from_toml(&meta)?;
+    assert_eq!(meta.source_hint.as_deref(), Some(marker));
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_expression_eval_ignores_persistent_parse_cache_open_failure() -> Result<()> {
+    let root = unique_temp_dir("native-expression-persist-open-failure");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let cache_root = root.join("parse");
+    let persist_root = root.join("persist-is-file");
+    fs::write(&persist_root, b"not a persistent cache directory")?;
+    let mut options = TreeWalkOptions::new();
+    options.set_parse_cache_root(&cache_root);
+    options.set_persist_cache_root(&persist_root);
+    let native = NixNative::with_options(0, options)?;
+    let expr = "1 + 1";
+    let source = json_wrapper_source(expr);
 
     assert_eq!(native.eval_expr(expr)?, "2");
 
     let cache = ParseCache::new(&cache_root);
     assert!(
-        cache
-            .entry_for_source(json_wrapper_source(expr).as_bytes())
-            .is_complete()
+        cache.entry_for_source(source.as_bytes()).is_complete(),
+        "raw expression eval should fall back to the normal parse cache"
     );
-    assert!(
-        !persist_root.exists(),
-        "raw expression eval should not synthesize a persistent file key"
+    assert_eq!(
+        fs::read(&persist_root)?,
+        b"not a persistent cache directory",
+        "advisory persistent open failure should not mutate the file path"
     );
 
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_expression_eval_ignores_stale_persistent_parse_artifact() -> Result<()> {
+    use crate::cache::{
+        DurableBlake3Hash, PERSIST_BLOB_PACK_HEADER_LEN, PersistBlobLocation, PersistCache,
+        PersistParseArtifactIndexEntry, PersistParseArtifactIndexValue, PersistParseArtifactKey,
+    };
+
+    let root = unique_temp_dir("native-expression-persist-stale-hit");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let cache_root = root.join("parse");
+    let persist_root = root.join("persist");
+    let expr = "1 + 1";
+    let source = json_wrapper_source(expr);
+    let parse_cache = ParseCache::new(&cache_root);
+    let parse_key = parse_cache.key_for_source(source.as_bytes());
+    let artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+    let stale_value = PersistParseArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"missing raw expression artifact"),
+        PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
+    );
+    PersistCache::open(&persist_root)?.record_parse_artifact(
+        PersistParseArtifactIndexEntry::new(artifact_key, stale_value),
+    )?;
+    let mut options = TreeWalkOptions::new();
+    options.set_parse_cache_root(&cache_root);
+    options.set_persist_cache_root(&persist_root);
+    let native = NixNative::with_options(0, options)?;
+
+    assert_eq!(native.eval_expr(expr)?, "2");
+
+    assert!(
+        parse_cache.entry_for_key(parse_key).is_complete(),
+        "stale durable raw expression hit should fall back to parsing"
+    );
+    assert!(
+        PersistCache::open(&persist_root)?
+            .lookup_parse_artifact(artifact_key)?
+            .is_some(),
+        "fallback parse should preserve or replace a durable parse-artifact mapping"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_expression_eval_ignores_persistent_parse_writeback_failure() -> Result<()> {
+    use crate::cache::PersistCache;
+
+    let root = unique_temp_dir("native-expression-persist-write-failure");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let cache_root = root.join("parse");
+    let persist_root = root.join("persist");
+    PersistCache::open(&persist_root)?;
+    let parse_artifact_index = PersistCache::open(&persist_root)?
+        .layout()
+        .parse_artifact_index_path();
+    let mut options = TreeWalkOptions::new();
+    options.set_parse_cache_root(&cache_root);
+    options.set_persist_cache_root(&persist_root);
+    let mut native = NixNative::with_options(0, options)?;
+    let hook_index = parse_artifact_index.clone();
+    native.set_persist_cache_hook(move |_| {
+        let mut permissions = fs::metadata(&hook_index)
+            .expect("parse artifact index metadata")
+            .permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&hook_index, permissions).expect("parse artifact index readonly");
+    });
+    let expr = "1 + 1";
+    let source = json_wrapper_source(expr);
+
+    assert_eq!(native.eval_expr(expr)?, "2");
+
+    let cache = ParseCache::new(&cache_root);
+    assert!(
+        cache.entry_for_source(source.as_bytes()).is_complete(),
+        "parse should still populate the normal parse-cache entry"
+    );
+    assert_eq!(
+        fs::metadata(&parse_artifact_index)?.len(),
+        0,
+        "failed advisory writeback should not record a parse-artifact mapping"
+    );
+
+    let mut permissions = fs::metadata(&parse_artifact_index)?.permissions();
+    permissions.set_readonly(false);
+    fs::set_permissions(&parse_artifact_index, permissions)?;
     fs::remove_dir_all(root)?;
     Ok(())
 }

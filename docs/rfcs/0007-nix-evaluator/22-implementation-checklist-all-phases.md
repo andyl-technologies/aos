@@ -1051,10 +1051,10 @@ alone (`M-1`/`Q-A`).
       caller-supplied source bytes through this parse-artifact index.
       Materialization rejects entries whose normal parse-cache directory key
       does not match the supplied `ParseCacheKey`. This is cache API substrate
-      only; evaluator/raw native expression hit selection and writeback, source
-      equality proof beyond the parse-cache entry directory key, mmap reads,
-      full artifact semantic validation beyond existing decoders, GC/repack,
-      and harness proof remain open
+      only; evaluator integration is covered by the raw native expression row
+      below. Source equality proof beyond the parse-cache entry directory key,
+      mmap reads, full artifact semantic validation beyond existing decoders,
+      GC/repack, and harness proof remain open
       (`C-13`/`C-14`/`R-10`).
 - [x] Current ordinary filesystem import durable parse-cache hit selection:
       `TreeWalkOptions::set_persist_cache_root` configures an optional
@@ -1066,9 +1066,8 @@ alone (`M-1`/`Q-A`).
       the persistent root is unavailable, misses, or has stale/corrupt indexed
       artifacts. The persistent root opens lazily on the first eligible import;
       scoped imports and text-store imports still bypass this path. This is
-      evaluator import hit selection only; file-backed native source roots,
-      raw native expressions, mmap reads, full artifact semantic validation
-      beyond existing decoders, GC/repack, and harness proof remain open
+      evaluator import hit selection only; mmap reads, full artifact semantic
+      validation beyond existing decoders, GC/repack, and harness proof remain open
       (`C-13`/`R-10`).
 - [x] Current ordinary filesystem import durable parse-cache writeback:
       unscoped filesystem imports with configured `parse_cache_root` and
@@ -1079,9 +1078,9 @@ alone (`M-1`/`Q-A`).
       loading. Writeback opens the persistent root through the same lazy
       advisory path as durable hit selection and ignores persistent write
       failures. This is ordinary import writeback only; file-backed native
-      source roots, raw native expressions, mmap reads, full artifact semantic
-      validation beyond existing decoders, GC/repack, and harness proof remain
-      open (`C-13`/`C-14`/`R-10`).
+      source roots and raw native expressions are covered separately. Mmap
+      reads, full artifact semantic validation beyond existing decoders,
+      GC/repack, and harness proof remain open (`C-13`/`C-14`/`R-10`).
 - [x] Current file-backed native root durable parse-cache integration:
       `NixNative::lower_native_source_bytes` now accepts an optional canonical
       source path from file-backed instantiation roots and, when both
@@ -1090,9 +1089,23 @@ alone (`M-1`/`Q-A`).
       `ParseCache::load_or_parse_bytes`, then writes successfully stored
       fallback parses to the persistent file-artifact index. Raw
       `eval_expr`/`instantiate_expr` sources do not synthesize file-artifact
-      keys. This is native file-root lookup/writeback only; raw expression
-      evaluator lookup/writeback, mmap reads, full artifact semantic validation beyond
-      existing decoders, GC/repack, and harness proof remain open
+      keys. This is native file-root lookup/writeback only; mmap reads, full
+      artifact semantic validation beyond existing decoders, GC/repack, and
+      harness proof remain open
+      (`C-13`/`C-14`/`R-10`).
+- [x] Current raw native expression durable parse-cache integration:
+      `NixNative::lower_native_source_bytes`, when called without a canonical
+      source path and with both `parse_cache_root` and `persist_cache_root`
+      configured, tries `PersistCache::load_parse_cache_bytes_from_index`
+      before ordinary `ParseCache::load_or_parse_bytes`, then writes
+      successfully stored fallback parses through
+      `PersistCache::materialize_parse_cache_entry_indexed`. Raw
+      `eval_expr`/`instantiate_expr` sources use parse-keyed persistent
+      artifacts and still do not synthesize file-artifact keys. This is raw
+      native expression lookup/writeback only; source equality proof beyond
+      the parse-cache entry directory key, mmap reads, full artifact semantic
+      validation beyond existing decoders, GC/repack, and harness proof remain
+      open
       (`C-13`/`C-14`/`R-10`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for

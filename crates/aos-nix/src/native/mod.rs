@@ -48,6 +48,19 @@ pub struct NixNative {
     options: TreeWalkOptions,
     ifd_realizer: Option<IfdRealizer>,
     eval_cache: Arc<Mutex<EvalCacheRuntime>>,
+    #[cfg(test)]
+    persist_cache_hook: Option<PersistCacheTestHook>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct PersistCacheTestHook(Arc<dyn Fn(&PersistCache) + Send + Sync>);
+
+#[cfg(test)]
+impl std::fmt::Debug for PersistCacheTestHook {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PersistCacheTestHook")
+    }
 }
 
 /// An evaluated derivation closure that has not been registered in the store.
@@ -104,6 +117,8 @@ impl NixNative {
             ))),
             options,
             ifd_realizer: None,
+            #[cfg(test)]
+            persist_cache_hook: None,
         })
     }
 
@@ -115,6 +130,14 @@ impl NixNative {
     /// Installs a callback used to realize derivation outputs for IFD.
     pub fn set_ifd_realizer(&mut self, realizer: IfdRealizer) {
         self.ifd_realizer = Some(realizer);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_persist_cache_hook(
+        &mut self,
+        hook: impl Fn(&PersistCache) + Send + Sync + 'static,
+    ) {
+        self.persist_cache_hook = Some(PersistCacheTestHook(Arc::new(hook)));
     }
 
     /// Returns this evaluator with a callback used to realize derivation outputs for IFD.
@@ -415,32 +438,46 @@ impl NixNative {
             let persist_cache = self
                 .options
                 .persist_cache_root()
-                .and_then(|root| source_path.map(|source_path| (root, source_path)))
-                .and_then(|(root, source_path)| {
-                    PersistCache::open(root)
-                        .ok()
-                        .map(|persist_cache| (persist_cache, source_path))
+                .and_then(|root| PersistCache::open(root).ok())
+                .map(|persist_cache| {
+                    self.run_persist_cache_hook(&persist_cache);
+                    persist_cache
                 });
-            if let Some((persist_cache, source_path)) = &persist_cache {
-                if let Some(cached) = persist_cache
-                    .load_parse_cache_source_from_index(&cache, source_path, source)
-                    .ok()
-                    .flatten()
-                {
+            if let Some(persist_cache) = &persist_cache {
+                let cached = if let Some(source_path) = source_path {
+                    persist_cache
+                        .load_parse_cache_source_from_index(&cache, source_path, source)
+                        .ok()
+                        .flatten()
+                } else {
+                    persist_cache
+                        .load_parse_cache_bytes_from_index(&cache, source)
+                        .ok()
+                        .flatten()
+                };
+                if let Some(cached) = cached {
                     return Ok(cached.ir);
                 }
             }
             match cache.load_or_parse_bytes(source, source_hint) {
                 Ok(cached) => {
                     if cached.stored {
-                        if let Some((persist_cache, source_path)) = &persist_cache {
-                            let file_key = ParseFileKey::for_source(source_path, source);
-                            let _ = persist_cache.materialize_parse_artifact_entry_indexed(
-                                &file_key,
-                                cached.key,
-                                &cached.entry,
-                                MaterializationDecision::Materialize,
-                            );
+                        if let Some(persist_cache) = &persist_cache {
+                            if let Some(source_path) = source_path {
+                                let file_key = ParseFileKey::for_source(source_path, source);
+                                let _ = persist_cache.materialize_parse_artifact_entry_indexed(
+                                    &file_key,
+                                    cached.key,
+                                    &cached.entry,
+                                    MaterializationDecision::Materialize,
+                                );
+                            } else {
+                                let _ = persist_cache.materialize_parse_cache_entry_indexed(
+                                    cached.key,
+                                    &cached.entry,
+                                    MaterializationDecision::Materialize,
+                                );
+                            }
                         }
                     }
                     return Ok(cached.ir);
@@ -499,6 +536,16 @@ impl NixNative {
         options.set_reject_unconfigured_impure_builtin_constants(true);
         options
     }
+
+    #[cfg(test)]
+    fn run_persist_cache_hook(&self, persist_cache: &PersistCache) {
+        if let Some(hook) = &self.persist_cache_hook {
+            (hook.0)(persist_cache);
+        }
+    }
+
+    #[cfg(not(test))]
+    fn run_persist_cache_hook(&self, _persist_cache: &PersistCache) {}
 
     fn observe_eval_cache(&self, outcome: &EvalOutcome) {
         let Ok(mut cache) = self.eval_cache.lock() else {
