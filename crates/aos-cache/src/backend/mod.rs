@@ -134,6 +134,41 @@ pub trait CacheBackend: Send + Sync {
         anyhow::bail!("backend does not support presigned direct upload")
     }
 
+    /// Mints presigned upload URLs for many object paths in one round-trip.
+    ///
+    /// Returns a map from each input path to its presigned PUT URL; paths that
+    /// are not presignable are simply absent from the map (the caller falls back
+    /// to the facade for those). The default returns an empty map — only AOS
+    /// HTTP backends batch-mint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only on a hard transport failure; a not-presignable
+    /// cache yields an empty map, not an error.
+    async fn mint_upload_urls(
+        &self,
+        _paths: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        Ok(std::collections::HashMap::new())
+    }
+
+    /// Registers (writes + indexes) a batch of narinfos in one round-trip.
+    ///
+    /// Each tuple is `(store_hash, narinfo_text)`. Used after the NAR bytes have
+    /// been uploaded directly to the origin, so the hub index stays authoritative
+    /// without a per-narinfo round-trip. The default falls back to a per-narinfo
+    /// [`put_narinfo`](CacheBackend::put_narinfo) so every backend works.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any narinfo write/registration fails.
+    async fn register_narinfos(&self, narinfos: &[(String, String)]) -> Result<()> {
+        for (store_hash, content) in narinfos {
+            self.put_narinfo(store_hash, content).await?;
+        }
+        Ok(())
+    }
+
     /// Batch check: returns the subset of `store_hashes` that are
     /// missing from the cache.
     ///

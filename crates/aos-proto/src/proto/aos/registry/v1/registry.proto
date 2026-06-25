@@ -838,6 +838,13 @@ service CacheService {
   // authority; only valid for a presign-configured (private external) binding.
   rpc MintCacheUploadCredentials(MintCacheUploadCredentialsRequest)
       returns (MintCacheUploadCredentialsResponse);
+  // Register (write + index) a batch of narinfos in one round-trip, after their
+  // NAR bytes have been uploaded directly to the origin via presigned URLs. The
+  // narinfos are small; batching keeps the hub off the per-object critical path
+  // so a bulk push is bounded by direct-to-origin NAR throughput, not Worker
+  // round-trips. Requires cache-write authority.
+  rpc RegisterCacheNarinfos(RegisterCacheNarinfosRequest)
+      returns (RegisterCacheNarinfosResponse);
 }
 
 // A managed cache (distinct from `Cache` above, which is a registry's
@@ -1156,8 +1163,13 @@ message ChangeCacheStorageResponse {
 message MintCacheUploadCredentialsRequest {
   // The cache slug to mint an upload URL for.
   string cache_slug = 1;
-  // The object path under the cache (e.g. `<hash>.narinfo` or `nar/<file>`).
+  // Single object path under the cache (e.g. `<hash>.narinfo` or `nar/<file>`).
+  // Used for a one-off mint; for bulk uploads use `paths` instead.
   string path = 2;
+  // Batch of object paths to mint URLs for in one round-trip. When non-empty,
+  // the response's `uploads` is populated (parallel to this list) and the
+  // single-path `upload_url` is unused.
+  repeated string paths = 3;
 }
 
 message MintCacheUploadCredentialsResponse {
@@ -1168,4 +1180,37 @@ message MintCacheUploadCredentialsResponse {
   string upload_url = 1;
   // Unix seconds the presigned URL expires.
   int64 expires_at = 2;
+  // Batch results, one per requested `paths` entry (same order). Each carries
+  // its own (possibly empty) presigned URL.
+  repeated PresignedUpload uploads = 3;
+}
+
+// One presigned upload URL within a batch mint response.
+message PresignedUpload {
+  // The cache-relative object path this URL uploads to.
+  string path = 1;
+  // The presigned PUT URL; empty when the path is not presignable.
+  string upload_url = 2;
+  // Unix seconds the presigned URL expires.
+  int64 expires_at = 3;
+}
+
+message RegisterCacheNarinfosRequest {
+  // The cache slug to register the narinfos under.
+  string cache_slug = 1;
+  // The narinfos to write + index.
+  repeated CacheNarinfo narinfos = 2;
+}
+
+// One narinfo to register: its store-path hash and full narinfo text.
+message CacheNarinfo {
+  // Store-path hash component (the narinfo object is `<store_hash>.narinfo`).
+  string store_hash = 1;
+  // The narinfo body (uploaded to the origin and parsed for the index).
+  string narinfo = 2;
+}
+
+message RegisterCacheNarinfosResponse {
+  // Number of narinfos successfully registered.
+  int64 registered = 1;
 }

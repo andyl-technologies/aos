@@ -375,6 +375,120 @@ impl CacheBackend for HttpBackend {
         Ok(())
     }
 
+    async fn mint_upload_urls(
+        &self,
+        paths: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        use std::sync::atomic::Ordering;
+        let empty = std::collections::HashMap::new();
+        if paths.is_empty() || self.mint_disabled.load(Ordering::Relaxed) {
+            return Ok(empty);
+        }
+        let has_auth = self.is_aos
+            || self
+                .headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("authorization"));
+        if !has_auth {
+            return Ok(empty);
+        }
+        let Some(slug) = self
+            .base_url
+            .strip_prefix(&self.origin)
+            .map(|s| s.trim_matches('/'))
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok(empty);
+        };
+        let url = format!(
+            "{}/aos.registry.v1.CacheService/MintCacheUploadCredentials",
+            self.origin
+        );
+        let body = serde_json::json!({ "cacheSlug": slug, "paths": paths }).to_string();
+        let mut req = TransferRequest::post(&url, body.into_bytes());
+        req.headers
+            .push(("Content-Type".to_string(), "application/json".to_string()));
+        let req = self.add_headers(req);
+        let result = match self.engine.execute(req).await {
+            Ok(result) if result.status < 400 => result,
+            _ => {
+                self.mint_disabled.store(true, Ordering::Relaxed);
+                return Ok(empty);
+            }
+        };
+        let Some(body) = result.body else {
+            return Ok(empty);
+        };
+        #[derive(Deserialize)]
+        struct Upload {
+            #[serde(default)]
+            path: String,
+            #[serde(default, rename = "uploadUrl")]
+            upload_url: String,
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            #[serde(default)]
+            uploads: Vec<Upload>,
+        }
+        let resp: Resp =
+            serde_json::from_slice(&body).context("parsing batch mint-credentials response")?;
+        let map: std::collections::HashMap<String, String> = resp
+            .uploads
+            .into_iter()
+            .filter(|u| !u.upload_url.is_empty())
+            .map(|u| (u.path, u.upload_url))
+            .collect();
+        if map.is_empty() {
+            self.mint_disabled.store(true, Ordering::Relaxed);
+        }
+        Ok(map)
+    }
+
+    async fn register_narinfos(&self, narinfos: &[(String, String)]) -> Result<()> {
+        if narinfos.is_empty() {
+            return Ok(());
+        }
+        if self.is_aos {
+            // AOS pack-mode servers synthesise narinfo from registered paths.
+            return Ok(());
+        }
+        let has_auth = self
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization"));
+        let slug = self
+            .base_url
+            .strip_prefix(&self.origin)
+            .map(|s| s.trim_matches('/'))
+            .filter(|s| !s.is_empty());
+        if let (true, Some(slug)) = (has_auth, slug) {
+            let url = format!(
+                "{}/aos.registry.v1.CacheService/RegisterCacheNarinfos",
+                self.origin
+            );
+            let items: Vec<serde_json::Value> = narinfos
+                .iter()
+                .map(|(h, t)| serde_json::json!({ "storeHash": h, "narinfo": t }))
+                .collect();
+            let body = serde_json::json!({ "cacheSlug": slug, "narinfos": items }).to_string();
+            let mut req = TransferRequest::post(&url, body.into_bytes());
+            req.headers
+                .push(("Content-Type".to_string(), "application/json".to_string()));
+            let req = self.add_headers(req);
+            if let Ok(result) = self.engine.execute(req).await {
+                if result.status < 400 {
+                    return Ok(());
+                }
+            }
+            // Older hub without the batch RPC (or a transient failure): fall back.
+        }
+        for (store_hash, content) in narinfos {
+            self.put_narinfo(store_hash, content).await?;
+        }
+        Ok(())
+    }
+
     fn supports_multipart(&self) -> bool {
         // The AOS hub facade implements the multipart protocol (initiate /
         // upload-part / complete) over `/{slug}/nar/...` for every storage
