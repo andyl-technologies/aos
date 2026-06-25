@@ -1511,6 +1511,7 @@ impl TreeWalk {
     ) -> Option<CacheExprIdentity> {
         let module = self.modules.get(site.module().index())?;
         let module_hash = Self::cache_module_identity_hash(module)?;
+        let site_node = module.ir.arena.node(site.id())?;
         let symbol_name = self
             .symbols
             .resolve(symbol)
@@ -1521,6 +1522,8 @@ impl TreeWalk {
         hasher.update(FORCE_SYNTHETIC_BUILTIN_ATTR_IDENTITY_DOMAIN_VERSION);
         hasher.update(&module_hash.as_bytes());
         hasher.update(&site.id().as_u32().to_le_bytes());
+        hasher.update(&site_node.span.start.to_le_bytes());
+        hasher.update(&site_node.span.end.to_le_bytes());
         Self::update_cache_identity_chunk(&mut hasher, symbol_name)?;
         Self::update_cache_identity_chunk(&mut hasher, execution_bytes)?;
         Some(CacheExprIdentity::new(

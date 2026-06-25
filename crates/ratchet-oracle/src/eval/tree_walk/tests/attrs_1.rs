@@ -4122,6 +4122,159 @@ fn synthetic_builtin_attr_current_system_thunks_include_current_system_in_cache_
     );
 }
 
+fn synthetic_current_system_identity_for_attr_a(
+    ir: &Ir,
+    source: &str,
+) -> (CacheExprIdentity, IrId) {
+    let a = symbol_for(ir, b"a");
+    let current_system = symbol_for(ir, b"currentSystem");
+    let builtin = lookup_builtin(b"currentSystem").expect("currentSystem builtin is registered");
+    let options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        ir,
+        options,
+        "synthetic-builtins.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let site = evaluator
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a remains a suspended select thunk")
+        .body()
+        .expect("a thunk has a lowered select body");
+    let identity = evaluator
+        .cache_synthetic_builtin_attr_identity(
+            EvalNodeRef::new(EvalModuleId::ROOT, site),
+            current_system,
+            builtin,
+        )
+        .expect("synthetic currentSystem identity builds");
+    (identity, site)
+}
+
+#[test]
+fn synthetic_builtin_attr_force_identities_include_force_site_span() {
+    let source = "let b = builtins; in { a = b.currentSystem; }";
+    let ir = lower(source);
+    let (first_identity, site) = synthetic_current_system_identity_for_attr_a(&ir, source);
+
+    let mut shifted = ir.clone();
+    let mut nodes = shifted.arena.nodes().to_vec();
+    nodes[site.index()].span = Span::new(200, 214);
+    shifted.arena = IrArena::from_raw_parts(nodes, shifted.arena.child_pool().to_vec());
+    let (shifted_identity, shifted_site) =
+        synthetic_current_system_identity_for_attr_a(&shifted, source);
+
+    assert_eq!(shifted_site, site);
+    assert_ne!(
+        shifted_identity, first_identity,
+        "same synthetic builtin force-site id under a different span must not reuse one node"
+    );
+
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options.clone(),
+        "synthetic-builtins.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut first, &ir, a);
+    assert_eq!(
+        first
+            .heap()
+            .get_string(forced)
+            .expect("currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &shifted,
+        options,
+        "synthetic-builtins.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut second, &shifted, a);
+    assert_eq!(
+        second
+            .heap()
+            .get_string(forced)
+            .expect("shifted currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(
+        second.stats().cache_hits(),
+        0,
+        "same synthetic builtin force-site id under a different span must miss"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "same synthetic builtin force-site id under different spans must allocate separate nodes"
+    );
+
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+
+    let mut source_less_first =
+        TreeWalk::with_options_and_eval_cache(&ir, options.clone(), cache.clone());
+    let forced = force_attr_a(&mut source_less_first, &ir, a);
+    assert_eq!(
+        source_less_first
+            .heap()
+            .get_string(forced)
+            .expect("source-less currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(source_less_first.stats().cache_misses(), 1);
+
+    let mut source_less_second =
+        TreeWalk::with_options_and_eval_cache(&shifted, options, cache.clone());
+    let forced = force_attr_a(&mut source_less_second, &shifted, a);
+    assert_eq!(
+        source_less_second
+            .heap()
+            .get_string(forced)
+            .expect("source-less shifted currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(
+        source_less_second.stats().cache_hits(),
+        0,
+        "source-less synthetic builtin force-site span changes must miss"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "source-less synthetic builtin force-site span changes must allocate separate nodes"
+    );
+}
+
 #[test]
 fn source_less_synthetic_builtin_attr_current_system_thunks_hit_with_matching_option_salt() {
     let source = "let b = builtins; in { a = b.currentSystem; }";

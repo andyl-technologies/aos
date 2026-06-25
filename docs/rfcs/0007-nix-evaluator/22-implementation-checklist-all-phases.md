@@ -621,13 +621,14 @@ alone (`M-1`/`Q-A`).
       synthetic builtin-attr thunks, so constructing the attrset does not force
       `currentTime`, and runtime selections such as
       `let b = builtins; in b.currentSystem` use synthetic identities keyed by
-      module identity, force site, builtin symbol, and execution tag. This
+      module identity, force-site `IrId` and lowered source span, builtin
+      symbol, and execution tag. This
       deliberately skips the recursive `builtins` attrset, `nixPath`,
       derivation, first-class primops, synthetic apply/select thunks,
       persistence, and cached/uncached harness proof. The gate covers
       source-backed and source-less ambient and synthetic currentSystem
       hit/miss, synthetic storeDir hit/miss/symbol-separation, synthetic
-      immediate constants, reified currentTime laziness, stale synthetic
+      force-site span separation, synthetic immediate constants, reified currentTime laziness, stale synthetic
       currentTime payload invalidation, and source-backed/source-less
       currentTime uncacheable-trace force-cache tests (`C-1`/`C-2`/`R-10`).
 - [x] Current source-less lowered-IR force-cache identity substrate:
@@ -636,11 +637,12 @@ alone (`M-1`/`Q-A`).
       and tree-walk uses that digest when a module has no source provenance
       before applying the same path-literal-base, `store_dir`, `home_dir`,
       configured `current_system`, configured `current_time`, and `eval_mode`
-      salts plus the lowered node source span. This lets caller-owned in-memory
-      cache runtimes share conservative source-less lowered-IR node-thunk
-      payloads without requiring source bytes, while still separating
-      equal-shaped IR whose symbol tables, path bases, evaluator options, or
-      node spans differ. It is a
+      salts plus lowered node and synthetic force-site source spans. This lets
+      caller-owned in-memory cache runtimes share conservative source-less
+      lowered-IR node-thunk and admitted synthetic builtin-attr payloads without
+      requiring source bytes, while still separating equal-shaped IR whose symbol
+      tables, path bases, evaluator options, node spans, or synthetic force-site
+      spans differ. It is a
       source-independent identity substrate only; broader source-less raw eval
       surfaces, synthetic apply/select thunks, remaining composite payloads, persistence,
       fine-grained option dependency tracking, and cached/uncached harness proof
@@ -682,16 +684,18 @@ alone (`M-1`/`Q-A`).
 - [x] Current node-span force-cache identity precursor: source-backed and
       source-less node-thunk expression identities now fold the lowered node's
       source span into the durable expression-identity hash before pairing that
-      hash with the existing `IrId` discriminator. This moves the current
+      hash with the existing `IrId` discriminator, and synthetic builtin-attr
+      identities fold the lowered force-site span into their force-site
+      `IrId`/symbol/execution identity. This moves the current
       identity shape toward the RFC `source content hash + IR node position` key
       while preserving the existing source-byte/lowered-IR fingerprint,
-      path-literal-base, evaluator-option salt, synthetic builtin identity, and
-      ordered free-variable hash behavior. Full cache-key integration still
+      path-literal-base, evaluator-option salt, synthetic builtin
+      symbol/execution behavior, and ordered free-variable hash behavior. Full cache-key integration still
       requires canonical strictness/escape free-variable sets, real durable value
       hashes for all admitted values, persistent key compatibility decisions,
       and the cached/uncached false-hit harness. The gate covers a force-cache
       identity and shared-runtime no-hit regression for same source bytes and
-      same `IrId` under a changed node span (`C-1`/`C-2`).
+      same `IrId` under changed node or synthetic force-site spans (`C-1`/`C-2`).
 - [ ] Full cache-key integration remains: feed source content + IR node position
       from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real
