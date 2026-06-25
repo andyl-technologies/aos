@@ -226,10 +226,11 @@ hold invariant.
 - [ ] Standing harness robustness remains: rnix parser acceptance differential
       coverage is now present in `aos-nix-syntax`'s test-only
       `parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus` plus
-      automatically enumerated local language fixtures and source-seed fuzz
-      corpora; automatic fuzz-corpus population from the full §2.7 corpus and
-      full parity-fuzzer budget/quiescence remain. These are standing-harness
-      robustness items, not the falsifiable byte-green gate, which is met.
+      automatically enumerated local language fixtures, source-seed fuzz
+      corpora, and the real workspace `.nix` source tree (package/module/system
+      files); automatic fuzz-corpus population from the full §2.7 corpus and
+      full parity-fuzzer budget/quiescence remain. This is a standing-harness
+      robustness item, not the falsifiable byte-green gate, which is met.
 
 **Conformance — FULL parity is a Phase-1 requirement.**
 

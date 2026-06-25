@@ -68,6 +68,14 @@ fn local_parser_oracle_cases() -> Vec<ParserOracleCase> {
     cases
 }
 
+fn workspace_parser_oracle_cases() -> Vec<ParserOracleCase> {
+    let root = workspace_root();
+    let mut cases = Vec::new();
+    collect_workspace_nix_source_cases(&root, &root, &mut cases);
+    cases.sort_by(|left, right| left.name.cmp(&right.name));
+    cases
+}
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -102,6 +110,36 @@ fn collect_source_seed_cases(dir: &Path, root: &Path, cases: &mut Vec<ParserOrac
             source: source.trim().to_owned(),
         });
     }
+}
+
+fn collect_workspace_nix_source_cases(dir: &Path, root: &Path, cases: &mut Vec<ParserOracleCase>) {
+    for entry in fs::read_dir(dir).expect("workspace source directory exists") {
+        let entry = entry.expect("workspace source entry is readable");
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .expect("workspace source file type is readable");
+        if file_type.is_dir() {
+            if workspace_oracle_skips_dir(&path) {
+                continue;
+            }
+            collect_workspace_nix_source_cases(&path, root, cases);
+        } else if file_type.is_file()
+            && path.extension().and_then(|extension| extension.to_str()) == Some("nix")
+        {
+            cases.push(ParserOracleCase {
+                name: relative_display(root, &path),
+                source: fs::read_to_string(&path).expect("workspace Nix source is UTF-8"),
+            });
+        }
+    }
+}
+
+fn workspace_oracle_skips_dir(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(name, ".git" | ".direnv" | "result" | "target") || name.starts_with("result-")
 }
 
 fn recursively_list_files(dir: &Path) -> Vec<PathBuf> {
@@ -322,6 +360,44 @@ fn parser_acceptance_matches_rnix_oracle_on_local_fixtures_and_fuzz_seeds() {
     for case in cases {
         assert_rnix_acceptance_matches_named(&case.name, &case.source);
     }
+}
+
+#[test]
+fn parser_acceptance_matches_rnix_oracle_on_workspace_nix_sources() {
+    let cases = workspace_parser_oracle_cases();
+    assert!(
+        cases.len() >= 600,
+        "expected real workspace Nix source corpus, got {} cases",
+        cases.len()
+    );
+    assert!(
+        cases.iter().any(|case| case.name == "pkgs/default.nix"),
+        "expected package-set root in workspace parser corpus"
+    );
+    assert!(
+        cases.iter().any(|case| case.name == "systems/server.nix"),
+        "expected system root in workspace parser corpus"
+    );
+
+    for case in cases {
+        assert_rnix_acceptance_matches_named(&case.name, &case.source);
+    }
+}
+
+#[test]
+fn workspace_parser_oracle_skips_generated_directories() {
+    let root = workspace_root();
+
+    for skipped in [".git", ".direnv", "result", "result-system", "target"] {
+        assert!(
+            workspace_oracle_skips_dir(&root.join(skipped)),
+            "expected workspace parser oracle to skip {skipped}"
+        );
+    }
+    assert!(
+        !workspace_oracle_skips_dir(&root.join("pkgs")),
+        "expected package sources to stay in the workspace parser oracle"
+    );
 }
 
 #[test]

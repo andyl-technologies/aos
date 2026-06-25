@@ -591,10 +591,11 @@ AOS package set. Build it in this order.
 - [ ] Parser/fuzz hardening still open: the rnix parser acceptance differential
       oracle now runs as `aos-nix-syntax`'s test-only
       `parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus` plus
-      automatically enumerated local language fixtures and source-seed fuzz
-      corpora; full parity-fuzzer budget/quiescence, automatic fuzz-corpus
-      population from the full §2.7 corpus, and full conformance diff-green
-      remain acceptance gates.
+      automatically enumerated local language fixtures, source-seed fuzz
+      corpora, and the real workspace `.nix` source tree (package/module/system
+      files); automatic fuzz-corpus population from the full §2.7 corpus, full
+      parity-fuzzer budget/quiescence, and full conformance diff-green remain
+      acceptance gates.
 
 **Phase-1 exit criteria.** The `.drv`-diff harness is byte-green on the full AOS
 closure under the tree-walk oracle; the baseline eval-time and `NIX_SHOW_STATS`
