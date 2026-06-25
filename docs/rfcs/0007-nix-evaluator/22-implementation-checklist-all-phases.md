@@ -543,6 +543,16 @@ alone (`M-1`/`Q-A`).
       scheduling, persistent graph/value cache integration, `derivationStrict`
       SHA-256 short-circuiting, and cached/uncached harness proof remain open
       (`R-10`/`S-14`).
+- [x] Current force-cache evaluator option identity salt: source-backed force
+      expression identities now hash the module's `store_dir`, `home_dir`, and
+      `eval_mode` alongside source name, source bytes, path-literal base, and
+      IR node id. This prevents the current advisory force cache from sharing
+      inline payloads across evaluator configurations that can change
+      path/context or impurity-policy behavior. It is deliberately conservative
+      and may miss across option changes that do not affect a specific
+      expression; full cache-key integration, canonical free-variable hashes,
+      fine-grained option dependency tracking, persistent keys, and
+      cached/uncached harness proof remain open (`C-1`/`C-2`/`R-10`).
 - [ ] Full cache-key integration remains: feed source content + IR node position
       from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real

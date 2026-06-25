@@ -836,6 +836,146 @@ fn source_backed_forced_inline_thunks_include_path_base_in_cache_identity() {
     fs::remove_dir_all(root).expect("temp tree removed");
 }
 
+#[test]
+fn source_backed_forced_inline_thunks_include_store_dir_in_cache_identity() {
+    let root = unique_temp_dir("force-cache-store-dir");
+    let first_store = root.join("store-a");
+    let second_store = root.join("store-b");
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for store_dir in [&first_store, &second_store] {
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_store_dir(path_bytes(store_dir))
+            .expect("store dir is absolute");
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("thunk force succeeds");
+        assert_eq!(forced.as_int(), Ok(3));
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "same source bytes under different store dirs must not reuse one demand node"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_backed_forced_inline_thunks_include_home_dir_in_cache_identity() {
+    let root = unique_temp_dir("force-cache-home-dir");
+    let first_home = root.join("home-a");
+    let second_home = root.join("home-b");
+    fs::create_dir_all(&first_home).expect("first home exists");
+    fs::create_dir_all(&second_home).expect("second home exists");
+    fs::write(first_home.join("marker"), b"present").expect("first marker exists");
+    let first_home = fs::canonicalize(&first_home).expect("first home canonicalizes");
+    let second_home = fs::canonicalize(&second_home).expect("second home canonicalizes");
+    let source = "{ a = builtins.pathExists ~/marker; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (home_dir, expected) in [(&first_home, true), (&second_home, false)] {
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_home_dir(path_bytes(home_dir))
+            .expect("home dir is absolute");
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("thunk force succeeds");
+        assert_eq!(forced.as_bool(), Ok(expected));
+        assert_eq!(
+            evaluator.stats().cache_hits(),
+            0,
+            "different home dirs must not reuse a prior resolved pathExists input"
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        4,
+        "same source bytes under different home dirs must not reuse demand nodes"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_backed_forced_inline_thunks_include_eval_mode_in_cache_identity() {
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for mode in [EvalMode::Impure, EvalMode::Pure] {
+        let options = TreeWalkOptions::with_eval_mode(mode);
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("thunk force succeeds");
+        assert_eq!(forced.as_int(), Ok(3));
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "same source bytes under different eval modes must not reuse one demand node"
+    );
+}
+
 fn cache_nodes_with_dependencies(cache: &EvalCache) -> usize {
     (0..cache.len())
         .filter(|index| {

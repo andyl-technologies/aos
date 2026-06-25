@@ -4,6 +4,42 @@ use super::*;
 
 const FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION: &[u8] = b"aos-nix-force-expression-identity-v1";
 
+impl ForceCacheOptionsIdentity {
+    fn new(options: &TreeWalkOptions) -> Self {
+        Self {
+            store_dir: options.store_dir().to_vec(),
+            home_dir: options.home_dir().map(<[u8]>::to_vec),
+            eval_mode: options.eval_mode(),
+        }
+    }
+
+    fn update_cache_identity(&self, hasher: &mut blake3::Hasher) -> Option<()> {
+        hasher.update(b"force-cache-options-v1");
+        hasher.update(b"store-dir");
+        TreeWalk::update_cache_identity_chunk(hasher, &self.store_dir)?;
+        match &self.home_dir {
+            Some(home_dir) => {
+                hasher.update(b"home-dir");
+                TreeWalk::update_cache_identity_chunk(hasher, home_dir)?;
+            }
+            None => {
+                hasher.update(b"no-home-dir");
+            }
+        }
+        hasher.update(b"eval-mode");
+        hasher.update(self.eval_mode_cache_identity_bytes());
+        Some(())
+    }
+
+    const fn eval_mode_cache_identity_bytes(&self) -> &'static [u8] {
+        match self.eval_mode {
+            EvalMode::Impure => b"impure",
+            EvalMode::Restricted => b"restricted",
+            EvalMode::Pure => b"pure",
+        }
+    }
+}
+
 impl TreeWalk {
     /// Creates a tree-walk evaluator over `ir`.
     pub fn new(ir: &Ir) -> Self {
@@ -35,6 +71,7 @@ impl TreeWalk {
             modules: vec![TreeWalkModule {
                 ir: ir.clone(),
                 path_literal_base,
+                force_cache_options: ForceCacheOptionsIdentity::new(&options),
                 source: None,
             }],
             current_module: EvalModuleId::ROOT,
@@ -746,6 +783,9 @@ impl TreeWalk {
                 hasher.update(b"no-path-literal-base");
             }
         };
+        module
+            .force_cache_options
+            .update_cache_identity(&mut hasher)?;
         Some(DurableBlake3Hash::from_hasher(hasher))
     }
 
@@ -858,6 +898,7 @@ impl TreeWalk {
         self.modules.push(TreeWalkModule {
             ir,
             path_literal_base: Some(path_literal_base),
+            force_cache_options: ForceCacheOptionsIdentity::new(&self.options),
             source: Some(ModuleSource {
                 name: source_name,
                 bytes: source,

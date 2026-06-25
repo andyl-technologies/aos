@@ -477,7 +477,15 @@ impl EvalStderr {
 struct TreeWalkModule {
     ir: Ir,
     path_literal_base: Option<Vec<u8>>,
+    force_cache_options: ForceCacheOptionsIdentity,
     source: Option<ModuleSource>,
+}
+
+#[derive(Clone, Debug)]
+struct ForceCacheOptionsIdentity {
+    store_dir: Vec<u8>,
+    home_dir: Option<Vec<u8>>,
+    eval_mode: EvalMode,
 }
 
 #[derive(Clone, Debug)]
