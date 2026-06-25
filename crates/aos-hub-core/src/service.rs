@@ -980,6 +980,82 @@ impl RpcService {
         }
     }
 
+    /// The instance settings, read-through cached in KV when one is attached
+    /// (RFC-0004 ch.14 Phase C, the `cfg:instance` singleton).
+    ///
+    /// A short-TTL cache off the database; the eventual-consistency contract
+    /// (≤ [`HOT_TTL_SECS`](crate::cache::HOT_TTL_SECS) staleness) is acceptable
+    /// for site chrome / signup policy. Falls back to the database with no `kv`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a KV read or database failure.
+    pub async fn instance_settings_cached(&self) -> anyhow::Result<crate::db::InstanceSettings> {
+        let Some(kv) = &self.kv else {
+            return self.db.instance_settings().await;
+        };
+        let db = &self.db;
+        let cached = crate::cache::read_through(
+            kv.as_ref(),
+            "cfg:instance",
+            Some(crate::cache::HOT_TTL_SECS),
+            || async move { db.instance_settings().await.map(Some) },
+        )
+        .await?;
+        // `instance_settings` always yields a value (defaults), so a `None` here
+        // can only be a transient miss; fall back to a direct read.
+        match cached {
+            Some(settings) => Ok(settings),
+            None => self.db.instance_settings().await,
+        }
+    }
+
+    /// Invalidates the cached instance settings (call after a settings save).
+    pub async fn invalidate_instance_settings_cache(&self) {
+        if let Some(kv) = &self.kv {
+            crate::cache::invalidate(kv.as_ref(), "cfg:instance").await;
+        }
+    }
+
+    /// A registry's trust-key roster, read-through cached in KV when one is
+    /// attached (RFC-0004 ch.14 Phase C, `roster:{registry_id}`).
+    ///
+    /// Each entry is `(key_id, public_key, status)` as
+    /// [`Database::list_roster`](crate::db::Database::list_roster) returns. A
+    /// short-TTL cache off the database; falls back to the database with no `kv`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a KV read or database failure.
+    pub async fn list_roster_cached(
+        &self,
+        registry_id: i64,
+    ) -> anyhow::Result<Vec<(String, String, String)>> {
+        let Some(kv) = &self.kv else {
+            return self.db.list_roster(registry_id).await;
+        };
+        let key = format!("roster:{registry_id}");
+        let db = &self.db;
+        let cached = crate::cache::read_through(
+            kv.as_ref(),
+            &key,
+            Some(crate::cache::HOT_TTL_SECS),
+            || async move { db.list_roster(registry_id).await.map(Some) },
+        )
+        .await?;
+        match cached {
+            Some(roster) => Ok(roster),
+            None => self.db.list_roster(registry_id).await,
+        }
+    }
+
+    /// Invalidates a registry's cached roster (call after a key rotation/change).
+    pub async fn invalidate_roster_cache(&self, registry_id: i64) {
+        if let Some(kv) = &self.kv {
+            crate::cache::invalidate(kv.as_ref(), &format!("roster:{registry_id}")).await;
+        }
+    }
+
     /// Attach an [`OriginFetch`](crate::fetch::OriginFetch) for streamed proxying
     /// of private-origin cache reads, returning the modified service.
     ///

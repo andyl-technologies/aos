@@ -12,13 +12,12 @@
 //! it arrives.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
 use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
-use tokio::sync::Semaphore;
+use futures::stream::{StreamExt, TryStreamExt};
 
 use aos_core::nar::info as narinfo;
 use aos_core::nar::pack::{self, PackPath};

@@ -465,7 +465,8 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
             svc.db.list_channels(registry.id),
             svc.db.list_packages(registry.id),
             svc.db.list_advertised_caches(registry.id),
-            svc.db.list_roster(registry.id),
+            // RFC-0004 ch.14 Phase C: trust roster read-through KV cache.
+            svc.list_roster_cached(registry.id),
             svc.db.latest_validation_runs(registry.id),
         ),
         futures_util::future::join(
