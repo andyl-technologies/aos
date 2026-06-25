@@ -1418,7 +1418,7 @@ fn pipe_forced_inline_thunks_wait_for_application_cache_keys() {
 
 #[test]
 fn captured_forced_inline_thunks_wait_for_free_variable_hashes() {
-    let source = "let x = 1; in { a = x + 2; }";
+    let source = r#"let x = "s"; in { a = x == x; }"#;
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
@@ -1441,10 +1441,179 @@ fn captured_forced_inline_thunks_wait_for_free_variable_hashes() {
         .force_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("thunk force succeeds");
 
-    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(forced.as_bool(), Ok(true));
     let runtime = cache.lock().expect("cache lock is valid");
     assert!(
         runtime.cache().expect("cache is enabled").is_empty(),
-        "captured thunks need canonical free-variable hashes before observation"
+        "captured non-inline thunks need canonical value hashes before observation"
+    );
+}
+
+#[test]
+fn lowered_captured_inline_forced_thunks_use_free_variable_hashes() {
+    let source = "let f = x: { a = x + 2; }; in [ (f 1).a (f 5).a ]";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "lambda.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("list evaluates");
+    let elements = {
+        let list = evaluator
+            .heap()
+            .get_list(root)
+            .expect("root list is heap-owned");
+        [
+            list.get(0).expect("first result exists"),
+            list.get(1).expect("second result exists"),
+        ]
+    };
+
+    let first = evaluator
+        .force_value(ir.root, Span::new(0, 0), elements[0])
+        .expect("first captured attr force succeeds");
+    assert_eq!(first.as_int(), Ok(3));
+    let second = evaluator
+        .force_value(ir.root, Span::new(0, 0), elements[1])
+        .expect("second captured attr force succeeds");
+
+    assert_eq!(second.as_int(), Ok(7));
+    assert_eq!(
+        evaluator.stats().cache_hits(),
+        0,
+        "same lowered attr body with different lambda arguments must not cache hit"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "different inline lambda arguments should create distinct demand nodes"
+    );
+}
+
+fn manual_inline_capture_force_ir(captured: i64) -> Ir {
+    let mut symbols = SymbolTable::new();
+    let x = symbols.intern(b"x").expect("symbol interns");
+    let frame = FrameId::new(0);
+    Ir {
+        root: IrId::new(5),
+        arena: IrArena::from_raw_parts(
+            vec![
+                pure_node(IrKind::Int, Span::new(8, 9), IrData::Int(captured)),
+                pure_node(
+                    IrKind::LocalVar,
+                    Span::new(18, 19),
+                    IrData::Local { slot: 0 },
+                ),
+                pure_node(IrKind::Int, Span::new(22, 23), IrData::Int(2)),
+                pure_node(
+                    IrKind::BinOp,
+                    Span::new(18, 23),
+                    IrData::Binary {
+                        op: BinOpKind::Add,
+                        lhs: IrId::new(1),
+                        rhs: IrId::new(2),
+                    },
+                ),
+                pure_node(
+                    IrKind::ThunkAlloc,
+                    Span::new(18, 23),
+                    IrData::Node(IrId::new(3)),
+                ),
+                pure_node(
+                    IrKind::Let,
+                    Span::new(0, 23),
+                    IrData::Let {
+                        bindings: IrBindingSlice::new(0, 1),
+                        body: IrId::new(4),
+                        frame: Some(frame),
+                    },
+                ),
+            ],
+            Vec::new(),
+        ),
+        symbols,
+        frames: vec![FrameInfo {
+            slot_count: 1,
+            captures: Vec::new().into_boxed_slice(),
+            rec: false,
+            has_with: false,
+        }]
+        .into_boxed_slice(),
+        with_chains: Vec::new().into_boxed_slice(),
+        attr_paths: Vec::new().into_boxed_slice(),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(x),
+            position: None,
+            value: IrId::new(0),
+        }]
+        .into_boxed_slice(),
+        shapes: Vec::new().into_boxed_slice(),
+    }
+}
+
+#[test]
+fn captured_inline_forced_thunks_hit_when_free_variable_hashes_match() {
+    let source = "let x = <inline>; in x + 2";
+    let ir = manual_inline_capture_force_ir(1);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "manual.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("manual let yields a thunk");
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 23), root)
+            .expect("manual captured thunk force succeeds");
+        assert_eq!(forced.as_int(), Ok(3));
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching inline free-variable hashes should share one demand node"
+    );
+}
+
+#[test]
+fn captured_inline_forced_thunks_include_free_variable_hashes_in_cache_key() {
+    let source = "let x = <inline>; in x + 2";
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for (captured, expected) in [(1, 3), (5, 7)] {
+        let ir = manual_inline_capture_force_ir(captured);
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "manual.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("manual let yields a thunk");
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 23), root)
+            .expect("manual captured thunk force succeeds");
+        assert_eq!(forced.as_int(), Ok(expected));
+        assert_eq!(
+            evaluator.stats().cache_hits(),
+            0,
+            "changed inline free-variable values must not hit an old demand node"
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "different inline free-variable hashes should create distinct demand nodes"
     );
 }

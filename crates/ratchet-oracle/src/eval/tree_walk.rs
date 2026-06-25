@@ -55,7 +55,7 @@ use crate::cache::{
     CacheExprIdentity, CachedParse, DirEntryInput, DurableBlake3Hash, EvalCacheRuntime,
     FileTypeForInput, ImpureInputFingerprint, ImpureInputIdentity, ImpureInputKind,
     ImpureInputMode, ImpureInputRevalidator, ImpureInputTraceSource, InputFingerprintError,
-    ParseCache, ParseCacheError,
+    ParseCache, ParseCacheError, ValueHash,
 };
 use crate::compile::{
     FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,
@@ -486,6 +486,12 @@ struct ForceCacheOptionsIdentity {
     store_dir: Vec<u8>,
     home_dir: Option<Vec<u8>>,
     eval_mode: EvalMode,
+}
+
+#[derive(Clone, Debug)]
+struct ForceCacheSubject {
+    body: EvalNodeRef,
+    free_var_value_hashes: Vec<DurableBlake3Hash>,
 }
 
 #[derive(Clone, Debug)]

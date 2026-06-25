@@ -26,6 +26,11 @@ impl ValueHash {
         Self(hash)
     }
 
+    /// Returns the durable BLAKE3 hash carried by this value hash.
+    pub const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
+    }
+
     /// Hashes a validated inline WHNF scalar value.
     ///
     /// This is a precursor for the full `blake3(canonical(value))` layer. It

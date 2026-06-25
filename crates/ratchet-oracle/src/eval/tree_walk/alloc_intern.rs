@@ -738,8 +738,10 @@ impl TreeWalk {
                 Ok(value)
             }
             ForceClaim::Claimed(guard) => {
-                let observed_body = thunk.closed_body_ref();
-                if let Some(value) = self.lookup_forced_inline_expression_result(observed_body) {
+                let cache_subject = self.force_cache_subject_for_thunk(&thunk);
+                if let Some(value) =
+                    self.lookup_forced_inline_expression_result(cache_subject.clone())
+                {
                     let value = guard.finish(value).map_err(|source| {
                         TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
                     })?;
@@ -838,7 +840,7 @@ impl TreeWalk {
                     TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
                 })?;
                 self.lazy_identity_thunks.remove(&forced_payload);
-                self.observe_forced_inline_expression_result(observed_body, value, impure_trace);
+                self.observe_forced_inline_expression_result(cache_subject, value, impure_trace);
                 Ok(value)
             }
         }

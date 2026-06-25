@@ -553,6 +553,21 @@ alone (`M-1`/`Q-A`).
       expression; full cache-key integration, canonical free-variable hashes,
       fine-grained option dependency tracking, persistent keys, and
       cached/uncached harness proof remain open (`C-1`/`C-2`/`R-10`).
+- [x] Current inline captured-free-variable force-cache key substrate: tree-walk
+      now builds one force-cache subject for each source-backed node thunk,
+      including ordered durable hashes for referenced captured lexical slots
+      when every captured slot value is already an inline scalar supported by
+      `ValueHash::from_inline_value`. Lookup and observation feed those hashes
+      into the existing ordered/length-prefixed demand-key combiner, so repeated
+      captured inline thunks hit only when their free-variable value hashes match
+      and miss when those captured values differ. This deliberately skips dynamic
+      `with` scopes, scoped-import globals, captured
+      heap/string/path/list/attrs/lambda/primop/thunk values, captured bodies
+      with nested lexical-frame introducers, source-less/apply/select/builtin-attr
+      thunks, full strictness/escape free-variable analysis, heap/composite value
+      hashes, persistence, and cached/uncached harness proof. The gate covers
+      captured inline hit/miss tests, lowered lambda-argument coverage, and
+      representative captured unsupported free-variable skips (`C-1`/`C-2`).
 - [ ] Full cache-key integration remains: feed source content + IR node position
       from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real

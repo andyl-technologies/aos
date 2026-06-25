@@ -409,7 +409,7 @@ impl TreeWalk {
 
     pub(super) fn observe_forced_inline_expression_result(
         &mut self,
-        body: Option<EvalNodeRef>,
+        subject: Option<ForceCacheSubject>,
         value: Value,
         trace: ImpureInputTraceSegment,
     ) {
@@ -420,13 +420,13 @@ impl TreeWalk {
             return;
         }
 
-        let Some(body) = body else {
+        let Some(subject) = subject else {
             return;
         };
         let identity = if trace.is_empty_complete() {
-            self.cache_identity_for_node(body)
+            self.cache_identity_for_node(subject.body)
         } else {
-            self.cache_observation_identity_for_node(body)
+            self.cache_observation_identity_for_node(subject.body)
         };
         let Some(identity) = identity else {
             return;
@@ -443,7 +443,7 @@ impl TreeWalk {
             cache
                 .observe_inline_expression_result(
                     identity,
-                    std::iter::empty::<DurableBlake3Hash>(),
+                    subject.free_var_value_hashes.iter().copied(),
                     value,
                 )
                 .map(|_| None)
@@ -451,7 +451,7 @@ impl TreeWalk {
             cache
                 .observe_inline_expression_result_with_impure_inputs(
                     identity,
-                    std::iter::empty::<DurableBlake3Hash>(),
+                    subject.free_var_value_hashes.iter().copied(),
                     value,
                     &trace,
                 )
@@ -471,12 +471,12 @@ impl TreeWalk {
 
     pub(super) fn lookup_forced_inline_expression_result(
         &mut self,
-        body: Option<EvalNodeRef>,
+        subject: Option<ForceCacheSubject>,
     ) -> Option<Value> {
-        let Some(body) = body else {
+        let Some(subject) = subject else {
             return None;
         };
-        let Some(identity) = self.cache_observation_identity_for_node(body) else {
+        let Some(identity) = self.cache_observation_identity_for_node(subject.body) else {
             return None;
         };
         let mut revalidator = TreeWalkImpureInputRevalidator::new(&self.options);
@@ -493,7 +493,7 @@ impl TreeWalk {
         }
         match cache.lookup_inline_expression_result_with_impure_inputs(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            subject.free_var_value_hashes.iter().copied(),
             &mut revalidator,
         ) {
             Ok(Some(value)) => {
@@ -521,6 +521,110 @@ impl TreeWalk {
                 None
             }
         }
+    }
+
+    pub(super) fn force_cache_subject_for_thunk(
+        &self,
+        thunk: &EvalThunk,
+    ) -> Option<ForceCacheSubject> {
+        let body = thunk.body_ref()?;
+        let env = thunk.env()?;
+        if !thunk.with_scope_env()?.scopes().is_empty()
+            || !thunk.scoped_global_env()?.scopes().is_empty()
+        {
+            return None;
+        }
+        let free_var_value_hashes = self.inline_free_var_value_hashes_for_body(body, env)?;
+        Some(ForceCacheSubject {
+            body,
+            free_var_value_hashes,
+        })
+    }
+
+    fn inline_free_var_value_hashes_for_body(
+        &self,
+        body: EvalNodeRef,
+        env: &EvalEnv,
+    ) -> Option<Vec<DurableBlake3Hash>> {
+        let frames = env.frames();
+        if frames.is_empty() {
+            return Some(Vec::new());
+        }
+
+        let module = self.modules.get(body.module().index())?;
+        let slots = Self::captured_free_variable_slots(&module.ir, body.id(), frames.len())?;
+        let mut hashes = Vec::new();
+        hashes.try_reserve_exact(slots.len()).ok()?;
+        for (frame_index, slot) in slots {
+            let value = frames.get(frame_index)?.get(slot).ok()?;
+            let hash = ValueHash::from_inline_value(value).ok()?.as_durable_hash();
+            hashes.push(hash);
+        }
+        Some(hashes)
+    }
+
+    fn captured_free_variable_slots(
+        ir: &Ir,
+        root: IrId,
+        captured_frame_count: usize,
+    ) -> Option<BTreeSet<(usize, u32)>> {
+        let mut visited = BTreeSet::new();
+        let mut slots = BTreeSet::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id.as_u32()) {
+                continue;
+            }
+            let Some(node) = ir.arena.node(id) else {
+                return None;
+            };
+            match node.data {
+                IrData::Local { slot } => {
+                    let frame_index = captured_frame_count.checked_sub(1)?;
+                    slots.insert((frame_index, slot));
+                }
+                IrData::Upval { depth, slot } => {
+                    let depth = depth as usize;
+                    if depth >= captured_frame_count {
+                        return None;
+                    }
+                    slots.insert((captured_frame_count - 1 - depth, slot));
+                }
+                IrData::Let { .. }
+                | IrData::Lambda { .. }
+                | IrData::FormalSet { .. }
+                | IrData::Formal { .. }
+                | IrData::AttrSet {
+                    recursive: true, ..
+                } => {
+                    return None;
+                }
+                IrData::None
+                | IrData::Int(_)
+                | IrData::Float(_)
+                | IrData::Bool(_)
+                | IrData::Symbol(_)
+                | IrData::SearchPath { .. }
+                | IrData::Node(_)
+                | IrData::Pair { .. }
+                | IrData::Triple { .. }
+                | IrData::Children(_)
+                | IrData::Bindings(_)
+                | IrData::Binary { .. }
+                | IrData::Unary { .. }
+                | IrData::Select { .. }
+                | IrData::HasAttr { .. }
+                | IrData::PrimOp { .. }
+                | IrData::DialectNode { .. }
+                | IrData::DialectScopeVar { .. }
+                | IrData::AttrSet {
+                    recursive: false, ..
+                } => {
+                    Self::push_ir_children(ir, node, &mut stack).then_some(())?;
+                }
+            }
+        }
+        Some(slots)
     }
 
     fn cache_identity_for_node(&self, body: EvalNodeRef) -> Option<CacheExprIdentity> {
