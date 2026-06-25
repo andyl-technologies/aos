@@ -356,6 +356,120 @@ fn configured_import_cache_preserves_drv_surfaces() {
 }
 
 #[test]
+fn persistent_force_cache_hit_preserves_drv_surfaces() {
+    fn evaluate_derivation_surface(
+        ir: &Ir,
+        source: &str,
+        options: TreeWalkOptions,
+        eval_cache: EvalCacheRuntime,
+    ) -> (String, Vec<u8>, u64, u64, u64) {
+        let attr_path = vec![b"pkg".to_vec()];
+        let outcome =
+            eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
+                ir,
+                &attr_path,
+                options,
+                "force-cache-drv-surface.nix",
+                source,
+                None,
+                Arc::new(Mutex::new(eval_cache)),
+            )
+            .expect("derivation attr-path eval succeeds");
+        let [derivation] = outcome.derivations() else {
+            panic!(
+                "expected one recorded derivation, got {:?}",
+                outcome.derivations()
+            );
+        };
+        let aterm = derivation
+            .aterm_bytes()
+            .expect("static derivation has ATerm bytes")
+            .to_vec();
+        (
+            derivation.absolute_path().to_owned(),
+            aterm,
+            outcome.stats().cache_hits(),
+            outcome.stats().force_cache_hits(),
+            outcome.stats().force_cache_misses(),
+        )
+    }
+
+    let persist_root = unique_temp_dir("force-cache-drv-surface-parity");
+    let source = r#"let
+             b = builtins;
+           in {
+             pkg = derivationStrict {
+               name = "force-cache-drv-surface";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ b.currentSystem ];
+             };
+           }"#;
+    let ir = lower(source);
+
+    let uncached_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    let (
+        uncached_path,
+        uncached_aterm,
+        uncached_cache_hits,
+        uncached_force_hits,
+        uncached_force_misses,
+    ) = evaluate_derivation_surface(&ir, source, uncached_options, EvalCacheRuntime::disabled());
+    assert_eq!(uncached_cache_hits, 0);
+    assert_eq!(uncached_force_hits, 0);
+    assert_eq!(uncached_force_misses, 0);
+
+    let mut first_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    first_options.set_eval_cache_enabled(true);
+    first_options.set_persist_cache_root(&persist_root);
+    let (first_path, first_aterm, first_cache_hits, first_force_hits, first_force_misses) =
+        evaluate_derivation_surface(&ir, source, first_options, EvalCacheRuntime::enabled());
+    assert_eq!(first_path, uncached_path);
+    assert_eq!(first_aterm, uncached_aterm);
+    assert_eq!(first_cache_hits, 0);
+    assert_eq!(first_force_hits, 0);
+    assert_eq!(first_force_misses, 1);
+
+    let mut materialize_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    materialize_options.set_eval_cache_enabled(true);
+    materialize_options.set_persist_cache_root(&persist_root);
+    let (
+        materialize_path,
+        materialize_aterm,
+        materialize_cache_hits,
+        materialize_force_hits,
+        materialize_force_misses,
+    ) = evaluate_derivation_surface(
+        &ir,
+        source,
+        materialize_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(materialize_path, uncached_path);
+    assert_eq!(materialize_aterm, uncached_aterm);
+    assert_eq!(materialize_cache_hits, 0);
+    assert_eq!(materialize_force_hits, 0);
+    assert_eq!(materialize_force_misses, 1);
+
+    let mut hit_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    hit_options.set_eval_cache_enabled(true);
+    hit_options.set_persist_cache_root(&persist_root);
+    let (hit_path, hit_aterm, hit_cache_hits, hit_force_hits, hit_force_misses) =
+        evaluate_derivation_surface(&ir, source, hit_options, EvalCacheRuntime::enabled());
+    assert_eq!(hit_path, uncached_path);
+    assert_eq!(hit_aterm, uncached_aterm);
+    assert_eq!(hit_cache_hits, 1);
+    assert_eq!(hit_force_hits, 1);
+    assert_eq!(hit_force_misses, 0);
+
+    fs::remove_dir_all(persist_root).expect("temp directory removes");
+}
+
+#[test]
 fn derivation_strict_rejects_non_utf8_structural_fields() {
     for source in [
             b"derivationStrict {\n  name = \"x\";\n  system = \"x86_64-linux\";\n  builder = \"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-\xff-builder\";\n}"

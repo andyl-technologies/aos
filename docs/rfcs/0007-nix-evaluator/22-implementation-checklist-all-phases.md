@@ -1310,6 +1310,18 @@ alone (`M-1`/`Q-A`).
       dependents, automatic compaction/GC, mmap reads, and cached/uncached
       harness proof remain open
       (`C-13`/`R-10`/`S-14`).
+- [x] Current persistent force-value `.drv` surface parity canary:
+      `persistent_force_cache_hit_preserves_drv_surfaces` evaluates the same
+      derivation attr path with eval cache disabled, with configured persistent
+      force-cache demand/writeback on the cold and materializing paths, and
+      with a fresh-runtime persistent forced-value hit for a replayed
+      `builtins.currentSystem` payload. It requires identical `.drv` paths and
+      ATerm bytes across all runs and requires the final run to report a
+      force-cache hit. This samples the current replayable forced-value hit
+      path inside a derivation input surface; full cached-vs-uncached closure
+      parity, derivationStrict-node SHA-256 early cutoff, lazy replay payloads,
+      mmap reads, GC/repack, and future value-memoization safety net remain
+      open (`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips
