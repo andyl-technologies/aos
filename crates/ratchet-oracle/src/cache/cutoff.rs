@@ -17,6 +17,8 @@ pub(crate) const CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION: &[u8] =
 pub(crate) const CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION: &[u8] =
     b"aos-nix-context-string-value-hash-v1";
 pub(crate) const PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-path-value-hash-v1";
+pub(crate) const CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] =
+    b"aos-nix-context-path-value-hash-v1";
 
 /// A durable hash of a canonical evaluated value.
 ///
@@ -136,6 +138,22 @@ impl ValueHash {
         hasher.update(b"path");
         hasher.update(&(bytes.len() as u128).to_le_bytes());
         hasher.update(bytes);
+        Self(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    /// Hashes a context-bearing Nix path as a canonical value precursor.
+    ///
+    /// The hash covers the path bytes plus the path value's string context.
+    /// This stays separate from both context-bearing string hashing and
+    /// context-free path hashing because Nix paths and strings remain distinct
+    /// WHNF tags even when their byte payloads and contexts match.
+    pub fn from_context_path_parts(bytes: &[u8], context: &StringContext) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION);
+        hasher.update(b"path");
+        hasher.update(&(bytes.len() as u128).to_le_bytes());
+        hasher.update(bytes);
+        update_string_context_hash(&mut hasher, context);
         Self(DurableBlake3Hash::from_hasher(hasher))
     }
 
@@ -337,6 +355,23 @@ mod tests {
             same,
             ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"same"))
         );
+    }
+
+    #[test]
+    fn context_path_hashes_include_bytes_and_canonical_context() {
+        let source = opaque(b"/nix/store/source");
+        let output = output(b"/nix/store/pkg.drv", b"out");
+        let first = StringContext::new(vec![output.clone(), source.clone(), output.clone()]);
+        let second = StringContext::new(vec![source, output]);
+        let hash = ValueHash::from_context_path_parts(b"same", &first);
+
+        assert_eq!(hash, ValueHash::from_context_path_parts(b"same", &second));
+        assert_ne!(
+            hash,
+            ValueHash::from_context_path_parts(b"different", &second)
+        );
+        assert_ne!(hash, ValueHash::from_path_bytes(b"same"));
+        assert_ne!(hash, ValueHash::from_context_string_parts(b"same", &second));
     }
 
     #[test]

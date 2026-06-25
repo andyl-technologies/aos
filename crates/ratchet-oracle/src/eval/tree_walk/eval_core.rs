@@ -723,11 +723,13 @@ impl TreeWalk {
             }
             ValueTag::Path => {
                 let path = self.heap.get_path(value).ok()?;
-                if path.has_context() {
-                    return None;
-                }
                 let bytes = try_clone_bytes(path.bytes()).ok()?;
-                Some(CachedExpressionValue::path(bytes))
+                if path.has_context() {
+                    let context = path.context().try_clone_context().ok()?;
+                    Some(CachedExpressionValue::context_path(bytes, context))
+                } else {
+                    Some(CachedExpressionValue::path(bytes))
+                }
             }
             _ => None,
         }
@@ -911,6 +913,11 @@ impl TreeWalk {
             let bytes = try_clone_bytes(bytes).ok()?;
             let context = context.try_clone_context().ok()?;
             return self.heap.alloc_string(NixString::new(bytes, context)).ok();
+        }
+        if let Some((bytes, context)) = payload.context_path_parts() {
+            let bytes = try_clone_bytes(bytes).ok()?;
+            let context = context.try_clone_context().ok()?;
+            return self.heap.alloc_path(NixString::new(bytes, context)).ok();
         }
         let bytes = try_clone_bytes(payload.path_bytes()?).ok()?;
         self.heap.alloc_path(NixString::from_bytes(bytes)).ok()

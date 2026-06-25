@@ -9,8 +9,9 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use super::cutoff::{
-    CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION, CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION,
-    INLINE_VALUE_HASH_DOMAIN_VERSION, PATH_VALUE_HASH_DOMAIN_VERSION,
+    CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION, CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION,
+    CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION, INLINE_VALUE_HASH_DOMAIN_VERSION,
+    PATH_VALUE_HASH_DOMAIN_VERSION,
 };
 use super::{
     CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey, DemandGraph, DemandGraphError,
@@ -124,7 +125,12 @@ impl CachedExpressionValue {
     }
 
     /// Creates a cached Nix string payload from canonical bytes and context.
+    ///
+    /// Empty contexts are canonicalized to [`Self::context_free_string`].
     pub fn context_string(bytes: Vec<u8>, context: StringContext) -> Self {
+        if context.is_empty() {
+            return Self::context_free_string(bytes);
+        }
         Self {
             payload: InlineValuePayload::ContextString { bytes, context },
         }
@@ -134,6 +140,18 @@ impl CachedExpressionValue {
     pub fn path(bytes: Vec<u8>) -> Self {
         Self {
             payload: InlineValuePayload::Path(bytes),
+        }
+    }
+
+    /// Creates a cached Nix path payload from canonical path bytes and context.
+    ///
+    /// Empty contexts are canonicalized to [`Self::path`].
+    pub fn context_path(bytes: Vec<u8>, context: StringContext) -> Self {
+        if context.is_empty() {
+            return Self::path(bytes);
+        }
+        Self {
+            payload: InlineValuePayload::ContextPath { bytes, context },
         }
     }
 
@@ -188,6 +206,7 @@ impl CachedExpressionValue {
             InlineValuePayload::ContextFreeString(bytes) => Some(bytes),
             InlineValuePayload::ContextString { .. }
             | InlineValuePayload::Path(_)
+            | InlineValuePayload::ContextPath { .. }
             | InlineValuePayload::Int(_)
             | InlineValuePayload::Float(_)
             | InlineValuePayload::Bool(_)
@@ -204,11 +223,12 @@ impl CachedExpressionValue {
             | InlineValuePayload::Bool(_)
             | InlineValuePayload::ContextFreeString(_)
             | InlineValuePayload::Path(_)
+            | InlineValuePayload::ContextPath { .. }
             | InlineValuePayload::Null => None,
         }
     }
 
-    /// Returns the cached path bytes, if this payload is a path.
+    /// Returns the cached path bytes, if this payload is a context-free path.
     pub fn path_bytes(&self) -> Option<&[u8]> {
         match &self.payload {
             InlineValuePayload::Path(bytes) => Some(bytes),
@@ -217,6 +237,21 @@ impl CachedExpressionValue {
             | InlineValuePayload::Bool(_)
             | InlineValuePayload::ContextFreeString(_)
             | InlineValuePayload::ContextString { .. }
+            | InlineValuePayload::ContextPath { .. }
+            | InlineValuePayload::Null => None,
+        }
+    }
+
+    /// Returns cached path bytes and context, if this payload is a contextual path.
+    pub fn context_path_parts(&self) -> Option<(&[u8], &StringContext)> {
+        match &self.payload {
+            InlineValuePayload::ContextPath { bytes, context } => Some((bytes, context)),
+            InlineValuePayload::Int(_)
+            | InlineValuePayload::Float(_)
+            | InlineValuePayload::Bool(_)
+            | InlineValuePayload::ContextFreeString(_)
+            | InlineValuePayload::ContextString { .. }
+            | InlineValuePayload::Path(_)
             | InlineValuePayload::Null => None,
         }
     }
@@ -299,6 +334,12 @@ pub enum CachedExpressionValuePayloadError {
     NonCanonicalStringContext {
         /// The zero-based index of the out-of-order or duplicate element.
         index: usize,
+    },
+    /// A context-bearing payload used the contextual domain with no context elements.
+    #[error("cached expression {payload} payload has an empty string context")]
+    EmptyStringContext {
+        /// The malformed contextual payload kind.
+        payload: &'static str,
     },
 }
 
@@ -947,6 +988,10 @@ enum InlineValuePayload {
         context: StringContext,
     },
     Path(Vec<u8>),
+    ContextPath {
+        bytes: Vec<u8>,
+        context: StringContext,
+    },
 }
 
 impl InlineValuePayload {
@@ -984,7 +1029,10 @@ impl InlineValuePayload {
             Self::Float(bits) => Some(Value::float(f64::from_bits(*bits))),
             Self::Bool(value) => Some(Value::bool(*value)),
             Self::Null => Some(Value::null()),
-            Self::ContextFreeString(_) | Self::ContextString { .. } | Self::Path(_) => None,
+            Self::ContextFreeString(_)
+            | Self::ContextString { .. }
+            | Self::Path(_)
+            | Self::ContextPath { .. } => None,
         }
     }
 
@@ -999,6 +1047,9 @@ impl InlineValuePayload {
                 Ok(ValueHash::from_context_string_parts(bytes, context))
             }
             Self::Path(bytes) => Ok(ValueHash::from_path_bytes(bytes)),
+            Self::ContextPath { bytes, context } => {
+                Ok(ValueHash::from_context_path_parts(bytes, context))
+            }
         }
     }
 
@@ -1043,6 +1094,13 @@ impl InlineValuePayload {
                 append_payload_u128(&mut out, bytes.len() as u128)?;
                 append_payload_bytes(&mut out, bytes)?;
             }
+            Self::ContextPath { bytes, context } => {
+                append_payload_bytes(&mut out, CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, b"path")?;
+                append_payload_u128(&mut out, bytes.len() as u128)?;
+                append_payload_bytes(&mut out, bytes)?;
+                append_string_context_payload(&mut out, context)?;
+            }
         }
         Ok(out)
     }
@@ -1075,6 +1133,11 @@ impl InlineValuePayload {
             cursor.take_marker(b"string", "string payload tag")?;
             let string_bytes = cursor.take_length_prefixed_bytes()?;
             let context = cursor.take_string_context()?;
+            if context.is_empty() {
+                return Err(CachedExpressionValuePayloadError::EmptyStringContext {
+                    payload: "context string",
+                });
+            }
             cursor.finish()?;
             return Ok(Self::ContextString {
                 bytes: string_bytes,
@@ -1088,6 +1151,26 @@ impl InlineValuePayload {
             let payload = Self::Path(cursor.take_length_prefixed_bytes()?);
             cursor.finish()?;
             return Ok(payload);
+        }
+        if bytes.starts_with(CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION) {
+            let mut cursor = PayloadCursor::new(bytes);
+            cursor.take_marker(
+                CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION,
+                "context path value domain",
+            )?;
+            cursor.take_marker(b"path", "path payload tag")?;
+            let path_bytes = cursor.take_length_prefixed_bytes()?;
+            let context = cursor.take_string_context()?;
+            if context.is_empty() {
+                return Err(CachedExpressionValuePayloadError::EmptyStringContext {
+                    payload: "context path",
+                });
+            }
+            cursor.finish()?;
+            return Ok(Self::ContextPath {
+                bytes: path_bytes,
+                context,
+            });
         }
         Err(CachedExpressionValuePayloadError::UnknownDomain)
     }
@@ -1830,6 +1913,22 @@ mod tests {
         encoded
     }
 
+    fn context_path_payload_with_opaque_paths(paths: &[&[u8]]) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        append_payload_bytes(&mut encoded, CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION)
+            .expect("domain appends");
+        append_payload_bytes(&mut encoded, b"path").expect("tag appends");
+        append_payload_u128(&mut encoded, 0).expect("path length appends");
+        append_payload_bytes(&mut encoded, b"context").expect("context tag appends");
+        append_payload_u128(&mut encoded, paths.len() as u128).expect("context count appends");
+        for path in paths {
+            append_payload_byte(&mut encoded, 0).expect("context kind appends");
+            append_payload_u128(&mut encoded, path.len() as u128).expect("path length appends");
+            append_payload_bytes(&mut encoded, path).expect("path appends");
+        }
+        encoded
+    }
+
     fn key(node: u32, label: &[u8]) -> DemandCacheKey {
         DemandCacheKey::for_free_vars(identity(label, node), [durable_hash(label)])
             .expect("key builds")
@@ -1851,6 +1950,10 @@ mod tests {
             CachedExpressionValue::context_free_string(b"plain bytes".to_vec()),
             CachedExpressionValue::context_string(b"context bytes".to_vec(), all_context_kinds()),
             CachedExpressionValue::path(b"/nix/store/path".to_vec()),
+            CachedExpressionValue::context_path(
+                b"/nix/store/context-path".to_vec(),
+                all_context_kinds(),
+            ),
         ];
 
         for payload in payloads {
@@ -1870,6 +1973,24 @@ mod tests {
                 payload
             );
         }
+    }
+
+    #[test]
+    fn cached_expression_payload_constructors_canonicalize_empty_contexts() {
+        let string =
+            CachedExpressionValue::context_string(b"plain bytes".to_vec(), StringContext::empty());
+        let path = CachedExpressionValue::context_path(
+            b"/nix/store/path".to_vec(),
+            StringContext::empty(),
+        );
+
+        assert_eq!(
+            string.context_free_string_bytes(),
+            Some(b"plain bytes".as_slice())
+        );
+        assert!(string.context_string_parts().is_none());
+        assert_eq!(path.path_bytes(), Some(b"/nix/store/path".as_slice()));
+        assert!(path.context_path_parts().is_none());
     }
 
     #[test]
@@ -1913,6 +2034,25 @@ mod tests {
             error,
             CachedExpressionValuePayloadError::ShortPayload { .. }
         ));
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_empty_contextual_domains() {
+        for (encoded, payload) in [
+            (
+                context_string_payload_with_opaque_paths(&[]),
+                "context string",
+            ),
+            (context_path_payload_with_opaque_paths(&[]), "context path"),
+        ] {
+            let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+                .expect_err("empty context errors");
+
+            assert_eq!(
+                error,
+                CachedExpressionValuePayloadError::EmptyStringContext { payload }
+            );
+        }
     }
 
     #[test]
@@ -2937,6 +3077,44 @@ mod tests {
 
         assert_eq!(payload.path_bytes(), Some(b"/tmp/cached-path".as_slice()));
         assert!(payload.context_free_string_bytes().is_none());
+        assert!(payload.immediate_value().is_none());
+        assert!(
+            immediate.is_none(),
+            "generic Value lookup must not return heap-backed payload pointers"
+        );
+    }
+
+    #[test]
+    fn eval_cache_looks_up_context_path_payloads() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+        let context = opaque_context(b"/nix/store/source");
+
+        cache
+            .observe_inline_expression_payload(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::context_path(
+                    b"/nix/store/context-path".to_vec(),
+                    context.clone(),
+                ),
+            )
+            .expect("context path payload observes");
+        let payload = cache
+            .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("payload lookup succeeds")
+            .expect("memoized context path payload is present");
+        let immediate = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("immediate lookup succeeds");
+        let (bytes, cached_context) = payload
+            .context_path_parts()
+            .expect("context path payload is present");
+
+        assert_eq!(bytes, b"/nix/store/context-path");
+        assert_eq!(cached_context, &context);
+        assert!(payload.context_string_parts().is_none());
+        assert!(payload.path_bytes().is_none());
         assert!(payload.immediate_value().is_none());
         assert!(
             immediate.is_none(),
