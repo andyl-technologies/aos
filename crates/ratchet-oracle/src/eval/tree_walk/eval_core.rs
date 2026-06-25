@@ -1183,6 +1183,16 @@ impl TreeWalk {
                 hasher.update(&value_hash.as_durable_hash().as_bytes());
                 return Some(DurableBlake3Hash::from_hasher(hasher));
             }
+            ValueTag::Thunk => {
+                let cached = {
+                    let thunk = self.heap.get_thunk(value).ok()?;
+                    thunk.cell().cached_value().ok()??
+                };
+                if cached.is_thunk() {
+                    return None;
+                }
+                return self.force_cache_free_var_value_hash(cached);
+            }
             _ => return None,
         }
     }

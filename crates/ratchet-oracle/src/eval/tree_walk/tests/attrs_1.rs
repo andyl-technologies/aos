@@ -5711,6 +5711,89 @@ fn materialized_non_empty_lists_are_free_variable_hashable() {
 }
 
 #[test]
+fn suspended_thunk_cells_are_not_free_variable_hashable_yet() {
+    let ir = lower("{ a = 1 + 2; }");
+    let a = symbol_for(&ir, b"a");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let thunk = evaluator
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a is a thunk");
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+
+    assert_eq!(evaluator.force_cache_free_var_value_hash(thunk_value), None);
+    let thunk = evaluator
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a is still a thunk");
+    assert_eq!(
+        thunk.cell().state(),
+        Ok(ThunkState::Suspended),
+        "hashing a captured suspended thunk cell must not force it"
+    );
+}
+
+#[test]
+fn fulfilled_thunk_cells_use_cached_free_variable_hashes() {
+    let ir = lower("{ a = 1 + 2; }");
+    let a = symbol_for(&ir, b"a");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+    assert_eq!(forced.as_int(), Ok(3));
+
+    assert_eq!(
+        evaluator.force_cache_free_var_value_hash(thunk_value),
+        evaluator.force_cache_free_var_value_hash(forced)
+    );
+}
+
+#[test]
+fn fulfilled_replayable_attrset_thunk_cells_use_cached_free_variable_hashes() {
+    let ir = lower(r#"{ a = builtins.fromJSON ''{"a":1,"b":[true,null]}''; }"#);
+    let a = symbol_for(&ir, b"a");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+    assert_eq!(forced.tag(), ValueTag::Attrs);
+
+    assert_eq!(
+        evaluator
+            .force_cache_free_var_value_hash(thunk_value)
+            .expect("fulfilled attrset thunk cell hashes"),
+        evaluator
+            .force_cache_free_var_value_hash(forced)
+            .expect("forced replayable attrset hashes")
+    );
+}
+
+#[test]
 fn materialized_context_bearing_string_captures_use_canonical_free_variable_hashes() {
     let ir = lower("1");
     let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
@@ -5824,7 +5907,7 @@ fn materialized_context_bearing_path_captures_use_canonical_free_variable_hashes
 }
 
 #[test]
-fn captured_computed_context_bearing_string_thunks_wait_for_materialized_capture_keys() {
+fn captured_preforced_computed_context_bearing_string_thunks_use_materialized_capture_keys() {
     let source = r#"
       let s = builtins.appendContext "s" {
         "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source" = { path = true; };
@@ -5834,7 +5917,7 @@ fn captured_computed_context_bearing_string_thunks_wait_for_materialized_capture
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
-    for _ in 0..2 {
+    for expected_hit in [false, true] {
         let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
             &ir,
             TreeWalkOptions::new(),
@@ -5857,9 +5940,9 @@ fn captured_computed_context_bearing_string_thunks_wait_for_materialized_capture
 
         assert_eq!(forced.as_bool(), Ok(true));
         assert_eq!(
-            evaluator.stats().cache_hits(),
-            hits_before,
-            "captured computed context-bearing strings still appear as captured thunk cells"
+            evaluator.stats().cache_hits() > hits_before,
+            expected_hit,
+            "captured preforced context-bearing strings should hash through the fulfilled thunk cell"
         );
     }
 }
