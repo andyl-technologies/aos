@@ -568,9 +568,21 @@ carries findings across an incompatible build.
 - [ ] **T-PKG-4** Wire `gate:patch-microtests` as a package check: apply-clean +
   build + every per-patch micro-test (sim-on effect + sim-off inertness), re-run on
   series/pin/header change. — satisfies [PKG-14]; spec §26.3.1.
-- [ ] **T-PKG-5** Implement the patch regeneration/drift pipeline (reproducible
+- [x] **T-PKG-5** Implement the patch regeneration/drift pipeline (reproducible
   patch bytes from the tracked branch) and the QEMU-version-bump re-gate. —
   satisfies [PKG-15], [PKG-16]; spec §26.3.2.
+  - Completed by `checks.crucible.phase2.qemuPatchRegeneration` and the
+    `gate:patch-microtests` aggregate: `pkgs/emulation/qemu-patches/_series.nix`
+    is the package-consumed manifest for the QEMU pin, source hash, ordered patch
+    inventory, tracked branch bundle, deterministic branch metadata, and patch
+    files. `pkgs/emulation/qemu.nix` applies that manifest order directly, derives
+    a build identity from the QEMU pin, qemu.nix hash, configure flags,
+    patch-series hash, and patch-branch bundle/material, and installs
+    `share/aos/crucible/qemu-build-identity.env` from that manifest, while the
+    regeneration gate verifies the bundle base/head and per-patch commit/tree
+    list, byte-compares regenerated patch output to the committed series, and
+    proves that changed QEMU build material would re-gate rather than replay under
+    the old reproduction-artifact identity.
 - [x] **T-PKG-6** Keep dev-only diagnostic patches out of the shipped package
   (optional `qemu-crucible-dev` variant, inert-by-default). — satisfies [PKG-11];
   spec §26.3.

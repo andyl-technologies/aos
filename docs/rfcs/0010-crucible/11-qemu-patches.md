@@ -1401,10 +1401,20 @@ time-control primitives the whole design rests on.
     developer-only variant as inert by default because no diagnostic patch is
     compiled or applied unless a future explicit dev package adds one behind its
     own opt-in gate.
-- [ ] **T-PATCH-19** Implement the regeneration/drift pipeline (reproducible patch
+- [x] **T-PATCH-19** Implement the regeneration/drift pipeline (reproducible patch
   bytes from the tracked branch) and the QEMU-version-bump re-gate (rebase +
   re-test + re-pin build identity into the artifact). — satisfies [PATCH-37],
   [PATCH-39]; spec §11.9.
+  - Completed by `checks.crucible.phase2.qemuPatchRegeneration` and consumed by
+    `gate:patch-microtests`: the gate rebuilds the ordered patch stack from the
+    checked-in `crucible/qemu-10.0.0` git bundle, verifies the base/head commits
+    and each per-patch commit/tree entry, regenerates deterministic `--unified=3`
+    patch bytes, fails on committed-file drift, applies the regenerated series
+    with fuzz disabled, and records the QEMU source hash, patch count,
+    patch-series hash, patch-branch bundle/material, and QEMU build identity. The
+    reproduction-artifact-shaped fixture pins that build identity and rejects a
+    deliberate changed-build negative control, making a QEMU pin or patch change
+    a re-gated event.
 - [ ] **T-PATCH-20** Pin and document the minimum QEMU version and the plugin-API
   capability set; fail the build loudly if a required capability is missing. —
   satisfies [PATCH-40], [PATCH-42]; spec §11.10.

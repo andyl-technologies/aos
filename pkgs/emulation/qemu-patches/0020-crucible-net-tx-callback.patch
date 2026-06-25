@@ -1,7 +1,8 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -987,5 +987,32 @@ QEMU_PLUGIN_API
+@@ -989,6 +989,33 @@ int qemu_plugin_net_flush(void);
+ QEMU_PLUGIN_API
  int qemu_plugin_net_can_receive(void);
  
 +/**
@@ -37,7 +38,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 diff --git a/net/net.c b/net/net.c
 --- a/net/net.c
 +++ b/net/net.c
-@@ -43,6 +43,7 @@
+@@ -47,6 +47,7 @@
  #include "qemu/iov.h"
  #include "qemu/qemu-print.h"
  #include "qemu/main-loop.h"
@@ -45,7 +46,7 @@ diff --git a/net/net.c b/net/net.c
  #include "qemu/option.h"
  #include "qemu/keyval.h"
  #include "qapi/error.h"
-@@ -76,6 +77,35 @@ typedef QSIMPLEQ_HEAD(, NetdevQueueEntry) NetdevQueue;
+@@ -77,6 +78,35 @@ typedef QSIMPLEQ_HEAD(, NetdevQueueEntry) NetdevQueue;
  static NetdevQueue nd_queue = QSIMPLEQ_HEAD_INITIALIZER(nd_queue);
  
  static GHashTable *nic_model_help;
@@ -81,7 +82,7 @@ diff --git a/net/net.c b/net/net.c
  
  static int nb_nics;
  static NICInfo nd_table[MAX_NICS];
-@@ -727,6 +753,9 @@ static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,
+@@ -723,6 +753,9 @@ static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,
      if (sender->link_down || !sender->peer) {
          return size;
      }
@@ -91,15 +92,12 @@ diff --git a/net/net.c b/net/net.c
  
      /* Let filters handle the packet first */
      ret = filter_receive(sender, NET_FILTER_DIRECTION_TX,
-@@ -862,13 +895,28 @@ ssize_t qemu_sendv_packet_async(NetClientState *sender,
+@@ -860,11 +893,26 @@ ssize_t qemu_sendv_packet_async(NetClientState *sender,
      size_t size = iov_size(iov, iovcnt);
      int ret;
  
 -    if (size > NET_BUFSIZE) {
--        return size;
--    }
--
-     if (sender->link_down || !sender->peer) {
++    if (sender->link_down || !sender->peer) {
          return size;
      }
 +    if (crucible_net_tx_callback_ready(sender)) {
@@ -110,7 +108,8 @@ diff --git a/net/net.c b/net/net.c
 +            return crucible_net_tx_submit(iov[0].iov_base, iov[0].iov_len);
 +        } else {
 +            g_autofree uint8_t *buf = g_malloc(size);
-+
+ 
+-    if (sender->link_down || !sender->peer) {
 +            if (iov_to_buf(iov, iovcnt, 0, buf, size) != size) {
 +                return -1;
 +            }
@@ -119,8 +118,6 @@ diff --git a/net/net.c b/net/net.c
 +    }
 +
 +    if (size > NET_BUFSIZE) {
-+        return size;
-+    }
+         return size;
+     }
  
-     /* Let filters handle the packet first */
-     ret = filter_receive_iov(sender, NET_FILTER_DIRECTION_TX, sender,

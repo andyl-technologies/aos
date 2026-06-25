@@ -1,8 +1,7 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index ffffe8824..9ae3be9d4 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
-@@ -121,7 +121,8 @@ static int crucible_shmem_next_request_id(BDRVCrucibleShmemState *s,
+@@ -122,6 +122,7 @@ static int crucible_shmem_next_request_id(BDRVCrucibleShmemState *s,
  
  static void coroutine_fn crucible_shmem_wait_one_poll(BlockDriverState *bs)
  {
@@ -10,4 +9,3 @@ index ffffe8824..9ae3be9d4 100644
      qemu_coroutine_yield();
  }
  
- static int64_t coroutine_fn

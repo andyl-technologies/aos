@@ -735,9 +735,16 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     `checks.crucible.phase2.gates.patchMicrotests`: the former compares
     unpatched pinned QEMU against patched sim-off QEMU over the real-QEMU corpus,
     and the latter requires each carried patch's focused micro-test.
-- [ ] **T-DET-24** Pin the QEMU build identity into the reproduction artifact and
+- [x] **T-DET-24** Pin the QEMU build identity into the reproduction artifact and
   re-gate on any QEMU/patch change; document the version-drift contract. —
   satisfies [DET-35]; spec §4.9.
+  - Completed by `checks.crucible.phase2.qemuPatchRegeneration`: the patched QEMU
+    package now emits a manifest-derived `qemu_build_id` with the QEMU version,
+    source hash, qemu.nix hash, configure flag hash, patch count,
+    patch-series hash, tracked-branch bundle/material hashes, and sim capability
+    flags. The gate embeds that identity in a reproduction-artifact-shaped fixture
+    and verifies both a matching artifact and a changed-build negative control, so
+    replay is tied to the exact QEMU build that produced the run.
 - [ ] **T-DET-25** Stand up the adversarial-host test fixture (randomized
   scheduling/affinity, injected jitter/load, varied core counts, skewed
   producer/consumer timing) shared by all determinism gates. — satisfies

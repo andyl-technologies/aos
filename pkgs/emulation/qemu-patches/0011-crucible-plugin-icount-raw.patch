@@ -1,11 +1,10 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -761,6 +761,16 @@
-  */
+@@ -762,6 +762,16 @@ void qemu_plugin_advance_virtual_time_direct(int64_t time);
  QEMU_PLUGIN_API
  void qemu_plugin_drain_main_loop(void);
-+
+ 
 +/**
 + * qemu_plugin_icount_raw() - return raw retired-instruction count
 + *
@@ -15,9 +14,10 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 + */
 +QEMU_PLUGIN_API
 +uint64_t qemu_plugin_icount_raw(void);
- 
++
  /**
   * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+  * @data: Ethernet frame bytes
 diff --git a/plugins/api-system.c b/plugins/api-system.c
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
@@ -29,12 +29,10 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -174,6 +175,21 @@
- 
-     main_loop_wait(true);
+@@ -176,6 +177,21 @@ void qemu_plugin_drain_main_loop(void)
      qemu_plugin_drain_bottom_halves();
-+}
-+
+ }
+ 
 +uint64_t qemu_plugin_icount_raw(void)
 +{
 +    int64_t raw_icount;
@@ -48,6 +46,8 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
 +        return 0;
 +    }
 +    return (uint64_t)raw_icount;
- }
++}
++
  
- 
+ static NetClientState *qemu_plugin_default_nic_queue(void)
+ {

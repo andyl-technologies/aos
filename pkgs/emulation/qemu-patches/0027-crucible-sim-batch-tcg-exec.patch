@@ -9,7 +9,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  #include "exec/cpu-common.h"
  #include "tcg/startup.h"
  #include "tcg-accel-ops.h"
-@@ -65,6 +66,10 @@
+@@ -65,6 +66,10 @@ void rr_kick_vcpu_thread(CPUState *unused)
  static QEMUTimer *rr_kick_vcpu_timer;
  static CPUState *rr_current_cpu;
  
@@ -20,12 +20,10 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  static bool rr_crucible_sim_mode(void)
  {
      return strcmp(current_accel_name(), "sim") == 0 &&
-@@ -107,6 +112,112 @@
-            cpu_work_list_empty(cpu) &&
-            !cpu->stop &&
+@@ -109,6 +114,112 @@ static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
             !cpu->unplug;
-+}
-+
+ }
+ 
 +static unsigned int rr_crucible_sim_tcg_batch_limit(void)
 +{
 +    return rr_crucible_sim_mode() ? RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT : 1;
@@ -130,10 +128,12 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 +
 +        rr_crucible_sim_refresh_batch_budget(cpu_budget);
 +    }
- }
- 
++}
++
  static void rr_crucible_sim_maybe_fire_idle_callback(CPUState *cpu,
-@@ -362,31 +473,8 @@
+                                                      bool *idle_reported)
+ {
+@@ -362,30 +473,7 @@ static void *rr_cpu_thread_fn(void *arg)
              }
  
              if (cpu_can_run(cpu)) {
@@ -156,13 +156,12 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 -
 -                if (r == EXCP_DEBUG) {
 -                    cpu_handle_guest_debug(cpu);
-+                if (rr_crucible_sim_run_tcg_batch(cpu, &cpu_budget)) {
-                     break;
+-                    break;
 -                } else if (r == EXCP_ATOMIC) {
 -                    bql_unlock();
 -                    cpu_exec_step_atomic(cpu);
 -                    bql_lock();
--                    break;
++                if (rr_crucible_sim_run_tcg_batch(cpu, &cpu_budget)) {
+                     break;
                  }
              } else if (cpu->stop) {
-                 if (cpu->unplug) {

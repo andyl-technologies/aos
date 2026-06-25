@@ -57,6 +57,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     );
     assert_contains(
         &aggregate,
+        "qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix",
+    );
+    assert_contains(
+        &aggregate,
         "qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix",
     );
     assert_contains(
@@ -67,6 +71,33 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "patch --batch --forward --fuzz=0 -p1");
     assert_contains(&aggregate, "test -x ${qemuPackage}/bin/qemu-system-x86_64");
     assert_contains(&aggregate, "patch_series_gate_passed=true");
+    assert_contains(&aggregate, "patch_regeneration_gate_passed=true");
+    assert_contains(&aggregate, "patch_regeneration_drift_checked=true");
+    assert_contains(&aggregate, "patch_regeneration_result_consumed=true");
+    assert_contains(&aggregate, "qemu_build_identity_artifact_checked=true");
+    assert_contains(&aggregate, "qemu_version_bump_regate_enforced=true");
+    assert_contains(
+        &aggregate,
+        "grep -q '^regenerated_patch_bytes_match_committed=true$'",
+    );
+    assert_contains(&aggregate, "grep -q '^patch_branch_bundle_verified=true$'");
+    assert_contains(
+        &aggregate,
+        "grep -q '^patch_branch_commit_hashes_match_manifest=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^qemu_package_patch_phase_generated_from_manifest=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^qemu_build_identity_metadata_installed=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^artifact_validator_rejects_mismatch=true$'",
+    );
+    assert_contains(&aggregate, "grep -q '^artifact_mismatch_regates=true$'");
     assert_contains(&aggregate, "qemu_doorbell_no_patch_gate_passed=true");
     assert_contains(
         &aggregate,
@@ -157,6 +188,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     );
     assert_contains(
         &default_checks,
+        "qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix",
+    );
+    assert_contains(
+        &default_checks,
         "attrPath = \"checks.crucible.phase2.gates.qemuInert\";",
     );
     assert_contains(&default_checks, "patchMicrotests = patchMicrotestsCheck;");
@@ -206,12 +241,82 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
 
     let qemu_patch_series =
         fs::read_to_string(root.join("tests/crucible/phase2-qemu-patch-series.nix"))?;
+    assert_contains(
+        &qemu_patch_series,
+        "series = import ../../pkgs/emulation/qemu-patches/_series.nix",
+    );
+    assert_contains(
+        &qemu_patch_series,
+        "patch_manifest_matches_carried_catalog=true",
+    );
     assert_contains(&qemu_patch_series, "noPatchDecisions");
     assert_contains(
         &qemu_patch_series,
         "checks.crucible.phase1.qemuDoorbellNoPatch",
     );
     assert_contains(&qemu_patch_series, "no_patch_decisions=");
+
+    let qemu_patch_regeneration =
+        fs::read_to_string(root.join("tests/crucible/phase2-qemu-patch-regeneration.nix"))?;
+    assert_contains(
+        &qemu_patch_regeneration,
+        "patch_regeneration_from_tracked_stack=true",
+    );
+    assert_contains(
+        &qemu_patch_regeneration,
+        "patch_branch_bundle_verified=true",
+    );
+    assert_contains(
+        &qemu_patch_regeneration,
+        "patch_branch_commit_hashes_match_manifest=true",
+    );
+    assert_contains(
+        &qemu_patch_regeneration,
+        "regenerated_patch_bytes_match_committed=true",
+    );
+    assert_contains(
+        &qemu_patch_regeneration,
+        "regenerated_patch_context_lines=3",
+    );
+    assert_contains(
+        &qemu_patch_regeneration,
+        "apply_clean_regenerated_series=true",
+    );
+    assert_contains(
+        &qemu_patch_regeneration,
+        "qemu_build_identity_metadata_installed=true",
+    );
+    assert_contains(
+        &qemu_patch_regeneration,
+        "qemu_build_id_material_includes=qemu_version,qemu_source_hash,qemu_nix_hash,qemu_configure_flags_hash,patch_series_hash,patch_branch_bundle_hash,patch_branch_material_hash",
+    );
+    assert_contains(
+        &qemu_patch_regeneration,
+        "artifact_validator_rejects_mismatch=true",
+    );
+    assert_contains(
+        &qemu_patch_regeneration,
+        "qemu_version_bump_regate_enforced=true",
+    );
+    assert_contains(
+        &qemu_patch_regeneration,
+        "changed_build_negative_control=mutated_build_id_material",
+    );
+
+    let qemu_nix = fs::read_to_string(root.join("pkgs/emulation/qemu.nix"))?;
+    assert_contains(&qemu_nix, "series ? import ./qemu-patches/_series.nix");
+    assert_contains(&qemu_nix, "version = series.qemuVersion;");
+    assert_contains(&qemu_nix, "hash = series.qemuSourceHash;");
+    assert_contains(&qemu_nix, "patchCommand = file:");
+    assert_contains(
+        &qemu_nix,
+        "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)",
+    );
+    assert_contains(&qemu_nix, "qemu_nix_hash=");
+    assert_contains(&qemu_nix, "qemu_configure_flags_hash=");
+    assert_contains(&qemu_nix, "qemu_patch_branch_bundle_hash=");
+    assert_contains(&qemu_nix, "qemu-build-identity.env");
+    assert_contains(&qemu_nix, "qemu_build_id=");
 
     let setup = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/setup.rs"))?;
     assert_contains(&setup, "RegisteredWakeFd");
@@ -383,6 +488,7 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
         if nix_path == "tests/crucible/phase1-plugin-runtime-apis.nix" {
             assert_contains(&nix_source, "patch=${patchName}");
             assert_contains(&nix_source, patch);
+            assert_contains(&nix_source, "tcg_exec_callback_after_icount_context=true");
         } else if nix_path == "tests/crucible/phase1-qemu-block-shmem.nix" {
             assert_contains(&nix_source, "patch=${patchName}");
             assert_contains(&nix_source, patch);
@@ -397,10 +503,7 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             assert_contains(&nix_source, patch);
             assert_contains(&nix_source, "sim_correctness_fixture_exercised=true");
             assert_contains(&nix_source, "sim_poll_immediate_repoll_microtest=true");
-            assert_contains(
-                &nix_source,
-                "sim_poll_immediate_requires_time_control=true",
-            );
+            assert_contains(&nix_source, "sim_poll_immediate_requires_time_control=true");
             assert_contains(
                 &nix_source,
                 "sim_poll_immediate_drain_bql_guard_validated=true",

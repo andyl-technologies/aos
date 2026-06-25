@@ -230,6 +230,8 @@ in
 
             /**
              * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+             * @data: Ethernet frame bytes
+             * @len: byte length of @data
              */
             QEMU_PLUGIN_API
             int qemu_plugin_net_inject(const uint8_t *data, size_t len);

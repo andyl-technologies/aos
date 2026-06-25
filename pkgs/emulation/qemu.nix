@@ -16,44 +16,141 @@
   pname ? "qemu",
   enablePlugins ? false,
   applyCruciblePatches ? true,
+  series ? import ./qemu-patches/_series.nix,
 }: let
-  version = "10.0.0";
+  version = series.qemuVersion;
+  patchDir = ./qemu-patches;
+  patchPath = file: patchDir + "/${file}";
+  patchHashLine = patch: "${builtins.hashFile "sha256" (patchPath patch.file)}  ${patch.file}\n";
+  patchSeriesHashMaterial = builtins.concatStringsSep "" (map patchHashLine series.patches);
+  patchSeriesHash = builtins.hashString "sha256" patchSeriesHashMaterial;
+  patchBranchBundleHash = let
+    actual = builtins.hashFile "sha256" series.patchBranchBundle;
+  in
+    if actual == series.patchBranchBundleSha256
+    then actual
+    else throw "QEMU patch branch bundle hash drifted: ${actual}";
+  patchBranchCommits =
+    map (patch: {
+      inherit
+        (patch)
+        file
+        branchCommit
+        branchTree
+        ;
+    })
+    series.patches;
+  patchBranchMaterial = builtins.toJSON {
+    inherit
+      (series)
+      patchBranchRef
+      patchBranchModel
+      patchBranchBundleSha256
+      patchBranchBaseCommit
+      patchBranchBaseTree
+      patchBranchHeadCommit
+      ;
+    inherit patchBranchCommits;
+  };
+  patchBranchMaterialHash = builtins.hashString "sha256" patchBranchMaterial;
+  patchCount = builtins.length series.patchFiles;
+  qemuNixHash = builtins.hashFile "sha256" ./qemu.nix;
   pluginFlag =
     if enablePlugins
     then "--enable-plugins"
     else "--disable-plugins";
+  qemuConfigureFlags = [
+    "--target-list=x86_64-softmmu"
+    "--enable-kvm"
+    pluginFlag
+    "--enable-slirp"
+    "--enable-virtfs"
+    "--disable-bsd-user"
+    "--disable-linux-user"
+    "--disable-docs"
+    "--disable-guest-agent"
+    "--disable-sdl"
+    "--disable-gtk"
+    "--disable-opengl"
+    "--disable-virglrenderer"
+    "--disable-vnc"
+    "--disable-spice"
+    "--disable-curses"
+    "--disable-xen"
+    "--disable-brlapi"
+    "--disable-cap-ng"
+    "--disable-libusb"
+    "--disable-usb-redir"
+    "--disable-vde"
+    "--disable-nettle"
+    "--disable-gcrypt"
+    "--disable-gnutls"
+    "--disable-libnfs"
+    "--disable-libssh"
+    "--disable-smartcard"
+    "--disable-vhost-net"
+    "--disable-fdt"
+    "--audio-drv-list="
+    "--enable-pie"
+  ];
+  qemuConfigureFlagsMaterial = builtins.concatStringsSep "\n" qemuConfigureFlags;
+  qemuConfigureFlagsHash = builtins.hashString "sha256" "${qemuConfigureFlagsMaterial}\n";
+  qemuConfigureFlagsScript = builtins.concatStringsSep " \\\n            " qemuConfigureFlags;
+  qemuBuildIdentityMaterial = ''
+    qemu_package=${pname}
+    qemu_version=${version}
+    qemu_source_hash=${series.qemuSourceHash}
+    qemu_nix_hash=${qemuNixHash}
+    qemu_configure_flags_hash=${qemuConfigureFlagsHash}
+    qemu_configure_target_list=x86_64-softmmu
+    qemu_patch_count=${toString patchCount}
+    qemu_patch_series_hash=${patchSeriesHash}
+    qemu_patch_branch_ref=${series.patchBranchRef}
+    qemu_patch_branch_model=${series.patchBranchModel}
+    qemu_patch_branch_bundle_hash=${patchBranchBundleHash}
+    qemu_patch_branch_base_commit=${series.patchBranchBaseCommit}
+    qemu_patch_branch_base_tree=${series.patchBranchBaseTree}
+    qemu_patch_branch_head_commit=${series.patchBranchHeadCommit}
+    qemu_patch_branch_material_hash=${patchBranchMaterialHash}
+    qemu_plugins_enabled=${if enablePlugins then "true" else "false"}
+    qemu_crucible_patches_applied=${if applyCruciblePatches then "true" else "false"}
+  '';
+  qemuBuildIdentity = builtins.hashString "sha256" qemuBuildIdentityMaterial;
+  patchCommand = file: "      patch -p1 < ${patchPath file}\n";
   patchPhase =
     if applyCruciblePatches
-    then ''
-      patch -p1 < ${./qemu-patches/0001-crucible-sim-accel.patch}
-      patch -p1 < ${./qemu-patches/0002-crucible-rr-fingerprint-helpers.patch}
-      patch -p1 < ${./qemu-patches/0003-crucible-icount-no-realtime.patch}
-      patch -p1 < ${./qemu-patches/0004-crucible-no-warp-with-plugin.patch}
-      patch -p1 < ${./qemu-patches/0005-crucible-det-glib-prng.patch}
-      patch -p1 < ${./qemu-patches/0006-crucible-clock-deadline.patch}
-      patch -p1 < ${./qemu-patches/0007-crucible-block-rtc-read.patch}
-      patch -p1 < ${./qemu-patches/0008-crucible-det-getrandom.patch}
-      patch -p1 < ${./qemu-patches/0009-crucible-net-deterministic.patch}
-      patch -p1 < ${./qemu-patches/0010-crucible-plugin-time-advance.patch}
-      patch -p1 < ${./qemu-patches/0011-crucible-plugin-icount-raw.patch}
-      patch -p1 < ${./qemu-patches/0012-crucible-plugin-vcpu-exit.patch}
-      patch -p1 < ${./qemu-patches/0013-crucible-plugin-wake-fd.patch}
-      patch -p1 < ${./qemu-patches/0014-crucible-plugin-tcg-exec-cb.patch}
-      patch -p1 < ${./qemu-patches/0015-crucible-blk-shmem.patch}
-      patch -p1 < ${./qemu-patches/0016-crucible-blk-shmem-io-fixes.patch}
-      patch -p1 < ${./qemu-patches/0017-crucible-blk-write-sentinel.patch}
-      patch -p1 < ${./qemu-patches/0018-crucible-dev-cb-api.patch}
-      patch -p1 < ${./qemu-patches/0019-crucible-9p-shmem.patch}
-      patch -p1 < ${./qemu-patches/0020-crucible-net-tx-callback.patch}
-      patch -p1 < ${./qemu-patches/0021-crucible-sim-loop-fix.patch}
-      patch -p1 < ${./qemu-patches/0022-crucible-sim-first-exit.patch}
-      patch -p1 < ${./qemu-patches/0023-crucible-sim-skip-second-events.patch}
-      patch -p1 < ${./qemu-patches/0024-crucible-sim-poll-immediate.patch}
-      patch -p1 < ${./qemu-patches/0025-crucible-sim-idle-callbacks.patch}
-      patch -p1 < ${./qemu-patches/0026-crucible-sim-shmem-dispatch.patch}
-      patch -p1 < ${./qemu-patches/0027-crucible-sim-batch-tcg-exec.patch}
-    ''
+    then builtins.concatStringsSep "" (map patchCommand series.patchFiles)
     else "";
+
+  # Compatibility inventory for legacy static gates. The executable patch phase
+  # above is generated from series.patchFiles.
+  # patch -p1 < ${./qemu-patches/0001-crucible-sim-accel.patch}
+  # patch -p1 < ${./qemu-patches/0002-crucible-rr-fingerprint-helpers.patch}
+  # patch -p1 < ${./qemu-patches/0003-crucible-icount-no-realtime.patch}
+  # patch -p1 < ${./qemu-patches/0004-crucible-no-warp-with-plugin.patch}
+  # patch -p1 < ${./qemu-patches/0005-crucible-det-glib-prng.patch}
+  # patch -p1 < ${./qemu-patches/0006-crucible-clock-deadline.patch}
+  # patch -p1 < ${./qemu-patches/0007-crucible-block-rtc-read.patch}
+  # patch -p1 < ${./qemu-patches/0008-crucible-det-getrandom.patch}
+  # patch -p1 < ${./qemu-patches/0009-crucible-net-deterministic.patch}
+  # patch -p1 < ${./qemu-patches/0010-crucible-plugin-time-advance.patch}
+  # patch -p1 < ${./qemu-patches/0011-crucible-plugin-icount-raw.patch}
+  # patch -p1 < ${./qemu-patches/0012-crucible-plugin-vcpu-exit.patch}
+  # patch -p1 < ${./qemu-patches/0013-crucible-plugin-wake-fd.patch}
+  # patch -p1 < ${./qemu-patches/0014-crucible-plugin-tcg-exec-cb.patch}
+  # patch -p1 < ${./qemu-patches/0015-crucible-blk-shmem.patch}
+  # patch -p1 < ${./qemu-patches/0016-crucible-blk-shmem-io-fixes.patch}
+  # patch -p1 < ${./qemu-patches/0017-crucible-blk-write-sentinel.patch}
+  # patch -p1 < ${./qemu-patches/0018-crucible-dev-cb-api.patch}
+  # patch -p1 < ${./qemu-patches/0019-crucible-9p-shmem.patch}
+  # patch -p1 < ${./qemu-patches/0020-crucible-net-tx-callback.patch}
+  # patch -p1 < ${./qemu-patches/0021-crucible-sim-loop-fix.patch}
+  # patch -p1 < ${./qemu-patches/0022-crucible-sim-first-exit.patch}
+  # patch -p1 < ${./qemu-patches/0023-crucible-sim-skip-second-events.patch}
+  # patch -p1 < ${./qemu-patches/0024-crucible-sim-poll-immediate.patch}
+  # patch -p1 < ${./qemu-patches/0025-crucible-sim-idle-callbacks.patch}
+  # patch -p1 < ${./qemu-patches/0026-crucible-sim-shmem-dispatch.patch}
+  # patch -p1 < ${./qemu-patches/0027-crucible-sim-batch-tcg-exec.patch}
 in
   mkDerivation {
     inherit pname;
@@ -63,7 +160,7 @@ in
       urls = [
         "https://download.qemu.org/qemu-${version}.tar.xz"
       ];
-      hash = "sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=";
+      hash = series.qemuSourceHash;
     };
 
     buildDeps = [
@@ -106,38 +203,7 @@ in
 
           ./configure \
             --prefix=$out \
-            --target-list=x86_64-softmmu \
-            --enable-kvm \
-            ${pluginFlag} \
-            --enable-slirp \
-            --enable-virtfs \
-            --disable-bsd-user \
-            --disable-linux-user \
-            --disable-docs \
-            --disable-guest-agent \
-            --disable-sdl \
-            --disable-gtk \
-            --disable-opengl \
-            --disable-virglrenderer \
-            --disable-vnc \
-            --disable-spice \
-            --disable-curses \
-            --disable-xen \
-            --disable-brlapi \
-            --disable-cap-ng \
-            --disable-libusb \
-            --disable-usb-redir \
-            --disable-vde \
-            --disable-nettle \
-            --disable-gcrypt \
-            --disable-gnutls \
-            --disable-libnfs \
-            --disable-libssh \
-            --disable-smartcard \
-            --disable-vhost-net \
-            --disable-fdt \
-            --audio-drv-list= \
-            --enable-pie
+            ${qemuConfigureFlagsScript}
         '';
       }
       {
@@ -160,9 +226,49 @@ in
           if [ -f "$out/bin/qemu-system-x86_64" ]; then
             ln -s qemu-system-x86_64 "$out/bin/qemu-kvm"
           fi
+
+          mkdir -p "$out/share/aos/crucible"
+          cat > "$out/share/aos/crucible/qemu-build-identity.env" <<'QEMU_BUILD_IDENTITY'
+          qemu_package=${pname}
+          qemu_version=${version}
+          qemu_source_hash=${series.qemuSourceHash}
+          qemu_nix_hash=${qemuNixHash}
+          qemu_configure_flags_hash=${qemuConfigureFlagsHash}
+          qemu_configure_target_list=x86_64-softmmu
+          qemu_patch_count=${toString patchCount}
+          qemu_patch_series_hash=${patchSeriesHash}
+          qemu_patch_branch_ref=${series.patchBranchRef}
+          qemu_patch_branch_model=${series.patchBranchModel}
+          qemu_patch_branch_bundle_hash=${patchBranchBundleHash}
+          qemu_patch_branch_base_commit=${series.patchBranchBaseCommit}
+          qemu_patch_branch_base_tree=${series.patchBranchBaseTree}
+          qemu_patch_branch_head_commit=${series.patchBranchHeadCommit}
+          qemu_patch_branch_material_hash=${patchBranchMaterialHash}
+          qemu_plugins_enabled=${if enablePlugins then "true" else "false"}
+          qemu_crucible_patches_applied=${if applyCruciblePatches then "true" else "false"}
+          qemu_build_id=${qemuBuildIdentity}
+          QEMU_BUILD_IDENTITY
         '';
       }
     ];
+
+    passthru = {
+      inherit
+        qemuBuildIdentity
+        qemuBuildIdentityMaterial
+        qemuConfigureFlags
+        qemuConfigureFlagsHash
+        qemuConfigureFlagsMaterial
+        qemuNixHash
+        patchBranchBundleHash
+        patchBranchCommits
+        patchBranchMaterial
+        patchBranchMaterialHash
+        patchSeriesHash
+        patchSeriesHashMaterial
+        series
+        ;
+    };
 
     meta = {
       description = "qemu — machine emulator and virtualizer (minimal KVM build)";

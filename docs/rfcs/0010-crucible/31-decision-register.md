@@ -1223,12 +1223,33 @@ register.
     lookahead through this surface.
 
 - **RISK-16 / T-RISK-9 — S9 QEMU build identity and inertness**
-  - **Status:** PASS WITH FALLBACK; the active AOS `qemu-crucible` build is tied
-    to a concrete build identity and S1 result, and reproduction artifacts can
-    reject a changed identity, but the current patch series is not a full
-    upstream-vs-patched inertness proof.
-  - **Check:** `checks.crucible.phase0.s9QemuBuildIdentity`.
-  - **Result:** `qemu_package=qemu-crucible`, `qemu_version=9.2.4`,
+  - **Status:** PASS; Phase-2 now ties the active AOS `qemu-crucible` build to a
+    manifest-derived build identity, proves the committed patch bytes regenerate
+    from the tracked stack, consumes that evidence in `gate:patch-microtests`, and
+    keeps the separate `gate:qemu-inert` upstream-vs-patched sim-off proof green.
+    The Phase-0 S9 result below remains historical fallback evidence only.
+  - **Current checks:** `checks.crucible.phase2.qemuPatchRegeneration`,
+    `checks.crucible.phase2.gates.patchMicrotests`, and
+    `checks.crucible.phase2.gates.qemuInert`.
+  - **Current result:** `qemu_package=qemu-crucible`, `qemu_version=10.0.0`,
+    `qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=`,
+    `patch_count=27`,
+    `patch_series_hash=2ed729cda5e0b78b208a6ef61b7b07af658435a71e50e247e701314c26bd57f8`,
+    `patch_branch_ref=crucible/qemu-10.0.0`,
+    `patch_branch_bundle_hash=6661ad51927d0e61744e180a2989072da83e9342e6d2f37908bc2dfd20c0dfb1`,
+    `patch_branch_head_commit=1ca198288b0ca503b8dd86b459dfe03cd1959e46`,
+    `patch_branch_material_hash=6b325a5a18abb07d7d7576012e562aac10eecab8ce3a042d1080102cf20c0e97`,
+    `qemu_build_id=3c402016048ce1d4c4e84d4e183b39a409d13cf7dff14f09954d9fb4b2ffd374`,
+    `qemu_nix_hash=35aad46df419155f4ce336d66dd4eac329348b333b1d202937ad05a0d94add09`,
+    `qemu_configure_flags_hash=716c3de64e42d5fee65c1b0ebb4dc213f282aba1d916820e1896ee36bc0db5f8`,
+    `regenerated_patch_bytes_match_committed=true`,
+    `apply_clean_regenerated_series=true`, `apply_clean_patch_fuzz=0`,
+    `patch_branch_bundle_verified=true`,
+    `patch_branch_commit_hashes_match_manifest=true`,
+    `qemu_package_patch_phase_generated_from_manifest=true`,
+    `artifact_build_id_match=true`, `artifact_validator_rejects_mismatch=true`,
+    `artifact_mismatch_regates=true`, and `qemu_version_bump_regate_enforced=true`.
+  - **Historical S9 result:** `qemu_package=qemu-crucible`, `qemu_version=9.2.4`,
     `qemu_derivation_path=/nix/store/lf1mn770yyh83j3lif4dmvzjk820grdk-qemu-crucible-9.2.4.drv`,
     `qemu_output_path=/nix/store/dvv5iv1qz2hp6a90i5nffb7ja5avlch5-qemu-crucible-9.2.4`,
     `qemu_build_id=729b568e369aac8b090a2b743ef14f1e8338fcbfa8d6e0412d5ba2dc973a5ba4`,
@@ -1257,23 +1278,18 @@ register.
   - **Current source pin:** T-PATCH-1 advances the carried QEMU source pin to
     `qemu_version=10.0.0` with
     `qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=`,
-    enforced by `checks.crucible.phase2.qemuPatchSeries`. The S9 build-identity
-    artifact above is a historical Phase-0 result and must be refreshed by the
-    next `checks.crucible.phase0.s9QemuBuildIdentity` run.
-  - **Scope:** validates the Phase-0 S9 no-silent-drift decision for the current
-    AOS QEMU package. The check records the QEMU derivation path, output path,
-    `qemu.nix` hash, patch hash, patch-series hash, plugin-enabled package
-    setting, and S1 fingerprint tail as build-id material. It also emits a
-    reproduction-artifact-shaped JSON carrying the aggregate `qemu_build_id`,
-    QEMU paths/version, patch-series hash, seed/scenario/schedule labels, and
-    S1 extended-hash tail. The check mutates the build-id material as a negative
-    control and verifies that the artifact would re-gate rather than reproduce
-    against that changed build identity. The current patch includes deliberate
-    icount behavior changes, so this does not claim full sim-off equivalence to
-    upstream QEMU.
-  - **Fallback:** pin `qemu_build_id` in reproduction artifacts and refuse
-    mismatched QEMU builds until the later `gate:qemu-inert` proves full
-    upstream-vs-patched inertness or scopes each intentional non-inert patch.
+    enforced by `checks.crucible.phase2.qemuPatchSeries` and consumed by
+    `checks.crucible.phase2.qemuPatchRegeneration`.
+  - **Scope:** validates the active no-silent-drift decision for the current AOS
+    QEMU package. The Phase-2 regeneration gate records the QEMU version/source
+    hash, package-file hash, configure flag hash, manifest patch count,
+    patch-series hash, tracked-branch bundle hash, tracked-branch material hash,
+    and sim capability flags as build-id material; emits a
+    reproduction-artifact-shaped JSON carrying `qemu_build_id`; mutates the build
+    material as a negative control; and verifies that the artifact re-gates rather
+    than reproduces against the changed identity.
+  - **Fallback:** retired for the active 10.0.0 package. The historical Phase-0 S9
+    fallback remains useful only as provenance for the older 9.2.4 spike.
 
 - **RISK-17 / T-RISK-10 — S10 aarch64 doorbell**
   - **Status:** PASS WITH FALLBACK; aarch64 white-box support is not available in

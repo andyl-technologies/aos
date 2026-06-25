@@ -38,7 +38,7 @@ diff --git a/include/system/rtc.h b/include/system/rtc.h
 diff --git a/system/rtc.c b/system/rtc.c
 --- a/system/rtc.c
 +++ b/system/rtc.c
-@@ -44,8 +44,34 @@ static QEMUTimer *rtc_clock_timer;
+@@ -44,8 +44,34 @@ static int rtc_realtime_clock_offset; /* used only with QEMU_CLOCK_REALTIME */
  static int rtc_host_datetime_offset = -1; /* valid & used only with
                                               RTC_BASE_DATETIME */
  QEMUClockType rtc_clock;

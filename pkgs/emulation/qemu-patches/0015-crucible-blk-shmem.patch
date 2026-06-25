@@ -1,6 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
 new file mode 100644
-index 000000000..ffffe8824
 --- /dev/null
 +++ b/block/crucible-shmem.c
 @@ -0,0 +1,273 @@
@@ -277,9 +276,7 @@ index 000000000..ffffe8824
 +    bdrv_register(&bdrv_crucible_shmem);
 +}
 +
-+block_init(bdrv_crucible_shmem_init);
 diff --git a/block/meson.build b/block/meson.build
-index 34b1b2a30..a8c6aab84 100644
 --- a/block/meson.build
 +++ b/block/meson.build
 @@ -12,6 +12,7 @@ block_ss.add(files(
@@ -291,7 +288,6 @@ index 34b1b2a30..a8c6aab84 100644
    'crypto.c',
    'dirty-bitmap.c',
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 3b8c5a7e2..5779706c1 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -164,6 +164,44 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,
