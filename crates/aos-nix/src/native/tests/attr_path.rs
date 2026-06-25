@@ -81,6 +81,107 @@ fn native_file_instantiation_materializes_persistent_root_parse_cache() -> Resul
 }
 
 #[test]
+fn native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closure() -> Result<()> {
+    use crate::cache::{ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey};
+
+    let root = unique_temp_dir("aos-nix-native-instantiate-file-cache-parity");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let store = root.join("store");
+    let first_parse_root = root.join("first-parse");
+    let second_parse_root = root.join("second-parse");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join("default.nix");
+    fs::write(
+        &file,
+        r#"let
+          base = derivationStrict {
+            name = "file-cache-parity-base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+          };
+        in {
+          pkgs.hello = derivationStrict {
+            name = "file-cache-parity-consumer";
+            system = "x86_64-linux";
+            builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+            input = "${base.out}";
+          };
+        }"#,
+    )?;
+    let source = fs::read(&file)?;
+    let realpath = fs::canonicalize(&file)?;
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+
+    let uncached_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+    let uncached =
+        NixNative::with_options(0, uncached_options)?.instantiate_closure(&file, "pkgs.hello")?;
+    assert_eq!(uncached.drvs().len(), 2);
+    assert!(
+        uncached.root().starts_with(&store),
+        "{}",
+        uncached.root().display()
+    );
+
+    let mut miss_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+    miss_options.set_parse_cache_root(&first_parse_root);
+    miss_options.set_persist_cache_root(&persist_root);
+    miss_options.set_eval_cache_enabled(true);
+    let miss =
+        NixNative::with_options(0, miss_options)?.instantiate_closure(&file, "pkgs.hello")?;
+    assert_eq!(miss, uncached);
+
+    let first_parse_cache = ParseCache::new(&first_parse_root);
+    let parse_key = first_parse_cache.key_for_source(&source);
+    let file_key = ParseFileKey::for_source(&realpath, &source);
+    assert!(first_parse_cache.entry_for_key(parse_key).is_complete());
+    assert!(
+        PersistCache::open(&persist_root)?
+            .lookup_file_artifact(PersistFileArtifactKey::from_parse_file_key(
+                &file_key, parse_key
+            ))?
+            .is_some(),
+        "cache-on miss should write a durable file-backed parse artifact"
+    );
+
+    let observed_hits = Arc::new(Mutex::new(Vec::new()));
+    let observed_hits_for_hook = Arc::clone(&observed_hits);
+    let mut hit_options = TreeWalkOptions::with_store_dir(store_bytes)?;
+    hit_options.set_parse_cache_root(&second_parse_root);
+    hit_options.set_persist_cache_root(&persist_root);
+    hit_options.set_eval_cache_enabled(true);
+    let mut hit_native = NixNative::with_options(0, hit_options)?;
+    hit_native.set_persistent_parse_hit_hook(move |hit| {
+        observed_hits_for_hook
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .push(hit);
+    });
+
+    let hit = hit_native.instantiate_closure(&file, "pkgs.hello")?;
+
+    assert_eq!(hit, uncached);
+    assert!(
+        ParseCache::new(&second_parse_root)
+            .entry_for_key(parse_key)
+            .is_complete(),
+        "persistent file-backed parse hit should hydrate the fresh parse-cache entry"
+    );
+    assert_eq!(
+        observed_hits
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .clone(),
+        vec![NativePersistentParseHit::Source]
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_file_instantiation_hydrates_persistent_root_parse_cache() -> Result<()> {
     use crate::cache::{
         MaterializationDecision, ParseCache, ParseCacheMeta, ParseFileKey, PersistCache,
