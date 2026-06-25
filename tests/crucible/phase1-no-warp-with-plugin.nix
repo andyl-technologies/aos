@@ -4,7 +4,7 @@
   qemuPackage ? null,
 }: let
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  patchName = "0003-crucible-no-warp-with-plugin.patch";
+  patchName = "0004-crucible-no-warp-with-plugin.patch";
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-no-warp-with-plugin.c;
@@ -46,7 +46,7 @@
   qemuNixRequirements = [
     {
       label = "no-warp patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0003-crucible-no-warp-with-plugin.patch}";
+      needle = "patch -p1 < \${./qemu-patches/0004-crucible-no-warp-with-plugin.patch}";
     }
   ];
 
@@ -387,7 +387,7 @@ in
             gate=gate:layer0-determinism
             gate=gate:patch-microtests
             tasks=T-DET-3
-            patch=0003-crucible-no-warp-with-plugin.patch
+            patch=0004-crucible-no-warp-with-plugin.patch
             patched_fixture_exercised=true
             stock_negative_control=true
             ${qemuPackageResultLines}

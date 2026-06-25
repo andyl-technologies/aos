@@ -8,11 +8,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const EXPECTED_PATCHES: &[&str] = &[
-    "0001-crucible-rr-fingerprint-helpers.patch",
-    "0002-crucible-icount-no-realtime.patch",
-    "0003-crucible-no-warp-with-plugin.patch",
-    "0004-crucible-det-glib-prng.patch",
-    "0005-crucible-clock-deadline.patch",
+    "0001-crucible-sim-accel.patch",
+    "0002-crucible-rr-fingerprint-helpers.patch",
+    "0003-crucible-icount-no-realtime.patch",
+    "0004-crucible-no-warp-with-plugin.patch",
+    "0005-crucible-det-glib-prng.patch",
+    "0006-crucible-clock-deadline.patch",
 ];
 
 #[test]
@@ -55,7 +56,14 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
 
     let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
     assert_contains(&default_checks, "patchMicrotestsCheck = import");
-    assert_contains(&default_checks, "dependencies = [patchMicrotestsCheck];");
+    assert_contains(
+        &default_checks,
+        "qemuInert = import ./phase2-qemu-inert.nix",
+    );
+    assert_contains(
+        &default_checks,
+        "attrPath = \"checks.crucible.phase2.gates.qemuInert\";",
+    );
     assert_contains(&default_checks, "patchMicrotests = patchMicrotestsCheck;");
 
     for patch in EXPECTED_PATCHES {
@@ -73,45 +81,52 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
     let root = workspace_root()?;
     let per_patch_checks = [
         (
+            "tests/crucible/phase1-sim-accel.nix",
+            "",
+            "0001-crucible-sim-accel.patch",
+        ),
+        (
             "tests/crucible/phase1-rr-fingerprint-helpers.nix",
             "tests/crucible/phase1-rr-fingerprint-helpers.c",
-            "0001-crucible-rr-fingerprint-helpers.patch",
+            "0002-crucible-rr-fingerprint-helpers.patch",
         ),
         (
             "tests/crucible/phase1-icount-no-realtime.nix",
             "tests/crucible/phase1-icount-no-realtime.c",
-            "0002-crucible-icount-no-realtime.patch",
+            "0003-crucible-icount-no-realtime.patch",
         ),
         (
             "tests/crucible/phase1-no-warp-with-plugin.nix",
             "tests/crucible/phase1-no-warp-with-plugin.c",
-            "0003-crucible-no-warp-with-plugin.patch",
+            "0004-crucible-no-warp-with-plugin.patch",
         ),
         (
             "tests/crucible/phase1-qemu-deterministic-entropy.nix",
             "tests/crucible/phase1-qemu-deterministic-entropy.c",
-            "0004-crucible-det-glib-prng.patch",
+            "0005-crucible-det-glib-prng.patch",
         ),
         (
             "tests/crucible/phase1-clock-deadline.nix",
             "tests/crucible/phase1-clock-deadline.c",
-            "0005-crucible-clock-deadline.patch",
+            "0006-crucible-clock-deadline.patch",
         ),
     ];
 
     for (nix_path, c_path, patch) in per_patch_checks {
         let nix_source = fs::read_to_string(root.join(nix_path))?;
-        let c_source = fs::read_to_string(root.join(c_path))?;
 
         assert_contains(&nix_source, "gate=gate:patch-microtests");
         assert_contains(&nix_source, &format!("patch={patch}"));
         assert_contains(&nix_source, "patched_fixture_exercised=true");
         assert_contains(&nix_source, "stock_negative_control");
-        assert_contains(&nix_source, "qemuPackage ? null");
+        assert_contains(&nix_source, "qemuPackage ?");
         assert_contains(&nix_source, "qemu_package=${qemuPackage}");
         assert_contains(&nix_source, "qemu_package_version=${qemuPackage.version}");
         assert_contains(&nix_source, "patch --batch --fuzz=0 -p1");
-        assert_contains(&c_source, "stock_negative_control");
+        if !c_path.is_empty() {
+            let c_source = fs::read_to_string(root.join(c_path))?;
+            assert_contains(&c_source, "stock_negative_control");
+        }
     }
 
     Ok(())
