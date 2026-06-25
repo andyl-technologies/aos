@@ -361,6 +361,38 @@ impl PersistCache {
         Ok(Some(advanced))
     }
 
+    /// Advances persisted reuse counters for all known demand nodes.
+    ///
+    /// This reads the newest metadata value for every node key, appends
+    /// [`MaterializationReuse::advance_run`] for entries whose counters change,
+    /// and returns the entries that were appended in stable key order. Callers
+    /// must serialize writes to the node metadata sidecar while this method
+    /// runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, read, decoded, written, or flushed.
+    pub fn advance_all_node_materialization_reuse_runs(
+        &self,
+    ) -> Result<Vec<PersistNodeMetadataIndexEntry>, PersistNodeMetadataIndexError> {
+        let mut recorded = Vec::new();
+        for entry in self.node_metadata_index.latest_entries()? {
+            let reuse = entry.value().materialization_reuse();
+            let advanced = reuse.advance_run();
+            if advanced == reuse {
+                continue;
+            }
+            let advanced_entry = PersistNodeMetadataIndexEntry::new(
+                entry.key(),
+                PersistNodeMetadataIndexValue::new(advanced),
+            );
+            self.record_node_metadata(advanced_entry)?;
+            recorded.push(advanced_entry);
+        }
+        Ok(recorded)
+    }
+
     /// Looks up a blob location through the sidecar index selected by `key`.
     ///
     /// # Errors

@@ -1033,7 +1033,7 @@ impl PersistParseArtifactIndex {
 /// in-process `DemandCacheKey` domain. It can address expression nodes keyed
 /// by expression identity plus ordered free-variable value hashes, or impure
 /// input leaves keyed by their typed input identity hash.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PersistNodeMetadataKey {
     hash: DurableBlake3Hash,
 }
@@ -1314,5 +1314,59 @@ impl PersistNodeMetadataIndex {
             }
         }
         Ok(found)
+    }
+
+    /// Returns the newest entry for every node metadata key.
+    ///
+    /// Entries are returned in stable key order. If a key appears multiple
+    /// times in the append-only sidecar, only its newest value is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the index cannot be opened,
+    /// read, or decoded.
+    pub fn latest_entries(
+        &self,
+    ) -> Result<Vec<PersistNodeMetadataIndexEntry>, PersistNodeMetadataIndexError> {
+        ensure_node_metadata_index_file(&self.path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .map_err(|source| PersistNodeMetadataIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let len = file
+            .metadata()
+            .map_err(|source| PersistNodeMetadataIndexError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        validate_node_metadata_index_len(&self.path, len)?;
+
+        let mut latest = std::collections::BTreeMap::new();
+        let records = len / PERSIST_NODE_METADATA_INDEX_ENTRY_LEN as u64;
+        let mut encoded = [0; PERSIST_NODE_METADATA_INDEX_ENTRY_LEN];
+        for _ in 0..records {
+            file.read_exact(&mut encoded).map_err(|source| {
+                PersistNodeMetadataIndexError::Read {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?;
+            let entry =
+                PersistNodeMetadataIndexEntry::decode_index_entry(&encoded).map_err(|source| {
+                    PersistNodeMetadataIndexError::Format {
+                        path: self.path.clone(),
+                        source,
+                    }
+                })?;
+            latest.insert(entry.key(), entry.value());
+        }
+        Ok(latest
+            .into_iter()
+            .map(|(key, value)| PersistNodeMetadataIndexEntry::new(key, value))
+            .collect())
     }
 }

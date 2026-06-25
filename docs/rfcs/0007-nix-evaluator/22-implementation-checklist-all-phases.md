@@ -944,6 +944,16 @@ alone (`M-1`/`Q-A`).
       writes for the same node key; evaluator demand accounting, automatic
       process-boundary orchestration, atomic writer coordination, LMDB/redb node
       tables, compaction/GC, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
+- [x] Current explicit node reuse sidecar advancement:
+      `PersistNodeMetadataIndex::latest_entries` scans the fixed-record
+      metadata sidecar into deterministic newest-entry-per-key order, and
+      `PersistCache::advance_all_node_materialization_reuse_runs` appends
+      changed `MaterializationReuse::advance_run` records for all known node
+      keys while skipping no-op counters. This is caller-driven, append-only,
+      and requires callers to serialize sidecar writes; evaluator demand
+      accounting, automatic process-boundary orchestration, atomic writer
+      coordination, LMDB/redb node tables, compaction/GC, and AOS tuning remain
+      open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit materialization-to-pack adapter:
       `PersistCache::materialize_blob` consumes a caller-supplied
       `MaterializationDecision`, skips without hashing/writing on

@@ -952,6 +952,41 @@ fn node_metadata_index_appends_and_finds_latest_matching_entry() {
 }
 
 #[test]
+fn node_metadata_index_lists_latest_entries_in_key_order() {
+    let root = temp_root();
+    let index_path = root.join("nodes").join("metadata.index");
+    let index = PersistNodeMetadataIndex::open(&index_path).expect("index opens");
+    let first_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"a"));
+    let second_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"b"));
+    let first = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(1, 2));
+    let second = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(3, 4));
+    let latest = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(5, 6));
+
+    assert_eq!(
+        index.latest_entries().expect("empty latest entries"),
+        Vec::new()
+    );
+
+    index
+        .append_entry(PersistNodeMetadataIndexEntry::new(second_key, second))
+        .expect("second entry appends");
+    index
+        .append_entry(PersistNodeMetadataIndexEntry::new(first_key, first))
+        .expect("first entry appends");
+    index
+        .append_entry(PersistNodeMetadataIndexEntry::new(second_key, latest))
+        .expect("latest entry appends");
+
+    let entries = index.latest_entries().expect("latest entries load");
+    assert_eq!(entries.len(), 2);
+    assert!(entries.windows(2).all(|pair| pair[0].key() < pair[1].key()));
+    assert!(entries.contains(&PersistNodeMetadataIndexEntry::new(first_key, first)));
+    assert!(entries.contains(&PersistNodeMetadataIndexEntry::new(second_key, latest)));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn node_metadata_index_open_rejects_truncated_records() {
     let root = temp_root();
     let index_path = root.join("nodes").join("metadata.index");
