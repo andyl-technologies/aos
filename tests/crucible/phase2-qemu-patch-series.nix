@@ -160,6 +160,15 @@
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
 
+  noPatchDecisions = [
+    {
+      item = "T-PATCH-15";
+      enforces = "PATCH-33";
+      capability = "guest-to-host doorbell reuses upstream QEMU plugin memory callbacks and virtual memory reads";
+      evidence = "checks.crucible.phase1.qemuDoorbellNoPatch";
+    }
+  ];
+
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
     haystackLen = builtins.stringLength haystack;
@@ -206,6 +215,12 @@
     ++ lib.optionals (!(hasInfix "pinned minimum QEMU version of 10.0 or" qemuPatchSpec)) [
       "docs/rfcs/0010-crucible/11-qemu-patches.md: PATCH-40 QEMU >=10.0 requirement missing"
     ]
+    ++ lib.optionals (!(hasInfix "- [x] **T-PATCH-15**" qemuPatchSpec)) [
+      "docs/rfcs/0010-crucible/11-qemu-patches.md: T-PATCH-15 no-patch decision is not marked complete"
+    ]
+    ++ lib.optionals (!(hasInfix "no QEMU patch was added" qemuPatchSpec)) [
+      "docs/rfcs/0010-crucible/11-qemu-patches.md: T-PATCH-15 must state that no QEMU patch was added"
+    ]
     ++ lib.optionals (!(hasInfix "The pinned QEMU version MUST be" packagingSpec && hasInfix "10.0" packagingSpec)) [
       "docs/rfcs/0010-crucible/26-packaging-aos-integration.md: PKG-9 QEMU >=10.0 requirement missing"
     ];
@@ -220,6 +235,16 @@
       echo
     '')
     carriedPatches;
+
+  noPatchDecisionLines =
+    lib.concatMapStringsSep "\n" (decision: ''
+      echo "no_patch_item=${decision.item}"
+      echo "no_patch_enforces=${decision.enforces}"
+      echo "no_patch_capability=${decision.capability}"
+      echo "no_patch_evidence=${decision.evidence}"
+      echo
+    '')
+    noPatchDecisions;
 in
   if failures != []
   then throw "crucible phase2 QEMU patch-series conformance failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -266,6 +291,10 @@ in
             ${manifestLines}
             MANIFEST
 
+            cat > "$out/no-patch-decisions" <<'NO_PATCH_DECISIONS'
+            ${noPatchDecisionLines}
+            NO_PATCH_DECISIONS
+
             awk '
               /^patch=/ { patch = $0 }
               /^class=/ {
@@ -298,6 +327,8 @@ in
             every_carried_patch_has_invariant_or_capability=true
             qemu_package_applies_manifested_series=true
             record_replay_start_scaffolding_absent=true
+            no_patch_decisions=${builtins.concatStringsSep "," (map (decision: decision.item) noPatchDecisions)}
+            no_patch_evidence=${builtins.concatStringsSep "," (map (decision: decision.evidence) noPatchDecisions)}
             RESULT
           '';
         }

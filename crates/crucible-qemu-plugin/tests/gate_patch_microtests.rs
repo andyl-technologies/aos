@@ -48,10 +48,21 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         &aggregate,
         "qemuPatchSeries = import ./phase2-qemu-patch-series.nix",
     );
+    assert_contains(
+        &aggregate,
+        "qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix",
+    );
     assert_contains(&aggregate, "tar -xf ${qemuPackage.src}");
     assert_contains(&aggregate, "patch --batch --forward --fuzz=0 -p1");
     assert_contains(&aggregate, "test -x ${qemuPackage}/bin/qemu-system-x86_64");
     assert_contains(&aggregate, "patch_series_gate_passed=true");
+    assert_contains(&aggregate, "qemu_doorbell_no_patch_gate_passed=true");
+    assert_contains(&aggregate, "phase0_s5_virtual_read_validated=true");
+    assert_contains(&aggregate, "phase0_s2_io_trap_surface_validated=true");
+    assert_contains(
+        &aggregate,
+        "whitebox_mode_off_installs_no_trap_validated=true",
+    );
     assert_contains(&aggregate, "apply_clean_pinned_qemu=true");
     assert_contains(&aggregate, "patched_qemu_package_build_passed=true");
     assert_contains(&aggregate, "qemu_package=${qemuPackage}");
@@ -83,6 +94,7 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         &aggregate,
         "every_microtest_has_stock_negative_control=true",
     );
+    assert_contains(&aggregate, "no_patch_decision_has_microtest_gate=true");
 
     let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
     assert_contains(&default_checks, "patchMicrotestsCheck = import");
@@ -93,6 +105,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(
         &default_checks,
         "qemuNetTxCallback = import ./phase1-qemu-net-tx-callback.nix",
+    );
+    assert_contains(
+        &default_checks,
+        "qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix",
     );
     assert_contains(
         &default_checks,
@@ -139,6 +155,26 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&network_rx, "resolve_qemu_net_send_symbol");
     assert_contains(&network_rx, "resolve_qemu_net_flush_symbol");
     assert_contains(&network_rx, "resolve_qemu_net_can_receive_symbol");
+
+    let whitebox_doorbell =
+        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/whitebox_doorbell.rs"))?;
+    assert_contains(&whitebox_doorbell, "QEMU_PLUGIN_DOORBELL_MEM_CB_SYMBOL");
+    assert_contains(&whitebox_doorbell, "qemu_plugin_register_vcpu_mem_cb");
+    assert_contains(&whitebox_doorbell, "qemu_plugin_read_memory_vaddr");
+    assert_contains(
+        &whitebox_doorbell,
+        "QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL: &str =",
+    );
+    assert_contains(&whitebox_doorbell, "QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL");
+
+    let qemu_patch_series =
+        fs::read_to_string(root.join("tests/crucible/phase2-qemu-patch-series.nix"))?;
+    assert_contains(&qemu_patch_series, "noPatchDecisions");
+    assert_contains(
+        &qemu_patch_series,
+        "checks.crucible.phase1.qemuDoorbellNoPatch",
+    );
+    assert_contains(&qemu_patch_series, "no_patch_decisions=");
 
     let setup = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/setup.rs"))?;
     assert_contains(&setup, "RegisteredWakeFd");

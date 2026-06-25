@@ -9,6 +9,7 @@
   defaultNix = builtins.readFile ./default.nix;
   qemuPatchSeries = import ./phase2-qemu-patch-series.nix {inherit pkgs lib;};
   qemuPackage = pkgs.qemu-crucible;
+  qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix {inherit pkgs lib qemuPackage;};
   patchFiles =
     builtins.sort builtins.lessThan
     (builtins.filter
@@ -252,6 +253,14 @@ in
 
             cp "${qemuPatchSeries}/result" "$out/patch-series.result"
             grep -q '^PASS$' "$out/patch-series.result"
+            cp "${qemuDoorbellNoPatch}/result" "$out/qemu-doorbell-no-patch.result"
+            grep -q '^PASS$' "$out/qemu-doorbell-no-patch.result"
+            grep -q '^gate=gate:patch-microtests$' "$out/qemu-doorbell-no-patch.result"
+            grep -q '^qemu_doorbell_patch_required=false$' "$out/qemu-doorbell-no-patch.result"
+            grep -q '^bespoke_qemu_doorbell_patch_present=false$' "$out/qemu-doorbell-no-patch.result"
+            grep -q '^phase0_s5_virtual_read_validated=true$' "$out/qemu-doorbell-no-patch.result"
+            grep -q '^phase0_s2_io_trap_surface_validated=true$' "$out/qemu-doorbell-no-patch.result"
+            grep -q '^whitebox_mode_off_installs_no_trap_validated=true$' "$out/qemu-doorbell-no-patch.result"
 
             ${resultChecks}
 
@@ -264,6 +273,7 @@ in
             microtest_count=${toString (builtins.length perPatchMicrotests)}
             patches=${builtins.concatStringsSep "," patchFiles}
             patch_series_gate_passed=true
+            qemu_doorbell_no_patch_gate_passed=true
             apply_clean_pinned_qemu=true
             apply_clean_patch_fuzz=0
             patched_qemu_package_build_passed=true
@@ -285,6 +295,7 @@ in
             every_microtest_keyed_to_patched_qemu_package=true
             every_microtest_exercises_patched_fixture=true
             every_microtest_has_stock_negative_control=true
+            no_patch_decision_has_microtest_gate=true
             qemu_package_applies_every_carried_patch=true
             RESULT
           '';
