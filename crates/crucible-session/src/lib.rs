@@ -15,6 +15,8 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use crucible::{
     Configuration, EngineError, QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState,
@@ -82,6 +84,40 @@ pub enum EngineState {
         /// The final run outcome.
         outcome: Outcome,
     },
+}
+
+/// Compact run-state kind stored in the lock-free live snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum LiveStateKind {
+    /// Configuration is loaded, but no runtime has been instantiated yet.
+    Loaded = 1,
+    /// The actor is actively stepping bounded scheduler quanta.
+    Running = 2,
+    /// The engine is idle at a quantum boundary.
+    Paused = 3,
+    /// The engine reached a terminal state.
+    Stopped = 4,
+}
+
+impl LiveStateKind {
+    fn from_engine_state(state: &EngineState) -> Self {
+        match state {
+            EngineState::Loaded => Self::Loaded,
+            EngineState::Running => Self::Running,
+            EngineState::Paused { .. } => Self::Paused,
+            EngineState::Stopped { .. } => Self::Stopped,
+        }
+    }
+
+    fn from_raw(raw: u8) -> Self {
+        match raw {
+            1 => Self::Loaded,
+            2 => Self::Running,
+            3 => Self::Paused,
+            _ => Self::Stopped,
+        }
+    }
 }
 
 /// Why a session paused at a quantum boundary.
@@ -172,6 +208,104 @@ pub struct EngineSnapshot {
     pub event_log_len: usize,
     /// Number of scheduler quanta driven by this engine.
     pub quanta: u64,
+}
+
+/// Lock-free mirror of live session state.
+///
+/// The session actor is the only writer. Observers clone an [`Arc`] handle and
+/// call [`LiveSnapshot::read`] without entering the actor mailbox or taking an
+/// engine lock.
+#[derive(Debug)]
+pub struct LiveSnapshot {
+    epoch: AtomicU64,
+    state_kind: AtomicU8,
+    virtual_time_ticks: AtomicU64,
+    event_log_len: AtomicU64,
+    quanta_stepped: AtomicU64,
+}
+
+/// Copy-out view of [`LiveSnapshot`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LiveSnapshotView {
+    /// Compact state kind visible to observers.
+    pub state_kind: LiveStateKind,
+    /// The latest scheduler virtual-time frontier.
+    pub virtual_time: VirtualTime,
+    /// Canonical event-log length observed by the session actor.
+    pub event_log_len: u64,
+    /// Monotone count of scheduler quanta stepped by the session actor.
+    pub quanta_stepped: u64,
+}
+
+impl LiveSnapshot {
+    /// Builds a live snapshot initialized from an engine boundary snapshot.
+    #[must_use]
+    pub fn new(initial: &EngineSnapshot) -> Self {
+        let snapshot = Self {
+            epoch: AtomicU64::new(0),
+            state_kind: AtomicU8::new(LiveStateKind::Loaded as u8),
+            virtual_time_ticks: AtomicU64::new(0),
+            event_log_len: AtomicU64::new(0),
+            quanta_stepped: AtomicU64::new(0),
+        };
+        snapshot.publish(initial);
+        snapshot
+    }
+
+    /// Reads a lock-free point-in-time view.
+    ///
+    /// This method uses atomic loads only. If it races a writer, it retries
+    /// until it observes one complete actor-published boundary snapshot.
+    #[must_use]
+    pub fn read(&self) -> LiveSnapshotView {
+        loop {
+            let start_epoch = self.epoch.load(Ordering::Acquire);
+            if !start_epoch.is_multiple_of(2) {
+                std::hint::spin_loop();
+                continue;
+            }
+
+            let state_kind = self.state_kind.load(Ordering::Acquire);
+            let virtual_time_ticks = self.virtual_time_ticks.load(Ordering::Acquire);
+            let event_log_len = self.event_log_len.load(Ordering::Acquire);
+            let quanta_stepped = self.quanta_stepped.load(Ordering::Acquire);
+            let end_epoch = self.epoch.load(Ordering::Acquire);
+
+            if start_epoch == end_epoch && end_epoch.is_multiple_of(2) {
+                return LiveSnapshotView {
+                    state_kind: LiveStateKind::from_raw(state_kind),
+                    virtual_time: VirtualTime {
+                        ticks: virtual_time_ticks,
+                    },
+                    event_log_len,
+                    quanta_stepped,
+                };
+            }
+
+            std::hint::spin_loop();
+        }
+    }
+
+    fn publish(&self, snapshot: &EngineSnapshot) {
+        let write_epoch = self.epoch.load(Ordering::Relaxed).wrapping_add(1) | 1;
+        self.epoch.store(write_epoch, Ordering::Release);
+        self.state_kind.store(
+            LiveStateKind::from_engine_state(&snapshot.state) as u8,
+            Ordering::Release,
+        );
+        self.virtual_time_ticks
+            .store(snapshot.frontier.ticks, Ordering::Release);
+        self.event_log_len
+            .store(usize_to_u64(snapshot.event_log_len), Ordering::Release);
+        self.quanta_stepped
+            .store(snapshot.quanta, Ordering::Release);
+        self.epoch
+            .store(write_epoch.wrapping_add(1), Ordering::Release);
+    }
+}
+
+fn usize_to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 /// Host-side engine state machine owned by the session actor.
@@ -451,6 +585,7 @@ pub struct SessionActor<L> {
     engine: Engine<L>,
     mailbox: mpsc::Receiver<SessionCommand>,
     deferred: VecDeque<SessionCommand>,
+    live: Arc<LiveSnapshot>,
     commands_applied: u64,
     yielded_after_quanta: u64,
 }
@@ -459,10 +594,12 @@ impl<L> SessionActor<L> {
     /// Creates a session actor from an engine and command mailbox.
     #[must_use]
     pub fn new(engine: Engine<L>, mailbox: mpsc::Receiver<SessionCommand>) -> Self {
+        let live = Arc::new(LiveSnapshot::new(&engine.snapshot()));
         Self {
             engine,
             mailbox,
             deferred: VecDeque::new(),
+            live,
             commands_applied: 0,
             yielded_after_quanta: 0,
         }
@@ -472,6 +609,12 @@ impl<L> SessionActor<L> {
     #[must_use]
     pub fn engine(&self) -> &Engine<L> {
         &self.engine
+    }
+
+    /// Returns a lock-free live snapshot handle for observers.
+    #[must_use]
+    pub fn live_snapshot(&self) -> Arc<LiveSnapshot> {
+        Arc::clone(&self.live)
     }
 
     /// Queues a command to be applied before the next running quantum.
@@ -498,6 +641,10 @@ impl<L> SessionActor<L> {
             quanta: self.engine.quanta(),
             yielded_after_quanta: self.yielded_after_quanta,
         }
+    }
+
+    fn publish_live_snapshot(&self) {
+        self.live.publish(&self.engine.snapshot());
     }
 }
 
@@ -527,6 +674,7 @@ impl<L: QuantumLoop> SessionActor<L> {
                 }
 
                 self.engine.step_quantum()?;
+                self.publish_live_snapshot();
                 self.yielded_after_quanta = self.yielded_after_quanta.saturating_add(1);
                 tokio::task::yield_now().await;
                 Ok(())
@@ -561,6 +709,7 @@ impl<L: QuantumLoop> SessionActor<L> {
     async fn apply_command(&mut self, command: SessionCommand) -> Result<(), SessionError> {
         let quanta_before = self.engine.quanta();
         self.engine.apply_command(command)?;
+        self.publish_live_snapshot();
         if self.engine.quanta() > quanta_before {
             self.yielded_after_quanta = self
                 .yielded_after_quanta
@@ -800,6 +949,53 @@ mod tests {
                 outcome: Outcome::Stopped
             }
         );
+    }
+
+    #[test]
+    fn session_actor_live_snapshot_starts_as_loaded_without_mailbox() {
+        let scenario = generated_scenario(17);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let engine = Engine::new(config, graph, AppendingLoop::default());
+        let (_sender, receiver) = mpsc::channel(4);
+        let actor = SessionActor::new(engine, receiver);
+        let live = actor.live_snapshot();
+
+        let view = live.read();
+
+        assert_eq!(view.state_kind, LiveStateKind::Loaded);
+        assert_eq!(view.virtual_time, VirtualTime { ticks: 0 });
+        assert_eq!(view.event_log_len, 0);
+        assert_eq!(view.quanta_stepped, 0);
+    }
+
+    #[tokio::test]
+    async fn session_actor_live_snapshot_publishes_monotone_progress() {
+        let scenario = generated_scenario(18);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, AppendingLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(4);
+        let mut actor = SessionActor::new(engine, receiver);
+        let live = actor.live_snapshot();
+        let before = live.read();
+
+        if let Err(error) = actor.run_once().await {
+            panic!("running actor iteration should step: {error}");
+        }
+        let after = live.read();
+
+        assert_eq!(before.state_kind, LiveStateKind::Running);
+        assert_eq!(before.quanta_stepped, 0);
+        assert_eq!(after.state_kind, LiveStateKind::Running);
+        assert!(after.quanta_stepped > before.quanta_stepped);
+        assert!(after.virtual_time >= before.virtual_time);
     }
 
     struct StubLoop;
