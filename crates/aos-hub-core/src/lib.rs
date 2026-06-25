@@ -63,6 +63,7 @@ pub mod dialect;
 pub mod directory;
 pub mod domain;
 pub mod email;
+pub mod ephemeral;
 pub mod fetch;
 pub mod filter;
 pub mod gc;
