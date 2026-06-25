@@ -264,12 +264,20 @@ pub async fn run_push(
     Ok(())
 }
 
-/// Upload one compressed NAR to a multipart-capable backend.
+/// Concurrent multipart parts in flight per NAR.
 ///
-/// Initiates the upload, pushes each part of the backend's suggested size (at
-/// least the R2/S3 5 MiB floor), then completes — so a NAR far larger than a
-/// single request body uploads as several sub-cap parts and the server holds
-/// only one part at a time.
+/// Parts of one NAR upload in parallel (in addition to the path-level `--jobs`
+/// concurrency), so a single large NAR saturates the link instead of trickling
+/// one part at a time. Total in-flight requests are roughly `jobs * this`.
+const PART_CONCURRENCY: usize = 8;
+
+/// Upload one compressed NAR to a multipart-capable backend, parts in parallel.
+///
+/// Initiates the upload, pushes parts of the backend's suggested size (at least
+/// the R2/S3 5 MiB floor) in concurrent batches of [`PART_CONCURRENCY`], then
+/// completes — so a NAR far larger than a single request body uploads as several
+/// sub-cap parts, the server holds only one part per request, and the parts
+/// stream concurrently rather than serially.
 ///
 /// # Errors
 ///
@@ -283,13 +291,22 @@ async fn upload_nar_multipart(
     let (upload_id, part_size) = backend.initiate_multipart(&nar_path).await?;
     // Honor the 5 MiB minimum part size R2/S3 require for all but the last part.
     let part_size = (part_size as usize).max(5 * 1024 * 1024);
-    let mut parts = Vec::new();
-    for (idx, chunk) in compressed.chunks(part_size).enumerate() {
-        let part_number = (idx + 1) as u32;
-        let tag = backend
-            .upload_part(&nar_path, &upload_id, part_number, chunk)
-            .await?;
-        parts.push(tag);
+    // Own each chunk so the concurrent part futures don't borrow `compressed`.
+    let chunks: Vec<(u32, Vec<u8>)> = compressed
+        .chunks(part_size)
+        .enumerate()
+        .map(|(i, c)| ((i + 1) as u32, c.to_vec()))
+        .collect();
+    let mut parts: Vec<(u32, String)> = Vec::with_capacity(chunks.len());
+    // Upload parts in concurrent batches; collect tags in part-number order.
+    for batch in chunks.chunks(PART_CONCURRENCY) {
+        let tags = futures::future::try_join_all(
+            batch
+                .iter()
+                .map(|(n, data)| backend.upload_part(&nar_path, &upload_id, *n, data)),
+        )
+        .await?;
+        parts.extend(tags);
     }
     backend
         .complete_multipart(&nar_path, &upload_id, &parts)
