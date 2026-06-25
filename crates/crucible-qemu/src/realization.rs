@@ -50,7 +50,7 @@ pub enum QemuVmRealizationOperation {
     Start,
     /// Realize the current tip configuration.
     Resume,
-    /// Realize a non-tip schedule prefix.
+    /// Realize a schedule prefix.
     Fork {
         /// Number of decisions retained in the forked prefix.
         prefix_len: usize,
@@ -284,15 +284,15 @@ pub fn resume_qemu_vm(
     )
 }
 
-/// Realizes a non-tip fork prefix of `config`.
+/// Realizes a fork prefix of `config`.
 ///
 /// This is a convenience wrapper over [`instantiate_qemu_vm`]. It exists to make
 /// the public lifecycle API explicit while sharing the single realization path.
 ///
 /// # Errors
 ///
-/// Returns [`QemuVmRealizationError`] when `prefix_len` is not a strict non-tip
-/// prefix or when realization fails.
+/// Returns [`QemuVmRealizationError`] when `prefix_len` is longer than the
+/// source schedule or when realization fails.
 pub fn fork_qemu_vm(
     world: &World,
     config: &Configuration,
@@ -301,8 +301,8 @@ pub fn fork_qemu_vm(
     executor: &mut impl QemuVmRealizationExecutor,
     policy: impl QemuVmLoadvmAdmissionPolicy + Copy,
 ) -> Result<QemuVmRealization, QemuVmRealizationError> {
-    if prefix_len >= config.schedule.len() {
-        return Err(QemuVmRealizationError::ForkPrefixNotStrict {
+    if prefix_len > config.schedule.len() {
+        return Err(QemuVmRealizationError::ForkPrefixOutOfRange {
             prefix_len,
             schedule_len: config.schedule.len(),
         });
@@ -640,9 +640,9 @@ pub enum QemuVmRealizationError {
     /// A fork prefix was longer than the source configuration schedule.
     #[error("invalid fork prefix: {0}")]
     ForkPrefix(ScheduleError),
-    /// A fork requested the tip rather than a strict non-tip prefix.
-    #[error("fork prefix length {prefix_len} must be shorter than schedule length {schedule_len}")]
-    ForkPrefixNotStrict {
+    /// A fork prefix was longer than the source configuration schedule.
+    #[error("fork prefix length {prefix_len} exceeds schedule length {schedule_len}")]
+    ForkPrefixOutOfRange {
         /// Requested fork prefix length.
         prefix_len: usize,
         /// Source configuration schedule length.
@@ -932,6 +932,65 @@ mod tests {
                 .filter(|call| matches!(call, RealizationCall::ColdBootBake(_)))
                 .count(),
             0
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_lifecycle_wrappers_match_direct_instantiate() -> Result<(), QemuVmRealizationError> {
+        let world = world("direct-lifecycle");
+        let def = scenario("direct-lifecycle");
+        let tip = config_with_decisions(def.clone(), 3);
+        let fork_prefix = Configuration {
+            def: def.clone(),
+            schedule: tip
+                .schedule
+                .prefix(1)
+                .map_err(QemuVmRealizationError::ForkPrefix)?,
+        };
+        let mut start_store = scripted_store(shared_log(), &world, &def);
+        let mut start_executor = scripted_executor(shared_log());
+        let mut resume_store = scripted_store(shared_log(), &world, &def);
+        let mut resume_executor = scripted_executor(shared_log());
+        let mut fork_store = scripted_store(shared_log(), &world, &def);
+        let mut fork_executor = scripted_executor(shared_log());
+
+        let start = start_qemu_vm(
+            &world,
+            &def,
+            &mut start_store,
+            &mut start_executor,
+            QemuSavevmCompletenessPolicy::default(),
+        )?;
+        let direct_start =
+            direct_instantiate_for_test(&world, &def, &Configuration::genesis(def.clone()))?;
+        let resume = resume_qemu_vm(
+            &world,
+            &tip,
+            &mut resume_store,
+            &mut resume_executor,
+            QemuSavevmCompletenessPolicy::default(),
+        )?;
+        let direct_resume = direct_instantiate_for_test(&world, &def, &tip)?;
+        let fork = fork_qemu_vm(
+            &world,
+            &tip,
+            1,
+            &mut fork_store,
+            &mut fork_executor,
+            QemuSavevmCompletenessPolicy::default(),
+        )?;
+        let direct_fork = direct_instantiate_for_test(&world, &def, &fork_prefix)?;
+
+        assert_same_realization(&start, &direct_start);
+        assert_same_realization(&resume, &direct_resume);
+        assert_same_realization(&fork, &direct_fork);
+        assert_eq!(start.operation, QemuVmRealizationOperation::Start);
+        assert_eq!(resume.operation, QemuVmRealizationOperation::Resume);
+        assert_eq!(
+            fork.operation,
+            QemuVmRealizationOperation::Fork { prefix_len: 1 }
         );
 
         Ok(())
@@ -1438,27 +1497,45 @@ mod tests {
     }
 
     #[test]
-    fn qemu_fork_rejects_tip_as_non_tip_prefix() {
-        let world = world("fork-tip");
-        let def = scenario("fork-tip");
+    fn qemu_fork_accepts_tip_and_rejects_out_of_range_prefixes() {
+        let world = world("fork-prefix-bounds");
+        let def = scenario("fork-prefix-bounds");
         let tip = config_with_decisions(def.clone(), 2);
-        let log = shared_log();
-        let mut store = scripted_store(Rc::clone(&log), &world, &def);
-        let mut executor = scripted_executor(log);
+        let tip_log = shared_log();
+        let mut tip_store = scripted_store(Rc::clone(&tip_log), &world, &def);
+        let mut tip_executor = scripted_executor(tip_log);
 
-        let result = fork_qemu_vm(
+        let tip_fork = fork_qemu_vm(
             &world,
             &tip,
             2,
-            &mut store,
-            &mut executor,
+            &mut tip_store,
+            &mut tip_executor,
+            QemuSavevmCompletenessPolicy::default(),
+        );
+        let out_of_range = fork_qemu_vm(
+            &world,
+            &tip,
+            3,
+            &mut scripted_store(shared_log(), &world, &def),
+            &mut scripted_executor(shared_log()),
             QemuSavevmCompletenessPolicy::default(),
         );
 
+        match tip_fork {
+            Ok(realized) => {
+                assert_eq!(realized.configuration, tip);
+                assert_eq!(
+                    realized.operation,
+                    QemuVmRealizationOperation::Fork { prefix_len: 2 }
+                );
+            }
+            Err(error) => panic!("tip fork should instantiate the tip configuration: {error}"),
+        }
         assert!(matches!(
-            result,
-            Err(QemuVmRealizationError::ForkPrefixNotStrict {
-                prefix_len: 2,
+            out_of_range,
+            Err(QemuVmRealizationError::ForkPrefixOutOfRange {
+                prefix_len: 3,
                 schedule_len: 2,
             })
         ));
@@ -1490,6 +1567,29 @@ mod tests {
 
     fn logged(log: &SharedLog) -> Vec<RealizationCall> {
         log.borrow().clone()
+    }
+
+    fn direct_instantiate_for_test(
+        world: &World,
+        def: &ScenarioDef,
+        config: &Configuration,
+    ) -> Result<QemuVmRealization, QemuVmRealizationError> {
+        let log = shared_log();
+        let mut store = scripted_store(Rc::clone(&log), world, def);
+        let mut executor = scripted_executor(log);
+        instantiate_qemu_vm(
+            world,
+            config,
+            &mut store,
+            &mut executor,
+            QemuSavevmCompletenessPolicy::default(),
+        )
+    }
+
+    fn assert_same_realization(actual: &QemuVmRealization, expected: &QemuVmRealization) {
+        assert_eq!(actual.configuration, expected.configuration);
+        assert_eq!(actual.runtime, expected.runtime);
+        assert_eq!(actual.branch, expected.branch);
     }
 
     fn world(name: &str) -> World {
