@@ -181,14 +181,14 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible-qemu",
         test_target: "gate_qemu_inert",
         required_features: &[],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:qemu-inert",
         package: "crucible-qemu-plugin",
         test_target: "gate_qemu_inert",
         required_features: &[],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:patch-microtests",

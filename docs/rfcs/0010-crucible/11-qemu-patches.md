@@ -1107,13 +1107,18 @@ time-control primitives the whole design rests on.
     unpacks the pinned QEMU source, applies every carried patch with zero fuzz,
     forces the patched `qemu-crucible` build, requires the patch-series manifest
     gate, and requires every per-patch micro-test result to be keyed to that
-    patched QEMU package/version. The `gate:qemu-inert` phase gate now depends on
+    patched QEMU package/version. The `gate:qemu-inert` phase gate depends on
     the patch-microtests aggregate; the full upstream-equivalence qemu-inert
-    corpus remains the next task, T-PATCH-3.
-- [ ] **T-PATCH-3** Implement `gate:qemu-inert`: run an upstream-equivalent corpus
+    corpus is completed by T-PATCH-3.
+- [x] **T-PATCH-3** Implement `gate:qemu-inert`: run an upstream-equivalent corpus
   against unpatched-pinned vs AOS-patched-sim-off and assert byte-identical
   guest-visible behavior. — satisfies [PATCH-1], [PATCH-2], [PATCH-3]; spec
   §11.1.1, routes [INV-7], [DET-36].
+  - Completed by `checks.crucible.phase2.gates.qemuInert`: the gate builds an
+    unpatched reference QEMU from the same pinned 10.0.0 source/configuration,
+    runs it against patched `qemu-crucible` with no plugin, no sim accelerator,
+    and no sim flags, and compares normalized boot/device-I/O, plain-icount boot,
+    QMP introspection, migration stream, and snapshot/restore command surface.
 - [ ] **T-PATCH-4** Implement `crucible-sim-accel`: the split vCPU/main
   deterministic TCG sim accelerator (`-accel sim`), inert under other
   accelerators, with a cross-run icount-trace micro-test. — satisfies [PATCH-11];

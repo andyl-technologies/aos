@@ -55,8 +55,8 @@
         needle = "contributes plugin-half evidence for [PLUG-49]";
       }
       {
-        label = "full qemu inert corpus remains T-HARN-21";
-        needle = "full real-QEMU corpus stays";
+        label = "full qemu inert corpus implemented by T-PATCH-3";
+        needle = "full real-QEMU corpus is";
       }
       {
         label = "PLUG-49 text";
@@ -77,7 +77,7 @@
         needle = "T-HARN-21";
       }
       {
-        label = "full qemu inert corpus remains real-QEMU comparison";
+        label = "full qemu inert corpus is real-QEMU comparison";
         needle = "behaviorally identical to an unpatched reference build";
       }
     ]
@@ -183,14 +183,18 @@
         needle = "gate_qemu_inert_plugin_half_is_backed_by_phase_check";
       }
       {
-        label = "full gate remains explicitly pending";
-        needle = "T-HARN-21 implements full gate:qemu-inert corpus";
+        label = "full gate implementation is wired";
+        needle = "full_real_qemu_corpus=implemented-T-PATCH-3";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase2 exposes plugin qemu-inert check";
         needle = "qemuPluginQemuInert = import ./phase2-plugin-qemu-inert.nix";
+      }
+      {
+        label = "phase2 exposes full qemu-inert gate";
+        needle = "qemuInert = import ./phase2-qemu-inert.nix";
       }
     ];
 in
@@ -302,8 +306,8 @@ in
             tasks=${taskList}
             gate=gate:qemu-inert
             plugin_half=contributes-to-PLUG-49-sim-off-no-plugin-arg-no-load-no-effects
-            full_PLUG49_gate=pending-T-HARN-21
-            full_real_qemu_corpus=pending-T-HARN-21
+            full_PLUG49_gate=implemented-T-PATCH-3
+            full_real_qemu_corpus=implemented-T-PATCH-3
             RESULT
           '';
         }

@@ -174,8 +174,8 @@
         needle = "protocolInertness = import ./phase2-protocol-inertness.nix";
       }
       {
-        label = "full qemu inert gate remains red";
-        needle = "qemuInert = redGate {";
+        label = "full qemu inert gate implemented";
+        needle = "qemuInert = import ./phase2-qemu-inert.nix";
       }
     ];
 in
@@ -248,7 +248,7 @@ in
             rust_test=crucible-qemu::protocol_inertness
             sim_off=no-control-socket,no-control-frames,no-plugin-args
             sim_on=shared-memory-runtime,no-runtime-control-frames,no-delivery-icounts,run-silent
-            full_qemu_inert_gate=pending-T-HARN-21
+            full_qemu_inert_gate=implemented-T-PATCH-3
             RESULT
           '';
         }

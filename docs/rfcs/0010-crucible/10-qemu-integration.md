@@ -851,8 +851,9 @@ determinism contract (04).
   per-elimination executable negative microtest matrix for TCG/icount, CPU
   entropy, RTC, guest entropy, run seed, kernel randomization, input, CoW
   backing, idle-warp, and sim-mode inertness. The full real-QEMU
-  `gate:qemu-inert` corpus remains tracked by [T-HARN-21]; the N-vCPU
-  fingerprint expansion is covered by `checks.crucible.phase2.qemuNvcpuFingerprint`.
+  `gate:qemu-inert` corpus is implemented by
+  `checks.crucible.phase2.gates.qemuInert`; the N-vCPU fingerprint expansion is
+  covered by `checks.crucible.phase2.qemuNvcpuFingerprint`.
 - [x] **T-QEMU-11** Implement the single-VM fingerprint hook for
   `gate:single-vm-fingerprint`: run-twice-and-diff under adversarial host
   conditions with first-mismatch icount-window localization and a fixed,

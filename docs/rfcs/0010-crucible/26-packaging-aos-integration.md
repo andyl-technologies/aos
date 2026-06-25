@@ -559,9 +559,12 @@ carries findings across an incompatible build.
   and `crucible-qemu-plugin` from the same pinned QEMU source, co-located as a
   matched pair with a sim-capability marker. — satisfies [PKG-5], [PKG-7], [PKG-8],
   [PKG-9], [PKG-10], [PKG-12]; spec §26.2, §26.3.
-- [ ] **T-PKG-3** Wire `gate:qemu-inert` as a `qemu-crucible` package check:
+- [x] **T-PKG-3** Wire `gate:qemu-inert` as a `qemu-crucible` package check:
   unpatched vs patched-sim-off byte-identical over the upstream-equivalent corpus.
   — satisfies [PKG-13]; spec §26.3.1, routes [INV-7].
+  - Completed by `checks.crucible.phase2.gates.qemuInert`; the AOS package set now
+    exposes `qemu-crucible-reference` from the same pinned source with
+    `applyCruciblePatches = false` for the comparison.
 - [ ] **T-PKG-4** Wire `gate:patch-microtests` as a package check: apply-clean +
   build + every per-patch micro-test (sim-on effect + sim-off inertness), re-run on
   series/pin/header change. — satisfies [PKG-14]; spec §26.3.1.

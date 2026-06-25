@@ -64,12 +64,16 @@
     builtins.filter
     (patch: !(hasInfix "patch -p1 < \${./qemu-patches/${patch}}" qemuNix))
     patchFiles;
-  qemuInertGateUnwired = !(
+  qemuInertRedGateWired =
     hasInfix "qemuInert = redGate {" defaultNix
     && hasInfix ''gateName = "gate:qemu-inert";'' defaultNix
     && hasInfix "dependencies = [patchMicrotestsCheck];" defaultNix
-    && hasInfix "patchMicrotests = patchMicrotestsCheck;" defaultNix
-  );
+    && hasInfix "patchMicrotests = patchMicrotestsCheck;" defaultNix;
+  qemuInertImplementedGateWired =
+    hasInfix "qemuInert = import ./phase2-qemu-inert.nix" defaultNix
+    && hasInfix ''attrPath = "checks.crucible.phase2.gates.qemuInert";'' defaultNix
+    && hasInfix "patchMicrotests = patchMicrotestsCheck;" defaultNix;
+  qemuInertGateUnwired = !(qemuInertRedGateWired || qemuInertImplementedGateWired);
 
   staticFailures =
     map (patch: "pkgs/emulation/qemu-patches/${patch}: carried patch has no per-patch micro-test")

@@ -426,6 +426,11 @@
         pname = "qemu-crucible";
         enablePlugins = true;
       };
+      qemu-crucible-reference = callPackage ./emulation/qemu.nix {
+        pname = "qemu-crucible-reference";
+        enablePlugins = true;
+        applyCruciblePatches = false;
+      };
 
       kubelet = callPackage ./kubernetes/kubelet.nix {inherit kubeSource;};
       kubectl = callPackage ./kubernetes/kubectl.nix {inherit kubeSource;};
