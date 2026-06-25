@@ -7,6 +7,7 @@ use crate::cache::{
     ImpureInputFingerprint, ImpureInputIdentity, ImpureInputKind, ImpureInputRevalidator,
     ValueHash,
 };
+use crate::string::{ContextElement, StringContext};
 use crate::value::Value;
 
 #[derive(Clone, Debug)]
@@ -99,6 +100,16 @@ fn noncanonical_context_string_payload() -> Vec<u8> {
         encoded.extend_from_slice(path);
     }
     encoded
+}
+
+fn all_context_kinds() -> StringContext {
+    StringContext::new(vec![
+        ContextElement::single_output(b"/nix/store/pkg.drv".to_vec(), b"out".to_vec())
+            .expect("single-output context builds"),
+        ContextElement::opaque_path(b"/nix/store/source".to_vec()).expect("opaque context builds"),
+        ContextElement::deep_derivation(b"/nix/store/toolchain.drv".to_vec())
+            .expect("deep context builds"),
+    ])
 }
 
 #[test]
@@ -1086,6 +1097,49 @@ fn cache_empty_list_payload_materializes_and_loads_by_value_hash() {
             .load_cached_expression_value_indexed(value_hash)
             .expect("empty list payload loads")
             .expect("empty list payload exists"),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_strict_list_payload_materializes_and_loads_by_value_hash() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = CachedExpressionValue::strict_list(vec![
+        CachedExpressionValue::immediate(Value::int(1)).expect("payload builds"),
+        CachedExpressionValue::context_string(b"context element".to_vec(), all_context_kinds()),
+        CachedExpressionValue::context_path(
+            b"/nix/store/context-list-path".to_vec(),
+            all_context_kinds(),
+        ),
+        CachedExpressionValue::strict_list(vec![
+            CachedExpressionValue::empty_list(),
+            CachedExpressionValue::empty_attrs(),
+        ]),
+    ]);
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+
+    let result = cache
+        .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
+        .expect("strict list payload materializes");
+
+    let PersistMaterialization::Materialized(location) = result else {
+        panic!("strict list payload should materialize");
+    };
+    assert_eq!(
+        cache
+            .lookup_blob_location(key)
+            .expect("indexed lookup succeeds"),
+        Some(location)
+    );
+    assert_eq!(
+        cache
+            .load_cached_expression_value_indexed(value_hash)
+            .expect("strict list payload loads")
+            .expect("strict list payload exists"),
         payload
     );
 

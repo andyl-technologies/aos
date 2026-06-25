@@ -6,6 +6,7 @@ const FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION: &[u8] = b"aos-nix-force-expressi
 const FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-force-captured-value-hash-v1";
 const FORCE_SYNTHETIC_BUILTIN_ATTR_IDENTITY_DOMAIN_VERSION: &[u8] =
     b"aos-nix-force-synthetic-builtin-attr-identity-v1";
+const FORCE_CACHE_PAYLOAD_MAX_DEPTH: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ForcePayloadPersistenceAction {
@@ -707,6 +708,17 @@ impl TreeWalk {
     }
 
     fn force_cache_payload_for_value(&self, value: Value) -> Option<CachedExpressionValue> {
+        self.force_cache_payload_for_value_with_depth(value, 0)
+    }
+
+    fn force_cache_payload_for_value_with_depth(
+        &self,
+        value: Value,
+        depth: usize,
+    ) -> Option<CachedExpressionValue> {
+        if depth > FORCE_CACHE_PAYLOAD_MAX_DEPTH {
+            return None;
+        }
         if let Ok(value) = CachedExpressionValue::immediate(value) {
             return Some(value);
         }
@@ -736,7 +748,15 @@ impl TreeWalk {
                 if list.is_empty() {
                     Some(CachedExpressionValue::empty_list())
                 } else {
-                    None
+                    let mut elements = Vec::new();
+                    elements.try_reserve_exact(list.len()).ok()?;
+                    for element in list {
+                        elements.push(self.force_cache_payload_for_value_with_depth(
+                            *element,
+                            depth.saturating_add(1),
+                        )?);
+                    }
+                    Some(CachedExpressionValue::strict_list(elements))
                 }
             }
             ValueTag::Attrs => {
@@ -918,6 +938,17 @@ impl TreeWalk {
         &mut self,
         payload: CachedExpressionValue,
     ) -> Option<Value> {
+        self.value_for_cached_expression_payload_with_depth(payload, 0)
+    }
+
+    fn value_for_cached_expression_payload_with_depth(
+        &mut self,
+        payload: CachedExpressionValue,
+        depth: usize,
+    ) -> Option<Value> {
+        if depth > FORCE_CACHE_PAYLOAD_MAX_DEPTH {
+            return None;
+        }
         if let Some(value) = payload.immediate_value() {
             return Some(value);
         }
@@ -937,6 +968,17 @@ impl TreeWalk {
         }
         if payload.is_empty_list() {
             return self.heap.alloc_list(NixList::empty()).ok();
+        }
+        if let Some(element_payloads) = payload.list_element_payloads() {
+            let mut elements = Vec::new();
+            elements.try_reserve_exact(element_payloads.len()).ok()?;
+            for element in element_payloads {
+                elements.push(self.value_for_cached_expression_payload_with_depth(
+                    element,
+                    depth.saturating_add(1),
+                )?);
+            }
+            return self.heap.alloc_list(NixList::new(elements)).ok();
         }
         if payload.is_empty_attrs() {
             return self.heap.alloc_attrs(0, FlatAttrs::empty()).ok();

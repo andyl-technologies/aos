@@ -23,6 +23,8 @@ use super::{
 use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};
 use crate::value::Value;
 
+const MAX_CACHED_EXPRESSION_PAYLOAD_NESTING: usize = 64;
+
 /// A source of evaluator-observed impure input trace entries.
 pub trait ImpureInputTraceSource {
     /// Returns impure inputs observed while evaluating a root computation.
@@ -163,6 +165,22 @@ impl CachedExpressionValue {
         }
     }
 
+    /// Creates a cached strict Nix list payload from replayable element payloads.
+    ///
+    /// This represents a list spine whose elements are already replayable
+    /// values. It does not represent lazy element thunks; callers must not force
+    /// elements just to build this payload.
+    pub fn strict_list(elements: Vec<Self>) -> Self {
+        if elements.is_empty() {
+            return Self::empty_list();
+        }
+        Self {
+            payload: InlineValuePayload::List(
+                elements.into_iter().map(|value| value.payload).collect(),
+            ),
+        }
+    }
+
     /// Creates a cached empty Nix attrset payload.
     pub const fn empty_attrs() -> Self {
         Self {
@@ -223,6 +241,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::Path(_)
             | InlineValuePayload::ContextPath { .. }
             | InlineValuePayload::EmptyList
+            | InlineValuePayload::List(_)
             | InlineValuePayload::EmptyAttrs
             | InlineValuePayload::Int(_)
             | InlineValuePayload::Float(_)
@@ -242,6 +261,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::Path(_)
             | InlineValuePayload::ContextPath { .. }
             | InlineValuePayload::EmptyList
+            | InlineValuePayload::List(_)
             | InlineValuePayload::EmptyAttrs
             | InlineValuePayload::Null => None,
         }
@@ -258,6 +278,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::ContextString { .. }
             | InlineValuePayload::ContextPath { .. }
             | InlineValuePayload::EmptyList
+            | InlineValuePayload::List(_)
             | InlineValuePayload::EmptyAttrs
             | InlineValuePayload::Null => None,
         }
@@ -274,6 +295,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::ContextString { .. }
             | InlineValuePayload::Path(_)
             | InlineValuePayload::EmptyList
+            | InlineValuePayload::List(_)
             | InlineValuePayload::EmptyAttrs
             | InlineValuePayload::Null => None,
         }
@@ -282,6 +304,49 @@ impl CachedExpressionValue {
     /// Returns whether this payload is the empty Nix list.
     pub const fn is_empty_list(&self) -> bool {
         matches!(&self.payload, InlineValuePayload::EmptyList)
+    }
+
+    /// Returns the cached list spine length, if this payload is a list.
+    pub fn list_len(&self) -> Option<usize> {
+        match &self.payload {
+            InlineValuePayload::EmptyList => Some(0),
+            InlineValuePayload::List(elements) => Some(elements.len()),
+            InlineValuePayload::Int(_)
+            | InlineValuePayload::Float(_)
+            | InlineValuePayload::Bool(_)
+            | InlineValuePayload::Null
+            | InlineValuePayload::ContextFreeString(_)
+            | InlineValuePayload::ContextString { .. }
+            | InlineValuePayload::Path(_)
+            | InlineValuePayload::ContextPath { .. }
+            | InlineValuePayload::EmptyAttrs => None,
+        }
+    }
+
+    pub(crate) fn list_element_payloads(&self) -> Option<Vec<Self>> {
+        match &self.payload {
+            InlineValuePayload::EmptyList => Some(Vec::new()),
+            InlineValuePayload::List(elements) => {
+                let mut out = Vec::new();
+                out.try_reserve_exact(elements.len()).ok()?;
+                out.extend(
+                    elements
+                        .iter()
+                        .cloned()
+                        .map(|payload| CachedExpressionValue { payload }),
+                );
+                Some(out)
+            }
+            InlineValuePayload::Int(_)
+            | InlineValuePayload::Float(_)
+            | InlineValuePayload::Bool(_)
+            | InlineValuePayload::Null
+            | InlineValuePayload::ContextFreeString(_)
+            | InlineValuePayload::ContextString { .. }
+            | InlineValuePayload::Path(_)
+            | InlineValuePayload::ContextPath { .. }
+            | InlineValuePayload::EmptyAttrs => None,
+        }
     }
 
     /// Returns whether this payload is the empty Nix attrset.
@@ -311,6 +376,12 @@ pub enum CachedExpressionValuePayloadError {
     #[error("failed to reserve cached expression context storage for {len} elements")]
     ContextAllocationFailed {
         /// The requested context element capacity.
+        len: usize,
+    },
+    /// List element storage could not be reserved while decoding.
+    #[error("failed to reserve cached expression list storage for {len} elements")]
+    ListAllocationFailed {
+        /// The requested list element capacity.
         len: usize,
     },
     /// A length field cannot fit in `usize` on this host.
@@ -374,17 +445,17 @@ pub enum CachedExpressionValuePayloadError {
         /// The malformed contextual payload kind.
         payload: &'static str,
     },
-    /// A list payload encoded a non-empty spine that this precursor cannot replay yet.
-    #[error("cached expression list payload has unsupported length {len}")]
-    UnsupportedListPayloadLength {
-        /// The encoded list spine length.
-        len: u128,
-    },
     /// An attrset payload encoded a non-empty binding table that this precursor cannot replay yet.
     #[error("cached expression attrset payload has unsupported length {len}")]
     UnsupportedAttrsPayloadLength {
         /// The encoded attrset binding count.
         len: u128,
+    },
+    /// Nested payload decoding exceeded the supported recursion depth.
+    #[error("cached expression payload nesting exceeded {limit} levels")]
+    PayloadNestingLimitExceeded {
+        /// The maximum supported nesting depth.
+        limit: usize,
     },
 }
 
@@ -1038,6 +1109,7 @@ enum InlineValuePayload {
         context: StringContext,
     },
     EmptyList,
+    List(Vec<InlineValuePayload>),
     EmptyAttrs,
 }
 
@@ -1081,6 +1153,7 @@ impl InlineValuePayload {
             | Self::Path(_)
             | Self::ContextPath { .. }
             | Self::EmptyList
+            | Self::List(_)
             | Self::EmptyAttrs => None,
         }
     }
@@ -1100,7 +1173,126 @@ impl InlineValuePayload {
                 Ok(ValueHash::from_context_path_parts(bytes, context))
             }
             Self::EmptyList => Ok(ValueHash::from_empty_list()),
+            Self::List(_) => Ok(self.value_hash_from_persistent_payload()),
             Self::EmptyAttrs => Ok(ValueHash::from_empty_attrs()),
+        }
+    }
+
+    fn value_hash_from_persistent_payload(&self) -> ValueHash {
+        let mut hasher = blake3::Hasher::new();
+        self.update_persistent_payload_preimage(&mut hasher);
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    fn update_persistent_payload_preimage(&self, hasher: &mut blake3::Hasher) {
+        match self {
+            Self::Int(value) => {
+                hasher.update(INLINE_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"int");
+                hasher.update(&value.to_le_bytes());
+            }
+            Self::Float(bits) => {
+                hasher.update(INLINE_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"float");
+                hasher.update(&bits.to_le_bytes());
+            }
+            Self::Bool(value) => {
+                hasher.update(INLINE_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"bool");
+                hasher.update(&[u8::from(*value)]);
+            }
+            Self::Null => {
+                hasher.update(INLINE_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"null");
+            }
+            Self::ContextFreeString(bytes) => {
+                hasher.update(CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"string");
+                hasher.update(&(bytes.len() as u128).to_le_bytes());
+                hasher.update(bytes);
+            }
+            Self::ContextString { bytes, context } => {
+                hasher.update(CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"string");
+                hasher.update(&(bytes.len() as u128).to_le_bytes());
+                hasher.update(bytes);
+                update_string_context_payload_preimage(hasher, context);
+            }
+            Self::Path(bytes) => {
+                hasher.update(PATH_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"path");
+                hasher.update(&(bytes.len() as u128).to_le_bytes());
+                hasher.update(bytes);
+            }
+            Self::ContextPath { bytes, context } => {
+                hasher.update(CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"path");
+                hasher.update(&(bytes.len() as u128).to_le_bytes());
+                hasher.update(bytes);
+                update_string_context_payload_preimage(hasher, context);
+            }
+            Self::EmptyList => {
+                hasher.update(LIST_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"list");
+                hasher.update(&0u128.to_le_bytes());
+            }
+            Self::List(elements) => {
+                hasher.update(LIST_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"list");
+                hasher.update(&(elements.len() as u128).to_le_bytes());
+                for element in elements {
+                    hasher.update(&element.persistent_payload_len().to_le_bytes());
+                    element.update_persistent_payload_preimage(hasher);
+                }
+            }
+            Self::EmptyAttrs => {
+                hasher.update(ATTRS_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"attrs");
+                hasher.update(&0u128.to_le_bytes());
+            }
+        }
+    }
+
+    fn persistent_payload_len(&self) -> u128 {
+        match self {
+            Self::Int(_) => INLINE_VALUE_HASH_DOMAIN_VERSION.len() as u128 + 3 + 8,
+            Self::Float(_) => INLINE_VALUE_HASH_DOMAIN_VERSION.len() as u128 + 5 + 8,
+            Self::Bool(_) => INLINE_VALUE_HASH_DOMAIN_VERSION.len() as u128 + 4 + 1,
+            Self::Null => INLINE_VALUE_HASH_DOMAIN_VERSION.len() as u128 + 4,
+            Self::ContextFreeString(bytes) => {
+                CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION.len() as u128
+                    + 6
+                    + 16
+                    + bytes.len() as u128
+            }
+            Self::ContextString { bytes, context } => {
+                CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION.len() as u128
+                    + 6
+                    + 16
+                    + bytes.len() as u128
+                    + string_context_payload_len(context)
+            }
+            Self::Path(bytes) => {
+                PATH_VALUE_HASH_DOMAIN_VERSION.len() as u128 + 4 + 16 + bytes.len() as u128
+            }
+            Self::ContextPath { bytes, context } => {
+                CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION.len() as u128
+                    + 4
+                    + 16
+                    + bytes.len() as u128
+                    + string_context_payload_len(context)
+            }
+            Self::EmptyList => LIST_VALUE_HASH_DOMAIN_VERSION.len() as u128 + 4 + 16,
+            Self::List(elements) => {
+                LIST_VALUE_HASH_DOMAIN_VERSION.len() as u128
+                    + 4
+                    + 16
+                    + elements
+                        .iter()
+                        .map(|element| 16 + element.persistent_payload_len())
+                        .sum::<u128>()
+            }
+            Self::EmptyAttrs => ATTRS_VALUE_HASH_DOMAIN_VERSION.len() as u128 + 5 + 16,
         }
     }
 
@@ -1157,6 +1349,15 @@ impl InlineValuePayload {
                 append_payload_bytes(&mut out, b"list")?;
                 append_payload_u128(&mut out, 0)?;
             }
+            Self::List(elements) => {
+                append_payload_bytes(&mut out, LIST_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, b"list")?;
+                append_payload_u128(&mut out, elements.len() as u128)?;
+                for element in elements {
+                    append_payload_u128(&mut out, element.persistent_payload_len())?;
+                    append_payload_bytes(&mut out, &element.encode_persistent_payload()?)?;
+                }
+            }
             Self::EmptyAttrs => {
                 append_payload_bytes(&mut out, ATTRS_VALUE_HASH_DOMAIN_VERSION)?;
                 append_payload_bytes(&mut out, b"attrs")?;
@@ -1167,6 +1368,20 @@ impl InlineValuePayload {
     }
 
     fn decode_persistent_payload(bytes: &[u8]) -> Result<Self, CachedExpressionValuePayloadError> {
+        Self::decode_persistent_payload_with_depth(bytes, 0)
+    }
+
+    fn decode_persistent_payload_with_depth(
+        bytes: &[u8],
+        depth: usize,
+    ) -> Result<Self, CachedExpressionValuePayloadError> {
+        if depth > MAX_CACHED_EXPRESSION_PAYLOAD_NESTING {
+            return Err(
+                CachedExpressionValuePayloadError::PayloadNestingLimitExceeded {
+                    limit: MAX_CACHED_EXPRESSION_PAYLOAD_NESTING,
+                },
+            );
+        }
         if bytes.starts_with(INLINE_VALUE_HASH_DOMAIN_VERSION) {
             let mut cursor = PayloadCursor::new(bytes);
             cursor.take_marker(INLINE_VALUE_HASH_DOMAIN_VERSION, "inline value domain")?;
@@ -1237,14 +1452,24 @@ impl InlineValuePayload {
             let mut cursor = PayloadCursor::new(bytes);
             cursor.take_marker(LIST_VALUE_HASH_DOMAIN_VERSION, "list value domain")?;
             cursor.take_marker(b"list", "list payload tag")?;
-            let len = cursor.take_u128()?;
-            if len != 0 {
-                return Err(
-                    CachedExpressionValuePayloadError::UnsupportedListPayloadLength { len },
-                );
+            let len = cursor.take_len()?;
+            if len == 0 {
+                cursor.finish()?;
+                return Ok(Self::EmptyList);
+            }
+            let mut elements = Vec::new();
+            elements
+                .try_reserve_exact(len)
+                .map_err(|_| CachedExpressionValuePayloadError::ListAllocationFailed { len })?;
+            for _ in 0..len {
+                let element = cursor.take_length_prefixed_bytes()?;
+                elements.push(Self::decode_persistent_payload_with_depth(
+                    &element,
+                    depth.saturating_add(1),
+                )?);
             }
             cursor.finish()?;
-            return Ok(Self::EmptyList);
+            return Ok(Self::List(elements));
         }
         if bytes.starts_with(ATTRS_VALUE_HASH_DOMAIN_VERSION) {
             let mut cursor = PayloadCursor::new(bytes);
@@ -1329,6 +1554,51 @@ fn append_string_context_payload(
         }
     }
     Ok(())
+}
+
+fn string_context_payload_len(context: &StringContext) -> u128 {
+    7 + 16
+        + context
+            .elements()
+            .iter()
+            .map(|element| {
+                let path_len = element.path().len() as u128;
+                match element.kind() {
+                    ContextKind::OpaquePath | ContextKind::DeepDerivation => 1 + 16 + path_len,
+                    ContextKind::SingleOutput => {
+                        let output_len = element.output().unwrap_or_default().len() as u128;
+                        1 + 16 + path_len + 16 + output_len
+                    }
+                }
+            })
+            .sum::<u128>()
+}
+
+fn update_string_context_payload_preimage(hasher: &mut blake3::Hasher, context: &StringContext) {
+    hasher.update(b"context");
+    hasher.update(&(context.len() as u128).to_le_bytes());
+    for element in context.elements() {
+        match element.kind() {
+            ContextKind::OpaquePath => {
+                hasher.update(&[0]);
+                hasher.update(&(element.path().len() as u128).to_le_bytes());
+                hasher.update(element.path());
+            }
+            ContextKind::SingleOutput => {
+                hasher.update(&[1]);
+                hasher.update(&(element.path().len() as u128).to_le_bytes());
+                hasher.update(element.path());
+                let output = element.output().unwrap_or_default();
+                hasher.update(&(output.len() as u128).to_le_bytes());
+                hasher.update(output);
+            }
+            ContextKind::DeepDerivation => {
+                hasher.update(&[2]);
+                hasher.update(&(element.path().len() as u128).to_le_bytes());
+                hasher.update(element.path());
+            }
+        }
+    }
 }
 
 fn decode_inline_value_payload(
@@ -2059,6 +2329,21 @@ mod tests {
                 all_context_kinds(),
             ),
             CachedExpressionValue::empty_list(),
+            CachedExpressionValue::strict_list(vec![
+                CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
+                CachedExpressionValue::context_string(
+                    b"context element".to_vec(),
+                    all_context_kinds(),
+                ),
+                CachedExpressionValue::context_path(
+                    b"/nix/store/context-list-path".to_vec(),
+                    all_context_kinds(),
+                ),
+                CachedExpressionValue::strict_list(vec![
+                    CachedExpressionValue::empty_list(),
+                    CachedExpressionValue::empty_attrs(),
+                ]),
+            ]),
             CachedExpressionValue::empty_attrs(),
         ];
 
@@ -2217,15 +2502,37 @@ mod tests {
     }
 
     #[test]
-    fn cached_expression_payload_decode_rejects_non_empty_lists() {
+    fn cached_expression_payload_decode_rejects_truncated_list_elements() {
         let encoded = list_payload_with_len(1);
 
         let error = CachedExpressionValue::decode_persistent_payload(&encoded)
-            .expect_err("non-empty list payload errors");
+            .expect_err("truncated list element payload errors");
+
+        assert!(matches!(
+            error,
+            CachedExpressionValuePayloadError::ShortPayload { .. }
+        ));
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_excessive_list_nesting() {
+        let mut payload =
+            CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds");
+        for _ in 0..=MAX_CACHED_EXPRESSION_PAYLOAD_NESTING {
+            payload = CachedExpressionValue::strict_list(vec![payload]);
+        }
+        let encoded = payload
+            .encode_persistent_payload()
+            .expect("deep list payload encodes");
+
+        let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+            .expect_err("excessive nesting errors");
 
         assert_eq!(
             error,
-            CachedExpressionValuePayloadError::UnsupportedListPayloadLength { len: 1 }
+            CachedExpressionValuePayloadError::PayloadNestingLimitExceeded {
+                limit: MAX_CACHED_EXPRESSION_PAYLOAD_NESTING
+            }
         );
     }
 
@@ -3275,6 +3582,42 @@ mod tests {
             .expect("immediate lookup succeeds");
 
         assert!(payload.is_empty_list());
+        assert!(payload.context_free_string_bytes().is_none());
+        assert!(payload.context_string_parts().is_none());
+        assert!(payload.path_bytes().is_none());
+        assert!(payload.context_path_parts().is_none());
+        assert!(payload.immediate_value().is_none());
+        assert!(
+            immediate.is_none(),
+            "generic Value lookup must not return heap-backed payload pointers"
+        );
+    }
+
+    #[test]
+    fn eval_cache_looks_up_strict_list_payloads() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+
+        cache
+            .observe_inline_expression_payload(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::strict_list(vec![
+                    CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
+                    CachedExpressionValue::context_free_string(b"element".to_vec()),
+                ]),
+            )
+            .expect("strict list payload observes");
+        let payload = cache
+            .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("payload lookup succeeds")
+            .expect("memoized strict list payload is present");
+        let immediate = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("immediate lookup succeeds");
+
+        assert_eq!(payload.list_len(), Some(2));
+        assert!(!payload.is_empty_list());
         assert!(payload.context_free_string_bytes().is_none());
         assert!(payload.context_string_parts().is_none());
         assert!(payload.path_bytes().is_none());

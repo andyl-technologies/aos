@@ -4671,6 +4671,156 @@ fn empty_list_result_thunks_hit_after_heap_rehydration() {
 }
 
 #[test]
+fn strict_list_result_thunks_hit_after_heap_rehydration() {
+    let source = r#"{ a = [ 1 true null ]; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "strict-list-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("strict list thunk force succeeds");
+        let list = evaluator
+            .heap()
+            .get_list(forced)
+            .expect("cached value is rehydrated into this evaluator heap");
+
+        assert_eq!(list.len(), 3);
+        assert_eq!(list.get(0).expect("first element exists").as_int(), Ok(1));
+        assert_eq!(
+            list.get(1).expect("second element exists").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(list.get(2).expect("third element exists").as_null(), Ok(()));
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+        assert_eq!(
+            evaluator.stats().thunks_forced(),
+            if expected_hit { 0 } else { 1 }
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching strict list results should share one demand node"
+    );
+}
+
+#[test]
+fn strict_list_result_thunks_with_heap_elements_hit_after_heap_rehydration() {
+    let source = r#"{ a = [ "x" "y" ]; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "strict-list-heap-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("strict heap-backed list thunk force succeeds");
+        let list = evaluator
+            .heap()
+            .get_list(forced)
+            .expect("cached value is rehydrated into this evaluator heap");
+
+        assert_eq!(list.len(), 2);
+        let string = evaluator
+            .heap()
+            .get_string(list.get(0).expect("first element exists"))
+            .expect("first element is a string");
+        assert_eq!(string.bytes(), b"x");
+        let second = evaluator
+            .heap()
+            .get_string(list.get(1).expect("second element exists"))
+            .expect("second element is a string");
+        assert_eq!(second.bytes(), b"y");
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+        assert_eq!(
+            evaluator.stats().thunks_forced(),
+            if expected_hit { 0 } else { 1 }
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching strict heap-backed list results should share one demand node"
+    );
+}
+
+#[test]
+fn non_empty_list_literals_with_lazy_elements_wait_for_element_payloads() {
+    let source = r#"{ a = [ (1 / 0) ]; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for _ in 0..2 {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "lazy-list-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("lazy list thunk force succeeds");
+        let list = evaluator
+            .heap()
+            .get_list(forced)
+            .expect("list is heap-owned");
+
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.get(0).expect("element exists").tag(), ValueTag::Thunk);
+        assert_eq!(evaluator.stats().cache_hits(), 0);
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "list literals with lazy elements need element payloads before observation"
+    );
+}
+
+#[test]
 fn empty_attrset_result_thunks_hit_after_heap_rehydration() {
     let source = r#"{ a = { }; }"#;
     let ir = lower(source);
@@ -5051,9 +5201,10 @@ fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
 
     assert_eq!(forced.as_bool(), Ok(true));
     let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "captured non-empty lists need canonical composite value hashes before observation"
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "only the non-empty list literal result should be cached; the captured list free variable remains unsupported"
     );
 }
 
@@ -5135,6 +5286,18 @@ fn materialized_empty_attrsets_are_not_free_variable_hashable_yet() {
         .expect("empty attrset allocates");
 
     assert_eq!(evaluator.force_cache_free_var_value_hash(attrs), None);
+}
+
+#[test]
+fn materialized_non_empty_lists_are_not_free_variable_hashable_yet() {
+    let ir = lower("1");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let list = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![Value::int(1)]))
+        .expect("list allocates");
+
+    assert_eq!(evaluator.force_cache_free_var_value_hash(list), None);
 }
 
 #[test]
