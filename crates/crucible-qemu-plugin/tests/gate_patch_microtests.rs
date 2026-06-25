@@ -29,11 +29,34 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
 
     let aggregate = fs::read_to_string(root.join("tests/crucible/phase2-patch-microtests.nix"))?;
     assert_contains(&aggregate, "gate=gate:patch-microtests");
+    assert_contains(
+        &aggregate,
+        "qemuPatchSeries = import ./phase2-qemu-patch-series.nix",
+    );
+    assert_contains(&aggregate, "tar -xf ${qemuPackage.src}");
+    assert_contains(&aggregate, "patch --batch --forward --fuzz=0 -p1");
+    assert_contains(&aggregate, "test -x ${qemuPackage}/bin/qemu-system-x86_64");
+    assert_contains(&aggregate, "patch_series_gate_passed=true");
+    assert_contains(&aggregate, "apply_clean_pinned_qemu=true");
+    assert_contains(&aggregate, "patched_qemu_package_build_passed=true");
+    assert_contains(&aggregate, "qemu_package=${qemuPackage}");
+    assert_contains(&aggregate, "qemu_package_version=${qemuPackage.version}");
+    assert_contains(&aggregate, "qemu_inert_gate_wired=true");
+    assert_contains(&aggregate, "qemu_inert_depends_on_patch_microtests=true");
+    assert_contains(
+        &aggregate,
+        "every_microtest_keyed_to_patched_qemu_package=true",
+    );
     assert_contains(&aggregate, "every_carried_patch_has_microtest=true");
     assert_contains(
         &aggregate,
         "every_microtest_has_stock_negative_control=true",
     );
+
+    let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
+    assert_contains(&default_checks, "patchMicrotestsCheck = import");
+    assert_contains(&default_checks, "dependencies = [patchMicrotestsCheck];");
+    assert_contains(&default_checks, "patchMicrotests = patchMicrotestsCheck;");
 
     for patch in EXPECTED_PATCHES {
         assert_contains(&aggregate, patch);
@@ -84,6 +107,9 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
         assert_contains(&nix_source, &format!("patch={patch}"));
         assert_contains(&nix_source, "patched_fixture_exercised=true");
         assert_contains(&nix_source, "stock_negative_control");
+        assert_contains(&nix_source, "qemuPackage ? null");
+        assert_contains(&nix_source, "qemu_package=${qemuPackage}");
+        assert_contains(&nix_source, "qemu_package_version=${qemuPackage.version}");
         assert_contains(&nix_source, "patch --batch --fuzz=0 -p1");
         assert_contains(&c_source, "stock_negative_control");
     }

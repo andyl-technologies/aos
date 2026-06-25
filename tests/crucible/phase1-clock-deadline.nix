@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.clockDeadline",
   taskIds ? ["T-TIME-6"],
+  qemuPackage ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -21,6 +22,16 @@
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   defaultChecks = builtins.readFile ./default.nix;
+  qemuPackageResultLines =
+    if qemuPackage == null
+    then ''
+      qemu_package=standalone-fixture
+      qemu_package_version=standalone-fixture
+    ''
+    else ''
+      qemu_package=${qemuPackage}
+      qemu_package_version=${qemuPackage.version}
+    '';
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -500,6 +511,7 @@ in
             patch=0005-crucible-clock-deadline.patch
             patched_fixture_exercised=true
             stock_negative_control=true
+            ${qemuPackageResultLines}
             deadline_symbol=qemu_plugin_clock_deadline_ns
             deadline_source=QEMU_CLOCK_VIRTUAL
             deadline_absolute_time=124456

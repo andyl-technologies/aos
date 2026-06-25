@@ -1,12 +1,23 @@
 {
   pkgs,
   lib,
+  qemuPackage ? null,
 }: let
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   patchName = "0002-crucible-icount-no-realtime.patch";
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-icount-no-realtime.c;
+  qemuPackageResultLines =
+    if qemuPackage == null
+    then ''
+      qemu_package=standalone-fixture
+      qemu_package_version=standalone-fixture
+    ''
+    else ''
+      qemu_package=${qemuPackage}
+      qemu_package_version=${qemuPackage.version}
+    '';
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -187,6 +198,7 @@ in
             patch=0002-crucible-icount-no-realtime.patch
             patched_fixture_exercised=true
             stock_negative_control=true
+            ${qemuPackageResultLines}
             qemu_mode=ICOUNT_PRECISE
             realtime_deadline_in_precise_budget=false
             RESULT

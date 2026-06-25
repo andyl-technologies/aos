@@ -1099,10 +1099,17 @@ time-control primitives the whole design rests on.
     pinned to QEMU 10.0.0, uses stable `NNNN-crucible-*.patch` filenames, records
     per-patch class/invariant metadata, checks package wiring, and rejects added
     record/replay-start scaffolding.
-- [ ] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
+- [x] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
   micro-test + `gate:qemu-inert` + `gate:patch-microtests` aggregate, on every
   series/pin change. — satisfies [PATCH-4], [PATCH-5], [PATCH-8], [PATCH-38];
   spec §11.1.2, §11.9.
+  - Completed by `checks.crucible.phase2.gates.patchMicrotests`: the aggregate
+    unpacks the pinned QEMU source, applies every carried patch with zero fuzz,
+    forces the patched `qemu-crucible` build, requires the patch-series manifest
+    gate, and requires every per-patch micro-test result to be keyed to that
+    patched QEMU package/version. The `gate:qemu-inert` phase gate now depends on
+    the patch-microtests aggregate; the full upstream-equivalence qemu-inert
+    corpus remains the next task, T-PATCH-3.
 - [ ] **T-PATCH-3** Implement `gate:qemu-inert`: run an upstream-equivalent corpus
   against unpatched-pinned vs AOS-patched-sim-off and assert byte-identical
   guest-visible behavior. — satisfies [PATCH-1], [PATCH-2], [PATCH-3]; spec

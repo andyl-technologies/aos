@@ -1,12 +1,23 @@
 {
   pkgs,
   lib,
+  qemuPackage ? null,
 }: let
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   patchName = "0004-crucible-det-glib-prng.patch";
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-qemu-deterministic-entropy.c;
+  qemuPackageResultLines =
+    if qemuPackage == null
+    then ''
+      qemu_package=standalone-fixture
+      qemu_package_version=standalone-fixture
+    ''
+    else ''
+      qemu_package=${qemuPackage}
+      qemu_package_version=${qemuPackage.version}
+    '';
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -264,6 +275,7 @@ in
             patch=0004-crucible-det-glib-prng.patch
             patched_fixture_exercised=true
             stock_negative_control=true
+            ${qemuPackageResultLines}
             qemu_seed_option_controls_guest_random=true
             qemu_seed_option_controls_glib_global_prng=true
             unseeded_guest_random_uses_host_crypto=true

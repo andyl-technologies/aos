@@ -220,7 +220,13 @@ in {
     shmemControlFlags = import ./phase2-shmem-control-flags.nix {inherit pkgs lib;};
     shmemMultiVcpuNodeSlot = import ./phase2-shmem-multi-vcpu-node-slot.nix {inherit pkgs lib;};
     shmemDeliverability = import ./phase2-shmem-deliverability.nix {inherit pkgs lib;};
-    gates = {
+    gates = let
+      patchMicrotestsCheck = import ./phase2-patch-microtests.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase2.gates.patchMicrotests";
+        taskIds = ["T-PLAN-3" "T-HARN-20" "T-PATCH-2"];
+      };
+    in {
       abiConformance = redGate {
         attrPath = "checks.crucible.phase2.gates.abiConformance";
         gateName = "gate:abi-conformance";
@@ -235,13 +241,10 @@ in {
         owner = "crucible-qemu";
         phase = "phase2";
         taskIds = ["T-PLAN-3" "T-HARN-21"];
+        dependencies = [patchMicrotestsCheck];
         reason = "QEMU inertness gate is intentionally pending";
       };
-      patchMicrotests = import ./phase2-patch-microtests.nix {
-        inherit pkgs lib;
-        attrPath = "checks.crucible.phase2.gates.patchMicrotests";
-        taskIds = ["T-PLAN-3" "T-HARN-20"];
-      };
+      patchMicrotests = patchMicrotestsCheck;
       singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
