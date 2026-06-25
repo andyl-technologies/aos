@@ -181,8 +181,12 @@ green.
 
 ### Phase A — Measurement harness + the read/write session split (foundation)
 
-- [ ] `Server-Timing` span per `Backend::query`/`execute` (feature-gated) so
+- [x] `Server-Timing` span per `Backend::query`/`execute` (feature-gated) so
       per-statement ms is visible in `wrangler tail` / preview, not inferred.
+      *Done:* `aos_hub_core::backend::TimingBackend` + `QueryTimings`
+      (`backend/timing.rs`, `query-timing` feature) decorate the read-path
+      backend; the Worker emits `Server-Timing` from `fetch` (`lib.rs`). Native
+      tests green; compiles on native + wasm32 with/without the feature.
 - [ ] Stand up a throwaway **preview** Worker (`aos-hub-preview`) with its own
       D1/R2/KV/DO bindings for safe experiments (no prod impact).
 - [ ] On the preview, measure `with_session` vs the raw D1 binding for a single

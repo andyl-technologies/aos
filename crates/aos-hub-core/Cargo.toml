@@ -77,6 +77,12 @@ default = []
 postgres = ["sqlx/postgres"]
 mysql = ["sqlx/mysql"]
 
+# Per-statement query timing (RFC-0004 ch.14 Phase A). Compiles the
+# `TimingBackend` decorator + `QueryTimings`/`Server-Timing` rendering so a
+# deployment (the preview Worker) can surface the per-request D1 session cost.
+# Off by default: production pays nothing.
+query-timing = []
+
 # The concrete native database driver. `sqlx` does not build for
 # wasm32-unknown-unknown, so it is a native-only dependency: the SqlxBackend
 # Backend impl is compiled out of the Cloudflare Worker target, which supplies a
