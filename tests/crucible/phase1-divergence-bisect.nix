@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.divergenceBisect",
-  taskIds ? ["T-HARN-9" "T-HARN-10" "T-DET-20"],
+  taskIds ? ["T-HARN-9" "T-HARN-10" "T-DET-20" "T-EXEC-12"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -12,6 +12,7 @@
   };
   divergenceHarness = builtins.readFile ../../crates/crucible-harness/src/divergence.rs;
   divergenceTypes = builtins.readFile ../../crates/crucible-harness/src/divergence/types.rs;
+  replayOracleHarness = builtins.readFile ../../crates/crucible-harness/src/replay_oracle.rs;
   divergenceGate = builtins.readFile ../../crates/crucible-harness/tests/gate_divergence_bisect.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
@@ -20,6 +21,7 @@
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
+  executionModel = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -131,6 +133,48 @@
         needle = "pub fn bisect_icount_window";
       }
     ]
+    ++ failuresFor "crates/crucible-harness/src/replay_oracle.rs" replayOracleHarness [
+      {
+        label = "replay-oracle localized mismatch type";
+        needle = "pub struct ReplayOracleLocalizedMismatch";
+      }
+      {
+        label = "replay-oracle divergence inputs";
+        needle = "pub struct ReplayOracleDivergenceInputs";
+      }
+      {
+        label = "replay-oracle search divergence materialization";
+        needle = "pub struct ReplayOracleSearchDivergenceMaterialization";
+      }
+      {
+        label = "replay-oracle localization error";
+        needle = "pub enum ReplayOracleDivergenceError";
+      }
+      {
+        label = "replay-oracle search bisection error";
+        needle = "pub enum ReplayOracleSearchBisectionError";
+      }
+      {
+        label = "replay-oracle search localization failure payload";
+        needle = "pub struct ReplayOracleSearchLocalizationFailure";
+      }
+      {
+        label = "oracle mismatch localizer";
+        needle = "pub fn localize_replay_oracle_mismatch";
+      }
+      {
+        label = "sampled oracle bisection check";
+        needle = "pub fn check_sampled_search_replay_oracle_with_bisection";
+      }
+      {
+        label = "oracle mismatch uses divergence bisection";
+        needle = "bisect_diverging_runs(";
+      }
+      {
+        label = "oracle matching streams rejected";
+        needle = "Self::Divergence";
+      }
+    ]
     ++ failuresFor "crates/crucible-harness/tests/gate_divergence_bisect.rs" divergenceGate [
       {
         label = "seeded exact localization test";
@@ -183,6 +227,14 @@
       {
         label = "malformed state dump rejection";
         needle = "gate_divergence_bisect_rejects_malformed_state_dumps";
+      }
+      {
+        label = "replay-oracle mismatch localization test";
+        needle = "gate_divergence_bisect_localizes_replay_oracle_mismatch";
+      }
+      {
+        label = "replay-oracle no-repair rejection test";
+        needle = "gate_divergence_bisect_rejects_oracle_mismatch_without_divergent_streams";
       }
       {
         label = "known seeded divergence icount";
@@ -252,6 +304,10 @@
         label = "phase1 divergence-bisect lists T-DET-20";
         needle = "\"T-DET-20\"";
       }
+      {
+        label = "phase1 divergence-bisect lists T-EXEC-12";
+        needle = "\"T-EXEC-12\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
@@ -275,6 +331,16 @@
       {
         label = "DET-39 forbids repair and retry";
         needle = "be smoothed over, tolerated, or retried";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
+      {
+        label = "T-EXEC-12 checklist complete";
+        needle = "- [x] **T-EXEC-12**";
+      }
+      {
+        label = "T-EXEC-12 completion note names strict replay-oracle path";
+        needle = "strict sampled\n    replay-oracle path";
       }
     ];
 in
@@ -347,6 +413,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             rust_test=crucible-harness::gate_divergence_bisect
             localization=coarse-fingerprint-plus-exact-icount-bisection
+            oracle_failure_localization=fat-thin-divergence-bisection
             first_different_decision=canonical-schedule-bytes
             first_different_instruction=exact-icount
             no_repair_or_retry=true

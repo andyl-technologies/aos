@@ -946,9 +946,18 @@ information that cannot be recomputed.
     fingerprints. `checks.crucible.phase1.gates.replayOracle` now runs both the
     existing materialized model oracle and the QEMU `loadvm(snapshot) ≡
     replay-from-ancestor` checker tests.
-- [ ] **T-EXEC-12** Implement divergence bisection on oracle failure (localize to
+- [x] **T-EXEC-12** Implement divergence bisection on oracle failure (localize to
   first differing decision/instruction) and the `gate:divergence-bisect` check;
   assert no silent-repair path exists. — satisfies [EXEC-24]; spec §8.
+  - Completed by `crates/crucible-harness/src/divergence.rs` and
+    `crates/crucible-harness/src/replay_oracle.rs`: the strict sampled
+    replay-oracle path now calls `localize_replay_oracle_mismatch`, which
+    compares the fat/materialized path against the thin replay path through the
+    divergence bisector and reports the first differing schedule decision and
+    exact icount. `gate:divergence-bisect` covers seeded first-difference
+    localization, replay-oracle fat/thin mismatch localization, and
+    matching-stream rejection so oracle failures cannot be repaired, retried, or
+    smoothed over silently.
 - [ ] **T-EXEC-13** Express save/replay/search as model operations
   (fat-checkpoint materialization keyed by `config.id()`, on-demand oracle replay,
   frontier `step` enumeration) with content-addressed temporal-graph dedup. —

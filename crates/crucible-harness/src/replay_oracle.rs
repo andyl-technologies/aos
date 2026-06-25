@@ -7,6 +7,12 @@
 use std::error::Error;
 use std::fmt;
 
+use crate::divergence::{
+    DecisionTraceEntry, DivergenceBisectionError, DivergenceBisectionReport, DivergenceSide,
+    DivergenceStateDump, bisect_diverging_runs,
+};
+use crate::fingerprint::FingerprintStream;
+
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x00000100000001b3;
 
@@ -176,6 +182,81 @@ pub struct ReplayOracleBisectionRequest {
     pub reason: &'static str,
 }
 
+/// A replay-oracle mismatch localized by divergence bisection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayOracleLocalizedMismatch {
+    /// First replay-oracle mismatch that triggered localization.
+    pub mismatch: ReplayOracleMismatch,
+    /// Bisection request attached to the fat/thin disagreement.
+    pub bisection: ReplayOracleBisectionRequest,
+    /// First differing decision or instruction between the fat and thin sides.
+    pub divergence: DivergenceBisectionReport,
+}
+
+/// A replay-oracle mismatch that could not be localized.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplayOracleDivergenceError {
+    /// The mismatch and bisection request name different checkpoints.
+    CheckpointIdMismatch {
+        /// Checkpoint id carried by the replay-oracle mismatch.
+        mismatch_checkpoint_id: String,
+        /// Checkpoint id carried by the bisection request.
+        bisection_checkpoint_id: String,
+    },
+    /// The fat/thin fingerprint streams did not produce a bisectable divergence.
+    Divergence {
+        /// Underlying divergence-bisection failure.
+        source: DivergenceBisectionError,
+    },
+}
+
+/// Fat and thin diagnostic artifacts used to localize an oracle mismatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReplayOracleDivergenceInputs<'a> {
+    /// Fingerprint stream from the fat/materialized checkpoint path.
+    pub fat_stream: &'a FingerprintStream,
+    /// Fingerprint stream from the thin replay-from-ancestor path.
+    pub thin_stream: &'a FingerprintStream,
+    /// Canonical decision trace from the fat/materialized path.
+    pub fat_decisions: &'a [DecisionTraceEntry],
+    /// Canonical decision trace from the thin replay path.
+    pub thin_decisions: &'a [DecisionTraceEntry],
+}
+
+/// A search materialization paired with fat/thin divergence artifacts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayOracleSearchDivergenceMaterialization<'a> {
+    /// Materialized checkpoint considered by in-search oracle sampling.
+    pub materialization: ReplayOracleSearchMaterialization,
+    /// Fat/thin diagnostic streams and decision traces for bisection.
+    pub divergence_inputs: ReplayOracleDivergenceInputs<'a>,
+}
+
+impl<'a> ReplayOracleSearchDivergenceMaterialization<'a> {
+    /// Builds one search materialization with its divergence artifacts.
+    #[must_use]
+    pub fn new(
+        materialization: ReplayOracleSearchMaterialization,
+        divergence_inputs: ReplayOracleDivergenceInputs<'a>,
+    ) -> Self {
+        Self {
+            materialization,
+            divergence_inputs,
+        }
+    }
+}
+
+/// Details for a sampled replay-oracle mismatch that failed localization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayOracleSearchLocalizationFailure {
+    /// First replay-oracle mismatch that triggered localization.
+    pub mismatch: ReplayOracleMismatch,
+    /// Bisection request attached to the fat/thin disagreement.
+    pub bisection: ReplayOracleBisectionRequest,
+    /// Reason localization failed.
+    pub source: ReplayOracleDivergenceError,
+}
+
 /// Summary of a sampled in-search replay-oracle pass.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayOracleSearchSamplingReport {
@@ -206,6 +287,21 @@ pub enum ReplayOracleSearchSamplingError {
     },
 }
 
+/// A failed in-search replay-oracle sampling run with required bisection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplayOracleSearchBisectionError {
+    /// A sampled checkpoint mismatch was localized successfully.
+    Mismatch {
+        /// Localized fat/thin replay-oracle mismatch.
+        localized: Box<ReplayOracleLocalizedMismatch>,
+    },
+    /// A sampled checkpoint mismatch could not be localized.
+    LocalizationFailure {
+        /// Diagnostic payload for the failed localization.
+        failure: Box<ReplayOracleSearchLocalizationFailure>,
+    },
+}
+
 impl fmt::Display for ReplayOracleSearchSamplingError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -225,6 +321,62 @@ impl fmt::Display for ReplayOracleSearchSamplingError {
 }
 
 impl Error for ReplayOracleSearchSamplingError {}
+
+impl fmt::Display for ReplayOracleSearchBisectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Mismatch { localized } => write!(
+                formatter,
+                "{}; localized first divergence for checkpoint {}",
+                localized.mismatch, localized.bisection.checkpoint_id
+            ),
+            Self::LocalizationFailure { failure } => write!(
+                formatter,
+                "{mismatch}; failed to localize checkpoint {} at materialization {}: {source}",
+                failure.bisection.checkpoint_id,
+                failure.bisection.sequence,
+                mismatch = &failure.mismatch,
+                source = &failure.source
+            ),
+        }
+    }
+}
+
+impl Error for ReplayOracleSearchBisectionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Mismatch { .. } => None,
+            Self::LocalizationFailure { failure } => Some(&failure.source),
+        }
+    }
+}
+
+impl fmt::Display for ReplayOracleDivergenceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CheckpointIdMismatch {
+                mismatch_checkpoint_id,
+                bisection_checkpoint_id,
+            } => write!(
+                formatter,
+                "replay-oracle mismatch checkpoint `{mismatch_checkpoint_id}` does not match bisection request `{bisection_checkpoint_id}`"
+            ),
+            Self::Divergence { source } => write!(
+                formatter,
+                "replay-oracle mismatch could not be divergence-bisected: {source}"
+            ),
+        }
+    }
+}
+
+impl Error for ReplayOracleDivergenceError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::CheckpointIdMismatch { .. } => None,
+            Self::Divergence { source } => Some(source),
+        }
+    }
+}
 
 impl fmt::Display for ReplayOracleMismatch {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -314,7 +466,134 @@ pub fn check_materialized_replay_oracle(
     Ok(())
 }
 
+/// Localizes a replay-oracle mismatch to the first differing decision or icount.
+///
+/// The left side of the divergence report is the fat/materialized checkpoint
+/// path; the right side is the thin replay-from-ancestor path.
+///
+/// # Errors
+///
+/// Returns [`ReplayOracleDivergenceError::CheckpointIdMismatch`] when the
+/// mismatch and bisection request refer to different checkpoints. Returns
+/// [`ReplayOracleDivergenceError::Divergence`] when the fat/thin fingerprint
+/// streams do not produce a bisectable divergence.
+pub fn localize_replay_oracle_mismatch<D>(
+    mismatch: ReplayOracleMismatch,
+    bisection: ReplayOracleBisectionRequest,
+    inputs: ReplayOracleDivergenceInputs<'_>,
+    matches_at: impl FnMut(u64) -> bool,
+    dump_at: D,
+) -> Result<ReplayOracleLocalizedMismatch, ReplayOracleDivergenceError>
+where
+    D: FnMut(DivergenceSide, u64) -> DivergenceStateDump,
+{
+    if mismatch.checkpoint_id != bisection.checkpoint_id {
+        return Err(ReplayOracleDivergenceError::CheckpointIdMismatch {
+            mismatch_checkpoint_id: mismatch.checkpoint_id,
+            bisection_checkpoint_id: bisection.checkpoint_id,
+        });
+    }
+
+    let divergence = bisect_diverging_runs(
+        inputs.fat_stream,
+        inputs.thin_stream,
+        inputs.fat_decisions,
+        inputs.thin_decisions,
+        matches_at,
+        dump_at,
+    )
+    .map_err(|source| ReplayOracleDivergenceError::Divergence { source })?;
+
+    Ok(ReplayOracleLocalizedMismatch {
+        mismatch,
+        bisection,
+        divergence,
+    })
+}
+
+/// Checks sampled search checkpoints and localizes the first oracle mismatch.
+///
+/// Each sampled fat checkpoint is compared to its thin reconstruction. On
+/// mismatch this function immediately runs divergence bisection between the fat
+/// and thin artifacts instead of returning a recoverable mismatch.
+///
+/// # Errors
+///
+/// Returns [`ReplayOracleSearchBisectionError::Mismatch`] after successfully
+/// localizing the first sampled mismatch. Returns
+/// [`ReplayOracleSearchBisectionError::LocalizationFailure`] when the mismatch
+/// could not be localized, including the case where the fat/thin fingerprint
+/// streams match and no bisection window exists.
+pub fn check_sampled_search_replay_oracle_with_bisection<M, D>(
+    materializations: &[ReplayOracleSearchDivergenceMaterialization<'_>],
+    config: &ReplayOracleSamplingConfig,
+    mut matches_at: M,
+    mut dump_at: D,
+) -> Result<ReplayOracleSearchSamplingReport, ReplayOracleSearchBisectionError>
+where
+    M: FnMut(&ReplayOracleSearchMaterialization, u64) -> bool,
+    D: FnMut(&ReplayOracleSearchMaterialization, DivergenceSide, u64) -> DivergenceStateDump,
+{
+    let mut report = ReplayOracleSearchSamplingReport {
+        considered: materializations.len(),
+        sampled: 0,
+        skipped: 0,
+        sampled_checkpoints: Vec::new(),
+    };
+
+    for materialization in materializations {
+        if !config.samples(&materialization.materialization) {
+            report.skipped += 1;
+            continue;
+        }
+
+        report.sampled += 1;
+        report
+            .sampled_checkpoints
+            .push(materialization.materialization.case.checkpoint_id.clone());
+        if let Err(mismatch) = check_materialized_replay_oracle(std::slice::from_ref(
+            &materialization.materialization.case,
+        )) {
+            let bisection = ReplayOracleBisectionRequest {
+                sequence: materialization.materialization.sequence,
+                checkpoint_id: mismatch.checkpoint_id.clone(),
+                reason: "sampled fat checkpoint differs from thin reconstruction",
+            };
+            match localize_replay_oracle_mismatch(
+                mismatch.clone(),
+                bisection.clone(),
+                materialization.divergence_inputs,
+                |icount| matches_at(&materialization.materialization, icount),
+                |side, icount| dump_at(&materialization.materialization, side, icount),
+            ) {
+                Ok(localized) => {
+                    return Err(ReplayOracleSearchBisectionError::Mismatch {
+                        localized: Box::new(localized),
+                    });
+                }
+                Err(source) => {
+                    return Err(ReplayOracleSearchBisectionError::LocalizationFailure {
+                        failure: Box::new(ReplayOracleSearchLocalizationFailure {
+                            mismatch,
+                            bisection,
+                            source,
+                        }),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(report)
+}
+
 /// Checks a deterministic sample of materialized search checkpoints.
+///
+/// This lower-level helper reports the first sampled mismatch plus a required
+/// bisection request. Call
+/// [`check_sampled_search_replay_oracle_with_bisection`] when fat/thin
+/// diagnostic artifacts are available and the mismatch must be localized before
+/// returning.
 ///
 /// # Errors
 ///
