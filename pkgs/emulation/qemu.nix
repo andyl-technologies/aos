@@ -34,6 +34,7 @@
       patch -p1 < ${./qemu-patches/0007-crucible-block-rtc-read.patch}
       patch -p1 < ${./qemu-patches/0008-crucible-det-getrandom.patch}
       patch -p1 < ${./qemu-patches/0009-crucible-net-deterministic.patch}
+      patch -p1 < ${./qemu-patches/0010-crucible-plugin-time-advance.patch}
     ''
     else "";
 in

@@ -1,0 +1,105 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -727,6 +727,40 @@
+  */
+ QEMU_PLUGIN_API
+ void qemu_plugin_update_ns(const void *handle, int64_t time);
++
++/**
++ * qemu_plugin_has_time_control() - report whether a plugin owns virtual time
++ *
++ * Returns true after qemu_plugin_request_time_control() grants ownership to a
++ * plugin. Crucible uses this predicate to suppress realtime icount warp while
++ * the deterministic scheduler owns idle virtual-time advancement.
++ */
++QEMU_PLUGIN_API
++bool qemu_plugin_has_time_control(void);
++
++/**
++ * qemu_plugin_advance_virtual_time_direct() - advance virtual time directly
++ * @time: absolute QEMU_CLOCK_VIRTUAL time in nanoseconds
++ *
++ * Advances virtual time synchronously after plugin time control has been
++ * acquired, runs due virtual-clock timers inline, and drains bottom halves
++ * scheduled by those timers before returning. If no plugin owns time control
++ * or the call is outside QEMU's BQL-held idle/main-loop context, the call
++ * fails closed and leaves virtual time unchanged.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_advance_virtual_time_direct(int64_t time);
++
++/**
++ * qemu_plugin_drain_main_loop() - run one non-blocking main-loop pass
++ *
++ * Processes pending main-loop work without blocking on host file descriptors or
++ * timers and without implicitly advancing virtual time. If no plugin owns time
++ * control or the call is outside QEMU's BQL-held idle/main-loop context, the
++ * call fails closed and does not enter the main loop.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_drain_main_loop(void);
+ 
+ /**
+  * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -176,7 +176,5 @@
+ void qemu_plugin_atexit_cb(void);
+ 
+-bool qemu_plugin_has_time_control(void);
+-
+ void qemu_plugin_add_dyn_cb_arr(GArray *arr);
+ 
+ static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -137,7 +137,46 @@
+     }
+ }
+ 
++static bool qemu_plugin_time_control_call_permitted(void)
++{
++    return has_control && bql_locked();
++}
++
++static void qemu_plugin_drain_bottom_halves(void)
++{
++    AioContext *aio_context = qemu_get_aio_context();
++
++    if (aio_context == NULL) {
++        return;
++    }
++
++    while (aio_bh_poll(aio_context)) {
++        /* Drain timer-produced BH work before returning to the plugin. */
++    }
++}
++
++void qemu_plugin_advance_virtual_time_direct(int64_t new_time)
++{
++    if (!qemu_plugin_time_control_call_permitted()) {
++        return;
++    }
++
++    qemu_clock_advance_virtual_time(new_time);
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    qemu_plugin_drain_bottom_halves();
++}
++
++void qemu_plugin_drain_main_loop(void)
++{
++    if (!qemu_plugin_time_control_call_permitted()) {
++        return;
++    }
++
++    main_loop_wait(true);
++    qemu_plugin_drain_bottom_halves();
++}
++
+ 
+ static NetClientState *qemu_plugin_default_nic_queue(void)
+ {
+     NetClientState *nc;

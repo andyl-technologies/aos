@@ -13,6 +13,7 @@
   qemuPatch7Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0007-crucible-block-rtc-read.patch;
   qemuPatch8Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0008-crucible-det-getrandom.patch;
   qemuPatch9Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0009-crucible-net-deterministic.patch;
+  qemuPatch10Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0010-crucible-plugin-time-advance.patch;
   qemuNixHash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu.nix;
   qemuPatch1Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0001-crucible-sim-accel.patch;
   qemuPatch2Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0002-crucible-rr-fingerprint-helpers.patch;
@@ -23,6 +24,7 @@
   qemuPatch7Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0007-crucible-block-rtc-read.patch;
   qemuPatch8Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0008-crucible-det-getrandom.patch;
   qemuPatch9Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0009-crucible-net-deterministic.patch;
+  qemuPatch10Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0010-crucible-plugin-time-advance.patch;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-s9-qemu-build-identity";
@@ -39,6 +41,7 @@ in
     qemuPatch7 = qemuPatch7Source;
     qemuPatch8 = qemuPatch8Source;
     qemuPatch9 = qemuPatch9Source;
+    qemuPatch10 = qemuPatch10Source;
     passAsFile = [
       "qemuNix"
       "qemuPatch1"
@@ -50,6 +53,7 @@ in
       "qemuPatch7"
       "qemuPatch8"
       "qemuPatch9"
+      "qemuPatch10"
     ];
 
     buildDeps = [
@@ -83,6 +87,8 @@ in
     PATCH_0008_HASH = qemuPatch8Hash;
     PATCH_0009_NAME = "0009-crucible-net-deterministic.patch";
     PATCH_0009_HASH = qemuPatch9Hash;
+    PATCH_0010_NAME = "0010-crucible-plugin-time-advance.patch";
+    PATCH_0010_HASH = qemuPatch10Hash;
 
     phases = [
       {
@@ -132,6 +138,7 @@ in
           cp "$qemuPatch7Path" "$PATCH_0007_NAME"
           cp "$qemuPatch8Path" "$PATCH_0008_NAME"
           cp "$qemuPatch9Path" "$PATCH_0009_NAME"
+          cp "$qemuPatch10Path" "$PATCH_0010_NAME"
 
           require_fixed qemu.nix 'pname ? "qemu"'
           require_fixed qemu.nix 'enablePlugins ? false'
@@ -145,6 +152,7 @@ in
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0007-crucible-block-rtc-read.patch}'
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0008-crucible-det-getrandom.patch}'
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0009-crucible-net-deterministic.patch}'
+          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0010-crucible-plugin-time-advance.patch}'
           require_fixed qemu.nix '--target-list=x86_64-softmmu'
           require_fixed qemu.nix 'https://download.qemu.org/qemu-'
           require_fixed qemu.nix '.tar.xz'
@@ -187,8 +195,17 @@ in
           require_fixed "$PATCH_0009_NAME" 'qemu_plugin_net_sent_cb'
           require_fixed "$PATCH_0009_NAME" 'qemu_net_queue_flush'
           require_fixed "$PATCH_0009_NAME" 'qemu_notify_event'
+          require_fixed "$PATCH_0010_NAME" 'qemu_plugin_has_time_control'
+          require_fixed "$PATCH_0010_NAME" 'qemu_plugin_advance_virtual_time_direct'
+          require_fixed "$PATCH_0010_NAME" 'qemu_plugin_drain_main_loop'
+          require_fixed "$PATCH_0010_NAME" 'qemu_plugin_time_control_call_permitted'
+          require_fixed "$PATCH_0010_NAME" 'bql_locked()'
+          require_fixed "$PATCH_0010_NAME" 'qemu_clock_advance_virtual_time(new_time)'
+          require_fixed "$PATCH_0010_NAME" 'qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL)'
+          require_fixed "$PATCH_0010_NAME" 'while (aio_bh_poll(aio_context))'
+          require_fixed "$PATCH_0010_NAME" 'main_loop_wait(true)'
 
-          patch_count=9
+          patch_count=10
           patch_series_hash=$(
             {
               printf '%s  %s\n' "$PATCH_0001_HASH" "$PATCH_0001_NAME"
@@ -200,6 +217,7 @@ in
               printf '%s  %s\n' "$PATCH_0007_HASH" "$PATCH_0007_NAME"
               printf '%s  %s\n' "$PATCH_0008_HASH" "$PATCH_0008_NAME"
               printf '%s  %s\n' "$PATCH_0009_HASH" "$PATCH_0009_NAME"
+              printf '%s  %s\n' "$PATCH_0010_HASH" "$PATCH_0010_NAME"
             } \
               | sha256sum \
               | gawk '{ print $1 }'
@@ -229,6 +247,8 @@ in
             echo "patch_0008_hash=$PATCH_0008_HASH"
             echo "patch_0009_name=$PATCH_0009_NAME"
             echo "patch_0009_hash=$PATCH_0009_HASH"
+            echo "patch_0010_name=$PATCH_0010_NAME"
+            echo "patch_0010_hash=$PATCH_0010_HASH"
             echo "patch_series_hash=$patch_series_hash"
             echo "plugins_enabled=true"
             echo "s1_horizon_extended_hash=$s1_horizon_extended_hash"
@@ -291,6 +311,7 @@ in
           qemu_internal_entropy_patch_present=true
           qemu_guest_random_patch_present=true
           qemu_network_rx_patch_present=true
+          qemu_time_advance_patch_present=true
           full_upstream_inertness_comparison=false
           qemu_inert_gate_status=fallback_pending_upstream_comparison
           fallback_adopted=pin_build_id_and_regate_on_change
@@ -308,6 +329,7 @@ in
           cp "$PATCH_0007_NAME" "$out/$PATCH_0007_NAME"
           cp "$PATCH_0008_NAME" "$out/$PATCH_0008_NAME"
           cp "$PATCH_0009_NAME" "$out/$PATCH_0009_NAME"
+          cp "$PATCH_0010_NAME" "$out/$PATCH_0010_NAME"
           {
             echo PASS_WITH_FALLBACK
             echo spike=qemu-build-identity-and-inertness
@@ -337,6 +359,8 @@ in
             echo patch_0008_hash="$PATCH_0008_HASH"
             echo patch_0009_name="$PATCH_0009_NAME"
             echo patch_0009_hash="$PATCH_0009_HASH"
+            echo patch_0010_name="$PATCH_0010_NAME"
+            echo patch_0010_hash="$PATCH_0010_HASH"
             echo patch_series_hash="$patch_series_hash"
             echo plugins_enabled=true
             echo patch_apply_list_matches="$patch_apply_list_matches"
@@ -348,6 +372,7 @@ in
             echo qemu_internal_entropy_patch_present="$qemu_internal_entropy_patch_present"
             echo qemu_guest_random_patch_present="$qemu_guest_random_patch_present"
             echo qemu_network_rx_patch_present="$qemu_network_rx_patch_present"
+            echo qemu_time_advance_patch_present="$qemu_time_advance_patch_present"
             echo s1_result_consumed=true
             echo s1_result_status=PASS
             echo s1_source=checks.crucible.phase0.s1Fingerprint
