@@ -12,7 +12,7 @@
     hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
   };
 
-  patchName = "0005-crucible-clock-deadline.patch";
+  patchName = "0006-crucible-clock-deadline.patch";
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   patchSource = builtins.readFile (../../pkgs/emulation/qemu-patches + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-clock-deadline.c;
@@ -70,7 +70,7 @@
     failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
         label = "clock deadline patch wiring";
-        needle = "patch -p1 < \${./qemu-patches/0005-crucible-clock-deadline.patch}";
+        needle = "patch -p1 < \${./qemu-patches/0006-crucible-clock-deadline.patch}";
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
@@ -508,7 +508,7 @@ in
             gate=gate:layer0-determinism
             gate=gate:scheduler-liveness
             gate=gate:patch-microtests
-            patch=0005-crucible-clock-deadline.patch
+            patch=0006-crucible-clock-deadline.patch
             patched_fixture_exercised=true
             stock_negative_control=true
             ${qemuPackageResultLines}

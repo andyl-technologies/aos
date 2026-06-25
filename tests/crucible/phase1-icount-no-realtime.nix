@@ -4,7 +4,7 @@
   qemuPackage ? null,
 }: let
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  patchName = "0002-crucible-icount-no-realtime.patch";
+  patchName = "0003-crucible-icount-no-realtime.patch";
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-icount-no-realtime.c;
@@ -46,7 +46,7 @@
   qemuNixRequirements = [
     {
       label = "icount no-realtime patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0002-crucible-icount-no-realtime.patch}";
+      needle = "patch -p1 < \${./qemu-patches/0003-crucible-icount-no-realtime.patch}";
     }
   ];
 
@@ -195,7 +195,7 @@ in
             gate=gate:layer0-determinism
             gate=gate:patch-microtests
             tasks=T-DET-2
-            patch=0002-crucible-icount-no-realtime.patch
+            patch=0003-crucible-icount-no-realtime.patch
             patched_fixture_exercised=true
             stock_negative_control=true
             ${qemuPackageResultLines}

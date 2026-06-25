@@ -25,11 +25,12 @@
   patchPhase =
     if applyCruciblePatches
     then ''
-      patch -p1 < ${./qemu-patches/0001-crucible-rr-fingerprint-helpers.patch}
-      patch -p1 < ${./qemu-patches/0002-crucible-icount-no-realtime.patch}
-      patch -p1 < ${./qemu-patches/0003-crucible-no-warp-with-plugin.patch}
-      patch -p1 < ${./qemu-patches/0004-crucible-det-glib-prng.patch}
-      patch -p1 < ${./qemu-patches/0005-crucible-clock-deadline.patch}
+      patch -p1 < ${./qemu-patches/0001-crucible-sim-accel.patch}
+      patch -p1 < ${./qemu-patches/0002-crucible-rr-fingerprint-helpers.patch}
+      patch -p1 < ${./qemu-patches/0003-crucible-icount-no-realtime.patch}
+      patch -p1 < ${./qemu-patches/0004-crucible-no-warp-with-plugin.patch}
+      patch -p1 < ${./qemu-patches/0005-crucible-det-glib-prng.patch}
+      patch -p1 < ${./qemu-patches/0006-crucible-clock-deadline.patch}
     ''
     else "";
 in

@@ -17,35 +17,42 @@
 
   carriedPatches = [
     {
-      file = "0001-crucible-rr-fingerprint-helpers.patch";
+      file = "0001-crucible-sim-accel.patch";
+      catalogName = "crucible-sim-accel";
+      class = "D";
+      enforces = "DET-1,TIME-23,E14";
+      capability = "-accel sim deterministic TCG accelerator";
+    }
+    {
+      file = "0002-crucible-rr-fingerprint-helpers.patch";
       catalogName = "crucible-rr-fingerprint-helpers";
       class = "F";
       enforces = "DET-29,QEMU-43";
       capability = "phase1 RR quantum and fingerprint helper ABI";
     }
     {
-      file = "0002-crucible-icount-no-realtime.patch";
+      file = "0003-crucible-icount-no-realtime.patch";
       catalogName = "crucible-icount-no-realtime";
       class = "D";
       enforces = "DET-9,TIME-22,E3";
       capability = "precise icount budget excludes realtime deadlines";
     }
     {
-      file = "0003-crucible-no-warp-with-plugin.patch";
+      file = "0004-crucible-no-warp-with-plugin.patch";
       catalogName = "crucible-no-warp-with-plugin";
       class = "D";
       enforces = "DET-10,TIME-21,E2";
       capability = "time-control plugin suppresses idle wall-clock warp";
     }
     {
-      file = "0004-crucible-det-glib-prng.patch";
+      file = "0005-crucible-det-glib-prng.patch";
       catalogName = "crucible-det-glib-prng";
       class = "D";
       enforces = "DET-21,E9";
       capability = "run seed initializes QEMU global GLib PRNG";
     }
     {
-      file = "0005-crucible-clock-deadline.patch";
+      file = "0006-crucible-clock-deadline.patch";
       catalogName = "crucible-clock-deadline";
       class = "D";
       enforces = "TIME-24,TIME-25";

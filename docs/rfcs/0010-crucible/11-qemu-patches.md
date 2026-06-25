@@ -1119,10 +1119,17 @@ time-control primitives the whole design rests on.
     runs it against patched `qemu-crucible` with no plugin, no sim accelerator,
     and no sim flags, and compares normalized boot/device-I/O, plain-icount boot,
     QMP introspection, migration stream, and snapshot/restore command surface.
-- [ ] **T-PATCH-4** Implement `crucible-sim-accel`: the split vCPU/main
+- [x] **T-PATCH-4** Implement `crucible-sim-accel`: the split vCPU/main
   deterministic TCG sim accelerator (`-accel sim`), inert under other
   accelerators, with a cross-run icount-trace micro-test. — satisfies [PATCH-11];
   spec §11.4 (E14).
+  - Completed by `0001-crucible-sim-accel.patch` and
+    `checks.crucible.phase1.simAccel`: `-accel sim` registers as a TCG-derived
+    accelerator, rejects launch without fixed `-icount shift=N`, disables MTTCG,
+    reuses TCG target CPU hooks, and runs a bounded cross-run TB execution trace
+    under fixed icount. `checks.crucible.phase2.gates.patchMicrotests` carries
+    the per-patch runtime check, while `checks.crucible.phase2.gates.qemuInert`
+    verifies sim remains opt-in and inert under the normal patched QEMU surface.
 - [ ] **T-PATCH-5** Implement the warp/budget determinism patches
   `crucible-no-warp-with-plugin` and `crucible-icount-no-realtime`, each gated on
   its sim predicate with reintroduce-to-red micro-tests. — satisfies [PATCH-12],

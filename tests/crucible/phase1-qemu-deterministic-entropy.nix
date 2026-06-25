@@ -4,7 +4,7 @@
   qemuPackage ? null,
 }: let
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  patchName = "0004-crucible-det-glib-prng.patch";
+  patchName = "0005-crucible-det-glib-prng.patch";
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-qemu-deterministic-entropy.c;
@@ -46,7 +46,7 @@
   qemuNixRequirements = [
     {
       label = "deterministic entropy patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0004-crucible-det-glib-prng.patch}";
+      needle = "patch -p1 < \${./qemu-patches/0005-crucible-det-glib-prng.patch}";
     }
   ];
 
@@ -272,7 +272,7 @@ in
             gate=gate:layer0-determinism
             gate=gate:patch-microtests
             tasks=T-DET-4
-            patch=0004-crucible-det-glib-prng.patch
+            patch=0005-crucible-det-glib-prng.patch
             patched_fixture_exercised=true
             stock_negative_control=true
             ${qemuPackageResultLines}

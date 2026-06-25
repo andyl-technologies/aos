@@ -4,7 +4,7 @@
   qemuPackage ? null,
 }: let
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  patchName = "0001-crucible-rr-fingerprint-helpers.patch";
+  patchName = "0002-crucible-rr-fingerprint-helpers.patch";
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-rr-fingerprint-helpers.c;
@@ -46,7 +46,7 @@
   qemuNixRequirements = [
     {
       label = "RR fingerprint helper patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0001-crucible-rr-fingerprint-helpers.patch}";
+      needle = "patch -p1 < \${./qemu-patches/0002-crucible-rr-fingerprint-helpers.patch}";
     }
   ];
 
@@ -479,7 +479,7 @@ in
             check=checks.crucible.phase1.rrFingerprintHelpers
             gate=gate:patch-microtests
             tasks=T-HARN-20
-            patch=0001-crucible-rr-fingerprint-helpers.patch
+            patch=0002-crucible-rr-fingerprint-helpers.patch
             patched_fixture_exercised=true
             stock_negative_control=true
             ${qemuPackageResultLines}

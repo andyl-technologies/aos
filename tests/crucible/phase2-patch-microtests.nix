@@ -17,23 +17,27 @@
 
   perPatchMicrotests = [
     {
-      patch = "0001-crucible-rr-fingerprint-helpers.patch";
+      patch = "0001-crucible-sim-accel.patch";
+      check = import ./phase1-sim-accel.nix {inherit pkgs lib qemuPackage;};
+    }
+    {
+      patch = "0002-crucible-rr-fingerprint-helpers.patch";
       check = import ./phase1-rr-fingerprint-helpers.nix {inherit pkgs lib qemuPackage;};
     }
     {
-      patch = "0002-crucible-icount-no-realtime.patch";
+      patch = "0003-crucible-icount-no-realtime.patch";
       check = import ./phase1-icount-no-realtime.nix {inherit pkgs lib qemuPackage;};
     }
     {
-      patch = "0003-crucible-no-warp-with-plugin.patch";
+      patch = "0004-crucible-no-warp-with-plugin.patch";
       check = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib qemuPackage;};
     }
     {
-      patch = "0004-crucible-det-glib-prng.patch";
+      patch = "0005-crucible-det-glib-prng.patch";
       check = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib qemuPackage;};
     }
     {
-      patch = "0005-crucible-clock-deadline.patch";
+      patch = "0006-crucible-clock-deadline.patch";
       check = import ./phase1-clock-deadline.nix {inherit pkgs lib qemuPackage;};
     }
   ];
