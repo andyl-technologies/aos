@@ -3720,6 +3720,211 @@ fn synthetic_builtin_attr_cold_force_records_demand_without_materializing() {
 }
 
 #[test]
+fn public_eval_advances_persistent_force_demand_run_boundary() {
+    let persist_root = unique_temp_dir("force-cache-persistent-run-boundary");
+    let source = "let b = builtins; in { a = b.currentSystem; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let current_system = symbol_for(&ir, b"currentSystem");
+    let builtin = lookup_builtin(b"currentSystem").expect("currentSystem builtin is registered");
+    let mut key_eval = TreeWalk::with_options_and_source(
+        &ir,
+        TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+            .expect("currentSystem is valid"),
+        "synthetic-builtins.nix",
+        source,
+    );
+    let root = key_eval.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = key_eval
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let select_id = key_eval
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a remains a suspended select thunk")
+        .body()
+        .expect("a thunk has a lowered select body");
+    let identity = key_eval
+        .cache_synthetic_builtin_attr_identity(
+            EvalNodeRef::new(EvalModuleId::ROOT, select_id),
+            current_system,
+            builtin,
+        )
+        .expect("synthetic currentSystem identity builds");
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+
+    let mut options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let attr_path = vec![b"a".to_vec()];
+    let first = eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
+        &ir,
+        &attr_path,
+        options.clone(),
+        "synthetic-builtins.nix",
+        source,
+        None,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    )
+    .expect("first attr-path eval succeeds");
+    assert_eq!(
+        first
+            .heap()
+            .get_string(first.value())
+            .expect("currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux"
+    );
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    assert_eq!(
+        persist
+            .lookup_node_materialization_reuse(key)
+            .expect("metadata lookup succeeds"),
+        Some(MaterializationReuse::from_previous_run(1)),
+        "successful public eval advances cold current demand into prior-run history"
+    );
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "the cold run still skips the durable value payload before prior demand exists"
+    );
+    drop(persist);
+
+    let second = eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
+        &ir,
+        &attr_path,
+        options,
+        "synthetic-builtins.nix",
+        source,
+        None,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    )
+    .expect("second attr-path eval succeeds");
+    assert_eq!(
+        second
+            .heap()
+            .get_string(second.value())
+            .expect("currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux"
+    );
+
+    let expected_payload = CachedExpressionValue::context_free_string(b"x86_64-linux".to_vec());
+    let expected_value_hash = expected_payload
+        .value_hash()
+        .expect("expected payload hashes");
+    let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
+    assert_eq!(
+        persist
+            .lookup_node_materialization_reuse(key)
+            .expect("metadata lookup succeeds"),
+        Some(MaterializationReuse::from_previous_run(2)),
+        "second successful public eval advances the new demand observation too"
+    );
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        Some(expected_payload),
+        "prior-run demand lets the next run materialize the durable value payload"
+    );
+    assert_eq!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds"),
+        Some(PersistNodeTraceLogEntry::new(
+            key,
+            expected_value_hash,
+            persistent_empty_trace_payload()
+        )),
+        "materialized public evals write the zero-input verifying trace"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn non_owning_public_eval_rejection_does_not_advance_persistent_force_demand() {
+    let persist_root = unique_temp_dir("force-cache-persistent-rejected-boundary");
+    let source = "let b = builtins; in { a = b.currentSystem; }.a";
+    let ir = lower(source);
+
+    let mut options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let error =
+        eval_whnf_with_options(&ir, options).expect_err("non-owning eval rejects heap string");
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::HeapValueRequiresOwner {
+            id: ir.root,
+            tag: ValueTag::String,
+        }
+    );
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    let entries = persist
+        .node_metadata_index()
+        .latest_entries()
+        .expect("latest metadata entries load");
+    let [entry] = entries.as_slice() else {
+        panic!("expected one force-cache demand metadata entry, got {entries:?}");
+    };
+    assert_eq!(
+        entry.value().materialization_reuse(),
+        MaterializationReuse::new(0, 1),
+        "the rejected public wrapper must not promote demand into prior-run history"
+    );
+    assert_eq!(
+        entry.value().materialized_value_hash(),
+        None,
+        "the rejected public wrapper must not link a durable payload"
+    );
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(entry.key())
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "the rejected public wrapper must not materialize a durable payload"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn public_eval_without_persistent_force_demand_does_not_open_persist_cache() {
+    let persist_root = unique_temp_dir("force-cache-persistent-unused-boundary");
+    let ir = lower("1 + 2");
+    let mut options = TreeWalkOptions::default();
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+
+    let bytes = eval_number_raw_bytes_with_options(&ir, options).expect("number eval succeeds");
+    assert_eq!(bytes, b"3");
+
+    let entries = fs::read_dir(&persist_root)
+        .expect("temp root is readable")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("temp root entries read");
+    assert!(
+        entries.is_empty(),
+        "successful public evals must not create persistent-cache state unless force-cache code opened it"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
 fn synthetic_builtin_attr_hits_persistent_current_system_with_empty_trace() {
     let persist_root = unique_temp_dir("force-cache-persistent-current-system-hit");
     let source = "let b = builtins; in { a = b.currentSystem; }";

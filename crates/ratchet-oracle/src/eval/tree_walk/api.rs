@@ -27,8 +27,12 @@ pub fn eval_whnf(ir: &Ir) -> Result<Value, TreeWalkError> {
 /// heap-backed value; use [`eval_whnf_owned_with_options`] for those values so
 /// their evaluator heap stays alive.
 pub fn eval_whnf_with_options(ir: &Ir, options: TreeWalkOptions) -> Result<Value, TreeWalkError> {
-    let outcome = eval_whnf_owned_with_options(ir, options)?;
-    if outcome.value.tag().is_heap() {
+    let mut evaluator = TreeWalk::with_options(ir, options);
+    let value = evaluator.eval_root()?;
+    evaluator.derivation_snapshot()?;
+    let stats = evaluator.stats_snapshot();
+    TreeWalk::emit_stats_trace(&stats);
+    if value.tag().is_heap() {
         let span = ir
             .arena
             .node(ir.root)
@@ -37,12 +41,13 @@ pub fn eval_whnf_with_options(ir: &Ir, options: TreeWalkOptions) -> Result<Value
         return Err(TreeWalkError::new(
             TreeWalkErrorKind::HeapValueRequiresOwner {
                 id: ir.root,
-                tag: outcome.value.tag(),
+                tag: value.tag(),
             },
             span,
         ));
     }
-    Ok(outcome.value)
+    evaluator.advance_persist_eval_cache_run_boundary();
+    Ok(value)
 }
 
 /// Evaluates an IR root while returning the heap that owns heap-backed values.
@@ -85,7 +90,9 @@ pub fn eval_whnf_owned_with_options_and_realizer(
 /// The supplied cache runtime remains advisory: enabled runtimes may observe
 /// source-backed or lowered-IR-backed forced inline thunk results and reuse
 /// clean pure inline-scalar force results for a conservative IR subset. They do
-/// not perform general memo lookup or persistence through this entry point.
+/// not perform general demand-graph memo lookup. When options configure a
+/// persistent-cache root, forced-expression observations may record demand and
+/// threshold-selected durable value/trace payloads.
 ///
 /// # Errors
 ///
@@ -111,6 +118,7 @@ fn eval_whnf_owned_with_evaluator(
     let derivations = evaluator.derivation_snapshot()?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
+    evaluator.advance_persist_eval_cache_run_boundary();
     Ok(EvalOutcome {
         value,
         heap: evaluator.heap,
@@ -173,7 +181,9 @@ pub fn eval_instantiation_attr_path_owned_with_options_source_and_realizer(
 /// [`eval_instantiation_attr_path_owned_with_options_source_and_realizer`].
 /// The cache runtime remains advisory: enabled runtimes may reuse clean pure
 /// inline-scalar force results for a conservative IR subset, but they do not
-/// perform general memo lookup or persistence.
+/// perform general demand-graph memo lookup. When options configure a
+/// persistent-cache root, forced-expression observations may record demand and
+/// threshold-selected durable value/trace payloads.
 ///
 /// # Errors
 ///
@@ -213,6 +223,7 @@ fn eval_instantiation_attr_path_with_evaluator(
     let derivations = evaluator.derivation_snapshot()?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
+    evaluator.advance_persist_eval_cache_run_boundary();
     Ok(EvalOutcome {
         value,
         heap: evaluator.heap,
@@ -315,6 +326,7 @@ fn eval_raw_bytes_with_evaluator(
     evaluator.write_raw_value(ir.root, span, ir.root, span, value, &mut out, &mut visited)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
+    evaluator.advance_persist_eval_cache_run_boundary();
     Ok(out)
 }
 
@@ -347,5 +359,6 @@ pub fn eval_number_raw_bytes_with_options(
     let bytes = TreeWalk::raw_number_bytes(ir.root, span, value)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
+    evaluator.advance_persist_eval_cache_run_boundary();
     Ok(bytes)
 }

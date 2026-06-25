@@ -91,8 +91,14 @@ impl TreeWalk {
     /// The cache runtime stays advisory. Disabled runtimes are no-ops; enabled
     /// runtimes record source-backed or lowered-IR-backed forced inline thunk
     /// results and may reuse clean pure inline-scalar force results for a
-    /// conservative IR subset. They do not perform general memo lookup or
-    /// persistence.
+    /// conservative IR subset. They do not perform general demand-graph memo
+    /// lookup. When options configure a persistent-cache root, forced-expression
+    /// observations may read verifying durable force-cache payloads, record
+    /// demand, and write threshold-selected durable value/trace payloads.
+    ///
+    /// Direct [`TreeWalk::eval_root`] and [`TreeWalk::eval_node`] callers do not
+    /// perform automatic persistent run-boundary advancement; the public
+    /// `eval_*` free-function wrappers advance successful evaluation exits.
     pub fn with_options_and_eval_cache(
         ir: &Ir,
         options: TreeWalkOptions,
@@ -1061,6 +1067,22 @@ impl TreeWalk {
                 target: "aos_nix::cache",
                 error = %error,
                 "tree-walk evaluator persistent force demand observation failed"
+            );
+        }
+    }
+
+    pub(super) fn advance_persist_eval_cache_run_boundary(&mut self) {
+        if !self.options.eval_cache_enabled() {
+            return;
+        }
+        let Some(persist_cache) = &self.persist_cache else {
+            return;
+        };
+        if let Err(error) = persist_cache.advance_all_node_materialization_reuse_runs() {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator persistent force demand run-boundary advancement failed"
             );
         }
     }

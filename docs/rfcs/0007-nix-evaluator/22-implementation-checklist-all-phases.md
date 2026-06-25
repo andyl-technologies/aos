@@ -977,8 +977,8 @@ alone (`M-1`/`Q-A`).
       materialized cached-expression value-hash link in the same metadata
       record. This is caller-driven, append-only, and
       requires callers to serialize writes for the same node key; evaluator
-      call-site integration is covered by the force-cache accounting row below,
-      while atomic writer coordination, automatic run-boundary orchestration,
+      call-site integration is covered by the force-cache accounting and
+      public run-boundary rows below, while atomic writer coordination,
       LMDB/redb node tables, compaction/GC, and AOS tuning remain open
       (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node reuse run-boundary adapter:
@@ -988,7 +988,7 @@ alone (`M-1`/`Q-A`).
       current-run observations become prior-run reuse signal for later runs
       while preserving any materialized value-hash link. This is caller-driven,
       append-only, and requires callers to serialize writes for the same node
-      key; automatic process-boundary orchestration,
+      key; Drop/panic/error-path process-boundary orchestration,
       atomic writer coordination, LMDB/redb node tables, compaction/GC, and AOS
       tuning remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node reuse sidecar advancement:
@@ -998,10 +998,23 @@ alone (`M-1`/`Q-A`).
       changed `MaterializationReuse::advance_run` records for all known node
       keys while preserving materialized value-hash links and skipping no-op
       counters. This is caller-driven, append-only, and requires callers to
-      serialize sidecar writes; automatic
-      process-boundary orchestration, atomic writer coordination, LMDB/redb
-      node tables, automatic compaction/GC policy, and AOS tuning remain open
+      serialize sidecar writes; Drop/panic/error-path process-boundary
+      orchestration, atomic writer coordination, LMDB/redb node tables,
+      automatic compaction/GC policy, and AOS tuning remain open
       (`C-13`/`C-14`/`S-14`).
+- [x] Current public evaluator reuse run-boundary advancement:
+      successful public tree-walk free-function evaluation exits (`eval_whnf*`,
+      `eval_instantiation_attr_path*`, `eval_raw_bytes*`, and
+      `eval_number_raw_bytes_with_options`) call
+      `advance_all_node_materialization_reuse_runs` when eval-cache
+      observation is enabled and the evaluator already opened the persistent
+      cache root. This advances current-run force-cache demand into prior-run
+      materialization history without creating a persistent cache for
+      evaluations that never touched it. This is public free-function
+      entry-point orchestration only; low-level `TreeWalk::eval_root`/`eval_node`
+      advancement, Drop/panic/error-path advancement, cross-process writer
+      locking, LMDB/redb node tables, automatic compaction/GC policy, and AOS
+      tuning remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node metadata sidecar compaction:
       `PersistNodeMetadataIndex::compact_latest_entries` rewrites
       `nodes/metadata.index` through a temporary file and rename so only the
@@ -1020,7 +1033,8 @@ alone (`M-1`/`Q-A`).
       appends `record_node_current_demand` for successful cold forces and
       in-memory force-cache hits. Observation-only uncacheable subjects such as
       `currentTime` have no metadata identity and are not counted. This is
-      current-run demand accounting only; automatic run-boundary orchestration,
+      current-run demand accounting only; public successful run-boundary
+      advancement is covered above, while Drop/panic/error-path advancement,
       atomic writer coordination, durable cached-payload hit selection,
       LMDB/redb node tables, automatic compaction/GC policy, and AOS tuning
       remain open (`C-13`/`C-14`/`S-14`).
@@ -1033,9 +1047,10 @@ alone (`M-1`/`Q-A`).
       accepted by the existing blob/file/parse materializers. Current-run-only
       demand does not predict cross-run reuse until an explicit run-boundary
       advance has moved it into prior history. This is decision plumbing only;
-      automatic run-boundary orchestration, cost measurement, automatic
-      evaluator writeback, LMDB/redb node tables, automatic compaction/GC
-      policy, and AOS tuning remain open (`C-13`/`C-14`).
+      public successful run-boundary advancement and threshold-driven evaluator
+      writeback are covered by separate rows, while Drop/panic/error-path
+      advancement, cost measurement, LMDB/redb node tables, automatic
+      compaction/GC policy, and AOS tuning remain open (`C-13`/`C-14`).
 - [x] Current explicit materialization-to-pack adapter:
       `PersistCache::materialize_blob` consumes a caller-supplied
       `MaterializationDecision`, skips without hashing/writing on
