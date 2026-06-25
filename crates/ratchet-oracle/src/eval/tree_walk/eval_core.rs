@@ -502,7 +502,13 @@ impl TreeWalk {
         drop(cache);
         match persistence_action {
             Ok(ForcePayloadPersistenceAction::Materialize) => {
-                let _ = self.materialize_persist_forced_expression_payload(&subject, &payload);
+                if let Some(value_hash) =
+                    self.materialize_persist_forced_expression_payload(&subject, &payload)
+                {
+                    if !self.record_persist_forced_expression_pure_trace(&subject, value_hash) {
+                        self.clear_persist_forced_expression_payload(&subject);
+                    }
+                }
             }
             Ok(ForcePayloadPersistenceAction::MaterializeWithTrace) => {
                 if let Some(value_hash) =
@@ -602,18 +608,33 @@ impl TreeWalk {
         }
     }
 
+    fn record_persist_forced_expression_pure_trace(
+        &mut self,
+        subject: &ForceCacheSubject,
+        value_hash: ValueHash,
+    ) -> bool {
+        let payload = match PersistNodeTracePayload::from_impure_trace(std::iter::empty::<
+            &ImpureInputFingerprint,
+        >()) {
+            Ok(payload) => payload,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator pure force trace could not be encoded for persistence"
+                );
+                return false;
+            }
+        };
+        self.record_persist_forced_expression_trace_payload(subject, value_hash, &payload)
+    }
+
     fn record_persist_forced_expression_trace(
         &mut self,
         subject: &ForceCacheSubject,
         value_hash: ValueHash,
         trace: &ImpureInputTraceSegment,
     ) -> bool {
-        if !self.options.eval_cache_enabled() {
-            return false;
-        }
-        let Some(identity) = subject.metadata_identity else {
-            return false;
-        };
         let payload = match PersistNodeTracePayload::from_impure_trace(trace.impure_input_trace()) {
             Ok(payload) => payload,
             Err(error) => {
@@ -624,6 +645,21 @@ impl TreeWalk {
                 );
                 return false;
             }
+        };
+        self.record_persist_forced_expression_trace_payload(subject, value_hash, &payload)
+    }
+
+    fn record_persist_forced_expression_trace_payload(
+        &mut self,
+        subject: &ForceCacheSubject,
+        value_hash: ValueHash,
+        payload: &PersistNodeTracePayload,
+    ) -> bool {
+        if !self.options.eval_cache_enabled() {
+            return false;
+        }
+        let Some(identity) = subject.metadata_identity else {
+            return false;
         };
         self.open_persist_eval_cache();
         let Some(persist_cache) = &self.persist_cache else {

@@ -1106,19 +1106,19 @@ alone (`M-1`/`Q-A`).
       compaction/GC, mmap reads, and cached/uncached harness proof remain open
       (`C-13`/`R-10`/`S-14`).
 - [x] Current force-cache persistent trace writeback:
-      after tree-walk `force_value` gets an accepted cacheable impure
-      forced-expression observation and successfully materializes its value
-      payload, it encodes the same trace segment as `PersistNodeTracePayload`
-      and appends it through `PersistCache::record_node_trace` using the same
-      expression metadata key that links the materialized payload plus the
-      payload's `ValueHash`. Trace-write failure clears the just-linked durable
-      value metadata so an impure value is not left live without a persisted
-      trace; pure observations write no trace, and rejected or unsupported
-      observations can clear the durable value link without deleting older
-      value-associated trace log records. Future durable hit selection can
-      require the node metadata value hash to match the trace record value hash
-      before revalidation, but the sidecar is still non-transactional. This is
-      accepted-impure trace writeback only; evaluator durable hit selection,
+      after tree-walk `force_value` gets an accepted forced-expression
+      observation and successfully materializes its value payload, it appends a
+      value-associated `PersistNodeTracePayload` through
+      `PersistCache::record_node_trace` using the same expression metadata key
+      that links the materialized payload plus the payload's `ValueHash`.
+      Trace-write failure clears the just-linked durable value metadata so a
+      value is not left live without a persisted trace; pure observations write
+      a zero-input trace payload, and rejected or unsupported observations can
+      clear the durable value link without deleting older value-associated
+      trace log records. Future durable hit selection can require the node
+      metadata value hash to match the trace record value hash before
+      revalidation, but the sidecar is still non-transactional. This is
+      accepted trace writeback only; evaluator durable hit selection,
       revalidation, trace tombstones, transactionality with value
       materialization, currentTime taint propagation through persisted
       dependents, automatic compaction/GC, mmap reads, and cached/uncached
@@ -1139,20 +1139,22 @@ alone (`M-1`/`Q-A`).
       (`C-13`/`R-10`/`S-14`).
 - [x] Current force-cache durable hit selection:
       tree-walk forced-expression lookup now tries the trace-verified
-      persistent node-value load after an in-memory force-cache miss, rehydrates
-      replayable payloads into the current evaluator heap, records fresh
-      revalidated impure inputs into the enclosing evaluation trace, records
-      current-run persistent demand, and counts the result as a cache hit.
-      Missing/stale traces, value-hash mismatches, unavailable persistent
-      roots, persistent read errors, stale impure observations, missing value
-      blobs, and unsupported payload rehydration all fall back to ordinary
-      forcing. This is trace-backed forced-expression hit selection only:
+      persistent node-value load after an in-memory force-cache miss; pure
+      values hit through the same path by using a zero-input trace record
+      rather than trace absence. Hits rehydrate replayable payloads into the
+      current evaluator heap, record fresh revalidated impure inputs into the
+      enclosing evaluation trace when present, record current-run persistent
+      demand, and count the result as a cache hit. Missing/stale traces,
+      value-hash mismatches, unavailable persistent roots, persistent read
+      errors, stale impure observations, missing value blobs, and unsupported
+      payload rehydration all fall back to ordinary forcing. This is replayable
+      forced-expression hit selection only:
       in-memory demand-graph insertion, dirty propagation beyond revalidation
-      miss fallback, pure no-trace persistent hits, context-bearing paths or
-      composite values, trace tombstones, transactionality with value
-      materialization, currentTime taint propagation through persisted
-      dependents, automatic compaction/GC, mmap reads, and cached/uncached
-      harness proof remain open (`C-13`/`R-10`/`S-14`).
+      miss fallback, context-bearing paths or composite values, trace
+      tombstones, transactionality with value materialization, currentTime taint
+      propagation through persisted dependents, automatic compaction/GC, mmap
+      reads, and cached/uncached harness proof remain open
+      (`C-13`/`R-10`/`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips
