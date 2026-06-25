@@ -132,6 +132,8 @@ pub mod surface;
 pub mod tracinglog;
 #[cfg(target_arch = "wasm32")]
 pub mod workerkv;
+#[cfg(target_arch = "wasm32")]
+pub mod workerqueue;
 
 #[cfg(target_arch = "wasm32")]
 mod entry {

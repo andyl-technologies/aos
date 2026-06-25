@@ -27,4 +27,7 @@ pub mod bindings {
     /// The Durable Object binding name for the coordinator (rate-limit/lease/
     /// floor), `[[durable_objects.bindings]]`. RFC-0004 ch.14 Phase B.
     pub const COORDINATOR: &str = "COORDINATOR";
+    /// The Cloudflare Queue binding name for deferred post-write jobs
+    /// (`[[queues.producers]]`). RFC-0004 ch.14 Phase D.
+    pub const QUEUE: &str = "JOBS";
 }
