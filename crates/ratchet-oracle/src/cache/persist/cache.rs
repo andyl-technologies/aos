@@ -633,6 +633,54 @@ impl PersistCache {
         }
     }
 
+    /// Applies `decision` to an existing parse-cache entry and records indexes.
+    ///
+    /// [`MaterializationDecision::KeepInMemory`] returns a skipped result
+    /// without reading or encoding `entry`. [`MaterializationDecision::Materialize`]
+    /// reads the entry as a [`ParseArtifactBundle`], encodes it as one payload,
+    /// appends it through [`Self::materialize_file_artifact_indexed`], and
+    /// records both blob and file-artifact sidecar indexes.
+    ///
+    /// This helper inherits the explicit non-transactional behavior of
+    /// [`Self::materialize_file_artifact_indexed`]: a blob append/index write
+    /// can remain even when the file-artifact mapping write fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactMaterializationError`] when `decision` is
+    /// [`MaterializationDecision::Materialize`] and the source entry cannot be
+    /// read, the bundle payload cannot be encoded, the `files/` blob cannot be
+    /// appended/indexed, or the file-artifact mapping cannot be recorded.
+    pub fn materialize_parse_artifact_entry_indexed(
+        &self,
+        file_key: &ParseFileKey,
+        parse_key: ParseCacheKey,
+        entry: &ParseCacheEntry,
+        decision: MaterializationDecision,
+    ) -> Result<PersistFileArtifactMaterialization, PersistParseArtifactMaterializationError> {
+        let artifact_key = PersistFileArtifactKey::from_parse_file_key(file_key, parse_key);
+        match decision {
+            MaterializationDecision::KeepInMemory => {
+                Ok(PersistFileArtifactMaterialization::Skipped { artifact_key })
+            }
+            MaterializationDecision::Materialize => {
+                let bundle = entry.read_artifact_bundle().map_err(|source| {
+                    PersistParseArtifactMaterializationError::ReadBundle { source }
+                })?;
+                let payload = bundle.encode().map_err(|source| {
+                    PersistParseArtifactMaterializationError::EncodeBundle { source }
+                })?;
+                self.materialize_file_artifact_indexed(
+                    file_key,
+                    parse_key,
+                    &payload,
+                    MaterializationDecision::Materialize,
+                )
+                .map_err(|source| PersistParseArtifactMaterializationError::WriteIndexed { source })
+            }
+        }
+    }
+
     /// Applies materialization threshold signals to an existing parse-cache entry.
     ///
     /// The signals are evaluated with [`MaterializationSignals::decide`] and
@@ -652,5 +700,27 @@ impl PersistCache {
         signals: MaterializationSignals,
     ) -> Result<PersistFileArtifactMaterialization, PersistParseArtifactMaterializationError> {
         self.materialize_parse_artifact_entry(file_key, parse_key, entry, signals.decide())
+    }
+
+    /// Applies threshold signals to indexed parse-cache entry materialization.
+    ///
+    /// The signals are evaluated with [`MaterializationSignals::decide`] and
+    /// then applied through [`Self::materialize_parse_artifact_entry_indexed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactMaterializationError`] when the signals
+    /// choose [`MaterializationDecision::Materialize`] and the source entry
+    /// cannot be read, the bundle payload cannot be encoded, the `files/` blob
+    /// cannot be appended/indexed, or the file-artifact mapping cannot be
+    /// recorded.
+    pub fn materialize_parse_artifact_entry_indexed_with_signals(
+        &self,
+        file_key: &ParseFileKey,
+        parse_key: ParseCacheKey,
+        entry: &ParseCacheEntry,
+        signals: MaterializationSignals,
+    ) -> Result<PersistFileArtifactMaterialization, PersistParseArtifactMaterializationError> {
+        self.materialize_parse_artifact_entry_indexed(file_key, parse_key, entry, signals.decide())
     }
 }

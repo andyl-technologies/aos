@@ -786,7 +786,7 @@ alone (`M-1`/`Q-A`).
       bytes as one versioned little-endian payload, and
       `ParseCacheEntry::read_artifact_bundle` reads complete entries into that
       bundle. This is payload-format substrate only; automatic file-artifact
-      materialization, durable index updates, lookup, bundle-to-entry hydration,
+      materialization, automatic parse-cache integration, cache-hit lookup,
       mmap reads, and harness proof remain open (`C-13`).
 - [x] Current parse metadata decoder substrate:
       `ParseCacheMeta::from_toml` and `ParseArtifactBundle::decode_meta` parse
@@ -832,9 +832,9 @@ alone (`M-1`/`Q-A`).
       `lookup_blob_location`/`read_blob_indexed` scan the sidecar index and
       read/verify the indexed pack record, returning `None` for misses. This is
       explicit non-transactional sidecar integration only; automatic low-level
-      append/read indexing, file-artifact/materialization index updates, node
-      metadata linkage, mmap reads, writer batching/locking, GC/repack, Attic
-      transport, and harness proof remain open (`C-13`/`R-14`).
+      append/read indexing, node metadata linkage, mmap reads, writer
+      batching/locking, GC/repack, Attic transport, and harness proof remain
+      open (`C-13`/`R-14`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and
@@ -897,8 +897,8 @@ alone (`M-1`/`Q-A`).
       successful materialization records a sidecar hash-to-offset entry. This is
       explicit non-transactional indexed materialization only; cost measurement,
       reuse metadata production, evaluator value serialization, automatic raw
-      materialization indexing, file-artifact/materialization index updates,
-      mmap reads, GC/repack, and AOS tuning remain open (`C-13`/`C-14`).
+      materialization indexing, mmap reads, GC/repack, and AOS tuning remain
+      open (`C-13`/`C-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips
@@ -917,9 +917,8 @@ alone (`M-1`/`Q-A`).
       materialization records both the `files/` blob hash-to-offset sidecar
       entry and the file-artifact mapping sidecar entry. This is explicit
       non-transactional indexed materialization only; automatic parse-cache
-      integration, parse-entry indexed materialization, durable hit selection,
-      mmap reads, GC/repack, and harness proof remain open
-      (`C-13`/`C-14`/`R-10`).
+      integration, durable hit selection, mmap reads, GC/repack, and harness
+      proof remain open (`C-13`/`C-14`/`R-10`).
 - [x] Current materialized file-artifact index-entry accessor:
       `PersistFileArtifactMaterialization::index_entry` returns the complete
       `PersistFileArtifactIndexEntry` only when an artifact was materialized,
@@ -935,14 +934,26 @@ alone (`M-1`/`Q-A`).
       file-artifact materialization adapter. Automatic parse-cache integration,
       durable index updates, lookup, source/key equality proof, mmap reads,
       GC/repack, and harness proof remain open (`C-13`/`C-14`).
+- [x] Current explicit indexed parse-entry materialization adapter:
+      `PersistCache::materialize_parse_artifact_entry_indexed` consumes the
+      same caller-supplied `ParseFileKey`/`ParseCacheKey` plus source
+      `ParseCacheEntry`, preserves skip-without-read/encode behavior, and on
+      `Materialize` bundles the existing parse artifacts before delegating to
+      indexed file-artifact materialization so both the `files/` blob
+      hash-to-offset entry and file-artifact mapping entry are recorded. This
+      is explicit non-transactional indexed materialization only; automatic
+      parse-cache integration, durable hit selection, source/key equality proof,
+      mmap reads, GC/repack, and harness proof remain open (`C-13`/`C-14`).
 - [x] Current file/parse threshold signal adapters:
-      `PersistCache::materialize_file_artifact_with_signals` and
-      `materialize_parse_artifact_entry_with_signals` evaluate caller-supplied
-      `MaterializationSignals` before delegating to the existing decision-based
-      adapters, preserving skip-without-payload-read/write behavior when the
-      threshold fails. Automatic parse-cache integration, durable index updates,
-      lookup, source/key equality proof, mmap reads, GC/repack, and harness
-      proof remain open (`C-13`/`C-14`).
+      `PersistCache::materialize_file_artifact_with_signals`,
+      `materialize_file_artifact_indexed_with_signals`,
+      `materialize_parse_artifact_entry_with_signals`, and
+      `materialize_parse_artifact_entry_indexed_with_signals` evaluate
+      caller-supplied `MaterializationSignals` before delegating to the existing
+      decision-based adapters, preserving skip-without-payload-read/write
+      behavior when the threshold fails. Automatic parse-cache integration,
+      durable hit selection, source/key equality proof, mmap reads, GC/repack,
+      and harness proof remain open (`C-13`/`C-14`).
 - [x] Current explicit file-artifact read adapter:
       `PersistCache::read_file_artifact` consumes a typed
       `PersistFileArtifactIndexValue` and reads/verifies the referenced payload

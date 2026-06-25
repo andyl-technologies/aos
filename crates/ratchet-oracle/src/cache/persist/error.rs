@@ -455,6 +455,12 @@ pub enum PersistParseArtifactMaterializationError {
         /// The underlying packfile write error.
         source: PersistBlobPackError,
     },
+    /// The encoded artifact payload could not be written with durable indexes.
+    #[error("failed to write indexed parse-cache artifact bundle to persistent files pack")]
+    WriteIndexed {
+        /// The underlying indexed write error.
+        source: PersistFileArtifactIndexedWriteError,
+    },
 }
 
 /// Persistent-cache layout initialization failed.
