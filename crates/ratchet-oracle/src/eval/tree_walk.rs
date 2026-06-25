@@ -494,7 +494,9 @@ struct ForceCacheOptionsIdentity {
 
 #[derive(Clone, Debug)]
 struct ForceCacheSubject {
-    body: EvalNodeRef,
+    lookup_identity: Option<CacheExprIdentity>,
+    pure_observation_identity: Option<CacheExprIdentity>,
+    impure_observation_identity: Option<CacheExprIdentity>,
     free_var_value_hashes: Vec<DurableBlake3Hash>,
 }
 

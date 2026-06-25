@@ -4,6 +4,8 @@ use super::*;
 
 const FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION: &[u8] = b"aos-nix-force-expression-identity-v1";
 const FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-force-captured-value-hash-v1";
+const FORCE_SYNTHETIC_BUILTIN_ATTR_IDENTITY_DOMAIN_VERSION: &[u8] =
+    b"aos-nix-force-synthetic-builtin-attr-identity-v1";
 
 impl ForceCacheOptionsIdentity {
     fn new(options: &TreeWalkOptions) -> Self {
@@ -444,9 +446,9 @@ impl TreeWalk {
             return;
         };
         let identity = if trace.is_empty_complete() {
-            self.cache_identity_for_node(subject.body)
+            subject.pure_observation_identity
         } else {
-            self.cache_observation_identity_for_node(subject.body)
+            subject.impure_observation_identity
         };
         let Some(identity) = identity else {
             return;
@@ -523,7 +525,7 @@ impl TreeWalk {
         let Some(subject) = subject else {
             return None;
         };
-        let Some(identity) = self.cache_observation_identity_for_node(subject.body) else {
+        let Some(identity) = subject.lookup_identity else {
             return None;
         };
         let mut revalidator = TreeWalkImpureInputRevalidator::new(&self.options);
@@ -596,19 +598,69 @@ impl TreeWalk {
 
     pub(super) fn force_cache_subject_for_thunk(
         &self,
+        site: EvalNodeRef,
         thunk: &EvalThunk,
     ) -> Option<ForceCacheSubject> {
-        let body = thunk.body_ref()?;
-        let env = thunk.env()?;
-        if !thunk.with_scope_env()?.scopes().is_empty()
-            || !thunk.scoped_global_env()?.scopes().is_empty()
-        {
+        match thunk.kind() {
+            EvalThunkKind::Node { body, env, .. } => {
+                if !thunk.with_scope_env()?.scopes().is_empty()
+                    || !thunk.scoped_global_env()?.scopes().is_empty()
+                {
+                    return None;
+                }
+                let free_var_value_hashes =
+                    self.inline_free_var_value_hashes_for_body(*body, env)?;
+                let lookup_identity = self.cache_lookup_identity_for_node(*body);
+                let pure_observation_identity = self.cache_identity_for_node(*body);
+                let impure_observation_identity = self.cache_observation_identity_for_node(*body);
+                if lookup_identity.is_none()
+                    && pure_observation_identity.is_none()
+                    && impure_observation_identity.is_none()
+                {
+                    return None;
+                }
+                Some(ForceCacheSubject {
+                    lookup_identity,
+                    pure_observation_identity,
+                    impure_observation_identity,
+                    free_var_value_hashes,
+                })
+            }
+            EvalThunkKind::BuiltinAttr { symbol, builtin } => {
+                self.force_cache_subject_for_builtin_attr(site, *symbol, *builtin)
+            }
+            EvalThunkKind::Apply { .. }
+            | EvalThunkKind::Apply2 { .. }
+            | EvalThunkKind::Select { .. } => None,
+        }
+    }
+
+    fn force_cache_subject_for_builtin_attr(
+        &self,
+        site: EvalNodeRef,
+        symbol: Symbol,
+        builtin: Builtin,
+    ) -> Option<ForceCacheSubject> {
+        let execution = builtin.execution();
+        let lookup_identity = if Self::builtin_execution_is_force_cache_lookup_safe(execution) {
+            self.cache_synthetic_builtin_attr_identity(site, symbol, builtin)
+        } else {
+            None
+        };
+        let observation_identity =
+            if Self::builtin_execution_is_force_cache_observation_safe(execution) {
+                self.cache_synthetic_builtin_attr_identity(site, symbol, builtin)
+            } else {
+                None
+            };
+        if lookup_identity.is_none() && observation_identity.is_none() {
             return None;
         }
-        let free_var_value_hashes = self.inline_free_var_value_hashes_for_body(body, env)?;
         Some(ForceCacheSubject {
-            body,
-            free_var_value_hashes,
+            lookup_identity,
+            pure_observation_identity: lookup_identity,
+            impure_observation_identity: observation_identity,
+            free_var_value_hashes: Vec::new(),
         })
     }
 
@@ -740,6 +792,17 @@ impl TreeWalk {
         ))
     }
 
+    fn cache_lookup_identity_for_node(&self, body: EvalNodeRef) -> Option<CacheExprIdentity> {
+        let module = self.modules.get(body.module().index())?;
+        if !Self::subtree_is_force_lookup_safe(&module.ir, body.id()) {
+            return None;
+        }
+        Some(CacheExprIdentity::new(
+            Self::cache_module_identity_hash(module)?,
+            body.id(),
+        ))
+    }
+
     fn cache_observation_identity_for_node(&self, body: EvalNodeRef) -> Option<CacheExprIdentity> {
         let module = self.modules.get(body.module().index())?;
         if !Self::subtree_is_force_observation_safe(&module.ir, body.id()) {
@@ -806,6 +869,36 @@ impl TreeWalk {
         Self::node_kind_is_force_cache_safe(node.kind)
     }
 
+    fn subtree_is_force_lookup_safe(ir: &Ir, root: IrId) -> bool {
+        let mut visited = BTreeSet::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id.as_u32()) {
+                continue;
+            }
+            let Some(node) = ir.arena.node(id) else {
+                return false;
+            };
+            if !Self::node_is_force_lookup_safe(ir, node) {
+                return false;
+            }
+            if !Self::push_ir_children(ir, node, &mut stack) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn node_is_force_lookup_safe(ir: &Ir, node: &IrNode) -> bool {
+        if node.kind == IrKind::BuiltinAttr {
+            return Self::builtin_attr_is_force_cache_lookup_safe(ir, node);
+        }
+        if node.effect.is_speculable() {
+            return Self::node_kind_is_force_cache_safe(node.kind);
+        }
+        node.kind == IrKind::PrimOp && Self::primop_has_cacheable_impure_input_trace(ir, node)
+    }
+
     fn subtree_is_force_observation_safe(ir: &Ir, root: IrId) -> bool {
         let mut visited = BTreeSet::new();
         let mut stack = vec![root];
@@ -849,26 +942,75 @@ impl TreeWalk {
     }
 
     fn builtin_attr_is_force_cache_lookup_safe(ir: &Ir, node: &IrNode) -> bool {
-        matches!(
-            Self::builtin_attr_execution(ir, node),
-            Some(
-                BuiltinExecution::TrueValue
-                    | BuiltinExecution::FalseValue
-                    | BuiltinExecution::NullValue
-                    | BuiltinExecution::CurrentSystemValue
-                    | BuiltinExecution::StoreDirValue
-                    | BuiltinExecution::NixVersionValue
-                    | BuiltinExecution::LangVersionValue,
-            )
-        )
+        Self::builtin_attr_execution(ir, node)
+            .is_some_and(Self::builtin_execution_is_force_cache_lookup_safe)
     }
 
     fn builtin_attr_is_force_cache_observation_safe(ir: &Ir, node: &IrNode) -> bool {
-        Self::builtin_attr_is_force_cache_lookup_safe(ir, node)
-            || matches!(
-                Self::builtin_attr_execution(ir, node),
-                Some(BuiltinExecution::CurrentTimeValue)
-            )
+        Self::builtin_attr_execution(ir, node)
+            .is_some_and(Self::builtin_execution_is_force_cache_observation_safe)
+    }
+
+    const fn builtin_execution_is_force_cache_lookup_safe(execution: BuiltinExecution) -> bool {
+        matches!(
+            execution,
+            BuiltinExecution::TrueValue
+                | BuiltinExecution::FalseValue
+                | BuiltinExecution::NullValue
+                | BuiltinExecution::CurrentSystemValue
+                | BuiltinExecution::StoreDirValue
+                | BuiltinExecution::NixVersionValue
+                | BuiltinExecution::LangVersionValue
+        )
+    }
+
+    const fn builtin_execution_is_force_cache_observation_safe(
+        execution: BuiltinExecution,
+    ) -> bool {
+        Self::builtin_execution_is_force_cache_lookup_safe(execution)
+            || matches!(execution, BuiltinExecution::CurrentTimeValue)
+    }
+
+    const fn builtin_execution_cache_identity_bytes(
+        execution: BuiltinExecution,
+    ) -> Option<&'static [u8]> {
+        match execution {
+            BuiltinExecution::TrueValue => Some(b"true"),
+            BuiltinExecution::FalseValue => Some(b"false"),
+            BuiltinExecution::NullValue => Some(b"null"),
+            BuiltinExecution::CurrentSystemValue => Some(b"current-system"),
+            BuiltinExecution::CurrentTimeValue => Some(b"current-time"),
+            BuiltinExecution::StoreDirValue => Some(b"store-dir"),
+            BuiltinExecution::NixVersionValue => Some(b"nix-version"),
+            BuiltinExecution::LangVersionValue => Some(b"lang-version"),
+            _ => None,
+        }
+    }
+
+    pub(super) fn cache_synthetic_builtin_attr_identity(
+        &self,
+        site: EvalNodeRef,
+        symbol: Symbol,
+        builtin: Builtin,
+    ) -> Option<CacheExprIdentity> {
+        let module = self.modules.get(site.module().index())?;
+        let module_hash = Self::cache_module_identity_hash(module)?;
+        let symbol_name = self
+            .symbols
+            .resolve(symbol)
+            .unwrap_or_else(|| builtin.name());
+        let execution = builtin.execution();
+        let execution_bytes = Self::builtin_execution_cache_identity_bytes(execution)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(FORCE_SYNTHETIC_BUILTIN_ATTR_IDENTITY_DOMAIN_VERSION);
+        hasher.update(&module_hash.as_bytes());
+        hasher.update(&site.id().as_u32().to_le_bytes());
+        Self::update_cache_identity_chunk(&mut hasher, symbol_name)?;
+        Self::update_cache_identity_chunk(&mut hasher, execution_bytes)?;
+        Some(CacheExprIdentity::new(
+            DurableBlake3Hash::from_hasher(hasher),
+            site.id(),
+        ))
     }
 
     fn primop_has_cacheable_impure_input_trace(ir: &Ir, node: &IrNode) -> bool {
@@ -1663,7 +1805,7 @@ impl TreeWalk {
         if builtin.execution() == BuiltinExecution::BuiltinsValue {
             return self.alloc_thunk_for_node(id, id, span);
         }
-        if builtin.execution() == BuiltinExecution::NixPathValue {
+        if Self::builtin_execution_is_delayed_attrset_value(builtin.execution()) {
             return self.alloc_builtin_attr_thunk(id, span, symbol, builtin);
         }
         if self.reject_unconfigured_impure_builtin_constant(builtin) && !builtin.is_available(self)
@@ -1671,5 +1813,10 @@ impl TreeWalk {
             return self.alloc_builtin_attr_thunk(id, span, symbol, builtin);
         }
         builtin.select(self, id, span, symbol)
+    }
+
+    const fn builtin_execution_is_delayed_attrset_value(execution: BuiltinExecution) -> bool {
+        Self::builtin_execution_is_force_cache_observation_safe(execution)
+            || matches!(execution, BuiltinExecution::NixPathValue)
     }
 }

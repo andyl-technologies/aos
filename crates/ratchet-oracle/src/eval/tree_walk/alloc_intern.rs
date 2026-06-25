@@ -738,7 +738,10 @@ impl TreeWalk {
                 Ok(value)
             }
             ForceClaim::Claimed(guard) => {
-                let cache_subject = self.force_cache_subject_for_thunk(&thunk);
+                let cache_subject = self.force_cache_subject_for_thunk(
+                    EvalNodeRef::new(self.current_module, id),
+                    &thunk,
+                );
                 if let Some(value) =
                     self.lookup_forced_inline_expression_result(cache_subject.clone())
                 {

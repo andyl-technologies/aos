@@ -474,9 +474,9 @@ alone (`M-1`/`Q-A`).
       decision. This is
       observation/reconsideration only: source-less raw eval outside the
       lowered-IR-backed node-thunk subset, captured dynamic/scoped-global
-      thunks, ambient builtin values outside the admitted constant subset,
+      thunks, ambient/synthetic builtin values outside the admitted constant subset,
       search-path/global/builtin/primop/application/dialect nodes pending
-      explicit option and impure-input keys, synthetic apply/select/builtin-attr
+      explicit option and impure-input keys, synthetic apply/select
       thunks, canonical free-variable hashes, general memo lookup,
       captured context-bearing strings, context-bearing paths, lists/attrs and other composite value
       hashing, persistence, and cached/uncached harness proof remain open
@@ -494,9 +494,9 @@ alone (`M-1`/`Q-A`).
       payloads, and stale payloads are misses. This is a scalar/string/context-free path
       pure/local hit path only: source-less raw eval outside the
       lowered-IR-backed node-thunk subset, captured dynamic/scoped-global
-      thunks, ambient builtin values outside the admitted constant subset,
+      thunks, ambient/synthetic builtin values outside the admitted constant subset,
       search-path/global/builtin/primop/application/dialect nodes pending
-      explicit option and impure-input keys, synthetic apply/select/builtin-attr
+      explicit option and impure-input keys, synthetic apply/select
       thunks, canonical free-variable hashes, captured context-bearing strings, context-bearing paths,
       lists/attrs and other composite payloads,
       transitive dirty scheduling, persistence, `derivationStrict` SHA-256
@@ -575,20 +575,27 @@ alone (`M-1`/`Q-A`).
       specific expression; full cache-key integration, canonical free-variable
       hashes, fine-grained option dependency tracking, persistent keys, and
       cached/uncached harness proof remain open (`C-1`/`C-2`/`R-10`).
-- [x] Current ambient builtin constant force-cache substrate: tree-walk admits
+- [x] Current ambient and synthetic builtin constant force-cache substrate: tree-walk admits
       only symbol-checked `BuiltinAttr` constants for force-cache
       lookup/observation: immediate true/false/null, `currentSystem`,
       `storeDir`, `nixVersion`, and `langVersion`; `currentTime` is
       observation-only and remains uncacheable through its existing impure
       trace. Matching configured `currentSystem` and `storeDir` thunks can now
       hit as context-free string payloads, while changed `currentSystem` or
-      `storeDir` options miss through the expanded option identity salt. This
+      `storeDir` options miss through the expanded option identity salt.
+      Reified `builtins` attrset entries for those constants are now delayed
+      synthetic builtin-attr thunks, so constructing the attrset does not force
+      `currentTime`, and runtime selections such as
+      `let b = builtins; in b.currentSystem` use synthetic identities keyed by
+      module identity, force site, builtin symbol, and execution tag. This
       deliberately skips the recursive `builtins` attrset, `nixPath`,
-      derivation, first-class primops, broad synthetic builtin-attr thunks,
+      derivation, first-class primops, synthetic apply/select thunks,
       persistence, and cached/uncached harness proof. The gate covers
-      source-backed and source-less currentSystem hit/miss, storeDir hit/miss,
-      and source-backed/source-less currentTime uncacheable-trace force-cache
-      tests (`C-1`/`C-2`/`R-10`).
+      source-backed and source-less ambient and synthetic currentSystem
+      hit/miss, synthetic storeDir hit/miss/symbol-separation, synthetic
+      immediate constants, reified currentTime laziness, stale synthetic
+      currentTime payload invalidation, and source-backed/source-less
+      currentTime uncacheable-trace force-cache tests (`C-1`/`C-2`/`R-10`).
 - [x] Current source-less lowered-IR force-cache identity substrate:
       `cache::parse::lowered_ir_fingerprint` hashes the stable `ir.bin` and
       `symbols.bin` artifact encodings under the parse-cache schema version,
@@ -600,12 +607,13 @@ alone (`M-1`/`Q-A`).
       while still separating equal-shaped IR whose symbol tables differ and
       equal source-less expressions under different path bases. It is a
       source-independent identity substrate only; broader source-less raw eval
-      surfaces, synthetic apply/select/builtin-attr thunks, composite payloads,
-      persistence, fine-grained option dependency tracking, and cached/uncached
-      harness proof remain open. The gate covers lowered-IR fingerprint tests
-      plus source-less hit/miss, source/source-less domain separation,
-      path/store/home/current-system/eval-mode salt, readFile revalidation, and
-      captured-free-variable tests (`C-1`/`C-2`/`S-14`).
+      surfaces, synthetic apply/select thunks, composite payloads, persistence,
+      fine-grained option dependency tracking, and cached/uncached harness proof
+      remain open. The gate covers lowered-IR fingerprint tests plus
+      source-less hit/miss, source/source-less domain separation,
+      path/store/home/current-system/eval-mode salt, readFile revalidation,
+      captured-free-variable tests, and source-less synthetic builtin constant
+      hit tests (`C-1`/`C-2`/`S-14`).
 - [x] Current inline/string/path captured-free-variable force-cache key substrate: tree-walk
       now builds one force-cache subject for each source-backed or
       lowered-IR-backed node thunk,
@@ -620,7 +628,7 @@ alone (`M-1`/`Q-A`).
       deliberately skips dynamic `with` scopes, scoped-import globals, captured
       context-bearing strings/paths, lists, attrs, lambdas, primops, thunks,
       captured bodies with nested lexical-frame introducers,
-      apply/select/builtin-attr thunks, full strictness/escape
+      apply/select thunks, full strictness/escape
       free-variable analysis, heap/composite value hashes, persistence, and
       cached/uncached harness proof. The gate covers captured inline/string/path
       hit/miss tests, lowered lambda-argument coverage, cross-type string/path
