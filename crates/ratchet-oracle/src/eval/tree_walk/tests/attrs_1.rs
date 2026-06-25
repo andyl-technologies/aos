@@ -1,5 +1,7 @@
 //! Tree-walk evaluator tests: attrs 1.
 
+use crate::cache::PersistNodeTraceLogEntry;
+
 use super::*;
 
 #[test]
@@ -3239,6 +3241,7 @@ fn rejected_force_observation_clears_persistent_value_link() {
         PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
     let stale_payload = CachedExpressionValue::immediate(Value::int(123))
         .expect("stale scalar payload is cacheable");
+    let stale_value_hash = stale_payload.value_hash().expect("stale payload hashes");
     let stale_trace_payload = persistent_path_exists_trace_payload(b"/tmp/stale-input", true);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     {
@@ -3264,7 +3267,7 @@ fn rejected_force_observation_clears_persistent_value_link() {
         )
         .expect("stale persistent payload materializes");
     persist
-        .record_node_trace(key, &stale_trace_payload)
+        .record_node_trace(key, stale_value_hash, &stale_trace_payload)
         .expect("stale persistent trace records");
     drop(persist);
 
@@ -3321,7 +3324,11 @@ fn rejected_force_observation_clears_persistent_value_link() {
         persist
             .lookup_node_trace(key)
             .expect("persistent trace lookup succeeds"),
-        Some(stale_trace_payload),
+        Some(PersistNodeTraceLogEntry::new(
+            key,
+            stale_value_hash,
+            stale_trace_payload
+        )),
         "rejected observations do not append a replacement persistent trace"
     );
 
@@ -3364,6 +3371,9 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
 
     let expected_payload =
         CachedExpressionValue::immediate(Value::bool(true)).expect("bool payload is cacheable");
+    let expected_value_hash = expected_payload
+        .value_hash()
+        .expect("expected payload hashes");
     let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
     assert_eq!(
         persist
@@ -3376,8 +3386,12 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
         persist
             .lookup_node_trace(key)
             .expect("persistent trace lookup succeeds"),
-        Some(expected_trace_payload),
-        "cacheable impure observations write the persistent verifying trace"
+        Some(PersistNodeTraceLogEntry::new(
+            key,
+            expected_value_hash,
+            expected_trace_payload
+        )),
+        "cacheable impure observations write the value-associated persistent verifying trace"
     );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");

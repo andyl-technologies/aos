@@ -295,6 +295,10 @@ fn cache_node_trace_log_records_and_looks_up_payloads() {
     let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
     let other_key =
         PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let first_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"first value"));
+    let latest_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"latest value"));
     let first = test_node_trace_payload(b"/src/first", 1);
     let latest = test_node_trace_payload(b"/src/latest", 2);
 
@@ -310,17 +314,21 @@ fn cache_node_trace_log_records_and_looks_up_payloads() {
     );
 
     cache
-        .record_node_trace(key, &first)
+        .record_node_trace(key, first_value_hash, &first)
         .expect("first node trace records");
     cache
-        .record_node_trace(key, &latest)
+        .record_node_trace(key, latest_value_hash, &latest)
         .expect("latest node trace records");
 
     assert_eq!(
         cache
             .lookup_node_trace(key)
             .expect("node trace lookup succeeds"),
-        Some(latest.clone())
+        Some(PersistNodeTraceLogEntry::new(
+            key,
+            latest_value_hash,
+            latest.clone()
+        ))
     );
     assert_eq!(
         cache

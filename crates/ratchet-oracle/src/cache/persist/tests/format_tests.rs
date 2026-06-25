@@ -1208,6 +1208,12 @@ fn node_trace_log_appends_and_finds_latest_matching_entry() {
     let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
     let other_key =
         PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let first_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"first value"));
+    let other_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"other value"));
+    let latest_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"latest value"));
     let first = test_node_trace_payload(b"/src/first", 1);
     let other = test_node_trace_payload(b"/src/other", 2);
     let latest = test_node_trace_payload(b"/src/latest", 3);
@@ -1215,10 +1221,15 @@ fn node_trace_log_appends_and_finds_latest_matching_entry() {
     assert_eq!(log.path(), log_path.as_path());
     assert_eq!(log.lookup(key).expect("empty lookup succeeds"), None);
 
-    log.append_trace(key, &first).expect("first trace appends");
-    log.append_entry(PersistNodeTraceLogEntry::new(other_key, other.clone()))
-        .expect("other trace appends");
-    log.append_trace(key, &latest)
+    log.append_trace(key, first_value_hash, &first)
+        .expect("first trace appends");
+    log.append_entry(PersistNodeTraceLogEntry::new(
+        other_key,
+        other_value_hash,
+        other.clone(),
+    ))
+    .expect("other trace appends");
+    log.append_trace(key, latest_value_hash, &latest)
         .expect("latest trace appends");
 
     let first_payload = first.encode().expect("first payload encodes");
@@ -1227,17 +1238,26 @@ fn node_trace_log_appends_and_finds_latest_matching_entry() {
     let log_bytes = fs::read(log.path()).expect("trace log reads");
     let mut expected_first_record = Vec::new();
     expected_first_record.extend_from_slice(&key.index_bytes());
+    expected_first_record.extend_from_slice(&first_value_hash.as_durable_hash().as_bytes());
     expected_first_record.extend_from_slice(&(first_payload.len() as u64).to_le_bytes());
     expected_first_record.extend_from_slice(&first_payload);
 
     assert!(log_bytes.starts_with(&expected_first_record));
     assert_eq!(
         log.lookup(key).expect("key lookup succeeds"),
-        Some(latest.clone())
+        Some(PersistNodeTraceLogEntry::new(
+            key,
+            latest_value_hash,
+            latest.clone()
+        ))
     );
     assert_eq!(
         log.lookup(other_key).expect("other lookup succeeds"),
-        Some(other.clone())
+        Some(PersistNodeTraceLogEntry::new(
+            other_key,
+            other_value_hash,
+            other.clone()
+        ))
     );
     assert_eq!(
         fs::metadata(log.path()).expect("trace log metadata").len(),
@@ -1278,8 +1298,10 @@ fn node_trace_log_open_rejects_truncated_record_payload() {
     let root = temp_root();
     let log_path = root.join("nodes").join("traces.log");
     let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
     let mut encoded = Vec::new();
     encoded.extend_from_slice(&key.index_bytes());
+    encoded.extend_from_slice(&value_hash.as_durable_hash().as_bytes());
     encoded.extend_from_slice(&999u64.to_le_bytes());
     encoded.extend_from_slice(b"short");
     fs::create_dir_all(log_path.parent().expect("log parent")).expect("parent creates");
@@ -1307,9 +1329,11 @@ fn node_trace_log_open_rejects_malformed_record_payload() {
     let root = temp_root();
     let log_path = root.join("nodes").join("traces.log");
     let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
     let payload = b"not-a-node-trace-payload-with-enough-bytes";
     let mut encoded = Vec::new();
     encoded.extend_from_slice(&key.index_bytes());
+    encoded.extend_from_slice(&value_hash.as_durable_hash().as_bytes());
     encoded.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     encoded.extend_from_slice(payload);
     fs::create_dir_all(log_path.parent().expect("log parent")).expect("parent creates");

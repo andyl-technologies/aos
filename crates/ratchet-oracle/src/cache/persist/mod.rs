@@ -26,7 +26,7 @@ use super::{
 /// The persistent eval-cache schema format marker.
 pub const PERSIST_CACHE_FORMAT: &str = "aos-nix-eval-cache";
 /// The persistent eval-cache schema version.
-pub const PERSIST_CACHE_SCHEMA_VERSION: u32 = 2;
+pub const PERSIST_CACHE_SCHEMA_VERSION: u32 = 3;
 /// The fixed magic bytes at the start of every immutable blob packfile.
 pub const PERSIST_BLOB_PACK_MAGIC: [u8; 16] = *b"AOS-NIX-BLOBPACK";
 /// The immutable blob packfile format version.
@@ -78,8 +78,11 @@ pub const PERSIST_NODE_TRACE_PAYLOAD_VERSION: u32 = 1;
 pub const PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN: usize = 28;
 /// The fixed encoded bytes in one node verifying-trace input record.
 pub const PERSIST_NODE_TRACE_INPUT_FIXED_LEN: usize = 42;
+/// The encoded length of a trace-associated materialized value hash.
+pub const PERSIST_NODE_TRACE_LOG_VALUE_HASH_LEN: usize = 32;
 /// The fixed header bytes in one node trace log record.
-pub const PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN: usize = PERSIST_NODE_METADATA_INDEX_KEY_LEN + 8;
+pub const PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN: usize =
+    PERSIST_NODE_METADATA_INDEX_KEY_LEN + PERSIST_NODE_TRACE_LOG_VALUE_HASH_LEN + 8;
 
 static SCHEMA_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 static INDEX_REWRITE_ID: AtomicU64 = AtomicU64::new(0);

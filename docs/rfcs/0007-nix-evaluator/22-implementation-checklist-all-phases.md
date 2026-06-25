@@ -1091,30 +1091,33 @@ alone (`M-1`/`Q-A`).
       taint propagation through persisted dependents, mmap reads, GC/repack,
       and cached/uncached harness proof remain open
       (`C-13`/`R-10`/`S-14`).
-- [x] Current node verifying-trace sidecar substrate:
+- [x] Current value-associated node verifying-trace sidecar substrate:
       `PersistLayout::node_trace_log_path` adds `nodes/traces.log`;
       `PersistNodeTraceLog` appends variable-length records keyed by
-      `PersistNodeMetadataKey`, validates existing log records on open, and
-      returns the newest payload for a node key through linear lookup.
+      `PersistNodeMetadataKey` and carrying the materialized `ValueHash` plus
+      `PersistNodeTracePayload`, validates existing log records on open, and
+      returns the newest record for a node key through linear lookup.
       `PersistCache::record_node_trace` and `lookup_node_trace` expose the
-      sidecar through the opened cache root. This is a simple append-only log
-      only; LMDB/redb node tables, transactionality with node metadata or value
-      blobs, automatic evaluator writeback beyond the force-cache bridge below,
-      durable hit selection, revalidation, currentTime taint propagation through
-      persisted dependents, automatic compaction/GC, mmap reads, and
-      cached/uncached harness proof remain open (`C-13`/`R-10`/`S-14`).
+      sidecar through the opened cache root. This schema-version-3 log is a
+      simple append-only substrate only; LMDB/redb node tables, transactionality
+      with node metadata or value blobs, automatic evaluator writeback beyond
+      the force-cache bridge below, durable hit selection, revalidation,
+      currentTime taint propagation through persisted dependents, automatic
+      compaction/GC, mmap reads, and cached/uncached harness proof remain open
+      (`C-13`/`R-10`/`S-14`).
 - [x] Current force-cache persistent trace writeback:
       after tree-walk `force_value` gets an accepted cacheable impure
       forced-expression observation and successfully materializes its value
       payload, it encodes the same trace segment as `PersistNodeTracePayload`
       and appends it through `PersistCache::record_node_trace` using the same
-      expression metadata key that links the materialized payload. Trace-write
-      failure clears the just-linked durable value metadata so an impure value
-      is not left live without a persisted trace; pure observations write no
-      trace, and rejected or unsupported observations can clear the durable
-      value link without deleting older trace log records. The trace log still
-      has no value-hash/generation association, so future durable hit selection
-      must add that pairing or treat trace records as advisory-only. This is
+      expression metadata key that links the materialized payload plus the
+      payload's `ValueHash`. Trace-write failure clears the just-linked durable
+      value metadata so an impure value is not left live without a persisted
+      trace; pure observations write no trace, and rejected or unsupported
+      observations can clear the durable value link without deleting older
+      value-associated trace log records. Future durable hit selection can
+      require the node metadata value hash to match the trace record value hash
+      before revalidation, but the sidecar is still non-transactional. This is
       accepted-impure trace writeback only; evaluator durable hit selection,
       revalidation, trace tombstones, transactionality with value
       materialization, currentTime taint propagation through persisted

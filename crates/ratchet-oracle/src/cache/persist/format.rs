@@ -1570,22 +1570,36 @@ fn node_trace_input_mode_from_tag(
     }
 }
 
-/// A complete key/payload record in the node trace log.
+/// A complete key/value-hash/payload record in the node trace log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersistNodeTraceLogEntry {
     key: PersistNodeMetadataKey,
+    value_hash: ValueHash,
     payload: PersistNodeTracePayload,
 }
 
 impl PersistNodeTraceLogEntry {
     /// Creates a node trace log entry.
-    pub fn new(key: PersistNodeMetadataKey, payload: PersistNodeTracePayload) -> Self {
-        Self { key, payload }
+    pub fn new(
+        key: PersistNodeMetadataKey,
+        value_hash: ValueHash,
+        payload: PersistNodeTracePayload,
+    ) -> Self {
+        Self {
+            key,
+            value_hash,
+            payload,
+        }
     }
 
     /// Returns the node metadata key this trace belongs to.
     pub const fn key(&self) -> PersistNodeMetadataKey {
         self.key
+    }
+
+    /// Returns the materialized value hash this trace verifies.
+    pub const fn value_hash(&self) -> ValueHash {
+        self.value_hash
     }
 
     /// Returns the persisted node trace payload.
@@ -1602,9 +1616,10 @@ impl PersistNodeTraceLogEntry {
 /// An append-only log for persisted node verifying traces.
 ///
 /// This is a simple durable substrate for the future `nodes/` table. Each
-/// record stores a [`PersistNodeMetadataKey`] plus a variable-length
-/// [`PersistNodeTracePayload`]. Lookups scan linearly and return the newest
-/// matching trace for the requested node key.
+/// record stores a [`PersistNodeMetadataKey`], the materialized [`ValueHash`]
+/// the trace verifies, and a variable-length [`PersistNodeTracePayload`].
+/// Lookups scan linearly and return the newest matching trace record for the
+/// requested node key.
 #[derive(Clone, Debug)]
 pub struct PersistNodeTraceLog {
     path: PathBuf,
@@ -1639,10 +1654,10 @@ impl PersistNodeTraceLog {
         &self,
         entry: PersistNodeTraceLogEntry,
     ) -> Result<(), PersistNodeTraceLogError> {
-        self.append_trace(entry.key, &entry.payload)
+        self.append_trace(entry.key, entry.value_hash, &entry.payload)
     }
 
-    /// Appends one node trace payload for `key`.
+    /// Appends one node trace payload for `key` and `value_hash`.
     ///
     /// # Errors
     ///
@@ -1651,6 +1666,7 @@ impl PersistNodeTraceLog {
     pub fn append_trace(
         &self,
         key: PersistNodeMetadataKey,
+        value_hash: ValueHash,
         payload: &PersistNodeTracePayload,
     ) -> Result<(), PersistNodeTraceLogError> {
         ensure_node_trace_log_file(&self.path)?;
@@ -1671,7 +1687,11 @@ impl PersistNodeTraceLog {
         record
             .try_reserve_exact(record_len)
             .map_err(|_| PersistNodeTraceLogError::RecordAllocationFailed { len: record_len })?;
-        record.extend_from_slice(&encode_node_trace_log_record_header(key, payload_len));
+        record.extend_from_slice(&encode_node_trace_log_record_header(
+            key,
+            value_hash,
+            payload_len,
+        ));
         record.extend_from_slice(&payload_bytes);
         let mut file = OpenOptions::new()
             .append(true)
@@ -1688,7 +1708,7 @@ impl PersistNodeTraceLog {
             })
     }
 
-    /// Looks up the newest trace payload recorded for `key`.
+    /// Looks up the newest trace record recorded for `key`.
     ///
     /// Missing trace records return `Ok(None)`.
     ///
@@ -1699,12 +1719,12 @@ impl PersistNodeTraceLog {
     pub fn lookup(
         &self,
         key: PersistNodeMetadataKey,
-    ) -> Result<Option<PersistNodeTracePayload>, PersistNodeTraceLogError> {
+    ) -> Result<Option<PersistNodeTraceLogEntry>, PersistNodeTraceLogError> {
         ensure_node_trace_log_file(&self.path)?;
         let mut found = None;
         scan_node_trace_log_entries(&self.path, |entry| {
             if entry.key() == key {
-                found = Some(entry.into_payload());
+                found = Some(entry);
             }
             Ok(())
         })?;
@@ -1714,11 +1734,15 @@ impl PersistNodeTraceLog {
 
 fn encode_node_trace_log_record_header(
     key: PersistNodeMetadataKey,
+    value_hash: ValueHash,
     payload_len: u64,
 ) -> [u8; PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN] {
     let mut bytes = [0; PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN];
-    bytes[..PERSIST_NODE_METADATA_INDEX_KEY_LEN].copy_from_slice(&key.index_bytes());
-    bytes[PERSIST_NODE_METADATA_INDEX_KEY_LEN..].copy_from_slice(&payload_len.to_le_bytes());
+    let key_end = PERSIST_NODE_METADATA_INDEX_KEY_LEN;
+    let value_hash_end = key_end + PERSIST_NODE_TRACE_LOG_VALUE_HASH_LEN;
+    bytes[..key_end].copy_from_slice(&key.index_bytes());
+    bytes[key_end..value_hash_end].copy_from_slice(&value_hash.as_durable_hash().as_bytes());
+    bytes[value_hash_end..].copy_from_slice(&payload_len.to_le_bytes());
     bytes
 }
 
@@ -1791,7 +1815,13 @@ where
         .map_err(|source| {
             node_trace_log_format_error(path, PersistNodeTraceLogFormatError::Key { source })
         })?;
-        let payload_len = read_u64(&header[PERSIST_NODE_METADATA_INDEX_KEY_LEN..]);
+        let value_hash_start = PERSIST_NODE_METADATA_INDEX_KEY_LEN;
+        let value_hash_end = value_hash_start + PERSIST_NODE_TRACE_LOG_VALUE_HASH_LEN;
+        let mut value_hash_bytes = [0; PERSIST_NODE_TRACE_LOG_VALUE_HASH_LEN];
+        value_hash_bytes.copy_from_slice(&header[value_hash_start..value_hash_end]);
+        let value_hash =
+            ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_bytes(value_hash_bytes));
+        let payload_len = read_u64(&header[value_hash_end..]);
         let payload_start = offset
             .checked_add(PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN as u64)
             .ok_or_else(|| {
@@ -1843,7 +1873,7 @@ where
         let payload = PersistNodeTracePayload::decode(&payload_bytes).map_err(|source| {
             node_trace_log_format_error(path, PersistNodeTraceLogFormatError::Payload { source })
         })?;
-        visit(PersistNodeTraceLogEntry::new(key, payload))?;
+        visit(PersistNodeTraceLogEntry::new(key, value_hash, payload))?;
         offset = payload_end;
     }
     Ok(())

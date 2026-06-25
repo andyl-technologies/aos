@@ -293,11 +293,13 @@ impl PersistCache {
         self.node_metadata_index.lookup(key)
     }
 
-    /// Appends a durable verifying-trace payload for one demand node.
+    /// Appends a durable verifying-trace payload for one materialized demand node.
     ///
     /// The trace log is append-only and newest-record-wins on lookup. This
     /// fixed-file sidecar has no cross-process write lock; callers must
-    /// serialize concurrent writes to the same log.
+    /// serialize concurrent writes to the same log. The caller supplies the
+    /// materialized value hash so future hit selection can reject stale
+    /// trace/value pairings.
     ///
     /// # Errors
     ///
@@ -306,12 +308,13 @@ impl PersistCache {
     pub fn record_node_trace(
         &self,
         key: PersistNodeMetadataKey,
+        value_hash: ValueHash,
         payload: &PersistNodeTracePayload,
     ) -> Result<(), PersistNodeTraceLogError> {
-        self.node_trace_log.append_trace(key, payload)
+        self.node_trace_log.append_trace(key, value_hash, payload)
     }
 
-    /// Looks up the newest durable verifying-trace payload for one demand node.
+    /// Looks up the newest durable verifying-trace record for one demand node.
     ///
     /// Missing trace records return `Ok(None)`.
     ///
@@ -322,7 +325,7 @@ impl PersistCache {
     pub fn lookup_node_trace(
         &self,
         key: PersistNodeMetadataKey,
-    ) -> Result<Option<PersistNodeTracePayload>, PersistNodeTraceLogError> {
+    ) -> Result<Option<PersistNodeTraceLogEntry>, PersistNodeTraceLogError> {
         self.node_trace_log.lookup(key)
     }
 

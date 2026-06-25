@@ -502,13 +502,15 @@ impl TreeWalk {
         drop(cache);
         match persistence_action {
             Ok(ForcePayloadPersistenceAction::Materialize) => {
-                self.materialize_persist_forced_expression_payload(&subject, &payload);
+                let _ = self.materialize_persist_forced_expression_payload(&subject, &payload);
             }
             Ok(ForcePayloadPersistenceAction::MaterializeWithTrace) => {
-                if self.materialize_persist_forced_expression_payload(&subject, &payload)
-                    && !self.record_persist_forced_expression_trace(&subject, &trace)
+                if let Some(value_hash) =
+                    self.materialize_persist_forced_expression_payload(&subject, &payload)
                 {
-                    self.clear_persist_forced_expression_payload(&subject);
+                    if !self.record_persist_forced_expression_trace(&subject, value_hash, &trace) {
+                        self.clear_persist_forced_expression_payload(&subject);
+                    }
                 }
             }
             Ok(ForcePayloadPersistenceAction::Clear) => {
@@ -557,16 +559,27 @@ impl TreeWalk {
         &mut self,
         subject: &ForceCacheSubject,
         payload: &CachedExpressionValue,
-    ) -> bool {
+    ) -> Option<ValueHash> {
         if !self.options.eval_cache_enabled() {
-            return false;
+            return None;
         }
         let Some(identity) = subject.metadata_identity else {
-            return false;
+            return None;
+        };
+        let value_hash = match payload.value_hash() {
+            Ok(value_hash) => value_hash,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent force payload hashing failed"
+                );
+                return None;
+            }
         };
         self.open_persist_eval_cache();
         let Some(persist_cache) = &self.persist_cache else {
-            return false;
+            return None;
         };
         let key = PersistNodeMetadataKey::for_expression(
             identity,
@@ -577,14 +590,14 @@ impl TreeWalk {
             payload,
             MaterializationDecision::Materialize,
         ) {
-            Ok(_) => true,
+            Ok(_) => Some(value_hash),
             Err(error) => {
                 tracing::warn!(
                     target: "aos_nix::cache",
                     error = %error,
                     "tree-walk evaluator persistent force payload materialization failed"
                 );
-                false
+                None
             }
         }
     }
@@ -592,6 +605,7 @@ impl TreeWalk {
     fn record_persist_forced_expression_trace(
         &mut self,
         subject: &ForceCacheSubject,
+        value_hash: ValueHash,
         trace: &ImpureInputTraceSegment,
     ) -> bool {
         if !self.options.eval_cache_enabled() {
@@ -619,7 +633,7 @@ impl TreeWalk {
             identity,
             subject.free_var_value_hashes.iter().copied(),
         );
-        match persist_cache.record_node_trace(key, &payload) {
+        match persist_cache.record_node_trace(key, value_hash, &payload) {
             Ok(()) => true,
             Err(error) => {
                 tracing::warn!(
