@@ -126,6 +126,8 @@ pub struct QemuNodeEmittedFrame {
     pub source: NodeId,
     /// The destination node for the frame.
     pub destination: NodeId,
+    /// The source node icount at which the guest emitted the frame.
+    pub emit_icount: Icount,
     /// The per-source deterministic frame sequence number.
     pub sequence: u64,
     /// The emitted payload bytes.
@@ -680,6 +682,7 @@ mod tests {
             Ok(Some(QemuNodeEmittedFrame {
                 source: node_id("vm-a"),
                 destination: node_id("vm-b"),
+                emit_icount: Icount { retired: 17 },
                 sequence: 7,
                 payload: vec![8, 9],
             }))
@@ -793,6 +796,7 @@ mod tests {
             Some(QemuNodeEmittedFrame {
                 source: node_id("vm-a"),
                 destination: node_id("vm-b"),
+                emit_icount: Icount { retired: 17 },
                 sequence: 7,
                 payload: vec![8, 9],
             })

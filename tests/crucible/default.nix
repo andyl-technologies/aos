@@ -199,6 +199,7 @@ in {
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuNodeWrapper = import ./phase2-qemu-node-wrapper.nix {inherit pkgs lib;};
     qemuQmpClient = import ./phase2-qemu-qmp-client.nix {inherit pkgs lib;};
+    qemuInjectionContract = import ./phase2-qemu-injection-contract.nix {inherit pkgs lib;};
     qemuQuantumShmem = import ./phase2-qemu-quantum-shmem.nix {inherit pkgs lib;};
     qemuRealization = import ./phase2-qemu-realization.nix {inherit pkgs lib;};
     qemuSavevmFallback = import ./phase2-qemu-savevm-fallback.nix {inherit pkgs lib;};
