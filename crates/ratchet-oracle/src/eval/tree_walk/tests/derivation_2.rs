@@ -1,7 +1,10 @@
 //! Tree-walk evaluator tests: derivation 2.
 
 use super::*;
-use crate::cache::{PARSE_CACHE_SCHEMA_VERSION, ParseCacheFlags, ParseCacheKey};
+use crate::cache::{
+    PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags, ParseCacheKey, ParseFileKey,
+    PersistCache, PersistFileArtifactKey,
+};
 use crate::string::NixString;
 
 #[test]
@@ -113,17 +116,45 @@ fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
                 .any(|window| window == needle)
     }
 
-    let source = r#"let
+    let root = fs::canonicalize(unique_temp_dir("internal-hash-leak-canary-import"))
+        .expect("temp directory canonicalizes");
+    let parse_root = root.join("parse-cache");
+    let persist_root = root.join("persist-cache");
+    let import_path = root.join("imported.nix");
+    let imported_source = br#""imported-value""#;
+    fs::write(&import_path, imported_source).expect("import source writes");
+    let import_realpath = fs::canonicalize(&import_path).expect("import path canonicalizes");
+    let source = format!(
+        r#"let
+             imported = import {};
              forced = 1 + 2;
-           in derivationStrict {
+           in derivationStrict {{
              name = "leak-canary";
              system = "x86_64-linux";
              builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
-             args = [ (toString forced) ];
-           }"#;
-    let outcome = eval_whnf_owned(&lower(source)).expect("canary derivation evaluates");
-    let derivation = outcome
-        .derivations()
+             args = [ (toString forced) imported ];
+           }}"#,
+        import_path.display()
+    );
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&parse_root);
+    options.set_persist_cache_root(&persist_root);
+    let ir = lower(&source);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let _value = evaluator.eval_root().expect("canary derivation evaluates");
+    assert_eq!(
+        evaluator.import_parse_cache_stats(),
+        (0, 1),
+        "import should populate the configured parse-cache path"
+    );
+    let derivations = evaluator
+        .derivation_snapshot()
+        .expect("derivation snapshot succeeds");
+    let derivation = derivations
         .iter()
         .next()
         .expect("static derivation is recorded");
@@ -131,13 +162,43 @@ fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
         .aterm_bytes()
         .expect("static derivation has ATerm bytes");
 
-    let parse_key = ParseCacheKey::for_source(
+    let root_parse_key = ParseCacheKey::for_source(
         source.as_bytes(),
         PARSE_CACHE_SCHEMA_VERSION,
         ParseCacheFlags::new(),
     );
-    let parse_key_hex_canary = parse_key.to_hex();
-    let parse_key_raw_canary = parse_key.as_bytes();
+    let root_parse_key_hex_canary = root_parse_key.to_hex();
+    let root_parse_key_raw_canary = root_parse_key.as_bytes();
+    let root_parse_key_nixbase32_canary = nix_compat::nixbase32::encode(&root_parse_key_raw_canary);
+    let imported_parse_key = ParseCacheKey::for_source(
+        imported_source,
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let imported_parse_key_hex_canary = imported_parse_key.to_hex();
+    let imported_parse_key_raw_canary = imported_parse_key.as_bytes();
+    let imported_parse_key_nixbase32_canary =
+        nix_compat::nixbase32::encode(&imported_parse_key_raw_canary);
+    let file_key = ParseFileKey::for_source(&import_realpath, imported_source);
+    assert!(
+        ParseCache::new(&parse_root)
+            .entry_for_source(imported_source)
+            .is_complete(),
+        "canary import should write a parse-cache entry"
+    );
+    let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, imported_parse_key);
+    assert!(
+        PersistCache::open(&persist_root)
+            .expect("persistent cache opens")
+            .lookup_file_artifact(artifact_key)
+            .expect("persistent file-artifact lookup succeeds")
+            .is_some(),
+        "canary import should materialize a persistent file-artifact mapping"
+    );
+    let file_content_hash_hex_canary = file_key.content_hash_hex();
+    let file_content_hash_raw_canary = file_key.content_hash().as_bytes();
+    let file_content_hash_nixbase32_canary =
+        nix_compat::nixbase32::encode(&file_content_hash_raw_canary);
     let hot_canary = NixString::from_bytes(b"leak-canary".to_vec())
         .structural_hash_xxh3()
         .raw_for_tests();
@@ -151,10 +212,41 @@ fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
         (".drv path", derivation.absolute_path().as_bytes()),
     ];
     let canaries = [
-        ("parse-cache BLAKE3 hex", parse_key_hex_canary.as_bytes()),
         (
-            "parse-cache BLAKE3 raw bytes",
-            parse_key_raw_canary.as_slice(),
+            "root parse-cache BLAKE3 hex",
+            root_parse_key_hex_canary.as_bytes(),
+        ),
+        (
+            "root parse-cache BLAKE3 raw bytes",
+            root_parse_key_raw_canary.as_slice(),
+        ),
+        (
+            "root parse-cache BLAKE3 Nix base32",
+            root_parse_key_nixbase32_canary.as_bytes(),
+        ),
+        (
+            "import parse-cache BLAKE3 hex",
+            imported_parse_key_hex_canary.as_bytes(),
+        ),
+        (
+            "import parse-cache BLAKE3 raw bytes",
+            imported_parse_key_raw_canary.as_slice(),
+        ),
+        (
+            "import parse-cache BLAKE3 Nix base32",
+            imported_parse_key_nixbase32_canary.as_bytes(),
+        ),
+        (
+            "file-content BLAKE3 hex",
+            file_content_hash_hex_canary.as_bytes(),
+        ),
+        (
+            "file-content BLAKE3 raw bytes",
+            file_content_hash_raw_canary.as_slice(),
+        ),
+        (
+            "file-content BLAKE3 Nix base32",
+            file_content_hash_nixbase32_canary.as_bytes(),
         ),
         ("hot xxh3 decimal", hot_decimal_canary.as_bytes()),
         ("hot xxh3 hex", hot_hex_canary.as_bytes()),
@@ -176,6 +268,8 @@ fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
             );
         }
     }
+
+    fs::remove_dir_all(root).expect("temp directory removes");
 }
 
 #[test]
