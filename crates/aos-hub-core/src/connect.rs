@@ -342,9 +342,22 @@ async fn facade_put(
     headers: HeaderMap,
     slug: String,
     path: String,
+    query: Option<String>,
     body: Bytes,
 ) -> Response {
     let auth = auth_header(&headers);
+    // A multipart part upload (`?uploadId=…&partNumber=N`) streams this one part
+    // straight to the backend; any other `PUT` is a single-object write.
+    let mp = parse_multipart_query(query.as_deref());
+    if let (Some(upload_id), Some(part_number)) = (mp.upload_id.as_deref(), mp.part_number) {
+        return match svc
+            .upload_part(auth.as_deref(), &slug, &path, upload_id, part_number, &body)
+            .await
+        {
+            Ok(tag) => multipart_part_response(&tag),
+            Err(deny) => facade_write_response(deny, &path),
+        };
+    }
     let outcome = svc
         .put_machine_path(auth.as_deref(), &slug, &path, &body)
         .await;
@@ -368,6 +381,147 @@ async fn facade_put(
         }
     }
     facade_write_response(outcome, &path)
+}
+
+/// Suggested multipart part size handed back at initiate (16 MiB): above the
+/// R2/S3 5 MiB minimum and under the Worker request-body cap, so each part is
+/// one bounded-memory request.
+const MULTIPART_PART_SIZE: u64 = 16 * 1024 * 1024;
+
+/// Multipart query parameters parsed off a facade request's query string.
+///
+/// The facade overloads the `/{slug}/{*path}` route with the S3-style multipart
+/// query convention: `?uploads` initiates, `?uploadId=…&partNumber=N` uploads a
+/// part, `?uploadId=…` (POST) completes / (DELETE) aborts.
+struct MultipartQuery {
+    /// `?uploads` present — an initiate request.
+    initiate: bool,
+    /// `?uploadId=…` — names an in-progress upload (part/complete/abort).
+    upload_id: Option<String>,
+    /// `?partNumber=…` — the 1-based part index on a part `PUT`.
+    part_number: Option<u32>,
+}
+
+/// Parse the multipart query parameters from a raw query string.
+fn parse_multipart_query(query: Option<&str>) -> MultipartQuery {
+    let mut out = MultipartQuery {
+        initiate: false,
+        upload_id: None,
+        part_number: None,
+    };
+    if let Some(q) = query {
+        for (k, v) in url::form_urlencoded::parse(q.as_bytes()) {
+            match k.as_ref() {
+                "uploads" => out.initiate = true,
+                "uploadId" => out.upload_id = Some(v.into_owned()),
+                "partNumber" => out.part_number = v.parse().ok(),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Initiate (`?uploads`) / complete (`?uploadId`) of a multipart upload, on the
+/// facade `POST` to a surface path.
+async fn facade_post(
+    svc: Arc<RpcService>,
+    headers: HeaderMap,
+    slug: String,
+    path: String,
+    query: Option<String>,
+    body: Bytes,
+) -> Response {
+    let auth = auth_header(&headers);
+    let mp = parse_multipart_query(query.as_deref());
+    if mp.initiate {
+        return match svc.initiate_upload(auth.as_deref(), &slug, &path).await {
+            Ok(upload_id) => Json(MultipartInitiate {
+                upload_id,
+                part_size: MULTIPART_PART_SIZE,
+            })
+            .into_response(),
+            Err(deny) => facade_write_response(deny, &path),
+        };
+    }
+    if let Some(upload_id) = mp.upload_id.as_deref() {
+        let parts = match serde_json::from_slice::<MultipartComplete>(&body) {
+            Ok(req) => req
+                .parts
+                .into_iter()
+                .map(|p| crate::surface_write::PartTag {
+                    part_number: p.part_number,
+                    etag: p.etag,
+                })
+                .collect::<Vec<_>>(),
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "invalid multipart complete body")
+                    .into_response()
+            }
+        };
+        let outcome = svc
+            .complete_upload(auth.as_deref(), &slug, &path, upload_id, &parts)
+            .await;
+        return facade_write_response(outcome, &path);
+    }
+    (StatusCode::BAD_REQUEST, "unsupported POST to a surface path").into_response()
+}
+
+/// Abort (`?uploadId`) of a multipart upload, on the facade `DELETE` to a
+/// surface path.
+async fn facade_delete(
+    svc: Arc<RpcService>,
+    headers: HeaderMap,
+    slug: String,
+    path: String,
+    query: Option<String>,
+) -> Response {
+    let auth = auth_header(&headers);
+    let mp = parse_multipart_query(query.as_deref());
+    if let Some(upload_id) = mp.upload_id.as_deref() {
+        let outcome = svc
+            .abort_upload(auth.as_deref(), &slug, &path, upload_id)
+            .await;
+        return facade_write_response(outcome, &path);
+    }
+    (StatusCode::BAD_REQUEST, "unsupported DELETE to a surface path").into_response()
+}
+
+/// `200` JSON response to a multipart part upload (`PUT ?uploadId&partNumber`).
+fn multipart_part_response(tag: &crate::surface_write::PartTag) -> Response {
+    Json(MultipartPart {
+        part_number: tag.part_number,
+        etag: tag.etag.clone(),
+    })
+    .into_response()
+}
+
+/// Initiate response body: the opaque backend `upload_id` and the suggested
+/// `part_size`.
+#[derive(Serialize)]
+struct MultipartInitiate {
+    upload_id: String,
+    part_size: u64,
+}
+
+/// Part-upload response body: the part's number and backend `etag`.
+#[derive(Serialize)]
+struct MultipartPart {
+    part_number: u32,
+    etag: String,
+}
+
+/// Complete request body: the ordered parts (number + etag) to assemble.
+#[derive(serde::Deserialize)]
+struct MultipartComplete {
+    parts: Vec<MultipartCompletePart>,
+}
+
+/// One `(part_number, etag)` entry in a [`MultipartComplete`] body.
+#[derive(serde::Deserialize)]
+struct MultipartCompletePart {
+    part_number: u32,
+    etag: String,
 }
 
 /// Turn a [`Rendered`] browse outcome into an HTTP response.
@@ -1244,9 +1398,29 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
             // hub keeps its own richer `/{slug}/{*path}` handler instead (this
             // facade route is omitted for it via `mount_facade = false`).
             .put(
-                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>, body: Bytes| {
+                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>, uri: axum::http::Uri, body: Bytes| {
                     let svc = from_state(state);
-                    send_bridge(facade_put(svc, headers, slug, path, body))
+                    let query = uri.query().map(str::to_owned);
+                    send_bridge(facade_put(svc, headers, slug, path, query, body))
+                },
+            )
+            // Multipart upload over the same wildcard (S3-style query
+            // convention): `POST ?uploads` initiates, `POST ?uploadId` completes,
+            // `DELETE ?uploadId` aborts; the parts ride the `PUT` above. Each
+            // part is a small, sub-cap body, so they upload with bounded memory
+            // even for NARs far larger than the request-body limit.
+            .post(
+                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>, uri: axum::http::Uri, body: Bytes| {
+                    let svc = from_state(state);
+                    let query = uri.query().map(str::to_owned);
+                    send_bridge(facade_post(svc, headers, slug, path, query, body))
+                },
+            )
+            .delete(
+                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>, uri: axum::http::Uri| {
+                    let svc = from_state(state);
+                    let query = uri.query().map(str::to_owned);
+                    send_bridge(facade_delete(svc, headers, slug, path, query))
                 },
             ),
         );
