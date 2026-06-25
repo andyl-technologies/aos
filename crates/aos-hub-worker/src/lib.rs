@@ -790,9 +790,67 @@ mod entry {
                         }
                     }
                 }
+                Job::Reindex { registry_id } => {
+                    // Event-driven re-index of one registry: load it and run the
+                    // shared reindexer (the inline counterpart to the `*/15` Cron).
+                    let (Ok(d1), Ok(bucket)) = (
+                        env.d1(crate::handlers::bindings::D1),
+                        env.bucket(crate::handlers::bindings::R2),
+                    ) else {
+                        worker::console_error!("queue: reindex: D1/R2 binding missing");
+                        continue;
+                    };
+                    let sealer = match env
+                        .secret(HUB_SEAL_KEY)
+                        .map_err(|err| format!("{err}"))
+                        .and_then(|s| {
+                            sealer_from_secret(&s.to_string()).map_err(|err| format!("{err:#}"))
+                        }) {
+                        Ok(sealer) => sealer,
+                        Err(err) => {
+                            worker::console_error!("queue: reindex: {HUB_SEAL_KEY}: {err}");
+                            continue;
+                        }
+                    };
+                    let session = match crate::d1backend::open_session(&d1, D1_SEED_PRIMARY) {
+                        Ok(session) => session,
+                        Err(err) => {
+                            worker::console_error!("queue: reindex session: {err:#}");
+                            continue;
+                        }
+                    };
+                    let db = Arc::new(aos_hub_core::db::Database::attach(Box::new(
+                        crate::d1backend::D1Backend::new(session),
+                    )));
+                    match db.registry_by_id(*registry_id).await {
+                        Ok(Some(registry)) => {
+                            use aos_hub_core::reindex::Reindexer as _;
+                            let reindexer = WorkerReindexer::new(bucket, Arc::clone(&db), sealer);
+                            if let Err(err) = reindexer.reindex(&registry).await {
+                                worker::console_error!("queue: reindex {registry_id}: {err:#}");
+                            }
+                        }
+                        Ok(None) => {
+                            worker::console_log!("queue: reindex {registry_id}: registry gone")
+                        }
+                        Err(err) => worker::console_error!("queue: reindex load {registry_id}: {err:#}"),
+                    }
+                }
+                Job::InvalidateReadModel { keys } => {
+                    // Purge edge-cached read-model entries (RFC-0004 ch.14 Phase
+                    // D/D3) so a write is observed at the next read rather than
+                    // after the cache TTL.
+                    let cache = worker::Cache::default();
+                    for key in keys {
+                        if let Err(err) = cache.delete(key.as_str(), false).await {
+                            worker::console_error!("queue: cache delete {key}: {err}");
+                        }
+                    }
+                }
                 other => {
-                    // Full execution is wired with the rest of the Phase D
-                    // consumer (deploy-gated); record the job for now.
+                    // RegenerateSurface / DeliverWebhook run against the
+                    // surface/webhook subsystems; their execution is exercised
+                    // under a live queue (deploy-gated).
                     worker::console_log!("queue: job pending consumer wiring: {other:?}");
                 }
             }

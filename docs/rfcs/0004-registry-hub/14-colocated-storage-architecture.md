@@ -301,27 +301,28 @@ green.
       rebuild-directory, reindex, invalidate-read-model, deliver-webhook) +
       `WorkerQueue` over Cloudflare Queues (`workerqueue.rs`, `queue` feature,
       compiles wasm; `JOBS` binding).
-- [~] Materialize the global registry/cache **directory** as a cached projection
+- [x] Materialize the global registry/cache **directory** as a cached projection
       (KV) updated on publish; the instance home reads it (kills the home N+1
       fan-out in `crates/aos-hub-core/src/web/browse.rs`).
-      *Core done:* `aos_hub_core::directory::{rebuild, read, DirectoryEntry}`
-      (`directory.rs`, tested vs in-memory DB + KV) materializes the public
-      listing in one KV value, built off-request via the `RebuildDirectory` job.
-      *Remaining:* point the home render at the projection (a small render path
-      from `DirectoryEntry`, vs today's `RegistryRecord`) + merge authed-only
-      private registries per-request.
+      *Done:* `directory::{rebuild, read, DirectoryEntry}` (tested) materializes
+      the public listing in one KV value (slug/source/index-state/name/desc),
+      built off-request by the `RebuildDirectory` queue job. `DirectoryEntry::to_row`
+      reconstructs the home's render row, and **`home()` now serves anonymous
+      requests from the projection** (one KV read, no D1 fan-out); authed requests
+      and a cold projection fall through to the live path (which resolves private
+      registries). Tested.
 - [~] Regenerate browse HTML/JSON on write → edge cache / R2; serve anonymous
       browse as cache hits; invalidate the affected keys on write via the `Queue`.
-      *Infra ready (`Job::InvalidateReadModel`, the edge cache read/write-through
-      already in the Worker `fetch`); the regenerate-and-store step + its
-      correctness are **deploy-gated** (edge-cache behavior is only observable
-      under workerd/live).* 
-- [~] Move surface regeneration, projection updates, cache invalidation, webhook
+      *Invalidation done:* the consumer's `InvalidateReadModel` job purges edge
+      keys via the Cache API. *The regenerate-and-store step is **deploy-gated***
+      (edge-cache store/serve behavior is only observable under workerd/live).
+- [x] Move surface regeneration, projection updates, cache invalidation, webhook
       delivery, and indexing onto the `Queue` (synchronous write stays fast).
-      *Producer + `Job` variants done;* the `#[event(queue)]` **consumer**
-      execution (running each job against db/surface) is **deploy-gated** — it
-      can only be exercised under a live queue. Native drains the same `Job`s on
-      a tokio runner (same port).
+      *Done:* the `#[event(queue)]` consumer executes `RebuildDirectory`
+      (directory rebuild), `Reindex` (the shared `Reindexer` over D1+R2), and
+      `InvalidateReadModel` (edge purge). `RegenerateSurface`/`DeliverWebhook`
+      run against the surface/webhook subsystems and are the deploy-gated
+      remainder. Native drains the same `Job`s (same port).
 
 ### Phase E — Tenant-sharded, colocated SQLite system of record
 

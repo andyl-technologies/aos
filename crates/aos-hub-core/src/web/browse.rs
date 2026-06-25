@@ -393,6 +393,26 @@ pub async fn home(svc: &RpcService, headers: &HeaderMap, query: &BrowseQuery) ->
     }
     let started = Instant::now();
     let session = session_indicator(svc, headers).await;
+    // RFC-0004 ch.14 Phase D: anonymous fast path — serve the public listing
+    // from the KV directory projection (one KV read, no per-registry D1
+    // fan-out — the home N+1) when it has been built. Authenticated requests
+    // fall through to the live path, which also resolves private/internal
+    // registries the caller may see; a cold projection falls through too.
+    if session.email.is_none() {
+        if let Some(kv) = &svc.kv {
+            if let Ok(Some(entries)) = crate::directory::read(kv.as_ref()).await {
+                let rows: Vec<(RegistryRecord, Option<IndexStatus>)> =
+                    entries.iter().map(crate::directory::DirectoryEntry::to_row).collect();
+                return Rendered::Html(pages::instance_home(
+                    &rows,
+                    query.query(),
+                    query.page_number(),
+                    started,
+                    &session,
+                ));
+            }
+        }
+    }
     let mut rows: Vec<(RegistryRecord, Option<IndexStatus>)> = Vec::new();
     if let Ok(registries) = svc.db.list_registries().await {
         use futures_util::stream::StreamExt as _;
