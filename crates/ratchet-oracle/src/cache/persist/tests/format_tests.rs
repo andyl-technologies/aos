@@ -2,6 +2,10 @@
 //! encodings, and node metadata.
 
 use super::*;
+use crate::cache::{
+    CacheableInputFingerprint, DirEntryInput, FileTypeForInput, ImpureInputKind,
+    InputFingerprintError,
+};
 
 #[test]
 fn blob_packfile_paths_are_store_separated() {
@@ -949,6 +953,231 @@ fn node_metadata_index_entries_reject_invalid_prefixes() {
     assert_eq!(
         error,
         PersistPackFormatError::InvalidNodeMetadataIndexTag { tag: 99 }
+    );
+}
+
+#[test]
+fn node_trace_payload_uses_stable_wire_bytes() {
+    let read_file = CacheableInputFingerprint::from_observation_hash(
+        ImpureInputKind::ReadFile,
+        ImpureInputMode::Default,
+        b"/a",
+        DurableBlake3Hash::from_bytes([0x11; 32]),
+    )
+    .expect("readFile persisted input builds");
+    let path_exists = CacheableInputFingerprint::from_observation_hash(
+        ImpureInputKind::PathExists,
+        ImpureInputMode::RequireDirectory,
+        b"/dir",
+        DurableBlake3Hash::from_bytes([0x22; 32]),
+    )
+    .expect("pathExists persisted input builds");
+    let payload = PersistNodeTracePayload::from_cacheable_inputs([read_file, path_exists])
+        .expect("payload builds");
+
+    let encoded = payload.encode().expect("payload encodes");
+    let mut expected = Vec::new();
+    expected.extend_from_slice(b"AOS-NIX-NTRACE01");
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend_from_slice(&2u64.to_le_bytes());
+    expected.push(2);
+    expected.push(1);
+    expected.extend_from_slice(&2u64.to_le_bytes());
+    expected.extend_from_slice(&[0x11; 32]);
+    expected.extend_from_slice(b"/a");
+    expected.push(5);
+    expected.push(2);
+    expected.extend_from_slice(&4u64.to_le_bytes());
+    expected.extend_from_slice(&[0x22; 32]);
+    expected.extend_from_slice(b"/dir");
+
+    assert_eq!(encoded, expected);
+    assert_eq!(encoded[0..16], *b"AOS-NIX-NTRACE01");
+    assert_eq!(encoded[28], 2);
+    assert_eq!(encoded[29], 1);
+    assert_eq!(encoded[72], 5);
+    assert_eq!(encoded[73], 2);
+}
+
+#[test]
+fn node_trace_payload_round_trips_cacheable_input_records() {
+    let trace = vec![
+        ImpureInputFingerprint::import(b"/src/default.nix", b"{ pkgs }: pkgs.hello")
+            .expect("import input builds"),
+        ImpureInputFingerprint::read_file(b"/src/README", b"readme bytes")
+            .expect("readFile input builds"),
+        ImpureInputFingerprint::read_dir(
+            b"/src",
+            [
+                DirEntryInput::new(b"default.nix", FileTypeForInput::Regular),
+                DirEntryInput::new(b"lib", FileTypeForInput::Directory),
+            ],
+        )
+        .expect("readDir input builds"),
+        ImpureInputFingerprint::read_file_type(b"/src/default.nix", FileTypeForInput::Regular)
+            .expect("readFileType input builds"),
+        ImpureInputFingerprint::path_exists_with_mode(
+            b"/src/lib",
+            ImpureInputMode::RequireDirectory,
+            true,
+        )
+        .expect("pathExists input builds"),
+        ImpureInputFingerprint::get_env(b"HOME", Some(b"/homeless-shelter"))
+            .expect("getEnv input builds"),
+    ];
+    let expected_inputs: Vec<_> = trace
+        .iter()
+        .map(|input| input.as_cacheable().expect("trace input cacheable").clone())
+        .collect();
+
+    let payload = PersistNodeTracePayload::from_impure_trace(&trace).expect("payload builds");
+    let encoded = payload.encode().expect("payload encodes");
+    let decoded = PersistNodeTracePayload::decode(&encoded).expect("payload decodes");
+    let expected_len = PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN
+        + expected_inputs
+            .iter()
+            .map(|input| PERSIST_NODE_TRACE_INPUT_FIXED_LEN + input.identity().subject().len())
+            .sum::<usize>();
+
+    assert_eq!(payload.inputs(), expected_inputs.as_slice());
+    assert_eq!(encoded.len(), expected_len);
+    assert_eq!(&encoded[..16], PERSIST_NODE_TRACE_PAYLOAD_MAGIC.as_slice());
+    assert_eq!(decoded.inputs(), expected_inputs.as_slice());
+    assert_eq!(decoded, payload);
+}
+
+#[test]
+fn node_trace_payload_rejects_count_without_enough_fixed_records() {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(b"AOS-NIX-NTRACE01");
+    encoded.extend_from_slice(&1u32.to_le_bytes());
+    encoded.extend_from_slice(&(usize::MAX as u64).to_le_bytes());
+
+    let error = PersistNodeTracePayload::decode(&encoded)
+        .expect_err("huge count without bytes errors before allocation");
+
+    assert_eq!(
+        error,
+        PersistNodeTracePayloadError::ShortPayload {
+            expected: usize::MAX,
+            actual: PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN,
+        }
+    );
+}
+
+#[test]
+fn node_trace_payload_rejects_impossible_kind_mode_pairs() {
+    let input = CacheableInputFingerprint::from_observation_hash(
+        ImpureInputKind::GetEnv,
+        ImpureInputMode::Default,
+        b"HOME",
+        DurableBlake3Hash::from_bytes([0x33; 32]),
+    )
+    .expect("getEnv persisted input builds");
+    let payload = PersistNodeTracePayload::from_cacheable_inputs([input]).expect("payload builds");
+    let mut encoded = payload.encode().expect("payload encodes");
+    encoded[PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN + 1] = 2;
+
+    let error = PersistNodeTracePayload::decode(&encoded)
+        .expect_err("invalid persisted kind/mode pair errors");
+
+    assert_eq!(
+        error,
+        PersistNodeTracePayloadError::Input {
+            source: InputFingerprintError::InvalidInputMode {
+                kind: ImpureInputKind::GetEnv,
+                mode: ImpureInputMode::RequireDirectory,
+            },
+        }
+    );
+}
+
+#[test]
+fn node_trace_payload_rejects_uncacheable_inputs() {
+    let trace = [ImpureInputFingerprint::current_time()];
+
+    let error = PersistNodeTracePayload::from_impure_trace(&trace)
+        .expect_err("uncacheable trace input errors");
+
+    assert_eq!(
+        error,
+        PersistNodeTracePayloadError::UncacheableInput {
+            input: UncacheableInput::CurrentTime,
+        }
+    );
+}
+
+#[test]
+fn node_trace_payload_rejects_invalid_header_bytes() {
+    let payload =
+        PersistNodeTracePayload::from_cacheable_inputs(Vec::new()).expect("empty payload builds");
+    let encoded = payload.encode().expect("empty payload encodes");
+
+    let error =
+        PersistNodeTracePayload::decode(&encoded[..8]).expect_err("short payload header errors");
+    assert_eq!(
+        error,
+        PersistNodeTracePayloadError::ShortPayload {
+            expected: PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN,
+            actual: 8,
+        }
+    );
+
+    let mut bad_magic = encoded.clone();
+    bad_magic[0] = b'X';
+    assert!(matches!(
+        PersistNodeTracePayload::decode(&bad_magic),
+        Err(PersistNodeTracePayloadError::InvalidMagic { .. })
+    ));
+
+    let mut bad_version = encoded;
+    bad_version[16..20].copy_from_slice(&99u32.to_le_bytes());
+    let error =
+        PersistNodeTracePayload::decode(&bad_version).expect_err("bad payload version errors");
+    assert_eq!(
+        error,
+        PersistNodeTracePayloadError::UnsupportedVersion { version: 99 }
+    );
+}
+
+#[test]
+fn node_trace_payload_rejects_malformed_input_records() {
+    let input =
+        ImpureInputFingerprint::read_file(b"/src/default.nix", b"contents").expect("input builds");
+    let payload = PersistNodeTracePayload::from_impure_trace([&input]).expect("payload builds");
+    let encoded = payload.encode().expect("payload encodes");
+
+    let mut invalid_kind = encoded.clone();
+    invalid_kind[PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN] = 99;
+    let error = PersistNodeTracePayload::decode(&invalid_kind).expect_err("bad input kind errors");
+    assert_eq!(
+        error,
+        PersistNodeTracePayloadError::InvalidInputKindTag { tag: 99 }
+    );
+
+    let mut invalid_mode = encoded.clone();
+    invalid_mode[PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN + 1] = 99;
+    let error = PersistNodeTracePayload::decode(&invalid_mode).expect_err("bad input mode errors");
+    assert_eq!(
+        error,
+        PersistNodeTracePayloadError::InvalidInputModeTag { tag: 99 }
+    );
+
+    let truncated = &encoded[..encoded.len() - 1];
+    assert!(matches!(
+        PersistNodeTracePayload::decode(truncated),
+        Err(PersistNodeTracePayloadError::ShortPayload { .. })
+    ));
+
+    let mut trailing = encoded;
+    trailing.extend_from_slice(b"trailing");
+    let error =
+        PersistNodeTracePayload::decode(&trailing).expect_err("trailing payload bytes error");
+    assert_eq!(
+        error,
+        PersistNodeTracePayloadError::TrailingBytes {
+            remaining: b"trailing".len(),
+        }
     );
 }
 

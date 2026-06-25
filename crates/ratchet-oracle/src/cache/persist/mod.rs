@@ -17,9 +17,10 @@ use super::parse::{
     ParseCacheError, ParseCacheKey, ParseFileKey,
 };
 use super::{
-    CacheExprIdentity, CachedExpressionValue, CachedExpressionValuePayloadError, DurableBlake3Hash,
-    MaterializationCosts, MaterializationDecision, MaterializationReuse, MaterializationSignals,
-    ValueHash, ValueHashError,
+    CacheExprIdentity, CacheableInputFingerprint, CachedExpressionValue,
+    CachedExpressionValuePayloadError, DurableBlake3Hash, ImpureInputFingerprint, ImpureInputKind,
+    ImpureInputMode, InputFingerprintError, MaterializationCosts, MaterializationDecision,
+    MaterializationReuse, MaterializationSignals, UncacheableInput, ValueHash, ValueHashError,
 };
 
 /// The persistent eval-cache schema format marker.
@@ -69,6 +70,14 @@ pub const PERSIST_NODE_METADATA_INDEX_ENTRY_LEN: usize =
     PERSIST_NODE_METADATA_INDEX_KEY_LEN + PERSIST_NODE_METADATA_INDEX_VALUE_LEN;
 /// The encoded length of durable materialization reuse metadata.
 pub const PERSIST_MATERIALIZATION_REUSE_LEN: usize = 16;
+/// The fixed magic bytes at the start of a node verifying-trace payload.
+pub const PERSIST_NODE_TRACE_PAYLOAD_MAGIC: [u8; 16] = *b"AOS-NIX-NTRACE01";
+/// The node verifying-trace payload format version.
+pub const PERSIST_NODE_TRACE_PAYLOAD_VERSION: u32 = 1;
+/// The encoded length of a node verifying-trace payload header.
+pub const PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN: usize = 28;
+/// The fixed encoded bytes in one node verifying-trace input record.
+pub const PERSIST_NODE_TRACE_INPUT_FIXED_LEN: usize = 42;
 
 static SCHEMA_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 static INDEX_REWRITE_ID: AtomicU64 = AtomicU64::new(0);
@@ -99,19 +108,20 @@ pub use error::{
     PersistCachedExpressionValueIndexedLoadError, PersistCachedExpressionValueIndexedWriteError,
     PersistError, PersistFileArtifactHydrationError, PersistFileArtifactIndexError,
     PersistFileArtifactIndexedHydrationError, PersistFileArtifactIndexedWriteError,
-    PersistNodeMetadataIndexError, PersistPackFormatError, PersistParseArtifactHydrationError,
-    PersistParseArtifactIndexError, PersistParseArtifactIndexedHydrationError,
-    PersistParseArtifactIndexedWriteError, PersistParseArtifactMaterializationError,
-    PersistParseBytesIndexedLoadError, PersistParseFileIndexedHydrationError,
-    PersistParseFileIndexedLoadError, PersistParseSourceIndexedLoadError,
+    PersistNodeMetadataIndexError, PersistNodeTracePayloadError, PersistPackFormatError,
+    PersistParseArtifactHydrationError, PersistParseArtifactIndexError,
+    PersistParseArtifactIndexedHydrationError, PersistParseArtifactIndexedWriteError,
+    PersistParseArtifactMaterializationError, PersistParseBytesIndexedLoadError,
+    PersistParseFileIndexedHydrationError, PersistParseFileIndexedLoadError,
+    PersistParseSourceIndexedLoadError,
 };
 pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,
     PersistBlobPackHeader, PersistBlobRecordHeader, PersistBlobStore, PersistFileArtifactIndex,
     PersistFileArtifactIndexEntry, PersistFileArtifactIndexValue, PersistFileArtifactKey,
     PersistNodeMetadataIndex, PersistNodeMetadataIndexEntry, PersistNodeMetadataIndexValue,
-    PersistNodeMetadataKey, PersistParseArtifactIndex, PersistParseArtifactIndexEntry,
-    PersistParseArtifactIndexValue, PersistParseArtifactKey,
+    PersistNodeMetadataKey, PersistNodeTracePayload, PersistParseArtifactIndex,
+    PersistParseArtifactIndexEntry, PersistParseArtifactIndexValue, PersistParseArtifactKey,
 };
 pub use layout::PersistLayout;
 pub use materialization::{

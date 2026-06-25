@@ -207,6 +207,97 @@ pub enum PersistPackFormatError {
     },
 }
 
+/// Node verifying-trace payload bytes could not be encoded or decoded.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum PersistNodeTracePayloadError {
+    /// A trace payload had an unexpected magic prefix.
+    #[error("persistent node trace payload has invalid magic bytes {actual:?}")]
+    InvalidMagic {
+        /// The observed magic bytes.
+        actual: [u8; 16],
+    },
+    /// A trace payload declared an unsupported format version.
+    #[error("persistent node trace payload declares unsupported version {version}")]
+    UnsupportedVersion {
+        /// The unsupported format version.
+        version: u32,
+    },
+    /// A trace payload was shorter than a required fixed-width region.
+    #[error("persistent node trace payload has {actual} bytes, expected at least {expected}")]
+    ShortPayload {
+        /// The required byte length.
+        expected: usize,
+        /// The available byte length.
+        actual: usize,
+    },
+    /// A trace payload declared too many input records for this platform.
+    #[error("persistent node trace payload input count {count} does not fit in usize")]
+    InputCountOverflow {
+        /// The decoded input count.
+        count: u64,
+    },
+    /// A trace payload input count is too large to encode.
+    #[error("persistent node trace payload cannot encode {inputs} inputs")]
+    EncodedInputCountOverflow {
+        /// The requested input count.
+        inputs: usize,
+    },
+    /// A trace payload declared an input subject that is too large for this platform.
+    #[error("persistent node trace payload subject length {len} does not fit in usize")]
+    SubjectLengthOverflow {
+        /// The decoded subject length.
+        len: u64,
+    },
+    /// A trace payload input subject is too large to encode.
+    #[error("persistent node trace payload cannot encode subject length {len}")]
+    EncodedSubjectLengthOverflow {
+        /// The requested subject byte length.
+        len: usize,
+    },
+    /// A trace payload contained an unknown input kind tag.
+    #[error("persistent node trace payload has invalid input kind tag {tag}")]
+    InvalidInputKindTag {
+        /// The unknown input kind tag.
+        tag: u8,
+    },
+    /// A trace payload contained an unknown input mode tag.
+    #[error("persistent node trace payload has invalid input mode tag {tag}")]
+    InvalidInputModeTag {
+        /// The unknown input mode tag.
+        tag: u8,
+    },
+    /// A trace payload contained bytes after the declared input records.
+    #[error("persistent node trace payload has {remaining} trailing bytes")]
+    TrailingBytes {
+        /// The number of trailing bytes.
+        remaining: usize,
+    },
+    /// A trace payload could not reserve storage for input records.
+    #[error("failed to reserve persistent node trace payload for {inputs} inputs")]
+    InputAllocationFailed {
+        /// The requested input count.
+        inputs: usize,
+    },
+    /// A trace payload could not reserve encoded output storage.
+    #[error("failed to reserve persistent node trace payload with {len} bytes")]
+    PayloadAllocationFailed {
+        /// The requested encoded byte length.
+        len: usize,
+    },
+    /// A trace included an input that must never be cached.
+    #[error("persistent node trace payload cannot encode uncacheable input {input:?}")]
+    UncacheableInput {
+        /// The uncacheable input.
+        input: UncacheableInput,
+    },
+    /// A decoded trace input could not be reconstructed.
+    #[error("failed to reconstruct persistent node trace input")]
+    Input {
+        /// The underlying input fingerprint error.
+        source: InputFingerprintError,
+    },
+}
+
 /// Fixed-record blob index file IO failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexError {

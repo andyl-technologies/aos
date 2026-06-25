@@ -1287,6 +1287,289 @@ impl PersistNodeMetadataIndexEntry {
     }
 }
 
+/// A stable payload for one persisted node verifying trace.
+///
+/// The payload preserves the evaluator trace order and stores only cacheable
+/// impure-input fingerprints: each record carries the typed input identity
+/// parts plus the observed-result hash. The eventual persistent demand-graph
+/// sidecar can attach these bytes to an expression node and replay the
+/// fingerprints during durable-hit revalidation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersistNodeTracePayload {
+    inputs: Vec<CacheableInputFingerprint>,
+}
+
+impl PersistNodeTracePayload {
+    /// Creates a node trace payload from cacheable input fingerprints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTracePayloadError`] if storage for the input list
+    /// cannot be reserved.
+    pub fn from_cacheable_inputs<I>(inputs: I) -> Result<Self, PersistNodeTracePayloadError>
+    where
+        I: IntoIterator<Item = CacheableInputFingerprint>,
+    {
+        let inputs = inputs.into_iter();
+        let (minimum, _) = inputs.size_hint();
+        let mut stored = Vec::new();
+        stored
+            .try_reserve_exact(minimum)
+            .map_err(|_| PersistNodeTracePayloadError::InputAllocationFailed { inputs: minimum })?;
+        for input in inputs {
+            if stored.len() == stored.capacity() {
+                let requested = stored.len().saturating_add(1);
+                stored.try_reserve_exact(1).map_err(|_| {
+                    PersistNodeTracePayloadError::InputAllocationFailed { inputs: requested }
+                })?;
+            }
+            stored.push(input);
+        }
+        Ok(Self { inputs: stored })
+    }
+
+    /// Creates a node trace payload from an evaluator impure-input trace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTracePayloadError`] if the trace contains an
+    /// uncacheable input or if storage for the input list cannot be reserved.
+    pub fn from_impure_trace<'a, I>(trace: I) -> Result<Self, PersistNodeTracePayloadError>
+    where
+        I: IntoIterator<Item = &'a ImpureInputFingerprint>,
+    {
+        let trace = trace.into_iter();
+        let (minimum, _) = trace.size_hint();
+        let mut inputs = Vec::new();
+        inputs
+            .try_reserve_exact(minimum)
+            .map_err(|_| PersistNodeTracePayloadError::InputAllocationFailed { inputs: minimum })?;
+        for fingerprint in trace {
+            match fingerprint {
+                ImpureInputFingerprint::Cacheable(input) => {
+                    if inputs.len() == inputs.capacity() {
+                        let requested = inputs.len().saturating_add(1);
+                        inputs.try_reserve_exact(1).map_err(|_| {
+                            PersistNodeTracePayloadError::InputAllocationFailed {
+                                inputs: requested,
+                            }
+                        })?;
+                    }
+                    inputs.push(input.clone());
+                }
+                ImpureInputFingerprint::Uncacheable(input) => {
+                    return Err(PersistNodeTracePayloadError::UncacheableInput { input: *input });
+                }
+            }
+        }
+        Ok(Self { inputs })
+    }
+
+    /// Returns the cacheable input fingerprints in trace order.
+    pub fn inputs(&self) -> &[CacheableInputFingerprint] {
+        &self.inputs
+    }
+
+    /// Encodes this node trace payload as stable little-endian bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTracePayloadError`] if the input count or any
+    /// subject length cannot be represented in the on-disk format, or if
+    /// encoded output storage cannot be reserved.
+    pub fn encode(&self) -> Result<Vec<u8>, PersistNodeTracePayloadError> {
+        let count = u64::try_from(self.inputs.len()).map_err(|_| {
+            PersistNodeTracePayloadError::EncodedInputCountOverflow {
+                inputs: self.inputs.len(),
+            }
+        })?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN)
+            .map_err(|_| PersistNodeTracePayloadError::PayloadAllocationFailed {
+                len: PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN,
+            })?;
+        bytes.extend_from_slice(&PERSIST_NODE_TRACE_PAYLOAD_MAGIC);
+        bytes.extend_from_slice(&PERSIST_NODE_TRACE_PAYLOAD_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&count.to_le_bytes());
+
+        for input in &self.inputs {
+            let identity = input.identity();
+            let subject = identity.subject();
+            let subject_len = u64::try_from(subject.len()).map_err(|_| {
+                PersistNodeTracePayloadError::EncodedSubjectLengthOverflow { len: subject.len() }
+            })?;
+            let record_len = PERSIST_NODE_TRACE_INPUT_FIXED_LEN
+                .checked_add(subject.len())
+                .ok_or(PersistNodeTracePayloadError::PayloadAllocationFailed { len: usize::MAX })?;
+            bytes.try_reserve_exact(record_len).map_err(|_| {
+                PersistNodeTracePayloadError::PayloadAllocationFailed { len: record_len }
+            })?;
+            bytes.push(node_trace_input_kind_tag(identity.kind()));
+            bytes.push(node_trace_input_mode_tag(identity.mode()));
+            bytes.extend_from_slice(&subject_len.to_le_bytes());
+            bytes.extend_from_slice(&input.observation_hash().as_bytes());
+            bytes.extend_from_slice(subject);
+        }
+
+        Ok(bytes)
+    }
+
+    /// Decodes a stable node trace payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTracePayloadError`] if `bytes` has the wrong magic
+    /// or version, contains malformed input records, contains trailing bytes,
+    /// or cannot reconstruct an input fingerprint.
+    pub fn decode(bytes: &[u8]) -> Result<Self, PersistNodeTracePayloadError> {
+        if bytes.len() < PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN {
+            return Err(PersistNodeTracePayloadError::ShortPayload {
+                expected: PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN,
+                actual: bytes.len(),
+            });
+        }
+
+        let mut magic = [0; 16];
+        magic.copy_from_slice(&bytes[..16]);
+        if magic != PERSIST_NODE_TRACE_PAYLOAD_MAGIC {
+            return Err(PersistNodeTracePayloadError::InvalidMagic { actual: magic });
+        }
+
+        let version = read_u32(&bytes[16..20]);
+        if version != PERSIST_NODE_TRACE_PAYLOAD_VERSION {
+            return Err(PersistNodeTracePayloadError::UnsupportedVersion { version });
+        }
+
+        let count = read_u64(&bytes[20..28]);
+        let count_usize = usize::try_from(count)
+            .map_err(|_| PersistNodeTracePayloadError::InputCountOverflow { count })?;
+        let fixed_records_len = count_usize
+            .checked_mul(PERSIST_NODE_TRACE_INPUT_FIXED_LEN)
+            .ok_or(PersistNodeTracePayloadError::ShortPayload {
+                expected: usize::MAX,
+                actual: bytes.len(),
+            })?;
+        let minimum_len = PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN
+            .checked_add(fixed_records_len)
+            .ok_or(PersistNodeTracePayloadError::ShortPayload {
+                expected: usize::MAX,
+                actual: bytes.len(),
+            })?;
+        if minimum_len > bytes.len() {
+            return Err(PersistNodeTracePayloadError::ShortPayload {
+                expected: minimum_len,
+                actual: bytes.len(),
+            });
+        }
+
+        let mut inputs = Vec::new();
+        inputs.try_reserve_exact(count_usize).map_err(|_| {
+            PersistNodeTracePayloadError::InputAllocationFailed {
+                inputs: count_usize,
+            }
+        })?;
+
+        let mut cursor = PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN;
+        for _ in 0..count_usize {
+            let fixed_end = cursor
+                .checked_add(PERSIST_NODE_TRACE_INPUT_FIXED_LEN)
+                .ok_or(PersistNodeTracePayloadError::ShortPayload {
+                    expected: usize::MAX,
+                    actual: bytes.len(),
+                })?;
+            if fixed_end > bytes.len() {
+                return Err(PersistNodeTracePayloadError::ShortPayload {
+                    expected: fixed_end,
+                    actual: bytes.len(),
+                });
+            }
+
+            let kind = node_trace_input_kind_from_tag(bytes[cursor])?;
+            let mode = node_trace_input_mode_from_tag(bytes[cursor + 1])?;
+            let subject_len = read_u64(&bytes[cursor + 2..cursor + 10]);
+            let mut observation_hash = [0; 32];
+            observation_hash.copy_from_slice(&bytes[cursor + 10..cursor + 42]);
+            cursor = fixed_end;
+
+            let subject_len = usize::try_from(subject_len).map_err(|_| {
+                PersistNodeTracePayloadError::SubjectLengthOverflow { len: subject_len }
+            })?;
+            let subject_end = cursor.checked_add(subject_len).ok_or(
+                PersistNodeTracePayloadError::ShortPayload {
+                    expected: usize::MAX,
+                    actual: bytes.len(),
+                },
+            )?;
+            if subject_end > bytes.len() {
+                return Err(PersistNodeTracePayloadError::ShortPayload {
+                    expected: subject_end,
+                    actual: bytes.len(),
+                });
+            }
+            let input = CacheableInputFingerprint::from_observation_hash(
+                kind,
+                mode,
+                &bytes[cursor..subject_end],
+                DurableBlake3Hash::from_bytes(observation_hash),
+            )
+            .map_err(|source| PersistNodeTracePayloadError::Input { source })?;
+            inputs.push(input);
+            cursor = subject_end;
+        }
+
+        if cursor != bytes.len() {
+            return Err(PersistNodeTracePayloadError::TrailingBytes {
+                remaining: bytes.len() - cursor,
+            });
+        }
+
+        Ok(Self { inputs })
+    }
+}
+
+fn node_trace_input_kind_tag(kind: ImpureInputKind) -> u8 {
+    match kind {
+        ImpureInputKind::Import => 1,
+        ImpureInputKind::ReadFile => 2,
+        ImpureInputKind::ReadDir => 3,
+        ImpureInputKind::ReadFileType => 4,
+        ImpureInputKind::PathExists => 5,
+        ImpureInputKind::GetEnv => 6,
+    }
+}
+
+fn node_trace_input_kind_from_tag(
+    tag: u8,
+) -> Result<ImpureInputKind, PersistNodeTracePayloadError> {
+    match tag {
+        1 => Ok(ImpureInputKind::Import),
+        2 => Ok(ImpureInputKind::ReadFile),
+        3 => Ok(ImpureInputKind::ReadDir),
+        4 => Ok(ImpureInputKind::ReadFileType),
+        5 => Ok(ImpureInputKind::PathExists),
+        6 => Ok(ImpureInputKind::GetEnv),
+        _ => Err(PersistNodeTracePayloadError::InvalidInputKindTag { tag }),
+    }
+}
+
+fn node_trace_input_mode_tag(mode: ImpureInputMode) -> u8 {
+    match mode {
+        ImpureInputMode::Default => 1,
+        ImpureInputMode::RequireDirectory => 2,
+    }
+}
+
+fn node_trace_input_mode_from_tag(
+    tag: u8,
+) -> Result<ImpureInputMode, PersistNodeTracePayloadError> {
+    match tag {
+        1 => Ok(ImpureInputMode::Default),
+        2 => Ok(ImpureInputMode::RequireDirectory),
+        _ => Err(PersistNodeTracePayloadError::InvalidInputModeTag { tag }),
+    }
+}
+
 /// A fixed-record index file for durable demand-node metadata.
 ///
 /// This is a simple durable substrate for tests and future cache integration.

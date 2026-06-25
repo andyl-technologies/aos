@@ -217,10 +217,33 @@ impl CacheableInputFingerprint {
         subject: &[u8],
         observation_hash: DurableBlake3Hash,
     ) -> Result<Self, InputFingerprintError> {
+        validate_input_mode(kind, mode)?;
         Ok(Self {
             identity: ImpureInputIdentity::new(kind, mode, subject)?,
             observation_hash,
         })
+    }
+
+    /// Creates a cacheable input fingerprint from stable persisted parts.
+    ///
+    /// This constructor is for persistence formats that already carry the
+    /// typed identity subject and the observed-result hash. Normal evaluator
+    /// callers should prefer the operation-specific constructors on
+    /// [`ImpureInputFingerprint`], which compute observation hashes from
+    /// concrete input observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InputFingerprintError`] if the kind/mode pair is not emitted
+    /// by evaluator traces, the identity subject cannot be copied, or any
+    /// encoded identity chunk length does not fit in `u64`.
+    pub fn from_observation_hash(
+        kind: ImpureInputKind,
+        mode: ImpureInputMode,
+        subject: &[u8],
+        observation_hash: DurableBlake3Hash,
+    ) -> Result<Self, InputFingerprintError> {
+        Self::new(kind, mode, subject, observation_hash)
     }
 
     /// Returns the typed input identity.
@@ -414,6 +437,25 @@ pub enum InputFingerprintError {
         /// The chunk length that could not be represented.
         len: usize,
     },
+    /// An input mode was not valid for the input kind.
+    #[error("impure input kind {kind:?} cannot use mode {mode:?}")]
+    InvalidInputMode {
+        /// The input kind.
+        kind: ImpureInputKind,
+        /// The rejected input mode.
+        mode: ImpureInputMode,
+    },
+}
+
+fn validate_input_mode(
+    kind: ImpureInputKind,
+    mode: ImpureInputMode,
+) -> Result<(), InputFingerprintError> {
+    match (kind, mode) {
+        (_, ImpureInputMode::Default)
+        | (ImpureInputKind::PathExists, ImpureInputMode::RequireDirectory) => Ok(()),
+        _ => Err(InputFingerprintError::InvalidInputMode { kind, mode }),
+    }
 }
 
 struct InputHasher {

@@ -1077,6 +1077,20 @@ alone (`M-1`/`Q-A`).
       evaluator durable hit selection, cost measurement, context-bearing paths,
       composite values, mmap reads, GC/repack, and cached/uncached harness proof
       remain open (`C-13`/`C-14`/`S-14`).
+- [x] Current node verifying-trace payload codec:
+      `PersistNodeTracePayload` frames complete cacheable impure-input traces
+      as versioned little-endian bytes with a magic header, typed input
+      kind/mode tags, raw identity subjects, and observed-result hashes.
+      `CacheableInputFingerprint::from_observation_hash` reconstructs the
+      persisted fingerprints without re-reading the host. The codec preserves
+      trace order, rejects uncacheable `currentTime`, impossible kind/mode
+      pairs, malformed tags, truncated payloads, and trailing bytes, and
+      exposes stable payload constants for future sidecars. This is
+      payload-format substrate only; `nodes/` trace sidecar storage, evaluator
+      durable hit selection, revalidation, currentTime taint propagation
+      through persisted dependents, mmap reads, GC/repack, and cached/uncached
+      harness proof remain open
+      (`C-13`/`R-10`/`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips
