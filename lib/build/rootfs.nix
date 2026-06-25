@@ -296,8 +296,26 @@ in
             #     cluster, it adds no read amplification.
             # Together: ~200 MiB (plain zstd-19) -> ~160 MiB. (Block dedupe was
             # measured at 0 bytes saved — nix store paths are content-addressed.)
+            #
+            # --workers parallelizes the otherwise single-threaded zstd-19
+            # compression (hours on one core for the whole server closure).
+            # erofs-utils splits the input into fixed 16 MiB segments and
+            # reaps them in deterministic on-disk order, so the image stays
+            # bit-reproducible regardless of the worker count — verified
+            # identical across worker counts and against the single-threaded
+            # build. $NIX_BUILD_CORES is the sandbox's core allotment.
+            #
+            # libgcc_s.so.1 must be loadable at runtime: glibc lazily
+            # dlopen()s it for worker-thread teardown unwinding, and a
+            # DT_RUNPATH on the binary doesn't satisfy a libc-initiated
+            # dlopen — so point LD_LIBRARY_PATH at gcc-libs (same approach
+            # as the kernel build in pkgs/kernel/linux.nix). Without it
+            # mkfs prints "libgcc_s.so.1 must be installed for pthread_exit
+            # to work" and risks aborting a worker.
+            export LD_LIBRARY_PATH="${pkgs.gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             mkfs.erofs --all-root -T0 \
               -U bdfb6fc9-0000-4000-8000-000000000001 \
+              --workers="$NIX_BUILD_CORES" \
               -z zstd,level=19 \
               -C262144 \
               -Efragments,ztailpacking \

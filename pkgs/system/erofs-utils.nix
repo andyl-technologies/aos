@@ -87,13 +87,24 @@ in
         # `mkfs.erofs -z zstd` (lib/build/rootfs.nix), so the compressor must
         # be linked in. LZ4/LZMA stay off (unused), and fuse stays off (the
         # runtime mount is the in-kernel `mount -t erofs`).
+        #
+        # Multithreading is enabled so `mkfs.erofs --workers=#` can compress
+        # the system root in parallel. The root image build is dominated by
+        # single-threaded `-z zstd,level=19` over the whole server closure
+        # (hours on one core); the worker pool splits the input into fixed
+        # 16 MiB segments and compresses them concurrently. Output stays
+        # bit-reproducible — segments are merged in deterministic on-disk
+        # order, 16 MiB is a clean multiple of the 256 KiB pcluster so
+        # boundaries don't shift the per-cluster compression, and `-T0 -U`
+        # pin the remaining nondeterminism. Pulls in libpthread (glibc).
         script = ''
           ./configure \
             --prefix=$out \
             --disable-fuse \
             --without-lz4 \
             --without-lzma \
-            --enable-zstd
+            --enable-zstd \
+            --enable-multithreading
         '';
       }
       {
