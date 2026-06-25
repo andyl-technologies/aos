@@ -653,6 +653,42 @@ impl PersistCache {
         self.hydrate_file_artifact_bundle_from_index(&file_key, parse_key, &entry)
     }
 
+    /// Canonicalizes a source path and hydrates the matching parse-cache entry.
+    ///
+    /// This file-shaped adapter canonicalizes `path`, reads the canonical
+    /// source bytes, derives the file and parse identities from those bytes,
+    /// and delegates to [`Self::hydrate_parse_cache_entry_from_source_index`].
+    /// Missing file-artifact index entries return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseFileIndexedHydrationError`] if `path` cannot be
+    /// canonicalized, the canonical source file cannot be read, the
+    /// file-artifact index cannot be read, or a matching indexed artifact
+    /// cannot be read from the `files/` pack, decoded, validated, or written
+    /// into the parse cache entry.
+    pub fn hydrate_parse_cache_entry_from_file_index(
+        &self,
+        parse_cache: &ParseCache,
+        path: impl AsRef<Path>,
+    ) -> Result<Option<PersistFileArtifactIndexEntry>, PersistParseFileIndexedHydrationError> {
+        let requested = path.as_ref();
+        let realpath = fs::canonicalize(requested).map_err(|source| {
+            PersistParseFileIndexedHydrationError::CanonicalizeSource {
+                path: requested.to_path_buf(),
+                source,
+            }
+        })?;
+        let source = fs::read(&realpath).map_err(|source| {
+            PersistParseFileIndexedHydrationError::ReadSource {
+                path: realpath.clone(),
+                source,
+            }
+        })?;
+        self.hydrate_parse_cache_entry_from_source_index(parse_cache, &realpath, &source)
+            .map_err(|source| PersistParseFileIndexedHydrationError::Hydrate { source })
+    }
+
     /// Applies `decision` to an existing parse-cache artifact entry.
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns a skipped result

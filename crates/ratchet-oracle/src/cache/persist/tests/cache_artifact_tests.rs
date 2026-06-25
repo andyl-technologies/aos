@@ -834,6 +834,186 @@ fn cache_source_index_misses_when_realpath_changes() {
 }
 
 #[test]
+fn cache_file_index_hydrates_normal_parse_cache_entry_from_requested_path() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let src_dir = root.join("src");
+    fs::create_dir_all(&src_dir).expect("source dir creates");
+    let source_path = src_dir.join("expr.nix");
+    let source = b"let x = 1; in x";
+    fs::write(&source_path, source).expect("source writes");
+    let realpath = fs::canonicalize(&source_path).expect("source canonicalizes");
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some(realpath.to_string_lossy().into_owned()))
+        .expect("source parses");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let file_key = ParseFileKey::for_source(&realpath, source);
+    let materialized = persist
+        .materialize_parse_artifact_entry_indexed(
+            &file_key,
+            parsed.key,
+            &parsed.entry,
+            MaterializationDecision::Materialize,
+        )
+        .expect("entry materializes");
+    let expected_entry = materialized
+        .index_entry()
+        .expect("entry should materialize");
+    fs::remove_dir_all(parsed.entry.dir()).expect("parse-cache entry removes");
+
+    let result = persist
+        .hydrate_parse_cache_entry_from_file_index(&parse_cache, &source_path)
+        .expect("file-indexed entry hydrates");
+
+    let hydrated = parse_cache.entry_for_source(source);
+    assert_eq!(result, Some(expected_entry));
+    assert!(hydrated.is_complete());
+    assert_eq!(
+        hydrated
+            .read_artifact_bundle()
+            .expect("hydrated bundle reads"),
+        bundle
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_file_index_hydration_canonicalizes_requested_path() {
+    use crate::cache::parse::ParseCache;
+    use std::os::unix::fs::symlink;
+
+    let root = temp_root();
+    let src_dir = root.join("src");
+    fs::create_dir_all(&src_dir).expect("source dir creates");
+    let source_path = src_dir.join("expr.nix");
+    let link_path = src_dir.join("linked-expr.nix");
+    let source = b"let x = 1; in x";
+    fs::write(&source_path, source).expect("source writes");
+    symlink(&source_path, &link_path).expect("symlink creates");
+    let realpath = fs::canonicalize(&source_path).expect("source canonicalizes");
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some(realpath.to_string_lossy().into_owned()))
+        .expect("source parses");
+    let file_key = ParseFileKey::for_source(&realpath, source);
+    let materialized = persist
+        .materialize_parse_artifact_entry_indexed(
+            &file_key,
+            parsed.key,
+            &parsed.entry,
+            MaterializationDecision::Materialize,
+        )
+        .expect("entry materializes");
+    let expected_entry = materialized
+        .index_entry()
+        .expect("entry should materialize");
+    fs::remove_dir_all(parsed.entry.dir()).expect("parse-cache entry removes");
+
+    let result = persist
+        .hydrate_parse_cache_entry_from_file_index(&parse_cache, &link_path)
+        .expect("file-indexed symlink entry hydrates");
+
+    assert_eq!(result, Some(expected_entry));
+    assert!(parse_cache.entry_for_source(source).is_complete());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_index_misses_when_file_content_changes() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let src_dir = root.join("src");
+    fs::create_dir_all(&src_dir).expect("source dir creates");
+    let source_path = src_dir.join("expr.nix");
+    let source = b"let x = 1; in x";
+    let changed_source = b"let x = 2; in x";
+    fs::write(&source_path, source).expect("source writes");
+    let realpath = fs::canonicalize(&source_path).expect("source canonicalizes");
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some(realpath.to_string_lossy().into_owned()))
+        .expect("source parses");
+    let file_key = ParseFileKey::for_source(&realpath, source);
+    persist
+        .materialize_parse_artifact_entry_indexed(
+            &file_key,
+            parsed.key,
+            &parsed.entry,
+            MaterializationDecision::Materialize,
+        )
+        .expect("entry materializes");
+    fs::remove_dir_all(parsed.entry.dir()).expect("parse-cache entry removes");
+    fs::write(&source_path, changed_source).expect("changed source writes");
+
+    let result = persist
+        .hydrate_parse_cache_entry_from_file_index(&parse_cache, &source_path)
+        .expect("file-indexed miss succeeds");
+
+    assert_eq!(result, None);
+    assert!(!parse_cache.entry_for_source(source).dir().exists());
+    assert!(!parse_cache.entry_for_source(changed_source).dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_index_hydration_reports_source_prep_errors() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let missing_path = root.join("missing.nix");
+
+    let error = persist
+        .hydrate_parse_cache_entry_from_file_index(&parse_cache, &missing_path)
+        .expect_err("missing source errors");
+
+    assert!(matches!(
+        error,
+        PersistParseFileIndexedHydrationError::CanonicalizeSource { path, .. }
+            if path == missing_path
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_index_hydration_reports_read_source_errors() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let source_path = root.join("source-directory.nix");
+    fs::create_dir(&source_path).expect("source directory creates");
+    let realpath = fs::canonicalize(&source_path).expect("source canonicalizes");
+
+    let error = persist
+        .hydrate_parse_cache_entry_from_file_index(&parse_cache, &realpath)
+        .expect_err("removed source read errors");
+
+    assert!(matches!(
+        error,
+        PersistParseFileIndexedHydrationError::ReadSource { path, .. } if path == realpath
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_file_artifact_hydration_from_index_reports_lookup_errors() {
     let root = temp_root();
     let persist = PersistCache::open(&root).expect("cache opens");

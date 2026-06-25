@@ -451,6 +451,33 @@ pub enum PersistFileArtifactIndexedHydrationError {
     },
 }
 
+/// Indexed parse-cache hydration from a filesystem source failed.
+#[derive(Debug, Error)]
+pub enum PersistParseFileIndexedHydrationError {
+    /// The requested source path could not be canonicalized.
+    #[error("failed to canonicalize source path {path:?} for indexed parse-cache hydration")]
+    CanonicalizeSource {
+        /// The requested source path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The canonicalized source file could not be read.
+    #[error("failed to read source file {path:?} for indexed parse-cache hydration")]
+    ReadSource {
+        /// The canonical source path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The indexed file artifact could not be hydrated from the canonical source identity.
+    #[error("failed to hydrate indexed parse-cache entry from source file")]
+    Hydrate {
+        /// The underlying indexed hydration error.
+        source: PersistFileArtifactIndexedHydrationError,
+    },
+}
+
 /// Persistent parse-artifact materialization failed.
 #[derive(Debug, Error)]
 pub enum PersistParseArtifactMaterializationError {
