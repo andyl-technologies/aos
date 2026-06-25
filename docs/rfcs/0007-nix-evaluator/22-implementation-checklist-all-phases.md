@@ -881,8 +881,9 @@ alone (`M-1`/`Q-A`).
       with saturation, and returns `Materialize` only when
       `eval_cost > write_cost` and the caller-supplied reuse signal predicts
       cross-run reuse. This is a pure threshold decision only; cost measurement,
-      reuse metadata, RAM-tier promotion, packfile writes, persistence
-      integration, GC/repack, and AOS tuning remain open (`C-14`).
+      persistent reuse-metadata bridges are covered below, while cost
+      measurement, RAM-tier promotion, automatic value writes, GC/repack, and
+      AOS tuning remain open (`C-14`).
 - [x] Current materialization reuse-counter signal substrate:
       `MaterializationReuse` carries prior-run and current-run demand counters,
       saturates current-run increments, and converts prior-run demand into the
@@ -973,9 +974,21 @@ alone (`M-1`/`Q-A`).
       in-memory force-cache hits. Observation-only uncacheable subjects such as
       `currentTime` have no metadata identity and are not counted. This is
       current-run demand accounting only; automatic run-boundary orchestration,
-      atomic writer coordination, materialization-threshold consumption,
-      persistent value payload writes, LMDB/redb node tables, automatic
-      compaction/GC policy, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
+      atomic writer coordination, persistent value payload writes, LMDB/redb
+      node tables, automatic compaction/GC policy, and AOS tuning remain open
+      (`C-13`/`C-14`/`S-14`).
+- [x] Current node-reuse materialization decision adapter:
+      `PersistCache::node_materialization_signals` and
+      `node_materialization_decision` read the newest persisted
+      `MaterializationReuse` counters for a demand-node key, treat misses as
+      empty counters, combine prior-run reuse with caller-supplied
+      `MaterializationCosts`, and return the same `MaterializationDecision`
+      accepted by the existing blob/file/parse materializers. Current-run-only
+      demand does not predict cross-run reuse until an explicit run-boundary
+      advance has moved it into prior history. This is decision plumbing only;
+      automatic run-boundary orchestration, cost measurement, automatic value
+      serialization/writes, LMDB/redb node tables, automatic compaction/GC
+      policy, and AOS tuning remain open (`C-13`/`C-14`).
 - [x] Current explicit materialization-to-pack adapter:
       `PersistCache::materialize_blob` consumes a caller-supplied
       `MaterializationDecision`, skips without hashing/writing on

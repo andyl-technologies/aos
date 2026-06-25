@@ -17,8 +17,8 @@ use super::parse::{
     ParseCacheError, ParseCacheKey, ParseFileKey,
 };
 use super::{
-    CacheExprIdentity, DurableBlake3Hash, MaterializationDecision, MaterializationReuse,
-    MaterializationSignals,
+    CacheExprIdentity, DurableBlake3Hash, MaterializationCosts, MaterializationDecision,
+    MaterializationReuse, MaterializationSignals,
 };
 
 /// The persistent eval-cache schema format marker.

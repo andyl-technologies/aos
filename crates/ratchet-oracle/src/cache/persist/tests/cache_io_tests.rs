@@ -327,6 +327,86 @@ fn cache_node_current_demand_updates_latest_reuse_counters() {
 }
 
 #[test]
+fn cache_node_materialization_decision_uses_prior_reuse_counters() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let missing =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"missing input"));
+    let profitable = MaterializationCosts::new(100, 10, 20, 30);
+    let equal_cost = MaterializationCosts::new(60, 10, 20, 30);
+
+    assert_eq!(
+        cache
+            .node_materialization_signals(missing, profitable)
+            .expect("missing signals build"),
+        MaterializationReuse::default().signals(profitable)
+    );
+    assert_eq!(
+        cache
+            .node_materialization_decision(missing, profitable)
+            .expect("missing decision succeeds"),
+        MaterializationDecision::KeepInMemory
+    );
+
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(0, 3))
+        .expect("same-run reuse records");
+    assert_eq!(
+        cache
+            .node_materialization_decision(key, profitable)
+            .expect("same-run decision succeeds"),
+        MaterializationDecision::KeepInMemory,
+        "current-run demand must not predict cross-run reuse before advancement"
+    );
+
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(2, 0))
+        .expect("prior-run reuse records");
+    let metadata_len = fs::metadata(cache.node_metadata_index().path())
+        .expect("node metadata index metadata")
+        .len();
+    let value_pack_len = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata")
+        .len();
+    assert_eq!(
+        cache
+            .node_materialization_signals(key, profitable)
+            .expect("prior-run signals build"),
+        MaterializationReuse::new(2, 0).signals(profitable)
+    );
+    assert_eq!(
+        cache
+            .node_materialization_decision(key, profitable)
+            .expect("profitable decision succeeds"),
+        MaterializationDecision::Materialize
+    );
+    assert_eq!(
+        cache
+            .node_materialization_decision(key, equal_cost)
+            .expect("equal-cost decision succeeds"),
+        MaterializationDecision::KeepInMemory,
+        "prior reuse alone does not materialize when write cost is not lower"
+    );
+    assert_eq!(
+        fs::metadata(cache.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        metadata_len,
+        "decision helpers must not append metadata"
+    );
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata")
+            .len(),
+        value_pack_len,
+        "decision helpers must not write payloads"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_materialization_reuse_advances_run_boundaries() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

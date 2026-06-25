@@ -337,6 +337,46 @@ impl PersistCache {
         Ok(reuse)
     }
 
+    /// Builds durable materialization threshold signals for one demand node.
+    ///
+    /// Missing metadata starts from empty reuse counters, so current payloads
+    /// are kept in memory until a previous run has demanded the same node and
+    /// the caller-supplied cost model says writing is profitable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, read, or decoded.
+    pub fn node_materialization_signals(
+        &self,
+        key: PersistNodeMetadataKey,
+        costs: MaterializationCosts,
+    ) -> Result<MaterializationSignals, PersistNodeMetadataIndexError> {
+        Ok(self
+            .lookup_node_materialization_reuse(key)?
+            .unwrap_or_default()
+            .signals(costs))
+    }
+
+    /// Returns the durable materialization decision for one demand node.
+    ///
+    /// This is the cache-level bridge from persisted cross-run demand counters
+    /// to the existing materialization threshold policy. It does not write the
+    /// payload; callers pass the returned decision to the appropriate
+    /// materialization helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, read, or decoded.
+    pub fn node_materialization_decision(
+        &self,
+        key: PersistNodeMetadataKey,
+        costs: MaterializationCosts,
+    ) -> Result<MaterializationDecision, PersistNodeMetadataIndexError> {
+        Ok(self.node_materialization_signals(key, costs)?.decide())
+    }
+
     /// Advances persisted reuse counters for one demand node to the next run.
     ///
     /// Missing index entries return `Ok(None)` without appending an empty
