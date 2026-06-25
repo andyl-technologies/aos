@@ -318,16 +318,30 @@ green.
 
 ### Phase E — Tenant-sharded, colocated SQLite system of record
 
-- [ ] Add a **SQLite-in-DO** `Backend` impl behind the existing trait (Worker);
+- [x] Add a **SQLite-in-DO** `Backend` impl behind the existing trait (Worker);
       an embedded in-process SQLite `Backend` (native). Spike the trait fit first.
-- [ ] Shard the system of record per org/registry (one DO per tenant); define the
+      *Done:* `SqlDoBackend` (`sqldobackend.rs`) implements the core `Backend`
+      over the DO's synchronous local `SqlStorage` (Value↔SqlStorageValue,
+      positional cursor reads, `rows_written`, `last_insert_rowid`, `BEGIN
+      IMMEDIATE`/`COMMIT` batch) — so the *exact* `core::Database` logic runs
+      inside the tenant DO. Compiles wasm; **runtime is deploy-gated** (it can
+      only run inside a DO under workerd). Native E1 is the existing in-process
+      `SqlxBackend` (already colocated SQLite) — no new work.
+- [~] Shard the system of record per org/registry (one DO per tenant); define the
       tenant-DO create/migrate/backup/retire lifecycle.
-- [ ] Route tenant reads/writes to the tenant DO; keep the Phase D global
-      directory for cross-tenant listing/search.
-- [ ] DO read replicas for global readers; native streaming SQLite replication
-      for HA + read scale.
-- [ ] Decommission D1 as the tenant system of record once parity + data migration
-      are verified (retain as cold archive / reporting if useful).
+      *Foundation done (`SqlDoBackend`, the `CoordinatorObject` DO pattern, the
+      `id_from_name` per-tenant routing primitive).* The per-tenant DO class +
+      lifecycle is a **deploy-gated structural migration** — it restructures the
+      request path to route a tenant's DB ops to its DO. Not landed.
+- [~] Route tenant reads/writes to the tenant DO; keep the Phase D global
+      directory for cross-tenant listing/search. *Depends on the sharding above;
+      the global directory (Phase D) is the cross-tenant read model that makes
+      this viable. Deploy-gated structural change.*
+- [~] DO read replicas for global readers; native streaming SQLite replication
+      for HA + read scale. *Deploy-gated platform configuration on the above.*
+- [~] Decommission D1 as the tenant system of record once parity + data migration
+      are verified (retain as cold archive / reporting if useful). *Terminal
+      step — gated on the full E migration + a deploy-based parity verification.*
 
 ### Cross-cutting gates (every phase)
 

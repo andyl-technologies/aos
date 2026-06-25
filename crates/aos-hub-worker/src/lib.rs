@@ -127,6 +127,8 @@ pub mod handlers;
 #[cfg(target_arch = "wasm32")]
 pub mod indexer;
 #[cfg(target_arch = "wasm32")]
+pub mod sqldobackend;
+#[cfg(target_arch = "wasm32")]
 pub mod surface;
 #[cfg(target_arch = "wasm32")]
 pub mod tracinglog;
