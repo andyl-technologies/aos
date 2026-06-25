@@ -53,6 +53,17 @@ const ERROR_VARIANT_MARKERS: &[&str] = &[
     "engine_and_backend_errors_render_all_variants_deterministically",
 ];
 
+const INSTANTIATE_MARKERS: &[&str] = &[
+    "instantiate_loads_exact_snapshot_without_genesis",
+    "instantiate_replays_from_nearest_cached_ancestor",
+    "instantiate_loads_baked_genesis_for_genesis",
+    "instantiate_replays_from_baked_genesis_for_uncached_descendant",
+    "instantiate_requires_baked_genesis_when_no_cached_path",
+    "temporal_graph_rejects_mismatched_or_thin_cached_snapshots",
+    "temporal_graph_rejects_plain_cached_genesis_snapshot",
+    "temporal_graph_rejects_mismatched_or_thin_baked_genesis",
+];
+
 const SIM_BACKEND_ERROR_MARKERS: &[&str] = &[
     "sim_backend_rejects_backward_advance_and_post_shutdown_mutation",
     "sim_backend_rejects_unknown_checkpoint_deterministically",
@@ -146,6 +157,16 @@ const DETERMINISM_CORE_COVERAGE_FLOOR: &[CoverageSurface] = &[
         activation_source_roots: &[],
     },
     CoverageSurface {
+        id: "instantiate-recursion",
+        source_path: "crates/crucible/src/model.rs",
+        test_path: "crates/crucible/src/lib.rs",
+        status: CoverageStatus::Active,
+        instrumentation: COVERAGE_MEASUREMENT_MODE,
+        required_test_markers: INSTANTIATE_MARKERS,
+        activation_markers: &[],
+        activation_source_roots: &[],
+    },
+    CoverageSurface {
         id: "sim-backend-error-variants",
         source_path: "crates/crucible/src/sim_backend.rs",
         test_path: "crates/crucible/src/sim_backend.rs",
@@ -233,6 +254,7 @@ fn determinism_core_coverage_floor_names_required_surfaces() {
             "scheduler-quantum-loop",
             "scheduler-ordering-keys",
             "error-variant-floor",
+            "instantiate-recursion",
             "sim-backend-error-variants",
             "content-addressed-digest",
             "replay-oracle-path",
@@ -402,6 +424,7 @@ fn required_surface_regression_failures(surfaces: &[CoverageSurface]) -> Vec<Str
         "scheduler-quantum-loop",
         "scheduler-ordering-keys",
         "error-variant-floor",
+        "instantiate-recursion",
         "sim-backend-error-variants",
         "decision-rng-and-forking",
         "content-addressed-digest",

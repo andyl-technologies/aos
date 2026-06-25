@@ -865,9 +865,17 @@ information that cannot be recomputed.
 - [x] **T-EXEC-5** Prove resume+continue ≡ uninterrupted run by fingerprint over a
   representative scenario (scheduler/RNG state lives in the configuration). —
   satisfies [EXEC-13]; spec §4.
-- [ ] **T-EXEC-6** Implement recursive `instantiate` with the three-branch
+- [x] **T-EXEC-6** Implement recursive `instantiate` with the three-branch
   resolution (exact snapshot / ancestor-replay / genesis) and termination at the
   baked snapshot. — satisfies [EXEC-15], [EXEC-16], [EXEC-17]; spec §5.
+  - Completed by `crates/crucible/src/model.rs`: `instantiate` now resolves exact
+    cached snapshots, recursively materializes the nearest cached ancestor and
+    explicitly replays the suffix, and terminates at a registered baked genesis
+    checkpoint.
+    `crates/crucible/src/lib.rs` covers exact-snapshot, ancestor-replay,
+    baked-genesis, missing-genesis, cached-checkpoint, and baked-genesis
+    checkpoint validation cases;
+    `checks.crucible.phase1.executionInstantiate` gates the surface.
 - [ ] **T-EXEC-7** Wire `start`, `resume`, and `fork` as call sites of
   `instantiate` (genesis / tip / prefix) and delete any separate
   boot/resume/fork realization paths. — satisfies [EXEC-14], [G-4]; spec §5, §6.

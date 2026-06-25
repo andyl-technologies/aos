@@ -831,6 +831,7 @@ mod tests {
                     Some(hash) => hash,
                     None => admission.runtime_hash,
                 },
+                configuration: config.id(),
             })
         }
 
@@ -844,6 +845,7 @@ mod tests {
                 .push(RealizationCall::LoadBaked(config.id()));
             Ok(RuntimeState {
                 id: snapshot.checkpoint.id,
+                configuration: config.id(),
             })
         }
 
@@ -859,6 +861,7 @@ mod tests {
             });
             Ok(RuntimeState {
                 id: request.to.id(),
+                configuration: request.to.id(),
             })
         }
     }

@@ -63,6 +63,7 @@ in {
     documentationHygiene = import ./phase1-documentation-hygiene.nix {inherit pkgs lib;};
     engineeringHygiene = import ./phase1-engineering-hygiene.nix {inherit pkgs lib;};
     executionDecisionTaxonomy = import ./phase1-execution-decision-taxonomy.nix {inherit pkgs lib;};
+    executionInstantiate = import ./phase1-execution-instantiate.nix {inherit pkgs lib;};
     executionModelCore = import ./phase1-execution-model-core.nix {inherit pkgs lib;};
     executionResumeFingerprint = import ./phase1-execution-resume-fingerprint.nix {inherit pkgs lib;};
     executionStepPurity = import ./phase1-execution-step-purity.nix {inherit pkgs lib;};
