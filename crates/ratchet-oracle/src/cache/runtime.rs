@@ -223,6 +223,32 @@ impl EvalCache {
         Ok(ExpressionTraceObservation::new(Some(node), trace))
     }
 
+    /// Observes one recomputed inline expression result.
+    ///
+    /// This is the first force-path integration point for the demand graph:
+    /// callers still provide the expression identity and ordered free-variable
+    /// hashes, and the cache only records/reconsiders the inline value hash. It
+    /// does not perform memo lookup, compute free-variable hashes, or serialize
+    /// heap-backed values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails, node
+    /// insertion fails, the node cannot be reconsidered, or the value is not an
+    /// inline scalar supported by [`ValueHash::from_inline_value`].
+    pub fn observe_inline_expression_result<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        value: Value,
+    ) -> Result<Reconsideration, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
+        self.reconsider_inline_value_node(node, value)
+    }
+
     /// Reconsiders one node from a recomputed inline scalar value.
     ///
     /// This delegates to [`DemandGraph::reconsider_inline_value_node`]. It does
@@ -366,6 +392,33 @@ impl EvalCacheRuntime {
         };
         cache
             .observe_expression_impure_inputs(identity, free_var_value_hashes, value_hash, source)
+            .map(Some)
+    }
+
+    /// Observes one inline expression result when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity or value. Enabled runtimes delegate to
+    /// [`EvalCache::observe_inline_expression_result`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to insert/reconsider the expression node or hash the inline value.
+    pub fn observe_inline_expression_result<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        value: Value,
+    ) -> Result<Option<Reconsideration>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .observe_inline_expression_result(identity, free_var_value_hashes, value)
             .map(Some)
     }
 }
@@ -759,6 +812,76 @@ mod tests {
         assert_eq!(observation.trace().status(), ImpureTraceStatus::Cacheable);
         assert!(observation.node().is_some());
         assert_eq!(runtime.cache().expect("cache is enabled").len(), 2);
+    }
+
+    #[test]
+    fn eval_cache_observes_inline_expression_results() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+
+        let first = cache
+            .observe_inline_expression_result(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+            )
+            .expect("first result observes");
+        let second = cache
+            .observe_inline_expression_result(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+            )
+            .expect("second result observes");
+
+        assert_eq!(first.decision(), crate::cache::CutoffDecision::Propagate);
+        assert_eq!(second.node(), first.node());
+        assert_eq!(second.decision(), crate::cache::CutoffDecision::CutOff);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn enabled_eval_cache_runtime_observes_inline_expression_results() {
+        let mut runtime = EvalCacheRuntime::enabled();
+        let identity = identity(b"source", 7);
+
+        let first = runtime
+            .observe_inline_expression_result(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+            )
+            .expect("first result observes")
+            .expect("enabled runtime observes expression results");
+        let second = runtime
+            .observe_inline_expression_result(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+            )
+            .expect("second result observes")
+            .expect("enabled runtime observes expression results");
+
+        assert_eq!(first.decision(), crate::cache::CutoffDecision::Propagate);
+        assert_eq!(second.node(), first.node());
+        assert_eq!(second.decision(), crate::cache::CutoffDecision::CutOff);
+        assert_eq!(runtime.cache().expect("cache is enabled").len(), 1);
+    }
+
+    #[test]
+    fn disabled_eval_cache_runtime_expression_result_observation_is_noop() {
+        let mut runtime = EvalCacheRuntime::disabled();
+
+        let observation = runtime
+            .observe_inline_expression_result(
+                identity(b"source", 7),
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+            )
+            .expect("disabled expression result observation succeeds");
+
+        assert_eq!(observation, None);
+        assert!(runtime.cache().is_none());
     }
 
     #[test]

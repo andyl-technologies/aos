@@ -26,8 +26,9 @@ use crate::error::NativeEvalError;
 use crate::eval::tree_walk::{canonicalize_policy_path, normalize_absolute_path_bytes};
 use crate::eval::{
     EvalErrorLabel, EvalMode, EvalOutcome, IfdRealizer, TreeWalkError, TreeWalkErrorKind,
-    TreeWalkOptions, eval_instantiation_attr_path_owned_with_options_source_and_realizer,
-    eval_whnf_owned_with_options_and_realizer,
+    TreeWalkOptions,
+    eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache,
+    eval_whnf_owned_with_options_realizer_and_eval_cache,
 };
 use crate::runtime::builtins::{
     Builtin, BuiltinAvailability, NativeCliFallbackFeature, is_unshadowable_global_name,
@@ -342,18 +343,20 @@ impl NixNative {
             }
             .into());
         }
-        let outcome = eval_instantiation_attr_path_owned_with_options_source_and_realizer(
-            &ir,
-            &attr_path,
-            options,
-            source_name.clone(),
-            source.clone(),
-            self.ifd_realizer.clone(),
-        )
-        .map_err(|error| match diagnostic_source {
-            Some(diagnostic_source) => native_eval_error_with_source(error, diagnostic_source),
-            None => native_eval_error(error, None),
-        })?;
+        let outcome =
+            eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
+                &ir,
+                &attr_path,
+                options,
+                source_name.clone(),
+                source.clone(),
+                self.ifd_realizer.clone(),
+                self.eval_cache.clone(),
+            )
+            .map_err(|error| match diagnostic_source {
+                Some(diagnostic_source) => native_eval_error_with_source(error, diagnostic_source),
+                None => native_eval_error(error, None),
+            })?;
         self.observe_eval_cache(&outcome);
         self.native_drv_closure_from_outcome(outcome)
     }
@@ -435,20 +438,22 @@ impl NixNative {
     }
 
     fn eval_ir(&self, ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
-        let outcome = eval_whnf_owned_with_options_and_realizer(
+        let outcome = eval_whnf_owned_with_options_realizer_and_eval_cache(
             ir,
             self.options.clone(),
             self.ifd_realizer.clone(),
+            self.eval_cache.clone(),
         )?;
         self.observe_eval_cache(&outcome);
         Ok(outcome)
     }
 
     fn eval_instantiation_ir(&self, ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
-        let outcome = eval_whnf_owned_with_options_and_realizer(
+        let outcome = eval_whnf_owned_with_options_realizer_and_eval_cache(
             ir,
             self.instantiation_options(),
             self.ifd_realizer.clone(),
+            self.eval_cache.clone(),
         )?;
         self.observe_eval_cache(&outcome);
         Ok(outcome)

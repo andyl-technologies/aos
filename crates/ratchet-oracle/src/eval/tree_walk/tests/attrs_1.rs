@@ -677,3 +677,131 @@ fn forcing_attr_value_thunks_memoizes_whnf_results() {
         .expect("forced thunk reuses cache");
     assert_eq!(forced_again.as_int(), Ok(3));
 }
+
+#[test]
+fn source_backed_forced_inline_thunks_update_shared_eval_cache() {
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for _ in 0..2 {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "expr.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("thunk force succeeds");
+        assert_eq!(forced.as_int(), Ok(3));
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    assert_eq!(
+        cache.len(),
+        1,
+        "the same source hash and IR node should reuse one demand node"
+    );
+    let node = cache
+        .graph()
+        .node(crate::cache::DemandNodeId::new(0))
+        .expect("forced expression node exists");
+    assert_eq!(node.freshness(), crate::cache::NodeFreshness::Clean);
+    assert!(node.value_hash().is_some());
+}
+
+#[test]
+fn source_backed_forced_inline_thunks_include_path_base_in_cache_identity() {
+    let root = unique_temp_dir("force-cache-path-base");
+    let first_dir = root.join("first");
+    let second_dir = root.join("second");
+    fs::create_dir_all(&first_dir).expect("first dir exists");
+    fs::create_dir_all(&second_dir).expect("second dir exists");
+    fs::write(first_dir.join("marker"), b"present").expect("marker exists");
+    let first_dir = fs::canonicalize(&first_dir).expect("first dir canonicalizes");
+    let second_dir = fs::canonicalize(&second_dir).expect("second dir canonicalizes");
+    let source = "{ a = builtins.pathExists ./marker; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (path_base, expected) in [(&first_dir, true), (&second_dir, false)] {
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(path_base))
+            .expect("path base is absolute");
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("thunk force succeeds");
+        assert_eq!(forced.as_bool(), Ok(expected));
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "same source bytes under different path bases must not reuse one demand node"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn captured_forced_inline_thunks_wait_for_free_variable_hashes() {
+    let source = "let x = 1; in { a = x + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+
+    assert_eq!(forced.as_int(), Ok(3));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "captured thunks need canonical free-variable hashes before observation"
+    );
+}

@@ -22,8 +22,10 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
     rc::Rc,
-    sync::Arc,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::UNIX_EPOCH,
 };
 
@@ -50,8 +52,9 @@ use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, AttrPosition, FlatAttrs};
 use crate::cache::{
-    CachedParse, DirEntryInput, FileTypeForInput, ImpureInputFingerprint, ImpureInputMode,
-    InputFingerprintError, ParseCache, ParseCacheError,
+    CacheExprIdentity, CachedParse, DirEntryInput, DurableBlake3Hash, EvalCacheRuntime,
+    FileTypeForInput, ImpureInputFingerprint, ImpureInputMode, InputFingerprintError, ParseCache,
+    ParseCacheError,
 };
 use crate::compile::{
     FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,
@@ -269,10 +272,12 @@ pub(crate) use api::{
 };
 pub use api::{
     eval_instantiation_attr_path_owned_with_options_and_realizer,
-    eval_instantiation_attr_path_owned_with_options_source_and_realizer, eval_number_raw_bytes,
-    eval_number_raw_bytes_with_options, eval_raw_bytes, eval_raw_bytes_with_options,
-    eval_raw_bytes_with_options_source, eval_whnf, eval_whnf_owned, eval_whnf_owned_with_options,
-    eval_whnf_owned_with_options_and_realizer, eval_whnf_with_options,
+    eval_instantiation_attr_path_owned_with_options_source_and_realizer,
+    eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache,
+    eval_number_raw_bytes, eval_number_raw_bytes_with_options, eval_raw_bytes,
+    eval_raw_bytes_with_options, eval_raw_bytes_with_options_source, eval_whnf, eval_whnf_owned,
+    eval_whnf_owned_with_options, eval_whnf_owned_with_options_and_realizer,
+    eval_whnf_owned_with_options_realizer_and_eval_cache, eval_whnf_with_options,
 };
 pub use error_kind::TreeWalkErrorKind;
 pub(crate) use errors::ArithmeticOp;
@@ -659,6 +664,7 @@ pub struct TreeWalk {
     known_derivations: BTreeMap<nix_compat::store_path::StorePath<String>, KnownDerivation>,
     import_cache: BTreeMap<PathBuf, ImportCacheEntry>,
     parse_cache: Option<ParseCache>,
+    eval_cache: Arc<Mutex<EvalCacheRuntime>>,
     import_parse_cache_hits: usize,
     import_parse_cache_misses: usize,
     text_store: BTreeMap<Vec<u8>, TextStoreEntry>,

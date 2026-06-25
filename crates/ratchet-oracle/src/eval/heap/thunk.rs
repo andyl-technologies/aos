@@ -142,6 +142,33 @@ impl EvalThunk {
         }
     }
 
+    /// Returns the body only when this is a closed lowered-node thunk.
+    ///
+    /// The incremental-cache precursor can safely key these thunks by source
+    /// identity plus IR node alone. Thunks with captured lexical frames,
+    /// dynamic `with` scopes, or scoped-import globals need canonical
+    /// free-variable hashes before they can share that key.
+    pub(crate) fn closed_body_ref(&self) -> Option<EvalNodeRef> {
+        match &self.kind {
+            EvalThunkKind::Node {
+                body,
+                env,
+                with_env,
+                scoped_globals,
+            } if env.frames().is_empty()
+                && with_env.scopes().is_empty()
+                && scoped_globals.scopes().is_empty() =>
+            {
+                Some(*body)
+            }
+            EvalThunkKind::Node { .. }
+            | EvalThunkKind::Apply { .. }
+            | EvalThunkKind::Apply2 { .. }
+            | EvalThunkKind::Select { .. }
+            | EvalThunkKind::BuiltinAttr { .. } => None,
+        }
+    }
+
     /// Returns the lexical environment captured when this thunk was allocated, if any.
     pub const fn env(&self) -> Option<&EvalEnv> {
         match &self.kind {

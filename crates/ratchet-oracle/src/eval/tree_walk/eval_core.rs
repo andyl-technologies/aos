@@ -2,6 +2,8 @@
 
 use super::*;
 
+const FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION: &[u8] = b"aos-nix-force-expression-identity-v1";
+
 impl TreeWalk {
     /// Creates a tree-walk evaluator over `ir`.
     pub fn new(ir: &Ir) -> Self {
@@ -10,6 +12,22 @@ impl TreeWalk {
 
     /// Creates a tree-walk evaluator over `ir` with explicit runtime options.
     pub fn with_options(ir: &Ir, options: TreeWalkOptions) -> Self {
+        let eval_cache = Arc::new(Mutex::new(EvalCacheRuntime::from_enabled(
+            options.eval_cache_enabled(),
+        )));
+        Self::with_options_and_eval_cache(ir, options, eval_cache)
+    }
+
+    /// Creates a tree-walk evaluator over `ir` with caller-owned cache state.
+    ///
+    /// The cache runtime stays advisory. Disabled runtimes are no-ops; enabled
+    /// runtimes record source-backed forced inline thunk results but do not
+    /// perform memo lookup or persistence.
+    pub fn with_options_and_eval_cache(
+        ir: &Ir,
+        options: TreeWalkOptions,
+        eval_cache: Arc<Mutex<EvalCacheRuntime>>,
+    ) -> Self {
         let path_literal_base = options.path_literal_base().map(<[u8]>::to_vec);
         let parse_cache = options.parse_cache_root().map(ParseCache::new);
         Self {
@@ -37,6 +55,7 @@ impl TreeWalk {
             known_derivations: BTreeMap::new(),
             import_cache: BTreeMap::new(),
             parse_cache,
+            eval_cache,
             import_parse_cache_hits: 0,
             import_parse_cache_misses: 0,
             text_store: BTreeMap::new(),
@@ -59,6 +78,26 @@ impl TreeWalk {
         source: impl Into<Vec<u8>>,
     ) -> Self {
         let mut eval = Self::with_options(ir, options);
+        eval.modules[EvalModuleId::ROOT.index()].source = Some(ModuleSource {
+            name: source_name.into(),
+            bytes: source.into(),
+        });
+        eval
+    }
+
+    /// Creates a source-backed tree-walk evaluator with caller-owned cache state.
+    ///
+    /// This is the cache-sharing variant of [`Self::with_options_and_source`].
+    /// Source provenance is also used as the first expression-identity
+    /// component for advisory demand-graph observations.
+    pub fn with_options_and_source_and_eval_cache(
+        ir: &Ir,
+        options: TreeWalkOptions,
+        source_name: impl Into<Vec<u8>>,
+        source: impl Into<Vec<u8>>,
+        eval_cache: Arc<Mutex<EvalCacheRuntime>>,
+    ) -> Self {
+        let mut eval = Self::with_options_and_eval_cache(ir, options, eval_cache);
         eval.modules[EvalModuleId::ROOT.index()].source = Some(ModuleSource {
             name: source_name.into(),
             bytes: source.into(),
@@ -328,6 +367,78 @@ impl TreeWalk {
             return self.force_value(id, span, value);
         }
         Ok(value)
+    }
+
+    pub(super) fn observe_forced_inline_expression_result(
+        &mut self,
+        body: Option<EvalNodeRef>,
+        value: Value,
+    ) {
+        if !matches!(
+            value.tag(),
+            ValueTag::Int | ValueTag::Float | ValueTag::Bool | ValueTag::Null
+        ) {
+            return;
+        }
+
+        let Some(body) = body else {
+            return;
+        };
+        let Some(identity) = self.cache_identity_for_node(body) else {
+            return;
+        };
+
+        let Ok(mut cache) = self.eval_cache.lock() else {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                "tree-walk evaluator cache lock was poisoned; skipping forced expression observation"
+            );
+            return;
+        };
+        if let Err(error) = cache.observe_inline_expression_result(
+            identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            value,
+        ) {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator forced expression observation failed"
+            );
+        }
+    }
+
+    fn cache_identity_for_node(&self, body: EvalNodeRef) -> Option<CacheExprIdentity> {
+        let module = self.modules.get(body.module().index())?;
+        Some(CacheExprIdentity::new(
+            Self::cache_source_identity_hash(module)?,
+            body.id(),
+        ))
+    }
+
+    fn cache_source_identity_hash(module: &TreeWalkModule) -> Option<DurableBlake3Hash> {
+        let source = module.source.as_ref()?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
+        Self::update_cache_identity_chunk(&mut hasher, &source.name)?;
+        Self::update_cache_identity_chunk(&mut hasher, &source.bytes)?;
+        match &module.path_literal_base {
+            Some(path_literal_base) => {
+                hasher.update(b"path-literal-base");
+                Self::update_cache_identity_chunk(&mut hasher, path_literal_base)?;
+            }
+            None => {
+                hasher.update(b"no-path-literal-base");
+            }
+        };
+        Some(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    fn update_cache_identity_chunk(hasher: &mut blake3::Hasher, chunk: &[u8]) -> Option<()> {
+        let len = u64::try_from(chunk.len()).ok()?;
+        hasher.update(&len.to_le_bytes());
+        hasher.update(chunk);
+        Some(())
     }
 
     pub(super) fn node(&self, id: IrId) -> Result<&IrNode, TreeWalkError> {

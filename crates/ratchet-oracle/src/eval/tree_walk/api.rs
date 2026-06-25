@@ -76,7 +76,33 @@ pub fn eval_whnf_owned_with_options_and_realizer(
     options: TreeWalkOptions,
     ifd_realizer: Option<IfdRealizer>,
 ) -> Result<EvalOutcome, TreeWalkError> {
-    let mut evaluator = TreeWalk::with_options(ir, options);
+    let evaluator = TreeWalk::with_options(ir, options);
+    eval_whnf_owned_with_evaluator(evaluator, ifd_realizer)
+}
+
+/// Evaluates an IR root with explicit options, IFD, and caller-owned cache state.
+///
+/// The supplied cache runtime remains advisory: enabled runtimes may observe
+/// source-backed forced inline thunk results, but evaluation never performs
+/// memo lookup through this entry point.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] if root evaluation fails.
+pub fn eval_whnf_owned_with_options_realizer_and_eval_cache(
+    ir: &Ir,
+    options: TreeWalkOptions,
+    ifd_realizer: Option<IfdRealizer>,
+    eval_cache: Arc<Mutex<EvalCacheRuntime>>,
+) -> Result<EvalOutcome, TreeWalkError> {
+    let evaluator = TreeWalk::with_options_and_eval_cache(ir, options, eval_cache);
+    eval_whnf_owned_with_evaluator(evaluator, ifd_realizer)
+}
+
+fn eval_whnf_owned_with_evaluator(
+    mut evaluator: TreeWalk,
+    ifd_realizer: Option<IfdRealizer>,
+) -> Result<EvalOutcome, TreeWalkError> {
     if let Some(realizer) = ifd_realizer {
         evaluator.set_ifd_realizer(realizer);
     }
@@ -137,6 +163,35 @@ pub fn eval_instantiation_attr_path_owned_with_options_source_and_realizer(
     ifd_realizer: Option<IfdRealizer>,
 ) -> Result<EvalOutcome, TreeWalkError> {
     let evaluator = TreeWalk::with_options_and_source(ir, options, source_name, source);
+    eval_instantiation_attr_path_with_evaluator(ir, attr_path, evaluator, ifd_realizer)
+}
+
+/// Evaluates a source-backed IR root with `-A` semantics and caller-owned cache state.
+///
+/// This is the cache-sharing variant of
+/// [`eval_instantiation_attr_path_owned_with_options_source_and_realizer`].
+/// The cache runtime remains advisory and does not perform memo lookup.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] if root evaluation, formal-set auto-call, or
+/// attribute selection fails.
+pub fn eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
+    ir: &Ir,
+    attr_path: &[Vec<u8>],
+    options: TreeWalkOptions,
+    source_name: impl Into<Vec<u8>>,
+    source: impl Into<Vec<u8>>,
+    ifd_realizer: Option<IfdRealizer>,
+    eval_cache: Arc<Mutex<EvalCacheRuntime>>,
+) -> Result<EvalOutcome, TreeWalkError> {
+    let evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        ir,
+        options,
+        source_name,
+        source,
+        eval_cache,
+    );
     eval_instantiation_attr_path_with_evaluator(ir, attr_path, evaluator, ifd_realizer)
 }
 

@@ -456,6 +456,23 @@ alone (`M-1`/`Q-A`).
       production, `force_memoized`, automatic evaluator expression-node
       lifecycle, persistence, currentTime taint propagation, and cached/uncached
       harness proof remain open (`C-1`/`C-2`/`S-14`).
+- [x] Current closed source-backed force-demand observation substrate:
+      `EvalCache::observe_inline_expression_result` and
+      `EvalCacheRuntime::observe_inline_expression_result` insert/reconsider
+      expression nodes from caller-supplied identities, and tree-walk
+      `force_value` now observes successful, closed, source-backed
+      `EvalThunkKind::Node` forces whose WHNF result is an inline scalar. The
+      precursor expression identity uses a domain-separated hash of source name,
+      source bytes, and module path-literal base plus the IR node id, so
+      identical file bytes under different relative-path bases do not share one
+      observed node. `NixNative` passes its caller-owned cache runtime into
+      tree-walk evaluation, so repeated closed source-backed evaluations reuse
+      the same demand node and apply the existing inline-value early-cutoff
+      decision. This is observation/reconsideration only: source-less raw eval,
+      captured lexical/dynamic/scoped-global thunks, synthetic
+      apply/select/builtin-attr thunks, canonical free-variable hashes, memo
+      lookup, heap/composite value hashing, persistence, and cached/uncached
+      harness proof remain open (`S-14`/`S-15`).
 - [ ] Full cache-key integration remains: feed source content + IR node position
       from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real

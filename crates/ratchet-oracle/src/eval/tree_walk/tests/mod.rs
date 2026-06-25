@@ -16,8 +16,8 @@ use std::{
 };
 
 use crate::cache::{
-    DirEntryInput, EvalCache, FileTypeForInput, ImpureInputFingerprint, ImpureInputMode,
-    ImpureTraceStatus, UncacheableInput,
+    DirEntryInput, EvalCache, EvalCacheRuntime, FileTypeForInput, ImpureInputFingerprint,
+    ImpureInputMode, ImpureTraceStatus, UncacheableInput,
 };
 use crate::compile::{
     EffectClass, FrameId, FrameInfo, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode,
