@@ -1875,6 +1875,31 @@ pub(crate) struct CacheGcForm {
     dry_run: Option<String>,
 }
 
+/// `POST /-/org/{org}/caches/{slug}/pin/add` form: pin (or renew) a manual GC
+/// root.
+#[derive(serde::Deserialize)]
+pub(crate) struct CachePinAddForm {
+    #[serde(default)]
+    csrf: String,
+    /// The store path to pin: a 32-char hash, a `<hash>-<name>` store name, or a
+    /// full `/nix/store/<hash>-<name>` path. Only the hash component is stored.
+    #[serde(default)]
+    store_hash: String,
+    /// Optional expiry, in whole days from now. Empty/zero pins indefinitely.
+    #[serde(default)]
+    expires_days: String,
+}
+
+/// `POST /-/org/{org}/caches/{slug}/pin/remove` form: unpin a manual GC root.
+#[derive(serde::Deserialize)]
+pub(crate) struct CachePinRemoveForm {
+    #[serde(default)]
+    csrf: String,
+    /// The store-path hash component of the pin to remove.
+    #[serde(default)]
+    store_hash: String,
+}
+
 /// `POST /-/org/{org}/caches/{slug}/delete` form.
 #[derive(serde::Deserialize)]
 pub(crate) struct CacheConfirmForm {
@@ -1892,6 +1917,81 @@ fn cache_visibility(raw: &str) -> Option<&'static str> {
         "public" => Some("public"),
         _ => None,
     }
+}
+
+/// Cap on closure nodes walked per pin, mirroring the service's `cache_closure`
+/// bound so a pathological closure can't stall a console page render.
+const PIN_CLOSURE_NODE_CAP: usize = 10_000;
+
+/// The closure summary for a single pinned root, used to populate a
+/// [`console::CachePinRow`].
+struct ClosureSummary {
+    /// The root object's `<hash>-<name>` store name, or `""` when not indexed.
+    store_name: String,
+    /// Sum of `file_size` over the present closure nodes (compressed bytes).
+    total_size: u64,
+    /// Number of present (indexed) closure nodes, including the root.
+    count: u64,
+    /// Whether the root object itself is present in the cache index.
+    present: bool,
+}
+
+/// Compute a pinned store path's closure summary by BFS-walking
+/// [`crate::db::CacheObject::refs`] from `root_hash`.
+///
+/// Returns the root's store name plus the closure's total `file_size`, the count
+/// of present nodes, and whether the root itself is indexed. A `visited` set
+/// keeps each object visited once; the walk is bounded by
+/// [`PIN_CLOSURE_NODE_CAP`]. Objects referenced but not present in the index
+/// (e.g. not yet uploaded) are skipped from the size/count totals.
+///
+/// This mirrors the service's `cache_closure` RPC but runs against `deps.db`
+/// directly, since the console handlers do not hold a service handle.
+///
+/// # Errors
+///
+/// Returns an error on database failure while loading a closure object.
+async fn cache_closure_summary(
+    db: &crate::db::Database,
+    cache_id: i64,
+    root_hash: &str,
+) -> anyhow::Result<ClosureSummary> {
+    use std::collections::{HashSet, VecDeque};
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    queue.push_back(root_hash.to_string());
+    let mut store_name = String::new();
+    let mut total_size: u64 = 0;
+    let mut count: u64 = 0;
+    let mut present = false;
+    while let Some(hash) = queue.pop_front() {
+        if visited.len() >= PIN_CLOSURE_NODE_CAP {
+            break;
+        }
+        if !visited.insert(hash.clone()) {
+            continue;
+        }
+        let is_root = hash == root_hash;
+        if let Some(object) = db.cache_object(cache_id, &hash).await? {
+            if is_root {
+                store_name = object.store_name;
+                present = true;
+            }
+            total_size = total_size.saturating_add(object.file_size.max(0) as u64);
+            count += 1;
+            for r in object.refs {
+                if !visited.contains(&r) {
+                    queue.push_back(r);
+                }
+            }
+        }
+    }
+    Ok(ClosureSummary {
+        store_name,
+        total_size,
+        count,
+        present,
+    })
 }
 
 /// Render a cache's detail page (`cache_page`), gathering usage, links, and the
@@ -1969,6 +2069,28 @@ async fn render_cache_detail(
             .map(|r| (r.slug.clone(), r.visibility.clone()))
             .collect();
         let advertise_frontend = deps.db.cache_advertises_storage_frontend(cache.id).await?;
+        // Manual pins (the editor) with each pin's closure summary. Derived
+        // roots (release/channel/package_version) are managed elsewhere and are
+        // not editable here, so filter to `root_kind == "manual"`. Closure info
+        // is admin-only context, so only compute it when the section will render.
+        let mut pin_rows = Vec::new();
+        if can_admin {
+            for root in deps.db.list_cache_roots(cache.id).await? {
+                if root.root_kind != "manual" {
+                    continue;
+                }
+                let summary = cache_closure_summary(&deps.db, cache.id, &root.store_hash).await?;
+                pin_rows.push(console::CachePinRow {
+                    store_hash: root.store_hash,
+                    store_name: summary.store_name,
+                    closure_size: summary.total_size,
+                    closure_count: summary.count,
+                    present: summary.present,
+                    expires_at: root.expires_at,
+                    created_at: root.created_at,
+                });
+            }
+        }
         Ok::<_, anyhow::Error>(console::cache_page(
             &session.email,
             &org.slug,
@@ -1979,6 +2101,7 @@ async fn render_cache_detail(
             &usage,
             &link_rows,
             &linkable,
+            &pin_rows,
             can_admin,
             advertise_frontend,
             notice,
@@ -2481,6 +2604,126 @@ pub(crate) async fn cache_gc(
             }
             Err(err) => format!("GC failed: {err:#}"),
         };
+    render_cache_detail(&deps, &session, &org, &cache, true, Some(&notice), started).await
+}
+
+/// Extract the store-path hash component from operator-entered text.
+///
+/// Accepts a bare 32-char hash, a `<hash>-<name>` store name, or a full
+/// `/nix/store/<hash>-<name>` path, returning just the hash. A trailing
+/// `.narinfo`/`.nar` suffix is tolerated. Returns `None` when no plausible hash
+/// remains after trimming.
+fn normalize_store_hash(raw: &str) -> Option<String> {
+    let mut s = raw.trim();
+    // Drop a leading store path, keeping the basename.
+    if let Some(idx) = s.rfind('/') {
+        s = &s[idx + 1..];
+    }
+    // Drop common narinfo/nar suffixes.
+    if let Some(stripped) = s.strip_suffix(".narinfo") {
+        s = stripped;
+    } else if let Some(stripped) = s.strip_suffix(".nar") {
+        s = stripped;
+    }
+    // The hash is the component before the first `-` of `<hash>-<name>`.
+    let hash = s.split('-').next().unwrap_or(s).trim();
+    if hash.is_empty() {
+        None
+    } else {
+        Some(hash.to_string())
+    }
+}
+
+/// `POST /-/org/{org}/caches/{slug}/pin/add` — pin (or renew) a manual GC root.
+///
+/// Parses the store hash (a bare hash, `<hash>-<name>`, or full store path) and
+/// an optional `expires_days`, computing `expires_at = now + days*86400`
+/// (empty/zero pins indefinitely). Re-pinning an existing hash renews it in
+/// place, since `pin_cache_path` upserts.
+pub(crate) async fn cache_pin_add(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<CachePinAddForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let (org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    let Some(store_hash) = normalize_store_hash(&form.store_hash) else {
+        return (StatusCode::BAD_REQUEST, "a store hash is required").into_response();
+    };
+    // Empty `expires_days` = unlimited; a positive integer sets a deadline.
+    let expires_at = match form.expires_days.trim() {
+        "" => None,
+        other => match other.parse::<i64>() {
+            Ok(days) if days > 0 => Some(crate::clock::now_unix_secs() + days * 86_400),
+            Ok(_) => None,
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "expires must be a whole number of days")
+                    .into_response()
+            }
+        },
+    };
+    let notice = match deps.db.pin_cache_path(cache.id, &store_hash, expires_at).await {
+        Ok(()) => match expires_at {
+            Some(_) => format!("Pinned {store_hash} (expires set)."),
+            None => format!("Pinned {store_hash} (unlimited)."),
+        },
+        Err(err) => format!("Pin failed: {err:#}"),
+    };
+    render_cache_detail(&deps, &session, &org, &cache, true, Some(&notice), started).await
+}
+
+/// `POST /-/org/{org}/caches/{slug}/pin/remove` — remove a manual GC pin.
+///
+/// Unpins the given store hash; if no manual pin existed the notice says so.
+pub(crate) async fn cache_pin_remove(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<CachePinRemoveForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let (org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    let Some(store_hash) = normalize_store_hash(&form.store_hash) else {
+        return (StatusCode::BAD_REQUEST, "a store hash is required").into_response();
+    };
+    let notice = match deps.db.unpin_cache_path(cache.id, &store_hash).await {
+        Ok(true) => format!("Unpinned {store_hash}."),
+        Ok(false) => format!("No manual pin for {store_hash}."),
+        Err(err) => format!("Unpin failed: {err:#}"),
+    };
     render_cache_detail(&deps, &session, &org, &cache, true, Some(&notice), started).await
 }
 

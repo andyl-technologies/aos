@@ -568,6 +568,30 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             ),
         )
         .route(
+            "/-/org/{org}/caches/{slug}/pin/add",
+            post(
+                |State(s): State<SharedState>,
+                 h: HeaderMap,
+                 r: RequestStart,
+                 p: Path<_>,
+                 f: axum::extract::Form<_>| {
+                    send_bridge(handlers::cache_pin_add(from_state(s), h, r, p, f))
+                },
+            ),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}/pin/remove",
+            post(
+                |State(s): State<SharedState>,
+                 h: HeaderMap,
+                 r: RequestStart,
+                 p: Path<_>,
+                 f: axum::extract::Form<_>| {
+                    send_bridge(handlers::cache_pin_remove(from_state(s), h, r, p, f))
+                },
+            ),
+        )
+        .route(
             "/-/org/{org}/caches/{slug}/delete",
             post(
                 |State(s): State<SharedState>,
