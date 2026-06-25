@@ -357,6 +357,59 @@ pub enum PersistParseArtifactIndexError {
     },
 }
 
+/// Fixed-record demand-node metadata index file IO failed.
+#[derive(Debug, Error)]
+pub enum PersistNodeMetadataIndexError {
+    /// The index parent directory could not be created.
+    #[error("failed to create persistent node metadata index parent {path:?}")]
+    CreateParent {
+        /// The parent directory path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be opened.
+    #[error("failed to open persistent node metadata index {path:?}")]
+    Open {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// Index file metadata could not be read.
+    #[error("failed to read persistent node metadata index metadata {path:?}")]
+    Metadata {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be read.
+    #[error("failed to read persistent node metadata index {path:?}")]
+    Read {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be written.
+    #[error("failed to write persistent node metadata index {path:?}")]
+    Write {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file has malformed fixed-record bytes.
+    #[error("persistent node metadata index {path:?} has invalid format: {source}")]
+    Format {
+        /// The index file path.
+        path: PathBuf,
+        /// The format error.
+        source: PersistPackFormatError,
+    },
+}
+
 /// Indexed blob append failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexedWriteError {
@@ -889,5 +942,13 @@ pub enum PersistError {
         path: PathBuf,
         /// The underlying index error.
         source: PersistParseArtifactIndexError,
+    },
+    /// The demand-node metadata index file could not be initialized.
+    #[error("failed to initialize persistent node metadata index {path}")]
+    OpenNodeMetadataIndex {
+        /// The node metadata index file path.
+        path: PathBuf,
+        /// The underlying index error.
+        source: PersistNodeMetadataIndexError,
     },
 }

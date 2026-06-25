@@ -1208,3 +1208,111 @@ impl PersistNodeMetadataIndexEntry {
         Ok(Self::new(key, value))
     }
 }
+
+/// A fixed-record index file for durable demand-node metadata.
+///
+/// This is a simple durable substrate for tests and future cache integration.
+/// It is not the final LMDB/redb metadata engine: writes append one fixed
+/// record at a time, and lookups scan records linearly and return the newest
+/// matching entry.
+#[derive(Clone, Debug)]
+pub struct PersistNodeMetadataIndex {
+    path: PathBuf,
+}
+
+impl PersistNodeMetadataIndex {
+    /// Opens or initializes a fixed-record node metadata index file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if parent directories or the
+    /// index file cannot be created/opened, or if the existing file ends with a
+    /// partial fixed-width record.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistNodeMetadataIndexError> {
+        let path = path.into();
+        ensure_node_metadata_index_file(&path)?;
+        Ok(Self { path })
+    }
+
+    /// Returns this index file's filesystem path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Appends one node metadata index entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the index cannot be opened,
+    /// validated, written, or flushed.
+    pub fn append_entry(
+        &self,
+        entry: PersistNodeMetadataIndexEntry,
+    ) -> Result<(), PersistNodeMetadataIndexError> {
+        ensure_node_metadata_index_file(&self.path)?;
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| PersistNodeMetadataIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        file.write_all(&entry.encode_index_entry())
+            .and_then(|()| file.flush())
+            .map_err(|source| PersistNodeMetadataIndexError::Write {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
+    /// Looks up the newest node metadata value for `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the index cannot be opened,
+    /// read, or decoded.
+    pub fn lookup(
+        &self,
+        key: PersistNodeMetadataKey,
+    ) -> Result<Option<PersistNodeMetadataIndexValue>, PersistNodeMetadataIndexError> {
+        ensure_node_metadata_index_file(&self.path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .map_err(|source| PersistNodeMetadataIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let len = file
+            .metadata()
+            .map_err(|source| PersistNodeMetadataIndexError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        validate_node_metadata_index_len(&self.path, len)?;
+
+        let mut found = None;
+        let records = len / PERSIST_NODE_METADATA_INDEX_ENTRY_LEN as u64;
+        let mut encoded = [0; PERSIST_NODE_METADATA_INDEX_ENTRY_LEN];
+        for _ in 0..records {
+            file.read_exact(&mut encoded).map_err(|source| {
+                PersistNodeMetadataIndexError::Read {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?;
+            let entry =
+                PersistNodeMetadataIndexEntry::decode_index_entry(&encoded).map_err(|source| {
+                    PersistNodeMetadataIndexError::Format {
+                        path: self.path.clone(),
+                        source,
+                    }
+                })?;
+            if entry.key() == key {
+                found = Some(entry.value());
+            }
+        }
+        Ok(found)
+    }
+}

@@ -89,7 +89,7 @@ pub use error::{
     PersistBlobIndexError, PersistBlobIndexedReadError, PersistBlobIndexedWriteError,
     PersistBlobPackError, PersistError, PersistFileArtifactHydrationError,
     PersistFileArtifactIndexError, PersistFileArtifactIndexedHydrationError,
-    PersistFileArtifactIndexedWriteError, PersistPackFormatError,
+    PersistFileArtifactIndexedWriteError, PersistNodeMetadataIndexError, PersistPackFormatError,
     PersistParseArtifactHydrationError, PersistParseArtifactIndexError,
     PersistParseArtifactIndexedHydrationError, PersistParseArtifactIndexedWriteError,
     PersistParseArtifactMaterializationError, PersistParseBytesIndexedLoadError,
@@ -100,9 +100,9 @@ pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,
     PersistBlobPackHeader, PersistBlobRecordHeader, PersistBlobStore, PersistFileArtifactIndex,
     PersistFileArtifactIndexEntry, PersistFileArtifactIndexValue, PersistFileArtifactKey,
-    PersistNodeMetadataIndexEntry, PersistNodeMetadataIndexValue, PersistNodeMetadataKey,
-    PersistParseArtifactIndex, PersistParseArtifactIndexEntry, PersistParseArtifactIndexValue,
-    PersistParseArtifactKey,
+    PersistNodeMetadataIndex, PersistNodeMetadataIndexEntry, PersistNodeMetadataIndexValue,
+    PersistNodeMetadataKey, PersistParseArtifactIndex, PersistParseArtifactIndexEntry,
+    PersistParseArtifactIndexValue, PersistParseArtifactKey,
 };
 pub use layout::PersistLayout;
 pub use materialization::{

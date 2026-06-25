@@ -910,9 +910,19 @@ alone (`M-1`/`Q-A`).
       in domains separate from hot `DemandCacheKey`; `PersistNodeMetadataIndexValue`
       wraps the existing materialization reuse counters, and
       `PersistNodeMetadataIndexEntry` frames key/value records. This is
-      codec-only; fixed-record node metadata index files, LMDB/redb node tables,
-      durable counter storage, evaluator demand accounting, process-boundary
-      updates, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
+      codec-only; fixed-record index storage is covered by the next row, while
+      LMDB/redb node tables, durable counter storage, evaluator demand
+      accounting, process-boundary updates, and AOS tuning remain open
+      (`C-13`/`C-14`/`S-14`).
+- [x] Current demand-node metadata index substrate:
+      `PersistLayout::node_metadata_index_path` adds `nodes/metadata.index`,
+      `PersistNodeMetadataIndex` appends fixed-width metadata records and
+      resolves lookups with newest-record-wins semantics, and
+      `PersistCache::record_node_metadata`/`lookup_node_metadata` expose the
+      sidecar through the opened persistent cache root. This is a simple
+      fixed-record sidecar only; LMDB/redb node tables, durable counter update
+      policy, evaluator demand accounting, process-boundary updates, mmap
+      reads, GC/repack, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit materialization-to-pack adapter:
       `PersistCache::materialize_blob` consumes a caller-supplied
       `MaterializationDecision`, skips without hashing/writing on

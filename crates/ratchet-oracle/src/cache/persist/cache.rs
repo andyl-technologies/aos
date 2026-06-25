@@ -16,6 +16,7 @@ pub struct PersistCache {
     file_index: PersistBlobIndex,
     file_artifact_index: PersistFileArtifactIndex,
     parse_artifact_index: PersistParseArtifactIndex,
+    node_metadata_index: PersistNodeMetadataIndex,
 }
 
 impl PersistCache {
@@ -29,8 +30,8 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistError`] if schema metadata cannot be read, parsed,
-    /// written, if cache directories cannot be created or discarded, or if blob
-    /// packfiles cannot be initialized.
+    /// written, if cache directories cannot be created or discarded, or if
+    /// packfiles or sidecar indexes cannot be initialized.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, PersistError> {
         let layout = PersistLayout::new(root);
         match read_schema_version(&layout)? {
@@ -89,6 +90,12 @@ impl PersistCache {
             path: parse_artifact_index_path,
             source,
         })?;
+        let node_metadata_index_path = layout.node_metadata_index_path();
+        let node_metadata_index = PersistNodeMetadataIndex::open(node_metadata_index_path.clone())
+            .map_err(|source| PersistError::OpenNodeMetadataIndex {
+                path: node_metadata_index_path,
+                source,
+            })?;
         Ok(Self {
             layout,
             value_pack,
@@ -97,6 +104,7 @@ impl PersistCache {
             file_index,
             file_artifact_index,
             parse_artifact_index,
+            node_metadata_index,
         })
     }
 
@@ -133,6 +141,11 @@ impl PersistCache {
     /// Returns the fixed-record index for durable parse-artifact mappings.
     pub const fn parse_artifact_index(&self) -> &PersistParseArtifactIndex {
         &self.parse_artifact_index
+    }
+
+    /// Returns the fixed-record index for durable demand-node metadata.
+    pub const fn node_metadata_index(&self) -> &PersistNodeMetadataIndex {
+        &self.node_metadata_index
     }
 
     /// Returns the fixed-record blob index for `store`.
@@ -235,6 +248,34 @@ impl PersistCache {
         key: PersistParseArtifactKey,
     ) -> Result<Option<PersistParseArtifactIndexValue>, PersistParseArtifactIndexError> {
         self.parse_artifact_index.lookup(key)
+    }
+
+    /// Appends durable demand-node metadata to the sidecar index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, validated, written, or flushed.
+    pub fn record_node_metadata(
+        &self,
+        entry: PersistNodeMetadataIndexEntry,
+    ) -> Result<(), PersistNodeMetadataIndexError> {
+        self.node_metadata_index.append_entry(entry)
+    }
+
+    /// Looks up durable demand-node metadata through the sidecar index.
+    ///
+    /// Missing index entries return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, read, or decoded.
+    pub fn lookup_node_metadata(
+        &self,
+        key: PersistNodeMetadataKey,
+    ) -> Result<Option<PersistNodeMetadataIndexValue>, PersistNodeMetadataIndexError> {
+        self.node_metadata_index.lookup(key)
     }
 
     /// Looks up a blob location through the sidecar index selected by `key`.

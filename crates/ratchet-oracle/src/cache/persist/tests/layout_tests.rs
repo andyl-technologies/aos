@@ -25,6 +25,10 @@ fn open_creates_versioned_layout() {
         layout.parse_artifact_index_path()
     );
     assert_eq!(
+        cache.node_metadata_index().path(),
+        layout.node_metadata_index_path()
+    );
+    assert_eq!(
         cache.blob_pack(PersistBlobStore::Values).path(),
         layout.value_packfile_path()
     );
@@ -73,6 +77,12 @@ fn open_creates_versioned_layout() {
     assert_eq!(
         fs::metadata(layout.parse_artifact_index_path())
             .expect("parse artifact index metadata")
+            .len(),
+        0
+    );
+    assert_eq!(
+        fs::metadata(layout.node_metadata_index_path())
+            .expect("node metadata index metadata")
             .len(),
         0
     );
@@ -193,6 +203,35 @@ fn corrupt_parse_artifact_index_errors_without_rewriting() {
     ));
     assert_eq!(
         fs::read(layout.parse_artifact_index_path())
+            .expect("corrupt index reads")
+            .as_slice(),
+        b"partial"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn corrupt_node_metadata_index_errors_without_rewriting() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    fs::write(layout.node_metadata_index_path(), b"partial").expect("node metadata index corrupts");
+
+    let error = PersistCache::open(&root).expect_err("corrupt node metadata index errors");
+
+    assert!(matches!(
+        error,
+        PersistError::OpenNodeMetadataIndex {
+            source: PersistNodeMetadataIndexError::Format {
+                source: PersistPackFormatError::ShortNodeMetadataIndexEntry { actual: 7, .. },
+                ..
+            },
+            ..
+        }
+    ));
+    assert_eq!(
+        fs::read(layout.node_metadata_index_path())
             .expect("corrupt index reads")
             .as_slice(),
         b"partial"

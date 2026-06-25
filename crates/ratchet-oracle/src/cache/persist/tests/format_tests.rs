@@ -53,11 +53,19 @@ fn blob_index_paths_are_store_separated() {
         layout.parse_artifact_index_path(),
         layout.nodes_dir().join("parse-artifacts.index")
     );
+    assert_eq!(
+        layout.node_metadata_index_path(),
+        layout.nodes_dir().join("metadata.index")
+    );
     assert_ne!(layout.value_index_path(), layout.file_index_path());
     assert_ne!(layout.file_artifact_index_path(), layout.file_index_path());
     assert_ne!(
         layout.parse_artifact_index_path(),
         layout.file_artifact_index_path()
+    );
+    assert_ne!(
+        layout.node_metadata_index_path(),
+        layout.parse_artifact_index_path()
     );
 }
 
@@ -900,6 +908,95 @@ fn node_metadata_index_entries_reject_invalid_prefixes() {
         error,
         PersistPackFormatError::InvalidNodeMetadataIndexTag { tag: 99 }
     );
+}
+
+#[test]
+fn node_metadata_index_appends_and_finds_latest_matching_entry() {
+    let root = temp_root();
+    let index_path = root.join("nodes").join("metadata.index");
+    let index = PersistNodeMetadataIndex::open(&index_path).expect("index opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let other_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let first = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(1, 2));
+    let other = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(3, 4));
+    let latest = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(5, 6));
+
+    assert_eq!(index.path(), index_path.as_path());
+    assert_eq!(index.lookup(key).expect("empty lookup succeeds"), None);
+
+    index
+        .append_entry(PersistNodeMetadataIndexEntry::new(key, first))
+        .expect("first entry appends");
+    index
+        .append_entry(PersistNodeMetadataIndexEntry::new(other_key, other))
+        .expect("other entry appends");
+    index
+        .append_entry(PersistNodeMetadataIndexEntry::new(key, latest))
+        .expect("latest entry appends");
+
+    assert_eq!(
+        index.lookup(key).expect("key lookup succeeds"),
+        Some(latest)
+    );
+    assert_eq!(
+        index.lookup(other_key).expect("other lookup succeeds"),
+        Some(other)
+    );
+    assert_eq!(
+        fs::metadata(index.path()).expect("index metadata").len(),
+        (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 3) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn node_metadata_index_open_rejects_truncated_records() {
+    let root = temp_root();
+    let index_path = root.join("nodes").join("metadata.index");
+    fs::create_dir_all(index_path.parent().expect("index parent")).expect("parent creates");
+    fs::write(&index_path, b"partial").expect("partial index writes");
+
+    let error = PersistNodeMetadataIndex::open(&index_path).expect_err("truncated index errors");
+
+    assert!(matches!(
+        error,
+        PersistNodeMetadataIndexError::Format {
+            source: PersistPackFormatError::ShortNodeMetadataIndexEntry {
+                expected: PERSIST_NODE_METADATA_INDEX_ENTRY_LEN,
+                actual: 7,
+            },
+            ..
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn node_metadata_index_lookup_rejects_malformed_records() {
+    let root = temp_root();
+    let index_path = root.join("nodes").join("metadata.index");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let value = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(2, 3));
+    let mut encoded = PersistNodeMetadataIndexEntry::new(key, value).encode_index_entry();
+    encoded[0] = 99;
+    fs::create_dir_all(index_path.parent().expect("index parent")).expect("parent creates");
+    fs::write(&index_path, encoded).expect("malformed index writes");
+    let index = PersistNodeMetadataIndex::open(&index_path).expect("index opens by length");
+
+    let error = index.lookup(key).expect_err("malformed record errors");
+
+    assert!(matches!(
+        error,
+        PersistNodeMetadataIndexError::Format {
+            source: PersistPackFormatError::InvalidNodeMetadataIndexTag { tag: 99 },
+            ..
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

@@ -222,6 +222,41 @@ fn cache_file_artifact_index_records_and_looks_up_entries() {
 }
 
 #[test]
+fn cache_node_metadata_index_records_and_looks_up_entries() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let other_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let value = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(2, 3));
+
+    cache
+        .record_node_metadata(PersistNodeMetadataIndexEntry::new(key, value))
+        .expect("node metadata index entry records");
+
+    assert_eq!(
+        cache
+            .lookup_node_metadata(key)
+            .expect("node metadata lookup succeeds"),
+        Some(value)
+    );
+    assert_eq!(
+        cache
+            .lookup_node_metadata(other_key)
+            .expect("node metadata miss succeeds"),
+        None
+    );
+    assert_eq!(
+        fs::metadata(cache.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        PERSIST_NODE_METADATA_INDEX_ENTRY_LEN as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_materialization_decision_can_skip_without_writing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

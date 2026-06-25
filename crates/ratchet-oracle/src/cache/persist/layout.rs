@@ -66,6 +66,11 @@ impl PersistLayout {
         self.nodes_dir().join("parse-artifacts.index")
     }
 
+    /// Returns the fixed-record demand-node metadata index path.
+    pub fn node_metadata_index_path(&self) -> PathBuf {
+        self.nodes_dir().join("metadata.index")
+    }
+
     /// Returns the append-only packfile path for serialized value blobs.
     pub fn value_packfile_path(&self) -> PathBuf {
         self.blob_packfile_path(PersistBlobStore::Values)
