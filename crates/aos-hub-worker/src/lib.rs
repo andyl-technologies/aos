@@ -26,7 +26,8 @@
 //! hub's RPC path mounts** ([`aos_hub_core::connect::router`]) — bridged to
 //! the Workers runtime by [`bridge`] over the Worker's
 //! [`RpcService`](aos_hub_core::service) (D1 backend, R2 [`surface`]
-//! provider, D1-backed [`workerlimit`]). One router serves three surfaces:
+//! provider, Durable-Object-backed rate limiter via [`coordinatorobj`]). One
+//! router serves three surfaces:
 //!
 //! - the `aos.registry.v1` RPC surface (`POST
 //!   /aos.registry.v1.{Service}/{Method}`) — the write/publish path,
@@ -87,7 +88,12 @@
 //!   Connect-JSON router for the RPC surface (no `axum-cloudflare-adapter`).
 //! - `surface` — the R2-backed [`aos_hub_core::fetch::SurfaceProvider`]
 //!   the shared git/facade read logic uses.
-//! - `workerlimit` — the D1-backed [`aos_hub_core::ratelimit::RateLimiter`].
+//! - `workerkv` — the Workers KV [`aos_hub_core::kv::KvStore`] for hot
+//!   point-key state (sessions/tokens/config/routing), off the D1 read path.
+//! - `coordinatorobj` — the `CoordinatorObject` Durable Object and its
+//!   `WorkerCoordinator` client: the strongly-consistent
+//!   [`aos_hub_core::coordinator::Coordinator`] backing the rate limiter and the
+//!   publish lease without a D1 write (RFC-0004 ch.14).
 //! - `consoleports` — the Worker's console ports: the logging mailer, the
 //!   Fetch-API OIDC [`HttpClient`](aos_hub_core::web::console::ports::HttpClient),
 //!   and the Cron-deferring [`Reindexer`](aos_hub_core::reindex::Reindexer)
@@ -126,10 +132,6 @@ pub mod surface;
 pub mod tracinglog;
 #[cfg(target_arch = "wasm32")]
 pub mod workerkv;
-#[cfg(target_arch = "wasm32")]
-pub mod workerlease;
-#[cfg(target_arch = "wasm32")]
-pub mod workerlimit;
 
 #[cfg(target_arch = "wasm32")]
 mod entry {
@@ -205,8 +207,8 @@ mod entry {
     /// Constructs the runtime-neutral pieces once — a non-migrating [`Database`]
     /// over the D1 [`crate::d1backend`] (the schema is applied by the operator
     /// CLI, `aos-hub init --target d1:<name>`), the HS256 [`JwtKeys`],
-    /// the external URL, and the D1-backed rate limiter
-    /// ([`crate::workerlimit`]) — and wires them into **both** shared routers:
+    /// the external URL, and the Durable-Object-backed rate limiter
+    /// ([`crate::coordinatorobj`]) — and wires them into **both** shared routers:
     ///
     /// - the RPC + facade + browse router built from the [`RpcService`]
     ///   ([`aos_hub_core::connect::router`]), over the R2 surface provider
@@ -306,15 +308,15 @@ mod entry {
         let email_api_url = env.var(HUB_EMAIL_API_URL).ok().map(|v| v.to_string());
         let email_api_token = env.secret(HUB_EMAIL_API_TOKEN).ok().map(|s| s.to_string());
 
-        // The limiter drives its own D1 counter table over the shared session;
-        // its upserts are writes, so they always route to the primary regardless
-        // of the session's read seed.
+        // RFC-0004 ch.14: the strongly-consistent coordinator (the Durable
+        // Object) backs the rate limiter and the publish lease, so neither writes
+        // to D1 on the read path. One coordinator handle is shared across both.
+        let coordinator: Arc<dyn aos_hub_core::coordinator::Coordinator> =
+            Arc::new(crate::coordinatorobj::WorkerCoordinator::from_env(env)?);
+        // The rate-limit `admit` is a serialized DO operation — atomic, and off
+        // the D1 read path (no per-request upsert to the primary).
         let ratelimit: Arc<dyn RateLimiter> = Arc::new(
-            crate::workerlimit::D1RateLimiter::create(crate::d1backend::D1Backend::new(
-                Rc::clone(session),
-            ))
-            .await
-            .map_err(|err| worker::Error::RustError(format!("rate limiter init: {err:#}")))?,
+            aos_hub_core::ratelimit::CoordinatorRateLimiter::new(Arc::clone(&coordinator)),
         );
 
         let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
@@ -331,15 +333,15 @@ mod entry {
             ));
 
         // The cross-isolate publish lease and the inline reindexer back the
-        // shared facade-write handler on the Worker. The lease lives in D1 (a
-        // process-local lease cannot serialize across isolates); the reindexer
+        // shared facade-write handler on the Worker. The lease lives in the
+        // Durable Object coordinator (a single serialized instance replaces the
+        // prior cross-isolate D1 lease — RFC-0004 ch.14); the reindexer
         // re-indexes the published registry inline (event-driven), so a publish
         // is browse-visible the instant its final pointer write returns. The
         // `*/15` Cron remains the backstop for non-publish surface changes.
-        let lease: Arc<dyn aos_hub_core::lease::PublishLease> =
-            Arc::new(crate::workerlease::D1PublishLease::new(
-                crate::d1backend::D1Backend::new(Rc::clone(session)),
-            ));
+        let lease: Arc<dyn aos_hub_core::lease::PublishLease> = Arc::new(
+            aos_hub_core::lease::CoordinatorLease::new(Arc::clone(&coordinator)),
+        );
         let reindexer: Arc<dyn aos_hub_core::reindex::Reindexer> = Arc::new(WorkerReindexer::new(
             env.bucket(crate::handlers::bindings::R2)?,
             Arc::clone(&db),

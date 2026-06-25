@@ -12,7 +12,10 @@
 //! they mirror the native limiter's classes so the native implementation can
 //! adopt this trait without changing call sites.
 
+use std::sync::Arc;
+
 use crate::backend::BackendBounds;
+use crate::coordinator::Coordinator;
 
 /// The maximum number of orgs a single user principal may own at once.
 ///
@@ -79,4 +82,156 @@ pub trait RateLimiter: BackendBounds {
     /// *not* counted (so validation failures never consume budget — the caller
     /// gates cheap checks first).
     async fn check(&self, class: RateClass, key: &str, now: i64) -> RateDecision;
+}
+
+/// The fixed-window length, in seconds, for the [`CoordinatorRateLimiter`].
+///
+/// One minute matches the burst horizon the service's budgets are expressed
+/// against (the same window the Worker's prior D1 limiter used).
+const WINDOW_SECS: i64 = 60;
+
+/// A [`RateLimiter`] backed by the strongly-consistent [`Coordinator`] port.
+///
+/// RFC-0004 chapter 14 routes rate limiting off D1 — whose per-window upsert was
+/// a *write on every browse request* (the read-path-poisoning anti-pattern) — and
+/// onto the [`Coordinator`]'s atomic [`admit`](Coordinator::admit). On the Worker
+/// the coordinator is a Durable Object (`WorkerCoordinator`); natively it is the
+/// in-process [`InMemoryCoordinator`](crate::coordinator::InMemoryCoordinator).
+/// One limiter type serves both shells, so the class budgets are single-sourced.
+///
+/// This is a **fixed window**, not a sliding window: the [`admit`] increment and
+/// budget test are one serialized operation, so two concurrent callers racing a
+/// key cannot both admit at the boundary, and a denied attempt never consumes
+/// budget (the `WHERE count < budget` guard lives in `admit`).
+///
+/// [`admit`]: Coordinator::admit
+pub struct CoordinatorRateLimiter {
+    coordinator: Arc<dyn Coordinator>,
+}
+
+impl CoordinatorRateLimiter {
+    /// Builds a limiter over a shared [`Coordinator`].
+    #[must_use]
+    pub fn new(coordinator: Arc<dyn Coordinator>) -> CoordinatorRateLimiter {
+        CoordinatorRateLimiter { coordinator }
+    }
+
+    /// The per-window attempt budget for a metered class.
+    ///
+    /// Mirrors the burst budgets the Worker's prior D1 limiter enforced; classes
+    /// the shared service does not yet meter keep a conservative default so a
+    /// future call site is bounded rather than unlimited.
+    #[must_use]
+    pub fn budget(class: RateClass) -> i64 {
+        match class {
+            RateClass::CreateOrg => 5,
+            RateClass::DeviceAuthorization
+            | RateClass::MagicLinkEmail
+            | RateClass::MagicLinkIp
+            | RateClass::PasswordEmail
+            | RateClass::PasswordIp
+            | RateClass::TokenExchange
+            | RateClass::DeviceActivate => 10,
+            RateClass::BrowseSearch => 120,
+        }
+    }
+
+    /// The stable string discriminant a class is counted under in the coordinator.
+    #[must_use]
+    pub fn class_name(class: RateClass) -> &'static str {
+        match class {
+            RateClass::DeviceAuthorization => "device_authorization",
+            RateClass::MagicLinkEmail => "magic_link_email",
+            RateClass::MagicLinkIp => "magic_link_ip",
+            RateClass::PasswordEmail => "password_email",
+            RateClass::PasswordIp => "password_ip",
+            RateClass::TokenExchange => "token_exchange",
+            RateClass::BrowseSearch => "browse_search",
+            RateClass::CreateOrg => "create_org",
+            RateClass::DeviceActivate => "device_activate",
+        }
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl RateLimiter for CoordinatorRateLimiter {
+    async fn check(&self, class: RateClass, key: &str, now: i64) -> RateDecision {
+        let name = CoordinatorRateLimiter::class_name(class);
+        let budget = CoordinatorRateLimiter::budget(class);
+        let window = now.div_euclid(WINDOW_SECS);
+        match self.coordinator.admit(name, key, window, budget).await {
+            Ok(true) => RateDecision::Allowed,
+            Ok(false) => {
+                // Seconds until this fixed window resets, for `Retry-After`.
+                let window_end = (window + 1) * WINDOW_SECS;
+                RateDecision::Limited {
+                    retry_after: (window_end - now).max(1),
+                }
+            }
+            // Fail open: a coordinator error must not wedge the hub. The metered
+            // operations carry their own DB-enforced backstops (e.g.
+            // [`MAX_ORGS_PER_OWNER`] for `CreateOrg`).
+            Err(err) => {
+                tracing::warn!(class = name, key, error = %format!("{err:#}"), "rate-limit admit failed; failing open");
+                RateDecision::Allowed
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CoordinatorRateLimiter, RateClass, RateDecision, RateLimiter, WINDOW_SECS};
+    use crate::coordinator::InMemoryCoordinator;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn admits_up_to_budget_then_limits_within_a_window() {
+        let limiter = CoordinatorRateLimiter::new(Arc::new(InMemoryCoordinator::new()));
+        let budget = CoordinatorRateLimiter::budget(RateClass::CreateOrg); // 5
+        let now = 1_000_000;
+        for _ in 0..budget {
+            assert_eq!(
+                limiter.check(RateClass::CreateOrg, "owner", now).await,
+                RateDecision::Allowed
+            );
+        }
+        // Next attempt in the same window is limited, with a positive retry_after.
+        match limiter.check(RateClass::CreateOrg, "owner", now).await {
+            RateDecision::Limited { retry_after } => assert!(retry_after >= 1),
+            other => panic!("expected Limited, got {other:?}"),
+        }
+        // A fresh window (one minute later) admits again.
+        assert_eq!(
+            limiter
+                .check(RateClass::CreateOrg, "owner", now + WINDOW_SECS)
+                .await,
+            RateDecision::Allowed
+        );
+    }
+
+    #[tokio::test]
+    async fn keys_and_classes_are_independent() {
+        let limiter = CoordinatorRateLimiter::new(Arc::new(InMemoryCoordinator::new()));
+        let now = 2_000_000;
+        // Exhaust CreateOrg for owner-a.
+        for _ in 0..CoordinatorRateLimiter::budget(RateClass::CreateOrg) {
+            limiter.check(RateClass::CreateOrg, "owner-a", now).await;
+        }
+        assert!(matches!(
+            limiter.check(RateClass::CreateOrg, "owner-a", now).await,
+            RateDecision::Limited { .. }
+        ));
+        // A different key is unaffected.
+        assert_eq!(
+            limiter.check(RateClass::CreateOrg, "owner-b", now).await,
+            RateDecision::Allowed
+        );
+        // A different class for the same key has its own budget.
+        assert_eq!(
+            limiter.check(RateClass::BrowseSearch, "owner-a", now).await,
+            RateDecision::Allowed
+        );
+    }
 }

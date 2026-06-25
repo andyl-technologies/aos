@@ -213,11 +213,18 @@ green.
       `WorkerCoordinator` client (`coordinatorobj.rs`, compiles wasm). DO runtime
       behavior is verified on deploy (needs the `[[durable_objects.bindings]]`
       wrangler config — added in the deploy-prep item).
-- [ ] Reimplement the rate limiter over `Coordinator` (DO on Worker, in-process on
+- [x] Reimplement the rate limiter over `Coordinator` (DO on Worker, in-process on
       native); delete `D1RateLimiter` and remove all `rate_limits` writes from read
       paths.
-- [ ] Move the publish lease off D1 (`workerlease.rs` `D1PublishLease`) onto the
+      *Done:* shared `CoordinatorRateLimiter` (`ratelimit.rs`, tested over
+      `InMemoryCoordinator`); the Worker builds it over the DO `WorkerCoordinator`.
+      `workerlimit.rs` (`D1RateLimiter` + the `rate_limits` `CREATE TABLE`/upsert)
+      **deleted** — no D1 write on the browse read path. Native keeps its existing
+      in-process token-bucket limiter (already off-DB).
+- [x] Move the publish lease off D1 (`workerlease.rs` `D1PublishLease`) onto the
       `Coordinator`.
+      *Done:* shared `CoordinatorLease` (`lease.rs`, tested); the Worker builds it
+      over the same `WorkerCoordinator`. `workerlease.rs` **deleted**.
 - [ ] Move channel anti-rollback floors onto the `Coordinator` as compare-and-set.
 
 ### Phase C — Hot point-reads to KV / LMDB
