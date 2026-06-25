@@ -136,6 +136,61 @@ pub(super) fn validate_file_artifact_index_len(
     })
 }
 
+pub(super) fn ensure_parse_artifact_index_file(
+    path: &Path,
+) -> Result<(), PersistParseArtifactIndexError> {
+    ensure_parse_artifact_index_parent(path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)
+        .map_err(|source| PersistParseArtifactIndexError::Open {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let len = file
+        .metadata()
+        .map_err(|source| PersistParseArtifactIndexError::Metadata {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    validate_parse_artifact_index_len(path, len)
+}
+
+pub(super) fn ensure_parse_artifact_index_parent(
+    path: &Path,
+) -> Result<(), PersistParseArtifactIndexError> {
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return Ok(());
+    };
+    fs::create_dir_all(parent).map_err(|source| PersistParseArtifactIndexError::CreateParent {
+        path: parent.to_path_buf(),
+        source,
+    })
+}
+
+pub(super) fn validate_parse_artifact_index_len(
+    path: &Path,
+    len: u64,
+) -> Result<(), PersistParseArtifactIndexError> {
+    let remainder = len % PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN as u64;
+    if remainder == 0 {
+        return Ok(());
+    }
+    Err(PersistParseArtifactIndexError::Format {
+        path: path.to_path_buf(),
+        source: PersistPackFormatError::ShortParseArtifactIndexEntry {
+            expected: PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN,
+            actual: remainder as usize,
+        },
+    })
+}
+
 pub(super) fn ensure_blob_pack_file(path: &Path) -> Result<(), PersistBlobPackError> {
     ensure_blob_pack_parent(path)?;
     let mut file = OpenOptions::new()

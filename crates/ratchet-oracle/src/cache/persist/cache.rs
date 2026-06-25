@@ -15,6 +15,7 @@ pub struct PersistCache {
     value_index: PersistBlobIndex,
     file_index: PersistBlobIndex,
     file_artifact_index: PersistFileArtifactIndex,
+    parse_artifact_index: PersistParseArtifactIndex,
 }
 
 impl PersistCache {
@@ -80,6 +81,14 @@ impl PersistCache {
                 path: file_artifact_index_path,
                 source,
             })?;
+        let parse_artifact_index_path = layout.parse_artifact_index_path();
+        let parse_artifact_index = PersistParseArtifactIndex::open(
+            parse_artifact_index_path.clone(),
+        )
+        .map_err(|source| PersistError::OpenParseArtifactIndex {
+            path: parse_artifact_index_path,
+            source,
+        })?;
         Ok(Self {
             layout,
             value_pack,
@@ -87,6 +96,7 @@ impl PersistCache {
             value_index,
             file_index,
             file_artifact_index,
+            parse_artifact_index,
         })
     }
 
@@ -118,6 +128,11 @@ impl PersistCache {
     /// Returns the fixed-record index for durable file-artifact mappings.
     pub const fn file_artifact_index(&self) -> &PersistFileArtifactIndex {
         &self.file_artifact_index
+    }
+
+    /// Returns the fixed-record index for durable parse-artifact mappings.
+    pub const fn parse_artifact_index(&self) -> &PersistParseArtifactIndex {
+        &self.parse_artifact_index
     }
 
     /// Returns the fixed-record blob index for `store`.
@@ -192,6 +207,34 @@ impl PersistCache {
         key: PersistFileArtifactKey,
     ) -> Result<Option<PersistFileArtifactIndexValue>, PersistFileArtifactIndexError> {
         self.file_artifact_index.lookup(key)
+    }
+
+    /// Appends a durable parse-artifact mapping entry to the sidecar index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexError`] if the sidecar index cannot
+    /// be opened, validated, written, or flushed.
+    pub fn record_parse_artifact(
+        &self,
+        entry: PersistParseArtifactIndexEntry,
+    ) -> Result<(), PersistParseArtifactIndexError> {
+        self.parse_artifact_index.append_entry(entry)
+    }
+
+    /// Looks up a durable parse-artifact mapping through the sidecar index.
+    ///
+    /// Missing index entries return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexError`] if the sidecar index cannot
+    /// be opened, read, or decoded.
+    pub fn lookup_parse_artifact(
+        &self,
+        key: PersistParseArtifactKey,
+    ) -> Result<Option<PersistParseArtifactIndexValue>, PersistParseArtifactIndexError> {
+        self.parse_artifact_index.lookup(key)
     }
 
     /// Looks up a blob location through the sidecar index selected by `key`.
@@ -441,6 +484,90 @@ impl PersistCache {
         }
     }
 
+    /// Applies `decision` to a frontend parse artifact payload.
+    ///
+    /// The artifact mapping key is derived only from `parse_key`.
+    /// [`MaterializationDecision::KeepInMemory`] returns a skipped result
+    /// without hashing or writing `payload`. [`MaterializationDecision::Materialize`]
+    /// hashes `payload`, appends it to the `files/` pack, and returns the typed
+    /// index value a future durable index would store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] when `decision` is
+    /// [`MaterializationDecision::Materialize`] and the `files/` pack cannot be
+    /// opened, validated, or written.
+    pub fn materialize_parse_artifact(
+        &self,
+        parse_key: ParseCacheKey,
+        payload: &[u8],
+        decision: MaterializationDecision,
+    ) -> Result<PersistParseArtifactMaterialization, PersistBlobPackError> {
+        let artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+        match decision {
+            MaterializationDecision::KeepInMemory => {
+                Ok(PersistParseArtifactMaterialization::Skipped { artifact_key })
+            }
+            MaterializationDecision::Materialize => {
+                let blob_hash = DurableBlake3Hash::for_bytes(payload);
+                let location = self.append_blob(PersistBlobKey::for_file(blob_hash), payload)?;
+                Ok(PersistParseArtifactMaterialization::Materialized {
+                    artifact_key,
+                    index_value: PersistParseArtifactIndexValue::new(blob_hash, location),
+                })
+            }
+        }
+    }
+
+    /// Applies `decision` to a frontend parse artifact and records index entries.
+    ///
+    /// [`MaterializationDecision::KeepInMemory`] returns a skipped result
+    /// without hashing or writing `payload`. [`MaterializationDecision::Materialize`]
+    /// hashes `payload`, appends it to the `files/` pack through
+    /// [`Self::append_blob_indexed`], and records the parse-artifact mapping
+    /// through [`Self::record_parse_artifact`].
+    ///
+    /// This helper is explicit and non-transactional: if the blob append or
+    /// blob-index write succeeds but the parse-artifact index write fails, the
+    /// blob bytes and any blob hash-to-offset record remain without a
+    /// corresponding parse-artifact mapping record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexedWriteError`] when `decision` is
+    /// [`MaterializationDecision::Materialize`] and the `files/` blob cannot be
+    /// appended/indexed, or when the parse-artifact mapping cannot be recorded.
+    pub fn materialize_parse_artifact_indexed(
+        &self,
+        parse_key: ParseCacheKey,
+        payload: &[u8],
+        decision: MaterializationDecision,
+    ) -> Result<PersistParseArtifactMaterialization, PersistParseArtifactIndexedWriteError> {
+        let artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+        match decision {
+            MaterializationDecision::KeepInMemory => {
+                Ok(PersistParseArtifactMaterialization::Skipped { artifact_key })
+            }
+            MaterializationDecision::Materialize => {
+                let blob_hash = DurableBlake3Hash::for_bytes(payload);
+                let blob_entry = self
+                    .append_blob_indexed(PersistBlobKey::for_file(blob_hash), payload)
+                    .map_err(|source| PersistParseArtifactIndexedWriteError::Blob { source })?;
+                let index_value =
+                    PersistParseArtifactIndexValue::new(blob_hash, blob_entry.location());
+                self.record_parse_artifact(PersistParseArtifactIndexEntry::new(
+                    artifact_key,
+                    index_value,
+                ))
+                .map_err(|source| PersistParseArtifactIndexedWriteError::Index { source })?;
+                Ok(PersistParseArtifactMaterialization::Materialized {
+                    artifact_key,
+                    index_value,
+                })
+            }
+        }
+    }
+
     /// Applies materialization threshold signals to a frontend file artifact.
     ///
     /// The signals are evaluated with [`MaterializationSignals::decide`] and
@@ -481,6 +608,44 @@ impl PersistCache {
         self.materialize_file_artifact_indexed(file_key, parse_key, payload, signals.decide())
     }
 
+    /// Applies materialization threshold signals to a frontend parse artifact.
+    ///
+    /// The signals are evaluated with [`MaterializationSignals::decide`] and
+    /// then applied through [`Self::materialize_parse_artifact`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] when the signals choose
+    /// [`MaterializationDecision::Materialize`] and the `files/` pack cannot be
+    /// opened, validated, or written.
+    pub fn materialize_parse_artifact_with_signals(
+        &self,
+        parse_key: ParseCacheKey,
+        payload: &[u8],
+        signals: MaterializationSignals,
+    ) -> Result<PersistParseArtifactMaterialization, PersistBlobPackError> {
+        self.materialize_parse_artifact(parse_key, payload, signals.decide())
+    }
+
+    /// Applies materialization threshold signals to indexed parse-artifact materialization.
+    ///
+    /// The signals are evaluated with [`MaterializationSignals::decide`] and
+    /// then applied through [`Self::materialize_parse_artifact_indexed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexedWriteError`] when the signals choose
+    /// [`MaterializationDecision::Materialize`] and the `files/` blob cannot be
+    /// appended/indexed, or when the parse-artifact mapping cannot be recorded.
+    pub fn materialize_parse_artifact_indexed_with_signals(
+        &self,
+        parse_key: ParseCacheKey,
+        payload: &[u8],
+        signals: MaterializationSignals,
+    ) -> Result<PersistParseArtifactMaterialization, PersistParseArtifactIndexedWriteError> {
+        self.materialize_parse_artifact_indexed(parse_key, payload, signals.decide())
+    }
+
     /// Reads and verifies a materialized frontend file artifact.
     ///
     /// This is a typed wrapper over [`Self::read_blob`] for values decoded from
@@ -496,6 +661,112 @@ impl PersistCache {
         index_value: PersistFileArtifactIndexValue,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
         self.read_blob(index_value.blob_key(), index_value.location())
+    }
+
+    /// Reads and verifies a materialized frontend parse artifact.
+    ///
+    /// This is a typed wrapper over [`Self::read_blob`] for values decoded from
+    /// the parse-artifact index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the `files/` pack cannot be opened
+    /// or read, if `index_value` points at an invalid location, or if the record
+    /// or payload hash does not match `index_value`.
+    pub fn read_parse_artifact(
+        &self,
+        index_value: PersistParseArtifactIndexValue,
+    ) -> Result<Vec<u8>, PersistBlobPackError> {
+        self.read_blob(index_value.blob_key(), index_value.location())
+    }
+
+    /// Reads a materialized parse-artifact bundle into a parse-cache entry.
+    ///
+    /// This adapter consumes a caller-supplied parse-artifact index value and
+    /// target entry. The decoded bundle must validate against the current
+    /// parse-cache schema before any entry files are written. This adapter does
+    /// not perform durable index lookup or decide whether the hydrated entry
+    /// should be used for a cache hit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactHydrationError`] if the artifact cannot be
+    /// read from the `files/` pack, if the payload is not a valid
+    /// [`ParseArtifactBundle`], if the bundle metadata/artifact counts do not
+    /// validate, or if the target entry cannot be written.
+    pub fn hydrate_parse_artifact_bundle(
+        &self,
+        index_value: PersistParseArtifactIndexValue,
+        entry: &ParseCacheEntry,
+    ) -> Result<(), PersistParseArtifactHydrationError> {
+        let payload = self
+            .read_parse_artifact(index_value)
+            .map_err(|source| PersistParseArtifactHydrationError::Read { source })?;
+        let bundle = ParseArtifactBundle::decode(&payload)
+            .map_err(|source| PersistParseArtifactHydrationError::Decode { source })?;
+        bundle
+            .validate_meta(PARSE_CACHE_SCHEMA_VERSION)
+            .map_err(|source| PersistParseArtifactHydrationError::Validate { source })?;
+        entry
+            .write_artifact_bundle(&bundle)
+            .map_err(|source| PersistParseArtifactHydrationError::Write { source })
+    }
+
+    /// Reads a keyed parse-artifact bundle into a parse-cache entry.
+    ///
+    /// The supplied `artifact_key` must match the key derived from `parse_key`
+    /// before the `files/` pack is read. This adapter still relies on its
+    /// caller to perform the durable index lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactHydrationError`] if `artifact_key` does not
+    /// match `parse_key`, if the artifact cannot be read from the `files/` pack,
+    /// if the payload is not a valid [`ParseArtifactBundle`], if the bundle
+    /// metadata/artifact counts do not validate, or if the target entry cannot
+    /// be written.
+    pub fn hydrate_parse_artifact_bundle_for_key(
+        &self,
+        parse_key: ParseCacheKey,
+        artifact_key: PersistParseArtifactKey,
+        index_value: PersistParseArtifactIndexValue,
+        entry: &ParseCacheEntry,
+    ) -> Result<(), PersistParseArtifactHydrationError> {
+        let expected = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+        if artifact_key != expected {
+            return Err(PersistParseArtifactHydrationError::KeyMismatch {
+                expected,
+                actual: artifact_key,
+            });
+        }
+        self.hydrate_parse_artifact_bundle(index_value, entry)
+    }
+
+    /// Reads an indexed parse-artifact bundle into a parse-cache entry.
+    ///
+    /// This is the entry-shaped variant of
+    /// [`Self::hydrate_parse_artifact_bundle_for_key`]. It still relies on its
+    /// caller to perform the durable index lookup that produced `index_entry`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactHydrationError`] if `index_entry.key()`
+    /// does not match `parse_key`, if the artifact cannot be read from the
+    /// `files/` pack, if the payload is not a valid [`ParseArtifactBundle`], if
+    /// the bundle metadata/artifact counts do not validate, or if the target
+    /// entry cannot be written.
+    pub fn hydrate_parse_artifact_bundle_from_entry(
+        &self,
+        parse_key: ParseCacheKey,
+        index_entry: PersistParseArtifactIndexEntry,
+        entry: &ParseCacheEntry,
+    ) -> Result<(), PersistParseArtifactHydrationError> {
+        self.hydrate_parse_artifact_bundle_for_key(
+            parse_key,
+            index_entry.key(),
+            index_entry.value(),
+            entry,
+        )
     }
 
     /// Reads a materialized parse-artifact bundle into a parse-cache entry.
@@ -621,6 +892,94 @@ impl PersistCache {
         self.hydrate_file_artifact_bundle_from_entry(file_key, parse_key, index_entry, entry)
             .map_err(|source| PersistFileArtifactIndexedHydrationError::Hydrate { source })?;
         Ok(Some(index_entry))
+    }
+
+    /// Looks up and hydrates an indexed parse-artifact bundle.
+    ///
+    /// This is the cache-level hit adapter for the parse-artifact sidecar
+    /// index. It derives the expected mapping key from `parse_key`, returns
+    /// `Ok(None)` when the index has no matching entry, and otherwise validates
+    /// and writes the indexed bundle into `entry`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexedHydrationError`] if the
+    /// parse-artifact index cannot be read, or if a matching indexed artifact
+    /// cannot be read from the `files/` pack, decoded, validated, or written
+    /// into `entry`.
+    pub fn hydrate_parse_artifact_bundle_from_index(
+        &self,
+        parse_key: ParseCacheKey,
+        entry: &ParseCacheEntry,
+    ) -> Result<Option<PersistParseArtifactIndexEntry>, PersistParseArtifactIndexedHydrationError>
+    {
+        let artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+        let Some(index_value) = self
+            .lookup_parse_artifact(artifact_key)
+            .map_err(|source| PersistParseArtifactIndexedHydrationError::Lookup { source })?
+        else {
+            return Ok(None);
+        };
+        let index_entry = PersistParseArtifactIndexEntry::new(artifact_key, index_value);
+        self.hydrate_parse_artifact_bundle_from_entry(parse_key, index_entry, entry)
+            .map_err(|source| PersistParseArtifactIndexedHydrationError::Hydrate { source })?;
+        Ok(Some(index_entry))
+    }
+
+    /// Derives parse identity from source bytes and hydrates the parse cache.
+    ///
+    /// This source-shaped adapter derives `ParseCacheKey` through
+    /// `parse_cache` and hydrates the parse cache's normal entry directory when
+    /// the persistent parse-artifact index has a matching bundle. Missing index
+    /// entries return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexedHydrationError`] if the
+    /// parse-artifact index cannot be read, or if a matching indexed artifact
+    /// cannot be read from the `files/` pack, decoded, validated, or written
+    /// into the parse cache entry.
+    pub fn hydrate_parse_cache_entry_from_parse_index(
+        &self,
+        parse_cache: &ParseCache,
+        source: &[u8],
+    ) -> Result<Option<PersistParseArtifactIndexEntry>, PersistParseArtifactIndexedHydrationError>
+    {
+        let parse_key = parse_cache.key_for_source(source);
+        let entry = parse_cache.entry_for_key(parse_key);
+        self.hydrate_parse_artifact_bundle_from_index(parse_key, &entry)
+    }
+
+    /// Loads an indexed parse-cache hit for caller-supplied source bytes.
+    ///
+    /// This is a source-shaped load adapter over
+    /// [`Self::hydrate_parse_cache_entry_from_parse_index`] and
+    /// [`ParseCache::load_cached_bytes`]. It derives identity from `source`
+    /// bytes alone, hydrates the normal parse-cache entry from the persistent
+    /// parse-artifact index, and returns the hydrated entry as a
+    /// [`CachedParse`] hit. Missing parse-artifact index entries return
+    /// `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseBytesIndexedLoadError`] if the parse-artifact
+    /// index cannot be read, a matching indexed artifact cannot be hydrated, or
+    /// the hydrated parse-cache entry cannot be read back as a [`CachedParse`].
+    pub fn load_parse_cache_bytes_from_index(
+        &self,
+        parse_cache: &ParseCache,
+        source: &[u8],
+    ) -> Result<Option<CachedParse>, PersistParseBytesIndexedLoadError> {
+        if self
+            .hydrate_parse_cache_entry_from_parse_index(parse_cache, source)
+            .map_err(|source| PersistParseBytesIndexedLoadError::Hydrate { source })?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        parse_cache
+            .load_cached_bytes(source)
+            .map_err(|source| PersistParseBytesIndexedLoadError::Load { source })
     }
 
     /// Derives parse identities from source bytes and hydrates the parse cache.
@@ -797,6 +1156,7 @@ impl PersistCache {
                 Ok(PersistFileArtifactMaterialization::Skipped { artifact_key })
             }
             MaterializationDecision::Materialize => {
+                validate_parse_cache_entry_key(parse_key, entry)?;
                 let bundle = entry.read_artifact_bundle().map_err(|source| {
                     PersistParseArtifactMaterializationError::ReadBundle { source }
                 })?;
@@ -845,6 +1205,7 @@ impl PersistCache {
                 Ok(PersistFileArtifactMaterialization::Skipped { artifact_key })
             }
             MaterializationDecision::Materialize => {
+                validate_parse_cache_entry_key(parse_key, entry)?;
                 let bundle = entry.read_artifact_bundle().map_err(|source| {
                     PersistParseArtifactMaterializationError::ReadBundle { source }
                 })?;
@@ -858,6 +1219,56 @@ impl PersistCache {
                     MaterializationDecision::Materialize,
                 )
                 .map_err(|source| PersistParseArtifactMaterializationError::WriteIndexed { source })
+            }
+        }
+    }
+
+    /// Applies `decision` to an existing parse-cache entry and records parse indexes.
+    ///
+    /// [`MaterializationDecision::KeepInMemory`] returns a skipped result
+    /// without reading or encoding `entry`. [`MaterializationDecision::Materialize`]
+    /// reads the entry as a [`ParseArtifactBundle`], encodes it as one payload,
+    /// appends it through [`Self::materialize_parse_artifact_indexed`], and
+    /// records both blob and parse-artifact sidecar indexes.
+    ///
+    /// This helper inherits the explicit non-transactional behavior of
+    /// [`Self::materialize_parse_artifact_indexed`]: a blob append/index write
+    /// can remain even when the parse-artifact mapping write fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactMaterializationError`] when `decision` is
+    /// [`MaterializationDecision::Materialize`] and the source entry cannot be
+    /// read, the bundle payload cannot be encoded, the `files/` blob cannot be
+    /// appended/indexed, or the parse-artifact mapping cannot be recorded.
+    pub fn materialize_parse_cache_entry_indexed(
+        &self,
+        parse_key: ParseCacheKey,
+        entry: &ParseCacheEntry,
+        decision: MaterializationDecision,
+    ) -> Result<PersistParseArtifactMaterialization, PersistParseArtifactMaterializationError> {
+        match decision {
+            MaterializationDecision::KeepInMemory => {
+                Ok(PersistParseArtifactMaterialization::Skipped {
+                    artifact_key: PersistParseArtifactKey::from_parse_cache_key(parse_key),
+                })
+            }
+            MaterializationDecision::Materialize => {
+                validate_parse_cache_entry_key(parse_key, entry)?;
+                let bundle = entry.read_artifact_bundle().map_err(|source| {
+                    PersistParseArtifactMaterializationError::ReadBundle { source }
+                })?;
+                let payload = bundle.encode().map_err(|source| {
+                    PersistParseArtifactMaterializationError::EncodeBundle { source }
+                })?;
+                self.materialize_parse_artifact_indexed(
+                    parse_key,
+                    &payload,
+                    MaterializationDecision::Materialize,
+                )
+                .map_err(|source| {
+                    PersistParseArtifactMaterializationError::WriteParseIndexed { source }
+                })
             }
         }
     }
@@ -904,4 +1315,44 @@ impl PersistCache {
     ) -> Result<PersistFileArtifactMaterialization, PersistParseArtifactMaterializationError> {
         self.materialize_parse_artifact_entry_indexed(file_key, parse_key, entry, signals.decide())
     }
+
+    /// Applies threshold signals to parse-keyed parse-cache entry materialization.
+    ///
+    /// The signals are evaluated with [`MaterializationSignals::decide`] and
+    /// then applied through [`Self::materialize_parse_cache_entry_indexed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactMaterializationError`] when the signals
+    /// choose [`MaterializationDecision::Materialize`] and the source entry
+    /// cannot be read, the bundle payload cannot be encoded, the `files/` blob
+    /// cannot be appended/indexed, or the parse-artifact mapping cannot be
+    /// recorded.
+    pub fn materialize_parse_cache_entry_indexed_with_signals(
+        &self,
+        parse_key: ParseCacheKey,
+        entry: &ParseCacheEntry,
+        signals: MaterializationSignals,
+    ) -> Result<PersistParseArtifactMaterialization, PersistParseArtifactMaterializationError> {
+        self.materialize_parse_cache_entry_indexed(parse_key, entry, signals.decide())
+    }
+}
+
+fn validate_parse_cache_entry_key(
+    parse_key: ParseCacheKey,
+    entry: &ParseCacheEntry,
+) -> Result<(), PersistParseArtifactMaterializationError> {
+    let expected = parse_key.to_hex();
+    let matches = entry
+        .dir()
+        .file_name()
+        .map(|name| name.as_bytes() == expected.as_bytes())
+        .unwrap_or(false);
+    if matches {
+        return Ok(());
+    }
+    Err(PersistParseArtifactMaterializationError::EntryKeyMismatch {
+        expected: parse_key,
+        path: entry.dir().to_path_buf(),
+    })
 }

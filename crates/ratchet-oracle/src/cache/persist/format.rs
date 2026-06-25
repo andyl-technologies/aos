@@ -737,3 +737,292 @@ impl PersistFileArtifactIndex {
         Ok(found)
     }
 }
+
+/// A stable index key for a durable frontend parse artifact.
+///
+/// The key is derived from the parse-cache key, which already includes source
+/// bytes, parser schema version, and parse flags. Unlike
+/// [`PersistFileArtifactKey`], this identity is not tied to a filesystem path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistParseArtifactKey {
+    hash: DurableBlake3Hash,
+}
+
+impl PersistParseArtifactKey {
+    /// Creates a persistent parse-artifact index key from a parse-cache key.
+    pub const fn from_parse_cache_key(parse_key: ParseCacheKey) -> Self {
+        Self {
+            hash: DurableBlake3Hash::from_bytes(parse_key.as_bytes()),
+        }
+    }
+
+    /// Returns the durable hash of the parse-artifact mapping identity.
+    pub const fn hash(self) -> DurableBlake3Hash {
+        self.hash
+    }
+
+    /// Returns the stable binary key for the parse-artifact index.
+    pub fn index_bytes(self) -> [u8; PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN] {
+        let mut bytes = [0; PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN];
+        bytes[0] = PERSIST_PARSE_ARTIFACT_INDEX_TAG;
+        bytes[1..].copy_from_slice(&self.hash.as_bytes());
+        bytes
+    }
+
+    /// Decodes the stable binary key for the parse-artifact index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
+    /// [`PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN`] or carries an unexpected index
+    /// tag.
+    pub fn decode_index_bytes(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN {
+            return Err(PersistPackFormatError::ShortParseArtifactIndexKey {
+                expected: PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN,
+                actual: bytes.len(),
+            });
+        }
+        if bytes[0] != PERSIST_PARSE_ARTIFACT_INDEX_TAG {
+            return Err(PersistPackFormatError::InvalidParseArtifactIndexTag { tag: bytes[0] });
+        }
+        let mut hash = [0; 32];
+        hash.copy_from_slice(&bytes[1..PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN]);
+        Ok(Self {
+            hash: DurableBlake3Hash::from_bytes(hash),
+        })
+    }
+}
+
+/// A stable index value for a durable frontend parse artifact.
+///
+/// The value points at a blob in the `files/` pack. The blob payload format is
+/// intentionally outside this codec; the pack still verifies the payload hash
+/// on read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistParseArtifactIndexValue {
+    blob_hash: DurableBlake3Hash,
+    location: PersistBlobLocation,
+}
+
+impl PersistParseArtifactIndexValue {
+    /// Creates a parse-artifact index value for a `files/` blob hash and location.
+    pub const fn new(blob_hash: DurableBlake3Hash, location: PersistBlobLocation) -> Self {
+        Self {
+            blob_hash,
+            location,
+        }
+    }
+
+    /// Returns the durable hash of the parse artifact blob.
+    pub const fn blob_hash(self) -> DurableBlake3Hash {
+        self.blob_hash
+    }
+
+    /// Returns the typed blob lookup key in the `files/` store.
+    pub const fn blob_key(self) -> PersistBlobKey {
+        PersistBlobKey::for_file(self.blob_hash)
+    }
+
+    /// Returns the blob packfile location.
+    pub const fn location(self) -> PersistBlobLocation {
+        self.location
+    }
+
+    /// Encodes this value as stable parse-artifact index metadata.
+    pub fn encode_index_value(self) -> [u8; PERSIST_PARSE_ARTIFACT_INDEX_VALUE_LEN] {
+        let mut bytes = [0; PERSIST_PARSE_ARTIFACT_INDEX_VALUE_LEN];
+        bytes[..PERSIST_BLOB_INDEX_KEY_LEN].copy_from_slice(&self.blob_key().index_bytes());
+        bytes[PERSIST_BLOB_INDEX_KEY_LEN..].copy_from_slice(&self.location.encode_index_value());
+        bytes
+    }
+
+    /// Decodes stable parse-artifact index metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
+    /// [`PERSIST_PARSE_ARTIFACT_INDEX_VALUE_LEN`], if the embedded blob key is
+    /// malformed, or if the embedded blob key does not point at `files/`.
+    pub fn decode_index_value(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_PARSE_ARTIFACT_INDEX_VALUE_LEN {
+            return Err(PersistPackFormatError::ShortParseArtifactIndexValue {
+                expected: PERSIST_PARSE_ARTIFACT_INDEX_VALUE_LEN,
+                actual: bytes.len(),
+            });
+        }
+        let blob_key = PersistBlobKey::decode_index_bytes(&bytes[..PERSIST_BLOB_INDEX_KEY_LEN])?;
+        if blob_key.store() != PersistBlobStore::Files {
+            return Err(PersistPackFormatError::InvalidParseArtifactBlobStore {
+                store: blob_key.store(),
+            });
+        }
+        let location =
+            PersistBlobLocation::decode_index_value(&bytes[PERSIST_BLOB_INDEX_KEY_LEN..])?;
+        Ok(Self::new(blob_key.hash(), location))
+    }
+}
+
+/// A complete key/value record for the parse-artifact index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistParseArtifactIndexEntry {
+    key: PersistParseArtifactKey,
+    value: PersistParseArtifactIndexValue,
+}
+
+impl PersistParseArtifactIndexEntry {
+    /// Creates a parse-artifact index entry from its mapping key and value.
+    pub const fn new(key: PersistParseArtifactKey, value: PersistParseArtifactIndexValue) -> Self {
+        Self { key, value }
+    }
+
+    /// Returns the parse-artifact mapping key.
+    pub const fn key(self) -> PersistParseArtifactKey {
+        self.key
+    }
+
+    /// Returns the parse-artifact blob lookup value.
+    pub const fn value(self) -> PersistParseArtifactIndexValue {
+        self.value
+    }
+
+    /// Encodes this record as stable parse-artifact index bytes.
+    pub fn encode_index_entry(self) -> [u8; PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN] {
+        let mut bytes = [0; PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN];
+        bytes[..PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN].copy_from_slice(&self.key.index_bytes());
+        bytes[PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN..]
+            .copy_from_slice(&self.value.encode_index_value());
+        bytes
+    }
+
+    /// Decodes a complete parse-artifact index record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
+    /// [`PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN`], if the key is malformed, or
+    /// if the value is malformed.
+    pub fn decode_index_entry(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN {
+            return Err(PersistPackFormatError::ShortParseArtifactIndexEntry {
+                expected: PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN,
+                actual: bytes.len(),
+            });
+        }
+        let key = PersistParseArtifactKey::decode_index_bytes(
+            &bytes[..PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN],
+        )?;
+        let value = PersistParseArtifactIndexValue::decode_index_value(
+            &bytes[PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN..],
+        )?;
+        Ok(Self::new(key, value))
+    }
+}
+
+/// A fixed-record index file for durable frontend parse-artifact mappings.
+///
+/// This is a simple durable substrate for tests and future cache integration.
+/// It is not the final LMDB/redb metadata engine: writes append one fixed
+/// record at a time, and lookups scan records linearly and return the newest
+/// matching entry.
+#[derive(Clone, Debug)]
+pub struct PersistParseArtifactIndex {
+    path: PathBuf,
+}
+
+impl PersistParseArtifactIndex {
+    /// Opens or initializes a fixed-record parse-artifact index file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexError`] if parent directories or the
+    /// index file cannot be created/opened, or if the existing file ends with a
+    /// partial fixed-width record.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistParseArtifactIndexError> {
+        let path = path.into();
+        ensure_parse_artifact_index_file(&path)?;
+        Ok(Self { path })
+    }
+
+    /// Returns this index file's filesystem path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Appends one parse-artifact index entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexError`] if the index cannot be opened,
+    /// validated, written, or flushed.
+    pub fn append_entry(
+        &self,
+        entry: PersistParseArtifactIndexEntry,
+    ) -> Result<(), PersistParseArtifactIndexError> {
+        ensure_parse_artifact_index_file(&self.path)?;
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| PersistParseArtifactIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        file.write_all(&entry.encode_index_entry())
+            .and_then(|()| file.flush())
+            .map_err(|source| PersistParseArtifactIndexError::Write {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
+    /// Looks up the newest parse-artifact value for `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexError`] if the index cannot be opened,
+    /// read, or decoded.
+    pub fn lookup(
+        &self,
+        key: PersistParseArtifactKey,
+    ) -> Result<Option<PersistParseArtifactIndexValue>, PersistParseArtifactIndexError> {
+        ensure_parse_artifact_index_file(&self.path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .map_err(|source| PersistParseArtifactIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let len = file
+            .metadata()
+            .map_err(|source| PersistParseArtifactIndexError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        validate_parse_artifact_index_len(&self.path, len)?;
+
+        let mut found = None;
+        let records = len / PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN as u64;
+        let mut encoded = [0; PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN];
+        for _ in 0..records {
+            file.read_exact(&mut encoded).map_err(|source| {
+                PersistParseArtifactIndexError::Read {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?;
+            let entry =
+                PersistParseArtifactIndexEntry::decode_index_entry(&encoded).map_err(|source| {
+                    PersistParseArtifactIndexError::Format {
+                        path: self.path.clone(),
+                        source,
+                    }
+                })?;
+            if entry.key() == key {
+                found = Some(entry.value());
+            }
+        }
+        Ok(found)
+    }
+}

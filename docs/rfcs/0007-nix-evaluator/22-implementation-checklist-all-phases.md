@@ -1041,6 +1041,21 @@ alone (`M-1`/`Q-A`).
       caller-driven durable hit loading only; automatic evaluator/import
       selection, mmap reads, full artifact semantic validation beyond existing
       decoders, GC/repack, and harness proof remain open (`C-13`/`R-10`).
+- [x] Current parse-keyed persistent parse-artifact index substrate:
+      `PersistLayout::parse_artifact_index_path` adds
+      `nodes/parse-artifacts.index`; `PersistParseArtifactKey` encodes the
+      `ParseCacheKey` without a realpath; and
+      `PersistCache::materialize_parse_cache_entry_indexed`,
+      `PersistCache::hydrate_parse_cache_entry_from_parse_index`, and
+      `PersistCache::load_parse_cache_bytes_from_index` materialize and hydrate
+      caller-supplied source bytes through this parse-artifact index.
+      Materialization rejects entries whose normal parse-cache directory key
+      does not match the supplied `ParseCacheKey`. This is cache API substrate
+      only; evaluator/raw native expression hit selection and writeback, source
+      equality proof beyond the parse-cache entry directory key, mmap reads,
+      full artifact semantic validation beyond existing decoders, GC/repack,
+      and harness proof remain open
+      (`C-13`/`C-14`/`R-10`).
 - [x] Current ordinary filesystem import durable parse-cache hit selection:
       `TreeWalkOptions::set_persist_cache_root` configures an optional
       persistent cache root, and unscoped filesystem imports with a configured
@@ -1076,7 +1091,7 @@ alone (`M-1`/`Q-A`).
       fallback parses to the persistent file-artifact index. Raw
       `eval_expr`/`instantiate_expr` sources do not synthesize file-artifact
       keys. This is native file-root lookup/writeback only; raw expression
-      durable identities, mmap reads, full artifact semantic validation beyond
+      evaluator lookup/writeback, mmap reads, full artifact semantic validation beyond
       existing decoders, GC/repack, and harness proof remain open
       (`C-13`/`C-14`/`R-10`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed

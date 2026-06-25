@@ -36,6 +36,20 @@ pub enum PersistPackFormatError {
         /// The unexpected index tag.
         tag: u8,
     },
+    /// A parse-artifact index key was shorter than the fixed encoded key length.
+    #[error("persistent parse artifact index key has {actual} bytes, expected at least {expected}")]
+    ShortParseArtifactIndexKey {
+        /// The required fixed parse-artifact index key length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// A parse-artifact index key carried an unexpected index tag.
+    #[error("persistent parse artifact index key has invalid tag {tag}")]
+    InvalidParseArtifactIndexTag {
+        /// The unexpected index tag.
+        tag: u8,
+    },
     /// The packfile header was shorter than the fixed header length.
     #[error("persistent blob pack header has {actual} bytes, expected at least {expected}")]
     ShortPackHeader {
@@ -106,9 +120,35 @@ pub enum PersistPackFormatError {
         /// The available bytes.
         actual: usize,
     },
+    /// A parse-artifact index value was shorter than the fixed encoded length.
+    #[error(
+        "persistent parse artifact index value has {actual} bytes, expected at least {expected}"
+    )]
+    ShortParseArtifactIndexValue {
+        /// The required fixed parse-artifact index value length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// A parse-artifact index entry was shorter than the fixed encoded length.
+    #[error(
+        "persistent parse artifact index entry has {actual} bytes, expected at least {expected}"
+    )]
+    ShortParseArtifactIndexEntry {
+        /// The required fixed parse-artifact index entry length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
     /// A file-artifact index value pointed at a non-file blob store.
     #[error("persistent file artifact index value points at {store:?}, expected Files")]
     InvalidFileArtifactBlobStore {
+        /// The decoded blob store.
+        store: PersistBlobStore,
+    },
+    /// A parse-artifact index value pointed at a non-file blob store.
+    #[error("persistent parse artifact index value points at {store:?}, expected Files")]
+    InvalidParseArtifactBlobStore {
         /// The decoded blob store.
         store: PersistBlobStore,
     },
@@ -230,6 +270,59 @@ pub enum PersistFileArtifactIndexError {
     },
 }
 
+/// Fixed-record parse-artifact index file IO failed.
+#[derive(Debug, Error)]
+pub enum PersistParseArtifactIndexError {
+    /// The index parent directory could not be created.
+    #[error("failed to create persistent parse artifact index parent {path:?}")]
+    CreateParent {
+        /// The parent directory path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be opened.
+    #[error("failed to open persistent parse artifact index {path:?}")]
+    Open {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// Index file metadata could not be read.
+    #[error("failed to read persistent parse artifact index metadata {path:?}")]
+    Metadata {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be read.
+    #[error("failed to read persistent parse artifact index {path:?}")]
+    Read {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be written.
+    #[error("failed to write persistent parse artifact index {path:?}")]
+    Write {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file has malformed fixed-record bytes.
+    #[error("persistent parse artifact index {path:?} has invalid format: {source}")]
+    Format {
+        /// The index file path.
+        path: PathBuf,
+        /// The format error.
+        source: PersistPackFormatError,
+    },
+}
+
 /// Indexed blob append failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexedWriteError {
@@ -279,6 +372,24 @@ pub enum PersistFileArtifactIndexedWriteError {
     Index {
         /// The underlying file-artifact index error.
         source: PersistFileArtifactIndexError,
+    },
+}
+
+/// Indexed parse-artifact materialization failed.
+#[derive(Debug, Error)]
+pub enum PersistParseArtifactIndexedWriteError {
+    /// The artifact payload could not be appended to the `files/` blob pack or
+    /// recorded in the blob sidecar index.
+    #[error("failed to append indexed persistent parse artifact blob")]
+    Blob {
+        /// The underlying indexed blob write error.
+        source: PersistBlobIndexedWriteError,
+    },
+    /// The parse-artifact mapping could not be recorded in the sidecar index.
+    #[error("failed to record persistent parse artifact mapping")]
+    Index {
+        /// The underlying parse-artifact index error.
+        source: PersistParseArtifactIndexError,
     },
 }
 
@@ -434,6 +545,43 @@ pub enum PersistFileArtifactHydrationError {
     },
 }
 
+/// Persistent parse-artifact hydration failed.
+#[derive(Debug, Error)]
+pub enum PersistParseArtifactHydrationError {
+    /// The supplied artifact key does not match the requested parse identity.
+    #[error("persistent parse artifact key mismatch: expected {expected:?}, got {actual:?}")]
+    KeyMismatch {
+        /// The key derived from the requested parse identity.
+        expected: PersistParseArtifactKey,
+        /// The key supplied by the caller's artifact lookup.
+        actual: PersistParseArtifactKey,
+    },
+    /// The materialized artifact payload could not be read from the `files/` pack.
+    #[error("failed to read persistent parse artifact")]
+    Read {
+        /// The underlying packfile read error.
+        source: PersistBlobPackError,
+    },
+    /// The materialized artifact payload was not a valid parse-artifact bundle.
+    #[error("failed to decode persistent parse artifact bundle")]
+    Decode {
+        /// The underlying bundle decode error.
+        source: ParseCacheError,
+    },
+    /// The decoded artifact bundle failed parse-cache schema/count validation.
+    #[error("failed to validate persistent parse artifact bundle")]
+    Validate {
+        /// The underlying parse-cache validation error.
+        source: ParseCacheError,
+    },
+    /// The decoded artifact bundle could not be written to the target entry.
+    #[error("failed to hydrate parse-cache entry from persistent parse artifact")]
+    Write {
+        /// The underlying parse-cache write error.
+        source: ParseCacheError,
+    },
+}
+
 /// Indexed persistent file-artifact hydration failed.
 #[derive(Debug, Error)]
 pub enum PersistFileArtifactIndexedHydrationError {
@@ -448,6 +596,40 @@ pub enum PersistFileArtifactIndexedHydrationError {
     Hydrate {
         /// The underlying hydration error.
         source: PersistFileArtifactHydrationError,
+    },
+}
+
+/// Indexed persistent parse-artifact hydration failed.
+#[derive(Debug, Error)]
+pub enum PersistParseArtifactIndexedHydrationError {
+    /// The parse-artifact sidecar index could not be looked up.
+    #[error("failed to look up persistent parse artifact for hydration")]
+    Lookup {
+        /// The underlying parse-artifact index error.
+        source: PersistParseArtifactIndexError,
+    },
+    /// The indexed parse artifact could not be hydrated into the target entry.
+    #[error("failed to hydrate indexed persistent parse artifact")]
+    Hydrate {
+        /// The underlying hydration error.
+        source: PersistParseArtifactHydrationError,
+    },
+}
+
+/// Indexed parse-cache load from source bytes failed.
+#[derive(Debug, Error)]
+pub enum PersistParseBytesIndexedLoadError {
+    /// The indexed parse artifact could not hydrate the parse-cache entry.
+    #[error("failed to hydrate indexed parse-cache entry for byte-source load")]
+    Hydrate {
+        /// The underlying indexed hydration error.
+        source: PersistParseArtifactIndexedHydrationError,
+    },
+    /// The hydrated parse-cache entry could not be loaded as a cache hit.
+    #[error("failed to load hydrated byte-source parse-cache entry")]
+    Load {
+        /// The underlying parse-cache read error.
+        source: ParseCacheError,
     },
 }
 
@@ -531,6 +713,14 @@ pub enum PersistParseFileIndexedLoadError {
 /// Persistent parse-artifact materialization failed.
 #[derive(Debug, Error)]
 pub enum PersistParseArtifactMaterializationError {
+    /// The parse-cache entry directory did not match the supplied parse key.
+    #[error("parse-cache entry {path:?} does not match parse key {expected}")]
+    EntryKeyMismatch {
+        /// The supplied parse-cache key.
+        expected: ParseCacheKey,
+        /// The mismatched parse-cache entry directory.
+        path: PathBuf,
+    },
     /// The source parse-cache entry could not be read as an artifact bundle.
     #[error("failed to read parse-cache artifact bundle for persistent materialization")]
     ReadBundle {
@@ -554,6 +744,12 @@ pub enum PersistParseArtifactMaterializationError {
     WriteIndexed {
         /// The underlying indexed write error.
         source: PersistFileArtifactIndexedWriteError,
+    },
+    /// The encoded artifact payload could not be written with parse-artifact indexes.
+    #[error("failed to write parse-indexed parse-cache artifact bundle to persistent files pack")]
+    WriteParseIndexed {
+        /// The underlying indexed write error.
+        source: PersistParseArtifactIndexedWriteError,
     },
 }
 
@@ -651,5 +847,13 @@ pub enum PersistError {
         path: PathBuf,
         /// The underlying index error.
         source: PersistFileArtifactIndexError,
+    },
+    /// The parse-artifact mapping index file could not be initialized.
+    #[error("failed to initialize persistent parse artifact index {path}")]
+    OpenParseArtifactIndex {
+        /// The parse-artifact index file path.
+        path: PathBuf,
+        /// The underlying index error.
+        source: PersistParseArtifactIndexError,
     },
 }

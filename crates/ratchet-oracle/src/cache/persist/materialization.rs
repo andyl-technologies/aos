@@ -106,3 +106,53 @@ impl PersistFileArtifactMaterialization {
         }
     }
 }
+
+/// The result of applying a durable materialization decision to a parse artifact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PersistParseArtifactMaterialization {
+    /// The artifact was appended to the `files/` pack and has index metadata.
+    Materialized {
+        /// The parse-cache mapping key for the artifact.
+        artifact_key: PersistParseArtifactKey,
+        /// The file-blob lookup value a durable parse-artifact index stores.
+        index_value: PersistParseArtifactIndexValue,
+    },
+    /// The artifact stayed in the in-process tier and no persistent bytes were written.
+    Skipped {
+        /// The parse-cache mapping key for the artifact.
+        artifact_key: PersistParseArtifactKey,
+    },
+}
+
+impl PersistParseArtifactMaterialization {
+    /// Returns the parse-cache mapping key.
+    pub const fn artifact_key(self) -> PersistParseArtifactKey {
+        match self {
+            Self::Materialized { artifact_key, .. } | Self::Skipped { artifact_key } => {
+                artifact_key
+            }
+        }
+    }
+
+    /// Returns the file-blob index value when the artifact was materialized.
+    pub const fn index_value(self) -> Option<PersistParseArtifactIndexValue> {
+        match self {
+            Self::Materialized { index_value, .. } => Some(index_value),
+            Self::Skipped { .. } => None,
+        }
+    }
+
+    /// Returns the complete parse-artifact index entry when materialized.
+    pub const fn index_entry(self) -> Option<PersistParseArtifactIndexEntry> {
+        match self {
+            Self::Materialized {
+                artifact_key,
+                index_value,
+            } => Some(PersistParseArtifactIndexEntry::new(
+                artifact_key,
+                index_value,
+            )),
+            Self::Skipped { .. } => None,
+        }
+    }
+}

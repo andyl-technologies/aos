@@ -21,6 +21,10 @@ fn open_creates_versioned_layout() {
         layout.file_artifact_index_path()
     );
     assert_eq!(
+        cache.parse_artifact_index().path(),
+        layout.parse_artifact_index_path()
+    );
+    assert_eq!(
         cache.blob_pack(PersistBlobStore::Values).path(),
         layout.value_packfile_path()
     );
@@ -63,6 +67,12 @@ fn open_creates_versioned_layout() {
     assert_eq!(
         fs::metadata(layout.file_artifact_index_path())
             .expect("file artifact index metadata")
+            .len(),
+        0
+    );
+    assert_eq!(
+        fs::metadata(layout.parse_artifact_index_path())
+            .expect("parse artifact index metadata")
             .len(),
         0
     );
@@ -153,6 +163,36 @@ fn corrupt_file_artifact_index_errors_without_rewriting() {
     ));
     assert_eq!(
         fs::read(layout.file_artifact_index_path())
+            .expect("corrupt index reads")
+            .as_slice(),
+        b"partial"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn corrupt_parse_artifact_index_errors_without_rewriting() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    fs::write(layout.parse_artifact_index_path(), b"partial")
+        .expect("parse artifact index corrupts");
+
+    let error = PersistCache::open(&root).expect_err("corrupt parse artifact index errors");
+
+    assert!(matches!(
+        error,
+        PersistError::OpenParseArtifactIndex {
+            source: PersistParseArtifactIndexError::Format {
+                source: PersistPackFormatError::ShortParseArtifactIndexEntry { actual: 7, .. },
+                ..
+            },
+            ..
+        }
+    ));
+    assert_eq!(
+        fs::read(layout.parse_artifact_index_path())
             .expect("corrupt index reads")
             .as_slice(),
         b"partial"

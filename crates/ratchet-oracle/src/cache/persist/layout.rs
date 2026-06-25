@@ -61,6 +61,11 @@ impl PersistLayout {
         self.nodes_dir().join("file-artifacts.index")
     }
 
+    /// Returns the fixed-record parse-artifact mapping index path.
+    pub fn parse_artifact_index_path(&self) -> PathBuf {
+        self.nodes_dir().join("parse-artifacts.index")
+    }
+
     /// Returns the append-only packfile path for serialized value blobs.
     pub fn value_packfile_path(&self) -> PathBuf {
         self.blob_packfile_path(PersistBlobStore::Values)
