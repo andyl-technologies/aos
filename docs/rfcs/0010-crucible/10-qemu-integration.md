@@ -869,13 +869,29 @@ determinism contract (04).
   report is visible, moves inbound and outbound frame records through SPSC
   rings, and asserts the per-quantum operation log is shared-memory-only with
   QMP and plugin IPC rejected from the hot path. The exact frame visibility and
-  device-I/O freeze semantics remain tracked by [T-QEMU-13], and the bounded
+  device-I/O freeze semantics are completed by [T-QEMU-13], and the bounded
   real-time async wait remains tracked by [T-QEMU-14].
-- [ ] **T-QEMU-13** Implement injection-contract frame inject/emit at the QEMU
+- [x] **T-QEMU-13** Implement injection-contract frame inject/emit at the QEMU
   level: visibility at exactly `delivery_icount`, `(delivery_icount, src_node,
   seq)` total order, fail-loud on a past-delivery node; and the
   `device_io_active` virtual-time freeze across device-I/O bursts. — satisfies
   [QEMU-37], [QEMU-38]; spec §10.8.
+  Completed as QEMU-level injection-contract enforcement: the
+  `QemuQuantumShmemHotPath` authorizes a ceiling exactly at the next
+  `delivery_icount` while still rejecting overshoot, previews inbound SPSC
+  entries before committing them, rejects frames behind the passed-delivery
+  floor without consuming the ring, and reports due frames in
+  `(delivery_icount, src_node, seq)` order. The scheduler-facing `deliver_frame`
+  path assigns monotonic router-source sequence numbers and fails loudly if that
+  sequence space is exhausted. Emitted frames now preserve the guest-side
+  `emit_icount` stamp for the router, and each quantum carries device-I/O
+  freeze observations from the node slot so `device_io_active`
+  transitions are part of the QEMU-level report and fingerprint boundary. The
+  plugin RX path remains the QEMU-facing architectural injection mechanism:
+  it queues due frames through the lossless QEMU RX API, flushes after the
+  ordered batch, and uses the existing `PluginDeviceIoFreeze` submit/complete
+  state machine to hold HZ ticks across device-I/O bursts. The bounded
+  real-time async wait remains tracked by [T-QEMU-14].
 - [ ] **T-QEMU-14** Implement the async driver bridging the synchronous node-step
   to bounded async socket/QMP/process I/O on a real-time host runtime decoupled
   from virtual time, with shmem-only hot path, inter-quantum yields, bounded

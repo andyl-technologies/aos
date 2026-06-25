@@ -62,8 +62,8 @@
         needle = "shared-memory hot path";
       }
       {
-        label = "completion note preserves frame follow-up";
-        needle = "device-I/O freeze semantics remain tracked by";
+        label = "completion note points to completed injection contract";
+        needle = "device-I/O freeze semantics are completed by";
       }
       {
         label = "completion note preserves async follow-up";
@@ -203,7 +203,7 @@
       }
       {
         label = "lookahead rejection test";
-        needle = "qemu_quantum_rejects_horizon_that_would_reach_possible_frame_delivery";
+        needle = "qemu_quantum_rejects_horizon_that_would_pass_possible_frame_delivery";
       }
       {
         label = "outbound frame test";
@@ -313,7 +313,7 @@ in
             frame_path=spsc-inbound-and-outbound
             qmp_per_quantum=forbidden
             plugin_ipc_per_quantum=forbidden
-            exact_injection_contract_pending=T-QEMU-13
+            exact_injection_contract=qemu-level
             bounded_async_wait_pending=T-QEMU-14
             rust_tests=crucible-qemu::quantum::tests
             RESULT

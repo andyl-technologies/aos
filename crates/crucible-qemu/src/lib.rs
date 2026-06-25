@@ -84,9 +84,10 @@ pub use qmp::{
     QmpGreeting, QmpJobPollPolicy, QmpSnapshotTag,
 };
 pub use quantum::{
-    QemuDueInboundFrame, QemuInboundFrame, QemuOutboundFrame, QemuPendingQuantum, QemuQuantumError,
-    QemuQuantumOperation, QemuQuantumOperationPlane, QemuQuantumReport, QemuQuantumShmemConfig,
-    QemuQuantumShmemHotPath, QemuQuantumShmemView, assert_qemu_quantum_hot_path_is_shmem_only,
+    QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuDueInboundFrame, QemuInboundFrame,
+    QemuOutboundFrame, QemuPendingQuantum, QemuQuantumError, QemuQuantumOperation,
+    QemuQuantumOperationPlane, QemuQuantumReport, QemuQuantumShmemConfig, QemuQuantumShmemHotPath,
+    QemuQuantumShmemView, assert_qemu_quantum_hot_path_is_shmem_only,
 };
 pub use realization::{
     QemuBakedGenesisSnapshot, QemuCachedAncestor, QemuVmBakeExecutor, QemuVmLoadvmAdmissionPolicy,
