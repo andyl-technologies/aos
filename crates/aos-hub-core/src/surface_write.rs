@@ -36,6 +36,22 @@ use anyhow::Result;
 use crate::backend::BackendBounds;
 use crate::db::RegistryRecord;
 
+/// One multipart-upload part's identity: its 1-based `part_number` and the
+/// backend's entity tag.
+///
+/// `etag` is the value the backend returns for an uploaded part and requires
+/// back at completion (S3/R2 multipart); a backend with no native etag (local
+/// disk) returns and accepts an empty string. It is opaque to the hub and the
+/// client, which only carry it through the wire protocol and echo the full,
+/// ordered set back at [`complete`](SurfaceWrite::complete_multipart).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartTag {
+    /// 1-based, contiguous part index.
+    pub part_number: u32,
+    /// Backend-returned entity tag (empty when the backend has none).
+    pub etag: String,
+}
+
 /// Write access to a registry surface by relative path (the "Blobs" write
 /// port).
 ///
@@ -77,6 +93,83 @@ pub trait SurfaceWrite: BackendBounds {
     /// `path` is rejected as unsafe, or on any IO or transport failure other
     /// than the object being absent.
     async fn delete(&self, path: &str) -> Result<()>;
+
+    /// Begin a multipart upload targeting the logical `path`, returning the
+    /// backend's opaque upload id.
+    ///
+    /// The id, paired with `path`, reconstructs the in-progress upload on every
+    /// later [`upload_part`](Self::upload_part) /
+    /// [`complete_multipart`](Self::complete_multipart) / [`abort_multipart`](Self::abort_multipart)
+    /// call. This is what lets a *stateless* host drive a multipart upload: the
+    /// Cloudflare Worker handles each request in a fresh isolate and holds no
+    /// cross-request state, so the backend (R2/S3 upload id, or a hub-minted id
+    /// for local disk) owns the in-flight assembly and the protocol carries the
+    /// id. Large objects therefore upload as several sub-cap parts, one per
+    /// request, with memory bounded to a single part.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend does not support multipart, the store
+    /// is not writable, `path` is unsafe, or on a transport failure.
+    async fn create_multipart(&self, path: &str) -> Result<String> {
+        let _ = path;
+        anyhow::bail!("multipart upload not supported by this backend")
+    }
+
+    /// Upload one part (`part_number`, 1-based and contiguous) of the
+    /// in-progress upload `upload_id` for `path`, returning its [`PartTag`].
+    ///
+    /// Every part except the last MUST meet the backend's minimum part size
+    /// (R2/S3: 5 MiB). The caller streams one sub-cap part per request, so peak
+    /// memory is one part regardless of the final object size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend does not support multipart, the
+    /// `upload_id` is unknown/expired, the part violates the size minimum, or on
+    /// a transport failure.
+    async fn upload_part(
+        &self,
+        path: &str,
+        upload_id: &str,
+        part_number: u32,
+        bytes: &[u8],
+    ) -> Result<PartTag> {
+        let _ = (path, upload_id, part_number, bytes);
+        anyhow::bail!("multipart upload not supported by this backend")
+    }
+
+    /// Finalize the upload `upload_id` for `path`, assembling `parts` (which the
+    /// implementation orders by `part_number`) into the object — atomically with
+    /// respect to a concurrent reader, the same guarantee as [`write`](Self::write).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend does not support multipart, a part is
+    /// missing or out of order, an `etag` does not match, or on a transport
+    /// failure.
+    async fn complete_multipart(
+        &self,
+        path: &str,
+        upload_id: &str,
+        parts: &[PartTag],
+    ) -> Result<()> {
+        let _ = (path, upload_id, parts);
+        anyhow::bail!("multipart upload not supported by this backend")
+    }
+
+    /// Abort the upload `upload_id` for `path`, freeing any backend-held state.
+    ///
+    /// Best-effort and idempotent: aborting an unknown or already-completed
+    /// upload is not an error, so a retry or redundant cleanup is harmless.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only on a transport failure the backend deems fatal.
+    async fn abort_multipart(&self, path: &str, upload_id: &str) -> Result<()> {
+        let _ = (path, upload_id);
+        Ok(())
+    }
 }
 
 /// Resolves the [`SurfaceWrite`] for a registry (the per-registry store seam).

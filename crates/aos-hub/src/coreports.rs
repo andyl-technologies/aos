@@ -428,6 +428,88 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
             Err(err) => Err(err).with_context(|| format!("deleting {}", canonical.display())),
         }
     }
+
+    async fn create_multipart(&self, path: &str) -> Result<String> {
+        // Validate the eventual target is a safe path before accepting any part,
+        // so an unsafe upload fails fast. (The atomic write into place happens at
+        // `complete_multipart`.) `path` is otherwise not needed until then — the
+        // caller carries it back on every part/complete call.
+        crate::fetch::safe_join(&self.root, path)
+            .with_context(|| format!("resolving surface path {path}"))?;
+        let upload_id = uuid::Uuid::new_v4().to_string();
+        let dir = self.parts_dir(&upload_id);
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .with_context(|| format!("creating upload staging dir {}", dir.display()))?;
+        Ok(upload_id)
+    }
+
+    async fn upload_part(
+        &self,
+        _path: &str,
+        upload_id: &str,
+        part_number: u32,
+        bytes: &[u8],
+    ) -> Result<core_sw::PartTag> {
+        let dir = self.parts_dir(&validate_upload_id(upload_id)?);
+        if !tokio::fs::try_exists(&dir).await.unwrap_or(false) {
+            bail!("unknown multipart upload id");
+        }
+        // Each part is its own staged file; peak memory is a single part.
+        write_atomic(&dir.join(format!("part-{part_number:08}")), bytes).await?;
+        Ok(core_sw::PartTag {
+            part_number,
+            etag: String::new(),
+        })
+    }
+
+    async fn complete_multipart(
+        &self,
+        path: &str,
+        upload_id: &str,
+        parts: &[core_sw::PartTag],
+    ) -> Result<()> {
+        let dir = self.parts_dir(&validate_upload_id(upload_id)?);
+        let target = crate::fetch::safe_join(&self.root, path)
+            .with_context(|| format!("resolving surface path {path}"))?;
+        let contained = self.contained_target(&target).await?;
+        // Concatenate the staged parts in `part_number` order into a temp file,
+        // then atomic-rename into place: a reader never sees a partial object,
+        // and memory stays bounded to the copy buffer (no part is held whole).
+        let mut ordered: Vec<u32> = parts.iter().map(|p| p.part_number).collect();
+        ordered.sort_unstable();
+        let tmp = contained.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+        {
+            use tokio::io::AsyncWriteExt as _;
+            let out = tokio::fs::File::create(&tmp)
+                .await
+                .with_context(|| format!("creating {}", tmp.display()))?;
+            let mut writer = tokio::io::BufWriter::new(out);
+            for n in ordered {
+                let part_path = dir.join(format!("part-{n:08}"));
+                let mut part = tokio::fs::File::open(&part_path)
+                    .await
+                    .with_context(|| format!("opening staged part {}", part_path.display()))?;
+                tokio::io::copy(&mut part, &mut writer)
+                    .await
+                    .with_context(|| format!("appending part {n}"))?;
+            }
+            writer
+                .flush()
+                .await
+                .with_context(|| "flushing assembled object")?;
+        }
+        tokio::fs::rename(&tmp, &contained)
+            .await
+            .with_context(|| format!("renaming into {}", contained.display()))?;
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    async fn abort_multipart(&self, _path: &str, upload_id: &str) -> Result<()> {
+        let _ = tokio::fs::remove_dir_all(self.parts_dir(&validate_upload_id(upload_id)?)).await;
+        Ok(())
+    }
 }
 
 impl LocalFsWrite {
@@ -462,6 +544,31 @@ impl LocalFsWrite {
             .ok_or_else(|| anyhow::anyhow!("surface path has no file-name segment"))?;
         Ok(canonical_parent.join(file_name))
     }
+
+    /// The staging directory holding an in-progress multipart upload's parts.
+    ///
+    /// `upload_id` is a validated UUID (see [`validate_upload_id`]), so it cannot
+    /// contain path separators; the parts live under a reserved `.uploads/`
+    /// prefix inside the storage root, away from the served surface.
+    fn parts_dir(&self, upload_id: &str) -> PathBuf {
+        self.root.join(".uploads").join(upload_id)
+    }
+}
+
+/// Validate a multipart upload id is a well-formed UUID, returning its canonical
+/// string form.
+///
+/// Multipart ids reach the filesystem as a path segment, so this rejects any
+/// value that is not a UUID — closing off `..`/separator injection through the
+/// `upload_id` carried in the wire protocol.
+///
+/// # Errors
+///
+/// Returns an error when `upload_id` is not a valid UUID.
+fn validate_upload_id(upload_id: &str) -> Result<String> {
+    Ok(uuid::Uuid::parse_str(upload_id)
+        .context("invalid multipart upload id")?
+        .to_string())
 }
 
 /// Write `bytes` to `target` atomically (temp file + rename), creating parents.
@@ -893,4 +1000,53 @@ fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
         end.trim().parse().ok()?,
         total.trim().parse().ok()?,
     ))
+}
+
+#[cfg(test)]
+mod multipart_tests {
+    use super::*;
+    use core_sw::SurfaceWrite as _;
+
+    #[tokio::test]
+    async fn local_fs_multipart_assembles_in_order_and_matches_single_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = LocalFsWrite {
+            root: dir.path().to_path_buf(),
+        };
+        let path = "nar/sha256-test.nar.zst";
+
+        let upload_id = w.create_multipart(path).await.unwrap();
+        // Upload out of order; complete must reassemble by part_number.
+        let p2 = w.upload_part(path, &upload_id, 2, b"-world").await.unwrap();
+        let p1 = w.upload_part(path, &upload_id, 1, b"hello").await.unwrap();
+        let p3 = w.upload_part(path, &upload_id, 3, b"-again").await.unwrap();
+        w.complete_multipart(path, &upload_id, &[p3, p1, p2])
+            .await
+            .unwrap();
+
+        let assembled = tokio::fs::read(dir.path().join(path)).await.unwrap();
+        assert_eq!(assembled, b"hello-world-again");
+
+        // Parity: a single write() of the same bytes yields identical content.
+        let single = "nar/single.nar.zst";
+        w.write(single, b"hello-world-again").await.unwrap();
+        assert_eq!(
+            tokio::fs::read(dir.path().join(single)).await.unwrap(),
+            assembled
+        );
+
+        // The staging dir is removed on completion.
+        assert!(!dir.path().join(".uploads").join(&upload_id).exists());
+    }
+
+    #[tokio::test]
+    async fn local_fs_multipart_rejects_non_uuid_upload_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = LocalFsWrite {
+            root: dir.path().to_path_buf(),
+        };
+        // A non-UUID upload id (path-injection attempt) is rejected, not joined.
+        assert!(w.upload_part("nar/x", "../escape", 1, b"x").await.is_err());
+        assert!(w.abort_multipart("nar/x", "../escape").await.is_err());
+    }
 }
