@@ -2,6 +2,22 @@
 
 use super::*;
 
+// Some recursive conformance cases exercise the Rust tree-walk harness deeply
+// before reaching the intended max-call-depth assertion.
+const CPP_NIX_RECURSION_TEST_STACK_SIZE: usize = 32 * 1024 * 1024;
+
+fn run_cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk(oracle: String) {
+    let handle = std::thread::Builder::new()
+        .name("cpp-nix-recursion-oracle".to_owned())
+        .stack_size(CPP_NIX_RECURSION_TEST_STACK_SIZE)
+        .spawn(move || assert_cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk(&oracle))
+        .expect("C++ Nix recursion oracle worker spawns");
+
+    if let Err(payload) = handle.join() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
 #[test]
 #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
 fn cpp_nix_number_printing_matches_tree_walk() {
@@ -251,7 +267,7 @@ fn configured_cpp_nix_function_semantics_match_tree_walk() {
 #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
 fn cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk() {
     let oracle = cpp_nix_oracle();
-    assert_cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk(&oracle);
+    run_cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk(oracle);
 }
 
 #[test]
@@ -260,7 +276,7 @@ fn configured_cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk() {
         eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix recursion check");
         return;
     };
-    assert_cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk(&oracle);
+    run_cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk(oracle);
 }
 
 #[test]

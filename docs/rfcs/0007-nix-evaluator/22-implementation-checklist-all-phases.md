@@ -230,7 +230,11 @@ hold invariant.
       corpora, and the real workspace `.nix` source tree (package/module/system
       files); `aos nix-fuzz-corpus` now populates ignored parity-fuzzer source
       seeds from the full §2.7 package/toolchain/system corpus and configured
-      generated conformance corpus. Full parity-fuzzer budget/quiescence remains.
+      generated conformance corpus. The configured pinned C++ oracle recursion
+      semantics check now runs on a fixed 32 MiB worker stack, so recursive
+      fixed-point regressions report as semantic test failures instead of
+      aborting the `ratchet-oracle cpp_nix` harness process. Full parity-fuzzer
+      budget/quiescence remains.
       This is a standing-harness robustness item, not the falsifiable byte-green
       gate, which is met.
 
