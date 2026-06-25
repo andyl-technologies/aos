@@ -48,8 +48,10 @@ APM resolves the desired package set (see
    (`{pkg}.*`) as a submodule — the existing `attrsOf (submodule …)` +
    name-injection idiom already used by `systemd.services.<name>`
    (`lib/modules/systemd/types.nix:71-91`, `lib/default.nix:77-88`).
-3. **The operator's leaf `host.nix`**, delivered by a forked Ignition as signed
-   user-data (see [`trust-and-secrets.md`](trust-and-secrets.md)).
+3. **The operator's leaf `host.nix`**, delivered as **literal Nix in the cloud
+   user-data** and fetched by the `aos metadata` agent (see
+   [`provisioning.md`](provisioning.md) and
+   [`trust-and-secrets.md`](trust-and-secrets.md)).
 
 The evaluation produces a pure-data **manifest** (next section). Because every
 referenced store path already exists locally as a downloaded NAR and the modules
@@ -171,6 +173,16 @@ the resolver instead of reconstructed from AST scans and eval errors). None of
 this touches the registry format, the module contract, or the generations.
 
 ## Boot / first-boot bootstrap ordering
+
+> **Note on Ignition.** The initrd chain below names the `ignition-*` units as
+> they exist today; that is the **Phase A** state. In the end-state Ignition is
+> removed: substrate provisioning moves to `systemd-repart` + `cryptenroll`,
+> user-data fetch moves to the `aos metadata` agent, and the stage-2
+> install/activate monolith becomes a systemd unit graph. The eval *locus* and
+> the failure-safe properties below are unchanged by that swap. See
+> [`provisioning.md`](provisioning.md) (substrate + metadata agent) and
+> [`orchestration.md`](orchestration.md) (the unit graph) for the end-state, and
+> [`implementation-plan.md`](implementation-plan.md) for the phasing.
 
 The first on-host eval runs **post-switch-root, in stage-2** — the same locus
 where APM reconciles at first boot today (`modules/base/apm.nix`). Initrd cannot

@@ -83,17 +83,30 @@ the attestation record below.
 ## host.nix authenticity
 
 `host.nix` is operator-supplied and per-host — an input to the trusted
-computation but not in the image. Today the equivalent user-data arrives as
-`config.json` on the `aos-metadata` ISO and is read with **no signature check**
-(`modules/services/ignition.nix:11-20`). RFC-0011 requires it be authenticated:
+computation but not in the image. It is delivered as **literal Nix in the cloud
+user-data** (or a hash-pinned URL pointer) and fetched by the `aos metadata`
+agent (see [`provisioning.md`](provisioning.md)). Today the equivalent user-data
+is read with **no signature check**; RFC-0011 requires it be authenticated:
 
-- **Operator-signed config verified against an image-baked
+- **Operator-signed (detached SSHSIG) verified against an image-baked
   `trusted-config-keys.d/<op>.pub`**, mirroring `trusted-keys.d` /
-  `trusted-sb-certs.d`. The evaluator checks the signature *before* eval; an
-  unsigned/badly-signed host.nix fails the eval (no manifest, box stays on
-  gen-0, per [`architecture.md`](architecture.md)).
+  `trusted-sb-certs.d` (`apm-registries.nix`), via the existing
+  `security.rs::verify_payload_signature` + `TrustStore`. An unsigned/badly-signed
+  host.nix fails the eval (no manifest, box stays on gen-0, per
+  [`architecture.md`](architecture.md)).
 
-Ignition itself runs inside the **measured initrd** before switch-root, so the
+- **Verification happens in stage-2, not initrd.** The `trusted-config-keys.d`
+  keys live in the measured `/etc` that is only assembled in stage-2, so the
+  initrd `aos metadata` agent is **transport-only** — it fetches and stashes the
+  *untrusted* bytes, and `aos-eval.service` performs the signature check before
+  eval, where the trust anchors and the `apm verify` machinery are natively
+  available. This keeps the *consumer* (the evaluator) measured while not
+  dragging trust anchors into the initrd. For the URL-pointer case the agent
+  also checks the pointer's `sha256` content-pin (integrity before authenticity);
+  the two checks are independent — the pin defends the fetch, the signature
+  defends authenticity.
+
+The evaluator runs in stage-2 from the **measured** image (UKI), so the
 *consumer* of user-data is measured even though the *user-data* is not.
 
 **Per-host config does not break attestation** — it breaks whole-image

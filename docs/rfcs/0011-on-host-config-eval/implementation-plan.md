@@ -79,6 +79,46 @@ The enabling refactor; ships independently and de-risks everything after it.
       image (A/B UKI). Cross-ABI rollback re-evals retained inputs.
 - [ ] `gen-N/cfg/<hash>` GC roots; retention/prune unchanged.
 
+### Provisioning, substrate & orchestration (Ignition removal)
+
+systemd-native substrate + the `aos metadata` agent + the unit graph. Phased to
+keep an Ignition-compat fallback (see [`provisioning.md`](provisioning.md) §Phasing).
+
+- [ ] **systemd-repart substrate.** Flip `-Drepart=enabled`/`-Dfdisk=enabled`
+      in `pkgs/system/systemd.nix`; un-strip `systemd-repart` from the initrd
+      (`modules/base/_initrd-builder.nix:651`); ship convention `repart.d`
+      drop-ins (adopt ESP+root-a, fixed swap, `var` `Weight=1000` grow-to-fill);
+      add `systemd-repart.service`; **delete** `aos-growfs` + `aos-gpt-relocate`.
+- [ ] Retarget `aos-var-crypt`/`cryptswap` ordering from `ignition-disks` to
+      `systemd-repart.service` (LUKS path otherwise unchanged — RFC-0006).
+- [ ] **Lifecycle guards.** Render destructive ops as `Type=oneshot` +
+      state-probe (`cryptsetup isLuks`/`blkid || mkfs`) / `ConditionFirstBoot=`;
+      never guard convergent ops (repart/tmpfiles/sysusers).
+- [ ] **`aos metadata` agent.** `aos metadata detect` (port
+      `pkgs/boot/aos-platform-detect.nix`) + `fetch`; reuse `aos-net` +
+      `security.rs` SSHSIG + `TrustStore`. Transport-only in initrd; stash
+      `/run/aos-metadata/{host.nix,host.nix.sig,facts.json}`. Literal-Nix payload
+      + URL-pointer (`sha256` content-pin).
+- [ ] Render `facts.json` → `/run/aos-eval/host-facts.nix` as `host.facts.*`
+      (D9); no imperative `/etc/hostname`/`authorized_keys` writes (manifest
+      outputs), except the gen-0 SSH-key bootstrap carve-out.
+- [ ] **Unit graph (D19).** Bake template units `aos-pkg-fetch@.service` /
+      `aos-pkg-install@.service` + `aos-fetch`/`aos-config-render`/`aos-config`
+      targets into gen-0. New `apm fetch <pkg>` / `render-one <pkg>` subverbs.
+- [ ] **Graph compiler** (new `crates/aos-package` module): consume
+      `manifest.json` + `graph.json` → write `/run/systemd/system/` instance
+      dropins + `.wants` (edges mirror the config DAG) → `daemon-reload` → start
+      `aos-config.target`, via the `aos-systemd` client. Replace the monolithic
+      `aos-install-packages.service` with `aos-eval` + `aos-graph-compile` +
+      `aos-activate`.
+- [ ] `Wants=` for package pulls (degraded, not failed boot); `Requires=`/
+      `BindsTo=` reserved for substrate edges; `Restart=on-failure` on fetch;
+      `aos-activate` is the single atomic commit.
+- [ ] Phase out Ignition: keep `ignition-fetch` (payload-only) → `aos metadata`
+      for offline channels (ISO/NoCloud/config-drive/fw_cfg) → cloud IMDS
+      (AWS/GCP/DO/OpenStack); drop `pkgs.ignition`/`pkgs.butane`/
+      `lib/formats/ignition.nix` when the fallback is unused.
+
 ### Trust & secrets
 
 - [ ] `trusted-config-keys.d/<op>.pub` baked into the image
@@ -123,5 +163,11 @@ The enabling refactor; ships independently and de-risks everything after it.
 - **P1:** `checks.config-eval` + `checks.config-parity` green; fleet
   conflict-no-op + dry-run-matches-realized + pointer-only-rollback green;
   on-host eval within the perf budget.
+- **Provisioning:** `systemd-repart` carves/grows `/var` on a fresh VM and is a
+  no-op on reboot (idempotent); `aos metadata` fetches+stashes literal-Nix
+  user-data across the offline channels; a single failing package yields
+  `is-system-running = degraded` with `multi-user.target` reached and the box
+  SSH-reachable (`tests/fleet/apm-system-activation-fail.nix`); Ignition fallback
+  path still green until each native fetcher lands.
 - **P2:** byte-identical manifest vs P1 stock-Nix on the full fixture corpus
   (the aos-nix parity discipline), plus the P1 gates still green.
