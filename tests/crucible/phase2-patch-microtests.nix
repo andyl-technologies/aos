@@ -127,6 +127,48 @@
         patchName = "0020-crucible-net-tx-callback.patch";
       };
     }
+    {
+      patch = "0021-crucible-sim-loop-fix.patch";
+      check = import ./phase1-qemu-sim-correctness.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0021-crucible-sim-loop-fix.patch";
+      };
+    }
+    {
+      patch = "0022-crucible-sim-first-exit.patch";
+      check = import ./phase1-qemu-sim-correctness.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0022-crucible-sim-first-exit.patch";
+      };
+    }
+    {
+      patch = "0023-crucible-sim-skip-second-events.patch";
+      check = import ./phase1-qemu-sim-correctness.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0023-crucible-sim-skip-second-events.patch";
+      };
+    }
+    {
+      patch = "0024-crucible-sim-poll-immediate.patch";
+      check = import ./phase1-qemu-sim-correctness.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0024-crucible-sim-poll-immediate.patch";
+      };
+    }
+    {
+      patch = "0025-crucible-sim-idle-callbacks.patch";
+      check = import ./phase1-qemu-sim-correctness.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0025-crucible-sim-idle-callbacks.patch";
+      };
+    }
+    {
+      patch = "0026-crucible-sim-shmem-dispatch.patch";
+      check = import ./phase1-qemu-sim-correctness.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0026-crucible-sim-shmem-dispatch.patch";
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -245,6 +287,8 @@ in
               qemu_plugin_register_wake_fd \
               qemu_plugin_main_loop_wait \
               qemu_plugin_register_tcg_exec_cb \
+              qemu_plugin_register_vcpu_idle_resume_cb \
+              qemu_plugin_register_sim_shmem_dispatch_cb \
               qemu_plugin_register_blk_cb \
               qemu_plugin_register_9p_cb
             do
@@ -284,6 +328,7 @@ in
             qemu_plugin_net_exports_present=true
             qemu_plugin_time_drain_exports_present=true
             qemu_plugin_runtime_api_exports_present=true
+            qemu_plugin_sim_correctness_exports_present=true
             qemu_plugin_block_exports_present=true
             qemu_plugin_9p_exports_present=true
             qemu_inert_gate_attr=checks.crucible.phase2.gates.qemuInert

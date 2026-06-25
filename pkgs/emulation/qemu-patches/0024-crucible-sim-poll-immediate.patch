@@ -1,0 +1,55 @@
+diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+--- a/block/crucible-shmem.c
++++ b/block/crucible-shmem.c
+@@ -14,6 +14,7 @@
+ #include "qemu/cutils.h"
+ #include "qemu/iov.h"
+ #include "qemu/module.h"
++#include "qemu/accel.h"
+ #include "qemu/option.h"
+ #include "block/aio.h"
+ #include "block/block-io.h"
+@@ -68,6 +69,11 @@ static bool crucible_blk_callbacks_ready(void)
+     return crucible_blk_submit_cb != NULL && crucible_blk_poll_cb != NULL;
+ }
+ 
++static bool crucible_shmem_sim_poll_immediate(void)
++{
++    return strcmp(current_accel_name(), "sim") == 0;
++}
++
+ static int crucible_shmem_open(BlockDriverState *bs, QDict *options,
+                                int flags, Error **errp)
+ {
+@@ -122,6 +129,20 @@ static void coroutine_fn crucible_shmem_wait_one_poll(BlockDriverState *bs)
+     aio_co_schedule(bdrv_get_aio_context(bs), qemu_coroutine_self());
+     qemu_coroutine_yield();
+ }
++
++static int64_t coroutine_fn
++crucible_shmem_sim_repoll_once(uint32_t request_id, uint8_t *data,
++                               size_t capacity)
++{
++    if (!crucible_shmem_sim_poll_immediate() ||
++        !qemu_plugin_has_time_control()) {
++        return QEMU_PLUGIN_BLK_POLL_PENDING;
++    }
++
++    qemu_plugin_drain_main_loop();
++    return crucible_blk_poll_cb(request_id, data, capacity,
++                                crucible_blk_userdata);
++}
+ 
+ static int64_t coroutine_fn
+ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
+@@ -136,6 +155,10 @@ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
+         if (ret != QEMU_PLUGIN_BLK_POLL_PENDING) {
+             return ret;
+         }
++        ret = crucible_shmem_sim_repoll_once(request_id, data, capacity);
++        if (ret != QEMU_PLUGIN_BLK_POLL_PENDING) {
++            return ret;
++        }
+         crucible_shmem_wait_one_poll(bs);
+     }
+ }
