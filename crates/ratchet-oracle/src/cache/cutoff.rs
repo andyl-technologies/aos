@@ -8,11 +8,13 @@
 use thiserror::Error;
 
 use super::hashing::DurableBlake3Hash;
+use crate::string::{ContextKind, StringContext};
 use crate::value::{Value, ValueError, ValueTag};
 
 const INLINE_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-inline-value-hash-v1";
 const CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION: &[u8] =
     b"aos-nix-context-free-string-value-hash-v1";
+const CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-context-string-value-hash-v1";
 const PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-path-value-hash-v1";
 
 /// A durable hash of a canonical evaluated value.
@@ -106,6 +108,23 @@ impl ValueHash {
         Self(DurableBlake3Hash::from_hasher(hasher))
     }
 
+    /// Hashes a context-bearing Nix string as a canonical value precursor.
+    ///
+    /// The hash covers the raw string bytes plus the string context's canonical
+    /// sorted element set. Context element kinds, paths, and single-output
+    /// output names are encoded with explicit tags and length prefixes so
+    /// context-observable string values do not share cutoff identity with
+    /// context-free strings or with other context kinds carrying the same path.
+    pub fn from_context_string_parts(bytes: &[u8], context: &StringContext) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION);
+        hasher.update(b"string");
+        hasher.update(&(bytes.len() as u128).to_le_bytes());
+        hasher.update(bytes);
+        update_string_context_hash(&mut hasher, context);
+        Self(DurableBlake3Hash::from_hasher(hasher))
+    }
+
     /// Hashes a Nix path value's raw bytes as a canonical value precursor.
     ///
     /// This is separate from context-free string hashing because Nix paths and
@@ -125,6 +144,33 @@ impl ValueHash {
     /// observed filesystem or environment result, not a canonical Nix value.
     pub const fn from_impure_input_observation_hash(hash: DurableBlake3Hash) -> Self {
         Self(hash)
+    }
+}
+
+fn update_string_context_hash(hasher: &mut blake3::Hasher, context: &StringContext) {
+    hasher.update(b"context");
+    hasher.update(&(context.len() as u128).to_le_bytes());
+    for element in context.elements() {
+        match element.kind() {
+            ContextKind::OpaquePath => {
+                hasher.update(&[0]);
+                hasher.update(&(element.path().len() as u128).to_le_bytes());
+                hasher.update(element.path());
+            }
+            ContextKind::SingleOutput => {
+                hasher.update(&[1]);
+                hasher.update(&(element.path().len() as u128).to_le_bytes());
+                hasher.update(element.path());
+                let output = element.output().unwrap_or_default();
+                hasher.update(&(output.len() as u128).to_le_bytes());
+                hasher.update(output);
+            }
+            ContextKind::DeepDerivation => {
+                hasher.update(&[2]);
+                hasher.update(&(element.path().len() as u128).to_le_bytes());
+                hasher.update(element.path());
+            }
+        }
     }
 }
 
@@ -178,6 +224,7 @@ impl EarlyCutoff {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::string::{ContextElement, StringContext};
     use crate::value::HeapObject;
     use std::ptr::NonNull;
 
@@ -191,6 +238,18 @@ mod tests {
 
     fn inline_hash(value: Value) -> ValueHash {
         ValueHash::from_inline_value(value).expect("inline value hashes")
+    }
+
+    fn opaque(path: &[u8]) -> ContextElement {
+        ContextElement::opaque_path(path.to_vec()).expect("opaque context builds")
+    }
+
+    fn output(path: &[u8], name: &[u8]) -> ContextElement {
+        ContextElement::single_output(path.to_vec(), name.to_vec()).expect("output context builds")
+    }
+
+    fn deep(path: &[u8]) -> ContextElement {
+        ContextElement::deep_derivation(path.to_vec()).expect("deep context builds")
     }
 
     #[test]
@@ -230,6 +289,38 @@ mod tests {
             same,
             ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"same"))
         );
+    }
+
+    #[test]
+    fn context_string_hashes_include_bytes_and_canonical_context() {
+        let source = opaque(b"/nix/store/source");
+        let output = output(b"/nix/store/pkg.drv", b"out");
+        let first = StringContext::new(vec![output.clone(), source.clone(), output.clone()]);
+        let second = StringContext::new(vec![source, output]);
+        let hash = ValueHash::from_context_string_parts(b"same", &first);
+
+        assert_eq!(hash, ValueHash::from_context_string_parts(b"same", &second));
+        assert_ne!(
+            hash,
+            ValueHash::from_context_string_parts(b"different", &second)
+        );
+        assert_ne!(hash, ValueHash::from_context_free_string_bytes(b"same"));
+    }
+
+    #[test]
+    fn context_string_hashes_distinguish_context_kinds_and_outputs() {
+        let output_out = StringContext::new(vec![output(b"/nix/store/pkg.drv", b"out")]);
+        let output_dev = StringContext::new(vec![output(b"/nix/store/pkg.drv", b"dev")]);
+        let deep = StringContext::new(vec![deep(b"/nix/store/pkg.drv")]);
+        let opaque = StringContext::new(vec![opaque(b"/nix/store/pkg.drv")]);
+        let hash = ValueHash::from_context_string_parts(b"same", &output_out);
+
+        assert_ne!(
+            hash,
+            ValueHash::from_context_string_parts(b"same", &output_dev)
+        );
+        assert_ne!(hash, ValueHash::from_context_string_parts(b"same", &deep));
+        assert_ne!(hash, ValueHash::from_context_string_parts(b"same", &opaque));
     }
 
     #[test]

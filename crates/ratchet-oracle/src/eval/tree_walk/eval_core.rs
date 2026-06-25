@@ -474,11 +474,13 @@ impl TreeWalk {
         match value.tag() {
             ValueTag::String => {
                 let string = self.heap.get_string(value).ok()?;
-                if string.has_context() {
-                    return None;
-                }
                 let bytes = try_clone_bytes(string.bytes()).ok()?;
-                Some(CachedExpressionValue::context_free_string(bytes))
+                if string.has_context() {
+                    let context = string.context().try_clone_context().ok()?;
+                    Some(CachedExpressionValue::context_string(bytes, context))
+                } else {
+                    Some(CachedExpressionValue::context_free_string(bytes))
+                }
             }
             ValueTag::Path => {
                 let path = self.heap.get_path(value).ok()?;
@@ -560,6 +562,11 @@ impl TreeWalk {
         if let Some(bytes) = payload.context_free_string_bytes() {
             let bytes = try_clone_bytes(bytes).ok()?;
             return self.heap.alloc_string(NixString::from_bytes(bytes)).ok();
+        }
+        if let Some((bytes, context)) = payload.context_string_parts() {
+            let bytes = try_clone_bytes(bytes).ok()?;
+            let context = context.try_clone_context().ok()?;
+            return self.heap.alloc_string(NixString::new(bytes, context)).ok();
         }
         let bytes = try_clone_bytes(payload.path_bytes()?).ok()?;
         self.heap.alloc_path(NixString::from_bytes(bytes)).ok()

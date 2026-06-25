@@ -12,6 +12,7 @@ use super::{
     ImpureTraceObservation, ImpureTraceStatus, NodeFreshness, Reconsideration, UncacheableInput,
     ValueHash, ValueHashError,
 };
+use crate::string::StringContext;
 use crate::value::Value;
 
 /// A source of evaluator-observed impure input trace entries.
@@ -116,6 +117,13 @@ impl CachedExpressionValue {
         }
     }
 
+    /// Creates a cached Nix string payload from canonical bytes and context.
+    pub fn context_string(bytes: Vec<u8>, context: StringContext) -> Self {
+        Self {
+            payload: InlineValuePayload::ContextString { bytes, context },
+        }
+    }
+
     /// Creates a cached Nix path payload from canonical path bytes.
     pub fn path(bytes: Vec<u8>) -> Self {
         Self {
@@ -132,10 +140,24 @@ impl CachedExpressionValue {
     pub fn context_free_string_bytes(&self) -> Option<&[u8]> {
         match &self.payload {
             InlineValuePayload::ContextFreeString(bytes) => Some(bytes),
-            InlineValuePayload::Path(_)
+            InlineValuePayload::ContextString { .. }
+            | InlineValuePayload::Path(_)
             | InlineValuePayload::Int(_)
             | InlineValuePayload::Float(_)
             | InlineValuePayload::Bool(_)
+            | InlineValuePayload::Null => None,
+        }
+    }
+
+    /// Returns cached string bytes and context, if this payload is a contextual string.
+    pub fn context_string_parts(&self) -> Option<(&[u8], &StringContext)> {
+        match &self.payload {
+            InlineValuePayload::ContextString { bytes, context } => Some((bytes, context)),
+            InlineValuePayload::Int(_)
+            | InlineValuePayload::Float(_)
+            | InlineValuePayload::Bool(_)
+            | InlineValuePayload::ContextFreeString(_)
+            | InlineValuePayload::Path(_)
             | InlineValuePayload::Null => None,
         }
     }
@@ -148,6 +170,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::Float(_)
             | InlineValuePayload::Bool(_)
             | InlineValuePayload::ContextFreeString(_)
+            | InlineValuePayload::ContextString { .. }
             | InlineValuePayload::Null => None,
         }
     }
@@ -759,6 +782,10 @@ enum InlineValuePayload {
     Bool(bool),
     Null,
     ContextFreeString(Vec<u8>),
+    ContextString {
+        bytes: Vec<u8>,
+        context: StringContext,
+    },
     Path(Vec<u8>),
 }
 
@@ -797,7 +824,7 @@ impl InlineValuePayload {
             Self::Float(bits) => Some(Value::float(f64::from_bits(*bits))),
             Self::Bool(value) => Some(Value::bool(*value)),
             Self::Null => Some(Value::null()),
-            Self::ContextFreeString(_) | Self::Path(_) => None,
+            Self::ContextFreeString(_) | Self::ContextString { .. } | Self::Path(_) => None,
         }
     }
 
@@ -808,6 +835,9 @@ impl InlineValuePayload {
             Self::Bool(value) => ValueHash::from_inline_value(Value::bool(*value)),
             Self::Null => ValueHash::from_inline_value(Value::null()),
             Self::ContextFreeString(bytes) => Ok(ValueHash::from_context_free_string_bytes(bytes)),
+            Self::ContextString { bytes, context } => {
+                Ok(ValueHash::from_context_string_parts(bytes, context))
+            }
             Self::Path(bytes) => Ok(ValueHash::from_path_bytes(bytes)),
         }
     }
@@ -1181,6 +1211,7 @@ mod tests {
     use super::*;
     use crate::cache::{DemandCacheKey, ImpureTraceStatus, NodeFreshness, UncacheableInput};
     use crate::compile::IrId;
+    use crate::string::{ContextElement, StringContext};
 
     #[derive(Clone, Debug)]
     struct TraceSource {
@@ -1245,6 +1276,13 @@ mod tests {
 
     fn identity(source: &[u8], node: u32) -> CacheExprIdentity {
         CacheExprIdentity::new(durable_hash(source), IrId::new(node))
+    }
+
+    fn opaque_context(path: &[u8]) -> StringContext {
+        StringContext::singleton(
+            ContextElement::opaque_path(path.to_vec()).expect("opaque context builds"),
+        )
+        .expect("context allocates")
     }
 
     fn key(node: u32, label: &[u8]) -> DemandCacheKey {
@@ -2108,6 +2146,41 @@ mod tests {
             payload.context_free_string_bytes(),
             Some(b"cached string".as_slice())
         );
+        assert!(payload.immediate_value().is_none());
+        assert!(
+            immediate.is_none(),
+            "generic Value lookup must not return heap-backed payload pointers"
+        );
+    }
+
+    #[test]
+    fn eval_cache_looks_up_context_string_payloads() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+        let context = opaque_context(b"/nix/store/source");
+
+        cache
+            .observe_inline_expression_payload(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::context_string(b"cached string".to_vec(), context.clone()),
+            )
+            .expect("context string payload observes");
+        let payload = cache
+            .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("payload lookup succeeds")
+            .expect("memoized context string payload is present");
+        let immediate = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("immediate lookup succeeds");
+        let (bytes, cached_context) = payload
+            .context_string_parts()
+            .expect("context string payload is present");
+
+        assert_eq!(bytes, b"cached string");
+        assert_eq!(cached_context, &context);
+        assert!(payload.context_free_string_bytes().is_none());
+        assert!(payload.path_bytes().is_none());
         assert!(payload.immediate_value().is_none());
         assert!(
             immediate.is_none(),
