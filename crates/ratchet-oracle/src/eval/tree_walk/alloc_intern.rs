@@ -843,6 +843,9 @@ impl TreeWalk {
                     TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
                 })?;
                 self.lazy_identity_thunks.remove(&forced_payload);
+                if let Some(subject) = &cache_subject {
+                    self.record_forced_expression_demand(subject);
+                }
                 self.observe_forced_inline_expression_result(cache_subject, value, impure_trace);
                 Ok(value)
             }

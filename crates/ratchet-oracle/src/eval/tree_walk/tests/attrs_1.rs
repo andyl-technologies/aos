@@ -3101,6 +3101,220 @@ fn synthetic_builtin_attr_current_system_thunks_hit_with_matching_option_salt() 
 }
 
 #[test]
+fn synthetic_builtin_attr_forces_record_persistent_current_demand() {
+    let persist_root = unique_temp_dir("force-cache-persistent-demand");
+    let source = "let b = builtins; in { a = b.currentSystem; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let current_system = symbol_for(&ir, b"currentSystem");
+    let builtin = lookup_builtin(b"currentSystem").expect("currentSystem builtin is registered");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options.clone(),
+        "synthetic-builtins.nix",
+        source,
+        cache.clone(),
+    );
+    let root = first.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = first.heap().get_attrs(root).expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let select_id = first
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a remains a suspended select thunk")
+        .body()
+        .expect("a thunk has a lowered select body");
+    let identity = first
+        .cache_synthetic_builtin_attr_identity(
+            EvalNodeRef::new(EvalModuleId::ROOT, select_id),
+            current_system,
+            builtin,
+        )
+        .expect("synthetic currentSystem identity builds");
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let forced = first
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("currentSystem force succeeds");
+    assert_eq!(
+        first
+            .heap()
+            .get_string(forced)
+            .expect("currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(first.stats().cache_misses(), 1);
+    drop(first);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    assert_eq!(
+        persist
+            .lookup_node_materialization_reuse(key)
+            .expect("metadata lookup succeeds"),
+        Some(MaterializationReuse::new(0, 1)),
+        "cold force records one current-run demand"
+    );
+    drop(persist);
+
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "synthetic-builtins.nix",
+        source,
+        cache,
+    );
+    let forced = force_attr_a(&mut second, &ir, a);
+    assert_eq!(
+        second
+            .heap()
+            .get_string(forced)
+            .expect("cached currentSystem result rehydrates")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+    drop(second);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
+    assert_eq!(
+        persist
+            .lookup_node_materialization_reuse(key)
+            .expect("metadata lookup succeeds"),
+        Some(MaterializationReuse::new(0, 2)),
+        "in-memory hits also record current-run demand"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn disabled_eval_cache_skips_persistent_current_demand() {
+    let persist_root = unique_temp_dir("force-cache-persistent-demand-disabled");
+    let source = "let b = builtins; in { a = b.currentSystem; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let current_system = symbol_for(&ir, b"currentSystem");
+    let builtin = lookup_builtin(b"currentSystem").expect("currentSystem builtin is registered");
+    let mut options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    options.set_persist_cache_root(&persist_root);
+
+    let mut evaluator =
+        TreeWalk::with_options_and_source(&ir, options, "synthetic-builtins.nix", source);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let select_id = evaluator
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a remains a suspended select thunk")
+        .body()
+        .expect("a thunk has a lowered select body");
+    let identity = evaluator
+        .cache_synthetic_builtin_attr_identity(
+            EvalNodeRef::new(EvalModuleId::ROOT, select_id),
+            current_system,
+            builtin,
+        )
+        .expect("synthetic currentSystem identity builds");
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("currentSystem force succeeds");
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(forced)
+            .expect("currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    drop(evaluator);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    assert_eq!(
+        persist
+            .lookup_node_materialization_reuse(key)
+            .expect("metadata lookup succeeds"),
+        None,
+        "disabled eval-cache observation must not write persistent demand counters"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn observation_only_current_time_skips_persistent_current_demand() {
+    let persist_root = unique_temp_dir("force-cache-persistent-demand-current-time");
+    let source = "let b = builtins; in { a = b.currentTime; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let current_time = symbol_for(&ir, b"currentTime");
+    let builtin = lookup_builtin(b"currentTime").expect("currentTime builtin is registered");
+    let mut options =
+        TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+
+    let mut evaluator =
+        TreeWalk::with_options_and_source(&ir, options, "synthetic-current-time.nix", source);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let select_id = evaluator
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a remains a suspended select thunk")
+        .body()
+        .expect("a thunk has a lowered select body");
+    let identity = evaluator
+        .cache_synthetic_builtin_attr_identity(
+            EvalNodeRef::new(EvalModuleId::ROOT, select_id),
+            current_time,
+            builtin,
+        )
+        .expect("synthetic currentTime observation identity builds");
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("currentTime force succeeds");
+    assert_eq!(forced.as_int(), Ok(1_700_000_000));
+    drop(evaluator);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    assert_eq!(
+        persist
+            .lookup_node_materialization_reuse(key)
+            .expect("metadata lookup succeeds"),
+        None,
+        "observation-only currentTime subjects must not write persistent demand counters"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
 fn synthetic_builtin_attr_current_system_thunks_include_current_system_in_cache_identity() {
     let source = "let b = builtins; in { a = b.currentSystem; }";
     let ir = lower(source);

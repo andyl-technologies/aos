@@ -557,6 +557,7 @@ impl TreeWalk {
                 for fingerprint in trace {
                     self.record_impure_input(fingerprint);
                 }
+                self.record_forced_expression_demand(&subject);
                 self.increment_eval_cache_hit();
                 Some(value)
             }
@@ -598,6 +599,39 @@ impl TreeWalk {
         self.heap.alloc_path(NixString::from_bytes(bytes)).ok()
     }
 
+    pub(super) fn record_forced_expression_demand(&mut self, subject: &ForceCacheSubject) {
+        if !self.options.eval_cache_enabled() {
+            return;
+        }
+        let Some(identity) = subject.metadata_identity else {
+            return;
+        };
+        self.open_persist_eval_cache();
+        let Some(persist_cache) = &self.persist_cache else {
+            return;
+        };
+        let key = PersistNodeMetadataKey::for_expression(
+            identity,
+            subject.free_var_value_hashes.iter().copied(),
+        );
+        if let Err(error) = persist_cache.record_node_current_demand(key) {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator persistent force demand observation failed"
+            );
+        }
+    }
+
+    pub(super) fn open_persist_eval_cache(&mut self) {
+        if self.persist_cache.is_none() && !self.persist_cache_open_attempted {
+            self.persist_cache_open_attempted = true;
+            if let Some(root) = self.options.persist_cache_root().map(Path::to_path_buf) {
+                self.persist_cache = PersistCache::open(root).ok();
+            }
+        }
+    }
+
     pub(super) fn force_cache_subject_for_thunk(
         &self,
         site: EvalNodeRef,
@@ -625,6 +659,7 @@ impl TreeWalk {
                     lookup_identity,
                     pure_observation_identity,
                     impure_observation_identity,
+                    metadata_identity: lookup_identity,
                     free_var_value_hashes,
                 })
             }
@@ -662,6 +697,7 @@ impl TreeWalk {
             lookup_identity,
             pure_observation_identity: lookup_identity,
             impure_observation_identity: observation_identity,
+            metadata_identity: lookup_identity,
             free_var_value_hashes: Vec::new(),
         })
     }

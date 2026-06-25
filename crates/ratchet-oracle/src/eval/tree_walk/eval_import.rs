@@ -1120,11 +1120,6 @@ impl TreeWalk {
         if self.parse_cache.is_none() {
             return;
         }
-        if self.persist_cache.is_none() && !self.persist_cache_open_attempted {
-            self.persist_cache_open_attempted = true;
-            if let Some(root) = self.options.persist_cache_root().map(Path::to_path_buf) {
-                self.persist_cache = PersistCache::open(root).ok();
-            }
-        }
+        self.open_persist_eval_cache();
     }
 }

@@ -887,22 +887,23 @@ alone (`M-1`/`Q-A`).
       `MaterializationReuse` carries prior-run and current-run demand counters,
       saturates current-run increments, and converts prior-run demand into the
       existing `MaterializationSignals` cross-run reuse bit. This is policy
-      vocabulary only; durable counter storage, evaluator demand accounting,
-      cost measurement, packfile writes, and AOS tuning remain open (`C-14`).
+      vocabulary only; persistent storage and force-cache demand accounting are
+      covered by later rows, while cost measurement, packfile writes, and AOS
+      tuning remain open (`C-14`).
 - [x] Current materialization reuse run-boundary substrate:
       `MaterializationReuse::advance_run` carries current-run demand into
       prior-run history with saturation and clears current-run observations, so
       same-run demand only becomes a cross-run reuse signal for later runs. This
-      is policy vocabulary only; durable counter storage, automatic
-      process-boundary update, evaluator demand accounting, cost measurement,
+      is policy vocabulary only; persistent sidecar adapters are covered by
+      later rows, while automatic process-boundary update, cost measurement,
       packfile writes, and AOS tuning remain open (`C-14`).
 - [x] Current materialization reuse metadata codec:
       `MaterializationReuse::encode_persist_metadata`/`decode_persist_metadata`
       define a stable 16-byte little-endian payload for previous-run and
       current-run demand counters, with short-prefix validation through
       `PersistPackFormatError`. This is codec-only; node metadata index,
-      durable counter storage, automatic process-boundary update, evaluator
-      demand accounting, cost measurement, and AOS tuning remain open (`C-14`).
+      force-cache demand accounting, automatic process-boundary update, cost
+      measurement, and AOS tuning remain open (`C-14`).
 - [x] Current demand-node metadata codec substrate:
       `PersistNodeMetadataKey` derives stable persistent BLAKE3 keys for
       expression nodes from `CacheExprIdentity` plus ordered free-variable value
@@ -910,20 +911,19 @@ alone (`M-1`/`Q-A`).
       in domains separate from hot `DemandCacheKey`; `PersistNodeMetadataIndexValue`
       wraps the existing materialization reuse counters, and
       `PersistNodeMetadataIndexEntry` frames key/value records. This is
-      codec-only; fixed-record index storage is covered by the next row, while
-      LMDB/redb node tables, durable counter storage, evaluator demand
-      accounting, process-boundary updates, and AOS tuning remain open
-      (`C-13`/`C-14`/`S-14`).
+      codec-only; fixed-record index storage and force-cache demand accounting
+      are covered by following rows, while LMDB/redb node tables,
+      process-boundary updates, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current demand-node metadata index substrate:
       `PersistLayout::node_metadata_index_path` adds `nodes/metadata.index`,
       `PersistNodeMetadataIndex` appends fixed-width metadata records and
       resolves lookups with newest-record-wins semantics, and
       `PersistCache::record_node_metadata`/`lookup_node_metadata` expose the
       sidecar through the opened persistent cache root. This is a simple
-      fixed-record sidecar only; typed counter update helpers are covered by
-      the next row, while LMDB/redb node tables, evaluator demand accounting,
-      process-boundary updates, mmap reads, GC/repack, and AOS tuning remain
-      open (`C-13`/`C-14`/`S-14`).
+      fixed-record sidecar only; typed counter update helpers and force-cache
+      demand accounting are covered by following rows, while LMDB/redb node
+      tables, process-boundary updates, mmap reads, GC/repack, and AOS tuning
+      remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node reuse counter update adapter:
       `PersistCache::record_node_materialization_reuse` and
       `lookup_node_materialization_reuse` expose typed materialization reuse
@@ -932,38 +932,50 @@ alone (`M-1`/`Q-A`).
       counters on a miss, appends a saturated current-demand increment, and
       returns the recorded value. This is caller-driven, append-only, and
       requires callers to serialize writes for the same node key; evaluator
-      demand accounting, atomic writer coordination, automatic run-boundary
-      orchestration, LMDB/redb node tables, compaction/GC, and AOS tuning
-      remain open (`C-13`/`C-14`/`S-14`).
+      call-site integration is covered by the force-cache accounting row below,
+      while atomic writer coordination, automatic run-boundary orchestration,
+      LMDB/redb node tables, compaction/GC, and AOS tuning remain open
+      (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node reuse run-boundary adapter:
       `PersistCache::advance_node_materialization_reuse_run` looks up the
       newest counters for one node key, returns `None` without writing on a
       miss, and otherwise appends `MaterializationReuse::advance_run` so
       current-run observations become prior-run reuse signal for later runs.
       This is caller-driven, append-only, and requires callers to serialize
-      writes for the same node key; evaluator demand accounting, automatic
-      process-boundary orchestration, atomic writer coordination, LMDB/redb node
-      tables, compaction/GC, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
+      writes for the same node key; automatic process-boundary orchestration,
+      atomic writer coordination, LMDB/redb node tables, compaction/GC, and AOS
+      tuning remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node reuse sidecar advancement:
       `PersistNodeMetadataIndex::latest_entries` scans the fixed-record
       metadata sidecar into deterministic newest-entry-per-key order, and
       `PersistCache::advance_all_node_materialization_reuse_runs` appends
       changed `MaterializationReuse::advance_run` records for all known node
       keys while skipping no-op counters. This is caller-driven, append-only,
-      and requires callers to serialize sidecar writes; evaluator demand
-      accounting, automatic process-boundary orchestration, atomic writer
-      coordination, LMDB/redb node tables, automatic compaction/GC policy, and
-      AOS tuning remain open (`C-13`/`C-14`/`S-14`).
+      and requires callers to serialize sidecar writes; automatic
+      process-boundary orchestration, atomic writer coordination, LMDB/redb
+      node tables, automatic compaction/GC policy, and AOS tuning remain open
+      (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node metadata sidecar compaction:
       `PersistNodeMetadataIndex::compact_latest_entries` rewrites
       `nodes/metadata.index` through a temporary file and rename so only the
       newest record for each node metadata key remains in stable key order, and
       `PersistCache::compact_node_metadata` exposes that operation through the
       opened cache root. This is caller-driven and requires callers to
-      serialize sidecar writes; evaluator demand accounting, automatic
-      process-boundary orchestration, atomic writer coordination, LMDB/redb node
-      tables, automatic compaction/GC policy, and AOS tuning remain open
-      (`C-13`/`C-14`/`S-14`).
+      serialize sidecar writes; automatic process-boundary orchestration,
+      atomic writer coordination, LMDB/redb node tables, automatic
+      compaction/GC policy, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
+- [x] Current force-cache persistent demand accounting:
+      tree-walk `force_value` derives `PersistNodeMetadataKey` from the same
+      lookup-safe `ForceCacheSubject` identity and ordered free-variable hashes
+      used by the in-memory force-cache key, lazily opens the configured
+      persistent cache root when `eval_cache_enabled` is on, and best-effort
+      appends `record_node_current_demand` for successful cold forces and
+      in-memory force-cache hits. Observation-only uncacheable subjects such as
+      `currentTime` have no metadata identity and are not counted. This is
+      current-run demand accounting only; automatic run-boundary orchestration,
+      atomic writer coordination, materialization-threshold consumption,
+      persistent value payload writes, LMDB/redb node tables, automatic
+      compaction/GC policy, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit materialization-to-pack adapter:
       `PersistCache::materialize_blob` consumes a caller-supplied
       `MaterializationDecision`, skips without hashing/writing on
