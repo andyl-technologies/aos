@@ -56,6 +56,34 @@
       patch = "0010-crucible-plugin-time-advance.patch";
       check = import ./phase1-plugin-time-advance.nix {inherit pkgs lib qemuPackage;};
     }
+    {
+      patch = "0011-crucible-plugin-icount-raw.patch";
+      check = import ./phase1-plugin-runtime-apis.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0011-crucible-plugin-icount-raw.patch";
+      };
+    }
+    {
+      patch = "0012-crucible-plugin-vcpu-exit.patch";
+      check = import ./phase1-plugin-runtime-apis.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0012-crucible-plugin-vcpu-exit.patch";
+      };
+    }
+    {
+      patch = "0013-crucible-plugin-wake-fd.patch";
+      check = import ./phase1-plugin-runtime-apis.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0013-crucible-plugin-wake-fd.patch";
+      };
+    }
+    {
+      patch = "0014-crucible-plugin-tcg-exec-cb.patch";
+      check = import ./phase1-plugin-runtime-apis.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0014-crucible-plugin-tcg-exec-cb.patch";
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -166,7 +194,12 @@ in
               qemu_plugin_net_can_receive \
               qemu_plugin_has_time_control \
               qemu_plugin_advance_virtual_time_direct \
-              qemu_plugin_drain_main_loop
+              qemu_plugin_drain_main_loop \
+              qemu_plugin_icount_raw \
+              qemu_plugin_force_vcpu_exit \
+              qemu_plugin_register_wake_fd \
+              qemu_plugin_main_loop_wait \
+              qemu_plugin_register_tcg_exec_cb
             do
               grep -E "[[:space:]]$symbol$" "$out/qemu-system-x86_64.dynamic-symbols"
             done
@@ -194,6 +227,7 @@ in
             qemu_plugin_clock_deadline_export_present=true
             qemu_plugin_net_exports_present=true
             qemu_plugin_time_drain_exports_present=true
+            qemu_plugin_runtime_api_exports_present=true
             qemu_inert_gate_attr=checks.crucible.phase2.gates.qemuInert
             qemu_inert_gate_wired=true
             qemu_inert_depends_on_patch_microtests=true

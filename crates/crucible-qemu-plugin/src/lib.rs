@@ -75,20 +75,29 @@ pub mod whitebox_doorbell;
 
 pub use abi::{
     InertDeviceCallback, MIN_SUPPORTED_VCPU_COUNT, OWNED_DEVICE_CALLBACK_KINDS,
-    PluginDeviceCallbackKind, PluginLifecycleCore, PluginLifecyclePhase, PluginStatePartition,
-    QEMU_PLUGIN_API_VERSION, QEMU_PLUGIN_INSTALL_ERROR, QEMU_PLUGIN_INSTALL_OK,
-    QEMU_PLUGIN_INSTALL_SYMBOL, QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL, QEMU_PLUGIN_VERSION_SYMBOL,
-    QemuPluginAbiError, QemuPluginExecutionModel, QemuPluginId, QemuPluginInfo, QemuTcgThreading,
+    PluginDeviceCallbackKind, PluginLifecycleCore, PluginLifecyclePhase, PluginRuntimeApis,
+    PluginStatePartition, QEMU_PLUGIN_API_VERSION, QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL,
+    QEMU_PLUGIN_ICOUNT_RAW_SYMBOL, QEMU_PLUGIN_INSTALL_ERROR, QEMU_PLUGIN_INSTALL_OK,
+    QEMU_PLUGIN_INSTALL_SYMBOL, QEMU_PLUGIN_MAIN_LOOP_WAIT_SYMBOL,
+    QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL, QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL,
+    QEMU_PLUGIN_VERSION_SYMBOL, QemuForceVcpuExitFn, QemuIcountRawFn, QemuMainLoopWaitFn,
+    QemuPluginAbiError, QemuPluginExecutionModel, QemuPluginId, QemuPluginInfo,
+    QemuRegisterTcgExecCbFn, QemuRegisterWakeFdFn, QemuTcgExecCbFn, QemuTcgThreading,
     RegisteredDeviceCallbacks, execution_model_from_qemu_info, install_inert_scaffold,
     install_inert_scaffold_from_qemu_info, install_required_deadline_scaffold,
     install_required_deadline_scaffold_from_qemu_info, install_required_preemption_scaffold,
-    install_required_preemption_scaffold_from_qemu_info, install_required_time_capability_scaffold,
+    install_required_preemption_scaffold_from_qemu_info, install_required_runtime_api_scaffold,
+    install_required_runtime_api_scaffold_from_qemu_info,
+    install_required_time_capability_scaffold,
     install_required_time_capability_scaffold_from_qemu_info,
     install_required_vcpu_introspection_scaffold,
     install_required_vcpu_introspection_scaffold_from_qemu_info, qemu_plugin_install,
     qemu_plugin_version, resolve_qemu_advance_virtual_time_direct_symbol,
-    resolve_qemu_clock_deadline_symbol, resolve_qemu_inject_preemption_symbol,
-    resolve_qemu_read_vcpu_regs_symbol, resolve_qemu_rr_cursor_symbol, validate_install_boundary,
+    resolve_qemu_clock_deadline_symbol, resolve_qemu_force_vcpu_exit_symbol,
+    resolve_qemu_icount_raw_symbol, resolve_qemu_inject_preemption_symbol,
+    resolve_qemu_main_loop_wait_symbol, resolve_qemu_read_vcpu_regs_symbol,
+    resolve_qemu_register_tcg_exec_cb_symbol, resolve_qemu_register_wake_fd_symbol,
+    resolve_qemu_rr_cursor_symbol, validate_install_boundary,
 };
 pub use args::{
     PLUGIN_ARG_COVERAGE, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD,
@@ -108,7 +117,7 @@ pub use coverage::{
     CoverageBlockEvent, CoverageCallback, CoverageCapabilities, CoverageError, CoverageMap,
     CoverageObservation, CoverageRegistrationPlan, CoverageSink, CoverageSinkError,
     DEFAULT_COVERAGE_MAP_ENTRIES, PluginCoverage, QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL,
-    fold_basic_block_pc, handle_coverage_exec_callback,
+    crucible_qemu_plugin_coverage_exec_cb, fold_basic_block_pc, handle_coverage_exec_callback,
 };
 pub use deadline::{
     ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,
@@ -164,9 +173,9 @@ pub use round_robin::{
 pub use setup::PluginReadySetupAck;
 #[cfg(unix)]
 pub use setup::{
-    ArmedWakeFd, PluginSetupCompletion, PluginSetupError, PluginSetupFailureStage, WakeFdArmError,
-    prepare_setup_completion, receive_and_prepare_setup_completion, receive_setup_with_descriptors,
-    send_ready_setup_ack,
+    ArmedWakeFd, PluginSetupCompletion, PluginSetupError, PluginSetupFailureStage,
+    RegisteredWakeFd, WakeFdArmError, WakeFdRegisterError, prepare_setup_completion,
+    receive_and_prepare_setup_completion, receive_setup_with_descriptors, send_ready_setup_ack,
 };
 pub use shmem_ordering::PluginShmemOrdering;
 pub use teardown::{

@@ -710,7 +710,8 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
 
 - **Enforces:** [SHM-26], [INV-8]; integrates the cross-process wake.
 - **Mechanism:** exports `qemu_plugin_register_wake_fd(fd)` (registers an eventfd
-  as a source on QEMU's main AIO context; reads drain it without dispatching) and
+  through QEMU's iohandler/main-loop fd surface; reads drain it without
+  dispatching) and
   `qemu_plugin_main_loop_wait()` (drops BQL, runs `aio_poll` blocking, re-acquires
   BQL). Together they let the plugin's idle callback replace a raw `FUTEX_WAIT` on
   shmem with a first-class QEMU event-loop wait, so cross-process wakes (the
@@ -735,8 +736,9 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
 - **Mechanism:** exports `qemu_plugin_register_tcg_exec_cb()` — a
   runtime-toggleable hook fired after every `tcg_cpu_exec()` in the sim-mode
   accel loop, with **zero overhead when no callback is registered** (a single
-  NULL-check per call). Used to harvest basic-block coverage with no guest
-  instrumentation.
+  NULL-check per call). This supplies the QEMU-side exec-slice callback boundary
+  used by the plugin; richer basic-block coverage metadata is owned by the later
+  coverage gate.
 - **Micro-test:** register a counting callback; assert it fires exactly once per
   `tcg_cpu_exec`; assert no measurable overhead with no callback registered.
 - **Inertness:** [PATCH-3](c) — the NULL-check is the only always-present cost and
@@ -745,8 +747,9 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
 
 - **[PATCH-25]** The series MUST export a TCG-exec callback fired after each
   `tcg_cpu_exec` in the sim accelerator, with zero overhead when unregistered, to
-  harvest coverage without guest instrumentation. *Gate:* `gate:qemu-inert`,
-  forward-ref 22. *Spec:* §11.5; satisfies coverage capability (22), [INV-7].
+  provide the QEMU-side execution callback boundary without guest
+  instrumentation. *Gate:* `gate:qemu-inert`, forward-ref 22. *Spec:* §11.5;
+  satisfies coverage capability (22), [INV-7].
 
 ## 11.6 Device co-simulation patches (shmem transport)
 
@@ -1224,11 +1227,32 @@ time-control primitives the whole design rests on.
     symbol in the built QEMU binary, `gate:layer0-determinism` consumes the
     evidence, and [PATCH-41] records that this required API is Crucible-supplied
     rather than an upstream QEMU plugin assumption.
-- [ ] **T-PATCH-11** Implement the plugin reads/exits/wakes
+- [x] **T-PATCH-11** Implement the plugin reads/exits/wakes
   `crucible-plugin-icount-raw`, `crucible-plugin-vcpu-exit`,
   `crucible-plugin-wake-fd`, `crucible-plugin-tcg-exec-cb`, each additive and
   zero-overhead-when-unused. — satisfies [PATCH-22], [PATCH-23], [PATCH-24],
   [PATCH-25]; spec §11.5.
+  - Completed by `0011-crucible-plugin-icount-raw.patch`,
+    `0012-crucible-plugin-vcpu-exit.patch`,
+    `0013-crucible-plugin-wake-fd.patch`, and
+    `0014-crucible-plugin-tcg-exec-cb.patch`, with
+    `checks.crucible.phase1.pluginRuntimeApis` and
+    `gate:patch-microtests`: QEMU now exports `qemu_plugin_icount_raw`,
+    `qemu_plugin_force_vcpu_exit`, `qemu_plugin_register_wake_fd`,
+    `qemu_plugin_main_loop_wait`, and `qemu_plugin_register_tcg_exec_cb`; the
+    patch-level fixture validates raw icount is bias-independent and
+    disabled-safe, forced vCPU exit sets the current CPU's exit request, wake-fd
+    registration drains through QEMU's iohandler/main-loop surface with the BQL
+    guard intact, and the TCG exec callback fires after `icount_process_data()`
+    while retaining a single disabled NULL-check. The full skewed-startup and
+    QMP-service smoke scenarios remain layer-gate evidence rather than claims of
+    this source-level fixture. The Rust plugin now has typed ABI resolvers for
+    all five exports, requires the runtime API bundle at install, provides a
+    vCPU-init callback body that invokes `qemu_plugin_force_vcpu_exit` when QEMU
+    dispatches that callback, registers the wake fd with QEMU before
+    `SetupAck(0)`, and calls
+    `qemu_plugin_register_tcg_exec_cb` when coverage mode requests the
+    exec-slice callback capability.
 - [ ] **T-PATCH-12** Implement the block co-sim patches `crucible-blk-shmem`,
   `crucible-blk-shmem-io-fixes`, `crucible-blk-write-sentinel` over shmem with
   deterministic-completion micro-tests. — satisfies [PATCH-26], [PATCH-27],

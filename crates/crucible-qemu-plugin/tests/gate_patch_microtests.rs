@@ -18,6 +18,10 @@ const EXPECTED_PATCHES: &[&str] = &[
     "0008-crucible-det-getrandom.patch",
     "0009-crucible-net-deterministic.patch",
     "0010-crucible-plugin-time-advance.patch",
+    "0011-crucible-plugin-icount-raw.patch",
+    "0012-crucible-plugin-vcpu-exit.patch",
+    "0013-crucible-plugin-wake-fd.patch",
+    "0014-crucible-plugin-tcg-exec-cb.patch",
 ];
 
 #[test]
@@ -51,6 +55,12 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "qemu_plugin_clock_deadline_export_present=true");
     assert_contains(&aggregate, "qemu_plugin_net_exports_present=true");
     assert_contains(&aggregate, "qemu_plugin_time_drain_exports_present=true");
+    assert_contains(&aggregate, "qemu_plugin_runtime_api_exports_present=true");
+    assert_contains(&aggregate, "qemu_plugin_icount_raw");
+    assert_contains(&aggregate, "qemu_plugin_force_vcpu_exit");
+    assert_contains(&aggregate, "qemu_plugin_register_wake_fd");
+    assert_contains(&aggregate, "qemu_plugin_main_loop_wait");
+    assert_contains(&aggregate, "qemu_plugin_register_tcg_exec_cb");
     assert_contains(&aggregate, "qemu_inert_gate_wired=true");
     assert_contains(&aggregate, "qemu_inert_depends_on_patch_microtests=true");
     assert_contains(
@@ -74,6 +84,34 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         "attrPath = \"checks.crucible.phase2.gates.qemuInert\";",
     );
     assert_contains(&default_checks, "patchMicrotests = patchMicrotestsCheck;");
+
+    let abi = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/abi.rs"))?;
+    assert_contains(&abi, "pub type QemuIcountRawFn");
+    assert_contains(&abi, "pub type QemuForceVcpuExitFn");
+    assert_contains(&abi, "pub type QemuRegisterWakeFdFn");
+    assert_contains(&abi, "pub type QemuMainLoopWaitFn");
+    assert_contains(&abi, "pub type QemuRegisterTcgExecCbFn");
+    assert_contains(&abi, "resolve_qemu_icount_raw_symbol");
+    assert_contains(&abi, "resolve_qemu_force_vcpu_exit_symbol");
+    assert_contains(&abi, "resolve_qemu_register_wake_fd_symbol");
+    assert_contains(&abi, "resolve_qemu_main_loop_wait_symbol");
+    assert_contains(&abi, "resolve_qemu_register_tcg_exec_cb_symbol");
+    assert_contains(&abi, "PluginRuntimeApis::require");
+    assert_contains(&abi, "install_required_runtime_api_scaffold_from_qemu_info");
+    assert_contains(&abi, "crucible_qemu_plugin_inert_vcpu_init_cb");
+    assert_contains(&abi, "force_vcpu_exit();");
+
+    let setup = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/setup.rs"))?;
+    assert_contains(&setup, "RegisteredWakeFd");
+    assert_contains(&setup, "registered_wake_fd");
+    assert_contains(&setup, "register_with_qemu");
+    assert_contains(&setup, "QemuRegisterWakeFdFn");
+
+    let registration =
+        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/registration.rs"))?;
+    assert_contains(&registration, "register_tcg_exec_cb(");
+    assert_contains(&registration, "Some(");
+    assert_contains(&registration, "crucible_qemu_plugin_coverage_exec_cb");
 
     for patch in EXPECTED_PATCHES {
         assert_contains(&aggregate, patch);
@@ -139,13 +177,38 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             "tests/crucible/phase1-plugin-time-advance.c",
             "0010-crucible-plugin-time-advance.patch",
         ),
+        (
+            "tests/crucible/phase1-plugin-runtime-apis.nix",
+            "tests/crucible/phase1-plugin-runtime-apis.c",
+            "0011-crucible-plugin-icount-raw.patch",
+        ),
+        (
+            "tests/crucible/phase1-plugin-runtime-apis.nix",
+            "tests/crucible/phase1-plugin-runtime-apis.c",
+            "0012-crucible-plugin-vcpu-exit.patch",
+        ),
+        (
+            "tests/crucible/phase1-plugin-runtime-apis.nix",
+            "tests/crucible/phase1-plugin-runtime-apis.c",
+            "0013-crucible-plugin-wake-fd.patch",
+        ),
+        (
+            "tests/crucible/phase1-plugin-runtime-apis.nix",
+            "tests/crucible/phase1-plugin-runtime-apis.c",
+            "0014-crucible-plugin-tcg-exec-cb.patch",
+        ),
     ];
 
     for (nix_path, c_path, patch) in per_patch_checks {
         let nix_source = fs::read_to_string(root.join(nix_path))?;
 
         assert_contains(&nix_source, "gate=gate:patch-microtests");
-        assert_contains(&nix_source, &format!("patch={patch}"));
+        if nix_path == "tests/crucible/phase1-plugin-runtime-apis.nix" {
+            assert_contains(&nix_source, "patch=${patchName}");
+            assert_contains(&nix_source, patch);
+        } else {
+            assert_contains(&nix_source, &format!("patch={patch}"));
+        }
         assert_contains(&nix_source, "patched_fixture_exercised=true");
         assert_contains(&nix_source, "stock_negative_control");
         assert_contains(&nix_source, "qemuPackage ?");
