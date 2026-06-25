@@ -3808,7 +3808,7 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
 #[test]
 fn unsupported_force_payload_clears_persistent_value_link() {
     let persist_root = unique_temp_dir("force-cache-persistent-clear-unsupported");
-    let ir = lower("{ }");
+    let ir = lower("{ a = 1; }");
     let identity = CacheExprIdentity::new(
         DurableBlake3Hash::for_bytes(b"persistent-force-unsupported"),
         IrId::new(11),
@@ -4671,6 +4671,52 @@ fn empty_list_result_thunks_hit_after_heap_rehydration() {
 }
 
 #[test]
+fn empty_attrset_result_thunks_hit_after_heap_rehydration() {
+    let source = r#"{ a = { }; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "empty-attrs-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("empty attrset thunk force succeeds");
+        let attrs = evaluator
+            .heap()
+            .get_attrs(forced)
+            .expect("cached value is rehydrated into this evaluator heap");
+
+        assert!(attrs.is_empty());
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+        assert_eq!(
+            evaluator.stats().thunks_forced(),
+            if expected_hit { 0 } else { 1 }
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching empty attrset results should share one demand node"
+    );
+}
+
+#[test]
 fn context_path_payloads_rehydrate_after_heap_lookup() {
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
@@ -5043,6 +5089,52 @@ fn captured_empty_lists_wait_for_canonical_free_variable_hashes() {
         1,
         "only the empty list literal result should be cached; the captured list free variable remains unsupported"
     );
+}
+
+#[test]
+fn captured_empty_attrsets_wait_for_canonical_free_variable_hashes() {
+    let source = "let f = x: { a = x == x; }; in { a = (f {}).a; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "empty-attrs-captures.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured empty attrset force succeeds");
+
+    assert_eq!(forced.as_bool(), Ok(true));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "only the empty attrset literal result should be cached; the captured attrset free variable remains unsupported"
+    );
+}
+
+#[test]
+fn materialized_empty_attrsets_are_not_free_variable_hashable_yet() {
+    let ir = lower("1");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let attrs = evaluator
+        .heap
+        .alloc_attrs(0, FlatAttrs::empty())
+        .expect("empty attrset allocates");
+
+    assert_eq!(evaluator.force_cache_free_var_value_hash(attrs), None);
 }
 
 #[test]

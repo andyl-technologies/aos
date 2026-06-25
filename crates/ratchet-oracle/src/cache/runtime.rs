@@ -9,9 +9,10 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use super::cutoff::{
-    CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION, CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION,
-    CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION, INLINE_VALUE_HASH_DOMAIN_VERSION,
-    LIST_VALUE_HASH_DOMAIN_VERSION, PATH_VALUE_HASH_DOMAIN_VERSION,
+    ATTRS_VALUE_HASH_DOMAIN_VERSION, CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION,
+    CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION, CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION,
+    INLINE_VALUE_HASH_DOMAIN_VERSION, LIST_VALUE_HASH_DOMAIN_VERSION,
+    PATH_VALUE_HASH_DOMAIN_VERSION,
 };
 use super::{
     CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey, DemandGraph, DemandGraphError,
@@ -162,6 +163,13 @@ impl CachedExpressionValue {
         }
     }
 
+    /// Creates a cached empty Nix attrset payload.
+    pub const fn empty_attrs() -> Self {
+        Self {
+            payload: InlineValuePayload::EmptyAttrs,
+        }
+    }
+
     /// Returns the durable value hash for this cached payload.
     ///
     /// # Errors
@@ -215,6 +223,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::Path(_)
             | InlineValuePayload::ContextPath { .. }
             | InlineValuePayload::EmptyList
+            | InlineValuePayload::EmptyAttrs
             | InlineValuePayload::Int(_)
             | InlineValuePayload::Float(_)
             | InlineValuePayload::Bool(_)
@@ -233,6 +242,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::Path(_)
             | InlineValuePayload::ContextPath { .. }
             | InlineValuePayload::EmptyList
+            | InlineValuePayload::EmptyAttrs
             | InlineValuePayload::Null => None,
         }
     }
@@ -248,6 +258,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::ContextString { .. }
             | InlineValuePayload::ContextPath { .. }
             | InlineValuePayload::EmptyList
+            | InlineValuePayload::EmptyAttrs
             | InlineValuePayload::Null => None,
         }
     }
@@ -263,6 +274,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::ContextString { .. }
             | InlineValuePayload::Path(_)
             | InlineValuePayload::EmptyList
+            | InlineValuePayload::EmptyAttrs
             | InlineValuePayload::Null => None,
         }
     }
@@ -270,6 +282,11 @@ impl CachedExpressionValue {
     /// Returns whether this payload is the empty Nix list.
     pub const fn is_empty_list(&self) -> bool {
         matches!(&self.payload, InlineValuePayload::EmptyList)
+    }
+
+    /// Returns whether this payload is the empty Nix attrset.
+    pub const fn is_empty_attrs(&self) -> bool {
+        matches!(&self.payload, InlineValuePayload::EmptyAttrs)
     }
 }
 
@@ -361,6 +378,12 @@ pub enum CachedExpressionValuePayloadError {
     #[error("cached expression list payload has unsupported length {len}")]
     UnsupportedListPayloadLength {
         /// The encoded list spine length.
+        len: u128,
+    },
+    /// An attrset payload encoded a non-empty binding table that this precursor cannot replay yet.
+    #[error("cached expression attrset payload has unsupported length {len}")]
+    UnsupportedAttrsPayloadLength {
+        /// The encoded attrset binding count.
         len: u128,
     },
 }
@@ -1015,6 +1038,7 @@ enum InlineValuePayload {
         context: StringContext,
     },
     EmptyList,
+    EmptyAttrs,
 }
 
 impl InlineValuePayload {
@@ -1056,7 +1080,8 @@ impl InlineValuePayload {
             | Self::ContextString { .. }
             | Self::Path(_)
             | Self::ContextPath { .. }
-            | Self::EmptyList => None,
+            | Self::EmptyList
+            | Self::EmptyAttrs => None,
         }
     }
 
@@ -1075,6 +1100,7 @@ impl InlineValuePayload {
                 Ok(ValueHash::from_context_path_parts(bytes, context))
             }
             Self::EmptyList => Ok(ValueHash::from_empty_list()),
+            Self::EmptyAttrs => Ok(ValueHash::from_empty_attrs()),
         }
     }
 
@@ -1129,6 +1155,11 @@ impl InlineValuePayload {
             Self::EmptyList => {
                 append_payload_bytes(&mut out, LIST_VALUE_HASH_DOMAIN_VERSION)?;
                 append_payload_bytes(&mut out, b"list")?;
+                append_payload_u128(&mut out, 0)?;
+            }
+            Self::EmptyAttrs => {
+                append_payload_bytes(&mut out, ATTRS_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, b"attrs")?;
                 append_payload_u128(&mut out, 0)?;
             }
         }
@@ -1214,6 +1245,19 @@ impl InlineValuePayload {
             }
             cursor.finish()?;
             return Ok(Self::EmptyList);
+        }
+        if bytes.starts_with(ATTRS_VALUE_HASH_DOMAIN_VERSION) {
+            let mut cursor = PayloadCursor::new(bytes);
+            cursor.take_marker(ATTRS_VALUE_HASH_DOMAIN_VERSION, "attrs value domain")?;
+            cursor.take_marker(b"attrs", "attrs payload tag")?;
+            let len = cursor.take_u128()?;
+            if len != 0 {
+                return Err(
+                    CachedExpressionValuePayloadError::UnsupportedAttrsPayloadLength { len },
+                );
+            }
+            cursor.finish()?;
+            return Ok(Self::EmptyAttrs);
         }
         Err(CachedExpressionValuePayloadError::UnknownDomain)
     }
@@ -1980,6 +2024,15 @@ mod tests {
         encoded
     }
 
+    fn attrs_payload_with_len(len: u128) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        append_payload_bytes(&mut encoded, ATTRS_VALUE_HASH_DOMAIN_VERSION)
+            .expect("domain appends");
+        append_payload_bytes(&mut encoded, b"attrs").expect("tag appends");
+        append_payload_u128(&mut encoded, len).expect("attrs length appends");
+        encoded
+    }
+
     fn key(node: u32, label: &[u8]) -> DemandCacheKey {
         DemandCacheKey::for_free_vars(identity(label, node), [durable_hash(label)])
             .expect("key builds")
@@ -2006,6 +2059,7 @@ mod tests {
                 all_context_kinds(),
             ),
             CachedExpressionValue::empty_list(),
+            CachedExpressionValue::empty_attrs(),
         ];
 
         for payload in payloads {
@@ -2172,6 +2226,19 @@ mod tests {
         assert_eq!(
             error,
             CachedExpressionValuePayloadError::UnsupportedListPayloadLength { len: 1 }
+        );
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_non_empty_attrsets() {
+        let encoded = attrs_payload_with_len(1);
+
+        let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+            .expect_err("non-empty attrset payload errors");
+
+        assert_eq!(
+            error,
+            CachedExpressionValuePayloadError::UnsupportedAttrsPayloadLength { len: 1 }
         );
     }
 
@@ -3208,6 +3275,39 @@ mod tests {
             .expect("immediate lookup succeeds");
 
         assert!(payload.is_empty_list());
+        assert!(payload.context_free_string_bytes().is_none());
+        assert!(payload.context_string_parts().is_none());
+        assert!(payload.path_bytes().is_none());
+        assert!(payload.context_path_parts().is_none());
+        assert!(payload.immediate_value().is_none());
+        assert!(
+            immediate.is_none(),
+            "generic Value lookup must not return heap-backed payload pointers"
+        );
+    }
+
+    #[test]
+    fn eval_cache_looks_up_empty_attrs_payloads() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+
+        cache
+            .observe_inline_expression_payload(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::empty_attrs(),
+            )
+            .expect("empty attrset payload observes");
+        let payload = cache
+            .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("payload lookup succeeds")
+            .expect("memoized empty attrset payload is present");
+        let immediate = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("immediate lookup succeeds");
+
+        assert!(payload.is_empty_attrs());
+        assert!(!payload.is_empty_list());
         assert!(payload.context_free_string_bytes().is_none());
         assert!(payload.context_string_parts().is_none());
         assert!(payload.path_bytes().is_none());

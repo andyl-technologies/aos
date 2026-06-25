@@ -1093,6 +1093,38 @@ fn cache_empty_list_payload_materializes_and_loads_by_value_hash() {
 }
 
 #[test]
+fn cache_empty_attrs_payload_materializes_and_loads_by_value_hash() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = CachedExpressionValue::empty_attrs();
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+
+    let result = cache
+        .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
+        .expect("empty attrset payload materializes");
+
+    let PersistMaterialization::Materialized(location) = result else {
+        panic!("empty attrset payload should materialize");
+    };
+    assert_eq!(
+        cache
+            .lookup_blob_location(key)
+            .expect("indexed lookup succeeds"),
+        Some(location)
+    );
+    assert_eq!(
+        cache
+            .load_cached_expression_value_indexed(value_hash)
+            .expect("empty attrset payload loads")
+            .expect("empty attrset payload exists"),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_cached_expression_node_payload_materialization_can_skip_without_writing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

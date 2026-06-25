@@ -20,6 +20,7 @@ pub(crate) const PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-path-value-ha
 pub(crate) const CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] =
     b"aos-nix-context-path-value-hash-v1";
 pub(crate) const LIST_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-list-value-hash-v1";
+pub(crate) const ATTRS_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-attrs-value-hash-v1";
 
 /// A durable hash of a canonical evaluated value.
 ///
@@ -167,6 +168,19 @@ impl ValueHash {
         let mut hasher = blake3::Hasher::new();
         hasher.update(LIST_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"list");
+        hasher.update(&0u128.to_le_bytes());
+        Self(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    /// Hashes an empty Nix attrset as a canonical value precursor.
+    ///
+    /// Non-empty attrset hashing requires canonical key/value serialization and
+    /// thunk policy, so the force-cache precursor admits only the empty attrset
+    /// constructor for now.
+    pub fn from_empty_attrs() -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(ATTRS_VALUE_HASH_DOMAIN_VERSION);
+        hasher.update(b"attrs");
         hasher.update(&0u128.to_le_bytes());
         Self(DurableBlake3Hash::from_hasher(hasher))
     }
@@ -398,6 +412,20 @@ mod tests {
         assert_ne!(
             hash,
             ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"list"))
+        );
+    }
+
+    #[test]
+    fn empty_attrs_hashes_include_type_and_length() {
+        let hash = ValueHash::from_empty_attrs();
+
+        assert_eq!(hash, ValueHash::from_empty_attrs());
+        assert_ne!(hash, ValueHash::from_empty_list());
+        assert_ne!(hash, inline_hash(Value::null()));
+        assert_ne!(hash, ValueHash::from_context_free_string_bytes(b"{}"));
+        assert_ne!(
+            hash,
+            ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"attrs"))
         );
     }
 

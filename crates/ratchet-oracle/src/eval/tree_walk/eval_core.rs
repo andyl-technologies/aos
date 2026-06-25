@@ -739,6 +739,14 @@ impl TreeWalk {
                     None
                 }
             }
+            ValueTag::Attrs => {
+                let attrs = self.heap.get_attrs(value).ok()?;
+                if attrs.is_empty() {
+                    Some(CachedExpressionValue::empty_attrs())
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -929,6 +937,9 @@ impl TreeWalk {
         }
         if payload.is_empty_list() {
             return self.heap.alloc_list(NixList::empty()).ok();
+        }
+        if payload.is_empty_attrs() {
+            return self.heap.alloc_attrs(0, FlatAttrs::empty()).ok();
         }
         let bytes = try_clone_bytes(payload.path_bytes()?).ok()?;
         self.heap.alloc_path(NixString::from_bytes(bytes)).ok()
