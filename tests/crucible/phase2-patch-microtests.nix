@@ -119,6 +119,13 @@
         patchName = "0019-crucible-9p-shmem.patch";
       };
     }
+    {
+      patch = "0020-crucible-net-tx-callback.patch";
+      check = import ./phase1-qemu-net-tx-callback.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0020-crucible-net-tx-callback.patch";
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -228,6 +235,7 @@ in
               qemu_plugin_net_send \
               qemu_plugin_net_flush \
               qemu_plugin_net_can_receive \
+              qemu_plugin_register_net_tx_cb \
               qemu_plugin_has_time_control \
               qemu_plugin_advance_virtual_time_direct \
               qemu_plugin_drain_main_loop \

@@ -5,7 +5,10 @@
 //! counter; callers provide the already-mapped outbound ring storage for
 //! `(vm_slot -> SLOT_NET_ROUTER)`.
 
-use std::cell::Cell;
+use std::{
+    cell::Cell,
+    os::raw::{c_int, c_void},
+};
 
 use thiserror::Error;
 
@@ -14,6 +17,45 @@ use crucible_shmem::{DirectedRing, FrameEntry, RingHeader, SLOT_NET_ROUTER, Spsc
 use crate::shmem_ordering::PluginShmemOrdering;
 
 const NET_ROUTER_SLOT_U32: u32 = SLOT_NET_ROUTER as u32;
+/// QEMU plugin API symbol used to register network TX interception.
+pub const QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL: &str = "qemu_plugin_register_net_tx_cb";
+const QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_net_tx_cb\0";
+
+/// Network TX callback body passed to QEMU's transmit path.
+pub type QemuNetTxCbFn = extern "C" fn(*const u8, usize, *mut c_void) -> c_int;
+/// QEMU network TX callback registration exported by `crucible-net-tx-callback`.
+pub type QemuRegisterNetTxCbFn = extern "C" fn(Option<QemuNetTxCbFn>, *mut c_void);
+
+/// Resolves QEMU's network TX callback registration export from the loaded process.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_net_tx_cb_symbol() -> Option<QemuRegisterNetTxCbFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
+    // either null or a process symbol address. The QEMU patch defines this
+    // symbol with the exact `QemuRegisterNetTxCbFn` ABI; callers fail closed
+    // when it is absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: Non-null `symbol` was resolved for
+        // `qemu_plugin_register_net_tx_cb`, whose patched QEMU declaration
+        // matches `QemuRegisterNetTxCbFn`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterNetTxCbFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's network TX callback registration export from the loaded process.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_net_tx_cb_symbol() -> Option<QemuRegisterNetTxCbFn> {
+    None
+}
 
 /// Registration-time-fixed network TX enqueue state.
 #[derive(Debug)]

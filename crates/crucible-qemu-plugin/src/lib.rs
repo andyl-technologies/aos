@@ -148,10 +148,14 @@ pub use network_rx::{
     LosslessNetworkRxQueue, NetworkRxError, NetworkRxInjection, NetworkRxQueueError,
     NetworkRxQueueOperation, PluginNetworkRx, QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL,
     QEMU_PLUGIN_NET_FLUSH_SYMBOL, QEMU_PLUGIN_NET_SEND_SYMBOL, QemuLosslessNetworkRxQueue,
-    QemuPluginNetFlushFn, QemuPluginNetSendFn, handle_network_rx_idle_callback,
+    QemuPluginNetCanReceiveFn, QemuPluginNetFlushFn, QemuPluginNetSendFn,
+    handle_network_rx_idle_callback, resolve_qemu_net_can_receive_symbol,
+    resolve_qemu_net_flush_symbol, resolve_qemu_net_send_symbol,
 };
 pub use network_tx::{
-    NetworkTxEnqueue, NetworkTxError, NetworkTxRing, PluginNetworkTx, handle_network_tx_callback,
+    NetworkTxEnqueue, NetworkTxError, NetworkTxRing, PluginNetworkTx,
+    QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL, QemuNetTxCbFn, QemuRegisterNetTxCbFn,
+    handle_network_tx_callback, resolve_qemu_register_net_tx_cb_symbol,
 };
 pub use ninep_io::{
     NinePGuestCompletion, NinePGuestCompletionError, NinePInboundRing, NinePIoError,

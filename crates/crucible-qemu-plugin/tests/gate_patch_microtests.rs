@@ -27,6 +27,7 @@ const EXPECTED_PATCHES: &[&str] = &[
     "0017-crucible-blk-write-sentinel.patch",
     "0018-crucible-dev-cb-api.patch",
     "0019-crucible-9p-shmem.patch",
+    "0020-crucible-net-tx-callback.patch",
 ];
 
 #[test]
@@ -70,6 +71,7 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "qemu_plugin_register_tcg_exec_cb");
     assert_contains(&aggregate, "qemu_plugin_register_blk_cb");
     assert_contains(&aggregate, "qemu_plugin_register_9p_cb");
+    assert_contains(&aggregate, "qemu_plugin_register_net_tx_cb");
     assert_contains(&aggregate, "qemu_inert_gate_wired=true");
     assert_contains(&aggregate, "qemu_inert_depends_on_patch_microtests=true");
     assert_contains(
@@ -87,6 +89,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(
         &default_checks,
         "qemuBlockShmem = import ./phase1-qemu-block-shmem.nix",
+    );
+    assert_contains(
+        &default_checks,
+        "qemuNetTxCallback = import ./phase1-qemu-net-tx-callback.nix",
     );
     assert_contains(
         &default_checks,
@@ -121,6 +127,18 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&abi, "install_required_runtime_api_scaffold_from_qemu_info");
     assert_contains(&abi, "crucible_qemu_plugin_inert_vcpu_init_cb");
     assert_contains(&abi, "force_vcpu_exit();");
+
+    let network_tx =
+        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/network_tx.rs"))?;
+    assert_contains(&network_tx, "pub type QemuNetTxCbFn");
+    assert_contains(&network_tx, "pub type QemuRegisterNetTxCbFn");
+    assert_contains(&network_tx, "resolve_qemu_register_net_tx_cb_symbol");
+
+    let network_rx =
+        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/network_rx.rs"))?;
+    assert_contains(&network_rx, "resolve_qemu_net_send_symbol");
+    assert_contains(&network_rx, "resolve_qemu_net_flush_symbol");
+    assert_contains(&network_rx, "resolve_qemu_net_can_receive_symbol");
 
     let setup = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/setup.rs"))?;
     assert_contains(&setup, "RegisteredWakeFd");
@@ -243,6 +261,11 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             "tests/crucible/phase1-qemu-9p-shmem.c",
             "0019-crucible-9p-shmem.patch",
         ),
+        (
+            "tests/crucible/phase1-qemu-net-tx-callback.nix",
+            "tests/crucible/phase1-qemu-net-tx-callback.c",
+            "0020-crucible-net-tx-callback.patch",
+        ),
     ];
 
     for (nix_path, c_path, patch) in per_patch_checks {
@@ -256,6 +279,9 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             assert_contains(&nix_source, "patch=${patchName}");
             assert_contains(&nix_source, patch);
         } else if nix_path == "tests/crucible/phase1-qemu-9p-shmem.nix" {
+            assert_contains(&nix_source, "patch=${patchName}");
+            assert_contains(&nix_source, patch);
+        } else if nix_path == "tests/crucible/phase1-qemu-net-tx-callback.nix" {
             assert_contains(&nix_source, "patch=${patchName}");
             assert_contains(&nix_source, patch);
         } else {
