@@ -440,9 +440,18 @@ alone (`M-1`/`Q-A`).
       no dirty transitive dependencies, so a future evaluator scheduler can
       recompute a frontier without bypassing early cutoff through dirty
       intermediates. This is a graph-side scheduling view only; automatic
-      evaluator recomputation, dynamic dependency tracing, cycle diagnostics,
-      parallel scheduling, persistence, and cached/uncached harness proof remain
-      open (`S-14`/`C-20`).
+      evaluator recomputation, dynamic dependency tracing, SCC-aware cycle
+      handling, parallel scheduling, persistence, and cached/uncached harness
+      proof remain open (`S-14`/`C-20`).
+- [x] Current dirty-frontier blocker diagnostic substrate:
+      `DemandGraph::dirty_frontier` returns a `DirtyFrontier` snapshot with
+      ready dirty nodes and `BlockedDirtyNode` entries whose blocker lists name
+      dirty upstream nodes in deterministic node order; dependency cycles that
+      keep a dirty node reachable from itself report that self edge as a
+      blocker instead of making a stalled frontier look empty. This is a
+      graph-side diagnostic only; SCC-specific errors, evaluator scheduling
+      integration, dynamic dependency tracing, persistence, and cached/uncached
+      harness proof remain open (`S-14`/`C-20`).
 - [ ] Full demand-driven incremental graph remains: create nodes on actual
       force/eval demand, capture dependencies dynamically Adapton-style,
       separate inner/outer observers, run the full ready-dirty recomputation

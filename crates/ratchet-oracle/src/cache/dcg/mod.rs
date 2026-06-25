@@ -17,6 +17,7 @@ use super::{
 };
 use crate::value::Value;
 
+mod frontier;
 mod graph;
 mod nodes;
 mod observation;
@@ -50,6 +51,20 @@ pub struct Reconsideration {
     node: DemandNodeId,
     decision: CutoffDecision,
     dirtied_dependents: Vec<DemandNodeId>,
+}
+
+/// One dirty node that cannot be scheduled yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockedDirtyNode {
+    node: DemandNodeId,
+    blockers: Vec<DemandNodeId>,
+}
+
+/// A deterministic scheduling snapshot for dirty demand-graph nodes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DirtyFrontier {
+    ready: Vec<DemandNodeId>,
+    blocked: Vec<BlockedDirtyNode>,
 }
 
 /// The result of observing one cacheable impure input leaf.
@@ -1021,6 +1036,28 @@ mod tests {
     }
 
     #[test]
+    fn dirty_frontier_reports_ready_and_blocked_nodes() {
+        let mut graph = DemandGraph::new();
+        let a = node_with_hash(&mut graph, 1, b"a-old");
+        let b = node_with_hash(&mut graph, 2, b"b-stable");
+        let c = node_with_hash(&mut graph, 3, b"c-stale");
+        graph.add_dependency(b, a).expect("b depends on a");
+        graph.add_dependency(c, b).expect("c depends on b");
+        graph.mark_dirty(a).expect("a dirties");
+        graph.mark_dirty(c).expect("c dirties");
+
+        let frontier = graph.dirty_frontier();
+
+        assert_eq!(frontier.ready_nodes(), &[a]);
+        let [blocked] = frontier.blocked_nodes() else {
+            panic!("c is blocked by dirty upstream a");
+        };
+        assert_eq!(blocked.node(), c);
+        assert_eq!(blocked.blockers(), &[a]);
+        assert!(!frontier.is_empty());
+    }
+
+    #[test]
     fn ready_dirty_nodes_are_empty_for_dirty_cycle() {
         let mut graph = DemandGraph::new();
         let a = node_with_hash(&mut graph, 1, b"a");
@@ -1034,6 +1071,28 @@ mod tests {
 
         assert!(ready.is_empty());
         assert_eq!(graph.dirty_nodes().collect::<Vec<_>>(), vec![a, b]);
+    }
+
+    #[test]
+    fn dirty_frontier_reports_cycle_blockers() {
+        let mut graph = DemandGraph::new();
+        let a = node_with_hash(&mut graph, 1, b"a");
+        let b = node_with_hash(&mut graph, 2, b"b");
+        graph.add_dependency(a, b).expect("a depends on b");
+        graph.add_dependency(b, a).expect("b depends on a");
+        graph.mark_dirty(a).expect("a dirties");
+        graph.mark_dirty(b).expect("b dirties");
+
+        let frontier = graph.dirty_frontier();
+
+        assert!(frontier.ready_nodes().is_empty());
+        let [a_blocked, b_blocked] = frontier.blocked_nodes() else {
+            panic!("cycle keeps both dirty nodes blocked");
+        };
+        assert_eq!(a_blocked.node(), a);
+        assert_eq!(a_blocked.blockers(), &[a, b]);
+        assert_eq!(b_blocked.node(), b);
+        assert_eq!(b_blocked.blockers(), &[a, b]);
     }
 
     #[test]

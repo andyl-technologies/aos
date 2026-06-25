@@ -282,17 +282,38 @@ impl DemandGraph {
                 return None;
             }
             let id = u32::try_from(index).ok().map(DemandNodeId::new)?;
-            if self.has_dirty_upstream(id) {
+            if !self.dirty_upstream_blockers(id).is_empty() {
                 return None;
             }
             Some(id)
         })
     }
 
-    fn has_dirty_upstream(&self, id: DemandNodeId) -> bool {
+    /// Returns a deterministic scheduling snapshot for dirty nodes.
+    ///
+    /// The returned frontier separates ready dirty nodes from dirty nodes
+    /// blocked by dirty upstream nodes, including themselves when a dependency
+    /// cycle makes a node reachable from itself. This is a diagnostic and
+    /// scheduling view only; it does not recompute nodes or mutate freshness.
+    pub fn dirty_frontier(&self) -> DirtyFrontier {
+        let mut ready = Vec::new();
+        let mut blocked = Vec::new();
+        for node in self.dirty_nodes() {
+            let blockers = self.dirty_upstream_blockers(node);
+            if blockers.is_empty() {
+                ready.push(node);
+            } else {
+                blocked.push(BlockedDirtyNode::new(node, blockers));
+            }
+        }
+        DirtyFrontier::new(ready, blocked)
+    }
+
+    fn dirty_upstream_blockers(&self, id: DemandNodeId) -> Vec<DemandNodeId> {
         let Some(node) = self.nodes.get(id.index()) else {
-            return true;
+            return Vec::new();
         };
+        let mut blockers = BTreeSet::new();
         let mut stack: Vec<_> = node.dependencies.iter().copied().collect();
         let mut visited = BTreeSet::new();
         while let Some(dependency) = stack.pop() {
@@ -300,14 +321,14 @@ impl DemandGraph {
                 continue;
             }
             let Some(node) = self.nodes.get(dependency.index()) else {
-                return true;
+                continue;
             };
             if node.freshness == NodeFreshness::Dirty {
-                return true;
+                blockers.insert(dependency);
             }
             stack.extend(node.dependencies.iter().copied());
         }
-        false
+        blockers.into_iter().collect()
     }
 
     /// Reconsiders one node with a recomputed value hash.
