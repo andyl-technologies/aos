@@ -330,6 +330,15 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          \n\
          [triggers]\n\
          crons = [\"{cron}\"]\n\
+         \n\
+         [[durable_objects.bindings]]\n\
+         name = \"COORDINATOR\"\n\
+         class_name = \"CoordinatorObject\"\n\
+         \n\
+         [[migrations]]\n\
+         tag = \"v1\"\n\
+         new_classes = [\"CoordinatorObject\"]\n\
+         new_sqlite_classes = [\"TenantDb\"]\n\
          {observability}",
         name = toml_string(&cfg.name),
         compat = COMPAT_DATE,
