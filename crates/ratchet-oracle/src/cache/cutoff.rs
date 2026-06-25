@@ -11,6 +11,8 @@ use super::hashing::DurableBlake3Hash;
 use crate::value::{Value, ValueError, ValueTag};
 
 const INLINE_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-inline-value-hash-v1";
+const CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION: &[u8] =
+    b"aos-nix-context-free-string-value-hash-v1";
 
 /// A durable hash of a canonical evaluated value.
 ///
@@ -86,6 +88,21 @@ impl ValueHash {
             tag => return Err(ValueHashError::UnsupportedTag { tag }),
         }
         Ok(Self(DurableBlake3Hash::from_hasher(hasher)))
+    }
+
+    /// Hashes a context-free Nix string's raw bytes as a canonical value.
+    ///
+    /// This is a precursor for the full string value serializer. Callers must
+    /// ensure the source string carries no context before passing its bytes
+    /// here; context-bearing strings require the full canonical context
+    /// serialization before they can participate in early cutoff.
+    pub fn from_context_free_string_bytes(bytes: &[u8]) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION);
+        hasher.update(b"string");
+        hasher.update(&(bytes.len() as u128).to_le_bytes());
+        hasher.update(bytes);
+        Self(DurableBlake3Hash::from_hasher(hasher))
     }
 
     /// Wraps a durable BLAKE3 hash of an impure input observation.
@@ -184,6 +201,20 @@ mod tests {
         assert_ne!(
             inline_hash(Value::float(0.0)),
             inline_hash(Value::float(-0.0))
+        );
+    }
+
+    #[test]
+    fn context_free_string_hashes_include_type_length_and_payload() {
+        let empty = ValueHash::from_context_free_string_bytes(b"");
+        let same = ValueHash::from_context_free_string_bytes(b"same");
+
+        assert_eq!(same, ValueHash::from_context_free_string_bytes(b"same"));
+        assert_ne!(empty, same);
+        assert_ne!(same, ValueHash::from_context_free_string_bytes(b"same\0"));
+        assert_ne!(
+            same,
+            ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"same"))
         );
     }
 

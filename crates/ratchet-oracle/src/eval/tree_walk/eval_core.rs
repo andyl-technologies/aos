@@ -415,14 +415,10 @@ impl TreeWalk {
         value: Value,
         trace: ImpureInputTraceSegment,
     ) {
-        if !matches!(
-            value.tag(),
-            ValueTag::Int | ValueTag::Float | ValueTag::Bool | ValueTag::Null
-        ) {
-            return;
-        }
-
         let Some(subject) = subject else {
+            return;
+        };
+        let Some(payload) = self.force_cache_payload_for_value(value) else {
             return;
         };
         let identity = if trace.is_empty_complete() {
@@ -443,18 +439,18 @@ impl TreeWalk {
         };
         let observation = if trace.is_empty_complete() {
             cache
-                .observe_inline_expression_result(
+                .observe_inline_expression_payload(
                     identity,
                     subject.free_var_value_hashes.iter().copied(),
-                    value,
+                    payload,
                 )
                 .map(|_| None)
         } else {
             cache
-                .observe_inline_expression_result_with_impure_inputs(
+                .observe_inline_expression_payload_with_impure_inputs(
                     identity,
                     subject.free_var_value_hashes.iter().copied(),
-                    value,
+                    payload,
                     &trace,
                 )
                 .map(Some)
@@ -468,6 +464,23 @@ impl TreeWalk {
                     "tree-walk evaluator forced expression observation failed"
                 );
             }
+        }
+    }
+
+    fn force_cache_payload_for_value(&self, value: Value) -> Option<CachedExpressionValue> {
+        if let Ok(value) = CachedExpressionValue::immediate(value) {
+            return Some(value);
+        }
+        match value.tag() {
+            ValueTag::String => {
+                let string = self.heap.get_string(value).ok()?;
+                if string.has_context() {
+                    return None;
+                }
+                let bytes = try_clone_bytes(string.bytes()).ok()?;
+                Some(CachedExpressionValue::context_free_string(bytes))
+            }
+            _ => None,
         }
     }
 
@@ -493,14 +506,18 @@ impl TreeWalk {
         if !cache.is_enabled() {
             return None;
         }
-        match cache.lookup_inline_expression_result_with_impure_inputs(
+        match cache.lookup_inline_expression_payload_with_impure_inputs(
             identity,
             subject.free_var_value_hashes.iter().copied(),
             &mut revalidator,
         ) {
-            Ok(Some(value)) => {
+            Ok(Some(payload)) => {
                 let trace = revalidator.into_revalidated_trace();
                 drop(cache);
+                let Some(value) = self.value_for_cached_expression_payload(payload) else {
+                    self.increment_eval_cache_miss();
+                    return None;
+                };
                 for fingerprint in trace {
                     self.record_impure_input(fingerprint);
                 }
@@ -523,6 +540,17 @@ impl TreeWalk {
                 None
             }
         }
+    }
+
+    fn value_for_cached_expression_payload(
+        &mut self,
+        payload: CachedExpressionValue,
+    ) -> Option<Value> {
+        if let Some(value) = payload.immediate_value() {
+            return Some(value);
+        }
+        let bytes = try_clone_bytes(payload.context_free_string_bytes()?).ok()?;
+        self.heap.alloc_string(NixString::from_bytes(bytes)).ok()
     }
 
     pub(super) fn force_cache_subject_for_thunk(

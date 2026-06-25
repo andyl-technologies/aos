@@ -86,6 +86,53 @@ impl ExpressionTraceObservation {
     }
 }
 
+/// A memoized force-cache payload that can be replayed by an evaluator.
+///
+/// Immediate values can be returned directly because they carry their payload
+/// in the [`Value`] word. Heap-backed values must instead store canonical data
+/// and be rehydrated by the evaluator that consumes the hit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CachedExpressionValue {
+    payload: InlineValuePayload,
+}
+
+impl CachedExpressionValue {
+    /// Creates a cached immediate scalar value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueHashError`] if `value` is invalid or is not an inline
+    /// scalar supported by the current force-cache payload precursor.
+    pub fn immediate(value: Value) -> Result<Self, ValueHashError> {
+        Ok(Self {
+            payload: InlineValuePayload::from_value(value)?,
+        })
+    }
+
+    /// Creates a cached context-free Nix string payload from canonical bytes.
+    pub fn context_free_string(bytes: Vec<u8>) -> Self {
+        Self {
+            payload: InlineValuePayload::ContextFreeString(bytes),
+        }
+    }
+
+    /// Returns the immediate scalar value, if this payload is immediate.
+    pub fn immediate_value(&self) -> Option<Value> {
+        self.payload.immediate_value()
+    }
+
+    /// Returns the cached context-free string bytes, if this payload is a string.
+    pub fn context_free_string_bytes(&self) -> Option<&[u8]> {
+        match &self.payload {
+            InlineValuePayload::ContextFreeString(bytes) => Some(bytes),
+            InlineValuePayload::Int(_)
+            | InlineValuePayload::Float(_)
+            | InlineValuePayload::Bool(_)
+            | InlineValuePayload::Null => None,
+        }
+    }
+}
+
 /// Explicit evaluator cache state owned by the caller.
 #[derive(Clone, Debug, Default)]
 pub struct EvalCache {
@@ -127,10 +174,10 @@ impl EvalCache {
         self.graph
     }
 
-    /// Looks up a clean memoized inline expression result.
+    /// Looks up a clean memoized expression payload.
     ///
     /// This is a precursor memo path for force-time cache hits. It returns a
-    /// value only when the expression key already exists, its demand node is
+    /// payload only when the expression key already exists, its demand node is
     /// clean, the side payload record is reusable without input revalidation,
     /// and that payload still matches the node's value hash. Unknown, dirty,
     /// missing-payload, trace-backed, and stale-payload nodes are cache misses.
@@ -138,11 +185,11 @@ impl EvalCache {
     /// # Errors
     ///
     /// Returns a [`DemandGraphError`] if cache-key construction fails.
-    pub fn lookup_inline_expression_result<I>(
+    pub fn lookup_inline_expression_payload<I>(
         &self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
-    ) -> Result<Option<Value>, DemandGraphError>
+    ) -> Result<Option<CachedExpressionValue>, DemandGraphError>
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
@@ -167,10 +214,32 @@ impl EvalCache {
         Ok(Some(record.value()))
     }
 
-    /// Looks up a clean inline expression result after impure-input revalidation.
+    /// Looks up a clean memoized immediate expression result.
+    ///
+    /// This compatibility path returns only immediate scalar values. Heap-backed
+    /// payloads are misses for callers that cannot rehydrate them into their own
+    /// heap.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails.
+    pub fn lookup_inline_expression_result<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+    ) -> Result<Option<Value>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        Ok(self
+            .lookup_inline_expression_payload(identity, free_var_value_hashes)?
+            .and_then(|value| value.immediate_value()))
+    }
+
+    /// Looks up a clean expression payload after impure-input revalidation.
     ///
     /// Pure payload records are handled identically to
-    /// [`EvalCache::lookup_inline_expression_result`]. Trace-backed payload
+    /// [`EvalCache::lookup_inline_expression_payload`]. Trace-backed payload
     /// records are returned only if every stored cacheable input identity can be
     /// revalidated, the fresh identity still matches the stored identity, the
     /// fresh observation hash still matches the stored observation hash, and the
@@ -187,12 +256,12 @@ impl EvalCache {
     /// Returns a [`DemandGraphError`] if cache-key construction fails, graph
     /// node lookup fails, fresh input observation fails, or dirty marking
     /// fails.
-    pub fn lookup_inline_expression_result_with_impure_inputs<I, R>(
+    pub fn lookup_inline_expression_payload_with_impure_inputs<I, R>(
         &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
         revalidator: &mut R,
-    ) -> Result<Option<Value>, DemandGraphError>
+    ) -> Result<Option<CachedExpressionValue>, DemandGraphError>
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
         R: ImpureInputRevalidator + ?Sized,
@@ -226,6 +295,36 @@ impl EvalCache {
             return Ok(None);
         }
         Ok(Some(record.value()))
+    }
+
+    /// Looks up a clean immediate result after impure-input revalidation.
+    ///
+    /// This compatibility path returns only immediate scalar values. Heap-backed
+    /// payloads are misses for callers that cannot rehydrate them into their own
+    /// heap.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails, graph
+    /// node lookup fails, fresh input observation fails, or dirty marking
+    /// fails.
+    pub fn lookup_inline_expression_result_with_impure_inputs<I, R>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        revalidator: &mut R,
+    ) -> Result<Option<Value>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+        R: ImpureInputRevalidator + ?Sized,
+    {
+        Ok(self
+            .lookup_inline_expression_payload_with_impure_inputs(
+                identity,
+                free_var_value_hashes,
+                revalidator,
+            )?
+            .and_then(|value| value.immediate_value()))
     }
 
     /// Gets or inserts an expression node in the underlying demand graph.
@@ -343,13 +442,38 @@ impl EvalCache {
         Ok(ExpressionTraceObservation::new(Some(node), trace))
     }
 
-    /// Observes one recomputed inline expression result.
+    /// Observes one recomputed expression payload.
     ///
     /// This is the first force-path integration point for the demand graph:
     /// callers still provide the expression identity and ordered free-variable
-    /// hashes, and the cache only records/reconsiders the inline value hash. It
-    /// does not perform memo lookup, compute free-variable hashes, or serialize
-    /// heap-backed values.
+    /// hashes, and the cache only records/reconsiders the payload value hash.
+    /// It does not perform memo lookup, compute free-variable hashes, or
+    /// serialize general heap-backed values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails, node
+    /// insertion fails, or the node cannot be reconsidered.
+    pub fn observe_inline_expression_payload<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        value: CachedExpressionValue,
+    ) -> Result<Reconsideration, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let record = InlineValueRecord::reusable_without_revalidation(value)
+            .map_err(|source| DemandGraphError::ValueHash { source })?;
+        let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
+        let reconsideration = self.graph.reconsider_node(node, record.value_hash)?;
+        self.inline_values.insert(node, record);
+        Ok(reconsideration)
+    }
+
+    /// Observes one recomputed immediate expression result.
+    ///
+    /// This compatibility path accepts only immediate scalar values.
     ///
     /// # Errors
     ///
@@ -365,21 +489,18 @@ impl EvalCache {
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
-        let record = InlineValueRecord::reusable_without_revalidation(value)
+        let value = CachedExpressionValue::immediate(value)
             .map_err(|source| DemandGraphError::ValueHash { source })?;
-        let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
-        let reconsideration = self.graph.reconsider_node(node, record.value_hash)?;
-        self.inline_values.insert(node, record);
-        Ok(reconsideration)
+        self.observe_inline_expression_payload(identity, free_var_value_hashes, value)
     }
 
-    /// Observes one recomputed inline expression result with its impure inputs.
+    /// Observes one recomputed expression payload with its impure inputs.
     ///
     /// Cacheable traces get or insert the expression node, wire observed input
-    /// leaves as dependencies, reconsider the node from the inline value hash,
-    /// and store the scalar side payload plus the cacheable input fingerprints
+    /// leaves as dependencies, reconsider the node from the payload value hash,
+    /// and store the side payload plus the cacheable input fingerprints
     /// required by
-    /// [`EvalCache::lookup_inline_expression_result_with_impure_inputs`].
+    /// [`EvalCache::lookup_inline_expression_payload_with_impure_inputs`].
     /// Incomplete or uncacheable traces return their status without creating a
     /// new expression node or payload; if the expression key already exists,
     /// its prior inline payload is removed and the node is marked dirty.
@@ -389,15 +510,14 @@ impl EvalCache {
     ///
     /// # Errors
     ///
-    /// Returns a [`DemandGraphError`] if inline value hashing fails, trace
-    /// observation fails, expression cache-key construction or insertion fails,
-    /// dependency edge insertion fails, dirty marking fails, or node
-    /// reconsideration fails.
-    pub fn observe_inline_expression_result_with_impure_inputs<I, T>(
+    /// Returns a [`DemandGraphError`] if trace observation fails, expression
+    /// cache-key construction or insertion fails, dependency edge insertion
+    /// fails, dirty marking fails, or node reconsideration fails.
+    pub fn observe_inline_expression_payload_with_impure_inputs<I, T>(
         &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
-        value: Value,
+        value: CachedExpressionValue,
         source: &T,
     ) -> Result<ExpressionTraceObservation, DemandGraphError>
     where
@@ -406,6 +526,18 @@ impl EvalCache {
     {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
+        self.observe_inline_expression_payload_for_key_with_impure_inputs(key, value, source)
+    }
+
+    fn observe_inline_expression_payload_for_key_with_impure_inputs<T>(
+        &mut self,
+        key: DemandCacheKey,
+        value: CachedExpressionValue,
+        source: &T,
+    ) -> Result<ExpressionTraceObservation, DemandGraphError>
+    where
+        T: ImpureInputTraceSource + ?Sized,
+    {
         let existing_node = self.graph.node_id_for_key(key);
         let trace = self.observe_impure_inputs(source)?;
         if trace.status() != ImpureTraceStatus::Cacheable {
@@ -429,6 +561,40 @@ impl EvalCache {
         self.graph.reconsider_node(node, record.value_hash)?;
         self.inline_values.insert(node, record);
         Ok(ExpressionTraceObservation::new(Some(node), trace))
+    }
+
+    /// Observes one recomputed immediate expression result with its impure inputs.
+    ///
+    /// This compatibility path accepts only immediate scalar values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if inline value hashing fails, trace
+    /// observation fails, expression cache-key construction or insertion fails,
+    /// dependency edge insertion fails, dirty marking fails, or node
+    /// reconsideration fails.
+    pub fn observe_inline_expression_result_with_impure_inputs<I, T>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        value: Value,
+        source: &T,
+    ) -> Result<ExpressionTraceObservation, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+        T: ImpureInputTraceSource + ?Sized,
+    {
+        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
+            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        let value = match CachedExpressionValue::immediate(value) {
+            Ok(value) => value,
+            Err(source) => {
+                let existing_node = self.graph.node_id_for_key(key);
+                self.invalidate_existing_inline_payload(existing_node)?;
+                return Err(DemandGraphError::ValueHash { source });
+            }
+        };
+        self.observe_inline_expression_payload_for_key_with_impure_inputs(key, value, source)
     }
 
     /// Reconsiders one node from a recomputed inline scalar value.
@@ -503,36 +669,40 @@ struct InlineValueRecord {
 }
 
 impl InlineValueRecord {
-    fn reusable_without_revalidation(value: Value) -> Result<Self, ValueHashError> {
-        Self::from_value(value, true, None)
+    fn reusable_without_revalidation(value: CachedExpressionValue) -> Result<Self, ValueHashError> {
+        Self::from_cached_value(value, true, None)
     }
 
-    fn requires_revalidation<T>(value: Value, source: &T) -> Result<Self, DemandGraphError>
+    fn requires_revalidation<T>(
+        value: CachedExpressionValue,
+        source: &T,
+    ) -> Result<Self, DemandGraphError>
     where
         T: ImpureInputTraceSource + ?Sized,
     {
         let inputs = cacheable_trace_inputs(source.impure_input_trace())?;
-        Self::from_value(value, false, Some(inputs))
+        Self::from_cached_value(value, false, Some(inputs))
             .map_err(|source| DemandGraphError::ValueHash { source })
     }
 
-    fn from_value(
-        value: Value,
+    fn from_cached_value(
+        value: CachedExpressionValue,
         reusable_without_revalidation: bool,
         revalidation_inputs: Option<Vec<CacheableInputFingerprint>>,
     ) -> Result<Self, ValueHashError> {
-        let payload = InlineValuePayload::from_value(value)?;
-        let value_hash = ValueHash::from_inline_value(value)?;
+        let value_hash = value.payload.value_hash()?;
         Ok(Self {
-            payload,
+            payload: value.payload,
             value_hash,
             reusable_without_revalidation,
             revalidation_inputs,
         })
     }
 
-    const fn value(&self) -> Value {
-        self.payload.value()
+    fn value(&self) -> CachedExpressionValue {
+        CachedExpressionValue {
+            payload: self.payload.clone(),
+        }
     }
 
     const fn is_reusable_without_revalidation(&self) -> bool {
@@ -562,12 +732,13 @@ fn cacheable_trace_inputs(
     Ok(inputs)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum InlineValuePayload {
     Int(i64),
     Float(u64),
     Bool(bool),
     Null,
+    ContextFreeString(Vec<u8>),
 }
 
 impl InlineValuePayload {
@@ -599,12 +770,23 @@ impl InlineValuePayload {
         }
     }
 
-    const fn value(self) -> Value {
+    fn immediate_value(&self) -> Option<Value> {
         match self {
-            Self::Int(value) => Value::int(value),
-            Self::Float(bits) => Value::float(f64::from_bits(bits)),
-            Self::Bool(value) => Value::bool(value),
-            Self::Null => Value::null(),
+            Self::Int(value) => Some(Value::int(*value)),
+            Self::Float(bits) => Some(Value::float(f64::from_bits(*bits))),
+            Self::Bool(value) => Some(Value::bool(*value)),
+            Self::Null => Some(Value::null()),
+            Self::ContextFreeString(_) => None,
+        }
+    }
+
+    fn value_hash(&self) -> Result<ValueHash, ValueHashError> {
+        match self {
+            Self::Int(value) => ValueHash::from_inline_value(Value::int(*value)),
+            Self::Float(bits) => ValueHash::from_inline_value(Value::float(f64::from_bits(*bits))),
+            Self::Bool(value) => ValueHash::from_inline_value(Value::bool(*value)),
+            Self::Null => ValueHash::from_inline_value(Value::null()),
+            Self::ContextFreeString(bytes) => Ok(ValueHash::from_context_free_string_bytes(bytes)),
         }
     }
 }
@@ -761,6 +943,30 @@ impl EvalCacheRuntime {
         cache.lookup_inline_expression_result(identity, free_var_value_hashes)
     }
 
+    /// Looks up a clean expression payload when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity. Enabled runtimes delegate to
+    /// [`EvalCache::lookup_inline_expression_payload`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to build the expression cache key.
+    pub fn lookup_inline_expression_payload<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+    ) -> Result<Option<CachedExpressionValue>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache() else {
+            return Ok(None);
+        };
+        cache.lookup_inline_expression_payload(identity, free_var_value_hashes)
+    }
+
     /// Looks up a clean inline result with impure-input revalidation when enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without validating the expression
@@ -786,6 +992,37 @@ impl EvalCacheRuntime {
             return Ok(None);
         };
         cache.lookup_inline_expression_result_with_impure_inputs(
+            identity,
+            free_var_value_hashes,
+            revalidator,
+        )
+    }
+
+    /// Looks up a clean expression payload with impure-input revalidation when enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity or calling `revalidator`. Enabled runtimes delegate to
+    /// [`EvalCache::lookup_inline_expression_payload_with_impure_inputs`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to build the expression cache key, observe a fresh input, or
+    /// invalidate an unusable payload.
+    pub fn lookup_inline_expression_payload_with_impure_inputs<I, R>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        revalidator: &mut R,
+    ) -> Result<Option<CachedExpressionValue>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+        R: ImpureInputRevalidator + ?Sized,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache.lookup_inline_expression_payload_with_impure_inputs(
             identity,
             free_var_value_hashes,
             revalidator,
@@ -819,6 +1056,33 @@ impl EvalCacheRuntime {
             .map(Some)
     }
 
+    /// Observes one expression payload when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity or value. Enabled runtimes delegate to
+    /// [`EvalCache::observe_inline_expression_payload`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to insert/reconsider the expression node or hash the payload.
+    pub fn observe_inline_expression_payload<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        value: CachedExpressionValue,
+    ) -> Result<Option<Reconsideration>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .observe_inline_expression_payload(identity, free_var_value_hashes, value)
+            .map(Some)
+    }
+
     /// Observes one inline expression result and its impure inputs when enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without validating the expression
@@ -846,6 +1110,41 @@ impl EvalCacheRuntime {
         };
         cache
             .observe_inline_expression_result_with_impure_inputs(
+                identity,
+                free_var_value_hashes,
+                value,
+                source,
+            )
+            .map(Some)
+    }
+
+    /// Observes one expression payload and its impure inputs when enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity, value, or trace. Enabled runtimes delegate to
+    /// [`EvalCache::observe_inline_expression_payload_with_impure_inputs`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to observe or wire the expression trace, hash the payload, or
+    /// insert/reconsider the expression node.
+    pub fn observe_inline_expression_payload_with_impure_inputs<I, S>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        value: CachedExpressionValue,
+        source: &S,
+    ) -> Result<Option<ExpressionTraceObservation>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+        S: ImpureInputTraceSource + ?Sized,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .observe_inline_expression_payload_with_impure_inputs(
                 identity,
                 free_var_value_hashes,
                 value,
@@ -1761,6 +2060,37 @@ mod tests {
             .expect("memoized inline result is present");
 
         assert_eq!(value.as_int(), Ok(3));
+    }
+
+    #[test]
+    fn eval_cache_looks_up_context_free_string_payloads() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+
+        cache
+            .observe_inline_expression_payload(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::context_free_string(b"cached string".to_vec()),
+            )
+            .expect("string payload observes");
+        let payload = cache
+            .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("payload lookup succeeds")
+            .expect("memoized string payload is present");
+        let immediate = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("immediate lookup succeeds");
+
+        assert_eq!(
+            payload.context_free_string_bytes(),
+            Some(b"cached string".as_slice())
+        );
+        assert!(payload.immediate_value().is_none());
+        assert!(
+            immediate.is_none(),
+            "generic Value lookup must not return heap-backed payload pointers"
+        );
     }
 
     #[test]

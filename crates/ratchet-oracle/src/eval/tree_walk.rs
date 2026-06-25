@@ -52,10 +52,10 @@ use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, AttrPosition, FlatAttrs};
 use crate::cache::{
-    CacheExprIdentity, CachedParse, DirEntryInput, DurableBlake3Hash, EvalCacheRuntime,
-    FileTypeForInput, ImpureInputFingerprint, ImpureInputIdentity, ImpureInputKind,
-    ImpureInputMode, ImpureInputRevalidator, ImpureInputTraceSource, InputFingerprintError,
-    ParseCache, ParseCacheError, ValueHash,
+    CacheExprIdentity, CachedExpressionValue, CachedParse, DirEntryInput, DurableBlake3Hash,
+    EvalCacheRuntime, FileTypeForInput, ImpureInputFingerprint, ImpureInputIdentity,
+    ImpureInputKind, ImpureInputMode, ImpureInputRevalidator, ImpureInputTraceSource,
+    InputFingerprintError, ParseCache, ParseCacheError, ValueHash,
 };
 use crate::compile::{
     FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,
@@ -64,7 +64,9 @@ use crate::compile::{
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::builtins::*;
-use crate::string::{ContextElement, ContextKind, NixString, NixStringError, StringContext};
+use crate::string::{
+    ContextElement, ContextKind, NixString, NixStringError, StringContext, try_clone_bytes,
+};
 use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind, parse_bytes_with_symbols};
 use crate::value::{Value, ValueTag};
 use aos_nix_compat::drv_materialize::materialize_drv;
