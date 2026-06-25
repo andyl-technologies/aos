@@ -13,6 +13,7 @@
   timeContractADeterminism = import ./phase1-time-contract-a-determinism.nix {inherit pkgs lib;};
   timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix {inherit pkgs lib;};
   noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
+  pluginTimeAdvance = import ./phase1-plugin-time-advance.nix {inherit pkgs lib;};
   icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
   blockRtcRead = import ./phase1-block-rtc-read.nix {inherit pkgs lib;};
   singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {inherit pkgs lib;};
@@ -311,6 +312,16 @@ in
               "time_control_predicate=qemu_plugin_has_time_control" \
               "wall_clock_warp_under_time_control=false" \
               "notify_preserved_under_time_control=true"
+            require_leaf ${pluginTimeAdvance} \
+              "gate.layer0=gate:layer0-determinism" \
+              "qemu_time_control_public_predicate=true" \
+              "qemu_time_control_single_owner=true" \
+              "qemu_time_advance_synchronous=true" \
+              "qemu_time_advance_runs_virtual_timers=true" \
+              "qemu_time_advance_bh_drain=true" \
+              "qemu_time_advance_bql_context_guard=true" \
+              "timer_bh_interrupt_request_visible=true" \
+              "deterministic_propagation_icount_identical=true"
             require_leaf ${icountNoRealtime} \
               "gate=gate:layer0-determinism" \
               "tasks=T-DET-2" \
@@ -356,11 +367,11 @@ in
             evidence.E9=qemuDeterministicEntropy.qemu_seed_option_controls_guest_random+qemu_seed_option_controls_glib_global_prng+qemuDeterministicGetrandom.qemu_guest_getrandom_sim_unseeded_policy
             evidence.E10=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E13=deterministicLaunch.smp_vcpus+contractAIsolation.rr_vcpu_cursor+timeMultiVcpuAggregateClock.aggregate_node_clock
-            evidence.E14=noWarpWithPlugin.time_control_predicate+notify_preserved_under_time_control
+            evidence.E14=noWarpWithPlugin.time_control_predicate+notify_preserved_under_time_control+pluginTimeAdvance.qemu_time_advance_bh_drain
             evidence.E15=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E16=deterministicLaunch.machine_reset+ram_reset
             evidence.E17=deterministicLaunch.input_policy+contractAIsolation.recorded_inputs_enforced
-            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,qemuDeterministicGetrandom,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,timeContractADeterminism,timeMultiVcpuAggregateClock,noWarpWithPlugin,icountNoRealtime,blockRtcRead,singleVmFingerprint
+            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,qemuDeterministicGetrandom,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,timeContractADeterminism,timeMultiVcpuAggregateClock,noWarpWithPlugin,pluginTimeAdvance,icountNoRealtime,blockRtcRead,singleVmFingerprint
             RESULT
           '';
         }

@@ -1191,11 +1191,22 @@ time-control primitives the whole design rests on.
     QEMU's incoming queue without guest-visible delivery even when the NIC is
     ready; flush fails loudly while the NIC is not ready or link-down; skewed
     producer timing observes the same guest-visible delivery icount.
-- [ ] **T-PATCH-9** Implement the plugin time-control surface
+- [x] **T-PATCH-9** Implement the plugin time-control surface
   `crucible-plugin-time-advance` (+ `has_time_control`) and the drains
   `crucible-plugin-advance-drain` / `crucible-plugin-drain-mainloop` with
   deterministic-propagation micro-tests. — satisfies [PATCH-18], [PATCH-19],
   [PATCH-20]; spec §11.5.
+  - Completed by `0010-crucible-plugin-time-advance.patch` and
+    `checks.crucible.phase1.pluginTimeAdvance`: QEMU's public plugin header now
+    exports `qemu_plugin_has_time_control`,
+    `qemu_plugin_advance_virtual_time_direct`, and
+    `qemu_plugin_drain_main_loop`; direct advance fails closed without global
+    time-control ownership or outside QEMU's BQL-held idle/main-loop context,
+    advances virtual time synchronously after ownership is acquired, runs due
+    virtual timers inline, and drains timer-produced bottom halves before
+    returning; the fixture proves the timer BH sets `cpu->interrupt_request` at
+    the same icount across skewed producers, and the main-loop drain runs a
+    nonblocking completion-BH pass without advancing virtual time.
 - [ ] **T-PATCH-10** Implement `crucible-clock-deadline` (exact next
   `QEMU_CLOCK_VIRTUAL` deadline, REQUIRED) and ban the overshoot-and-correct
   fallback; fail loudly if the capability is unavailable. — satisfies [PATCH-21],

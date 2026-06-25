@@ -17,6 +17,7 @@ const EXPECTED_PATCHES: &[&str] = &[
     "0007-crucible-block-rtc-read.patch",
     "0008-crucible-det-getrandom.patch",
     "0009-crucible-net-deterministic.patch",
+    "0010-crucible-plugin-time-advance.patch",
 ];
 
 #[test]
@@ -48,6 +49,7 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "nm -D --defined-only");
     assert_contains(&aggregate, "plugin_exports_dynamic_symbols_checked=true");
     assert_contains(&aggregate, "qemu_plugin_net_exports_present=true");
+    assert_contains(&aggregate, "qemu_plugin_time_drain_exports_present=true");
     assert_contains(&aggregate, "qemu_inert_gate_wired=true");
     assert_contains(&aggregate, "qemu_inert_depends_on_patch_microtests=true");
     assert_contains(
@@ -130,6 +132,11 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             "tests/crucible/phase1-qemu-net-deterministic.nix",
             "tests/crucible/phase1-qemu-net-deterministic.c",
             "0009-crucible-net-deterministic.patch",
+        ),
+        (
+            "tests/crucible/phase1-plugin-time-advance.nix",
+            "tests/crucible/phase1-plugin-time-advance.c",
+            "0010-crucible-plugin-time-advance.patch",
         ),
     ];
 

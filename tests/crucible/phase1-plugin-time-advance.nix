@@ -1,0 +1,529 @@
+{
+  pkgs,
+  lib,
+  qemuPackage ? null,
+}: let
+  qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
+  patchName = "0010-crucible-plugin-time-advance.patch";
+  patchDir = ../../pkgs/emulation/qemu-patches;
+  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  microtestSource = builtins.readFile ./phase1-plugin-time-advance.c;
+  defaultChecks = builtins.readFile ./default.nix;
+  qemuPackageResultLines =
+    if qemuPackage == null
+    then ''
+      qemu_package=standalone-fixture
+      qemu_package_version=standalone-fixture
+    ''
+    else ''
+      qemu_package=${qemuPackage}
+      qemu_package_version=${qemuPackage.version}
+    '';
+
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
+
+  failuresFor = label: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (!(hasInfix requirement.needle content)) [
+          "${label}: missing ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  failures =
+    failuresFor "pkgs/emulation/qemu.nix" qemuNix [
+      {
+        label = "plugin time advance patch wiring";
+        needle = "patch -p1 < \${./qemu-patches/0010-crucible-plugin-time-advance.patch}";
+      }
+    ]
+    ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
+      {
+        label = "public time-control predicate";
+        needle = "qemu_plugin_has_time_control";
+      }
+      {
+        label = "direct advance export";
+        needle = "qemu_plugin_advance_virtual_time_direct";
+      }
+      {
+        label = "main-loop drain export";
+        needle = "qemu_plugin_drain_main_loop";
+      }
+      {
+        label = "fail-closed owner guard";
+        needle = "qemu_plugin_time_control_call_permitted";
+      }
+      {
+        label = "BQL context guard";
+        needle = "bql_locked()";
+      }
+      {
+        label = "synchronous virtual clock advance";
+        needle = "qemu_clock_advance_virtual_time(new_time)";
+      }
+      {
+        label = "inline virtual timer run";
+        needle = "qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL)";
+      }
+      {
+        label = "bottom-half drain loop";
+        needle = "while (aio_bh_poll(aio_context))";
+      }
+      {
+        label = "nonblocking main-loop pass";
+        needle = "main_loop_wait(true)";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase1-plugin-time-advance.c" microtestSource [
+      {
+        label = "patched fixture include";
+        needle = "#include \"plugins/api-system.c\"";
+      }
+      {
+        label = "direct advance exercised";
+        needle = "qemu_plugin_advance_virtual_time_direct(1000)";
+      }
+      {
+        label = "main-loop drain exercised";
+        needle = "qemu_plugin_drain_main_loop()";
+      }
+      {
+        label = "exclusive owner assertion";
+        needle = "single_time_control_owner=true";
+      }
+      {
+        label = "bottom-half before return assertion";
+        needle = "timer_bh_visible_before_direct_advance_return=true";
+      }
+      {
+        label = "timer interrupt-request assertion";
+        needle = "timer_bh_interrupt_request_visible=true";
+      }
+      {
+        label = "deterministic propagation assertion";
+        needle = "deterministic_propagation_icount_identical=true";
+      }
+      {
+        label = "BQL direct advance guard assertion";
+        needle = "direct_advance_fails_closed_outside_bql_context=true";
+      }
+      {
+        label = "no-BH no-op assertion";
+        needle = "no_pending_bh_drain_noop=true";
+      }
+      {
+        label = "nonblocking main-loop assertion";
+        needle = "qemu_main_loop_drain_nonblocking=true";
+      }
+      {
+        label = "no virtual-time advance assertion";
+        needle = "qemu_main_loop_drain_no_virtual_time_advance=true";
+      }
+      {
+        label = "completion interrupt-request assertion";
+        needle = "completion_interrupt_request_visible=true";
+      }
+      {
+        label = "stock negative control";
+        needle = "stock_negative_control_bh_drift_without_drain=true";
+      }
+    ]
+    ++ failuresFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase1 exposes plugin time advance check";
+        needle = "pluginTimeAdvance = import ./phase1-plugin-time-advance.nix";
+      }
+    ];
+in
+  if failures != []
+  then throw "crucible phase1 plugin time-advance check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase1-plugin-time-advance";
+      version = "0";
+      src = null;
+
+      inherit microtestSource patchSource;
+      passAsFile = ["microtestSource" "patchSource"];
+
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.grep
+        pkgs.patch
+      ];
+
+      phases = [
+        {
+          name = "run-plugin-time-advance-microtest";
+          script = ''
+            set -eu
+
+            mkdir -p hw include/qemu migration net plugins qapi qemu
+            : > hw/boards.h
+            : > migration/blocker.h
+            : > net/net.h
+            : > qapi/error.h
+            : > qemu/main-loop.h
+            : > qemu/osdep.h
+            : > qemu/plugin-memory.h
+            : > qemu/plugin.h
+            : > qemu/timer.h
+
+            : > include/qemu/plugin.h
+            line=1
+            while [ "$line" -lt 174 ]; do
+              printf '\n' >> include/qemu/plugin.h
+              line=$((line + 1))
+            done
+            cat >> include/qemu/plugin.h <<'PLUGIN_INTERNAL_HEADER_FIXTURE'
+            void qemu_plugin_flush_cb(void);
+
+            void qemu_plugin_atexit_cb(void);
+
+            bool qemu_plugin_has_time_control(void);
+
+            void qemu_plugin_add_dyn_cb_arr(GArray *arr);
+
+            static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
+            {
+              (void)cpu;
+            }
+            PLUGIN_INTERNAL_HEADER_FIXTURE
+
+            cat > include/qemu/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
+            #ifndef QEMU_QEMU_PLUGIN_H
+            #define QEMU_QEMU_PLUGIN_H
+
+            #include <stdbool.h>
+            #include <stddef.h>
+            #include <stdint.h>
+
+            #define QEMU_PLUGIN_API
+
+            typedef uint64_t qemu_plugin_id_t;
+
+            QEMU_PLUGIN_API
+            const void *qemu_plugin_request_time_control(void);
+
+            /**
+             * qemu_plugin_update_ns() - update system emulation time
+             * @handle: opaque handle returned by qemu_plugin_request_time_control()
+             * @time: time in nanoseconds
+             */
+            QEMU_PLUGIN_API
+            void qemu_plugin_update_ns(const void *handle, int64_t time);
+
+            /**
+             * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+             */
+            QEMU_PLUGIN_API
+            int qemu_plugin_net_inject(const uint8_t *data, size_t len);
+
+            /**
+             * qemu_plugin_net_send() - queue an inbound frame for the default NIC
+             */
+            QEMU_PLUGIN_API
+            int qemu_plugin_net_send(const uint8_t *data, size_t len);
+
+            /**
+             * qemu_plugin_net_flush() - flush queued inbound frames for the default NIC
+             */
+            QEMU_PLUGIN_API
+            int qemu_plugin_net_flush(void);
+
+            /**
+             * qemu_plugin_net_can_receive() - report whether the default NIC can receive
+             */
+            QEMU_PLUGIN_API
+            int qemu_plugin_net_can_receive(void);
+
+            typedef void
+            (*qemu_plugin_vcpu_syscall_cb_t)(qemu_plugin_id_t id, unsigned int vcpu_index,
+                                             int64_t num, uint64_t a1, uint64_t a2,
+                                             uint64_t a3, uint64_t a4, uint64_t a5,
+                                             uint64_t a6, uint64_t a7, uint64_t a8);
+
+            #endif /* QEMU_QEMU_PLUGIN_H */
+            PLUGIN_HEADER_FIXTURE
+
+            cat > plugins/api-system.c <<'PLUGIN_API_FIXTURE'
+            /*
+             * QEMU Plugin API - System specific implementations
+             */
+
+            #include "qemu/osdep.h"
+            #include "qemu/main-loop.h"
+            #include "net/net.h"
+            #include "qapi/error.h"
+            #include "migration/blocker.h"
+            #include "hw/boards.h"
+            #include "qemu/timer.h"
+            #include "qemu/plugin-memory.h"
+            #include "qemu/plugin.h"
+
+            /*
+             * In system mode we cannot trace the binary being executed so the
+             * helpers all return NULL/0.
+             */
+            const char *qemu_plugin_path_to_binary(void)
+            {
+                return NULL;
+            }
+
+            uint64_t qemu_plugin_start_code(void)
+            {
+                return 0;
+            }
+
+            uint64_t qemu_plugin_end_code(void)
+            {
+                return 0;
+            }
+
+            uint64_t qemu_plugin_entry_code(void)
+            {
+                return 0;
+            }
+
+            /*
+             * Time control
+             */
+            static bool has_control;
+            static Error *migration_blocker;
+
+            bool qemu_plugin_has_time_control(void)
+            {
+                return has_control;
+            }
+
+            const void *qemu_plugin_request_time_control(void)
+            {
+                if (!has_control) {
+                    has_control = true;
+                    error_setg(&migration_blocker,
+                               "TCG plugin time control does not support migration");
+                    migrate_add_blocker(&migration_blocker, NULL);
+                    return &has_control;
+                }
+                return NULL;
+            }
+
+            static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+            {
+                (void)cpu;
+                int64_t new_time = data.host_ulong;
+                qemu_clock_advance_virtual_time(new_time);
+            }
+
+            void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+            {
+                if (handle == &has_control) {
+                    /* Need to execute out of cpu_exec, so bql can be locked. */
+                    async_run_on_cpu(current_cpu,
+                                     advance_virtual_time__async,
+                                     RUN_ON_CPU_HOST_ULONG(new_time));
+                }
+            }
+
+
+            static NetClientState *qemu_plugin_default_nic_queue(void)
+            {
+                NetClientState *nc;
+
+                QTAILQ_FOREACH(nc, &net_clients, next) {
+                    if (nc->info->type == NET_CLIENT_DRIVER_NIC && nc->queue_index == 0) {
+                        return nc;
+                    }
+                }
+
+                return NULL;
+            }
+
+            static bool qemu_plugin_valid_net_payload(const uint8_t *data, size_t len)
+            {
+                return data != NULL && len > 0 && len <= INT_MAX;
+            }
+
+            static void qemu_plugin_net_sent_cb(NetClientState *sender, ssize_t ret)
+            {
+                (void)sender;
+                (void)ret;
+            }
+
+            int qemu_plugin_net_inject(const uint8_t *data, size_t len)
+            {
+                NetClientState *nc;
+                ssize_t delivered;
+
+                if (!qemu_plugin_valid_net_payload(data, len)) {
+                    return -1;
+                }
+
+                nc = qemu_plugin_default_nic_queue();
+                if (nc == NULL || nc->link_down) {
+                    return -1;
+                }
+
+                delivered = qemu_receive_packet(nc, data, (int)len);
+                return delivered == (ssize_t)len ? 0 : -1;
+            }
+
+            int qemu_plugin_net_send(const uint8_t *data, size_t len)
+            {
+                NetClientState *nc;
+                NetClientState *sender;
+
+                if (!qemu_plugin_valid_net_payload(data, len)) {
+                    return -1;
+                }
+
+                nc = qemu_plugin_default_nic_queue();
+                if (nc == NULL || nc->peer == NULL || nc->incoming_queue == NULL) {
+                    return -1;
+                }
+
+                sender = nc->peer;
+                if (nc->link_down || sender->link_down) {
+                    return -1;
+                }
+
+                return qemu_net_queue_append_lossless(nc->incoming_queue, sender,
+                                                      QEMU_NET_PACKET_FLAG_NONE,
+                                                      data, len,
+                                                      qemu_plugin_net_sent_cb) ? 0 : -1;
+            }
+
+            int qemu_plugin_net_flush(void)
+            {
+                NetClientState *nc = qemu_plugin_default_nic_queue();
+                NetClientState *sender;
+
+                if (nc == NULL || nc->peer == NULL || nc->incoming_queue == NULL) {
+                    return -1;
+                }
+
+                sender = nc->peer;
+                if (nc->link_down || sender->link_down) {
+                    return -1;
+                }
+
+                nc->receive_disabled = 0;
+                if (!qemu_can_receive_packet(nc)) {
+                    return -1;
+                }
+
+                if (!qemu_net_queue_flush(nc->incoming_queue)) {
+                    return -1;
+                }
+
+                qemu_notify_event();
+                return 0;
+            }
+
+            int qemu_plugin_net_can_receive(void)
+            {
+                NetClientState *nc = qemu_plugin_default_nic_queue();
+
+                if (nc == NULL) {
+                    return -1;
+                }
+                if (nc->link_down) {
+                    return 0;
+                }
+                return qemu_can_receive_packet(nc);
+            }
+
+            int64_t qemu_plugin_clock_deadline_ns(void)
+            {
+                int64_t delta = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                                          QEMU_TIMER_ATTR_ALL);
+
+                if (delta < 0) {
+                    return -1;
+                }
+                return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delta;
+            }
+            PLUGIN_API_FIXTURE
+
+            patch --batch --fuzz=0 -p1 < "$patchSourcePath"
+            cp "$microtestSourcePath" phase1-plugin-time-advance.c
+            cc -std=c11 -O2 -Wall -Wextra -Werror \
+              -I. -Iinclude \
+              phase1-plugin-time-advance.c \
+              -o phase1-plugin-time-advance
+
+            mkdir -p "$out"
+            ./phase1-plugin-time-advance > "$out/result"
+            grep -q '^PASS$' "$out/result"
+            grep -q '^patched_qemu_plugin_time_advance_fixture=true$' "$out/result"
+            grep -q '^time_control_predicate_symbol=qemu_plugin_has_time_control$' "$out/result"
+            grep -q '^direct_advance_symbol=qemu_plugin_advance_virtual_time_direct$' "$out/result"
+            grep -q '^main_loop_drain_symbol=qemu_plugin_drain_main_loop$' "$out/result"
+            grep -q '^single_time_control_owner=true$' "$out/result"
+            grep -q '^direct_advance_fails_closed_without_owner=true$' "$out/result"
+            grep -q '^main_loop_drain_fails_closed_without_owner=true$' "$out/result"
+            grep -q '^direct_advance_fails_closed_outside_bql_context=true$' "$out/result"
+            grep -q '^main_loop_drain_fails_closed_outside_bql_context=true$' "$out/result"
+            grep -q '^qemu_time_advance_synchronous=true$' "$out/result"
+            grep -q '^qemu_time_advance_runs_virtual_timers=true$' "$out/result"
+            grep -q '^qemu_time_advance_bh_drain=true$' "$out/result"
+            grep -q '^timer_bh_interrupt_request_visible=true$' "$out/result"
+            grep -q '^timer_bh_visible_before_direct_advance_return=true$' "$out/result"
+            grep -q '^deterministic_propagation_icount_identical=true$' "$out/result"
+            grep -q '^no_pending_bh_drain_noop=true$' "$out/result"
+            grep -q '^qemu_main_loop_drain_nonblocking=true$' "$out/result"
+            grep -q '^qemu_main_loop_drain_no_virtual_time_advance=true$' "$out/result"
+            grep -q '^qemu_main_loop_drain_completion_deterministic=true$' "$out/result"
+            grep -q '^completion_interrupt_request_visible=true$' "$out/result"
+            grep -q '^stock_negative_control_bh_drift_without_drain=true$' "$out/result"
+
+            cp "$patchSourcePath" "$out/${patchName}"
+            cp include/qemu/qemu-plugin.h "$out/qemu-plugin.h.patched"
+            cp plugins/api-system.c "$out/api-system.c.patched"
+            cat >> "$out/result" <<'RESULT'
+            check=checks.crucible.phase1.pluginTimeAdvance
+            gate=gate:patch-microtests
+            gate.layer0=gate:layer0-determinism
+            gate.layer1=gate:layer1-injection
+            gate.divergence=gate:divergence-bisect
+            tasks=T-PATCH-9
+            patch=0010-crucible-plugin-time-advance.patch
+            patched_fixture_exercised=true
+            stock_negative_control=true
+            ${qemuPackageResultLines}
+            qemu_time_control_public_predicate=true
+            qemu_time_control_single_owner=true
+            qemu_time_advance_synchronous=true
+            qemu_time_advance_runs_virtual_timers=true
+            qemu_time_advance_bh_drain=true
+            qemu_time_advance_bql_context_guard=true
+            timer_bh_interrupt_request_visible=true
+            deterministic_propagation_icount_identical=true
+            qemu_main_loop_drain_nonblocking=true
+            qemu_main_loop_drain_no_virtual_time_advance=true
+            qemu_main_loop_drain_completion_deterministic=true
+            completion_interrupt_request_visible=true
+            direct_advance_fails_closed_without_owner=true
+            main_loop_drain_fails_closed_without_owner=true
+            direct_advance_fails_closed_outside_bql_context=true
+            main_loop_drain_fails_closed_outside_bql_context=true
+            RESULT
+          '';
+        }
+      ];
+    }

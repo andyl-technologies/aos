@@ -79,6 +79,13 @@
       enforces = "DET-11,DET-13,E18";
       capability = "plugin-chosen icount network RX injection and flush";
     }
+    {
+      file = "0010-crucible-plugin-time-advance.patch";
+      catalogName = "crucible-plugin-time-advance";
+      class = "D";
+      enforces = "TIME-23,TIME-27,DET-1,INV-10";
+      capability = "plugin-owned synchronous virtual-time advance and BH/main-loop drains";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

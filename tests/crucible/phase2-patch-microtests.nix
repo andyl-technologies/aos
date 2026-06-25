@@ -52,6 +52,10 @@
       patch = "0009-crucible-net-deterministic.patch";
       check = import ./phase1-qemu-net-deterministic.nix {inherit pkgs lib qemuPackage;};
     }
+    {
+      patch = "0010-crucible-plugin-time-advance.patch";
+      check = import ./phase1-plugin-time-advance.nix {inherit pkgs lib qemuPackage;};
+    }
   ];
 
   microtestPatchNames =
@@ -158,7 +162,10 @@ in
               qemu_plugin_net_inject \
               qemu_plugin_net_send \
               qemu_plugin_net_flush \
-              qemu_plugin_net_can_receive
+              qemu_plugin_net_can_receive \
+              qemu_plugin_has_time_control \
+              qemu_plugin_advance_virtual_time_direct \
+              qemu_plugin_drain_main_loop
             do
               grep -E "[[:space:]]$symbol$" "$out/qemu-system-x86_64.dynamic-symbols"
             done
@@ -184,6 +191,7 @@ in
             patched_qemu_package_version=${qemuPackage.version}
             plugin_exports_dynamic_symbols_checked=true
             qemu_plugin_net_exports_present=true
+            qemu_plugin_time_drain_exports_present=true
             qemu_inert_gate_attr=checks.crucible.phase2.gates.qemuInert
             qemu_inert_gate_wired=true
             qemu_inert_depends_on_patch_microtests=true
