@@ -27,7 +27,7 @@ use aos_hub_core::auth::seal::SecretSealer;
 use aos_hub_core::db::{Cache, Database, RegistryRecord};
 use aos_hub_core::fetch::{OriginFetch, StreamedRead, SurfaceFetch, SurfaceProvider};
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
-use aos_hub_core::surface_write::{SurfaceWrite, SurfaceWriteProvider};
+use aos_hub_core::surface_write::{PartTag, SurfaceWrite, SurfaceWriteProvider};
 
 use crate::keymap;
 
@@ -919,6 +919,151 @@ impl SurfaceWrite for R2Write {
             .map_err(|err| anyhow::anyhow!("R2 delete {key}: {err}"))?;
         Ok(())
     }
+
+    async fn create_multipart(&self, path: &str) -> Result<String> {
+        use wasm_bindgen::JsValue;
+        use wasm_bindgen_futures::JsFuture;
+        let key = keymap::r2_key(&self.prefix, path);
+        let jsbucket: &JsValue = self.bucket.as_ref();
+        // bucket.createMultipartUpload(key) -> Promise<R2MultipartUpload>. Call
+        // via js_sys with no options object: worker-rs 0.8.5's multipart builders
+        // share the option-serialization bug bypassed for r2_get / the put path.
+        let create = js_method(jsbucket, "createMultipartUpload")?;
+        let promise = js_promise(
+            create.call1(jsbucket, &JsValue::from_str(&key)),
+            &key,
+            "createMultipartUpload",
+        )?;
+        let mp = JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("R2 createMultipartUpload {key}: {e:?}"))?;
+        js_sys::Reflect::get(&mp, &JsValue::from_str("uploadId"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .ok_or_else(|| anyhow::anyhow!("R2 createMultipartUpload {key}: result has no uploadId"))
+    }
+
+    async fn upload_part(
+        &self,
+        path: &str,
+        upload_id: &str,
+        part_number: u32,
+        bytes: &[u8],
+    ) -> Result<PartTag> {
+        use js_sys::Uint8Array;
+        use wasm_bindgen::JsValue;
+        use wasm_bindgen_futures::JsFuture;
+        let key = keymap::r2_key(&self.prefix, path);
+        let mp = self.resume_multipart(&key, upload_id)?;
+        let upload = js_method(&mp, "uploadPart")?;
+        let value = Uint8Array::from(bytes);
+        let promise = js_promise(
+            upload.call2(&mp, &JsValue::from(part_number), value.as_ref()),
+            &key,
+            "uploadPart",
+        )?;
+        let uploaded = JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("R2 uploadPart {key} #{part_number}: {e:?}"))?;
+        let etag = js_sys::Reflect::get(&uploaded, &JsValue::from_str("etag"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .ok_or_else(|| anyhow::anyhow!("R2 uploadPart {key} #{part_number}: no etag"))?;
+        Ok(PartTag { part_number, etag })
+    }
+
+    async fn complete_multipart(
+        &self,
+        path: &str,
+        upload_id: &str,
+        parts: &[PartTag],
+    ) -> Result<()> {
+        use wasm_bindgen::JsValue;
+        use wasm_bindgen_futures::JsFuture;
+        let key = keymap::r2_key(&self.prefix, path);
+        let mp = self.resume_multipart(&key, upload_id)?;
+        // R2.complete expects [{ partNumber, etag }, ...]; order by part number.
+        let mut sorted: Vec<&PartTag> = parts.iter().collect();
+        sorted.sort_by_key(|p| p.part_number);
+        let arr = js_sys::Array::new();
+        for p in sorted {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("partNumber"),
+                &JsValue::from(p.part_number),
+            )
+            .map_err(|e| anyhow::anyhow!("R2 complete {key}: build part: {e:?}"))?;
+            js_sys::Reflect::set(&obj, &JsValue::from_str("etag"), &JsValue::from_str(&p.etag))
+                .map_err(|e| anyhow::anyhow!("R2 complete {key}: build part: {e:?}"))?;
+            arr.push(&obj);
+        }
+        let complete = js_method(&mp, "complete")?;
+        let promise = js_promise(complete.call1(&mp, arr.as_ref()), &key, "complete")?;
+        JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("R2 complete {key}: {e:?}"))?;
+        Ok(())
+    }
+
+    async fn abort_multipart(&self, path: &str, upload_id: &str) -> Result<()> {
+        use wasm_bindgen_futures::JsFuture;
+        let key = keymap::r2_key(&self.prefix, path);
+        // Best-effort: a resume/abort failure (e.g. an already-completed or
+        // unknown upload) is not fatal.
+        let Ok(mp) = self.resume_multipart(&key, upload_id) else {
+            return Ok(());
+        };
+        if let Ok(abort) = js_method(&mp, "abort") {
+            if let Ok(promise) = js_promise(abort.call0(&mp), &key, "abort") {
+                let _ = JsFuture::from(promise).await;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl R2Write {
+    /// Reconstruct an in-progress R2 multipart upload from `(key, upload_id)`.
+    ///
+    /// `bucket.resumeMultipartUpload(key, uploadId)` returns the
+    /// `R2MultipartUpload` handle synchronously (no `Promise`), so a fresh Worker
+    /// isolate can drive `uploadPart`/`complete`/`abort` against an upload begun
+    /// in an earlier request — the statelessness the multipart protocol relies on.
+    fn resume_multipart(&self, key: &str, upload_id: &str) -> Result<wasm_bindgen::JsValue> {
+        use wasm_bindgen::JsValue;
+        let jsbucket: &JsValue = self.bucket.as_ref();
+        let resume = js_method(jsbucket, "resumeMultipartUpload")?;
+        resume
+            .call2(
+                jsbucket,
+                &JsValue::from_str(key),
+                &JsValue::from_str(upload_id),
+            )
+            .map_err(|e| anyhow::anyhow!("R2 resumeMultipartUpload {key}: {e:?}"))
+    }
+}
+
+/// Reflect method `name` off the JS object `obj` as a callable `Function`.
+fn js_method(obj: &wasm_bindgen::JsValue, name: &str) -> Result<js_sys::Function> {
+    use wasm_bindgen::JsCast;
+    js_sys::Reflect::get(obj, &wasm_bindgen::JsValue::from_str(name))
+        .map_err(|e| anyhow::anyhow!("missing JS method {name}: {e:?}"))?
+        .dyn_into::<js_sys::Function>()
+        .map_err(|e| anyhow::anyhow!("JS {name} is not a function: {e:?}"))
+}
+
+/// Coerce a JS call result into a `Promise`, tagging errors with `key`/`op`.
+fn js_promise(
+    result: std::result::Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>,
+    key: &str,
+    op: &str,
+) -> Result<js_sys::Promise> {
+    use wasm_bindgen::JsCast;
+    result
+        .map_err(|e| anyhow::anyhow!("R2 {op} {key}: call: {e:?}"))?
+        .dyn_into::<js_sys::Promise>()
+        .map_err(|e| anyhow::anyhow!("R2 {op} {key}: did not return a promise: {e:?}"))
 }
 
 /// A [`SurfaceWrite`] writing one resource's surface to an external
