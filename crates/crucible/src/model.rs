@@ -50,6 +50,22 @@ impl ScenarioDef {
     }
 }
 
+impl World {
+    /// Builds the canonical genesis scenario definition for this world.
+    ///
+    /// The full `ScenarioDef` schema will carry `World`, plan, properties, and
+    /// seed components. Until that schema lands, this helper makes the model's
+    /// world-to-genesis relationship explicit without weakening checkpoint
+    /// validation.
+    #[must_use]
+    pub fn scenario_def(&self) -> ScenarioDef {
+        ScenarioDef::from_canonical_material(
+            "crucible.model.world-scenario.v1",
+            &world_hash_material(self),
+        )
+    }
+}
+
 /// The only identity-bearing execution configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Configuration {
@@ -1083,10 +1099,28 @@ pub fn instantiate(
 ///
 /// # Errors
 ///
-/// Returns [`EngineError::NotImplemented`] until the genesis baking workflow
-/// lands in its owning execution-model task.
-pub fn bake(_world: &World) -> Result<GenesisCheckpoint, EngineError> {
-    Err(EngineError::NotImplemented { operation: "bake" })
+/// This pure model helper is total for a content-addressed [`World`] handle.
+/// Backend-specific bake implementations may still return backend errors while
+/// starting guests to their ready point and saving VM state.
+pub fn bake(world: &World) -> Result<GenesisCheckpoint, EngineError> {
+    let def = world.scenario_def();
+    let genesis = Configuration::genesis(def);
+    let material = format!(
+        "world_id={}\ngenesis_configuration={}",
+        content_hash_hex(world.id),
+        content_hash_hex(genesis.id())
+    );
+
+    Ok(GenesisCheckpoint {
+        checkpoint: Checkpoint {
+            id: ContentHash::from_canonical_material(
+                "crucible.model.baked-genesis-checkpoint.v1",
+                &material,
+            ),
+            configuration: genesis.id(),
+            kind: CheckpointKind::Fat,
+        },
+    })
 }
 
 /// An engine-spine error.
@@ -1251,4 +1285,19 @@ fn checkpoint_kind_label(kind: CheckpointKind) -> &'static str {
         CheckpointKind::Fat => "fat",
         CheckpointKind::Thin => "thin",
     }
+}
+
+fn world_hash_material(world: &World) -> String {
+    format!("world_id={}", content_hash_hex(world.id))
+}
+
+fn content_hash_hex(hash: ContentHash) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut encoded = String::with_capacity(64);
+    for byte in hash.bytes {
+        encoded.push(HEX[usize::from(byte >> 4)] as char);
+        encoded.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    encoded
 }

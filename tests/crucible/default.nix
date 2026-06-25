@@ -62,6 +62,7 @@ in {
     blockRtcRead = import ./phase1-block-rtc-read.nix {inherit pkgs lib;};
     documentationHygiene = import ./phase1-documentation-hygiene.nix {inherit pkgs lib;};
     engineeringHygiene = import ./phase1-engineering-hygiene.nix {inherit pkgs lib;};
+    executionBake = import ./phase1-execution-bake.nix {inherit pkgs lib;};
     executionDecisionTaxonomy = import ./phase1-execution-decision-taxonomy.nix {inherit pkgs lib;};
     executionInstantiate = import ./phase1-execution-instantiate.nix {inherit pkgs lib;};
     executionModelCore = import ./phase1-execution-model-core.nix {inherit pkgs lib;};
