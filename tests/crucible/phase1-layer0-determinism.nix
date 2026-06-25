@@ -12,6 +12,7 @@
   contractAIsolation = import ./phase1-contract-a-isolation.nix {inherit pkgs lib;};
   timeContractADeterminism = import ./phase1-time-contract-a-determinism.nix {inherit pkgs lib;};
   timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix {inherit pkgs lib;};
+  clockDeadline = import ./phase1-clock-deadline.nix {inherit pkgs lib;};
   noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
   pluginTimeAdvance = import ./phase1-plugin-time-advance.nix {inherit pkgs lib;};
   icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
@@ -306,6 +307,25 @@ in
               "per_vcpu_shmem_fields=false" \
               "rr_switch_quantum_units=node-icount" \
               "multi_vcpu_deadline=min-armed-vcpu-deadline"
+            require_leaf ${clockDeadline} \
+              "gate=gate:layer0-determinism" \
+              "gate=gate:scheduler-liveness" \
+              "tasks=T-TIME-6,T-PATCH-10" \
+              "deadline_symbol=qemu_plugin_clock_deadline_ns" \
+              "deadline_source=QEMU_CLOCK_VIRTUAL" \
+              "deadline_delta_ns=123456" \
+              "virtual_timer_armed=true" \
+              "guest_idle_for_deadline_query=true" \
+              "min_virtual_timer_selected=true" \
+              "realtime_deadline_source=false" \
+              "host_deadline_source=false" \
+              "capability_required=true" \
+              "missing_capability_fails_closed=true" \
+              "install_missing_deadline_isolated=true" \
+              "overshoot_and_correct_fallback=false" \
+              "patch41_upstream_api_absent_documented=true" \
+              "scheduler_liveness_gate_consumed=true" \
+              "scheduler_horizon_exact_local_event=true"
             require_leaf ${noWarpWithPlugin} \
               "gate=gate:layer0-determinism" \
               "tasks=T-DET-3" \
@@ -367,11 +387,11 @@ in
             evidence.E9=qemuDeterministicEntropy.qemu_seed_option_controls_guest_random+qemu_seed_option_controls_glib_global_prng+qemuDeterministicGetrandom.qemu_guest_getrandom_sim_unseeded_policy
             evidence.E10=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E13=deterministicLaunch.smp_vcpus+contractAIsolation.rr_vcpu_cursor+timeMultiVcpuAggregateClock.aggregate_node_clock
-            evidence.E14=noWarpWithPlugin.time_control_predicate+notify_preserved_under_time_control+pluginTimeAdvance.qemu_time_advance_bh_drain
+            evidence.E14=noWarpWithPlugin.time_control_predicate+notify_preserved_under_time_control+pluginTimeAdvance.qemu_time_advance_bh_drain+clockDeadline.deadline_source
             evidence.E15=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E16=deterministicLaunch.machine_reset+ram_reset
             evidence.E17=deterministicLaunch.input_policy+contractAIsolation.recorded_inputs_enforced
-            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,qemuDeterministicGetrandom,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,timeContractADeterminism,timeMultiVcpuAggregateClock,noWarpWithPlugin,pluginTimeAdvance,icountNoRealtime,blockRtcRead,singleVmFingerprint
+            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,qemuDeterministicGetrandom,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,timeContractADeterminism,timeMultiVcpuAggregateClock,clockDeadline,noWarpWithPlugin,pluginTimeAdvance,icountNoRealtime,blockRtcRead,singleVmFingerprint
             RESULT
           '';
         }
