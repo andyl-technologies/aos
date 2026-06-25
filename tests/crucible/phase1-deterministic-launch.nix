@@ -179,8 +179,8 @@
       needle = "reject_enabled_entropy_feature(&lower, \"rdseed\")?";
     }
     {
-      label = "non-single-vCPU rejection";
-      needle = "if self.smp_vcpus != 1";
+      label = "zero-vCPU rejection";
+      needle = "if self.smp_vcpus == 0";
     }
     {
       label = "machine type validation";
@@ -343,8 +343,8 @@
       needle = "format!(\"memory_mib={}\", self.memory_mib),";
     }
     {
-      label = "single vCPU in hash material";
-      needle = "\"smp_vcpus=1\".to_owned(),";
+      label = "vCPU count in hash material";
+      needle = "format!(\"smp_vcpus={}\", self.smp_vcpus),";
     }
     {
       label = "accelerator in hash material";

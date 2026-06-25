@@ -589,7 +589,7 @@ in
               --target-dir "$TMPDIR/crucible-shmem-abi-conformance-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-shmem \
-              --bin crucible-shmem-abi-header \
+              --example crucible-shmem-abi-header \
               --quiet \
               > "$TMPDIR/crucible_shmem_abi.generated.h"
             diff -u \

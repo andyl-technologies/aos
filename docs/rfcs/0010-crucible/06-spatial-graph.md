@@ -189,7 +189,7 @@ pub enum NodeKind {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct VmDef {
     /// Target architecture; selects the QEMU system binary and TCG target.
-    pub arch: Arch,                  // e.g. X86_64, Aarch64 (single-vCPU, NG-1)
+    pub arch: Arch,                  // e.g. X86_64, Aarch64
     /// Content-addressed reference to the guest kernel image (bzImage/vmlinux).
     pub kernel: BlobRef,
     /// Content-addressed reference to the read-only root image. Booting it
@@ -202,6 +202,9 @@ pub struct VmDef {
     pub cmdline: String,
     /// Guest RAM, in mebibytes. Fixed; part of the hashed config.
     pub memory_mib: u32,
+    /// Fixed vCPU count. `N >= 1`; multi-vCPU nodes use single-threaded RR-TCG
+    /// with a content-addressed RR switch quantum (10/[QEMU-5], 10/[QEMU-43]).
+    pub smp_vcpus: u16,
     /// The fixed `-icount shift=N` for this node (09, 10); never `auto`.
     /// Hashed so a shift change is a different scenario ([TIME] cross-ref).
     pub icount_shift: u8,
@@ -227,7 +230,8 @@ pub enum ReadyPoint {
 ```
 
 The fields are exactly the launch-time inputs to QEMU plus the determinism knobs:
-architecture, kernel/root/initrd blobs, command line, memory, the fixed icount
+architecture, kernel/root/initrd blobs, command line, memory, the fixed vCPU
+count, the fixed icount
 shift, the ready-point policy, and the white-box opt-in. Note what is *absent*:
 no host paths, no "snapshot path" (genesis snapshots are derived by `bake`, not
 authored — 05 §6), no participant count, no shmem geometry, no per-run scratch
@@ -241,17 +245,19 @@ content-addressed references.
 
 - **[SPAT-7]** A VM node's configuration MUST carry only launch-time inputs:
   architecture, content-addressed kernel/root/initrd references, kernel command
-  line, memory size, the fixed icount shift, the ready-point policy, and the
-  white-box opt-in. It MUST NOT carry host-varying absolute paths, an authored
-  genesis-snapshot path (genesis snapshots are produced by `bake`, 05 §6), or any
-  content that Crucible places inside the guest for core operation ([G-2],
-  [INV-5]). *Gate:* `gate:any-guest`. *Spec:* §3.1.
+  line, memory size, the fixed vCPU count, the fixed icount shift, the ready-point
+  policy, and the white-box opt-in. It MUST NOT carry host-varying absolute
+  paths, an authored genesis-snapshot path (genesis snapshots are produced by
+  `bake`, 05 §6), or any content that Crucible places inside the guest for core
+  operation ([G-2], [INV-5]). *Gate:* `gate:any-guest`. *Spec:* §3.1.
 
-- **[SPAT-8]** Each VM node MUST run single-vCPU; a `World` MUST NOT request
-  multiple vCPUs for a node ([NG-1]). The `icount_shift` MUST be a fixed value
-  (never `auto`) and MUST be part of the hashed configuration, so a shift change
-  is a different scenario. *Gate:* `gate:content-address`. *Spec:* §3.1;
-  cross-ref 09, 10.
+- **[SPAT-8]** Each VM node MUST request a fixed vCPU count `N >= 1`; `N` MUST be
+  part of the hashed configuration, so a vCPU-count change is a different
+  scenario. A multi-vCPU node (`N > 1`) MUST use the single-threaded RR-TCG
+  launch contract from 10/[QEMU-5] and 10/[QEMU-43], never MTTCG. The
+  `icount_shift` MUST be a fixed value (never `auto`) and MUST also be part of
+  the hashed configuration, so a shift change is a different scenario. *Gate:*
+  `gate:content-address`. *Spec:* §3.1; cross-ref 09, 10.
 
 - **[SPAT-9]** Each node MUST declare a `ReadyPoint` policy ([EXEC-20]); the
   policy is part of the hashed `World`. A white-box ready point (`AgentSignal`)
@@ -844,6 +850,7 @@ The required checks:
 | Plan time | every `Plan` entry is scheduled in virtual time, non-negative | [SPAT-20] |
 | Property refs | every predicate's node reference is declared | [SPAT-21] |
 | Ready point | white-box ready point requires the node's white-box opt-in | [SPAT-9] |
+| vCPU count | a fixed count `N >= 1`; `N > 1` uses single-threaded RR-TCG | [SPAT-8] |
 | Icount shift | a fixed, in-range shift (never `auto`) | [SPAT-8] |
 
 ```rust,illustrative
@@ -971,9 +978,9 @@ authority for its shape. The contract those files may rely on:
   canonical ordering; reject duplicate ids at build time. — satisfies [SPAT-6];
   spec §3.
 - [ ] **T-SPAT-5** Implement `NodeDef`/`VmDef` carrying only launch-time inputs
-  (arch, content-addressed kernel/root/initrd, cmdline, memory, fixed icount shift,
-  ready point, white-box opt-in); test no host-path leakage. — satisfies [SPAT-7],
-  [SPAT-8]; spec §3.1.
+  (arch, content-addressed kernel/root/initrd, cmdline, memory, fixed vCPU count,
+  fixed icount shift, ready point, white-box opt-in); test no host-path leakage.
+  — satisfies [SPAT-7], [SPAT-8]; spec §3.1.
 - [ ] **T-SPAT-6** Implement the `ReadyPoint` policy set (fixed-icount /
   network-idle / console-marker / agent-signal) and gate white-box ready points
   behind the white-box opt-in. — satisfies [SPAT-9]; spec §3.1.

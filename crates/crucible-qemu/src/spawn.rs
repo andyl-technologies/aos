@@ -540,7 +540,10 @@ mod tests {
         Err(format!("parent-death child pid marker missing in output: {text}").into())
     }
 
+    #[allow(clippy::disallowed_methods)]
     fn assert_process_eventually_gone(pid: u32, timeout: Duration) -> Result<(), Box<dyn Error>> {
+        // Test-only host wait: this polls for OS process cleanup and never
+        // feeds Crucible scenario state, scheduling, or fingerprint material.
         let deadline = Instant::now() + timeout;
         loop {
             match assert_process_is_gone(pid) {

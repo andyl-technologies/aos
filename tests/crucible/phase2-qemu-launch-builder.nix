@@ -402,7 +402,7 @@ in
             vm_launch_hash=world-derived-artifacts
             pre_spawn_validation=true
             child_spawn_deferred_to=T-QEMU-3,T-QEMU-7
-            multi_vcpu_extension_deferred_to=T-QEMU-15
+            multi_vcpu_extension=checks.crucible.phase2.qemuMultiVcpuLaunch
             RESULT
           '';
         }

@@ -250,10 +250,8 @@ impl LaunchProfileCandidate {
         if self.memory_mib == 0 {
             return Err(LaunchProfileError::MemorySizeZero);
         }
-        if self.smp_vcpus != 1 {
-            return Err(LaunchProfileError::SmpNotSingleVcpu {
-                requested: self.smp_vcpus,
-            });
+        if self.smp_vcpus == 0 {
+            return Err(LaunchProfileError::SmpVcpuCountZero);
         }
 
         let icount_shift = match self.icount_shift {
@@ -338,6 +336,7 @@ impl LaunchProfileCandidate {
             cpu_model,
             machine_type: self.machine_type,
             memory_mib: self.memory_mib,
+            smp_vcpus: self.smp_vcpus,
             icount_shift,
             rr_switch_quantum: self.rr_switch_quantum,
             rtc_epoch_utc: self.rtc_epoch_utc,
@@ -824,6 +823,7 @@ pub struct DeterministicLaunchProfile {
     cpu_model: String,
     machine_type: String,
     memory_mib: u32,
+    smp_vcpus: u16,
     icount_shift: u8,
     rr_switch_quantum: u64,
     rtc_epoch_utc: String,
@@ -872,7 +872,7 @@ impl DeterministicLaunchProfile {
             "-cpu".to_owned(),
             self.cpu_model.clone(),
             "-smp".to_owned(),
-            "1".to_owned(),
+            self.smp_vcpus.to_string(),
             "-icount".to_owned(),
             format!(
                 "shift={},sleep=off,align=off,rr_switch_quantum={}",
@@ -919,7 +919,7 @@ impl DeterministicLaunchProfile {
             format!("cpu_model={}", self.cpu_model),
             format!("machine_type={}", self.machine_type),
             format!("memory_mib={}", self.memory_mib),
-            "smp_vcpus=1".to_owned(),
+            format!("smp_vcpus={}", self.smp_vcpus),
             format!("accelerator={DEFAULT_ACCEL}"),
             format!("icount_shift={}", self.icount_shift),
             format!("rr_switch_quantum={}", self.rr_switch_quantum),
@@ -1050,6 +1050,12 @@ impl DeterministicLaunchProfile {
     #[must_use]
     pub fn icount_shift(&self) -> u8 {
         self.icount_shift
+    }
+
+    /// Returns the fixed QEMU `-smp` vCPU count.
+    #[must_use]
+    pub fn smp_vcpus(&self) -> u16 {
+        self.smp_vcpus
     }
 
     /// Returns the fixed single-threaded round-robin switch quantum.
