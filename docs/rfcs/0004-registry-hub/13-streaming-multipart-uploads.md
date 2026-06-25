@@ -174,3 +174,34 @@ sub-threshold NARs) keep working exactly as today.
 - Worker e2e: push a >100 MB synthetic NAR through `aos.andyl.org`, assert the
   object reads back byte-identical and substitutes.
 - Memory: confirm the worker isolate peak stays ~one part, not the whole NAR.
+
+## Status update (2026-06-25) — implemented + deployed
+
+Multipart upload is implemented end-to-end and **deployed to the Worker hub
+(aos.andyl.org)**. The full AOS package set (371-path closure, 8.79 GiB) and the
+dev-shell closure (135 paths, 980 MiB) uploaded successfully; the dev shell
+(`aos-dev-env`) is pinned as a manual GC root, and the WebUI pin editor shows
+its closure (names + sizes + count). The SurfaceWrite multipart port, local-fs +
+worker-R2 backends, the shared `RpcService` initiate/upload_part/complete/abort
+methods, the worker facade routing, and the client chunker (parallel parts) are
+all in; the axum 2 MiB default-body-limit (the real 413 cause) was lifted and
+the access-token TTL raised to 1 h.
+
+### Tracked follow-ups
+1. **Native facade multipart routing (parity).** The shared `RpcService`
+   multipart methods are the common code path and the worker routes the
+   multipart query to them; the native `server.rs` facade does not yet route
+   `?uploads`/`?uploadId` (it needs `rpc_service` threaded into `AppState`/the
+   facade handlers). Native single-PUT large uploads already work (the native
+   facade carries its own large limit), so this is client-protocol parity, not
+   a functional gap on native.
+2. **Presigned direct-to-R2 upload (throughput).** Per-request Worker latency
+   (~300 ms) caps push throughput (~8–15 MiB/s) far below the host's 3 Gbit
+   link — bytes go through the Worker. The fix is to take the Worker out of the
+   byte path: a batch mint of presigned R2 PUT/part URLs (extending
+   `MintCacheUploadCredentials`) + client direct-to-R2 upload + batch narinfo
+   register, so the Worker does only control-plane. `presign_cache_write`
+   already exists; it requires the default binding to be a **private** S3/R2
+   binding with sealed credentials (currently `public`, no creds), i.e. an R2
+   S3 API token must be configured. Also fix the generic-mode existence check so
+   query-missing dedups instead of re-uploading the whole closure each run.
