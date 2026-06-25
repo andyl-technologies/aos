@@ -35,6 +35,13 @@
     }
     {
       gate = "gate:single-vm-fingerprint";
+      package = "crucible";
+      testTarget = "gate_single_vm_fingerprint";
+      requiredFeatures = ["test-double"];
+      placeholder = false;
+    }
+    {
+      gate = "gate:single-vm-fingerprint";
       package = "crucible-qemu";
       testTarget = "gate_single_vm_fingerprint";
       requiredFeatures = [];

@@ -2,13 +2,21 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.singleVmFingerprint",
-  taskIds ? ["T-HARN-6" "T-HARN-7" "T-DET-9"],
+  taskIds ? ["T-HARN-6" "T-HARN-7" "T-DET-9" "T-EXEC-17"],
 }: let
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = pkgs.fetchCargoDeps {
+    src = crucibleSrc;
+    sourceRoot = "source/crates";
+    hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
+  };
   s1Fingerprint = import ./phase0-s1.nix {
     inherit pkgs lib;
   };
 
   phase0S1 = builtins.readFile ./phase0-s1.nix;
+  crucibleManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
+  crucibleModelGate = builtins.readFile ../../crates/crucible/tests/gate_single_vm_fingerprint.rs;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qemuGateRoot = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint.rs;
   qemuGateCompare = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/compare.rs;
@@ -23,6 +31,7 @@
   defaultChecks = builtins.readFile ./default.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  executionModel = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -58,6 +67,85 @@
     requirements;
 
   failures =
+    failuresFor "crates/crucible/Cargo.toml" crucibleManifest [
+      {
+        label = "model single-VM fingerprint target";
+        needle = ''name = "gate_single_vm_fingerprint"'';
+      }
+      {
+        label = "model single-VM fingerprint target path";
+        needle = ''path = "tests/gate_single_vm_fingerprint.rs"'';
+      }
+      {
+        label = "model gate requires test-double feature";
+        needle = ''required-features = ["test-double"]'';
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/gate_single_vm_fingerprint.rs" crucibleModelGate [
+      {
+        label = "same-configuration validator test";
+        needle = "gate_single_vm_fingerprint_same_configuration_twice_validates_start_resume_fork_and_snapshot_completeness";
+      }
+      {
+        label = "shared validator helper";
+        needle = "fn validate_same_configuration_twice";
+      }
+      {
+        label = "start probe";
+        needle = "SameConfigurationProbe::Start";
+      }
+      {
+        label = "resume probe";
+        needle = "SameConfigurationProbe::Resume";
+      }
+      {
+        label = "fork probe";
+        needle = "SameConfigurationProbe::Fork";
+      }
+      {
+        label = "snapshot-completeness probe";
+        needle = "SameConfigurationProbe::SnapshotCompleteness";
+      }
+      {
+        label = "exact snapshot branch";
+        needle = "graph_with_exact_snapshot_only";
+      }
+      {
+        label = "ancestor replay branch";
+        needle = "graph_with_ancestor_snapshot_only";
+      }
+      {
+        label = "saved checkpoint branch";
+        needle = "graph_with_saved_checkpoint_exact_only";
+      }
+      {
+        label = "no genesis fallback for forced branch paths";
+        needle = "assert!(graph.genesis_snapshot(scenario).is_none());";
+      }
+      {
+        label = "saved checkpoint replay-oracle evidence";
+        needle = "source_graph.replay_checkpoint(configuration, &checkpoint)";
+      }
+      {
+        label = "saved checkpoint fingerprint equality";
+        needle = "assert_eq!(replay_check.fat_checkpoint, replay_check.thin_checkpoint);";
+      }
+      {
+        label = "fingerprint equality assertion";
+        needle = "assert_eq!(first.fingerprint, second.fingerprint);";
+      }
+      {
+        label = "different-configuration rejection";
+        needle = "gate_single_vm_fingerprint_rejects_different_configuration_fingerprints";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible/tests/gate_single_vm_fingerprint.rs" crucibleModelGate [
+      {
+        label = "ignored model gate target";
+        needle = "#[ignore";
+      }
+    ]
+    ++
     failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
       {
         label = "single-VM fingerprint module";
@@ -288,6 +376,14 @@
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
+        label = "Crucible model gate target";
+        needle = "gate: \"gate:single-vm-fingerprint\",\n        package: \"crucible\",\n        test_target: \"gate_single_vm_fingerprint\",\n        required_features: &[\"test-double\"],\n        placeholder: false,";
+      }
+      {
+        label = "Crucible model target feature";
+        needle = "required_features: &[\"test-double\"]";
+      }
+      {
         label = "QEMU gate target";
         needle = "package: \"crucible-qemu\"";
       }
@@ -303,6 +399,10 @@
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
+      {
+        label = "implemented model gate target in Nix lint";
+        needle = "gate = \"gate:single-vm-fingerprint\";\n      package = \"crucible\";\n      testTarget = \"gate_single_vm_fingerprint\";\n      requiredFeatures = [\"test-double\"];\n      placeholder = false;";
+      }
       {
         label = "implemented QEMU gate target in Nix lint";
         needle = "placeholder = false;";
@@ -333,6 +433,10 @@
         label = "phase1 gate lists T-DET-9";
         needle = "\"T-DET-9\"";
       }
+      {
+        label = "phase1 gate lists T-EXEC-17";
+        needle = "\"T-EXEC-17\"";
+      }
     ]
     ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -355,6 +459,16 @@
         label = "T-HARN-7 checklist complete";
         needle = "- [x] **T-HARN-7**";
       }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
+      {
+        label = "T-EXEC-17 checklist complete";
+        needle = "- [x] **T-EXEC-17**";
+      }
+      {
+        label = "T-EXEC-17 completion note";
+        needle = "Completed by `crates/crucible/tests/gate_single_vm_fingerprint.rs`";
+      }
     ];
 in
   if failures != []
@@ -363,15 +477,60 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase1-single-vm-fingerprint-gate";
       version = "0";
-      src = null;
+      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
         pkgs.grep
+        pkgs.rust
+        pkgs.sed
         s1Fingerprint
       ];
 
       phases = [
+        {
+          name = "unpack";
+          script = ''
+            cp -R "$src" source
+            chmod -R u+w source
+            cd source
+          '';
+        }
+        {
+          name = "configure";
+          script = ''
+            export CARGO_HOME="$TMPDIR/cargo"
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            mkdir -p "$CARGO_HOME" .cargo
+            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+                > .cargo/config.toml
+            else
+              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+                > .cargo/config.toml
+            fi
+          '';
+        }
+        {
+          name = "run-model-single-vm-fingerprint";
+          script = ''
+            set -eu
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            cd crates
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-model-single-vm-fingerprint-target" \
+              -p crucible \
+              --features test-double \
+              --test gate_single_vm_fingerprint \
+              -- --test-threads=1
+          '';
+        }
         {
           name = "record-single-vm-fingerprint-gate";
           script = ''
@@ -426,6 +585,9 @@ in
             gate=gate:single-vm-fingerprint
             tasks=${builtins.concatStringsSep "," taskIds}
             gate_target=crucible-qemu::gate_single_vm_fingerprint
+            model_gate_target=crucible::gate_single_vm_fingerprint
+            model_validator=same-configuration-twice
+            model_probes=start,resume,fork,snapshot-completeness
             real_qemu_source=checks.crucible.phase0.s1Fingerprint
             run_model=run-twice-and-diff
             scenario=stock-linux-diskless-initramfs-workload

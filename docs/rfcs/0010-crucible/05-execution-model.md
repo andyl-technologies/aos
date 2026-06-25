@@ -1005,9 +1005,18 @@ information that cannot be recomputed.
     guards, and refresh failure atomicity, and
     `checks.crucible.phase1.executionCacheEviction` gates the API, no-observable
     change assertions, RFC linkage, and replay-oracle cache semantics.
-- [ ] **T-EXEC-17** Implement the same-configuration-twice fingerprint test as the
+- [x] **T-EXEC-17** Implement the same-configuration-twice fingerprint test as the
   unified validator of start/resume/fork/snapshot-completeness and wire it to
   `gate:single-vm-fingerprint`. — satisfies [EXEC-31]; spec §11.
+  - Completed by `crates/crucible/tests/gate_single_vm_fingerprint.rs`: the
+    model-side `gate:single-vm-fingerprint` target instantiates the same
+    `Configuration` twice through start/genesis, resume exact-snapshot vs
+    no-fallback ancestor-replay, fork prefix, and saved-checkpoint
+    snapshot-completeness paths, then compares the resulting execution
+    fingerprints while replay-checking the saved checkpoint's fat/thin identity.
+    The canonical gate target map now includes the `crucible` model target, and
+    `checks.crucible.phase1.gates.singleVmFingerprint` runs it alongside the
+    existing QEMU run-twice evidence.
 - [ ] **T-EXEC-18** Run the model determinism tests under adversarial host
   conditions (load, task reordering, varied core counts) and assert identical
   fingerprints. — satisfies [EXEC-32]; spec §11.
