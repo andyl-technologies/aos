@@ -257,16 +257,17 @@ green.
       browse read path (`session_indicator`) uses it. *Remaining (follow-up):*
       explicit invalidation at the console logout site and caching the console's
       own session reads — TTL already bounds revocation lag to ≤60 s.
-- [~] API tokens → `KvStore` read cache with D1 as source-on-miss; invalidate on
-      revoke. *Deferred by design (not mechanical):* token auth carries
-      hard-revoke + rotation-grace logic, and the lookup key is the token
-      **secret** while revocation is by token **id** — so a safe cache cannot
-      invalidate by id against a secret-keyed entry. It needs a
-      **revocation-tombstone** design (`revoked:{token_id}` written on
-      revoke/rotate and consulted on read) or a `token_id→hash` index, not just a
-      `read_through` call. A naive TTL-only cache would serve a revoked token for
-      ≤60 s (a security regression), so it is intentionally not shipped. Design
-      recorded here; the tombstone is the implementable path.
+- [x] API tokens → `KvStore` read cache with D1 as source-on-miss; invalidate on
+      revoke. *Done with the revocation-tombstone design:* `validate_token_cached`
+      serves the validated `TokenAuth` from KV (`tok:{hash}`, 60 s TTL, skips the
+      `last_used_at` write on a hit) **and** rejects any cached resolution whose
+      token id carries a `tokrev:{token_id}` tombstone — written by
+      `invalidate_token_cache` on the console **revoke and rotate** handlers — so
+      a revoke is observed **immediately**, not after the TTL. The bearer-auth
+      read path (`connect.rs`) uses it; `ConsoleDeps` carries the `kv` for the
+      tombstone writes. Domain types (`Principal`/`Scope`/`Permission`/`TokenAuth`)
+      are serde-derived (round-tripping an already-valid value). Both shells
+      compile; native suite green.
 - [x] `instance_config` + site chrome → `KvStore`; push-update on save.
       *Done:* `InstanceSettings`/`SignupPolicy` are serde-derived;
       `instance_settings_cached` / `invalidate_instance_settings_cache` serve the

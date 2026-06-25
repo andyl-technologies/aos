@@ -1195,7 +1195,9 @@ async fn oauth2_token_exchange(svc: &RpcService, headers: &HeaderMap) -> Respons
                 .into_response()
         }
     };
-    let auth = match svc.db.validate_token(secret).await {
+    // RFC-0004 ch.14 Phase C: validate through the KV cache (with the revocation
+    // tombstone) when one is attached, off the D1 read path.
+    let auth = match svc.validate_token_cached(secret).await {
         Ok(Some(auth)) => auth,
         Ok(None) => {
             return (StatusCode::UNAUTHORIZED, "invalid provisioning secret").into_response()

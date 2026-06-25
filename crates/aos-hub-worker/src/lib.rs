@@ -420,6 +420,11 @@ mod entry {
                 .ok()
                 .map(|v| format!("r2://{}", v.to_string()))
                 .filter(|s| s != "r2://"),
+            // RFC-0004 ch.14 Phase C: Workers KV for read-through caching +
+            // token-revocation tombstones (the `SESSIONS` namespace).
+            kv: Some(Arc::new(crate::workerkv::WorkerKv::new(
+                env.kv(crate::handlers::bindings::KV_SESSIONS)?,
+            ))),
         };
 
         // The service is returned alongside the router so the bridge can run the

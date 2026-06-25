@@ -92,6 +92,27 @@ pub struct ConsoleDeps {
     /// (e.g. an older Worker deploy without `HUB_DEFAULT_BUCKET`), so the UI
     /// falls back to "configured at deploy time".
     pub default_storage_location: Option<String>,
+    /// The hot-state key-value store ([`KvStore`](crate::kv::KvStore)) for
+    /// read-through caching (RFC-0004 ch.14 Phase C). `None` disables caching
+    /// (the database is authoritative). The console uses it to **invalidate** the
+    /// token cache on revoke/rotate (a `tokrev:` tombstone) so a revoked token is
+    /// rejected immediately rather than after the cache TTL.
+    pub kv: Option<Arc<dyn crate::kv::KvStore>>,
+}
+
+impl ConsoleDeps {
+    /// Tombstones a token id in KV so any cached resolution for it is rejected
+    /// (call on revoke/rotate). A no-op when no [`KvStore`](crate::kv::KvStore)
+    /// is attached. Mirrors
+    /// [`RpcService::invalidate_token_cache`](crate::service::RpcService::invalidate_token_cache).
+    pub async fn invalidate_token_cache(&self, token_id: &str) {
+        if let Some(kv) = &self.kv {
+            let ttl = crate::cache::HOT_TTL_SECS * 10;
+            let _ = kv
+                .put(&format!("tokrev:{token_id}"), b"1", Some(ttl))
+                .await;
+        }
+    }
 }
 
 /// A minimal outbound HTTP client for the OIDC authorization-code flow.

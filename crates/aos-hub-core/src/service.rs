@@ -1056,6 +1056,73 @@ impl RpcService {
         }
     }
 
+    /// Validates an API-token secret, read-through cached in KV when one is
+    /// attached, with **revocation safety via a tombstone** (RFC-0004 ch.14
+    /// Phase C, `tok:{hash}` + `tokrev:{token_id}`).
+    ///
+    /// Token auth runs on every API request; this serves the validated
+    /// [`TokenAuth`](crate::db::TokenAuth) from KV (sub-ms, off the D1 session
+    /// cost) for [`HOT_TTL_SECS`](crate::cache::HOT_TTL_SECS), and skips the
+    /// `last_used_at` write `validate_token` performs on a cache hit.
+    ///
+    /// Because the cache is keyed by the token **secret** but revocation is by
+    /// token **id**, a naive TTL cache could serve a revoked token until the TTL.
+    /// Instead, [`invalidate_token_cache`] writes a `tokrev:{token_id}` tombstone
+    /// on revoke/rotate, and this method **rejects any cached resolution whose
+    /// token id is tombstoned** — so a revoke is observed immediately, not after
+    /// the TTL. (After the resolution TTL the entry re-validates from the
+    /// database, which already excludes revoked/rotated tokens.)
+    ///
+    /// With no `kv` attached this is exactly
+    /// [`validate_token`](crate::db::Database::validate_token).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a KV read or database failure.
+    pub async fn validate_token_cached(
+        &self,
+        secret: &str,
+    ) -> anyhow::Result<Option<crate::db::TokenAuth>> {
+        let Some(kv) = &self.kv else {
+            return self.db.validate_token(secret).await;
+        };
+        let key = format!("tok:{}", crate::auth::token::sha256_hex(secret));
+        let db = &self.db;
+        let cached: Option<crate::db::TokenAuth> = crate::cache::read_through(
+            kv.as_ref(),
+            &key,
+            Some(crate::cache::HOT_TTL_SECS),
+            || async move { db.validate_token(secret).await },
+        )
+        .await?;
+        // Reject a cached resolution whose token was revoked/rotated since it was
+        // cached (the tombstone written by `invalidate_token_cache`).
+        if let Some(auth) = &cached {
+            let tomb = format!("tokrev:{}", auth.token_id);
+            if kv.get(&tomb).await?.is_some() {
+                return Ok(None);
+            }
+        }
+        Ok(cached)
+    }
+
+    /// Tombstones a token id so any KV-cached resolution for it is rejected
+    /// (call on revoke/rotate). A no-op when no [`KvStore`](crate::kv::KvStore)
+    /// is attached.
+    ///
+    /// The tombstone outlives the resolution cache TTL (so no stale resolution
+    /// can outlast it), after which the resolution re-validates from the database.
+    pub async fn invalidate_token_cache(&self, token_id: &str) {
+        if let Some(kv) = &self.kv {
+            // 10× the resolution TTL is a generous margin over any cached entry's
+            // lifetime (and clock skew); the value is irrelevant (presence is).
+            let ttl = crate::cache::HOT_TTL_SECS * 10;
+            let _ = kv
+                .put(&format!("tokrev:{token_id}"), b"1", Some(ttl))
+                .await;
+        }
+    }
+
     /// Attach an [`OriginFetch`](crate::fetch::OriginFetch) for streamed proxying
     /// of private-origin cache reads, returning the modified service.
     ///
