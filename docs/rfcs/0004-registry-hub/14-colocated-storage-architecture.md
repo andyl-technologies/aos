@@ -287,15 +287,34 @@ green.
 
 ### Phase D — Edge-regenerated control-plane read models (ISR)
 
-- [ ] Define a `Queue` port (Cloudflare Queues / native job runner) for async
+- [x] Define a `Queue` port (Cloudflare Queues / native job runner) for async
       fan-out.
-- [ ] Materialize the global registry/cache **directory** as a cached projection
+      *Done:* `aos_hub_core::jobs::{Queue, Job, InMemoryQueue}` (`jobs.rs`,
+      tested — `Job` is a JSON-serializable enum: regenerate-surface,
+      rebuild-directory, reindex, invalidate-read-model, deliver-webhook) +
+      `WorkerQueue` over Cloudflare Queues (`workerqueue.rs`, `queue` feature,
+      compiles wasm; `JOBS` binding).
+- [~] Materialize the global registry/cache **directory** as a cached projection
       (KV) updated on publish; the instance home reads it (kills the home N+1
       fan-out in `crates/aos-hub-core/src/web/browse.rs`).
-- [ ] Regenerate browse HTML/JSON on write → edge cache / R2; serve anonymous
+      *Core done:* `aos_hub_core::directory::{rebuild, read, DirectoryEntry}`
+      (`directory.rs`, tested vs in-memory DB + KV) materializes the public
+      listing in one KV value, built off-request via the `RebuildDirectory` job.
+      *Remaining:* point the home render at the projection (a small render path
+      from `DirectoryEntry`, vs today's `RegistryRecord`) + merge authed-only
+      private registries per-request.
+- [~] Regenerate browse HTML/JSON on write → edge cache / R2; serve anonymous
       browse as cache hits; invalidate the affected keys on write via the `Queue`.
-- [ ] Move surface regeneration, projection updates, cache invalidation, webhook
+      *Infra ready (`Job::InvalidateReadModel`, the edge cache read/write-through
+      already in the Worker `fetch`); the regenerate-and-store step + its
+      correctness are **deploy-gated** (edge-cache behavior is only observable
+      under workerd/live).* 
+- [~] Move surface regeneration, projection updates, cache invalidation, webhook
       delivery, and indexing onto the `Queue` (synchronous write stays fast).
+      *Producer + `Job` variants done;* the `#[event(queue)]` **consumer**
+      execution (running each job against db/surface) is **deploy-gated** — it
+      can only be exercised under a live queue. Native drains the same `Job`s on
+      a tokio runner (same port).
 
 ### Phase E — Tenant-sharded, colocated SQLite system of record
 
