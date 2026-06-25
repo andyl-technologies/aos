@@ -12,8 +12,8 @@ const FORCE_CACHE_PAYLOAD_MAX_DEPTH: usize = 64;
 enum ForcePayloadPersistenceAction {
     Skip,
     Clear,
-    Materialize,
-    MaterializeWithTrace,
+    Materialize { early_cutoff: bool },
+    MaterializeWithTrace { early_cutoff: bool },
 }
 
 impl ForceCacheOptionsIdentity {
@@ -487,7 +487,9 @@ impl TreeWalk {
                 subject.free_var_value_hashes.iter().copied(),
                 payload.clone(),
             ) {
-                Ok(Some(_)) => Ok(ForcePayloadPersistenceAction::Materialize),
+                Ok(Some(reconsideration)) => Ok(ForcePayloadPersistenceAction::Materialize {
+                    early_cutoff: reconsideration.decision() == CutoffDecision::CutOff,
+                }),
                 Ok(None) => Ok(ForcePayloadPersistenceAction::Skip),
                 Err(error) => Err(error),
             }
@@ -499,7 +501,14 @@ impl TreeWalk {
                 &trace,
             ) {
                 Ok(Some(observation)) if observation.node().is_some() => {
-                    Ok(ForcePayloadPersistenceAction::MaterializeWithTrace)
+                    Ok(ForcePayloadPersistenceAction::MaterializeWithTrace {
+                        early_cutoff: observation
+                            .payload_reconsideration()
+                            .map(|reconsideration| {
+                                reconsideration.decision() == CutoffDecision::CutOff
+                            })
+                            .unwrap_or(false),
+                    })
                 }
                 Ok(Some(_)) => Ok(ForcePayloadPersistenceAction::Clear),
                 Ok(None) => Ok(ForcePayloadPersistenceAction::Skip),
@@ -508,7 +517,10 @@ impl TreeWalk {
         };
         drop(cache);
         match persistence_action {
-            Ok(ForcePayloadPersistenceAction::Materialize) => {
+            Ok(ForcePayloadPersistenceAction::Materialize { early_cutoff }) => {
+                if early_cutoff {
+                    self.increment_early_cutoffs();
+                }
                 if let Some(value_hash) =
                     self.materialize_persist_forced_expression_payload(&subject, &payload)
                 {
@@ -517,7 +529,10 @@ impl TreeWalk {
                     }
                 }
             }
-            Ok(ForcePayloadPersistenceAction::MaterializeWithTrace) => {
+            Ok(ForcePayloadPersistenceAction::MaterializeWithTrace { early_cutoff }) => {
+                if early_cutoff {
+                    self.increment_early_cutoffs();
+                }
                 if let Some(value_hash) =
                     self.materialize_persist_forced_expression_payload(&subject, &payload)
                 {

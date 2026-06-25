@@ -62,11 +62,28 @@ pub enum ExpressionCacheability {
 pub struct ExpressionTraceObservation {
     node: Option<DemandNodeId>,
     trace: ImpureTraceObservation,
+    payload_reconsideration: Option<Reconsideration>,
 }
 
 impl ExpressionTraceObservation {
     fn new(node: Option<DemandNodeId>, trace: ImpureTraceObservation) -> Self {
-        Self { node, trace }
+        Self {
+            node,
+            trace,
+            payload_reconsideration: None,
+        }
+    }
+
+    fn with_payload_reconsideration(
+        node: DemandNodeId,
+        trace: ImpureTraceObservation,
+        payload_reconsideration: Reconsideration,
+    ) -> Self {
+        Self {
+            node: Some(node),
+            trace,
+            payload_reconsideration: Some(payload_reconsideration),
+        }
     }
 
     /// Returns the expression node wired to cacheable input leaves, if any.
@@ -77,6 +94,11 @@ impl ExpressionTraceObservation {
     /// Returns the observed impure trace cacheability and leaves.
     pub const fn trace(&self) -> &ImpureTraceObservation {
         &self.trace
+    }
+
+    /// Returns the value-hash reconsideration from payload observation, if any.
+    pub fn payload_reconsideration(&self) -> Option<&Reconsideration> {
+        self.payload_reconsideration.as_ref()
     }
 
     /// Returns whether this expression evaluation can be memoized.
@@ -1029,14 +1051,16 @@ impl EvalCache {
                 return Err(error);
             }
         };
-        let node = self
-            .graph
-            .get_or_insert_node(key, Some(record.value_hash))?;
+        let node = self.graph.get_or_insert_node(key, None)?;
         self.graph
             .replace_dependencies(node, trace.leaves().iter().map(|leaf| leaf.node()))?;
-        self.graph.reconsider_node(node, record.value_hash)?;
+        let payload_reconsideration = self.graph.reconsider_node(node, record.value_hash)?;
         self.inline_values.insert(node, record);
-        Ok(ExpressionTraceObservation::new(Some(node), trace))
+        Ok(ExpressionTraceObservation::with_payload_reconsideration(
+            node,
+            trace,
+            payload_reconsideration,
+        ))
     }
 
     /// Observes one recomputed immediate expression result with its impure inputs.
@@ -2360,7 +2384,9 @@ impl EvalCacheRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{DemandCacheKey, ImpureTraceStatus, NodeFreshness, UncacheableInput};
+    use crate::cache::{
+        CutoffDecision, DemandCacheKey, ImpureTraceStatus, NodeFreshness, UncacheableInput,
+    };
     use crate::compile::IrId;
     use crate::string::{ContextElement, StringContext};
 
@@ -3394,6 +3420,48 @@ mod tests {
                 .expect("expression node exists")
                 .freshness(),
             NodeFreshness::Dirty
+        );
+    }
+
+    #[test]
+    fn eval_cache_trace_backed_payload_reports_early_cutoff_reconsideration() {
+        let source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/version", b"same")],
+            complete: true,
+        };
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+
+        let first_observation = cache
+            .observe_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+                &source,
+            )
+            .expect("first inline result and trace observe");
+        assert_eq!(
+            first_observation
+                .payload_reconsideration()
+                .expect("payload reconsideration is reported")
+                .decision(),
+            CutoffDecision::Propagate
+        );
+
+        let second_observation = cache
+            .observe_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+                &source,
+            )
+            .expect("second inline result and trace observes");
+        assert_eq!(
+            second_observation
+                .payload_reconsideration()
+                .expect("payload reconsideration is reported")
+                .decision(),
+            CutoffDecision::CutOff
         );
     }
 

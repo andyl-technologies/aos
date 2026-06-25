@@ -82,4 +82,8 @@ impl TreeWalk {
     pub(super) fn increment_eval_cache_miss(&mut self) {
         self.stats.force_cache_misses = self.stats.force_cache_misses.saturating_add(1);
     }
+
+    pub(super) fn increment_early_cutoffs(&mut self) {
+        self.stats.early_cutoffs = self.stats.early_cutoffs.saturating_add(1);
+    }
 }

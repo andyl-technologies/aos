@@ -774,6 +774,16 @@ alone (`M-1`/`Q-A`).
       value-hash production, `force_memoized`, evaluator node lifecycle,
       automatic `NixNative` use, persistence, and harness proof remain open
       (`S-14`/`S-15`).
+- [x] Current forced-payload early-cutoff stats substrate:
+      trace-backed force-cache payload observation now reports its value-hash
+      `Reconsideration`, first trace-backed insertion uses no synthetic prior
+      hash, and tree-walk increments `EvalStats::early_cutoffs` when a
+      recomputed pure or trace-backed force-cache payload returns `CutOff`.
+      This is telemetry for the current explicit force-cache observation path
+      only; evaluator-owned recomputation scheduling, transitive red/green
+      propagation, canonical hashes for all values, persistence-aware cutoff
+      accounting, and cached/uncached `.drv` parity proof remain open
+      (`S-14`/`M-11`).
 - [ ] Full Salsa/red-green early cutoff remains: recompute demand-graph nodes,
       produce canonical value hashes, compare old/new hashes, stop propagation
       through dependents on no-change, and prove cached/uncached `.drv` parity.

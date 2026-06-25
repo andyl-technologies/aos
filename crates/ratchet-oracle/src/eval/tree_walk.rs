@@ -52,12 +52,12 @@ use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, AttrPosition, FlatAttrs};
 use crate::cache::{
-    CacheExprIdentity, CachedExpressionValue, CachedParse, DirEntryInput, DurableBlake3Hash,
-    EvalCacheRuntime, FileTypeForInput, ImpureInputFingerprint, ImpureInputIdentity,
-    ImpureInputKind, ImpureInputMode, ImpureInputRevalidator, ImpureInputTraceSource,
-    InputFingerprintError, MaterializationCosts, MaterializationDecision, ParseCache,
-    ParseCacheError, ParseFileKey, PersistCache, PersistMaterialization, PersistNodeMetadataKey,
-    PersistNodeTracePayload, ValueHash, lowered_ir_fingerprint,
+    CacheExprIdentity, CachedExpressionValue, CachedParse, CutoffDecision, DirEntryInput,
+    DurableBlake3Hash, EvalCacheRuntime, FileTypeForInput, ImpureInputFingerprint,
+    ImpureInputIdentity, ImpureInputKind, ImpureInputMode, ImpureInputRevalidator,
+    ImpureInputTraceSource, InputFingerprintError, MaterializationCosts, MaterializationDecision,
+    ParseCache, ParseCacheError, ParseFileKey, PersistCache, PersistMaterialization,
+    PersistNodeMetadataKey, PersistNodeTracePayload, ValueHash, lowered_ir_fingerprint,
 };
 use crate::compile::{
     FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,

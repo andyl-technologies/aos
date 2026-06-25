@@ -2151,6 +2151,77 @@ fn changed_read_file_backed_inline_thunks_miss_after_revalidation() {
 }
 
 #[test]
+fn force_cache_recompute_same_value_counts_early_cutoff_after_trace_miss() {
+    let root = unique_temp_dir("force-cache-read-file-same-value-cutoff");
+    fs::write(root.join("target"), b"first").expect("target writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = r#"{ a = let x = builtins.readFile ./target; in if x == "never" then 4 else 3; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = eval.eval_root().expect("attrset evaluates");
+    let thunk = {
+        let attrs = eval
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = eval
+        .force_value(ir.root, Span::new(0, 0), thunk)
+        .expect("readFile-backed force succeeds");
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(eval.stats().cache_hits(), 0);
+    assert!(eval.stats().cache_misses() > 0);
+    assert_eq!(eval.stats().early_cutoffs(), 0);
+
+    fs::write(root.join("target"), b"second").expect("target changes");
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let changed_root = changed.eval_root().expect("attrset evaluates again");
+    let changed_thunk = {
+        let attrs = changed
+            .heap()
+            .get_attrs(changed_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced_changed = changed
+        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .expect("changed readFile-backed force recomputes");
+
+    assert_eq!(forced_changed.as_int(), Ok(3));
+    assert!(changed.stats().thunks_forced() > 0);
+    assert_eq!(changed.stats().cache_hits(), 0);
+    assert!(changed.stats().cache_misses() > 0);
+    assert_eq!(changed.stats().early_cutoffs(), 1);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn read_file_string_payload_thunks_hit_after_revalidation() {
     let root = unique_temp_dir("force-cache-read-file-string-payload");
     fs::write(root.join("target"), b"payload").expect("target writes");
