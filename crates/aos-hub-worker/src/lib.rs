@@ -121,6 +121,8 @@ pub mod consoleports;
 #[cfg(target_arch = "wasm32")]
 pub mod coordinatorobj;
 #[cfg(target_arch = "wasm32")]
+pub mod edgeratelimit;
+#[cfg(target_arch = "wasm32")]
 pub mod d1backend;
 #[cfg(target_arch = "wasm32")]
 pub mod handlers;
@@ -314,16 +316,17 @@ mod entry {
         let email_api_url = env.var(HUB_EMAIL_API_URL).ok().map(|v| v.to_string());
         let email_api_token = env.secret(HUB_EMAIL_API_TOKEN).ok().map(|s| s.to_string());
 
-        // RFC-0004 ch.14: the strongly-consistent coordinator (the Durable
-        // Object) backs the rate limiter and the publish lease, so neither writes
-        // to D1 on the read path. One coordinator handle is shared across both.
+        // RFC-0004 ch.14 (corrected): rate limiting uses the **edge-local** Rate
+        // Limiting bindings — `limit({key})` increments a machine-local counter
+        // with no network round-trip, so it adds nothing to the read path (the
+        // earlier Durable Object limiter added a ~100 ms cross-region hop per
+        // request). The publish lease keeps its DO backing (a write-path concern).
+        let ratelimit: Arc<dyn RateLimiter> =
+            Arc::new(crate::edgeratelimit::EdgeRateLimiter::from_env(env)?);
+        // The DO coordinator now backs only the cross-isolate publish lease; its
+        // hop is paid only on a publish, never on a read.
         let coordinator: Arc<dyn aos_hub_core::coordinator::Coordinator> =
             Arc::new(crate::coordinatorobj::WorkerCoordinator::from_env(env)?);
-        // The rate-limit `admit` is a serialized DO operation — atomic, and off
-        // the D1 read path (no per-request upsert to the primary).
-        let ratelimit: Arc<dyn RateLimiter> = Arc::new(
-            aos_hub_core::ratelimit::CoordinatorRateLimiter::new(Arc::clone(&coordinator)),
-        );
 
         let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
             Arc::new(crate::surface::R2SurfaceProvider::new(

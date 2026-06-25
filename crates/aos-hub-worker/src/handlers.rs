@@ -30,4 +30,9 @@ pub mod bindings {
     /// The Cloudflare Queue binding name for deferred post-write jobs
     /// (`[[queues.producers]]`). RFC-0004 ch.14 Phase D.
     pub const QUEUE: &str = "JOBS";
+    /// Edge Rate Limiting bindings (`[[ratelimits]]`), one per budget tier
+    /// (all `period = 60`). RFC-0004 ch.14 (corrected: edge-local, no DO hop).
+    pub const RL_BURST5: &str = "RL_BURST5";
+    pub const RL_BURST10: &str = "RL_BURST10";
+    pub const RL_BROWSE120: &str = "RL_BROWSE120";
 }
