@@ -394,6 +394,7 @@ mod tests {
             id: 1,
             registry_id: Some(1),
             cache_id: None,
+            storage_binding_id: None,
             domain: domain.to_string(),
             base_path: base_path.to_string(),
             mode: "direct".to_string(),
