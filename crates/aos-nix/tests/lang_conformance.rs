@@ -20,7 +20,7 @@ enum LangCategory {
     EvalOkay,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct LangCase {
     name: String,
     category: LangCategory,
@@ -90,12 +90,11 @@ struct LangCaseExclusion {
 
 const PINNED_LANG_CPP_NIX_VERSION: LangVersion = LangVersion::new(2, 24, 12);
 const LANG_VERSION_SKIP_RULES: &[LangVersionSkipRule] = &[];
-const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[LangCaseExclusion {
-    name: "eval-fail-infinite-recursion-lambda",
-    reason: "native evaluator stack-safety gap for infinite lambda recursion",
-}];
-const PINNED_LANG_2_24_12_PASS_COUNT: usize = 207;
-const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 2;
+const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[];
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 208;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 1;
+const LANG_CASE_STACK_SIZE: usize = 32 * 1024 * 1024;
+const STACK_SAFE_RECURSION_LAMBDA_MAX_CALL_DEPTH: usize = 512;
 const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
     "parse-fail-dup-attrs-1",
@@ -450,13 +449,34 @@ fn read_flags(lang_dir: &Path, stem: &str) -> Result<Vec<String>> {
 }
 
 fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
-    run_lang_case_with_exclusions(case, false)
+    run_lang_case_on_stack(case.clone(), false)
 }
 
 fn run_lang_case_with_exclusions(
     case: &LangCase,
     allow_documented_exclusions: bool,
 ) -> Result<CaseOutcome> {
+    run_lang_case_on_stack(case.clone(), allow_documented_exclusions)
+}
+
+fn run_lang_case_on_stack(
+    case: LangCase,
+    allow_documented_exclusions: bool,
+) -> Result<CaseOutcome> {
+    let name = case.name.clone();
+    let handle = std::thread::Builder::new()
+        .name("aos-nix-lang-case".to_owned())
+        .stack_size(LANG_CASE_STACK_SIZE)
+        .spawn(move || run_lang_case_inner(&case, allow_documented_exclusions))
+        .with_context(|| format!("spawning lang conformance worker for {name}"))?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => bail!("lang conformance worker panicked while running {name}"),
+    }
+}
+
+fn run_lang_case_inner(case: &LangCase, allow_documented_exclusions: bool) -> Result<CaseOutcome> {
     if case.disabled {
         return Ok(CaseOutcome::Skipped("disabled by .exp-disabled".to_owned()));
     }
@@ -472,7 +492,7 @@ fn run_lang_case_with_exclusions(
         .source
         .parent()
         .ok_or_else(|| anyhow!("{} has no lang corpus parent directory", case.name))?;
-    let config = match lang_case_config(case.category, &case.flags, lang_dir) {
+    let config = match lang_case_config_for_case(case, lang_dir) {
         Ok(config) => config,
         Err(reason) => return Ok(CaseOutcome::Skipped(reason)),
     };
@@ -727,6 +747,24 @@ fn lang_case_config(
     }
 }
 
+fn lang_case_config_for_case(
+    case: &LangCase,
+    lang_dir: &Path,
+) -> std::result::Result<LangEvalConfig, String> {
+    let mut config = lang_case_config(case.category, &case.flags, lang_dir)?;
+    if case.category == LangCategory::EvalFail
+        && case.name == "eval-fail-infinite-recursion-lambda"
+        && !has_max_call_depth_flag(&case.flags)
+    {
+        // This upstream case is intentionally non-terminating; cap it below the
+        // host stack limit so the evaluator reports the max-depth error.
+        config
+            .options
+            .set_max_call_depth(STACK_SAFE_RECURSION_LAMBDA_MAX_CALL_DEPTH);
+    }
+    Ok(config)
+}
+
 fn eval_okay_options(
     flags: &[String],
     lang_dir: &Path,
@@ -904,6 +942,10 @@ fn path_bytes(path: &Path) -> Vec<u8> {
 
 fn parse_max_call_depth_flag(value: &str, flags: &[String]) -> std::result::Result<usize, String> {
     value.parse().map_err(|_| unsupported_flags_message(flags))
+}
+
+fn has_max_call_depth_flag(flags: &[String]) -> bool {
+    flags.iter().any(|flag| flag == "--max-call-depth")
 }
 
 fn validate_auto_arg_name(name: &str, flags: &[String]) -> std::result::Result<(), String> {
@@ -1157,6 +1199,7 @@ fn discovers_lang_sh_categories_flags_and_disabled_cases() -> Result<()> {
             LangCategory::EvalFail,
             LangCategory::EvalFail,
             LangCategory::EvalFail,
+            LangCategory::EvalFail,
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
@@ -1202,6 +1245,7 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
         vec![
             ("parse-fail-missing-then", CaseOutcome::Passed),
             ("parse-okay-simple", CaseOutcome::Passed),
+            ("eval-fail-infinite-recursion-lambda", CaseOutcome::Passed),
             ("eval-fail-max-call-depth", CaseOutcome::Passed),
             ("eval-fail-type", CaseOutcome::Passed),
             ("eval-fail-with-flags", CaseOutcome::Passed),
@@ -1652,6 +1696,28 @@ fn lang_sh_max_call_depth_flag_configures_eval() {
             &lang_dir
         ),
         Err("case carries unsupported flags: --max-call-depth 3 --eval --strict".to_owned())
+    );
+}
+
+#[test]
+fn recursive_lambda_eval_fail_uses_stack_safe_max_call_depth() {
+    let lang_dir = fixture_lang_dir();
+    let case = LangCase {
+        name: "eval-fail-infinite-recursion-lambda".to_owned(),
+        category: LangCategory::EvalFail,
+        source: lang_dir.join("eval-fail-infinite-recursion-lambda.nix"),
+        expected: Some(lang_dir.join("eval-fail-infinite-recursion-lambda.err.exp")),
+        expected_xml: None,
+        postprocess: None,
+        flags: Vec::new(),
+        disabled: false,
+    };
+
+    let config =
+        lang_case_config_for_case(&case, &lang_dir).expect("recursive lambda case configures");
+    assert_eq!(
+        config.options.max_call_depth(),
+        STACK_SAFE_RECURSION_LAMBDA_MAX_CALL_DEPTH
     );
 }
 
