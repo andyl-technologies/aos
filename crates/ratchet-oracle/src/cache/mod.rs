@@ -52,5 +52,5 @@ pub use policy::{
 };
 pub use runtime::{
     EvalCache, EvalCacheRuntime, ExpressionCacheability, ExpressionTraceObservation,
-    ImpureInputTraceSource,
+    ImpureInputRevalidator, ImpureInputTraceSource,
 };

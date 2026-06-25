@@ -519,6 +519,30 @@ alone (`M-1`/`Q-A`).
       revalidation, heap/composite payloads, transitive dirty scheduling,
       persistence, `derivationStrict` SHA-256 short-circuiting, and
       cached/uncached harness proof remain open (`R-10`/`S-14`).
+- [x] Current force-time inline impure revalidation substrate: trace-backed
+      inline payload records now retain the cacheable input fingerprints from
+      their force-time trace, and
+      `EvalCache::lookup_inline_expression_result_with_impure_inputs`
+      revalidates those typed identities through an `ImpureInputRevalidator`
+      before returning a scalar payload. Changed, unavailable, uncacheable, or
+      identity-mismatched fresh inputs invalidate the payload and miss. Tree-walk
+      supplies a conservative options-backed revalidator for `getEnv`,
+      `pathExists`, `readDir`, and `readFileType`, so stable source-backed
+      `pathExists` thunks can hit after replaying their input probe, while
+      deleted or changed paths force recomputation through the normal evaluator
+      path. Revalidated cache hits append their fresh fingerprints back into the
+      active evaluator trace so enclosing forced thunks cannot be observed as
+      pure by losing nested dependencies. `readFile`-backed payloads remain
+      misses until revalidation identities include store-dir-dependent string
+      context, and the older public pure lookup remains pure-only. This is
+      in-memory scalar effectful reuse only; source-less raw eval, captured
+      lexical/dynamic/scoped-global thunks, ambient builtin constants,
+      search-path/path/global/builtin/application/dialect nodes beyond the
+      traceable primop subset, canonical free-variable hashes, persistent
+      input-identity retention, heap/composite payloads, transitive dirty
+      scheduling, persistent graph/value cache integration, `derivationStrict`
+      SHA-256 short-circuiting, and cached/uncached harness proof remain open
+      (`R-10`/`S-14`).
 - [ ] Full cache-key integration remains: feed source content + IR node position
       from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real

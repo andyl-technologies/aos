@@ -439,11 +439,12 @@ impl TreeWalk {
         let Some(body) = body else {
             return None;
         };
-        let Some(identity) = self.cache_identity_for_node(body) else {
+        let Some(identity) = self.cache_observation_identity_for_node(body) else {
             return None;
         };
+        let mut revalidator = TreeWalkImpureInputRevalidator::new(&self.options);
 
-        let Ok(cache) = self.eval_cache.lock() else {
+        let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
                 target: "aos_nix::cache",
                 "tree-walk evaluator cache lock was poisoned; skipping forced expression lookup"
@@ -453,20 +454,28 @@ impl TreeWalk {
         if !cache.is_enabled() {
             return None;
         }
-        match cache
-            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
-        {
+        match cache.lookup_inline_expression_result_with_impure_inputs(
+            identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            &mut revalidator,
+        ) {
             Ok(Some(value)) => {
+                let trace = revalidator.into_revalidated_trace();
                 drop(cache);
+                for fingerprint in trace {
+                    self.record_impure_input(fingerprint);
+                }
                 self.increment_eval_cache_hit();
                 Some(value)
             }
             Ok(None) => {
+                drop(revalidator);
                 drop(cache);
                 self.increment_eval_cache_miss();
                 None
             }
             Err(error) => {
+                drop(revalidator);
                 tracing::warn!(
                     target: "aos_nix::cache",
                     error = %error,

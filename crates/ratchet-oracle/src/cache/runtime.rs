@@ -7,9 +7,10 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CacheExprIdentity, DemandCacheKey, DemandGraph, DemandGraphError, DemandNodeId,
-    DurableBlake3Hash, ImpureInputFingerprint, ImpureTraceObservation, ImpureTraceStatus,
-    NodeFreshness, Reconsideration, UncacheableInput, ValueHash, ValueHashError,
+    CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey, DemandGraph, DemandGraphError,
+    DemandNodeId, DurableBlake3Hash, ImpureInputFingerprint, ImpureInputIdentity,
+    ImpureTraceObservation, ImpureTraceStatus, NodeFreshness, Reconsideration, UncacheableInput,
+    ValueHash, ValueHashError,
 };
 use crate::value::Value;
 
@@ -20,6 +21,18 @@ pub trait ImpureInputTraceSource {
 
     /// Returns whether the trace is complete enough to be cache-usable.
     fn impure_input_trace_complete(&self) -> bool;
+}
+
+/// Recomputes impure-input fingerprints for cached input identities.
+pub trait ImpureInputRevalidator {
+    /// Revalidates one previously observed cacheable input identity.
+    ///
+    /// Returning `None` means the input could not be revalidated without
+    /// evaluating the original expression, so the cache lookup must miss.
+    fn revalidate_impure_input(
+        &mut self,
+        identity: &ImpureInputIdentity,
+    ) -> Option<ImpureInputFingerprint>;
 }
 
 /// Whether an observed expression evaluation is eligible for memoization.
@@ -142,10 +155,71 @@ impl EvalCache {
         if graph_node.freshness() != NodeFreshness::Clean {
             return Ok(None);
         }
-        let Some(record) = self.inline_values.get(&node).copied() else {
+        let Some(record) = self.inline_values.get(&node).cloned() else {
             return Ok(None);
         };
         if !record.is_reusable_without_revalidation() {
+            return Ok(None);
+        }
+        if graph_node.value_hash() != Some(record.value_hash) {
+            return Ok(None);
+        }
+        Ok(Some(record.value()))
+    }
+
+    /// Looks up a clean inline expression result after impure-input revalidation.
+    ///
+    /// Pure payload records are handled identically to
+    /// [`EvalCache::lookup_inline_expression_result`]. Trace-backed payload
+    /// records are returned only if every stored cacheable input identity can be
+    /// revalidated, the fresh identity still matches the stored identity, the
+    /// fresh observation hash still matches the stored observation hash, and the
+    /// expression node remains clean with the recorded value hash. Revalidation
+    /// observes fresh input leaves through the demand graph so changed inputs
+    /// dirty dependents through the ordinary cutoff path.
+    ///
+    /// Inputs that cannot be revalidated, revalidate to an uncacheable
+    /// fingerprint, or revalidate to a different identity invalidate the
+    /// expression payload and return a miss.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails, graph
+    /// node lookup fails, fresh input observation fails, or dirty marking
+    /// fails.
+    pub fn lookup_inline_expression_result_with_impure_inputs<I, R>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        revalidator: &mut R,
+    ) -> Result<Option<Value>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+        R: ImpureInputRevalidator + ?Sized,
+    {
+        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
+            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        let Some(node) = self.graph.node_id_for_key(key) else {
+            return Ok(None);
+        };
+        let graph_node = self.graph.node(node)?;
+        if graph_node.freshness() != NodeFreshness::Clean {
+            return Ok(None);
+        }
+        let Some(record) = self.inline_values.get(&node).cloned() else {
+            return Ok(None);
+        };
+        if graph_node.value_hash() != Some(record.value_hash) {
+            return Ok(None);
+        }
+        if record.is_reusable_without_revalidation() {
+            return Ok(Some(record.value()));
+        }
+        if !self.revalidate_inline_record_inputs(node, &record, revalidator)? {
+            return Ok(None);
+        }
+        let graph_node = self.graph.node(node)?;
+        if graph_node.freshness() != NodeFreshness::Clean {
             return Ok(None);
         }
         if graph_node.value_hash() != Some(record.value_hash) {
@@ -303,12 +377,12 @@ impl EvalCache {
     ///
     /// Cacheable traces get or insert the expression node, wire observed input
     /// leaves as dependencies, reconsider the node from the inline value hash,
-    /// and store the scalar side payload. The stored payload is not returned by
-    /// [`EvalCache::lookup_inline_expression_result`] until a future lookup path
-    /// can revalidate the input identities. Incomplete or uncacheable traces
-    /// return their status without creating a new expression node or payload;
-    /// if the expression key already exists, its prior inline payload is
-    /// removed and the node is marked dirty.
+    /// and store the scalar side payload plus the cacheable input fingerprints
+    /// required by
+    /// [`EvalCache::lookup_inline_expression_result_with_impure_inputs`].
+    /// Incomplete or uncacheable traces return their status without creating a
+    /// new expression node or payload; if the expression key already exists,
+    /// its prior inline payload is removed and the node is marked dirty.
     ///
     /// Successful leaf observations are not rolled back if expression-node
     /// allocation, edge wiring, or value reconsideration later fails.
@@ -339,11 +413,11 @@ impl EvalCache {
             return Ok(ExpressionTraceObservation::new(None, trace));
         }
 
-        let record = match InlineValueRecord::requires_revalidation(value) {
+        let record = match InlineValueRecord::requires_revalidation(value, source) {
             Ok(record) => record,
-            Err(source) => {
+            Err(error) => {
                 self.invalidate_existing_inline_payload(existing_node)?;
-                return Err(DemandGraphError::ValueHash { source });
+                return Err(error);
             }
         };
         let node = self
@@ -384,27 +458,68 @@ impl EvalCache {
         }
         Ok(())
     }
+
+    fn revalidate_inline_record_inputs<R>(
+        &mut self,
+        node: DemandNodeId,
+        record: &InlineValueRecord,
+        revalidator: &mut R,
+    ) -> Result<bool, DemandGraphError>
+    where
+        R: ImpureInputRevalidator + ?Sized,
+    {
+        let Some(inputs) = record.revalidation_inputs() else {
+            return Ok(false);
+        };
+        for expected in inputs {
+            let Some(fresh) = revalidator.revalidate_impure_input(expected.identity()) else {
+                self.invalidate_existing_inline_payload(Some(node))?;
+                return Ok(false);
+            };
+            let ImpureInputFingerprint::Cacheable(fresh) = fresh else {
+                self.invalidate_existing_inline_payload(Some(node))?;
+                return Ok(false);
+            };
+            if fresh.identity() != expected.identity() {
+                self.invalidate_existing_inline_payload(Some(node))?;
+                return Ok(false);
+            }
+            self.graph.observe_impure_input(&fresh)?;
+            if fresh.observation_hash() != expected.observation_hash() {
+                self.invalidate_existing_inline_payload(Some(node))?;
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct InlineValueRecord {
     payload: InlineValuePayload,
     value_hash: ValueHash,
     reusable_without_revalidation: bool,
+    revalidation_inputs: Option<Vec<CacheableInputFingerprint>>,
 }
 
 impl InlineValueRecord {
     fn reusable_without_revalidation(value: Value) -> Result<Self, ValueHashError> {
-        Self::from_value(value, true)
+        Self::from_value(value, true, None)
     }
 
-    fn requires_revalidation(value: Value) -> Result<Self, ValueHashError> {
-        Self::from_value(value, false)
+    fn requires_revalidation<T>(value: Value, source: &T) -> Result<Self, DemandGraphError>
+    where
+        T: ImpureInputTraceSource + ?Sized,
+    {
+        let inputs = cacheable_trace_inputs(source.impure_input_trace())?;
+        Self::from_value(value, false, Some(inputs))
+            .map_err(|source| DemandGraphError::ValueHash { source })
     }
 
     fn from_value(
         value: Value,
         reusable_without_revalidation: bool,
+        revalidation_inputs: Option<Vec<CacheableInputFingerprint>>,
     ) -> Result<Self, ValueHashError> {
         let payload = InlineValuePayload::from_value(value)?;
         let value_hash = ValueHash::from_inline_value(value)?;
@@ -412,16 +527,39 @@ impl InlineValueRecord {
             payload,
             value_hash,
             reusable_without_revalidation,
+            revalidation_inputs,
         })
     }
 
-    const fn value(self) -> Value {
+    const fn value(&self) -> Value {
         self.payload.value()
     }
 
-    const fn is_reusable_without_revalidation(self) -> bool {
+    const fn is_reusable_without_revalidation(&self) -> bool {
         self.reusable_without_revalidation
     }
+
+    fn revalidation_inputs(&self) -> Option<&[CacheableInputFingerprint]> {
+        self.revalidation_inputs.as_deref()
+    }
+}
+
+fn cacheable_trace_inputs(
+    trace: &[ImpureInputFingerprint],
+) -> Result<Vec<CacheableInputFingerprint>, DemandGraphError> {
+    let mut inputs = Vec::new();
+    inputs.try_reserve_exact(trace.len()).map_err(|_| {
+        DemandGraphError::TraceObservationAllocationFailed {
+            observations: trace.len(),
+        }
+    })?;
+    for fingerprint in trace {
+        let ImpureInputFingerprint::Cacheable(fingerprint) = fingerprint else {
+            continue;
+        };
+        inputs.push(fingerprint.clone());
+    }
+    Ok(inputs)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -623,6 +761,37 @@ impl EvalCacheRuntime {
         cache.lookup_inline_expression_result(identity, free_var_value_hashes)
     }
 
+    /// Looks up a clean inline result with impure-input revalidation when enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity or calling `revalidator`. Enabled runtimes delegate to
+    /// [`EvalCache::lookup_inline_expression_result_with_impure_inputs`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to build the expression cache key, observe a fresh input, or
+    /// invalidate an unusable payload.
+    pub fn lookup_inline_expression_result_with_impure_inputs<I, R>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        revalidator: &mut R,
+    ) -> Result<Option<Value>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+        R: ImpureInputRevalidator + ?Sized,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache.lookup_inline_expression_result_with_impure_inputs(
+            identity,
+            free_var_value_hashes,
+            revalidator,
+        )
+    }
+
     /// Observes one inline expression result when cache observation is enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without validating the expression
@@ -705,6 +874,39 @@ mod tests {
 
         fn impure_input_trace_complete(&self) -> bool {
             self.complete
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct StaticRevalidator {
+        trace: Vec<ImpureInputFingerprint>,
+        calls: usize,
+    }
+
+    impl StaticRevalidator {
+        fn new(trace: Vec<ImpureInputFingerprint>) -> Self {
+            Self { trace, calls: 0 }
+        }
+
+        const fn calls(&self) -> usize {
+            self.calls
+        }
+    }
+
+    impl ImpureInputRevalidator for StaticRevalidator {
+        fn revalidate_impure_input(
+            &mut self,
+            identity: &ImpureInputIdentity,
+        ) -> Option<ImpureInputFingerprint> {
+            self.calls = self.calls.saturating_add(1);
+            self.trace.iter().find_map(|fingerprint| {
+                let cacheable = fingerprint.as_cacheable()?;
+                if cacheable.identity() == identity {
+                    Some(fingerprint.clone())
+                } else {
+                    None
+                }
+            })
         }
     }
 
@@ -1121,6 +1323,111 @@ mod tests {
     }
 
     #[test]
+    fn eval_cache_revalidates_trace_backed_inline_expression_results() {
+        let fingerprint = read_file_trace(b"/tmp/version", b"1");
+        let source = TraceSource {
+            trace: vec![fingerprint.clone()],
+            complete: true,
+        };
+        let mut revalidator = StaticRevalidator::new(vec![fingerprint]);
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+
+        cache
+            .observe_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+                &source,
+            )
+            .expect("inline result and trace observe");
+        let value = cache
+            .lookup_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                &mut revalidator,
+            )
+            .expect("lookup revalidates");
+
+        assert_eq!(value.expect("cache hit").as_int(), Ok(3));
+        assert_eq!(revalidator.calls(), 1);
+    }
+
+    #[test]
+    fn changed_revalidated_input_dirties_trace_backed_inline_expression() {
+        let source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/version", b"1")],
+            complete: true,
+        };
+        let mut revalidator = StaticRevalidator::new(vec![read_file_trace(b"/tmp/version", b"2")]);
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+        let observation = cache
+            .observe_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+                &source,
+            )
+            .expect("inline result and trace observe");
+        let node = observation.node().expect("cacheable trace creates node");
+
+        let value = cache
+            .lookup_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                &mut revalidator,
+            )
+            .expect("lookup revalidates");
+
+        assert!(value.is_none());
+        assert_eq!(revalidator.calls(), 1);
+        assert_eq!(
+            cache.graph().node(node).expect("node exists").freshness(),
+            NodeFreshness::Dirty
+        );
+        let value = cache
+            .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("public lookup succeeds");
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn unavailable_revalidated_input_invalidates_trace_backed_inline_expression() {
+        let source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/version", b"1")],
+            complete: true,
+        };
+        let mut revalidator = StaticRevalidator::new(Vec::new());
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 7);
+        let observation = cache
+            .observe_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Value::int(3),
+                &source,
+            )
+            .expect("inline result and trace observe");
+        let node = observation.node().expect("cacheable trace creates node");
+
+        let value = cache
+            .lookup_inline_expression_result_with_impure_inputs(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                &mut revalidator,
+            )
+            .expect("lookup handles unavailable input");
+
+        assert!(value.is_none());
+        assert_eq!(revalidator.calls(), 1);
+        assert_eq!(
+            cache.graph().node(node).expect("node exists").freshness(),
+            NodeFreshness::Dirty
+        );
+    }
+
+    #[test]
     fn changed_impure_edge_dirties_inline_expression_payload_node() {
         let first = TraceSource {
             trace: vec![read_file_trace(b"/tmp/version", b"1")],
@@ -1391,6 +1698,23 @@ mod tests {
 
         assert_eq!(observation, None);
         assert!(runtime.cache().is_none());
+    }
+
+    #[test]
+    fn disabled_eval_cache_runtime_revalidating_lookup_is_noop() {
+        let mut runtime = EvalCacheRuntime::disabled();
+        let mut revalidator = StaticRevalidator::new(vec![read_file_trace(b"/tmp/version", b"1")]);
+
+        let value = runtime
+            .lookup_inline_expression_result_with_impure_inputs(
+                identity(b"source", 7),
+                std::iter::empty::<DurableBlake3Hash>(),
+                &mut revalidator,
+            )
+            .expect("disabled lookup succeeds");
+
+        assert!(value.is_none());
+        assert_eq!(revalidator.calls(), 0);
     }
 
     #[test]
