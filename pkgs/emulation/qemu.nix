@@ -35,6 +35,10 @@
       patch -p1 < ${./qemu-patches/0008-crucible-det-getrandom.patch}
       patch -p1 < ${./qemu-patches/0009-crucible-net-deterministic.patch}
       patch -p1 < ${./qemu-patches/0010-crucible-plugin-time-advance.patch}
+      patch -p1 < ${./qemu-patches/0011-crucible-plugin-icount-raw.patch}
+      patch -p1 < ${./qemu-patches/0012-crucible-plugin-vcpu-exit.patch}
+      patch -p1 < ${./qemu-patches/0013-crucible-plugin-wake-fd.patch}
+      patch -p1 < ${./qemu-patches/0014-crucible-plugin-tcg-exec-cb.patch}
     ''
     else "";
 in

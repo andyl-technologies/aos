@@ -24,8 +24,8 @@ use crate::{
     ExactDeadlineError, ExactDeadlineReader, PluginArgs, PluginArgsParseError, PluginBootBarrier,
     PluginControlHandshake, PluginCoverage, PluginHandshakeError, PluginReadySetupAck,
     PluginRegistrationStep, QemuAdvanceVirtualTimeDirectFn, QemuClockDeadlineFn,
-    SynchronousIdleAdvance, SynchronousIdleAdvanceError, TimeControlRegistrationPlan,
-    perform_plugin_handshake,
+    QemuRegisterWakeFdFn, SynchronousIdleAdvance, SynchronousIdleAdvanceError,
+    TimeControlRegistrationPlan, crucible_qemu_plugin_coverage_exec_cb, perform_plugin_handshake,
 };
 #[cfg(unix)]
 use crate::{
@@ -205,13 +205,15 @@ impl PluginRegistrationSequence {
         writer: &mut W,
         setup: ReceivedSetup,
         handshake: PluginControlHandshake,
+        register_wake_fd: QemuRegisterWakeFdFn,
     ) -> Result<PluginSetupCompletion, PluginRegistrationSequenceError>
     where
         W: Write,
     {
         self.ensure_next_step(PluginRegistrationStep::MapSharedMemory)?;
-        let completion = plugin_prepare_setup_completion(writer, setup, handshake)
-            .map_err(|source| self.fail_setup_preparation(source))?;
+        let completion =
+            plugin_prepare_setup_completion(writer, setup, handshake, register_wake_fd)
+                .map_err(|source| self.fail_setup_preparation(source))?;
         self.record_step_unchecked(PluginRegistrationStep::MapSharedMemory)?;
         self.record_step_unchecked(PluginRegistrationStep::ArmWakeFd)?;
         Ok(completion)
@@ -365,11 +367,19 @@ impl PluginRegistrationSequence {
             .map_err(|source| self.fail_coverage_capability(source))?;
         let coverage_callback = match coverage_registration_plan {
             CoverageRegistrationPlan::Disabled => None,
-            CoverageRegistrationPlan::Install { .. } => Some(
-                coverage_registration_plan
+            CoverageRegistrationPlan::Install { .. } => {
+                let callback = coverage_registration_plan
                     .require_callback()
-                    .map_err(|source| self.fail_coverage_capability(source))?,
-            ),
+                    .map_err(|source| self.fail_coverage_capability(source))?;
+                if let Some(register_tcg_exec_cb) = coverage_capabilities.register_tcg_exec_cb_fn()
+                {
+                    register_tcg_exec_cb(
+                        Some(crucible_qemu_plugin_coverage_exec_cb),
+                        std::ptr::null_mut(),
+                    );
+                }
+                Some(callback)
+            }
         };
         self.record_step_unchecked(PluginRegistrationStep::RegisterCallbacks)?;
         Ok(PluginCallbackCapabilities::new(
@@ -592,14 +602,18 @@ const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegis
         | PluginSetupError::SlotOutsideRegionNodeCount { .. } => {
             PluginRegistrationStep::MapSharedMemory
         }
-        PluginSetupError::ArmWakeFd { .. } => PluginRegistrationStep::ArmWakeFd,
+        PluginSetupError::ArmWakeFd { .. } | PluginSetupError::RegisterWakeFd { .. } => {
+            PluginRegistrationStep::ArmWakeFd
+        }
         PluginSetupError::SendReadyAck { .. } => PluginRegistrationStep::SendSetupAck,
         PluginSetupError::SendFailureAck { stage, .. } => match stage {
             PluginSetupFailureStage::ReceiveSetup => PluginRegistrationStep::ReceiveSetup,
             PluginSetupFailureStage::MapRegion
             | PluginSetupFailureStage::ValidateRegion
             | PluginSetupFailureStage::CrossCheckSlot => PluginRegistrationStep::MapSharedMemory,
-            PluginSetupFailureStage::ArmWakeFd => PluginRegistrationStep::ArmWakeFd,
+            PluginSetupFailureStage::ArmWakeFd | PluginSetupFailureStage::RegisterWakeFd => {
+                PluginRegistrationStep::ArmWakeFd
+            }
         },
     }
 }
@@ -681,6 +695,7 @@ mod tests {
     use super::*;
 
     use std::io::{Cursor, Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
     use crucible_shmem::{ABI_VERSION, KIND_VM, NodeSlot, authorize_advance_ceiling};
@@ -1179,13 +1194,14 @@ mod tests {
         let mut sequence = PluginRegistrationSequence::new();
         record_steps_through_wake_fd(&mut sequence);
         let args = registration_args("simfd=3,slot=0,coverage=on");
+        TCG_EXEC_REGISTRATION_CALLS.store(0, Ordering::SeqCst);
 
         let capabilities = sequence
             .register_callbacks_with_exact_deadline(
                 &args,
                 Some(registration_test_deadline),
                 Some(registration_test_direct_advance),
-                CoverageCapabilities::tcg_exec(),
+                CoverageCapabilities::tcg_exec(registration_test_register_tcg_exec_cb),
             )
             .unwrap_or_else(|error| panic!("coverage on should register TCG exec: {error}"));
 
@@ -1206,6 +1222,7 @@ mod tests {
                 .map(CoverageCallback::map_entries),
             Some(crate::DEFAULT_COVERAGE_MAP_ENTRIES)
         );
+        assert_eq!(TCG_EXEC_REGISTRATION_CALLS.load(Ordering::SeqCst), 1);
     }
 
     fn record_steps_through_wake_fd(sequence: &mut PluginRegistrationSequence) {
@@ -1257,6 +1274,17 @@ mod tests {
     }
 
     extern "C" fn registration_test_direct_advance(_target_virtual_ns: i64) {}
+
+    static TCG_EXEC_REGISTRATION_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn registration_test_register_tcg_exec_cb(
+        callback: Option<crate::QemuTcgExecCbFn>,
+        userdata: *mut std::os::raw::c_void,
+    ) {
+        assert!(callback.is_some());
+        assert!(userdata.is_null());
+        TCG_EXEC_REGISTRATION_CALLS.fetch_add(1, Ordering::SeqCst);
+    }
 
     fn registration_args(raw: &str) -> PluginArgs {
         PluginArgs::parse(raw).unwrap_or_else(|error| panic!("test args should parse: {error}"))

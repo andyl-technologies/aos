@@ -86,6 +86,34 @@
       enforces = "TIME-23,TIME-27,DET-1,INV-10";
       capability = "plugin-owned synchronous virtual-time advance and BH/main-loop drains";
     }
+    {
+      file = "0011-crucible-plugin-icount-raw.patch";
+      catalogName = "crucible-plugin-icount-raw";
+      class = "F";
+      enforces = "DET-29,INV-10";
+      capability = "plugin-visible raw bias-excluded icount read";
+    }
+    {
+      file = "0012-crucible-plugin-vcpu-exit.patch";
+      catalogName = "crucible-plugin-vcpu-exit";
+      class = "D";
+      enforces = "DET-1,INV-10";
+      capability = "plugin force vCPU exit for first-exit phase normalization";
+    }
+    {
+      file = "0013-crucible-plugin-wake-fd.patch";
+      catalogName = "crucible-plugin-wake-fd";
+      class = "F";
+      enforces = "SHM-26,INV-8";
+      capability = "plugin wake fd registration and blocking main-loop wait";
+    }
+    {
+      file = "0014-crucible-plugin-tcg-exec-cb.patch";
+      catalogName = "crucible-plugin-tcg-exec-cb";
+      class = "F";
+      enforces = "coverage,INV-7";
+      capability = "post-tcg_cpu_exec coverage callback with disabled NULL-check";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

@@ -5,9 +5,11 @@
 //! per-block branch. When enabled, the safe callback body folds each executed
 //! guest basic-block PC into a fixed-size map and records an observational event.
 
+use std::os::raw::{c_uint, c_void};
+
 use thiserror::Error;
 
-use crate::PluginSwitch;
+use crate::{PluginSwitch, QemuRegisterTcgExecCbFn};
 
 /// QEMU capability label for registering the TCG-exec coverage callback.
 pub const QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL: &str = "qemu_plugin_register_tcg_exec_cb";
@@ -97,9 +99,9 @@ where
 }
 
 /// QEMU capabilities needed by the optional coverage hook.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct CoverageCapabilities {
-    register_tcg_exec_cb: bool,
+    register_tcg_exec_cb: Option<QemuRegisterTcgExecCbFn>,
 }
 
 impl CoverageCapabilities {
@@ -107,23 +109,43 @@ impl CoverageCapabilities {
     #[must_use]
     pub const fn none() -> Self {
         Self {
-            register_tcg_exec_cb: false,
+            register_tcg_exec_cb: None,
         }
     }
 
     /// Returns capabilities sufficient for coverage registration.
     #[must_use]
-    pub const fn tcg_exec() -> Self {
+    pub const fn tcg_exec(register_tcg_exec_cb: QemuRegisterTcgExecCbFn) -> Self {
         Self {
-            register_tcg_exec_cb: true,
+            register_tcg_exec_cb: Some(register_tcg_exec_cb),
         }
     }
 
     /// Returns whether QEMU can register the TCG-exec callback.
     #[must_use]
     pub const fn register_tcg_exec_cb(self) -> bool {
+        self.register_tcg_exec_cb.is_some()
+    }
+
+    /// Returns QEMU's TCG-exec callback registration function, if available.
+    #[must_use]
+    pub const fn register_tcg_exec_cb_fn(self) -> Option<QemuRegisterTcgExecCbFn> {
         self.register_tcg_exec_cb
     }
+}
+
+/// Minimal QEMU-facing TCG-exec callback registered by T-PATCH-11.
+///
+/// This callback proves that QEMU can call back into the plugin after
+/// `tcg_cpu_exec` with the current vCPU and raw icount. The later coverage gate
+/// owns the richer basic-block event path that supplies guest PC and block
+/// length to [`handle_coverage_exec_callback`].
+pub extern "C" fn crucible_qemu_plugin_coverage_exec_cb(
+    vcpu_index: c_uint,
+    icount: u64,
+    userdata: *mut c_void,
+) {
+    let _ = (vcpu_index, icount, userdata);
 }
 
 /// A registration decision for the optional coverage hook.
@@ -490,7 +512,7 @@ mod tests {
 
     fn coverage_callback(coverage: PluginCoverage) -> CoverageCallback {
         let plan = coverage
-            .registration_plan(CoverageCapabilities::tcg_exec())
+            .registration_plan(CoverageCapabilities::tcg_exec(test_register_tcg_exec_cb))
             .unwrap_or_else(|error| panic!("enabled coverage should register: {error}"));
         plan.require_callback()
             .unwrap_or_else(|error| panic!("enabled coverage should expose callback: {error}"))
@@ -525,7 +547,7 @@ mod tests {
             })
         );
         let plan = coverage
-            .registration_plan(CoverageCapabilities::tcg_exec())
+            .registration_plan(CoverageCapabilities::tcg_exec(test_register_tcg_exec_cb))
             .unwrap_or_else(|error| panic!("coverage registration should succeed: {error}"));
         assert_eq!(
             plan,
@@ -543,12 +565,12 @@ mod tests {
     fn coverage_registration_rejects_invalid_enabled_map_size() {
         assert_eq!(
             PluginCoverage::new(PluginSwitch::On, 0)
-                .registration_plan(CoverageCapabilities::tcg_exec()),
+                .registration_plan(CoverageCapabilities::tcg_exec(test_register_tcg_exec_cb)),
             Err(CoverageError::InvalidMapEntries { entries: 0 })
         );
         assert_eq!(
             PluginCoverage::new(PluginSwitch::On, 1000)
-                .registration_plan(CoverageCapabilities::tcg_exec()),
+                .registration_plan(CoverageCapabilities::tcg_exec(test_register_tcg_exec_cb)),
             Err(CoverageError::InvalidMapEntries { entries: 1000 })
         );
     }
@@ -604,7 +626,7 @@ mod tests {
     fn coverage_disabled_plan_cannot_build_hot_callback_and_does_not_touch_map() {
         let coverage = PluginCoverage::new(PluginSwitch::Off, 16);
         let plan = coverage
-            .registration_plan(CoverageCapabilities::tcg_exec())
+            .registration_plan(CoverageCapabilities::tcg_exec(test_register_tcg_exec_cb))
             .unwrap_or_else(|error| panic!("off-mode coverage should not validate caps: {error}"));
         let map = CoverageMap::new(16)
             .unwrap_or_else(|error| panic!("coverage map should build: {error}"));
@@ -638,6 +660,12 @@ mod tests {
         );
         assert!(map.entries().iter().all(|entry| *entry == 0));
         assert!(sink.observations.is_empty());
+    }
+
+    extern "C" fn test_register_tcg_exec_cb(
+        _callback: Option<crate::QemuTcgExecCbFn>,
+        _userdata: *mut std::os::raw::c_void,
+    ) {
     }
 
     #[test]

@@ -1,0 +1,91 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -781,8 +781,32 @@
+  */
+ QEMU_PLUGIN_API
+ void qemu_plugin_force_vcpu_exit(void);
++
++/**
++ * qemu_plugin_register_wake_fd() - register a scheduler wake fd
++ * @fd: nonblocking eventfd or pipe descriptor owned by the plugin
++ *
++ * Registers @fd on QEMU's main-loop iohandler context. Read readiness drains the
++ * descriptor but dispatches no guest-visible work; the scheduler remains the
++ * single authority for publishing wake decisions.
++ *
++ * Returns: 0 on successful registration, nonzero on invalid input.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_register_wake_fd(int fd);
+ 
+ /**
++ * qemu_plugin_main_loop_wait() - block in QEMU's main-loop wait
++ *
++ * Runs one blocking main-loop wait iteration so plugin idle waits integrate
++ * scheduler wake fds and QEMU-owned fd handlers such as QMP/chardev sources.
++ * The call is ignored unless QEMU's BQL is held; QEMU's main loop drops and
++ * reacquires BQL around the host poll.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_main_loop_wait(void);
++
++/**
+  * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+  * @data: Ethernet frame bytes
+  * @len: byte length of @data
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -104,6 +104,7 @@
+  */
+ static bool has_control;
+ static Error *migration_blocker;
++static int qemu_plugin_wake_fd = -1;
+ 
+ bool qemu_plugin_has_time_control(void)
+ {
+@@ -196,10 +197,43 @@
+ {
+     if (current_cpu) {
+         qatomic_set_mb(&current_cpu->exit_request, 1);
++    }
++}
++
++static void qemu_plugin_wake_fd_read(void *opaque)
++{
++    int fd = (intptr_t)opaque;
++    uint64_t value;
++
++    (void)read(fd, &value, sizeof(value));
++}
++
++int qemu_plugin_register_wake_fd(int fd)
++{
++    if (fd < 0) {
++        return -1;
++    }
++
++    if (qemu_plugin_wake_fd >= 0 && qemu_plugin_wake_fd != fd) {
++        qemu_set_fd_handler(qemu_plugin_wake_fd, NULL, NULL, NULL);
+     }
++
++    qemu_plugin_wake_fd = fd;
++    qemu_set_fd_handler(fd, qemu_plugin_wake_fd_read, NULL,
++                        (void *)(intptr_t)fd);
++    return 0;
+ }
+ 
++void qemu_plugin_main_loop_wait(void)
++{
++    if (!bql_locked()) {
++        return;
++    }
+ 
++    main_loop_wait(false);
++}
++
++
+ static NetClientState *qemu_plugin_default_nic_queue(void)
+ {
+     NetClientState *nc;
