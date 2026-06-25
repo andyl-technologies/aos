@@ -289,6 +289,9 @@ impl NixCli {
     }
 
     fn append_eval_options(&self, cmd: &mut Command) {
+        for arg in self.eval_config.cli_search_path_args() {
+            cmd.arg(arg);
+        }
         for arg in self.eval_config.cli_option_args() {
             cmd.arg(arg);
         }
@@ -748,6 +751,39 @@ mod tests {
             command_args(&command),
             ["--option", "trace-verbose", "true"]
         );
+    }
+
+    #[test]
+    fn eval_config_emits_restricted_paths_as_cpp_nix_search_paths() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(crate::nix::NixEvalMode::Restricted);
+        config.set_allowed_paths(["/aos/src", "/aos/store"])?;
+        let nix = NixCli::with_eval_config(0, config);
+        let mut command = Command::new("nix-instantiate");
+        nix.append_eval_options(&mut command);
+
+        assert_eq!(
+            command_args(&command),
+            [
+                "-I",
+                "/aos/src",
+                "-I",
+                "/aos/store",
+                "--option",
+                "pure-eval",
+                "false",
+                "--option",
+                "restrict-eval",
+                "true",
+                "--option",
+                "allowed-impure-host-deps",
+                "/aos/src /aos/store",
+                "--option",
+                "allowed-uris",
+                ""
+            ]
+        );
+        Ok(())
     }
 
     #[test]

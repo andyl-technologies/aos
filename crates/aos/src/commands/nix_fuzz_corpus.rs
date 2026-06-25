@@ -60,7 +60,7 @@ pub fn run(
         .into());
     }
 
-    let summary = write_source_corpus(&output_dir, &seeds, clean)?;
+    let summary = write_source_corpus(&output_dir, &seeds, &eval_config, clean)?;
     if !printer.json_if_active(&json!({
         "output_dir": summary.output_dir,
         "written": summary.written,
@@ -101,6 +101,7 @@ fn effective_fuzz_eval_config(mut eval_config: NixEvalConfig) -> Result<NixEvalC
 fn write_source_corpus(
     output_dir: &Path,
     seeds: &[FuzzSourceSeed],
+    eval_config: &NixEvalConfig,
     clean: bool,
 ) -> Result<FuzzCorpusSummary> {
     let removed = if clean {
@@ -113,7 +114,7 @@ fn write_source_corpus(
     for seed in seeds {
         let seed = seed_for_output(seed, output_dir)?;
         let path = output_dir.join(seed_file_name(&seed));
-        fs::write(&path, source_seed_file(&seed))
+        fs::write(&path, source_seed_file(&seed, eval_config))
             .with_context(|| format!("writing fuzz source seed {}", path.display()))?;
     }
 
@@ -172,12 +173,56 @@ fn seed_for_output(seed: &FuzzSourceSeed, output_dir: &Path) -> Result<FuzzSourc
     seed.with_source_file(support_file)
 }
 
-fn source_seed_file(seed: &FuzzSourceSeed) -> String {
-    let mut file = String::with_capacity(SOURCE_SEED_PREFIX.len() + seed.source.len() + 1);
+fn source_seed_file(seed: &FuzzSourceSeed, eval_config: &NixEvalConfig) -> String {
+    let metadata = source_seed_config_lines(eval_config, seed);
+    let metadata_len = metadata.iter().map(String::len).sum::<usize>() + metadata.len();
+    let mut file =
+        String::with_capacity(SOURCE_SEED_PREFIX.len() + metadata_len + seed.source.len() + 1);
     file.push_str(SOURCE_SEED_PREFIX);
+    for line in metadata {
+        file.push_str("# aos-nix-fuzz-config ");
+        file.push_str(&line);
+        file.push('\n');
+    }
     file.push_str(seed.source.trim());
     file.push('\n');
     file
+}
+
+fn source_seed_config_lines(eval_config: &NixEvalConfig, seed: &FuzzSourceSeed) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "eval-mode={}",
+        match eval_config.eval_mode() {
+            NixEvalMode::Ambient => "ambient",
+            NixEvalMode::Impure => "impure",
+            NixEvalMode::Restricted => "restricted",
+            NixEvalMode::Pure => "pure",
+        }
+    ));
+    if let Some(current_system) = eval_config.current_system() {
+        lines.push(format!("current-system={current_system}"));
+    }
+    if eval_config.eval_mode() == NixEvalMode::Restricted {
+        lines.extend(
+            eval_config
+                .allowed_paths()
+                .iter()
+                .map(|path| format!("allowed-path={path}")),
+        );
+        lines.extend(
+            eval_config
+                .allowed_uris()
+                .iter()
+                .map(|uri| format!("allowed-uri={uri}")),
+        );
+        if seed.source_file_kind == FuzzSourceFileKind::GeneratedConformance
+            && let Some(source_file) = seed.source_file.to_str()
+        {
+            lines.push(format!("allowed-path={source_file}"));
+        }
+    }
+    lines
 }
 
 fn seed_file_name(seed: &FuzzSourceSeed) -> String {
@@ -279,11 +324,68 @@ mod tests {
             source_file_kind: FuzzSourceFileKind::Direct,
             root_args: "{}".to_string(),
         };
+        let mut config =
+            NixEvalConfig::with_current_system("x86_64-linux").expect("test system is valid");
+        config.set_eval_mode(NixEvalMode::Impure);
 
         assert_eq!(
-            source_seed_file(&seed),
-            "# aos-nix-fuzz-source\n{ a = 1; }\n"
+            source_seed_file(&seed, &config),
+            "# aos-nix-fuzz-source\n\
+             # aos-nix-fuzz-config eval-mode=impure\n\
+             # aos-nix-fuzz-config current-system=x86_64-linux\n\
+             { a = 1; }\n"
         );
+    }
+
+    #[test]
+    fn source_seed_config_lines_record_eval_mode_and_system() -> Result<()> {
+        let mut config = NixEvalConfig::with_current_system("aos-test-target")?;
+        config.set_eval_mode(NixEvalMode::Restricted);
+        config.add_allowed_path("/repo")?;
+        config.add_allowed_uri("https://cache.example/")?;
+        let seed = FuzzSourceSeed {
+            name: "pkgs.hello".to_string(),
+            source: "{ hello = true; }".to_string(),
+            source_file: PathBuf::from("/repo/default.nix"),
+            source_file_kind: FuzzSourceFileKind::Direct,
+            root_args: "{}".to_string(),
+        };
+
+        assert_eq!(
+            source_seed_config_lines(&config, &seed),
+            vec![
+                "eval-mode=restricted".to_string(),
+                "current-system=aos-test-target".to_string(),
+                "allowed-path=/repo".to_string(),
+                "allowed-uri=https://cache.example/".to_string()
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn restricted_conformance_seed_allows_copied_support_file() -> Result<()> {
+        let mut config = NixEvalConfig::with_current_system("aos-test-target")?;
+        config.set_eval_mode(NixEvalMode::Restricted);
+        config.add_allowed_path("/repo")?;
+        let seed = FuzzSourceSeed {
+            name: "conformance.eval-okay-number".to_string(),
+            source: "old temp source".to_string(),
+            source_file: PathBuf::from("/private/tmp/generated/generated-conformance-corpus.nix"),
+            source_file_kind: FuzzSourceFileKind::GeneratedConformance,
+            root_args: "{ system = \"aos-test-target\"; }".to_string(),
+        };
+
+        assert_eq!(
+            source_seed_config_lines(&config, &seed),
+            vec![
+                "eval-mode=restricted".to_string(),
+                "current-system=aos-test-target".to_string(),
+                "allowed-path=/repo".to_string(),
+                "allowed-path=/private/tmp/generated/generated-conformance-corpus.nix".to_string(),
+            ]
+        );
+        Ok(())
     }
 
     #[test]
@@ -303,7 +405,10 @@ mod tests {
             root_args: "{}".to_string(),
         }];
 
-        let summary = write_source_corpus(&output_dir, &seeds, true)?;
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
+
+        let summary = write_source_corpus(&output_dir, &seeds, &config, true)?;
 
         assert_eq!(summary.written, 1);
         assert_eq!(summary.removed, 2);
@@ -313,7 +418,9 @@ mod tests {
         assert!(output_dir.join("keep.txt").exists());
         assert_eq!(
             fs::read_to_string(output_dir.join(seed_file_name(&seeds[0])))?,
-            "# aos-nix-fuzz-source\n{ hello = true; }\n"
+            "# aos-nix-fuzz-source\n\
+             # aos-nix-fuzz-config eval-mode=impure\n\
+             { hello = true; }\n"
         );
         Ok(())
     }
@@ -335,7 +442,11 @@ mod tests {
             root_args: "{ system = \"x86_64-linux\"; }".to_string(),
         };
 
-        let summary = write_source_corpus(&output_dir, std::slice::from_ref(&seed), false)?;
+        let mut config = NixEvalConfig::with_current_system("x86_64-linux")?;
+        config.set_eval_mode(NixEvalMode::Impure);
+
+        let summary =
+            write_source_corpus(&output_dir, std::slice::from_ref(&seed), &config, false)?;
 
         let support_file = output_dir.join(GENERATED_CONFORMANCE_CORPUS);
         assert_eq!(summary.written, 1);
@@ -346,6 +457,8 @@ mod tests {
         let rendered_seed = seed.with_source_file(support_file.clone())?;
         let seed_path = output_dir.join(seed_file_name(&rendered_seed));
         let seed_text = fs::read_to_string(seed_path)?;
+        assert!(seed_text.contains("# aos-nix-fuzz-config eval-mode=impure"));
+        assert!(seed_text.contains("# aos-nix-fuzz-config current-system=x86_64-linux"));
         assert!(seed_text.contains(&support_file.display().to_string()));
         assert!(seed_text.contains("path = [ \"conformance\" \"eval-okay-number\" ];"));
         Ok(())

@@ -27,6 +27,10 @@ AOS_NIX_LANG_TESTS=/path/to/nix/tests/functional/lang aos nix-fuzz-corpus --clea
 The command writes ignored files under `fuzz/corpus/parity_json/generated/`.
 Generated seeds default to `system = "x86_64-linux"` and honor the global
 `--eval-system` override when another target is intentional.
+Each generated source seed records the effective eval mode, target system, and
+restricted-mode allowlist policy in `# aos-nix-fuzz-config ...` comments; the
+fuzz harness applies those settings to both the native evaluator and the
+configured C++ oracle while still accepting older source seeds without metadata.
 When `AOS_NIX_LANG_TESTS` points at the pinned C++ Nix lang corpus, supported
 `eval-okay` cases are included through a copied
 `generated-conformance-corpus.nix` support file beside the generated seeds.

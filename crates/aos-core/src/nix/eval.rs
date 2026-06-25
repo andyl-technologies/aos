@@ -654,6 +654,17 @@ impl NixEvalConfig {
         args
     }
 
+    pub(crate) fn cli_search_path_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if self.eval_mode == NixEvalMode::Restricted {
+            for path in &self.allowed_paths {
+                args.push("-I".to_string());
+                args.push(path.clone());
+            }
+        }
+        args
+    }
+
     /// Returns C++ Nix environment bindings that reproduce these settings.
     pub(crate) fn cli_env_vars(&self) -> Vec<(&'static str, String)> {
         let mut vars = Vec::new();

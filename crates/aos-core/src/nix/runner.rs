@@ -539,6 +539,7 @@ impl NixRunner {
     fn args_with_eval_options(&self, cmd: &str, args: &[String]) -> Vec<String> {
         let mut args = args.to_vec();
         if command_accepts_eval_options(cmd) {
+            args.extend(self.eval_config.cli_search_path_args());
             args.extend(self.eval_config.cli_option_args());
         }
         args
@@ -550,6 +551,12 @@ impl NixRunner {
 
     fn repl_args(&self, nix_file: &Path) -> Vec<OsString> {
         let mut args = vec![OsString::from("repl")];
+        args.extend(
+            self.eval_config
+                .cli_search_path_args()
+                .into_iter()
+                .map(OsString::from),
+        );
         args.extend(
             self.eval_config
                 .cli_option_args()
@@ -866,6 +873,38 @@ mod tests {
     }
 
     #[test]
+    fn runner_appends_restricted_paths_to_eval_commands() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(crate::nix::NixEvalMode::Restricted);
+        config.set_allowed_paths(["/aos/src"])?;
+        let runner = runner_with_config(config);
+        let args = vec!["--eval".to_string(), "default.nix".to_string()];
+
+        assert_eq!(
+            runner.args_with_eval_options("nix-instantiate", &args),
+            [
+                "--eval",
+                "default.nix",
+                "-I",
+                "/aos/src",
+                "--option",
+                "pure-eval",
+                "false",
+                "--option",
+                "restrict-eval",
+                "true",
+                "--option",
+                "allowed-impure-host-deps",
+                "/aos/src",
+                "--option",
+                "allowed-uris",
+                ""
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn runner_streams_successful_eval_stderr_for_eval_commands() {
         let runner = runner_with_config(NixEvalConfig::default());
 
@@ -937,6 +976,8 @@ mod tests {
     #[test]
     fn runner_appends_eval_options_to_repl() -> Result<()> {
         let mut config = NixEvalConfig::with_current_system("aos-test-target")?;
+        config.set_eval_mode(crate::nix::NixEvalMode::Restricted);
+        config.set_allowed_paths(["/aos/src"])?;
         config.set_trace_verbose(true);
         let runner = runner_with_config(config);
 
@@ -944,9 +985,23 @@ mod tests {
             os_args_to_strings(runner.repl_args(Path::new("default.nix"))),
             [
                 "repl",
+                "-I",
+                "/aos/src",
                 "--option",
                 "system",
                 "aos-test-target",
+                "--option",
+                "pure-eval",
+                "false",
+                "--option",
+                "restrict-eval",
+                "true",
+                "--option",
+                "allowed-impure-host-deps",
+                "/aos/src",
+                "--option",
+                "allowed-uris",
+                "",
                 "--option",
                 "trace-verbose",
                 "true",

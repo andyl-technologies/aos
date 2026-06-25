@@ -6,8 +6,8 @@ use std::sync::OnceLock;
 
 use aos_nix::compile::{Ir, lower, resolve};
 use aos_nix::eval::{
-    InternalDiffError, InternalDiffTier, TreeWalkError, TreeWalkOptions, compare_raw_with_oracle,
-    eval_raw_bytes_with_options,
+    EvalMode, InternalDiffError, InternalDiffTier, TreeWalkError, TreeWalkOptions,
+    compare_raw_with_oracle, eval_raw_bytes_with_options,
 };
 use aos_nix::syntax::parse_bytes;
 use aos_nix::{NativeEvalError, NixNative};
@@ -16,6 +16,7 @@ use arbitrary::{Arbitrary, Result as ArbitraryResult, Unstructured};
 const MAX_SOURCE_LEN: usize = 4096;
 const PINNED_NIX_VERSION: &str = "2.24.12";
 const SOURCE_SEED_PREFIX: &str = "# aos-nix-fuzz-source\n";
+const SOURCE_SEED_CONFIG_PREFIX: &str = "# aos-nix-fuzz-config ";
 const ASCII_STRING_BYTES: &[u8] =
     b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _-";
 const IDENT_FIRST_BYTES: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
@@ -23,15 +24,16 @@ const IDENT_REST_BYTES: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRST
 
 /// Runs one JSON parity fuzz case.
 pub fn fuzz_parity_json(data: &[u8]) {
-    let Some(source) = source_from_fuzz_bytes(data) else {
+    let Some(input) = fuzz_input_from_bytes(data) else {
         return;
     };
+    let source = input.source.as_str();
     if source.len() > MAX_SOURCE_LEN {
         return;
     }
 
-    let candidate = eval_native_json(&source);
-    let Some(oracle) = eval_cpp_nix_json(&source) else {
+    let candidate = eval_native_json(source, &input.config);
+    let Some(oracle) = eval_cpp_nix_json(source, &input.config) else {
         let _ = candidate;
         return;
     };
@@ -59,9 +61,10 @@ pub fn fuzz_parity_json(data: &[u8]) {
 
 /// Runs one internal raw-value differential fuzz case.
 pub fn fuzz_internal_diff_raw(data: &[u8]) {
-    let Some(source) = source_from_fuzz_bytes(data) else {
+    let Some(input) = fuzz_input_from_bytes(data) else {
         return;
     };
+    let source = input.source;
     if source.len() > MAX_SOURCE_LEN {
         return;
     }
@@ -70,7 +73,11 @@ pub fn fuzz_internal_diff_raw(data: &[u8]) {
         return;
     };
 
-    match compare_raw_with_oracle(&MirrorInternalDiffTier, &ir, TreeWalkOptions::default()) {
+    let Some(options) = native_options_from_source_config(&input.config) else {
+        return;
+    };
+
+    match compare_raw_with_oracle(&MirrorInternalDiffTier, &ir, options) {
         Ok(_) | Err(InternalDiffError::Oracle { .. }) => {}
         Err(InternalDiffError::Candidate {
             tier,
@@ -95,15 +102,90 @@ pub fn fuzz_internal_diff_raw(data: &[u8]) {
 
 /// Returns the Nix source represented by a fuzzer input.
 pub fn source_from_fuzz_bytes(data: &[u8]) -> Option<String> {
+    fuzz_input_from_bytes(data).map(|input| input.source)
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct FuzzInput {
+    source: String,
+    config: FuzzSourceConfig,
+}
+
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+struct FuzzSourceConfig {
+    eval_mode: Option<FuzzEvalMode>,
+    current_system: Option<String>,
+    allowed_paths: Vec<String>,
+    allowed_uris: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum FuzzEvalMode {
+    Impure,
+    Restricted,
+    Pure,
+}
+
+fn fuzz_input_from_bytes(data: &[u8]) -> Option<FuzzInput> {
     if let Ok(source) = std::str::from_utf8(data) {
         if let Some(source) = source.strip_prefix(SOURCE_SEED_PREFIX) {
-            return Some(source.trim().to_owned());
+            return Some(source_seed_input(source));
         }
     }
 
     let mut unstructured = Unstructured::new(data);
     let expr = GeneratedExpr::arbitrary(&mut unstructured).ok()?;
-    Some(expr.to_nix())
+    Some(FuzzInput {
+        source: expr.to_nix(),
+        config: FuzzSourceConfig::default(),
+    })
+}
+
+fn source_seed_input(seed: &str) -> FuzzInput {
+    let mut config = FuzzSourceConfig::default();
+    let mut source_lines = Vec::new();
+    let mut reading_config = true;
+    for line in seed.lines() {
+        if reading_config {
+            if let Some(raw_config) = line.strip_prefix(SOURCE_SEED_CONFIG_PREFIX) {
+                apply_source_seed_config_line(&mut config, raw_config);
+                continue;
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            reading_config = false;
+        }
+        source_lines.push(line);
+    }
+
+    FuzzInput {
+        source: source_lines.join("\n").trim().to_owned(),
+        config,
+    }
+}
+
+fn apply_source_seed_config_line(config: &mut FuzzSourceConfig, line: &str) {
+    let Some((key, value)) = line.split_once('=') else {
+        return;
+    };
+    let key = key.trim();
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    match key {
+        "eval-mode" => match value {
+            "impure" => config.eval_mode = Some(FuzzEvalMode::Impure),
+            "restricted" => config.eval_mode = Some(FuzzEvalMode::Restricted),
+            "pure" => config.eval_mode = Some(FuzzEvalMode::Pure),
+            _ => {}
+        },
+        "current-system" | "system" => config.current_system = Some(value.to_owned()),
+        "allowed-path" => config.allowed_paths.push(value.to_owned()),
+        "allowed-uri" => config.allowed_uris.push(value.to_owned()),
+        _ => {}
+    }
 }
 
 struct MirrorInternalDiffTier;
@@ -131,8 +213,11 @@ enum NativeJson {
     Err(String),
 }
 
-fn eval_native_json(source: &str) -> NativeJson {
-    let native = match NixNative::new(0) {
+fn eval_native_json(source: &str, config: &FuzzSourceConfig) -> NativeJson {
+    let Some(options) = native_options_from_source_config(config) else {
+        return NativeJson::Unsupported;
+    };
+    let native = match NixNative::with_options(0, options) {
         Ok(native) => native,
         Err(error) => return NativeJson::Err(error.to_string()),
     };
@@ -150,10 +235,36 @@ fn native_error_is_unsupported(error: &anyhow::Error) -> bool {
     )
 }
 
-fn eval_cpp_nix_json(source: &str) -> Option<Result<String, String>> {
+fn native_options_from_source_config(config: &FuzzSourceConfig) -> Option<TreeWalkOptions> {
+    let mut options = TreeWalkOptions::new();
+    if let Some(mode) = config.eval_mode {
+        options.set_eval_mode(match mode {
+            FuzzEvalMode::Impure => EvalMode::Impure,
+            FuzzEvalMode::Restricted => EvalMode::Restricted,
+            FuzzEvalMode::Pure => EvalMode::Pure,
+        });
+    }
+    if let Some(current_system) = &config.current_system {
+        options
+            .set_current_system(current_system.as_bytes().to_vec())
+            .ok()?;
+    }
+    for path in &config.allowed_paths {
+        options.add_allowed_path(path.as_bytes().to_vec()).ok()?;
+    }
+    for uri in &config.allowed_uris {
+        options.add_allowed_uri(uri.as_bytes().to_vec()).ok()?;
+    }
+    Some(options)
+}
+
+fn eval_cpp_nix_json(source: &str, config: &FuzzSourceConfig) -> Option<Result<String, String>> {
     let oracle = oracle_command()?;
-    let output = Command::new(oracle)
-        .args(["--eval", "--strict", "--json", "--expr", source])
+    let mut command = Command::new(oracle);
+    command.args(["--eval", "--strict", "--json"]);
+    apply_cpp_source_config(&mut command, config);
+    let output = command
+        .args(["--expr", source])
         .output()
         .unwrap_or_else(|error| panic!("C++ Nix oracle runs: {error}"));
     if output.status.success() {
@@ -164,6 +275,44 @@ fn eval_cpp_nix_json(source: &str) -> Option<Result<String, String>> {
         )))
     } else {
         Some(Err(String::from_utf8_lossy(&output.stderr).into_owned()))
+    }
+}
+
+fn apply_cpp_source_config(command: &mut Command, config: &FuzzSourceConfig) {
+    if let Some(current_system) = &config.current_system {
+        command.args(["--option", "system", current_system]);
+    }
+    let restricted = matches!(config.eval_mode, Some(FuzzEvalMode::Restricted));
+    if let Some(mode) = config.eval_mode {
+        match mode {
+            FuzzEvalMode::Impure => {
+                command.args(["--option", "pure-eval", "false"]);
+                command.args(["--option", "restrict-eval", "false"]);
+            }
+            FuzzEvalMode::Restricted => {
+                command.args(["--option", "pure-eval", "false"]);
+                command.args(["--option", "restrict-eval", "true"]);
+            }
+            FuzzEvalMode::Pure => {
+                command.args(["--option", "pure-eval", "true"]);
+                command.args(["--option", "restrict-eval", "false"]);
+            }
+        }
+    }
+    if restricted {
+        for path in &config.allowed_paths {
+            command.args(["-I", path]);
+        }
+    }
+    if restricted && !config.allowed_paths.is_empty() {
+        command.args([
+            "--option",
+            "allowed-impure-host-deps",
+            &config.allowed_paths.join(" "),
+        ]);
+    }
+    if restricted && !config.allowed_uris.is_empty() {
+        command.args(["--option", "allowed-uris", &config.allowed_uris.join(" ")]);
     }
 }
 
@@ -409,12 +558,109 @@ fn is_nix_keyword(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn command_args(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
     #[test]
     fn source_seed_prefix_uses_literal_nix_source() {
         let source = source_from_fuzz_bytes(b"# aos-nix-fuzz-source\n{ b = 2; a = 1; }\n")
             .expect("source seed decodes");
 
         assert_eq!(source, "{ b = 2; a = 1; }");
+    }
+
+    #[test]
+    fn source_seed_config_is_parsed_and_stripped_from_source() {
+        let input = fuzz_input_from_bytes(
+            b"# aos-nix-fuzz-source\n\
+              # aos-nix-fuzz-config eval-mode=impure\n\
+              # aos-nix-fuzz-config current-system=x86_64-linux\n\
+              # aos-nix-fuzz-config allowed-path=/repo\n\
+              # aos-nix-fuzz-config allowed-uri=https://cache.example/\n\
+              builtins.currentSystem\n",
+        )
+        .expect("configured source seed decodes");
+
+        assert_eq!(input.source, "builtins.currentSystem");
+        assert_eq!(input.config.eval_mode, Some(FuzzEvalMode::Impure));
+        assert_eq!(input.config.current_system.as_deref(), Some("x86_64-linux"));
+        assert_eq!(input.config.allowed_paths, vec!["/repo"]);
+        assert_eq!(input.config.allowed_uris, vec!["https://cache.example/"]);
+    }
+
+    #[test]
+    fn source_seed_config_ignores_unknown_or_invalid_lines() {
+        let input = fuzz_input_from_bytes(
+            b"# aos-nix-fuzz-source\n\
+              # aos-nix-fuzz-config eval-mode=weird\n\
+              # aos-nix-fuzz-config unknown=value\n\
+              # aos-nix-fuzz-config current-system=\n\
+              1 + 1\n",
+        )
+        .expect("source seed decodes");
+
+        assert_eq!(input.source, "1 + 1");
+        assert_eq!(input.config, FuzzSourceConfig::default());
+    }
+
+    #[test]
+    fn source_seed_config_maps_to_native_options() {
+        let config = FuzzSourceConfig {
+            eval_mode: Some(FuzzEvalMode::Restricted),
+            current_system: Some("x86_64-linux".to_owned()),
+            allowed_paths: vec!["/repo".to_owned()],
+            allowed_uris: vec!["https://cache.example/".to_owned()],
+        };
+
+        let options = native_options_from_source_config(&config).expect("options map");
+
+        assert_eq!(options.eval_mode(), EvalMode::Restricted);
+        assert_eq!(options.current_system(), Some(b"x86_64-linux".as_slice()));
+        assert_eq!(options.allowed_paths(), &[b"/repo".to_vec()]);
+        assert_eq!(
+            options.allowed_uris(),
+            &[b"https://cache.example/".to_vec()]
+        );
+    }
+
+    #[test]
+    fn restricted_source_seed_config_maps_to_cpp_oracle_args() {
+        let config = FuzzSourceConfig {
+            eval_mode: Some(FuzzEvalMode::Restricted),
+            current_system: Some("x86_64-linux".to_owned()),
+            allowed_paths: vec!["/repo".to_owned()],
+            allowed_uris: vec!["https://cache.example/".to_owned()],
+        };
+        let mut command = Command::new("nix-instantiate");
+
+        apply_cpp_source_config(&mut command, &config);
+
+        assert_eq!(
+            command_args(&command),
+            [
+                "--option",
+                "system",
+                "x86_64-linux",
+                "--option",
+                "pure-eval",
+                "false",
+                "--option",
+                "restrict-eval",
+                "true",
+                "-I",
+                "/repo",
+                "--option",
+                "allowed-impure-host-deps",
+                "/repo",
+                "--option",
+                "allowed-uris",
+                "https://cache.example/"
+            ]
+        );
     }
 
     #[test]
