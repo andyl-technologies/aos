@@ -43,9 +43,10 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::backend::BackendBounds;
+use crate::coordinator::Coordinator;
 
 /// Grace period, in seconds, after which an idle publish lease expires and
 /// another token may take it.
@@ -170,9 +171,84 @@ impl PublishLease for InMemoryLease {
     }
 }
 
+/// A [`PublishLease`] backed by the strongly-consistent [`Coordinator`] port.
+///
+/// RFC-0004 chapter 14 routes the publish lease off D1 (`publish_leases`) and
+/// onto the [`Coordinator`]'s generic lease primitive. On the Worker the
+/// coordinator is a Durable Object (`WorkerCoordinator`) — a single serialized
+/// instance replaces the cross-isolate D1 lease; natively it is the in-process
+/// [`InMemoryCoordinator`](crate::coordinator::InMemoryCoordinator). The lease
+/// key namespaces the registry id under `publish:` so it does not collide with
+/// other coordinator keys.
+pub struct CoordinatorLease {
+    coordinator: Arc<dyn Coordinator>,
+}
+
+impl CoordinatorLease {
+    /// Builds a publish lease over a shared [`Coordinator`].
+    #[must_use]
+    pub fn new(coordinator: Arc<dyn Coordinator>) -> CoordinatorLease {
+        CoordinatorLease { coordinator }
+    }
+
+    /// The coordinator key for a registry's publish lease.
+    fn key(registry_id: i64) -> String {
+        format!("publish:{registry_id}")
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl PublishLease for CoordinatorLease {
+    async fn acquire(&self, registry_id: i64, token_id: &str, now: i64) -> Result<(), String> {
+        match self
+            .coordinator
+            .acquire_lease(&Self::key(registry_id), token_id, LEASE_TTL_SECS, now)
+            .await
+        {
+            // Acquired or refreshed by us.
+            Ok(None) => Ok(()),
+            // A different token holds a live lease — the conflict signal.
+            Ok(Some(holder)) => Err(holder),
+            // A coordinator IO error is not a lease conflict: acquire
+            // optimistically so a transient coordinator failure never blocks a
+            // legitimate publish (matching the prior D1 lease's out-of-band
+            // error handling). The surrounding write handler surfaces real IO
+            // failures of the pointer writes themselves.
+            Err(_) => Ok(()),
+        }
+    }
+
+    async fn release(&self, registry_id: i64, token_id: &str) {
+        // Best-effort: a failure to release is not fatal (the lease self-expires
+        // after `LEASE_TTL_SECS`).
+        let _ = self
+            .coordinator
+            .release_lease(&Self::key(registry_id), token_id)
+            .await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coordinator::InMemoryCoordinator;
+
+    #[tokio::test]
+    async fn coordinator_lease_matches_lease_semantics() {
+        let lease = CoordinatorLease::new(Arc::new(InMemoryCoordinator::new()));
+        // First token takes it; same token refreshes; a different token conflicts.
+        assert!(lease.acquire(1, "token-a", 1000).await.is_ok());
+        assert!(lease.acquire(1, "token-a", 1010).await.is_ok());
+        assert_eq!(lease.acquire(1, "token-b", 1020).await, Err("token-a".into()));
+        // A different registry is independent.
+        assert!(lease.acquire(2, "token-b", 1020).await.is_ok());
+        // The holder's release frees it for the other token.
+        lease.release(1, "token-b").await; // no-op (not holder)
+        assert_eq!(lease.acquire(1, "token-b", 1030).await, Err("token-a".into()));
+        lease.release(1, "token-a").await;
+        assert!(lease.acquire(1, "token-b", 1040).await.is_ok());
+    }
 
     #[tokio::test]
     async fn lease_is_held_by_first_token_until_expiry() {
