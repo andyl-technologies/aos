@@ -1174,6 +1174,15 @@ impl TreeWalk {
                 }
                 return Some(DurableBlake3Hash::from_hasher(hasher));
             }
+            ValueTag::List | ValueTag::Attrs => {
+                let payload = self.force_cache_payload_for_value(value)?;
+                let value_hash = payload.value_hash().ok()?;
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(b"composite");
+                hasher.update(&value_hash.as_durable_hash().as_bytes());
+                return Some(DurableBlake3Hash::from_hasher(hasher));
+            }
             _ => return None,
         }
     }

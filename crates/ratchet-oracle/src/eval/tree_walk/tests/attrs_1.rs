@@ -5375,7 +5375,7 @@ fn captured_string_and_path_values_do_not_share_free_variable_hashes() {
 
 #[test]
 fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
-    let source = "let f = x: { a = x == x; }; in { a = (f [ 1 ]).a; }";
+    let source = "let f = x: { a = builtins.length x == 1; }; in { a = (f [ (1 / 0) ]).a; }";
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
@@ -5400,83 +5400,234 @@ fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
 
     assert_eq!(forced.as_bool(), Ok(true));
     let runtime = cache.lock().expect("cache lock is valid");
-    assert_eq!(
-        runtime.cache().expect("cache is enabled").len(),
-        1,
-        "only the non-empty list literal result should be cached; the captured list free variable remains unsupported"
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "captured lazy-element lists need element payloads before observation"
     );
 }
 
 #[test]
-fn captured_empty_lists_wait_for_canonical_free_variable_hashes() {
+fn captured_empty_lists_use_free_variable_hashes() {
     let source = "let f = x: { a = x == x; }; in { a = (f []).a; }";
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
-    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
-        &ir,
-        TreeWalkOptions::new(),
-        "empty-list-captures.nix",
-        source,
-        cache.clone(),
-    );
-    let root = evaluator.eval_root().expect("attrset evaluates");
-    let thunk_value = {
-        let attrs = evaluator
-            .heap()
-            .get_attrs(root)
-            .expect("attrset is heap-owned");
-        attrs.get(a).expect("a exists")
-    };
-    let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
-        .expect("captured empty list force succeeds");
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "empty-list-captures.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("captured empty list force succeeds");
 
-    assert_eq!(forced.as_bool(), Ok(true));
+        assert_eq!(forced.as_bool(), Ok(true));
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+    }
     let runtime = cache.lock().expect("cache lock is valid");
-    assert_eq!(
-        runtime.cache().expect("cache is enabled").len(),
-        1,
-        "only the empty list literal result should be cached; the captured list free variable remains unsupported"
+    assert!(
+        !runtime.cache().expect("cache is enabled").is_empty(),
+        "captured empty lists should create a demand node"
     );
 }
 
 #[test]
-fn captured_empty_attrsets_wait_for_canonical_free_variable_hashes() {
-    let source = "let f = x: { a = x == x; }; in { a = (f {}).a; }";
+fn captured_replayable_lists_hit_when_hashes_match() {
+    let source = "let f = x: { a = x == x; }; in { a = (f [ 1 true null ]).a; }";
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "list-captures.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("captured list force succeeds");
+
+        assert_eq!(forced.as_bool(), Ok(true));
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+    }
+}
+
+#[test]
+fn captured_replayable_lists_miss_when_hashes_differ() {
+    let source = r#"
+let f = x: { a = builtins.elemAt x 0 == 1; };
+in [ (f [ 1 ]).a (f [ 2 ]).a ]
+"#;
+    let ir = lower(source);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
         &ir,
         TreeWalkOptions::new(),
-        "empty-attrs-captures.nix",
+        "list-captures.nix",
         source,
         cache.clone(),
     );
-    let root = evaluator.eval_root().expect("attrset evaluates");
-    let thunk_value = {
-        let attrs = evaluator
+    let root = evaluator.eval_root().expect("list evaluates");
+    let elements = {
+        let list = evaluator
             .heap()
-            .get_attrs(root)
-            .expect("attrset is heap-owned");
-        attrs.get(a).expect("a exists")
+            .get_list(root)
+            .expect("root list is heap-owned");
+        [
+            list.get(0).expect("first result exists"),
+            list.get(1).expect("second result exists"),
+        ]
     };
-    let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
-        .expect("captured empty attrset force succeeds");
 
-    assert_eq!(forced.as_bool(), Ok(true));
-    let runtime = cache.lock().expect("cache lock is valid");
+    let first = evaluator
+        .force_value(ir.root, Span::new(0, 0), elements[0])
+        .expect("first captured list attr force succeeds");
+    assert_eq!(first.as_bool(), Ok(true));
+    let second = evaluator
+        .force_value(ir.root, Span::new(0, 0), elements[1])
+        .expect("second captured list attr force succeeds");
+
+    assert_eq!(second.as_bool(), Ok(false));
     assert_eq!(
-        runtime.cache().expect("cache is enabled").len(),
-        1,
-        "only the empty attrset literal result should be cached; the captured attrset free variable remains unsupported"
+        evaluator.stats().cache_hits(),
+        0,
+        "different captured list values must not cache hit"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").len() >= 2,
+        "different captured lists should create distinct demand nodes"
     );
 }
 
 #[test]
-fn materialized_empty_attrsets_are_not_free_variable_hashable_yet() {
+fn captured_empty_attrsets_use_free_variable_hashes() {
+    let source = "let f = x: { a = x == x; }; in { a = (f {}).a; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "empty-attrs-captures.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("captured empty attrset force succeeds");
+
+        assert_eq!(forced.as_bool(), Ok(true));
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+    }
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        !runtime.cache().expect("cache is enabled").is_empty(),
+        "captured empty attrsets should create a demand node"
+    );
+}
+
+#[test]
+fn materialized_replayable_attrset_capture_hashes_key_runtime_payloads() {
+    let ir = lower("1");
+    let identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"force-captured-attrs-result"),
+        IrId::new(17),
+    );
+    let subject_for = |hash| ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        free_var_value_hashes: vec![hash],
+    };
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first =
+        TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache.clone());
+    let a = first.symbols.intern(b"a").expect("a interns");
+    let attrs = FlatAttrs::new(vec![AttrEntry::new(a, Value::int(1))], &first.symbols)
+        .expect("attrs build");
+    let attrs = first.heap.alloc_attrs(0, attrs).expect("attrs allocate");
+    let first_hash = first
+        .force_cache_free_var_value_hash(attrs)
+        .expect("replayable attrset hashes");
+    first.observe_forced_inline_expression_result(
+        Some(subject_for(first_hash)),
+        Value::bool(true),
+        ImpureInputTraceSegment {
+            trace: Vec::new(),
+            complete: true,
+        },
+    );
+    drop(first);
+
+    let mut second =
+        TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache.clone());
+    let a = second.symbols.intern(b"a").expect("a interns");
+    let attrs = FlatAttrs::new(vec![AttrEntry::new(a, Value::int(1))], &second.symbols)
+        .expect("attrs build");
+    let attrs = second.heap.alloc_attrs(0, attrs).expect("attrs allocate");
+    let same_hash = second
+        .force_cache_free_var_value_hash(attrs)
+        .expect("matching replayable attrset hashes");
+    assert_eq!(same_hash, first_hash);
+    let hit = second
+        .lookup_forced_inline_expression_result(Some(subject_for(same_hash)))
+        .expect("matching captured attrset hash hits");
+    assert_eq!(hit.as_bool(), Ok(true));
+    assert_eq!(second.stats().cache_hits(), 1);
+    drop(second);
+
+    let mut changed = TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache);
+    let a = changed.symbols.intern(b"a").expect("a interns");
+    let attrs = FlatAttrs::new(vec![AttrEntry::new(a, Value::int(2))], &changed.symbols)
+        .expect("attrs build");
+    let attrs = changed.heap.alloc_attrs(0, attrs).expect("attrs allocate");
+    let changed_hash = changed
+        .force_cache_free_var_value_hash(attrs)
+        .expect("changed replayable attrset hashes");
+    assert_ne!(changed_hash, first_hash);
+    assert!(
+        changed
+            .lookup_forced_inline_expression_result(Some(subject_for(changed_hash)))
+            .is_none(),
+        "different captured attrset hashes must miss"
+    );
+}
+
+#[test]
+fn materialized_empty_attrsets_are_free_variable_hashable() {
     let ir = lower("1");
     let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
     let attrs = evaluator
@@ -5484,11 +5635,11 @@ fn materialized_empty_attrsets_are_not_free_variable_hashable_yet() {
         .alloc_attrs(0, FlatAttrs::empty())
         .expect("empty attrset allocates");
 
-    assert_eq!(evaluator.force_cache_free_var_value_hash(attrs), None);
+    assert!(evaluator.force_cache_free_var_value_hash(attrs).is_some());
 }
 
 #[test]
-fn materialized_non_empty_attrsets_are_not_free_variable_hashable_yet() {
+fn materialized_non_empty_attrsets_are_free_variable_hashable() {
     let ir = lower("1");
     let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
     let a = evaluator.symbols.intern(b"a").expect("a interns");
@@ -5499,11 +5650,56 @@ fn materialized_non_empty_attrsets_are_not_free_variable_hashable_yet() {
         .alloc_attrs(0, attrs)
         .expect("attrset allocates");
 
+    assert!(evaluator.force_cache_free_var_value_hash(attrs).is_some());
+}
+
+#[test]
+fn materialized_position_bearing_attrsets_are_not_free_variable_hashable_yet() {
+    let ir = lower("1");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let a = evaluator.symbols.intern(b"a").expect("a interns");
+    let attrs = FlatAttrs::new(
+        vec![AttrEntry::with_position(
+            a,
+            Value::int(1),
+            AttrPosition::new(0, Span::new(0, 1)),
+        )],
+        &evaluator.symbols,
+    )
+    .expect("attrs build");
+    let attrs = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("attrset allocates");
+
     assert_eq!(evaluator.force_cache_free_var_value_hash(attrs), None);
 }
 
 #[test]
-fn materialized_non_empty_lists_are_not_free_variable_hashable_yet() {
+fn materialized_source_order_attrsets_are_not_free_variable_hashable_yet() {
+    let ir = lower("1");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let b = evaluator.symbols.intern(b"b").expect("b interns");
+    let c = evaluator.symbols.intern(b"c").expect("c interns");
+    let attrs = FlatAttrs::new(
+        vec![
+            AttrEntry::new(c, Value::int(2)),
+            AttrEntry::new(b, Value::int(1)),
+        ],
+        &evaluator.symbols,
+    )
+    .expect("attrs build");
+    assert_ne!(attrs.source_order(), attrs.iteration_order());
+    let attrs = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("attrset allocates");
+
+    assert_eq!(evaluator.force_cache_free_var_value_hash(attrs), None);
+}
+
+#[test]
+fn materialized_non_empty_lists_are_free_variable_hashable() {
     let ir = lower("1");
     let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
     let list = evaluator
@@ -5511,7 +5707,7 @@ fn materialized_non_empty_lists_are_not_free_variable_hashable_yet() {
         .alloc_list(NixList::new(vec![Value::int(1)]))
         .expect("list allocates");
 
-    assert_eq!(evaluator.force_cache_free_var_value_hash(list), None);
+    assert!(evaluator.force_cache_free_var_value_hash(list).is_some());
 }
 
 #[test]

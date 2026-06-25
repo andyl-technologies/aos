@@ -644,30 +644,35 @@ alone (`M-1`/`Q-A`).
       path/store/home/current-system/eval-mode salt, readFile revalidation,
       captured-free-variable tests, and source-less synthetic builtin constant
       hit tests (`C-1`/`C-2`/`S-14`).
-- [x] Current inline/string/path captured-free-variable force-cache key substrate: tree-walk
-      now builds one force-cache subject for each source-backed or
-      lowered-IR-backed node thunk,
-      including ordered durable hashes for referenced captured lexical slots
-      when every captured slot value is either an inline scalar supported by
-      `ValueHash::from_inline_value`, a Nix string with or without context, or a
-      Nix path with or without context. Strings and paths are hashed in one
-      durable force-capture domain with typed string/path tags; contextual values
-      append canonical context element tags and length-prefixed path/output
-      bytes. Lookup and observation feed those hashes into the existing
-      ordered/length-prefixed demand-key combiner, so repeated captured
-      inline/string/path thunks hit only when their free-variable value hashes
-      match and miss when those captured values differ. This deliberately skips
-      dynamic `with` scopes, scoped-import globals, captured lists, attrs,
-      lambdas, primops, thunk-cell captures including computed strings/paths not
-      materialized in the captured slot, captured bodies with nested
-      lexical-frame introducers, apply/select thunks, full strictness/escape
-      free-variable analysis, heap/composite value hashes, persistence, and
-      cached/uncached harness proof. The gate covers captured inline/string/path
+- [x] Current inline/string/path/replayable-composite captured-free-variable
+      force-cache key substrate: tree-walk now builds one force-cache subject for
+      each source-backed or lowered-IR-backed node thunk, including ordered
+      durable hashes for referenced captured lexical slots when every captured
+      slot value is either an inline scalar supported by
+      `ValueHash::from_inline_value`, a Nix string with or without context, a
+      Nix path with or without context, a replayable Nix list, or a
+      position-free, source-order-canonical replayable Nix attrset. Strings and
+      paths are hashed in one durable force-capture domain with typed
+      string/path tags; contextual values append canonical context element tags
+      and length-prefixed path/output bytes. Replayable list/attrset captures
+      hash the current replayable payload value hash under the same
+      force-capture domain with a composite tag. Lookup and observation feed
+      those hashes into the existing ordered/length-prefixed demand-key
+      combiner, so repeated captured inline/string/path/replayable-composite
+      thunks hit only when their free-variable value hashes match and miss when
+      those captured values differ. This deliberately skips dynamic `with`
+      scopes, scoped-import globals, lazy-element lists, lazy-binding attrsets,
+      position/source-order-bearing attrsets, lambdas, primops, thunk-cell
+      captures including computed strings/paths not materialized in the captured
+      slot, captured bodies with nested lexical-frame introducers, apply/select
+      thunks, full strictness/escape free-variable analysis, remaining
+      heap/composite value hashes, persistence, and cached/uncached harness
+      proof. The gate covers captured inline/string/path/list and empty-attrset
       hit/miss tests, lowered lambda-argument coverage, cross-type string/path
       hash separation, materialized context-bearing string/path capture hash
-      tests, computed context-bearing string thunk skip, and representative
-      captured unsupported free-variable skips
-      (`C-1`/`C-2`).
+      tests, materialized replayable attrset capture-key hit/miss tests,
+      computed context-bearing string thunk skip, and representative captured
+      unsupported free-variable skips (`C-1`/`C-2`).
 - [ ] Full cache-key integration remains: feed source content + IR node position
       from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real
