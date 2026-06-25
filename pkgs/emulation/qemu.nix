@@ -33,6 +33,7 @@
       patch -p1 < ${./qemu-patches/0006-crucible-clock-deadline.patch}
       patch -p1 < ${./qemu-patches/0007-crucible-block-rtc-read.patch}
       patch -p1 < ${./qemu-patches/0008-crucible-det-getrandom.patch}
+      patch -p1 < ${./qemu-patches/0009-crucible-net-deterministic.patch}
     ''
     else "";
 in

@@ -1232,6 +1232,14 @@ const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 18);
 const _: () = assert!(FRAME_ENTRY_DATA_OFFSET == 24);
 const _: () = assert!(FRAME_ENTRY_SIZE == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
 const _: () = assert!(FRAME_ENTRY_ALIGN == 8);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, delivery_icount) == 0);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, src_node) == 8);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, seq) == 12);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, len) == 16);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == FRAME_ENTRY_DATA_OFFSET);
+#[rustfmt::skip]
+const _: () = assert!(core::mem::size_of::<FrameEntry>() == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
+const _: () = assert!(core::mem::align_of::<FrameEntry>() == 8);
 
 /// Node status: actively retiring instructions or processing an I/O burst.
 pub const STATUS_RUNNING: u8 = 0;

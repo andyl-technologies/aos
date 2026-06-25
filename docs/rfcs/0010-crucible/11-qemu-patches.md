@@ -173,7 +173,7 @@ DETERMINISM (source elimination)                       class  enforces
   crucible-block-rtc-read ....... seed/pin guest RTC base   D    DET-8,  E5  (launch+patch)
   crucible-det-glib-prng ........ seed global GRand (1-line) D    DET-21, E9
   crucible-det-getrandom ........ deterministic guest-rng   D    DET-21, E9
-  crucible-net-deterministic .... icount-timed RX delivery  D    DET-11, E18
+  crucible-net-deterministic .... icount-timed RX delivery  D    DET-11, DET-13, E18
   crucible-rr-quantum-icount .... RR switch @ node-icount    D    DET-1, QEMU-43 (RR)
   crucible-det-ipi .............. deterministic IPI/SIPI/INIT D    DET-1  (multi-vCPU)
   (crucible-replay-start) ....... NOT CARRIED (see §11.4)    —    NG-6 (PATCH-43)
@@ -395,11 +395,13 @@ determinism-critical.
 - **Enforces:** [DET-11], [DET-13]; eliminates E18 (network arrival timing)
   partially on the QEMU side (the rest is the scheduler + transport).
 - **Mechanism:** adds a plugin-callable **frame-injection** entry point
-  (`qemu_plugin_net_inject`) so an inbound frame becomes architecturally visible
-  to the guest at the plugin's chosen virtual-time moment (its `delivery_icount`),
-  not "as it arrives on a socket." The injection is driven by the plugin's idle
-  callback at a virtual-time-determined point, making delivery a pure function of
-  icount.
+  (`qemu_plugin_net_inject`) plus lossless queue/flush helpers
+  (`qemu_plugin_net_send`, `qemu_plugin_net_flush`,
+  `qemu_plugin_net_can_receive`) so an inbound frame is either delivered
+  directly at the plugin's chosen virtual-time moment or appended to QEMU's
+  incoming queue and made architecturally visible only when the plugin flushes
+  at that moment. Delivery is therefore a pure function of icount, not "as it
+  arrives on a socket."
 - **Micro-test:** inject the same frame at the same delivery icount under skewed
   producer timing across two runs; assert the guest observes it at the identical
   icount.
@@ -875,12 +877,15 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Enforces:** [DET-18]; the RX side correctness.
 - **Mechanism:** the naive inject path (`qemu_receive_packet`) silently drops
   frames when the receiver (virtio-net) is momentarily unready — nondeterministic
-  loss. Exports `qemu_plugin_net_send` (queues losslessly via `qemu_send_packet`),
-  `qemu_plugin_net_flush` (runs `qemu_flush_queued_packets` so queued frames
-  deliver at the plugin's chosen virtual-time moment), and
-  `qemu_plugin_net_can_receive` (diagnostic). The plugin flushes at the start of
-  each idle callback, then injects, so backpressure buffering lives in QEMU's
-  queue and the harness inbox stays focused on virtual-time scheduling.
+  loss. The QEMU-side append/flush primitives are introduced by
+  `crucible-net-deterministic`: `qemu_plugin_net_send` appends to QEMU's
+  incoming queue through a callback-backed lossless append helper,
+  `qemu_plugin_net_flush` drains that queue with an observable success/failure
+  result, and `qemu_plugin_net_can_receive` is diagnostic. This item completes
+  the end-to-end co-sim integration around those primitives: the plugin flushes
+  at the start of each idle callback, then injects, so backpressure buffering
+  lives in QEMU's queue and the harness inbox stays focused on virtual-time
+  scheduling.
 - **Micro-test:** inject a frame while the receiver is momentarily unready; assert
   it is not dropped and is delivered at the chosen icount when flushed; two runs
   agree.
@@ -1175,9 +1180,17 @@ time-control primitives the whole design rests on.
     host entropy calls, sim unseeded `qemu_guest_getrandom` fails closed before
     host crypto, and non-sim unseeded guest random remains the upstream
     host-crypto path.
-- [ ] **T-PATCH-8** Implement `crucible-net-deterministic`: plugin-callable
+- [x] **T-PATCH-8** Implement `crucible-net-deterministic`: plugin-callable
   icount-timed RX delivery, with a skewed-producer cross-run micro-test. —
   satisfies [PATCH-17]; spec §11.4 (E18).
+  - Completed by `0009-crucible-net-deterministic.patch` and
+    `checks.crucible.phase1.qemuNetDeterministic`: QEMU exports
+    `qemu_plugin_net_inject`, `qemu_plugin_net_send`,
+    `qemu_plugin_net_flush`, and `qemu_plugin_net_can_receive`; direct injection
+    fails closed when the NIC cannot receive; `qemu_plugin_net_send` appends to
+    QEMU's incoming queue without guest-visible delivery even when the NIC is
+    ready; flush fails loudly while the NIC is not ready or link-down; skewed
+    producer timing observes the same guest-visible delivery icount.
 - [ ] **T-PATCH-9** Implement the plugin time-control surface
   `crucible-plugin-time-advance` (+ `has_time_control`) and the drains
   `crucible-plugin-advance-drain` / `crucible-plugin-drain-mainloop` with
@@ -1200,9 +1213,10 @@ time-control primitives the whole design rests on.
   device registration surface `crucible-dev-cb-api`; upstream server used when no
   callback is registered. — satisfies [PATCH-29], [PATCH-30]; spec §11.6 (E19).
 - [ ] **T-PATCH-14** Implement the network co-sim patches
-  `crucible-net-tx-callback` (TX intercept) and `crucible-net-flush-api` (lossless
-  RX inject + flush) with no-loss / deterministic-delivery micro-tests. —
-  satisfies [PATCH-31], [PATCH-32]; spec §11.6 (E18).
+  `crucible-net-tx-callback` (TX intercept) and complete `crucible-net-flush-api`
+  end-to-end plugin integration over the QEMU-side RX append/flush primitives,
+  with no-loss / deterministic-delivery micro-tests. — satisfies [PATCH-31],
+  [PATCH-32]; spec §11.6 (E18).
 - [ ] **T-PATCH-15** Confirm (or spike) that the guest↔host doorbell needs **no
   new patch**: reuse the existing port-I/O/MMIO trap + plugin mem-read; any patch
   added is white-box-only, inert, and spike-gated. — satisfies [PATCH-33]; spec
