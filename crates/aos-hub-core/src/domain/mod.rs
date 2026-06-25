@@ -29,7 +29,7 @@ pub use iam::{allow, role_grants, validate_org_slug, Permission, Role, Scope, Sl
 ///
 /// Serialized as the snake-case token stored in the
 /// `memberships.principal_kind` column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PrincipalKind {
     /// A human user (sessions plus owned tokens).
     User,
@@ -66,7 +66,7 @@ impl PrincipalKind {
 /// The pair `(kind, id)` is the foreign key into `memberships`; it is what
 /// the hub's `Database::list_memberships_for` keys on when resolving the
 /// effective grants fed to [`allow`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Principal {
     /// Whether this principal is a user or a service account.
     pub kind: PrincipalKind,

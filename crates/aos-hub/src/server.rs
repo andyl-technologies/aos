@@ -1080,6 +1080,9 @@ fn console_deps(state: &Arc<AppState>) -> aos_hub_core::web::console::ConsoleDep
         ),
         reindexer: Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
         default_storage_location: None,
+        // The native hub's in-process database is already colocated and fast, so
+        // it runs without a KV cache; token-revocation is immediate via the DB.
+        kv: None,
     }
 }
 

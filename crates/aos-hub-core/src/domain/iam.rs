@@ -112,7 +112,7 @@ impl Role {
 ///
 /// The verbs mirror RFC-0004's permission list; [`role_grants`] maps each
 /// role to the exact set it confers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Permission {
     /// Read registry content (private registries, member lists, etc.).
     Read,
@@ -222,7 +222,7 @@ pub fn role_grants(role: Role) -> &'static [Permission] {
 /// Stored as the raw path string (`""`, `"acme"`, `"acme/infra/prod"`,
 /// `"acme/infra/prod/cdn"`); see the [module docs](self) for the grammar
 /// and containment rules. Construct with [`Scope::parse`].
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Scope(String);
 
 impl Scope {

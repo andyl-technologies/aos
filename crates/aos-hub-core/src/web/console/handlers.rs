@@ -5619,6 +5619,9 @@ async fn tokens_modify_action(
         }
         match deps.db.rotate_token(token_id).await {
             Ok(Some((_, secret))) => {
+                // RFC-0004 ch.14 Phase C: tombstone the old token id so any
+                // KV-cached resolution for it is rejected immediately.
+                deps.invalidate_token_cache(token_id).await;
                 render_tokens(
                     deps,
                     session,
@@ -5637,6 +5640,8 @@ async fn tokens_modify_action(
     } else {
         match deps.db.revoke_token(token_id).await {
             Ok(()) => {
+                // RFC-0004 ch.14 Phase C: tombstone the revoked token id.
+                deps.invalidate_token_cache(token_id).await;
                 Redirect::to(&format!("/{}/-/settings/tokens", registry.slug)).into_response()
             }
             Err(err) => internal(err),

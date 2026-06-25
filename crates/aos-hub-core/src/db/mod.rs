@@ -1924,7 +1924,7 @@ impl IdentityLink {
 /// with the owner's current memberships at decision time
 /// ([`Database::effective_scopes`]); the machine plane authorizes from
 /// these grants alone, bounded by the JWT TTL (see `auth::extract`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TokenAuth {
     /// The token's id (UUID); the JWT `sub` and the revoke/rotate key.
     pub token_id: String,
