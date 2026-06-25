@@ -345,6 +345,33 @@ impl ParseCache {
         self.entry_for_key(self.key_for_source(source))
     }
 
+    /// Loads a complete cached parse artifact for source bytes without parsing.
+    ///
+    /// Missing or incomplete entries return `Ok(None)`. Complete entries are
+    /// decoded as resolved and lowered artifacts and returned as cache hits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if a complete cache entry cannot be read or
+    /// decoded.
+    pub fn load_cached_bytes(&self, source: &[u8]) -> Result<Option<CachedParse>, ParseCacheError> {
+        let key = self.key_for_source(source);
+        let entry = self.entry_for_key(key);
+        if !entry.is_complete() {
+            return Ok(None);
+        }
+        let resolved = entry.read_resolved()?;
+        let ir = entry.read_ir()?;
+        Ok(Some(CachedParse {
+            key,
+            entry,
+            resolved,
+            ir,
+            hit: true,
+            stored: true,
+        }))
+    }
+
     /// Loads a resolved parse artifact from cache or parses and stores it.
     ///
     /// Cache misses and corrupt artifacts both fall back to parsing `source`.
@@ -364,19 +391,8 @@ impl ParseCache {
     ) -> Result<CachedParse, ParseCacheError> {
         let key = self.key_for_source(source);
         let entry = self.entry_for_key(key);
-        if entry.is_complete() {
-            if let Ok(resolved) = entry.read_resolved() {
-                if let Ok(ir) = entry.read_ir() {
-                    return Ok(CachedParse {
-                        key,
-                        entry,
-                        resolved,
-                        ir,
-                        hit: true,
-                        stored: true,
-                    });
-                }
-            }
+        if let Ok(Some(cached)) = self.load_cached_bytes(source) {
+            return Ok(cached);
         }
 
         let parsed = parse_bytes(source).map_err(|source| ParseCacheError::Parse { source })?;

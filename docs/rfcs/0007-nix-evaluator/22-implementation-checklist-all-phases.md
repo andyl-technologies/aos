@@ -788,6 +788,15 @@ alone (`M-1`/`Q-A`).
       bundle. This is payload-format substrate only; automatic file-artifact
       materialization, automatic parse-cache integration, cache-hit selection,
       mmap reads, and harness proof remain open (`C-13`).
+- [x] Current explicit parse-cache hit reader:
+      `ParseCache::load_cached_bytes` computes the normal source-content key,
+      returns `Ok(None)` for missing/incomplete entries, and decodes complete
+      `resolved.bin`/`ir.bin`/`symbols.bin` artifacts into `CachedParse` without
+      parsing. `load_or_parse_bytes` reuses this helper while preserving
+      fallback-to-parse behavior for corrupt entries. This is explicit parse
+      cache hit reading only; durable file-artifact lookup integration,
+      automatic evaluator hit selection, mmap reads, and harness proof remain
+      open (`C-13`).
 - [x] Current parse metadata decoder substrate:
       `ParseCacheMeta::from_toml` and `ParseArtifactBundle::decode_meta` parse
       bundled `meta.toml` into typed schema/node/symbol counts plus the

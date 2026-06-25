@@ -277,6 +277,86 @@ fn load_or_parse_writes_then_hits_by_source_content() {
 }
 
 #[test]
+fn load_cached_bytes_misses_incomplete_entries() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+
+    let cached = cache
+        .load_cached_bytes(source)
+        .expect("load-only cache miss succeeds");
+
+    assert!(cached.is_none());
+    assert!(!cache.entry_for_source(source).dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn load_cached_bytes_misses_partially_populated_entries() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let entry = cache.entry_for_source(source);
+    entry.ensure_dir().expect("entry dir creates");
+    fs::write(entry.resolved_path(), b"not enough artifacts").expect("partial artifact writes");
+
+    let cached = cache
+        .load_cached_bytes(source)
+        .expect("load-only partial cache miss succeeds");
+
+    assert!(cached.is_none());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn load_cached_bytes_returns_complete_entry() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+
+    let cached = cache
+        .load_cached_bytes(source)
+        .expect("load-only cache hit succeeds")
+        .expect("cached entry exists");
+
+    assert!(cached.hit);
+    assert!(cached.stored);
+    assert_eq!(cached.key, parsed.key);
+    assert_eq!(cached.entry, parsed.entry);
+    assert_eq!(cached.resolved.arena.nodes(), parsed.resolved.arena.nodes());
+    assert!(lowered_ir_matches(&cached.ir, &parsed.ir));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn load_cached_bytes_reports_corrupt_complete_entries() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    fs::write(parsed.entry.ir_path(), b"not an ir artifact").expect("corrupt ir writes");
+
+    let error = cache
+        .load_cached_bytes(source)
+        .expect_err("load-only cache hit reports corrupt artifact");
+
+    assert!(matches!(
+        error,
+        ParseCacheError::DecodeArtifact { path, .. } if path == parsed.entry.ir_path()
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn artifact_bundle_round_trips_complete_entry_payloads() {
     let root = temp_root();
     let cache = ParseCache::new(root.join("parse"));
