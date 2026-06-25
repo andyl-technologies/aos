@@ -1637,7 +1637,7 @@ pub struct OrgUsage {
 /// values but never owns them thereafter. Optional fields are `None`/empty when
 /// unset and fall back to a documented default. Loaded by
 /// [`Database::instance_settings`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct InstanceSettings {
     /// Operator-chosen site title shown in the masthead and page titles; `None`
     /// falls back to the deploy `--brand` (or empty).
@@ -1676,7 +1676,7 @@ pub struct InstanceSettings {
 /// [`Database::signup_policy`]. The default is [`SignupPolicy::InviteOnly`]
 /// (the hosted-instance posture: free hub-managed storage behind open signup
 /// is an abuse magnet).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SignupPolicy {
     /// Any authenticated principal may create an org.
     Open,

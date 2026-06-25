@@ -280,6 +280,86 @@ impl CacheBackend for HttpBackend {
         Ok(())
     }
 
+    async fn mint_upload_url(&self, path: &str) -> Result<Option<String>> {
+        // Only attempt against an authenticated AOS hub: a provisioning-token
+        // backend (`is_aos`) or one carrying an explicit `Authorization` header.
+        // An unauthenticated plain-HTTP cache cannot presign, so skip the RPC.
+        let has_auth = self.is_aos
+            || self
+                .headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("authorization"));
+        if !has_auth {
+            return Ok(None);
+        }
+        // The cache slug is the view path `base_url` encodes beyond the origin
+        // (e.g. `https://host/default` -> `default`).
+        let Some(slug) = self
+            .base_url
+            .strip_prefix(&self.origin)
+            .map(|s| s.trim_matches('/'))
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok(None);
+        };
+        // `MintCacheUploadCredentials` lives at the root (Connect-JSON), not
+        // under the view path.
+        let url = format!(
+            "{}/aos.registry.v1.CacheService/MintCacheUploadCredentials",
+            self.origin
+        );
+        let body = serde_json::json!({ "cache_slug": slug, "path": path }).to_string();
+        let mut req = TransferRequest::post(&url, body.into_bytes());
+        req.headers
+            .push(("Content-Type".to_string(), "application/json".to_string()));
+        let req = self.add_headers(req);
+        let result = self
+            .engine
+            .execute(req)
+            .await
+            .context("minting presigned upload URL")?;
+        // A non-presignable cache (or a non-AOS origin) yields a non-2xx or an
+        // empty `upload_url`: fall back to the facade rather than failing.
+        if result.status >= 400 {
+            return Ok(None);
+        }
+        let Some(body) = result.body else {
+            return Ok(None);
+        };
+        #[derive(Deserialize)]
+        struct MintResponse {
+            #[serde(default)]
+            upload_url: String,
+        }
+        let resp: MintResponse =
+            serde_json::from_slice(&body).context("parsing mint-upload-credentials response")?;
+        if resp.upload_url.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(resp.upload_url))
+        }
+    }
+
+    async fn put_to_url(&self, url: &str, data: &[u8]) -> Result<()> {
+        // The presigned URL embeds its own (query-string) SigV4 authorization
+        // and targets the origin host directly, so attach NO credential headers
+        // and none of the backend's view headers.
+        let req = TransferRequest::put(url, data.to_vec());
+        let result = self
+            .engine
+            .execute(req)
+            .await
+            .context("uploading NAR to presigned URL")?;
+        if result.status >= 400 {
+            anyhow::bail!(
+                "presigned upload failed (HTTP {}): {}",
+                result.status,
+                result.body_string().unwrap_or_default()
+            );
+        }
+        Ok(())
+    }
+
     fn supports_multipart(&self) -> bool {
         // The AOS hub facade implements the multipart protocol (initiate /
         // upload-part / complete) over `/{slug}/nar/...` for every storage

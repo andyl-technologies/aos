@@ -99,6 +99,41 @@ pub trait CacheBackend: Send + Sync {
     /// Returns an error if the upload fails.
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()>;
 
+    /// Mints a short-lived presigned upload URL for a cache-relative object
+    /// `path` (e.g. `nar/<file>.nar.zst`), when the cache is backed by a
+    /// presignable public origin (S3/R2 with credentials sealed in the hub).
+    ///
+    /// `Ok(Some(url))` means the caller should upload the bytes **directly** to
+    /// `url` via [`put_to_url`](CacheBackend::put_to_url) — bypassing the hub so
+    /// the bytes never traverse the Worker. `Ok(None)` means no presign is
+    /// available and the caller must fall back to [`put_nar`](CacheBackend::put_nar)
+    /// (or multipart) through the facade. The narinfo is uploaded through the
+    /// facade regardless, so the hub index stays authoritative.
+    ///
+    /// The default returns `Ok(None)` — only AOS HTTP backends presign.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only on a hard transport failure; an unsupported or
+    /// not-presignable cache is `Ok(None)`, not an error.
+    async fn mint_upload_url(&self, _path: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// Uploads bytes directly to a presigned `url` minted by
+    /// [`mint_upload_url`](CacheBackend::mint_upload_url), bypassing the hub.
+    ///
+    /// The URL carries its own query-string authorization, so no credential
+    /// headers are attached.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the direct upload fails, or if the backend does not
+    /// support presigned upload (the default).
+    async fn put_to_url(&self, _url: &str, _data: &[u8]) -> Result<()> {
+        anyhow::bail!("backend does not support presigned direct upload")
+    }
+
     /// Batch check: returns the subset of `store_hashes` that are
     /// missing from the cache.
     ///

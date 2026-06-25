@@ -258,23 +258,30 @@ green.
       explicit invalidation at the console logout site and caching the console's
       own session reads — TTL already bounds revocation lag to ≤60 s.
 - [~] API tokens → `KvStore` read cache with D1 as source-on-miss; invalidate on
-      revoke. *Infra ready (`read_through`), but deferred deliberately:* token
-      auth carries hard-revoke + rotation-grace logic (`validate_token`), so a
-      TTL-only cache would serve a **revoked** token for ≤60 s — a security
-      regression. Requires explicit invalidate-on-revoke/rotate wiring before it
-      ships; the `CachedSession` pattern is the template.
-- [~] `instance_config` + site chrome → `KvStore`; push-update on save.
-      *Infra ready; mechanical:* cache `instance_settings()` under `cfg:instance`
-      via `read_through`, invalidate on the settings-save handler. (Worker already
-      isolate-caches chrome once per isolate, so the marginal win is small.)
+      revoke. *Deferred by design (not mechanical):* token auth carries
+      hard-revoke + rotation-grace logic, and the lookup key is the token
+      **secret** while revocation is by token **id** — so a safe cache cannot
+      invalidate by id against a secret-keyed entry. It needs a
+      **revocation-tombstone** design (`revoked:{token_id}` written on
+      revoke/rotate and consulted on read) or a `token_id→hash` index, not just a
+      `read_through` call. A naive TTL-only cache would serve a revoked token for
+      ≤60 s (a security regression), so it is intentionally not shipped. Design
+      recorded here; the tombstone is the implementable path.
+- [x] `instance_config` + site chrome → `KvStore`; push-update on save.
+      *Done:* `InstanceSettings`/`SignupPolicy` are serde-derived;
+      `instance_settings_cached` / `invalidate_instance_settings_cache` serve the
+      settings under `cfg:instance` (60 s TTL, the accepted staleness for chrome /
+      signup policy). Read-site adoption is incremental (the worker already
+      isolate-caches chrome).
 - [~] `frontends` host→registry routing table → `KvStore`; rebuild on frontend
       change (`rewrite_for_frontend` reads KV, not D1). *Infra ready;* needs a
       serde projection of `FrontendRecord` (avoids a `ProxyConfig` derive
       cascade); benefits only proxied **foreign** domains (the instance's own
       host short-circuits before the lookup).
-- [~] `key_rosters` (trust anchors) → `KvStore`. *Infra ready;* cache the roster
-      read under `roster:{registry_id}` via `read_through`, invalidate on key
-      rotation. Non-sensitive, read on verify/browse.
+- [x] `key_rosters` (trust anchors) → `KvStore`. *Done:* `list_roster_cached` /
+      `invalidate_roster_cache` (`roster:{registry_id}`, 60 s TTL), **wired into
+      the registry-home hot path** (`browse.rs` `registry_home`'s `join5`).
+      Non-sensitive, read on verify/browse.
 - [~] Short-lived auth artifacts (`oidc_flows`, `magic_links`, `device_codes`,
       `webauthn_challenges`) → `KvStore` TTL, with single-use claims via
       `Coordinator` where atomicity matters. *Infra ready:* `KvStore` TTL fits the
