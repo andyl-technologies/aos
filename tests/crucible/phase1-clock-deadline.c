@@ -58,7 +58,7 @@ qemu_clock_get_ns(int clock)
   return -1;
 }
 
-#include "plugins/api.c"
+#include "plugins/api-system.c"
 
 static int
 test_virtual_deadline_is_absolute_virtual_time_only(void)

@@ -101,7 +101,7 @@
     ++ failuresFor "tests/crucible/phase1-clock-deadline.c" microtestSource [
       {
         label = "patched fixture include";
-        needle = "#include \"plugins/api.c\"";
+        needle = "#include \"plugins/api-system.c\"";
       }
       {
         label = "deadline symbol exercised";
@@ -298,9 +298,20 @@ in
               cd source
             fi
 
-            mkdir -p "$TMPDIR/clock-deadline-fixture/include/qemu" \
-              "$TMPDIR/clock-deadline-fixture/plugins"
+            mkdir -p "$TMPDIR/clock-deadline-fixture/hw/boards" \
+              "$TMPDIR/clock-deadline-fixture/include/qemu" \
+              "$TMPDIR/clock-deadline-fixture/migration" \
+              "$TMPDIR/clock-deadline-fixture/plugins" \
+              "$TMPDIR/clock-deadline-fixture/qapi" \
+              "$TMPDIR/clock-deadline-fixture/qemu"
             cd "$TMPDIR/clock-deadline-fixture"
+            : > hw/boards.h
+            : > migration/blocker.h
+            : > qapi/error.h
+            : > qemu/plugin-memory.h
+            : > qemu/plugin.h
+            : > qemu/timer.h
+
             cat > include/qemu/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
             #ifndef QEMU_PLUGIN_H
             #define QEMU_PLUGIN_H
@@ -311,10 +322,14 @@ in
             #define QEMU_PLUGIN_API
 
             QEMU_PLUGIN_API
+            uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
+
+            QEMU_PLUGIN_API
             void qemu_plugin_crucible_pause_vm(void);
 
             /**
              * qemu_plugin_scoreboard_new() - alloc a new scoreboard
+             *
              * @element_size: size (in bytes) for one entry
              */
             struct qemu_plugin_scoreboard;
@@ -324,34 +339,79 @@ in
             #endif
             PLUGIN_HEADER_FIXTURE
 
-            cat > plugins/api.c <<'PLUGIN_API_FIXTURE'
+            cat > plugins/api-system.c <<'PLUGIN_API_FIXTURE'
+            #include <stdbool.h>
             #include <stddef.h>
             #include <stdint.h>
 
+            #include "qapi/error.h"
+            #include "migration/blocker.h"
+            #include "hw/boards.h"
+            #include "qemu/plugin-memory.h"
+            #include "qemu/plugin.h"
+
             #include "qemu/qemu-plugin.h"
+
+            typedef struct CPUState CPUState;
+            typedef struct Error Error;
+            typedef struct run_on_cpu_data {
+                uintptr_t host_ulong;
+            } run_on_cpu_data;
+
+            static CPUState *current_cpu;
+
+            #define RUN_ON_CPU_HOST_ULONG(value) \
+                ((run_on_cpu_data){.host_ulong = (uintptr_t)(value)})
 
             struct qemu_plugin_scoreboard { int unused; };
 
             int64_t qemu_clock_deadline_ns_all(int clock, int attrs);
             int64_t qemu_clock_get_ns(int clock);
-            enum { RUN_STATE_PAUSED = 0 };
-            static int vm_stop(int run_state)
+            static void qemu_clock_advance_virtual_time(int64_t new_time)
             {
-                (void)run_state;
-                return 0;
+                (void)new_time;
             }
-
-            #ifndef CONFIG_USER_ONLY
-            void qemu_plugin_crucible_pause_vm(void)
+            static void async_run_on_cpu(CPUState *cpu,
+                                         void (*fn)(CPUState *, run_on_cpu_data),
+                                         run_on_cpu_data data)
             {
-                (void)vm_stop(RUN_STATE_PAUSED);
+                fn(cpu, data);
             }
-            #endif
 
             struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size)
             {
                 (void)element_size;
                 return NULL;
+            }
+
+            static bool has_control;
+            static Error *migration_blocker;
+
+            const void *qemu_plugin_request_time_control(void)
+            {
+                (void)migration_blocker;
+                if (!has_control) {
+                    has_control = true;
+                    return &has_control;
+                }
+                return NULL;
+            }
+
+            static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+            {
+                (void)cpu;
+                int64_t new_time = data.host_ulong;
+                qemu_clock_advance_virtual_time(new_time);
+            }
+
+            void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+            {
+                if (handle == &has_control) {
+                    /* Need to execute out of cpu_exec, so bql can be locked. */
+                    async_run_on_cpu(current_cpu,
+                                     advance_virtual_time__async,
+                                     RUN_ON_CPU_HOST_ULONG(new_time));
+                }
             }
             PLUGIN_API_FIXTURE
 
@@ -362,7 +422,7 @@ in
             struct qemu_plugin_register;
             typedef struct GByteArray GByteArray;
 
-            #include "plugins/api.c"
+            #include "plugins/api-system.c"
 
             int main(void)
             {
@@ -419,7 +479,7 @@ in
               -- --test-threads=1
 
             cp "$patchSourcePath" "$out/${patchName}"
-            cp "$TMPDIR/clock-deadline-fixture/plugins/api.c" "$out/api.c.patched"
+            cp "$TMPDIR/clock-deadline-fixture/plugins/api-system.c" "$out/api-system.c.patched"
             cp "$TMPDIR/clock-deadline-fixture/include/qemu/qemu-plugin.h" \
               "$out/qemu-plugin.h.patched"
             cp "$TMPDIR/clock-deadline-fixture/stock-clock-deadline-negative.err" \

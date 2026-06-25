@@ -81,9 +81,9 @@ in
 
           [ -x "$QEMU_OUT/bin/qemu-system-x86_64" ] \
             || fail "qemu-crucible x86_64 system emulator is missing"
-          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch}'
-          require_fixed qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch 'qemu_plugin_crucible_rr_switch_quantum'
-          require_fixed qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch 'qemu_plugin_crucible_pause_vm'
+          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0001-crucible-rr-fingerprint-helpers.patch}'
+          require_fixed qemu-patches/0001-crucible-rr-fingerprint-helpers.patch 'qemu_plugin_crucible_rr_switch_quantum'
+          require_fixed qemu-patches/0001-crucible-rr-fingerprint-helpers.patch 'qemu_plugin_crucible_pause_vm'
 
           preemption_regex='preempt|preemption|interrupt_at|vcpu_switch|crucible_.*inject|qemu_plugin_crucible_.*(irq|interrupt)'
           require_absent_regex qemu.nix "$preemption_regex" "preemption-injection patch wiring"

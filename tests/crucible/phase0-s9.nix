@@ -4,15 +4,15 @@
 }: let
   s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
   qemuNixSource = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  qemuPatch1Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch;
+  qemuPatch1Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0001-crucible-rr-fingerprint-helpers.patch;
   qemuPatch2Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0002-crucible-icount-no-realtime.patch;
   qemuPatch3Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0003-crucible-no-warp-with-plugin.patch;
-  qemuPatch4Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0004-crucible-deterministic-qemu-entropy.patch;
+  qemuPatch4Source = builtins.readFile ../../pkgs/emulation/qemu-patches/0004-crucible-det-glib-prng.patch;
   qemuNixHash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu.nix;
-  qemuPatch1Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch;
+  qemuPatch1Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0001-crucible-rr-fingerprint-helpers.patch;
   qemuPatch2Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0002-crucible-icount-no-realtime.patch;
   qemuPatch3Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0003-crucible-no-warp-with-plugin.patch;
-  qemuPatch4Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0004-crucible-deterministic-qemu-entropy.patch;
+  qemuPatch4Hash = builtins.hashFile "sha256" ../../pkgs/emulation/qemu-patches/0004-crucible-det-glib-prng.patch;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-s9-qemu-build-identity";
@@ -45,13 +45,13 @@ in
     QEMU_DRV = builtins.unsafeDiscardStringContext pkgs.qemu-crucible.drvPath;
     QEMU_VERSION = pkgs.qemu-crucible.version;
     QEMU_NIX_HASH = qemuNixHash;
-    PATCH_0001_NAME = "0001-add-crucible-rr-fingerprint-helpers.patch";
+    PATCH_0001_NAME = "0001-crucible-rr-fingerprint-helpers.patch";
     PATCH_0001_HASH = qemuPatch1Hash;
     PATCH_0002_NAME = "0002-crucible-icount-no-realtime.patch";
     PATCH_0002_HASH = qemuPatch2Hash;
     PATCH_0003_NAME = "0003-crucible-no-warp-with-plugin.patch";
     PATCH_0003_HASH = qemuPatch3Hash;
-    PATCH_0004_NAME = "0004-crucible-deterministic-qemu-entropy.patch";
+    PATCH_0004_NAME = "0004-crucible-det-glib-prng.patch";
     PATCH_0004_HASH = qemuPatch4Hash;
 
     phases = [
@@ -101,10 +101,10 @@ in
           require_fixed qemu.nix 'pname ? "qemu"'
           require_fixed qemu.nix 'enablePlugins ? false'
           require_fixed qemu.nix 'pluginFlag ='
-          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch}'
+          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0001-crucible-rr-fingerprint-helpers.patch}'
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0002-crucible-icount-no-realtime.patch}'
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0003-crucible-no-warp-with-plugin.patch}'
-          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0004-crucible-deterministic-qemu-entropy.patch}'
+          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0004-crucible-det-glib-prng.patch}'
           require_fixed qemu.nix '--target-list=x86_64-softmmu'
           require_fixed qemu.nix 'https://download.qemu.org/qemu-'
           require_fixed qemu.nix '.tar.xz'

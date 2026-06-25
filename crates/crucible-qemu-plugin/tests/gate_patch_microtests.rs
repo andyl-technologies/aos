@@ -8,10 +8,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const EXPECTED_PATCHES: &[&str] = &[
-    "0001-add-crucible-rr-fingerprint-helpers.patch",
+    "0001-crucible-rr-fingerprint-helpers.patch",
     "0002-crucible-icount-no-realtime.patch",
     "0003-crucible-no-warp-with-plugin.patch",
-    "0004-crucible-deterministic-qemu-entropy.patch",
+    "0004-crucible-det-glib-prng.patch",
     "0005-crucible-clock-deadline.patch",
 ];
 
@@ -52,7 +52,7 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
         (
             "tests/crucible/phase1-rr-fingerprint-helpers.nix",
             "tests/crucible/phase1-rr-fingerprint-helpers.c",
-            "0001-add-crucible-rr-fingerprint-helpers.patch",
+            "0001-crucible-rr-fingerprint-helpers.patch",
         ),
         (
             "tests/crucible/phase1-icount-no-realtime.nix",
@@ -67,7 +67,7 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
         (
             "tests/crucible/phase1-qemu-deterministic-entropy.nix",
             "tests/crucible/phase1-qemu-deterministic-entropy.c",
-            "0004-crucible-deterministic-qemu-entropy.patch",
+            "0004-crucible-det-glib-prng.patch",
         ),
         (
             "tests/crucible/phase1-clock-deadline.nix",

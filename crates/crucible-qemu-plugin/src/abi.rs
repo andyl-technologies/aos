@@ -44,7 +44,7 @@ struct QemuPluginSystemInfo {
 /// Minimal QEMU `qemu_info_t` layout consumed by the install scaffold.
 ///
 /// This mirrors the prefix and single `system` union member installed by AOS
-/// QEMU 9.2.4. The scaffold copies only scalar ABI-version and vCPU-count
+/// QEMU 10.0.0. The scaffold copies only scalar ABI-version and vCPU-count
 /// fields while QEMU guarantees the pointer is live during `qemu_plugin_install`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -59,7 +59,7 @@ pub struct QemuPluginInfo {
 pub const QEMU_PLUGIN_INSTALL_OK: c_int = 0;
 /// QEMU install return value meaning plugin registration failed.
 pub const QEMU_PLUGIN_INSTALL_ERROR: c_int = -1;
-/// QEMU plugin API version exported by AOS QEMU 9.2.4.
+/// QEMU plugin API version exported by AOS QEMU 10.0.0.
 pub const QEMU_PLUGIN_API_VERSION: c_int = 4;
 /// The exported symbol QEMU resolves when loading this `cdylib`.
 pub const QEMU_PLUGIN_INSTALL_SYMBOL: &str = "qemu_plugin_install";
@@ -941,7 +941,7 @@ pub static qemu_plugin_version: c_int = QEMU_PLUGIN_API_VERSION;
 /// # Safety
 ///
 /// QEMU must pass either a null `info` pointer for an error result, or a pointer
-/// to a live `qemu_info_t` with the AOS QEMU 9.2.4 layout for the duration of
+/// to a live `qemu_info_t` with the AOS QEMU 10.0.0 layout for the duration of
 /// this call. When `argc` is positive, `argv` must be QEMU's plugin argument
 /// vector for this loaded plugin.
 #[unsafe(no_mangle)]

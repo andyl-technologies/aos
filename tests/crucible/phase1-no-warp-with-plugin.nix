@@ -77,7 +77,7 @@
     }
     {
       label = "patched plugin API fixture include";
-      needle = "#include \"plugins/api.c\"";
+      needle = "#include \"plugins/api-system.c\"";
     }
     {
       label = "time-control request";
@@ -133,7 +133,7 @@ in
           script = ''
             set -eu
 
-            mkdir -p accel/tcg include/qemu plugins qemu sysemu migration qapi hw/core
+            mkdir -p accel/tcg include/qemu plugins qemu system migration qapi hw/core
             : > qemu/osdep.h
             : > qemu/cutils.h
             : > qemu/main-loop.h
@@ -142,12 +142,12 @@ in
             : > qemu/error-report.h
             : > migration/vmstate.h
             : > qapi/error.h
-            : > sysemu/cpus.h
-            : > sysemu/replay.h
-            : > sysemu/qtest.h
-            : > sysemu/runstate.h
-            : > sysemu/cpu-timers.h
-            : > sysemu/cpu-timers-internal.h
+            : > system/cpus.h
+            : > system/replay.h
+            : > system/qtest.h
+            : > system/runstate.h
+            : > system/cpu-timers.h
+            : > system/cpu-timers-internal.h
             : > hw/core/cpu.h
 
             cat > include/qemu/plugin.h <<'PLUGIN_HEADER_FIXTURE'
@@ -157,13 +157,20 @@ in
             #include <stdbool.h>
 
             typedef struct GArray GArray;
+            typedef struct CPUState CPUState;
             typedef struct QemuPluginList QemuPluginList;
 
             #ifdef CONFIG_PLUGIN
             void qemu_plugin_flush_cb(void);
+
             void qemu_plugin_atexit_cb(void);
 
             void qemu_plugin_add_dyn_cb_arr(GArray *arr);
+
+            static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
+            {
+              (void)cpu;
+            }
 
             #else /* !CONFIG_PLUGIN */
 
@@ -181,48 +188,40 @@ in
             #endif /* QEMU_PLUGIN_H */
             PLUGIN_HEADER_FIXTURE
 
-            cat > plugins/api.c <<'PLUGIN_API_FIXTURE'
+            cat > plugins/api-system.c <<'PLUGIN_API_FIXTURE'
             /*
              * Time control
              */
             static bool has_control;
-            #ifdef CONFIG_SOFTMMU
             static Error *migration_blocker;
-            #endif
 
             const void *qemu_plugin_request_time_control(void)
             {
                 if (!has_control) {
                     has_control = true;
-            #ifdef CONFIG_SOFTMMU
                     error_setg(&migration_blocker,
                                "TCG plugin time control does not support migration");
                     migrate_add_blocker(&migration_blocker, NULL);
-            #endif
                     return &has_control;
                 }
                 return NULL;
             }
 
-            #ifdef CONFIG_SOFTMMU
             static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
             {
                 (void)cpu;
                 int64_t new_time = data.host_ulong;
                 qemu_clock_advance_virtual_time(new_time);
             }
-            #endif
 
             void qemu_plugin_update_ns(const void *handle, int64_t new_time)
             {
-            #ifdef CONFIG_SOFTMMU
                 if (handle == &has_control) {
                     /* Need to execute out of cpu_exec, so bql can be locked. */
                     async_run_on_cpu(current_cpu,
                                      advance_virtual_time__async,
                                      RUN_ON_CPU_HOST_ULONG(new_time));
                 }
-            #endif
             }
             PLUGIN_API_FIXTURE
 
@@ -232,16 +231,16 @@ in
             #include "migration/vmstate.h"
             #include "qapi/error.h"
             #include "qemu/error-report.h"
-            #include "sysemu/cpus.h"
-            #include "sysemu/qtest.h"
+            #include "system/cpus.h"
+            #include "system/qtest.h"
             #include "qemu/main-loop.h"
             #include "qemu/option.h"
             #include "qemu/seqlock.h"
-            #include "sysemu/replay.h"
-            #include "sysemu/runstate.h"
+            #include "system/replay.h"
+            #include "system/runstate.h"
             #include "hw/core/cpu.h"
-            #include "sysemu/cpu-timers.h"
-            #include "sysemu/cpu-timers-internal.h"
+            #include "system/cpu-timers.h"
+            #include "system/cpu-timers-internal.h"
 
             static bool icount_sleep = true;
 
@@ -371,7 +370,7 @@ in
             cp "$patchSourcePath" "$out/${patchName}"
             cp accel/tcg/icount-common.c "$out/icount-common.c.patched"
             cp include/qemu/plugin.h "$out/plugin.h.patched"
-            cp plugins/api.c "$out/api.c.patched"
+            cp plugins/api-system.c "$out/api-system.c.patched"
             cat >> "$out/result" <<'RESULT'
             check=checks.crucible.phase1.noWarpWithPlugin
             gate=gate:layer0-determinism

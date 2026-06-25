@@ -1,18 +1,19 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index 402d3e3..c074b7e 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
-@@ -40,6 +40,7 @@
+@@ -47,6 +47,7 @@
  static bool icount_sleep = true;
  /* Arbitrarily pick 1MIPS as the minimum allowable speed.  */
  #define MAX_ICOUNT_SHIFT 10
 +static uint64_t crucible_rr_switch_quantum;
-
- /* Do not count executed instructions */
- ICountMode use_icount = ICOUNT_DISABLED;
-@@ -70,6 +71,26 @@ static int64_t icount_get_executed(CPUState *cpu)
+ 
+ bool icount_align_option;
+ 
+@@ -76,6 +77,26 @@ static int64_t icount_get_executed(CPUState *cpu)
              (cpu->neg.icount_decr.u16.low + cpu->icount_extra));
  }
-
+ 
 +uint64_t icount_crucible_rr_switch_quantum(void)
 +{
 +    return crucible_rr_switch_quantum;
@@ -36,13 +37,13 @@ diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
  /*
   * Update the global shared timer_state.qemu_icount to take into
   * account executed instructions. This is done by the TCG vCPU
-@@ -408,15 +427,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -422,15 +443,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      bool sleep = qemu_opt_get_bool(opts, "sleep", true);
      bool align = qemu_opt_get_bool(opts, "align", false);
      long time_shift = -1;
 +    uint64_t rr_switch_quantum =
 +        qemu_opt_get_number(opts, "rr_switch_quantum", 0);
-
+ 
      if (!option) {
          if (qemu_opt_get(opts, "align") != NULL) {
              error_setg(errp, "Please specify shift option when using align");
@@ -55,7 +56,7 @@ diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
 +        }
          return true;
      }
-
+ 
 +    if (rr_switch_quantum > INT32_MAX) {
 +        error_setg(errp, "icount: rr_switch_quantum is too large");
 +        return false;
@@ -64,18 +65,20 @@ diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
      if (align && !sleep) {
          error_setg(errp, "align=on and sleep=off are incompatible");
          return false;
-@@ -436,6 +465,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -451,6 +484,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      }
-
+ 
      icount_sleep = sleep;
 +    crucible_rr_switch_quantum = rr_switch_quantum;
      if (icount_sleep) {
          timers_state.icount_warp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,
                                           icount_timer_cb, NULL);
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
+index 27cf104..14da5c3 100644
 --- a/accel/tcg/tcg-accel-ops-icount.c
 +++ b/accel/tcg/tcg-accel-ops-icount.c
-@@ -82,10 +82,17 @@ int64_t icount_percpu_budget(int cpu_count)
+@@ -93,7 +93,14 @@ void icount_handle_deadline(void)
+ int64_t icount_percpu_budget(int cpu_count)
  {
      int64_t limit = icount_get_limit();
 -    int64_t timeslice = limit / cpu_count;
@@ -87,17 +90,15 @@ diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
 +    }
 +
 +    timeslice = limit / cpu_count;
-
+ 
      if (timeslice == 0) {
          timeslice = limit;
-     }
-
-     return timeslice;
- }
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index f62cf24..7426205 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -110,4 +110,14 @@ static void rr_wait_io_event(void)
+@@ -4,6 +4,16 @@
+ 
      while (all_cpu_threads_idle()) {
          rr_stop_kick_timer();
 +        if (icount_enabled()) {
@@ -112,78 +113,15 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 +        }
          qemu_cond_wait_bql(first_cpu->halt_cond);
      }
-diff --git a/system/cpu-timers.c b/system/cpu-timers.c
---- a/system/cpu-timers.c
-+++ b/system/cpu-timers.c
-@@ -22,6 +22,7 @@
- #include "qemu/osdep.h"
- #include "qemu/cutils.h"
- #include "migration/vmstate.h"
-+#include "migration/qemu-file-types.h"
- #include "qapi/error.h"
- #include "qemu/error-report.h"
- #include "sysemu/cpus.h"
-@@ -219,14 +219,50 @@ static const VMStateDescription icount_vmstate_timers = {
-     }
- };
--
-+
-+static int get_crucible_icount_host_timer_int64(QEMUFile *f, void *pv,
-+                                                size_t size,
-+                                                const VMStateField *field)
-+{
-+    int64_t *v = pv;
-+
-+    qemu_get_sbe64s(f, v);
-+    return 0;
-+}
-+
-+static int put_crucible_icount_host_timer_int64(QEMUFile *f, void *pv,
-+                                                size_t size,
-+                                                const VMStateField *field,
-+                                                JSONWriter *vmdesc)
-+{
-+    int64_t zero = 0;
-+    int64_t *v = pv;
-+
-+    if (icount_enabled()) {
-+        qemu_put_sbe64s(f, &zero);
-+    } else {
-+        qemu_put_sbe64s(f, v);
-+    }
-+    return 0;
-+}
-+
-+static const VMStateInfo vmstate_info_crucible_icount_host_timer_int64 = {
-+    .name = "int64",
-+    .get = get_crucible_icount_host_timer_int64,
-+    .put = put_crucible_icount_host_timer_int64,
-+};
-+
- static const VMStateDescription vmstate_timers = {
-     .name = "timer",
-     .version_id = 2,
-     .minimum_version_id = 1,
-     .fields = (const VMStateField[]) {
--        VMSTATE_INT64(cpu_ticks_offset, TimersState),
-+        VMSTATE_SINGLE(cpu_ticks_offset, TimersState, 0,
-+                       vmstate_info_crucible_icount_host_timer_int64,
-+                       int64_t),
-         VMSTATE_UNUSED(8),
--        VMSTATE_INT64_V(cpu_clock_offset, TimersState, 2),
-+        VMSTATE_SINGLE(cpu_clock_offset, TimersState, 2,
-+                       vmstate_info_crucible_icount_host_timer_int64,
-+                       int64_t),
-         VMSTATE_END_OF_LIST()
-     },
-     .subsections = (const VMStateDescription * const []) {
+ 
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 3a850aa..c507f37 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -933,6 +933,92 @@ QEMU_PLUGIN_API
+@@ -931,6 +931,92 @@ QEMU_PLUGIN_API
  int qemu_plugin_read_register(struct qemu_plugin_register *handle,
                                GByteArray *buf);
-
+ 
 +/**
 + * qemu_plugin_crucible_get_vcpu_registers() - return register list for a vCPU
 + * @vcpu_index: the vCPU index whose register descriptors should be returned
@@ -272,14 +210,15 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 +
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
-  * @element_size: size (in bytes) for one entry
-diff --git a/include/sysemu/cpu-timers.h b/include/sysemu/cpu-timers.h
---- a/include/sysemu/cpu-timers.h
-+++ b/include/sysemu/cpu-timers.h
-@@ -65,6 +65,9 @@ bool icount_configure(QemuOpts *opts, Error **errp);
+  *
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+index 64ae54f..b7955d8 100644
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -68,6 +68,9 @@ bool icount_configure(QemuOpts *opts, Error **errp);
  /* used by tcg vcpu thread to calc icount budget */
  int64_t icount_round(int64_t count);
-
+ 
 +uint64_t icount_crucible_rr_switch_quantum(void);
 +uint64_t icount_crucible_rr_cursor_position(CPUState *cpu);
 +
@@ -287,31 +226,27 @@ diff --git a/include/sysemu/cpu-timers.h b/include/sysemu/cpu-timers.h
  void icount_start_warp_timer(void);
  void icount_account_warp_timer(void);
 diff --git a/plugins/api.c b/plugins/api.c
+index 604ce06..2c24610 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -36,6 +36,9 @@
- #include "qemu/timer.h"
-+#include "sysemu/cpu-timers.h"
-+#include "sysemu/runstate.h"
+@@ -39,8 +39,13 @@
+ #include "qemu/main-loop.h"
+ #include "qemu/plugin.h"
+ #include "qemu/log.h"
++#include "system/cpu-timers.h"
++#include "system/runstate.h"
  #include "tcg/tcg.h"
- #include "exec/exec-all.h"
 +#include "exec/cpu-common.h"
  #include "exec/gdbstub.h"
- #include "exec/translator.h"
- #include "disas/disas.h"
-@@ -45,6 +46,8 @@
- #include "qapi/error.h"
- #include "migration/blocker.h"
- #include "exec/ram_addr.h"
 +#include "exec/ramblock.h"
 +#include "exec/ramlist.h"
- #include "qemu/plugin-memory.h"
- #include "hw/boards.h"
- #else
-@@ -583,6 +587,114 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+ #include "exec/target_page.h"
+ #include "exec/translation-block.h"
+ #include "exec/translator.h"
+@@ -462,6 +467,114 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
      return gdb_read_register(current_cpu, buf, GPOINTER_TO_INT(reg) - 1);
  }
-
+ 
 +#ifndef CONFIG_USER_ONLY
 +GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index)
 +{
@@ -424,18 +359,18 @@ diff --git a/plugins/api.c b/plugins/api.c
  {
      return plugin_scoreboard_new(element_size);
 diff --git a/qemu-options.hx b/qemu-options.hx
+index dc694a9..65a69a6 100644
 --- a/qemu-options.hx
 +++ b/qemu-options.hx
-@@ -4819,7 +4819,7 @@ SRST
+@@ -1,13 +1,13 @@
  ERST
-
+ 
  DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
 -    "-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr=record|replay,rrfile=<filename>[,rrsnapshot=<snapshot>]]\n" \
 +    "-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr_switch_quantum=N][,rr=record|replay,rrfile=<filename>[,rrsnapshot=<snapshot>]]\n" \
      "                enable virtual instruction counter with 2^N clock ticks per\n" \
      "                instruction, enable aligning the host and virtual clocks\n" \
-     "                or disable real time cpu sleeping, and optionally enable\n", QEMU_ARCH_ALL)
-@@ -4827,6 +4827,6 @@ DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
+     "                or disable real time cpu sleeping, and optionally enable\n" \
      "                record-and-replay mode\n", QEMU_ARCH_ALL)
  SRST
 -``-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr=record|replay,rrfile=filename[,rrsnapshot=snapshot]]``
@@ -443,7 +378,8 @@ diff --git a/qemu-options.hx b/qemu-options.hx
      Enable virtual instruction counter. The virtual cpu will execute one
      instruction every 2^N ns of virtual time. If ``auto`` is specified
      then the virtual cpu speed will be automatically adjusted to keep
-@@ -4859,6 +4859,13 @@ SRST
+@@ -15,7 +15,14 @@
+     option. Whenever the guest clock is behind the host clock and if
      ``align=on`` is specified then we print a message to the user to
      inform about the delay. Currently this option does not work when
 -    ``shift`` is ``auto``. Note: The sync algorithm will work for those
@@ -458,7 +394,73 @@ diff --git a/qemu-options.hx b/qemu-options.hx
      shift values for which the guest clock runs ahead of the host clock.
      Typically this happens when the shift value is high (how high
      depends on the host machine). The default if icount is enabled
+diff --git a/system/cpu-timers.c b/system/cpu-timers.c
+index 23dd82b..91fa999 100644
+--- a/system/cpu-timers.c
++++ b/system/cpu-timers.c
+@@ -25,6 +25,7 @@
+ #include "qemu/osdep.h"
+ #include "qemu/cutils.h"
+ #include "migration/vmstate.h"
++#include "migration/qemu-file-types.h"
+ #include "qapi/error.h"
+ #include "qemu/error-report.h"
+ #include "system/cpus.h"
+@@ -216,14 +217,50 @@ static const VMStateDescription icount_vmstate_timers = {
+     }
+ };
+ 
++static int get_crucible_icount_host_timer_int64(QEMUFile *f, void *pv,
++                                                size_t size,
++                                                const VMStateField *field)
++{
++    int64_t *v = pv;
++
++    qemu_get_sbe64s(f, v);
++    return 0;
++}
++
++static int put_crucible_icount_host_timer_int64(QEMUFile *f, void *pv,
++                                                size_t size,
++                                                const VMStateField *field,
++                                                JSONWriter *vmdesc)
++{
++    int64_t zero = 0;
++    int64_t *v = pv;
++
++    if (icount_enabled()) {
++        qemu_put_sbe64s(f, &zero);
++    } else {
++        qemu_put_sbe64s(f, v);
++    }
++    return 0;
++}
++
++static const VMStateInfo vmstate_info_crucible_icount_host_timer_int64 = {
++    .name = "int64",
++    .get = get_crucible_icount_host_timer_int64,
++    .put = put_crucible_icount_host_timer_int64,
++};
++
+ static const VMStateDescription vmstate_timers = {
+     .name = "timer",
+     .version_id = 2,
+     .minimum_version_id = 1,
+     .fields = (const VMStateField[]) {
+-        VMSTATE_INT64(cpu_ticks_offset, TimersState),
++        VMSTATE_SINGLE(cpu_ticks_offset, TimersState, 0,
++                       vmstate_info_crucible_icount_host_timer_int64,
++                       int64_t),
+         VMSTATE_UNUSED(8),
+-        VMSTATE_INT64_V(cpu_clock_offset, TimersState, 2),
++        VMSTATE_SINGLE(cpu_clock_offset, TimersState, 2,
++                       vmstate_info_crucible_icount_host_timer_int64,
++                       int64_t),
+         VMSTATE_END_OF_LIST()
+     },
+     .subsections = (const VMStateDescription * const []) {
 diff --git a/system/vl.c b/system/vl.c
+index ec93988..9d56aeb 100644
 --- a/system/vl.c
 +++ b/system/vl.c
 @@ -446,6 +446,9 @@ static QemuOptsList qemu_icount_opts = {

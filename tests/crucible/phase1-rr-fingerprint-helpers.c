@@ -223,6 +223,19 @@ rr_stop_kick_timer(void)
 }
 
 static void
+rr_start_kick_timer(void)
+{
+}
+
+#define CPU_FOREACH(cpu) for ((cpu) = NULL; (cpu) != NULL;)
+
+static void
+qemu_wait_io_event_common(CPUState *cpu)
+{
+  (void)cpu;
+}
+
+static void
 icount_start_warp_timer(void)
 {
   rr_warp_timer_calls++;

@@ -1234,7 +1234,7 @@ register.
     `qemu_build_id=729b568e369aac8b090a2b743ef14f1e8338fcbfa8d6e0412d5ba2dc973a5ba4`,
     `qemu_nix_hash=bbdaae2e7c1a5ac000ae311c840e659db2925b1e43f3af877c54a00f456caa5c`,
     `patch_count=1`,
-    `patch_0001_name=0001-add-crucible-rr-fingerprint-helpers.patch`,
+    `patch_0001_name=0001-crucible-rr-fingerprint-helpers.patch`,
     `patch_0001_hash=1996b15d86a2e7af293652649ef9c2f204e209ffe38b5ed232dbb5ae389c3a0e`,
     `patch_series_hash=f2b409e1639b9616d6daa321774131028b6e7ef35185a2d49950ec187aab2653`,
     `plugins_enabled=true`, `patch_apply_list_matches=true`,
@@ -1254,6 +1254,12 @@ register.
     `qemu_inert_gate_status=fallback_pending_upstream_comparison`,
     `fallback_adopted=pin_build_id_and_regate_on_change`,
     `s9_complete=true`.
+  - **Current source pin:** T-PATCH-1 advances the carried QEMU source pin to
+    `qemu_version=10.0.0` with
+    `qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=`,
+    enforced by `checks.crucible.phase2.qemuPatchSeries`. The S9 build-identity
+    artifact above is a historical Phase-0 result and must be refreshed by the
+    next `checks.crucible.phase0.s9QemuBuildIdentity` run.
   - **Scope:** validates the Phase-0 S9 no-silent-drift decision for the current
     AOS QEMU package. The check records the QEMU derivation path, output path,
     `qemu.nix` hash, patch hash, patch-series hash, plugin-enabled package
