@@ -66,6 +66,7 @@ in {
     executionDecisionTaxonomy = import ./phase1-execution-decision-taxonomy.nix {inherit pkgs lib;};
     executionInstantiate = import ./phase1-execution-instantiate.nix {inherit pkgs lib;};
     executionModelCore = import ./phase1-execution-model-core.nix {inherit pkgs lib;};
+    executionReadyPoint = import ./phase1-execution-ready-point.nix {inherit pkgs lib;};
     executionResumeFingerprint = import ./phase1-execution-resume-fingerprint.nix {inherit pkgs lib;};
     executionStartResumeFork = import ./phase1-execution-start-resume-fork.nix {inherit pkgs lib;};
     executionStepPurity = import ./phase1-execution-step-purity.nix {inherit pkgs lib;};

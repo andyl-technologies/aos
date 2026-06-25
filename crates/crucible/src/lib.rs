@@ -32,10 +32,10 @@ pub use model::{
     AppRandomDecision, Checkpoint, CheckpointKind, ChoiceTag, ClockDriftRate, Configuration,
     ContentHash, Decision, DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId,
     GenesisCheckpoint, Icount, IrqVector, NodeClockSkew, NodeCounter, NodeId, OverrideDecision,
-    PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, RuntimeState, ScenarioDef,
-    Schedule, ScheduleError, SchedulingPoint, Shift, SimDuration, SimInstant, SimOffset, State,
-    TemporalGraph, TimeConversionError, VcpuId, VirtualInstant, VirtualTime, World, bake,
-    instantiate, reduce, step,
+    PreemptionDecision, PreemptionKind, ReadyPoint, RngDecision, RngStreamId, RuntimeState,
+    ScenarioDef, Schedule, ScheduleError, SchedulingPoint, Shift, SimDuration, SimInstant,
+    SimOffset, State, TemporalGraph, TimeConversionError, VcpuId, VirtualInstant, VirtualTime,
+    WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
@@ -716,6 +716,272 @@ mod tests {
     }
 
     #[test]
+    fn world_ready_point_policies_are_hashed_canonically() {
+        let fixed = ready_node(
+            "a",
+            ReadyPoint::FixedIcount {
+                icount: Icount { retired: 42 },
+            },
+        );
+        let idle = ready_node(
+            "b",
+            ReadyPoint::NetworkIdle {
+                window: SimDuration { nanos: 1_000 },
+            },
+        );
+        let console = ready_node(
+            "c",
+            ReadyPoint::ConsoleMarker {
+                marker: String::from("crucible-ready"),
+            },
+        );
+        let agent = WorldNode {
+            id: node_id("d"),
+            ready_point: ReadyPoint::AgentSignal,
+            white_box: WhiteBoxPolicy::Enabled,
+        };
+
+        let canonical = world_from_nodes(vec![
+            fixed.clone(),
+            idle.clone(),
+            console.clone(),
+            agent.clone(),
+        ]);
+        let reordered = world_from_nodes(vec![agent, console, idle, fixed]);
+        let changed = world_from_nodes(vec![ready_node(
+            "a",
+            ReadyPoint::FixedIcount {
+                icount: Icount { retired: 43 },
+            },
+        )]);
+        let baked = match bake(&canonical) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("canonical ready-point world should bake: {error}"),
+        };
+        let baked_again = match bake(&reordered) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("reordered ready-point world should bake: {error}"),
+        };
+        let manually_reordered = World {
+            id: canonical.id,
+            nodes: canonical.nodes.iter().rev().cloned().collect(),
+        };
+        let manually_baked = match bake(&manually_reordered) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("manually reordered ready-point world should bake: {error}"),
+        };
+
+        assert_eq!(canonical.nodes.len(), 4);
+        assert_eq!(canonical.id, reordered.id);
+        assert_eq!(canonical.nodes, reordered.nodes);
+        assert_eq!(canonical.scenario_def(), manually_reordered.scenario_def());
+        assert_eq!(baked, baked_again);
+        assert_eq!(baked, manually_baked);
+        assert_ne!(canonical.id, changed.id);
+        assert_ne!(
+            baked.checkpoint.id,
+            match bake(&changed) {
+                Ok(genesis) => genesis.checkpoint.id,
+                Err(error) => panic!("changed ready-point world should bake: {error}"),
+            }
+        );
+    }
+
+    #[test]
+    fn world_ready_point_rejects_agent_signal_without_white_box_opt_in() {
+        let invalid = World::from_nodes(vec![WorldNode {
+            id: node_id("agent"),
+            ready_point: ReadyPoint::AgentSignal,
+            white_box: WhiteBoxPolicy::Disabled,
+        }]);
+        let duplicate = World::from_nodes(vec![
+            ready_node(
+                "dup",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 1 },
+                },
+            ),
+            ready_node(
+                "dup",
+                ReadyPoint::NetworkIdle {
+                    window: SimDuration { nanos: 10 },
+                },
+            ),
+        ]);
+        let valid = World::from_nodes(vec![WorldNode {
+            id: node_id("agent"),
+            ready_point: ReadyPoint::AgentSignal,
+            white_box: WhiteBoxPolicy::Enabled,
+        }]);
+
+        assert!(matches!(
+            invalid,
+            Err(EngineError::WhiteBoxReadyPointWithoutOptIn { .. })
+        ));
+        assert!(matches!(
+            duplicate,
+            Err(EngineError::DuplicateWorldNodeId { .. })
+        ));
+        assert!(valid.is_ok());
+    }
+
+    #[test]
+    fn bake_is_content_identical_for_each_ready_point_policy() {
+        let policies = vec![
+            (
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 10 },
+                },
+                WhiteBoxPolicy::Disabled,
+            ),
+            (
+                ReadyPoint::NetworkIdle {
+                    window: SimDuration { nanos: 250 },
+                },
+                WhiteBoxPolicy::Disabled,
+            ),
+            (
+                ReadyPoint::ConsoleMarker {
+                    marker: String::from("ready"),
+                },
+                WhiteBoxPolicy::Disabled,
+            ),
+            (ReadyPoint::AgentSignal, WhiteBoxPolicy::Enabled),
+        ];
+
+        for (index, (ready_point, white_box)) in policies.into_iter().enumerate() {
+            let world = world_from_nodes(vec![WorldNode {
+                id: node_id(&format!("node-{index}")),
+                ready_point,
+                white_box,
+            }]);
+            let first = match bake(&world) {
+                Ok(genesis) => genesis,
+                Err(error) => panic!("ready-point policy should bake: {error}"),
+            };
+            let second = match bake(&world) {
+                Ok(genesis) => genesis,
+                Err(error) => panic!("ready-point policy should bake again: {error}"),
+            };
+
+            assert_eq!(first, second);
+            assert_eq!(first.checkpoint.kind, CheckpointKind::Fat);
+            assert_eq!(
+                first.checkpoint.configuration,
+                Configuration::genesis(world.scenario_def()).id()
+            );
+        }
+    }
+
+    #[test]
+    fn ready_point_policy_material_affects_baked_genesis() {
+        let cases = vec![
+            (
+                "fixed-icount target",
+                WorldNode {
+                    id: node_id("node"),
+                    ready_point: ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 10 },
+                    },
+                    white_box: WhiteBoxPolicy::Disabled,
+                },
+                WorldNode {
+                    id: node_id("node"),
+                    ready_point: ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 11 },
+                    },
+                    white_box: WhiteBoxPolicy::Disabled,
+                },
+            ),
+            (
+                "network-idle window",
+                WorldNode {
+                    id: node_id("node"),
+                    ready_point: ReadyPoint::NetworkIdle {
+                        window: SimDuration { nanos: 250 },
+                    },
+                    white_box: WhiteBoxPolicy::Disabled,
+                },
+                WorldNode {
+                    id: node_id("node"),
+                    ready_point: ReadyPoint::NetworkIdle {
+                        window: SimDuration { nanos: 251 },
+                    },
+                    white_box: WhiteBoxPolicy::Disabled,
+                },
+            ),
+            (
+                "console marker",
+                WorldNode {
+                    id: node_id("node"),
+                    ready_point: ReadyPoint::ConsoleMarker {
+                        marker: String::from("ready"),
+                    },
+                    white_box: WhiteBoxPolicy::Disabled,
+                },
+                WorldNode {
+                    id: node_id("node"),
+                    ready_point: ReadyPoint::ConsoleMarker {
+                        marker: String::from("ready-v2"),
+                    },
+                    white_box: WhiteBoxPolicy::Disabled,
+                },
+            ),
+            (
+                "agent-signal variant",
+                WorldNode {
+                    id: node_id("node"),
+                    ready_point: ReadyPoint::AgentSignal,
+                    white_box: WhiteBoxPolicy::Enabled,
+                },
+                WorldNode {
+                    id: node_id("node"),
+                    ready_point: ReadyPoint::ConsoleMarker {
+                        marker: String::from("agent-ready"),
+                    },
+                    white_box: WhiteBoxPolicy::Enabled,
+                },
+            ),
+            (
+                "white-box policy",
+                WorldNode {
+                    id: node_id("node"),
+                    ready_point: ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 10 },
+                    },
+                    white_box: WhiteBoxPolicy::Disabled,
+                },
+                WorldNode {
+                    id: node_id("node"),
+                    ready_point: ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 10 },
+                    },
+                    white_box: WhiteBoxPolicy::Enabled,
+                },
+            ),
+        ];
+
+        for (label, base_node, changed_node) in cases {
+            let base = world_from_nodes(vec![base_node]);
+            let changed = world_from_nodes(vec![changed_node]);
+            let base_baked = match bake(&base) {
+                Ok(genesis) => genesis,
+                Err(error) => panic!("{label} base world should bake: {error}"),
+            };
+            let changed_baked = match bake(&changed) {
+                Ok(genesis) => genesis,
+                Err(error) => panic!("{label} changed world should bake: {error}"),
+            };
+
+            assert_ne!(base.id, changed.id, "{label}");
+            assert_ne!(
+                base_baked.checkpoint.id, changed_baked.checkpoint.id,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
     fn instantiate_requires_baked_genesis_when_no_cached_path() {
         let scenario = generated_scenario(59);
         let config = Configuration {
@@ -973,11 +1239,30 @@ mod tests {
     }
 
     fn generated_world(seed: u64) -> World {
-        World {
-            id: ContentHash::from_canonical_material(
-                "crucible.test.world.generated",
-                &format!("nodes=a,b\nlinks=a-b\nseed={seed}"),
-            ),
+        World::from_content_hash(ContentHash::from_canonical_material(
+            "crucible.test.world.generated",
+            &format!("nodes=a,b\nlinks=a-b\nseed={seed}"),
+        ))
+    }
+
+    fn world_from_nodes(nodes: Vec<WorldNode>) -> World {
+        match World::from_nodes(nodes) {
+            Ok(world) => world,
+            Err(error) => panic!("test world should be valid: {error}"),
+        }
+    }
+
+    fn ready_node(name: &str, ready_point: ReadyPoint) -> WorldNode {
+        WorldNode {
+            id: node_id(name),
+            ready_point,
+            white_box: WhiteBoxPolicy::Disabled,
+        }
+    }
+
+    fn node_id(name: &str) -> NodeId {
+        NodeId {
+            name: name.to_owned(),
         }
     }
 
