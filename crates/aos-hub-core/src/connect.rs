@@ -920,6 +920,70 @@ pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
     build(service, true, false)
 }
 
+/// Lifetime, in seconds, of an access JWT minted at `POST /oauth2/token`.
+///
+/// Matches the native hub's access-token TTL so the Worker and native
+/// deployments issue equivalently short-lived tokens.
+const ACCESS_TOKEN_TTL_SECS: i64 = 900;
+
+/// OAuth2 token-exchange response: `access_token`, `token_type` (`"Bearer"`),
+/// and `expires_in` (seconds) — the same shape the native hub's
+/// `/oauth2/token` returns, so a client cannot tell the runtimes apart.
+#[derive(Serialize)]
+struct TokenExchangeResponse {
+    access_token: String,
+    token_type: &'static str,
+    expires_in: i64,
+}
+
+/// Exchange a provisioning secret for a short-TTL access JWT (`POST
+/// /oauth2/token`).
+///
+/// The caller presents its `aos_`-prefixed provisioning secret as
+/// `Authorization: Bearer <secret>`; on success the `200` JSON grant is the
+/// `Authorization: Bearer <jwt>` the client then sends to the cache and publish
+/// surfaces. This is the Worker's counterpart to the native hub's
+/// `oauth2_token_handler`: that fragment (which also rate-limits per source IP)
+/// lives in the `aos-hub` binary and is unreachable from the Worker, so the
+/// exchange is mounted on the shared worker entry ([`router`]) instead.
+///
+/// Returns `401` when the header is missing/malformed or the secret is
+/// unknown, expired, or revoked, and `500` on a token-store or minting failure.
+async fn oauth2_token_exchange(svc: &RpcService, headers: &HeaderMap) -> Response {
+    let secret = match headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+    {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                "missing or malformed Authorization header",
+            )
+                .into_response()
+        }
+    };
+    let auth = match svc.db.validate_token(secret).await {
+        Ok(Some(auth)) => auth,
+        Ok(None) => {
+            return (StatusCode::UNAUTHORIZED, "invalid provisioning secret").into_response()
+        }
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "token validation error").into_response()
+        }
+    };
+    match svc.jwt_keys.mint(&auth, ACCESS_TOKEN_TTL_SECS) {
+        Ok(access_token) => Json(TokenExchangeResponse {
+            access_token,
+            token_type: "Bearer",
+            expires_in: ACCESS_TOKEN_TTL_SECS,
+        })
+        .into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "token creation error").into_response(),
+    }
+}
+
 /// Build the shared router, optionally mounting the browse surface and/or the
 /// machine-surface facade.
 ///
@@ -1185,6 +1249,20 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
                     send_bridge(facade_put(svc, headers, slug, path, body))
                 },
             ),
+        );
+    }
+    // `POST /oauth2/token` provisioning-secret -> JWT exchange. The native hub
+    // mounts its own rate-limited fragment in `server.rs`; the Worker has none,
+    // so the shared worker entry ([`router`], the only builder with
+    // `mount_facade`) mounts it here. Gated on `mount_facade` so the native
+    // `rpc_browse_router` (`mount_facade = false`) never double-mounts it.
+    if mount_facade {
+        r = r.route(
+            "/oauth2/token",
+            post(|State(state): State<SharedState>, headers: HeaderMap| {
+                let svc = from_state(state);
+                send_bridge(async move { oauth2_token_exchange(&svc, &headers).await })
+            }),
         );
     }
     r.with_state(into_state(service))
