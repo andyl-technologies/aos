@@ -66,8 +66,8 @@
         needle = "black-box plugin fingerprint definition";
       }
       {
-        label = "completion note preserves full qemu-inert follow-up";
-        needle = "`gate:qemu-inert` corpus remains";
+        label = "completion note points at implemented qemu-inert corpus";
+        needle = "checks.crucible.phase2.gates.qemuInert";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
@@ -315,7 +315,7 @@ in
             boundary_inputs=deterministic-launch-profile,sim-mode-inertness,black-box-plugin-fingerprint
             fingerprint_components=periodic-icount,architectural-registers,guest-memory,device-state
             entropy_elimination_microtests=tcg-icount,cpu-entropy,rtc,guest-entropy,run-seed,kernel-randomization,input,cow-backing,idle-warp,sim-mode
-            full_qemu_inert_gate=pending-T-HARN-21
+            full_qemu_inert_gate=implemented-T-PATCH-3
             n_vcpu_fingerprint=checks.crucible.phase2.qemuNvcpuFingerprint
             RESULT
           '';

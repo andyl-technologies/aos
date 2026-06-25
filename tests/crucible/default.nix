@@ -235,14 +235,11 @@ in {
         taskIds = ["T-PLAN-3" "T-HARN-17"];
         reason = "ABI conformance gate is intentionally pending";
       };
-      qemuInert = redGate {
+      qemuInert = import ./phase2-qemu-inert.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.qemuInert";
-        gateName = "gate:qemu-inert";
-        owner = "crucible-qemu";
-        phase = "phase2";
-        taskIds = ["T-PLAN-3" "T-HARN-21"];
-        dependencies = [patchMicrotestsCheck];
-        reason = "QEMU inertness gate is intentionally pending";
+        taskIds = ["T-PLAN-3" "T-HARN-21" "T-PATCH-3"];
+        patchMicrotests = patchMicrotestsCheck;
       };
       patchMicrotests = patchMicrotestsCheck;
       singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {

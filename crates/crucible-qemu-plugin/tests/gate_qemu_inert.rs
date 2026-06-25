@@ -16,7 +16,7 @@ fn gate_qemu_inert_plugin_half_is_backed_by_phase_check() -> Result<(), Box<dyn 
 
     assert_contains(&spec, "- [x] **T-PLUG-23**");
     assert_contains(&spec, "contributes plugin-half evidence for [PLUG-49]");
-    assert_contains(&spec, "full real-QEMU corpus stays");
+    assert_contains(&spec, "full real-QEMU corpus is");
     assert_contains(&plugin_inertness, "PluginInertnessObservation::sim_off");
     assert_contains(&plugin_inertness, "PluginArgumentWhenSimulationOff");
     assert_contains(
@@ -34,15 +34,10 @@ fn gate_qemu_inert_plugin_half_is_backed_by_phase_check() -> Result<(), Box<dyn 
         &phase_check,
         "plugin_sim_off_rejects_every_load_or_effect_vector",
     );
-    assert_contains(&phase_check, "full_real_qemu_corpus=pending-T-HARN-21");
+    assert_contains(&phase_check, "full_real_qemu_corpus=implemented-T-PATCH-3");
+    assert_contains(&phase_check, "phase2-qemu-inert.nix");
 
     Ok(())
-}
-
-#[test]
-#[ignore = "T-HARN-21 implements full gate:qemu-inert corpus"]
-fn gate_qemu_inert_full_real_qemu_corpus_is_pending() {
-    panic!("full gate:qemu-inert implementation is pending T-HARN-21");
 }
 
 fn assert_contains(haystack: &str, needle: &str) {

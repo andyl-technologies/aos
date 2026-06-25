@@ -912,9 +912,12 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [x] **T-HARN-20** Implement the per-patch QEMU micro-test framework and
   `gate:patch-microtests` (each patch has a focused test absent on stock QEMU). —
   satisfies [HARN-20]; spec §10.
-- [ ] **T-HARN-21** Implement `gate:qemu-inert` (sim-off patched QEMU behaviorally
+- [x] **T-HARN-21** Implement `gate:qemu-inert` (sim-off patched QEMU behaviorally
   identical to an unpatched reference over the behavioral corpus, all from-source).
   — satisfies [HARN-21]; spec §10.
+  - Completed by `checks.crucible.phase2.gates.qemuInert`, which builds both QEMU
+    variants from the pinned source and compares normalized boot/device-I/O, QMP,
+    migration, and snapshot/restore command surface with sim mode off.
 - [ ] **T-HARN-22** Implement the adversarial host-condition harness (randomized
   host scheduling, wall-clock jitter, varied core counts, induced I/O stalls) and
   `gate:adversarial-determinism` (byte-identical canonical logs/fingerprints). —

@@ -727,10 +727,14 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   black-box on an unmodified stock image with white-box disabled; enabling
   white-box does not perturb fingerprints. — satisfies [DET-15], [DET-17]; spec
   §4.5.
-- [ ] **T-DET-23** Implement `gate:qemu-inert`: prove every patch is inert out of
+- [x] **T-DET-23** Implement `gate:qemu-inert`: prove every patch is inert out of
   sim mode (production QEMU behaviorally identical to upstream) and effective in
   sim mode, with a per-patch micro-test. — satisfies [DET-36], [DET-37], routes
   [INV-7]; spec §4.10.
+  - Completed by `checks.crucible.phase2.gates.qemuInert` plus
+    `checks.crucible.phase2.gates.patchMicrotests`: the former compares
+    unpatched pinned QEMU against patched sim-off QEMU over the real-QEMU corpus,
+    and the latter requires each carried patch's focused micro-test.
 - [ ] **T-DET-24** Pin the QEMU build identity into the reproduction artifact and
   re-gate on any QEMU/patch change; document the version-drift contract. —
   satisfies [DET-35]; spec §4.9.
