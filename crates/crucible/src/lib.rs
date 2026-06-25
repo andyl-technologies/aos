@@ -551,6 +551,244 @@ mod tests {
     }
 
     #[test]
+    fn instantiate_loads_exact_snapshot_without_genesis() {
+        let scenario = generated_scenario(41);
+        let config = Configuration {
+            def: scenario,
+            schedule: generated_schedule(41, 3),
+        };
+        let graph = match TemporalGraph::empty()
+            .with_cached_snapshot(&config, fat_checkpoint_for(&config))
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid exact snapshot should register: {error}"),
+        };
+
+        let runtime = match instantiate(&graph, &config) {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("exact snapshot should instantiate without genesis: {error}"),
+        };
+
+        assert_eq!(runtime.configuration, config.id());
+        assert_eq!(runtime.id, reduced_state_id(&config));
+    }
+
+    #[test]
+    fn instantiate_replays_from_nearest_cached_ancestor() {
+        let scenario = generated_scenario(43);
+        let config = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(43, 5),
+        };
+        let near_ancestor = Configuration {
+            def: scenario.clone(),
+            schedule: match config.schedule.prefix(3) {
+                Ok(schedule) => schedule,
+                Err(error) => panic!("valid ancestor prefix should construct: {error}"),
+            },
+        };
+        let far_ancestor = Configuration {
+            def: scenario,
+            schedule: match config.schedule.prefix(1) {
+                Ok(schedule) => schedule,
+                Err(error) => panic!("valid ancestor prefix should construct: {error}"),
+            },
+        };
+        let graph = match TemporalGraph::empty()
+            .with_cached_snapshot(&far_ancestor, fat_checkpoint_for(&far_ancestor))
+            .and_then(|graph| {
+                graph.with_cached_snapshot(&near_ancestor, fat_checkpoint_for(&near_ancestor))
+            }) {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid ancestor snapshots should register: {error}"),
+        };
+
+        let selected_ancestor = match graph.nearest_cached_ancestor(&config) {
+            Ok(Some(ancestor)) => ancestor,
+            Ok(None) => panic!("nearest cached ancestor should exist"),
+            Err(error) => panic!("ancestor lookup should succeed: {error}"),
+        };
+        let runtime = match instantiate(&graph, &config) {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("ancestor replay should instantiate: {error}"),
+        };
+
+        assert_eq!(selected_ancestor, near_ancestor);
+        assert_eq!(runtime.configuration, config.id());
+        assert_eq!(runtime.id, reduced_state_id(&config));
+    }
+
+    #[test]
+    fn instantiate_loads_baked_genesis_for_genesis() {
+        let scenario = generated_scenario(47);
+        let genesis = Configuration::genesis(scenario.clone());
+        let graph = match TemporalGraph::empty()
+            .with_baked_genesis(&scenario, genesis_checkpoint_for(&genesis))
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+
+        let runtime = match instantiate(&graph, &genesis) {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("baked genesis should instantiate genesis: {error}"),
+        };
+
+        assert_eq!(runtime.configuration, genesis.id());
+        assert_eq!(runtime.id, reduced_state_id(&genesis));
+    }
+
+    #[test]
+    fn instantiate_replays_from_baked_genesis_for_uncached_descendant() {
+        let scenario = generated_scenario(53);
+        let genesis = Configuration::genesis(scenario.clone());
+        let config = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(53, 4),
+        };
+        let graph = match TemporalGraph::empty()
+            .with_baked_genesis(&scenario, genesis_checkpoint_for(&genesis))
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+
+        let runtime = match instantiate(&graph, &config) {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("baked-genesis replay should instantiate descendant: {error}"),
+        };
+
+        assert_eq!(runtime.configuration, config.id());
+        assert_eq!(runtime.id, reduced_state_id(&config));
+    }
+
+    #[test]
+    fn instantiate_requires_baked_genesis_when_no_cached_path() {
+        let scenario = generated_scenario(59);
+        let config = Configuration {
+            def: scenario,
+            schedule: generated_schedule(59, 2),
+        };
+
+        let error = match instantiate(&TemporalGraph::empty(), &config) {
+            Ok(_) => panic!("uncached path without baked genesis should fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, EngineError::MissingBakedGenesis { .. }));
+        assert_eq!(
+            error.to_string(),
+            "missing baked genesis checkpoint for scenario"
+        );
+    }
+
+    #[test]
+    fn temporal_graph_rejects_mismatched_or_thin_cached_snapshots() {
+        let scenario = generated_scenario(61);
+        let config = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(61, 2),
+        };
+        let other = Configuration::genesis(scenario);
+        let mismatched = Checkpoint {
+            id: config.id(),
+            configuration: other.id(),
+            kind: CheckpointKind::Fat,
+        };
+        let thin = Checkpoint {
+            id: config.id(),
+            configuration: config.id(),
+            kind: CheckpointKind::Thin,
+        };
+
+        let mismatch_error = match TemporalGraph::empty().with_cached_snapshot(&config, mismatched)
+        {
+            Ok(_) => panic!("mismatched snapshot should be rejected"),
+            Err(error) => error,
+        };
+        let thin_error = match TemporalGraph::empty().with_cached_snapshot(&config, thin) {
+            Ok(_) => panic!("thin snapshot should be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            mismatch_error,
+            EngineError::CheckpointConfigurationMismatch { .. }
+        ));
+        assert!(matches!(
+            thin_error,
+            EngineError::CheckpointNotLoadable {
+                kind: CheckpointKind::Thin,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn temporal_graph_rejects_plain_cached_genesis_snapshot() {
+        let scenario = generated_scenario(63);
+        let genesis = Configuration::genesis(scenario);
+
+        let error = match TemporalGraph::empty()
+            .with_cached_snapshot(&genesis, fat_checkpoint_for(&genesis))
+        {
+            Ok(_) => panic!("genesis snapshot should be registered through baked genesis"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            EngineError::GenesisSnapshotMustBeBaked { .. }
+        ));
+        assert_eq!(
+            error.to_string(),
+            "genesis snapshots must be registered as baked genesis checkpoints"
+        );
+    }
+
+    #[test]
+    fn temporal_graph_rejects_mismatched_or_thin_baked_genesis() {
+        let scenario = generated_scenario(67);
+        let genesis = Configuration::genesis(scenario.clone());
+        let descendant = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(67, 1),
+        };
+        let mismatched = GenesisCheckpoint {
+            checkpoint: fat_checkpoint_for(&descendant),
+        };
+        let thin = GenesisCheckpoint {
+            checkpoint: Checkpoint {
+                id: genesis.id(),
+                configuration: genesis.id(),
+                kind: CheckpointKind::Thin,
+            },
+        };
+
+        let mismatch_error = match TemporalGraph::empty().with_baked_genesis(&scenario, mismatched)
+        {
+            Ok(_) => panic!("mismatched baked genesis should be rejected"),
+            Err(error) => error,
+        };
+        let thin_error = match TemporalGraph::empty().with_baked_genesis(&scenario, thin) {
+            Ok(_) => panic!("thin baked genesis should be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            mismatch_error,
+            EngineError::CheckpointConfigurationMismatch { .. }
+        ));
+        assert!(matches!(
+            thin_error,
+            EngineError::CheckpointNotLoadable {
+                kind: CheckpointKind::Thin,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn backend_trait_is_object_safe() {
         struct StubBackend;
 
@@ -603,6 +841,34 @@ mod tests {
         let engine = EngineError::NotImplemented {
             operation: "instantiate",
         };
+        let checkpoint_not_loadable = EngineError::CheckpointNotLoadable {
+            checkpoint: ContentHash::default(),
+            kind: CheckpointKind::Thin,
+        };
+        let checkpoint_mismatch = EngineError::CheckpointConfigurationMismatch {
+            checkpoint: ContentHash::default(),
+            expected: ContentHash::default(),
+            actual: ContentHash::default(),
+        };
+        let missing_genesis = EngineError::MissingBakedGenesis {
+            scenario: ContentHash::default(),
+        };
+        let genesis_must_be_baked = EngineError::GenesisSnapshotMustBeBaked {
+            configuration: ContentHash::default(),
+        };
+        let runtime_mismatch = EngineError::RuntimeConfigurationMismatch {
+            runtime: ContentHash::default(),
+            expected: ContentHash::default(),
+            actual: ContentHash::default(),
+        };
+        let replay_target_mismatch = EngineError::ReplayTargetMismatch {
+            expected: ContentHash::default(),
+            actual: ContentHash::default(),
+        };
+        let schedule_prefix = EngineError::SchedulePrefix(ScheduleError::PrefixTooLong {
+            requested: 3,
+            available: 2,
+        });
         let backend_not_implemented = BackendError::NotImplemented {
             operation: "snapshot",
         };
@@ -611,6 +877,34 @@ mod tests {
         };
 
         assert_eq!(engine.to_string(), "instantiate is not implemented yet");
+        assert_eq!(
+            checkpoint_not_loadable.to_string(),
+            "checkpoint is not loadable because it is thin"
+        );
+        assert_eq!(
+            checkpoint_mismatch.to_string(),
+            "checkpoint configuration does not match requested configuration"
+        );
+        assert_eq!(
+            missing_genesis.to_string(),
+            "missing baked genesis checkpoint for scenario"
+        );
+        assert_eq!(
+            genesis_must_be_baked.to_string(),
+            "genesis snapshots must be registered as baked genesis checkpoints"
+        );
+        assert_eq!(
+            runtime_mismatch.to_string(),
+            "runtime configuration does not match replay start configuration"
+        );
+        assert_eq!(
+            replay_target_mismatch.to_string(),
+            "replayed suffix did not produce requested configuration"
+        );
+        assert_eq!(
+            schedule_prefix.to_string(),
+            "schedule prefix failed: schedule prefix length 3 exceeds available length 2"
+        );
         assert_eq!(
             backend_not_implemented.to_string(),
             "backend operation snapshot is not implemented yet"
@@ -705,6 +999,30 @@ mod tests {
             Err(error) => panic!("pure configuration fingerprint should reduce: {error}"),
         };
         ExecutionFingerprint { hash: state.id }
+    }
+
+    fn reduced_state_id(configuration: &Configuration) -> ContentHash {
+        match reduce(&configuration.def, &configuration.schedule) {
+            Ok(state) => state.id,
+            Err(error) => panic!("pure reduced state should construct: {error}"),
+        }
+    }
+
+    fn fat_checkpoint_for(configuration: &Configuration) -> Checkpoint {
+        Checkpoint {
+            id: ContentHash::from_canonical_material(
+                "crucible.test.fat-checkpoint",
+                &format!("{:?}", configuration.id().bytes),
+            ),
+            configuration: configuration.id(),
+            kind: CheckpointKind::Fat,
+        }
+    }
+
+    fn genesis_checkpoint_for(configuration: &Configuration) -> GenesisCheckpoint {
+        GenesisCheckpoint {
+            checkpoint: fat_checkpoint_for(configuration),
+        }
     }
 
     fn generated_decision(seed: u64, index: u64) -> Decision {

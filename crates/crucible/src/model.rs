@@ -4,6 +4,7 @@
 //! scheduler, temporal graph, checkpoint cache, fault engine, assertions, and
 //! event log. It deliberately contains no backend-specific driver state.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::ops;
@@ -160,6 +161,25 @@ impl Schedule {
 
         Ok(Self {
             decisions: self.decisions[..len].to_vec(),
+        })
+    }
+
+    /// Returns the suffix after the first `len` decisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScheduleError::PrefixTooLong`] when `len` is greater than the
+    /// number of decisions in this schedule.
+    pub fn suffix_from(&self, len: usize) -> Result<Self, ScheduleError> {
+        if len > self.decisions.len() {
+            return Err(ScheduleError::PrefixTooLong {
+                requested: len,
+                available: self.decisions.len(),
+            });
+        }
+
+        Ok(Self {
+            decisions: self.decisions[len..].to_vec(),
         })
     }
 
@@ -846,6 +866,142 @@ pub struct State {
 pub struct TemporalGraph {
     /// The temporal graph content address.
     pub id: ContentHash,
+    cached_snapshots: BTreeMap<ContentHash, Checkpoint>,
+    baked_genesis: BTreeMap<ContentHash, GenesisCheckpoint>,
+}
+
+impl TemporalGraph {
+    /// Builds an empty temporal graph cache with `id`.
+    #[must_use]
+    pub fn new(id: ContentHash) -> Self {
+        Self {
+            id,
+            cached_snapshots: BTreeMap::new(),
+            baked_genesis: BTreeMap::new(),
+        }
+    }
+
+    /// Builds an empty temporal graph cache with the default test identity.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::new(ContentHash::default())
+    }
+
+    /// Returns a graph with a loadable snapshot registered for `configuration`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointConfigurationMismatch`] when the
+    /// checkpoint does not name `configuration`, or
+    /// [`EngineError::CheckpointNotLoadable`] when `checkpoint` is not fat.
+    /// Returns [`EngineError::GenesisSnapshotMustBeBaked`] when
+    /// `configuration` is the scenario genesis.
+    pub fn with_cached_snapshot(
+        mut self,
+        configuration: &Configuration,
+        checkpoint: Checkpoint,
+    ) -> Result<Self, EngineError> {
+        self.cache_snapshot(configuration, checkpoint)?;
+        Ok(self)
+    }
+
+    /// Registers a loadable snapshot for `configuration`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointConfigurationMismatch`] when the
+    /// checkpoint does not name `configuration`, or
+    /// [`EngineError::CheckpointNotLoadable`] when `checkpoint` is not fat.
+    /// Returns [`EngineError::GenesisSnapshotMustBeBaked`] when
+    /// `configuration` is the scenario genesis.
+    pub fn cache_snapshot(
+        &mut self,
+        configuration: &Configuration,
+        checkpoint: Checkpoint,
+    ) -> Result<(), EngineError> {
+        if configuration.is_genesis() {
+            return Err(EngineError::GenesisSnapshotMustBeBaked {
+                configuration: configuration.id(),
+            });
+        }
+        validate_loadable_checkpoint(&checkpoint, configuration.id())?;
+        self.cached_snapshots.insert(configuration.id(), checkpoint);
+        Ok(())
+    }
+
+    /// Returns a graph with the baked genesis checkpoint registered for `def`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointConfigurationMismatch`] when the baked
+    /// checkpoint does not name the genesis configuration for `def`, or
+    /// [`EngineError::CheckpointNotLoadable`] when the baked checkpoint is not
+    /// fat.
+    pub fn with_baked_genesis(
+        mut self,
+        def: &ScenarioDef,
+        genesis: GenesisCheckpoint,
+    ) -> Result<Self, EngineError> {
+        self.cache_baked_genesis(def, genesis)?;
+        Ok(self)
+    }
+
+    /// Registers the baked genesis checkpoint for `def`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointConfigurationMismatch`] when the baked
+    /// checkpoint does not name the genesis configuration for `def`, or
+    /// [`EngineError::CheckpointNotLoadable`] when the baked checkpoint is not
+    /// fat.
+    pub fn cache_baked_genesis(
+        &mut self,
+        def: &ScenarioDef,
+        genesis: GenesisCheckpoint,
+    ) -> Result<(), EngineError> {
+        let genesis_config = Configuration::genesis(def.clone());
+        validate_loadable_checkpoint(&genesis.checkpoint, genesis_config.id())?;
+        self.baked_genesis.insert(def.id, genesis);
+        Ok(())
+    }
+
+    /// Returns the exact loadable snapshot for `configuration`, if one exists.
+    #[must_use]
+    pub fn cached_snapshot(&self, configuration: &Configuration) -> Option<&Checkpoint> {
+        self.cached_snapshots.get(&configuration.id())
+    }
+
+    /// Returns the baked genesis snapshot for `def`, if one exists.
+    #[must_use]
+    pub fn genesis_snapshot(&self, def: &ScenarioDef) -> Option<&GenesisCheckpoint> {
+        self.baked_genesis.get(&def.id)
+    }
+
+    /// Returns the nearest cached ancestor of `configuration`, excluding itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if a schedule prefix cannot be constructed.
+    pub fn nearest_cached_ancestor(
+        &self,
+        configuration: &Configuration,
+    ) -> Result<Option<Configuration>, EngineError> {
+        for prefix_len in (0..configuration.schedule.len()).rev() {
+            let schedule = configuration
+                .schedule
+                .prefix(prefix_len)
+                .map_err(EngineError::SchedulePrefix)?;
+            let ancestor = Configuration {
+                def: configuration.def.clone(),
+                schedule,
+            };
+            if self.cached_snapshot(&ancestor).is_some() {
+                return Ok(Some(ancestor));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 /// A live runtime-state handle produced by `instantiate`.
@@ -853,6 +1009,8 @@ pub struct TemporalGraph {
 pub struct RuntimeState {
     /// The runtime state's content address.
     pub id: ContentHash,
+    /// The configuration materialized by this runtime state.
+    pub configuration: ContentHash,
 }
 
 /// Appends one decision to a configuration without materializing runtime state.
@@ -881,15 +1039,44 @@ pub fn reduce(def: &ScenarioDef, schedule: &Schedule) -> Result<State, EngineErr
 ///
 /// # Errors
 ///
-/// Returns [`EngineError::NotImplemented`] until recursive materialization lands
-/// in its owning execution-model task.
+/// Returns [`EngineError::MissingBakedGenesis`] when materialization reaches
+/// genesis and the graph has no baked genesis checkpoint for the scenario.
+/// Returns other [`EngineError`] variants when cached checkpoint metadata is
+/// invalid or suffix replay does not reconstruct the requested configuration.
 pub fn instantiate(
-    _graph: &TemporalGraph,
-    _config: &Configuration,
+    graph: &TemporalGraph,
+    config: &Configuration,
 ) -> Result<RuntimeState, EngineError> {
-    Err(EngineError::NotImplemented {
-        operation: "instantiate",
-    })
+    if config.is_genesis() {
+        let genesis =
+            graph
+                .genesis_snapshot(&config.def)
+                .ok_or(EngineError::MissingBakedGenesis {
+                    scenario: config.def.id,
+                })?;
+        return load_snapshot(config, &genesis.checkpoint);
+    }
+
+    if let Some(snapshot) = graph.cached_snapshot(config) {
+        return load_snapshot(config, snapshot);
+    }
+
+    if let Some(ancestor) = graph.nearest_cached_ancestor(config)? {
+        let ancestor_runtime = instantiate(graph, &ancestor)?;
+        let suffix = config
+            .schedule
+            .suffix_from(ancestor.schedule.len())
+            .map_err(EngineError::SchedulePrefix)?;
+        return replay_suffix(ancestor_runtime, &ancestor, &suffix, config);
+    }
+
+    let genesis = Configuration::genesis(config.def.clone());
+    let genesis_runtime = instantiate(graph, &genesis)?;
+    let suffix = config
+        .schedule
+        .suffix_from(genesis.schedule.len())
+        .map_err(EngineError::SchedulePrefix)?;
+    replay_suffix(genesis_runtime, &genesis, &suffix, config)
 }
 
 /// Produces the genesis checkpoint for `world`.
@@ -910,6 +1097,53 @@ pub enum EngineError {
         /// The operation whose implementation is deferred.
         operation: &'static str,
     },
+    /// A cached checkpoint is not a fat loadable snapshot.
+    CheckpointNotLoadable {
+        /// The checkpoint that cannot be loaded.
+        checkpoint: ContentHash,
+        /// The checkpoint storage kind.
+        kind: CheckpointKind,
+    },
+    /// A cached checkpoint names a different configuration than requested.
+    CheckpointConfigurationMismatch {
+        /// The checkpoint whose metadata was invalid.
+        checkpoint: ContentHash,
+        /// The requested configuration id.
+        expected: ContentHash,
+        /// The configuration id recorded by the checkpoint.
+        actual: ContentHash,
+    },
+    /// No baked genesis checkpoint exists for the scenario.
+    MissingBakedGenesis {
+        /// The scenario id missing a baked genesis checkpoint.
+        scenario: ContentHash,
+    },
+    /// A genesis snapshot was registered through the ordinary snapshot cache.
+    GenesisSnapshotMustBeBaked {
+        /// The genesis configuration that must use the baked genesis cache.
+        configuration: ContentHash,
+    },
+    /// A runtime was replayed from a configuration it does not materialize.
+    RuntimeConfigurationMismatch {
+        /// The runtime-state id whose metadata was invalid.
+        runtime: ContentHash,
+        /// The configuration expected by the replay start.
+        expected: ContentHash,
+        /// The configuration recorded by the runtime state.
+        actual: ContentHash,
+    },
+    /// Replaying a suffix did not reconstruct the requested configuration.
+    ReplayTargetMismatch {
+        /// The requested target configuration.
+        expected: ContentHash,
+        /// The configuration produced by replaying the suffix.
+        actual: ContentHash,
+    },
+    /// A schedule prefix or suffix could not be constructed.
+    SchedulePrefix(
+        /// The schedule prefix error.
+        ScheduleError,
+    ),
 }
 
 impl fmt::Display for EngineError {
@@ -918,8 +1152,103 @@ impl fmt::Display for EngineError {
             Self::NotImplemented { operation } => {
                 write!(f, "{operation} is not implemented yet")
             }
+            Self::CheckpointNotLoadable { kind, .. } => {
+                write!(
+                    f,
+                    "checkpoint is not loadable because it is {}",
+                    checkpoint_kind_label(*kind)
+                )
+            }
+            Self::CheckpointConfigurationMismatch { .. } => {
+                f.write_str("checkpoint configuration does not match requested configuration")
+            }
+            Self::MissingBakedGenesis { .. } => {
+                f.write_str("missing baked genesis checkpoint for scenario")
+            }
+            Self::GenesisSnapshotMustBeBaked { .. } => {
+                f.write_str("genesis snapshots must be registered as baked genesis checkpoints")
+            }
+            Self::RuntimeConfigurationMismatch { .. } => {
+                f.write_str("runtime configuration does not match replay start configuration")
+            }
+            Self::ReplayTargetMismatch { .. } => {
+                f.write_str("replayed suffix did not produce requested configuration")
+            }
+            Self::SchedulePrefix(error) => write!(f, "schedule prefix failed: {error}"),
         }
     }
 }
 
 impl Error for EngineError {}
+
+fn load_snapshot(
+    configuration: &Configuration,
+    checkpoint: &Checkpoint,
+) -> Result<RuntimeState, EngineError> {
+    validate_loadable_checkpoint(checkpoint, configuration.id())?;
+    runtime_for_configuration(configuration)
+}
+
+fn runtime_for_configuration(configuration: &Configuration) -> Result<RuntimeState, EngineError> {
+    Ok(RuntimeState {
+        id: reduce(&configuration.def, &configuration.schedule)?.id,
+        configuration: configuration.id(),
+    })
+}
+
+fn replay_suffix(
+    runtime: RuntimeState,
+    start: &Configuration,
+    suffix: &Schedule,
+    target: &Configuration,
+) -> Result<RuntimeState, EngineError> {
+    if runtime.configuration != start.id() {
+        return Err(EngineError::RuntimeConfigurationMismatch {
+            runtime: runtime.id,
+            expected: start.id(),
+            actual: runtime.configuration,
+        });
+    }
+
+    let mut replayed = start.clone();
+    for decision in suffix.decisions() {
+        replayed = step(&replayed, decision.clone());
+    }
+
+    if replayed.id() != target.id() {
+        return Err(EngineError::ReplayTargetMismatch {
+            expected: target.id(),
+            actual: replayed.id(),
+        });
+    }
+
+    runtime_for_configuration(&replayed)
+}
+
+fn validate_loadable_checkpoint(
+    checkpoint: &Checkpoint,
+    expected_configuration: ContentHash,
+) -> Result<(), EngineError> {
+    if checkpoint.kind != CheckpointKind::Fat {
+        return Err(EngineError::CheckpointNotLoadable {
+            checkpoint: checkpoint.id,
+            kind: checkpoint.kind,
+        });
+    }
+    if checkpoint.configuration != expected_configuration {
+        return Err(EngineError::CheckpointConfigurationMismatch {
+            checkpoint: checkpoint.id,
+            expected: expected_configuration,
+            actual: checkpoint.configuration,
+        });
+    }
+
+    Ok(())
+}
+
+fn checkpoint_kind_label(kind: CheckpointKind) -> &'static str {
+    match kind {
+        CheckpointKind::Fat => "fat",
+        CheckpointKind::Thin => "thin",
+    }
+}

@@ -201,6 +201,14 @@
           require_covered_function scheduled_event_keys_cover_producer_tie_break
           require_covered_function schedule_prefix_bounds_are_checked
           require_covered_function engine_and_backend_errors_render_all_variants_deterministically
+          require_covered_function instantiate_loads_exact_snapshot_without_genesis
+          require_covered_function instantiate_replays_from_nearest_cached_ancestor
+          require_covered_function instantiate_loads_baked_genesis_for_genesis
+          require_covered_function instantiate_replays_from_baked_genesis_for_uncached_descendant
+          require_covered_function instantiate_requires_baked_genesis_when_no_cached_path
+          require_covered_function temporal_graph_rejects_mismatched_or_thin_cached_snapshots
+          require_covered_function temporal_graph_rejects_plain_cached_genesis_snapshot
+          require_covered_function temporal_graph_rejects_mismatched_or_thin_baked_genesis
           require_covered_function decision_recorder_records_rng_draws_and_fault_outcomes
           require_covered_function decision_recorder_keeps_per_entity_streams_stable
           require_covered_function decision_recorder_records_app_random_after_rng_draw
@@ -322,6 +330,44 @@
             "impl fmt::Display for EngineError" \
             "Self::NotImplemented { operation } => {" \
             "engine error display variant"
+          require_line_marker \
+            "crucible/src/model.rs" \
+            "crucible/src/model.rs" \
+            1 \
+            "return load_snapshot(config, snapshot);" \
+            "instantiate exact snapshot branch"
+          require_line_marker \
+            "crucible/src/model.rs" \
+            "crucible/src/model.rs" \
+            1 \
+            "let ancestor_runtime = instantiate(graph, &ancestor)?;" \
+            "instantiate ancestor replay branch"
+          require_line_marker \
+            "crucible/src/model.rs" \
+            "crucible/src/model.rs" \
+            1 \
+            "let genesis_runtime = instantiate(graph, &genesis)?;" \
+            "instantiate genesis replay branch"
+          require_line_marker \
+            "crucible/src/model.rs" \
+            "crucible/src/model.rs" \
+            1 \
+            "for decision in suffix.decisions() {" \
+            "instantiate suffix replay loop"
+          require_line_marker_after \
+            "crucible/src/model.rs" \
+            "crucible/src/model.rs" \
+            1 \
+            "pub fn cache_snapshot" \
+            "return Err(EngineError::GenesisSnapshotMustBeBaked {" \
+            "plain cached genesis rejection branch"
+          require_line_marker_after \
+            "crucible/src/model.rs" \
+            "crucible/src/model.rs" \
+            1 \
+            "if config.is_genesis() {" \
+            "EngineError::MissingBakedGenesis" \
+            "instantiate missing baked genesis branch"
           require_line_marker_after \
             "crucible/src/backend.rs" \
             "crucible/src/backend.rs" \
@@ -525,6 +571,25 @@
       ];
     }
     {
+      id = "instantiate-recursion";
+      sourcePath = "crates/crucible/src/model.rs";
+      testPath = "crates/crucible/src/lib.rs";
+      status = "active";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = [];
+      activationSourceRoots = [];
+      requiredMarkers = [
+        "instantiate_loads_exact_snapshot_without_genesis"
+        "instantiate_replays_from_nearest_cached_ancestor"
+        "instantiate_loads_baked_genesis_for_genesis"
+        "instantiate_replays_from_baked_genesis_for_uncached_descendant"
+        "instantiate_requires_baked_genesis_when_no_cached_path"
+        "temporal_graph_rejects_mismatched_or_thin_cached_snapshots"
+        "temporal_graph_rejects_plain_cached_genesis_snapshot"
+        "temporal_graph_rejects_mismatched_or_thin_baked_genesis"
+      ];
+    }
+    {
       id = "sim-backend-error-variants";
       sourcePath = "crates/crucible/src/sim_backend.rs";
       testPath = "crates/crucible/src/sim_backend.rs";
@@ -637,6 +702,7 @@
     "scheduler-quantum-loop"
     "scheduler-ordering-keys"
     "error-variant-floor"
+    "instantiate-recursion"
     "sim-backend-error-variants"
     "decision-rng-and-forking"
     "content-addressed-digest"
@@ -782,9 +848,18 @@
       "active_determinism_core_paths_have_branch_and_error_coverage_markers"
       "coverage_floor_regression_failures"
       "error-variant-floor"
+      "instantiate-recursion"
       "scheduler_errors_render_all_variants_deterministically"
       "scheduled_event_keys_cover_producer_tie_break"
       "engine_and_backend_errors_render_all_variants_deterministically"
+      "instantiate_loads_exact_snapshot_without_genesis"
+      "instantiate_replays_from_nearest_cached_ancestor"
+      "instantiate_loads_baked_genesis_for_genesis"
+      "instantiate_replays_from_baked_genesis_for_uncached_descendant"
+      "instantiate_requires_baked_genesis_when_no_cached_path"
+      "temporal_graph_rejects_mismatched_or_thin_cached_snapshots"
+      "temporal_graph_rejects_plain_cached_genesis_snapshot"
+      "temporal_graph_rejects_mismatched_or_thin_baked_genesis"
       "sim_backend_rejects_unknown_checkpoint_deterministically"
       "stable_hasher_covers_chunk_remainder_and_bool_inputs"
       "replay_oracle_reports_first_mismatch"
