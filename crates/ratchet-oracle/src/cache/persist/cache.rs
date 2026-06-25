@@ -590,6 +590,39 @@ impl PersistCache {
         )
     }
 
+    /// Looks up and hydrates an indexed parse-artifact bundle.
+    ///
+    /// This is the cache-level hit adapter for the explicit file-artifact
+    /// sidecar index. It derives the expected mapping key from `file_key` and
+    /// `parse_key`, returns `Ok(None)` when the index has no matching entry,
+    /// and otherwise validates and writes the indexed bundle into `entry`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexedHydrationError`] if the
+    /// file-artifact index cannot be read, or if a matching indexed artifact
+    /// cannot be read from the `files/` pack, decoded, validated, or written
+    /// into `entry`.
+    pub fn hydrate_file_artifact_bundle_from_index(
+        &self,
+        file_key: &ParseFileKey,
+        parse_key: ParseCacheKey,
+        entry: &ParseCacheEntry,
+    ) -> Result<Option<PersistFileArtifactIndexEntry>, PersistFileArtifactIndexedHydrationError>
+    {
+        let artifact_key = PersistFileArtifactKey::from_parse_file_key(file_key, parse_key);
+        let Some(index_value) = self
+            .lookup_file_artifact(artifact_key)
+            .map_err(|source| PersistFileArtifactIndexedHydrationError::Lookup { source })?
+        else {
+            return Ok(None);
+        };
+        let index_entry = PersistFileArtifactIndexEntry::new(artifact_key, index_value);
+        self.hydrate_file_artifact_bundle_from_entry(file_key, parse_key, index_entry, entry)
+            .map_err(|source| PersistFileArtifactIndexedHydrationError::Hydrate { source })?;
+        Ok(Some(index_entry))
+    }
+
     /// Applies `decision` to an existing parse-cache artifact entry.
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns a skipped result

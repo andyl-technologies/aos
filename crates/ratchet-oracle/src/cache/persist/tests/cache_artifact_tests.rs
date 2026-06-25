@@ -650,6 +650,137 @@ fn cache_file_artifact_hydrates_parse_entry_from_index_entry() {
 }
 
 #[test]
+fn cache_file_artifact_hydration_from_index_misses_without_writing() {
+    let root = temp_root();
+    let persist = PersistCache::open(&root).expect("cache opens");
+    let source = b"let x = 1; in x";
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let parse_key = test_parse_key(source);
+    let target = ParseCacheEntry::new(root.join("missing-hydration-target"));
+
+    let result = persist
+        .hydrate_file_artifact_bundle_from_index(&file_key, parse_key, &target)
+        .expect("index miss succeeds");
+
+    assert_eq!(result, None);
+    assert!(!target.dir().exists());
+    assert_eq!(
+        fs::metadata(persist.file_pack().path())
+            .expect("file pack metadata")
+            .len(),
+        PERSIST_BLOB_PACK_HEADER_LEN as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_artifact_hydrates_parse_entry_from_index_lookup() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let materialized = persist
+        .materialize_parse_artifact_entry_indexed(
+            &file_key,
+            parsed.key,
+            &parsed.entry,
+            MaterializationDecision::Materialize,
+        )
+        .expect("entry materializes");
+    let expected_entry = materialized
+        .index_entry()
+        .expect("entry should materialize");
+    let hydrated = ParseCacheEntry::new(root.join("hydrated-index-lookup"));
+
+    let result = persist
+        .hydrate_file_artifact_bundle_from_index(&file_key, parsed.key, &hydrated)
+        .expect("indexed entry hydrates");
+
+    assert_eq!(result, Some(expected_entry));
+    assert!(hydrated.is_complete());
+    assert_eq!(
+        hydrated
+            .read_artifact_bundle()
+            .expect("hydrated bundle reads"),
+        bundle
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_artifact_hydration_from_index_reports_lookup_errors() {
+    let root = temp_root();
+    let persist = PersistCache::open(&root).expect("cache opens");
+    let source = b"let x = 1; in x";
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let parse_key = test_parse_key(source);
+    let target = ParseCacheEntry::new(root.join("lookup-error-target"));
+    fs::remove_file(persist.file_artifact_index().path()).expect("index file removes");
+    fs::create_dir(persist.file_artifact_index().path()).expect("index path becomes directory");
+
+    let error = persist
+        .hydrate_file_artifact_bundle_from_index(&file_key, parse_key, &target)
+        .expect_err("lookup errors");
+
+    assert!(matches!(
+        error,
+        PersistFileArtifactIndexedHydrationError::Lookup {
+            source: PersistFileArtifactIndexError::Open { .. },
+        }
+    ));
+    assert!(!target.dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_artifact_hydration_from_index_reports_hydration_errors() {
+    let root = temp_root();
+    let persist = PersistCache::open(&root).expect("cache opens");
+    let source = b"let x = 1; in x";
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let parse_key = test_parse_key(source);
+    let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let stale_value = PersistFileArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"missing artifact"),
+        PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
+    );
+    let target = ParseCacheEntry::new(root.join("stale-hydration-target"));
+    persist
+        .record_file_artifact(PersistFileArtifactIndexEntry::new(
+            artifact_key,
+            stale_value,
+        ))
+        .expect("stale mapping records");
+
+    let error = persist
+        .hydrate_file_artifact_bundle_from_index(&file_key, parse_key, &target)
+        .expect_err("stale indexed artifact errors");
+
+    assert!(matches!(
+        error,
+        PersistFileArtifactIndexedHydrationError::Hydrate {
+            source: PersistFileArtifactHydrationError::Read { .. },
+        }
+    ));
+    assert!(!target.dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_parse_artifact_entry_materialization_can_skip_missing_entry() {
     let root = temp_root();
     let persist = PersistCache::open(&root).expect("cache opens");

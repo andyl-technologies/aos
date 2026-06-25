@@ -434,6 +434,23 @@ pub enum PersistFileArtifactHydrationError {
     },
 }
 
+/// Indexed persistent file-artifact hydration failed.
+#[derive(Debug, Error)]
+pub enum PersistFileArtifactIndexedHydrationError {
+    /// The file-artifact sidecar index could not be looked up.
+    #[error("failed to look up persistent file artifact for hydration")]
+    Lookup {
+        /// The underlying file-artifact index error.
+        source: PersistFileArtifactIndexError,
+    },
+    /// The indexed file artifact could not be hydrated into the target entry.
+    #[error("failed to hydrate indexed persistent file artifact")]
+    Hydrate {
+        /// The underlying hydration error.
+        source: PersistFileArtifactHydrationError,
+    },
+}
+
 /// Persistent parse-artifact materialization failed.
 #[derive(Debug, Error)]
 pub enum PersistParseArtifactMaterializationError {

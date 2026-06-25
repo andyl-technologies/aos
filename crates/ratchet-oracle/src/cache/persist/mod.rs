@@ -66,7 +66,8 @@ pub use cache::PersistCache;
 pub use error::{
     PersistBlobIndexError, PersistBlobIndexedReadError, PersistBlobIndexedWriteError,
     PersistBlobPackError, PersistError, PersistFileArtifactHydrationError,
-    PersistFileArtifactIndexError, PersistFileArtifactIndexedWriteError, PersistPackFormatError,
+    PersistFileArtifactIndexError, PersistFileArtifactIndexedHydrationError,
+    PersistFileArtifactIndexedWriteError, PersistPackFormatError,
     PersistParseArtifactMaterializationError,
 };
 pub use format::{

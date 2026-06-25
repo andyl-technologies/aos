@@ -786,7 +786,7 @@ alone (`M-1`/`Q-A`).
       bytes as one versioned little-endian payload, and
       `ParseCacheEntry::read_artifact_bundle` reads complete entries into that
       bundle. This is payload-format substrate only; automatic file-artifact
-      materialization, automatic parse-cache integration, cache-hit lookup,
+      materialization, automatic parse-cache integration, cache-hit selection,
       mmap reads, and harness proof remain open (`C-13`).
 - [x] Current parse metadata decoder substrate:
       `ParseCacheMeta::from_toml` and `ParseArtifactBundle::decode_meta` parse
@@ -958,35 +958,44 @@ alone (`M-1`/`Q-A`).
       `PersistCache::read_file_artifact` consumes a typed
       `PersistFileArtifactIndexValue` and reads/verifies the referenced payload
       through the `files/` pack. This is a typed buffered read helper only;
-      durable index lookup, parse-artifact payload decoding, mmap reads, cache
-      hit integration, GC/repack, and harness proof remain open (`C-13`).
+      parse-artifact payload decoding, automatic cache-hit selection, mmap
+      reads, GC/repack, and harness proof remain open (`C-13`).
 - [x] Current explicit file-artifact bundle hydration adapter:
       `PersistCache::hydrate_file_artifact_bundle` reads a typed `files/`
       artifact value, decodes the `ParseArtifactBundle` payload, validates
       bundled metadata/schema/counts through `ParseArtifactBundle::validate_meta`,
       and writes it into a caller-supplied `ParseCacheEntry` only after
-      validation succeeds. This is explicit validated hydration only; durable
-      index lookup, automatic cache-hit selection, source/key equality proof,
-      mmap reads, full artifact semantic validation beyond existing decoders,
-      GC/repack, and harness proof remain open (`C-13`).
+      validation succeeds. This is explicit validated hydration only; automatic
+      cache-hit selection, source/key equality proof, mmap reads, full artifact
+      semantic validation beyond existing decoders, GC/repack, and harness
+      proof remain open (`C-13`).
 - [x] Current keyed file-artifact bundle hydration adapter:
       `PersistCache::hydrate_file_artifact_bundle_for_key` derives the expected
       `PersistFileArtifactKey` from the requested `ParseFileKey`/`ParseCacheKey`,
       rejects mismatches before reading the `files/` pack, and otherwise
       delegates to validated bundle hydration. This is explicit keyed hydration
-      only; durable index lookup, automatic cache-hit selection, full artifact
-      semantic validation beyond existing decoders, mmap reads, GC/repack, and
-      harness proof remain open
+      only; automatic cache-hit selection, full artifact semantic validation
+      beyond existing decoders, mmap reads, GC/repack, and harness proof remain open
       (`C-13`).
 - [x] Current indexed file-artifact bundle hydration adapter:
       `PersistCache::hydrate_file_artifact_bundle_from_entry` consumes a
       complete `PersistFileArtifactIndexEntry`, verifies its key against the
       requested `ParseFileKey`/`ParseCacheKey`, and delegates matching entries
       to validated bundle hydration. This is explicit entry-shaped hydration
-      only; durable index lookup, automatic cache-hit selection, full artifact
+      only; automatic cache-hit selection, full artifact
       semantic validation beyond existing decoders, mmap reads, GC/repack, and
       harness proof remain open
       (`C-13`).
+- [x] Current indexed file-artifact lookup hydration adapter:
+      `PersistCache::hydrate_file_artifact_bundle_from_index` derives the
+      file-artifact mapping key from `ParseFileKey`/`ParseCacheKey`, performs
+      `lookup_file_artifact`, returns `Ok(None)` on misses, and on hits hydrates
+      the validated bundle into a caller-supplied `ParseCacheEntry` while
+      returning the matched `PersistFileArtifactIndexEntry`. This is explicit
+      cache-level lookup hydration only; automatic parse-cache integration,
+      durable hit selection, source/key equality proof, mmap reads, full
+      artifact semantic validation beyond existing decoders, GC/repack, and
+      harness proof remain open (`C-13`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus
