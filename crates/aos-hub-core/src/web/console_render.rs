@@ -1351,6 +1351,34 @@ pub struct CacheLinkRow {
     pub warning: Option<String>,
 }
 
+/// A manual GC pin shown on a cache's detail page (one `cache_gc_roots` row of
+/// `root_kind = 'manual'`), enriched with its store-path closure summary.
+///
+/// A pin is a manual GC root: it keeps `store_hash` and its transitive closure
+/// from being reclaimed by garbage collection. The closure figures
+/// ([`closure_size`](Self::closure_size) / [`closure_count`](Self::closure_count))
+/// are computed by BFS-walking [`crate::db::CacheObject::refs`] from the pinned
+/// root, so an operator can see what each pin actually retains before unpinning.
+pub struct CachePinRow {
+    /// The pinned store-path hash component (the `.narinfo` key).
+    pub store_hash: String,
+    /// The pinned path's `<hash>-<name>` store name, or `""` when the object is
+    /// not (or no longer) indexed in this cache (a dangling pin).
+    pub store_name: String,
+    /// Sum of `file_size` (compressed NAR bytes) over the present closure nodes.
+    pub closure_size: u64,
+    /// Number of present (indexed) objects in the closure, including the root.
+    pub closure_count: u64,
+    /// Whether the pinned root object itself is present in the cache index.
+    /// `false` marks a pin whose target has not been uploaded (or was purged).
+    pub present: bool,
+    /// Pin deadline (unix seconds); `None` pins indefinitely. Past it, the pin
+    /// stops rooting and the closure becomes collectable.
+    pub expires_at: Option<i64>,
+    /// When the pin was created (unix seconds).
+    pub created_at: i64,
+}
+
 /// A linked binary cache shown on a *registry's* settings page (the reverse of
 /// [`CacheLinkRow`]).
 pub struct RegistryCacheRow {
@@ -1791,8 +1819,9 @@ pub fn org_dashboard(
 ///
 /// `can_admin` gates every mutating form; a plain member sees the read-only
 /// configuration and usage. `linkable` is the org's registries available to link
-/// (already-linked ones are omitted). `notice` renders the outcome of the last
-/// action (e.g. a GC sweep summary).
+/// (already-linked ones are omitted). `pins` are the cache's manual GC pins
+/// (admin-only), each with its closure summary. `notice` renders the outcome of
+/// the last action (e.g. a GC sweep summary or a pin add/remove).
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn cache_page(
@@ -1805,6 +1834,7 @@ pub fn cache_page(
     usage: &CacheUsage,
     links: &[CacheLinkRow],
     linkable: &[(String, String)],
+    pins: &[CachePinRow],
     can_admin: bool,
     // Whether this cache advertises its inherited storage-binding frontend
     // (RFC-0004 §12) — the storage section's opt-out checkbox.
@@ -2031,6 +2061,9 @@ pub fn cache_page(
             csrf = csrf_field(csrf),
         );
 
+        // -- Pins (manual GC roots) -----------------------------------------
+        body.push_str(&cache_pins_section(org_slug, csrf, cache, pins));
+
         // -- Delete ----------------------------------------------------------
         body.push_str("<h2 class=\"danger\">Delete cache</h2>\n");
         let _ = write!(
@@ -2056,6 +2089,102 @@ pub fn cache_page(
         &StateLine::timed(started),
         &indicator(email),
     )
+}
+
+/// Render the "Pins (manual GC roots)" section of a cache's detail page.
+///
+/// Lists each manual pin with its closure summary (package name, human-readable
+/// closure size, object count, expiry, and age), a per-row **unpin** button, and
+/// an **add pin** form. Re-adding an already-pinned hash renews it in place
+/// (`pin_cache_path` upserts), so the form doubles as a renew control.
+///
+/// The whole section is admin-only; callers gate it on `can_admin`.
+fn cache_pins_section(org_slug: &str, csrf: &str, cache: &Cache, pins: &[CachePinRow]) -> String {
+    let org = escape(org_slug);
+    let slug = escape(&cache.slug);
+    let mut body = String::new();
+    body.push_str("<h2>Pins (manual GC roots)</h2>\n");
+    body.push_str(
+        "<p class=\"dim\">A pin keeps a store path and its entire closure from \
+         being reclaimed by garbage collection. Use a pin to retain a release or \
+         a known-good build indefinitely (or until an expiry you set).</p>\n",
+    );
+
+    if pins.is_empty() {
+        body.push_str("<p class=\"dim\">No manual pins. Add one below to root a store path.</p>\n");
+    } else {
+        body.push_str(
+            "<table class=\"linktable\"><tr>\
+             <th>package</th><th>store hash</th><th>closure</th>\
+             <th>expires</th><th>created</th><th></th></tr>\n",
+        );
+        for pin in pins {
+            // A short, scannable prefix of the 32-char hash; the title carries
+            // the full value for copy/inspection.
+            let short_hash: String = pin.store_hash.chars().take(12).collect();
+            let name = if pin.store_name.is_empty() {
+                if pin.present {
+                    "<span class=\"dim\">(unnamed)</span>".to_string()
+                } else {
+                    "<span class=\"warn\">(not in cache)</span>".to_string()
+                }
+            } else {
+                escape(&pin.store_name)
+            };
+            let closure = if pin.present {
+                format!(
+                    "{size} · {count} object{plural}",
+                    size = human_size(pin.closure_size),
+                    count = pin.closure_count,
+                    plural = if pin.closure_count == 1 { "" } else { "s" },
+                )
+            } else {
+                "<span class=\"dim\">unknown</span>".to_string()
+            };
+            let expires = match pin.expires_at {
+                Some(at) => format!("<span title=\"{}\">{}</span>", at, ago(at)),
+                None => "<span class=\"chip\">unlimited</span>".to_string(),
+            };
+            let _ = write!(
+                body,
+                "<tr><td>{name}</td>\
+                 <td><code title=\"{full}\">{short}\u{2026}</code></td>\
+                 <td>{closure}</td><td>{expires}</td><td>{created}</td>\
+                 <td><form class=\"console\" method=\"post\" \
+                 action=\"/-/org/{org}/caches/{slug}/pin/remove\" style=\"display:inline\">{csrf}\
+                 <input type=\"hidden\" name=\"store_hash\" value=\"{full}\">\
+                 <button class=\"danger\">unpin</button></form></td></tr>\n",
+                name = name,
+                full = escape(&pin.store_hash),
+                short = escape(&short_hash),
+                closure = closure,
+                expires = expires,
+                created = ago(pin.created_at),
+                org = org,
+                slug = slug,
+                csrf = csrf_field(csrf),
+            );
+        }
+        body.push_str("</table>\n");
+    }
+
+    // -- Add / renew pin -----------------------------------------------------
+    let _ = write!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/pin/add\">{csrf}\
+         <label>store hash \
+         <input type=\"text\" name=\"store_hash\" autocomplete=\"off\" spellcheck=\"false\" \
+         placeholder=\"32-char hash or full /nix/store/&hellip; path\" required></label>\n\
+         <label>expires in \
+         <input type=\"number\" name=\"expires_days\" min=\"1\" autocomplete=\"off\" \
+         placeholder=\"days\"> days <span class=\"dim\">(empty = unlimited)</span></label>\n\
+         <button>add pin</button>\n</form>\n\
+         <p class=\"dim\">Re-adding an existing hash renews its expiry in place.</p>\n",
+        org = org,
+        slug = slug,
+        csrf = csrf_field(csrf),
+    );
+    body
 }
 
 /// The org audit feed page.
@@ -5082,6 +5211,15 @@ mod cache_render_tests {
 
     #[test]
     fn admin_sees_every_control() {
+        let pins = [CachePinRow {
+            store_hash: "abcdefghijklmnopqrstuvwxyz012345".into(),
+            store_name: "abcdefghijklmnopqrstuvwxyz012345-hello-2.12".into(),
+            closure_size: 3 * 1024 * 1024,
+            closure_count: 4,
+            present: true,
+            expires_at: None,
+            created_at: 1_700_000_000,
+        }];
         let html = cache_page(
             "a@b.com",
             "acme",
@@ -5092,6 +5230,7 @@ mod cache_render_tests {
             &usage(),
             &[],
             &[("cdn".to_string(), "public".to_string())],
+            &pins,
             true,
             true,
             None,
@@ -5106,6 +5245,13 @@ mod cache_render_tests {
         assert!(html.contains("/-/org/acme/caches/build/gc"));
         assert!(html.contains("/-/org/acme/caches/build/delete"));
         assert!(html.contains("save"));
+        // The pins editor renders the pin with its closure summary + controls.
+        assert!(html.contains("Pins (manual GC roots)"));
+        assert!(html.contains("/-/org/acme/caches/build/pin/add"));
+        assert!(html.contains("/-/org/acme/caches/build/pin/remove"));
+        assert!(html.contains("hello-2.12"));
+        assert!(html.contains("3.0 MiB · 4 objects"));
+        assert!(html.contains("unlimited"));
         // The CSRF token is wired into the forms.
         assert!(html.contains("csrf-tok"));
     }
@@ -5122,6 +5268,7 @@ mod cache_render_tests {
             &usage(),
             &[],
             &[("cdn".to_string(), "public".to_string())],
+            &[],
             false,
             true,
             None,
@@ -5132,6 +5279,8 @@ mod cache_render_tests {
         assert!(!html.contains("/caches/build/delete"));
         assert!(!html.contains("/caches/build/gc"));
         assert!(!html.contains("/caches/build/link"));
+        assert!(!html.contains("/caches/build/pin/"));
+        assert!(!html.contains("Pins (manual GC roots)"));
     }
 
     #[test]
@@ -5146,11 +5295,14 @@ mod cache_render_tests {
             &usage(),
             &[],
             &[],
+            &[],
             true,
             true,
             Some("Collected 5 objects, reclaimed 1.0 MiB (3 retained)."),
             Instant::now(),
         );
         assert!(html.contains("Collected 5 objects"));
+        // With no pins, the editor shows its empty-state hint.
+        assert!(html.contains("No manual pins"));
     }
 }
