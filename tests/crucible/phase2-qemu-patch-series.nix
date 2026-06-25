@@ -35,14 +35,14 @@
       catalogName = "crucible-icount-no-realtime";
       class = "D";
       enforces = "DET-9,TIME-22,E3";
-      capability = "precise icount budget excludes realtime deadlines";
+      capability = "sim precise icount budget excludes realtime deadlines";
     }
     {
       file = "0004-crucible-no-warp-with-plugin.patch";
       catalogName = "crucible-no-warp-with-plugin";
       class = "D";
       enforces = "DET-10,TIME-21,E2";
-      capability = "time-control plugin suppresses idle wall-clock warp";
+      capability = "sim time-control plugin suppresses idle wall-clock warp";
     }
     {
       file = "0005-crucible-det-glib-prng.patch";

@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 enum {
   QEMU_CLOCK_VIRTUAL = 0,
@@ -18,10 +19,17 @@ static enum icount_mode current_icount_mode;
 static int64_t current_virtual_deadline;
 static int64_t current_realtime_deadline;
 static unsigned int current_shift;
+static const char *current_accel = "sim";
 static unsigned int virtual_deadline_reads;
 static unsigned int realtime_deadline_reads;
 
 #define icount_enabled() (current_icount_mode)
+
+const char *
+current_accel_name(void)
+{
+  return current_accel;
+}
 
 static int64_t
 qemu_soonest_timeout(int64_t left, int64_t right)
@@ -79,11 +87,12 @@ stock_budget_insns(int64_t virtual_deadline_ns, int64_t realtime_deadline_ns,
 }
 
 static int64_t
-run_patched_limit(enum icount_mode mode, int64_t virtual_deadline_ns,
+run_patched_limit(const char *accel, enum icount_mode mode, int64_t virtual_deadline_ns,
                   int64_t realtime_deadline_ns, unsigned int shift,
                   unsigned int *virtual_reads, unsigned int *realtime_reads)
 {
   replay_mode = 0;
+  current_accel = accel;
   current_icount_mode = mode;
   current_virtual_deadline = virtual_deadline_ns;
   current_realtime_deadline = realtime_deadline_ns;
@@ -113,18 +122,24 @@ main(void)
   unsigned int adaptive_slow_virtual_reads = 0;
   unsigned int adaptive_slow_realtime_reads = 0;
 
+  unsigned int tcg_precise_virtual_reads = 0;
+  unsigned int tcg_precise_realtime_reads = 0;
+
   const int64_t precise_fast = run_patched_limit(
-      ICOUNT_PRECISE, virtual_deadline, fast_host_realtime, shift,
+      "sim", ICOUNT_PRECISE, virtual_deadline, fast_host_realtime, shift,
       &precise_fast_virtual_reads, &precise_fast_realtime_reads);
   const int64_t precise_slow = run_patched_limit(
-      ICOUNT_PRECISE, virtual_deadline, slow_host_realtime, shift,
+      "sim", ICOUNT_PRECISE, virtual_deadline, slow_host_realtime, shift,
       &precise_slow_virtual_reads, &precise_slow_realtime_reads);
   const int64_t adaptive_fast = run_patched_limit(
-      ICOUNT_ADAPTATIVE, virtual_deadline, fast_host_realtime, shift,
+      "sim", ICOUNT_ADAPTATIVE, virtual_deadline, fast_host_realtime, shift,
       &adaptive_fast_virtual_reads, &adaptive_fast_realtime_reads);
   const int64_t adaptive_slow = run_patched_limit(
-      ICOUNT_ADAPTATIVE, virtual_deadline, slow_host_realtime, shift,
+      "sim", ICOUNT_ADAPTATIVE, virtual_deadline, slow_host_realtime, shift,
       &adaptive_slow_virtual_reads, &adaptive_slow_realtime_reads);
+  const int64_t tcg_precise = run_patched_limit(
+      "tcg", ICOUNT_PRECISE, virtual_deadline, fast_host_realtime, shift,
+      &tcg_precise_virtual_reads, &tcg_precise_realtime_reads);
   const int64_t stock_precise_fast =
       stock_budget_insns(virtual_deadline, fast_host_realtime, shift);
   const int64_t stock_precise_slow =
@@ -161,6 +176,14 @@ main(void)
     fprintf(stderr, "adaptive mode did not consult realtime clock exactly once\n");
     return 1;
   }
+  if (tcg_precise != stock_precise_fast || tcg_precise_realtime_reads != 1 ||
+      tcg_precise_virtual_reads != 1) {
+    fprintf(stderr,
+            "non-sim precise icount did not retain upstream realtime budget: budget=%lld stock=%lld rt_reads=%u virt_reads=%u\n",
+            (long long)tcg_precise, (long long)stock_precise_fast,
+            tcg_precise_realtime_reads, tcg_precise_virtual_reads);
+    return 1;
+  }
   if (stock_precise_fast == stock_precise_slow) {
     fprintf(stderr, "stock negative control unexpectedly ignored realtime deadline\n");
     return 1;
@@ -169,6 +192,7 @@ main(void)
   puts("PASS");
   printf("precise_budget_fast=%lld\n", (long long)precise_fast);
   printf("precise_budget_slow=%lld\n", (long long)precise_slow);
+  printf("non_sim_precise_budget=%lld\n", (long long)tcg_precise);
   printf("adaptive_budget_fast=%lld\n", (long long)adaptive_fast);
   printf("adaptive_budget_slow=%lld\n", (long long)adaptive_slow);
   printf("stock_precise_budget_fast=%lld\n", (long long)stock_precise_fast);
@@ -176,7 +200,10 @@ main(void)
   puts("precise_realtime_reads_fast=0");
   puts("precise_realtime_reads_slow=0");
   puts("patched_icount_get_limit_fixture=true");
+  puts("synthetic_fast_slow_realtime_deadlines=true");
+  puts("sim_precise_tb_exit_budget_identical=true");
   puts("precise_realtime_independent=true");
+  puts("non_sim_precise_realtime_consulted=true");
   puts("adaptive_realtime_consulted=true");
   puts("stock_negative_control_realtime_dependent=true");
   return 0;

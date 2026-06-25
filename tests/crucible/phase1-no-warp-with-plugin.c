@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 enum {
   QEMU_CLOCK_VIRTUAL = 0,
@@ -55,6 +56,7 @@ static unsigned int warning_count;
 static unsigned int migration_blockers_added;
 static unsigned int async_requests;
 static unsigned int plugin_authorized_jumps;
+static const char *current_accel = "tcg";
 
 #define RUN_ON_CPU_HOST_ULONG(value) \
   ((run_on_cpu_data){.host_ulong = (uintptr_t)(value)})
@@ -79,6 +81,12 @@ static bool
 icount_enabled(void)
 {
   return true;
+}
+
+const char *
+current_accel_name(void)
+{
+  return current_accel;
 }
 
 static bool
@@ -204,6 +212,7 @@ reset_common(void)
   replay_checkpoint_result = true;
   replay_event_pending = false;
   replay_mode = 0;
+  current_accel = "tcg";
   has_control = false;
   timers_state.qemu_icount_bias = 300;
   timers_state.vm_clock_warp_start = -1;
@@ -276,6 +285,7 @@ static int
 test_time_control_suppresses_warp(void)
 {
   reset_common();
+  current_accel = "sim";
   icount_sleep = false;
   const void *handle = qemu_plugin_request_time_control();
 
@@ -310,6 +320,94 @@ test_time_control_suppresses_warp(void)
 }
 
 static int
+test_time_control_suppresses_sleep_on_timer(void)
+{
+  reset_common();
+  current_accel = "sim";
+  icount_sleep = true;
+  const void *handle = qemu_plugin_request_time_control();
+
+  if (!handle || !qemu_plugin_has_time_control()) {
+    fprintf(stderr, "sim sleep-on time control was not acquired\n");
+    return 1;
+  }
+
+  icount_start_warp_timer();
+
+  if (timers_state.qemu_icount_bias != 300 || notify_virtual_count != 1 ||
+      timer_mod_count != 0 || timers_state.vm_clock_warp_start != -1 ||
+      virtual_rt_clock_reads != 0 || virtual_deadline_reads != 0) {
+    fprintf(stderr,
+            "sim sleep-on time-control path did not suppress realtime timer: bias=%lld notify=%u timer_mod=%u warp_start=%lld rt_reads=%u deadline_reads=%u\n",
+            (long long)timers_state.qemu_icount_bias, notify_virtual_count,
+            timer_mod_count, (long long)timers_state.vm_clock_warp_start,
+            virtual_rt_clock_reads, virtual_deadline_reads);
+    return 1;
+  }
+
+  return 0;
+}
+
+static int
+test_non_sim_time_control_keeps_upstream_warp(void)
+{
+  reset_common();
+  current_accel = "tcg";
+  icount_sleep = false;
+  const void *handle = qemu_plugin_request_time_control();
+
+  if (!handle || !qemu_plugin_has_time_control()) {
+    fprintf(stderr, "non-sim time control was not acquired\n");
+    return 1;
+  }
+
+  icount_start_warp_timer();
+
+  if (timers_state.qemu_icount_bias != 1300 || notify_virtual_count != 1 ||
+      timer_mod_count != 0 || virtual_rt_clock_reads != 1 ||
+      virtual_deadline_reads != 1) {
+    fprintf(stderr,
+            "non-sim time-control path did not retain upstream warp: bias=%lld notify=%u timer_mod=%u rt_reads=%u deadline_reads=%u\n",
+            (long long)timers_state.qemu_icount_bias, notify_virtual_count,
+            timer_mod_count, virtual_rt_clock_reads, virtual_deadline_reads);
+    return 1;
+  }
+
+  return 0;
+}
+
+static int
+test_non_sim_time_control_keeps_upstream_sleep_on_timer(void)
+{
+  reset_common();
+  current_accel = "tcg";
+  icount_sleep = true;
+  const void *handle = qemu_plugin_request_time_control();
+
+  if (!handle || !qemu_plugin_has_time_control()) {
+    fprintf(stderr, "non-sim sleep-on time control was not acquired\n");
+    return 1;
+  }
+
+  icount_start_warp_timer();
+
+  if (timers_state.qemu_icount_bias != 300 || notify_virtual_count != 0 ||
+      timer_mod_count != 1 || timer_mod_deadline != 1050 ||
+      timers_state.vm_clock_warp_start != 50 || virtual_rt_clock_reads != 1 ||
+      virtual_deadline_reads != 1) {
+    fprintf(stderr,
+            "non-sim sleep-on time-control path did not retain upstream timer: bias=%lld notify=%u timer_mod=%u timer_deadline=%lld warp_start=%lld rt_reads=%u deadline_reads=%u\n",
+            (long long)timers_state.qemu_icount_bias, notify_virtual_count,
+            timer_mod_count, (long long)timer_mod_deadline,
+            (long long)timers_state.vm_clock_warp_start,
+            virtual_rt_clock_reads, virtual_deadline_reads);
+    return 1;
+  }
+
+  return 0;
+}
+
+static int
 test_time_control_single_owner(void)
 {
   reset_common();
@@ -334,6 +432,9 @@ main(void)
   if (test_upstream_sleep_off_without_time_control() != 0 ||
       test_upstream_sleep_on_without_time_control() != 0 ||
       test_time_control_suppresses_warp() != 0 ||
+      test_time_control_suppresses_sleep_on_timer() != 0 ||
+      test_non_sim_time_control_keeps_upstream_warp() != 0 ||
+      test_non_sim_time_control_keeps_upstream_sleep_on_timer() != 0 ||
       test_time_control_single_owner() != 0) {
     return 1;
   }
@@ -345,6 +446,8 @@ main(void)
   puts("time_control_predicate_exercised=true");
   puts("time_control_suppresses_sleep_off_bias_warp=true");
   puts("time_control_suppresses_sleep_on_realtime_timer=true");
+  puts("non_sim_time_control_keeps_upstream_warp=true");
+  puts("non_sim_time_control_keeps_upstream_sleep_on_timer=true");
   puts("notify_preserved_under_time_control=true");
   puts("virtual_clock_reads_under_time_control=0");
   puts("realtime_clock_reads_under_time_control=0");

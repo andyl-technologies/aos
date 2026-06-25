@@ -57,7 +57,11 @@
     }
     {
       label = "precise icount gate";
-      needle = "if (icount_enabled() != ICOUNT_PRECISE) {";
+      needle = "icount_enabled() != ICOUNT_PRECISE";
+    }
+    {
+      label = "sim accelerator gate";
+      needle = ''strcmp(current_accel_name(), "sim") != 0'';
     }
     {
       label = "realtime deadline remains in non-precise modes";
@@ -83,6 +87,10 @@
       needle = "#include \"accel/tcg/tcg-accel-ops-icount.c\"";
     }
     {
+      label = "sim predicate model";
+      needle = "current_accel_name(void)";
+    }
+    {
       label = "precise realtime clock read assertion";
       needle = "precise_realtime_reads_fast=0";
     }
@@ -97,6 +105,18 @@
     {
       label = "precise realtime independence assertion";
       needle = "precise_realtime_independent=true";
+    }
+    {
+      label = "synthetic host speed perturbation evidence";
+      needle = "synthetic_fast_slow_realtime_deadlines=true";
+    }
+    {
+      label = "sim precise TB-exit budget equality";
+      needle = "sim_precise_tb_exit_budget_identical=true";
+    }
+    {
+      label = "non-sim precise realtime assertion";
+      needle = "non_sim_precise_realtime_consulted=true";
     }
     {
       label = "adaptive realtime assertion";
@@ -136,8 +156,30 @@ in
           script = ''
             set -eu
 
-            mkdir -p accel/tcg
+            mkdir -p accel/tcg hw/core qemu system
+            : > accel/tcg/tcg-accel-ops.h
+            : > accel/tcg/tcg-accel-ops-icount.h
+            : > accel/tcg/tcg-accel-ops-rr.h
+            : > hw/core/cpu.h
+            : > qemu/accel.h
+            : > qemu/guest-random.h
+            : > qemu/main-loop.h
+            : > qemu/osdep.h
+            : > system/cpu-timers.h
+            : > system/replay.h
+
             cat > accel/tcg/tcg-accel-ops-icount.c <<'QEMU_FIXTURE'
+            #include "qemu/osdep.h"
+            #include "system/replay.h"
+            #include "system/cpu-timers.h"
+            #include "qemu/main-loop.h"
+            #include "qemu/guest-random.h"
+            #include "hw/core/cpu.h"
+
+            #include "tcg-accel-ops.h"
+            #include "tcg-accel-ops-icount.h"
+            #include "tcg-accel-ops-rr.h"
+
             static int64_t icount_get_limit(void)
             {
                 int64_t deadline;
@@ -174,6 +216,7 @@ in
             patch --batch --fuzz=0 -p1 < "$patchSourcePath"
             cp "$microtestSourcePath" phase1-icount-no-realtime.c
             cc -std=c11 -O2 -Wall -Wextra -Werror \
+              -I . \
               phase1-icount-no-realtime.c \
               -o phase1-icount-no-realtime
 
@@ -183,7 +226,10 @@ in
             grep -q '^patched_icount_get_limit_fixture=true$' "$out/result"
             grep -q '^precise_realtime_reads_fast=0$' "$out/result"
             grep -q '^precise_realtime_reads_slow=0$' "$out/result"
+            grep -q '^synthetic_fast_slow_realtime_deadlines=true$' "$out/result"
+            grep -q '^sim_precise_tb_exit_budget_identical=true$' "$out/result"
             grep -q '^precise_realtime_independent=true$' "$out/result"
+            grep -q '^non_sim_precise_realtime_consulted=true$' "$out/result"
             grep -q '^adaptive_realtime_consulted=true$' "$out/result"
             grep -q '^stock_negative_control_realtime_dependent=true$' "$out/result"
 
@@ -200,6 +246,10 @@ in
             stock_negative_control=true
             ${qemuPackageResultLines}
             qemu_mode=ICOUNT_PRECISE
+            sim_predicate=current_accel_name==sim
+            synthetic_fast_slow_realtime_deadlines=true
+            sim_precise_tb_exit_budget=identical
+            non_sim_precise_realtime_budget=upstream
             realtime_deadline_in_precise_budget=false
             RESULT
           '';

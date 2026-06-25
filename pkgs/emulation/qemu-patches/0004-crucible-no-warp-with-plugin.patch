@@ -2,24 +2,26 @@ diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
 index c074b7e..e57a024 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
-@@ -29,6 +29,7 @@
+@@ -29,6 +29,8 @@
  #include "qemu/error-report.h"
  #include "system/cpus.h"
  #include "system/qtest.h"
++#include "qemu/accel.h"
 +#include "qemu/plugin.h"
  #include "qemu/main-loop.h"
  #include "qemu/option.h"
  #include "qemu/seqlock.h"
-@@ -353,6 +354,16 @@ void icount_start_warp_timer(void)
+@@ -353,6 +355,17 @@ void icount_start_warp_timer(void)
          }
      }
 -
 +
-+    if (qemu_plugin_has_time_control()) {
++    if (strcmp(current_accel_name(), "sim") == 0 &&
++        qemu_plugin_has_time_control()) {
 +        /*
-+         * A time-control plugin owns idle advancement. Keep the virtual-clock
-+         * notification that wakes the main loop, but do not advance
-+         * qemu_icount_bias or arm the realtime warp timer.
++         * In sim mode, a time-control plugin owns idle advancement. Keep the
++         * virtual-clock notification that wakes the main loop, but do not
++         * advance qemu_icount_bias or arm the realtime warp timer.
 +         */
 +        qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
 +        return;

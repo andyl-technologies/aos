@@ -60,12 +60,16 @@
       needle = "qemu_plugin_has_time_control()";
     }
     {
+      label = "sim accelerator gate";
+      needle = ''strcmp(current_accel_name(), "sim") == 0'';
+    }
+    {
       label = "notify preservation";
       needle = "qemu_clock_notify(QEMU_CLOCK_VIRTUAL)";
     }
     {
       label = "bias warp suppression";
-      needle = "do not advance";
+      needle = "advance qemu_icount_bias";
     }
     {
       label = "realtime warp timer suppression";
@@ -77,7 +81,7 @@
     }
     {
       label = "time-control rationale";
-      needle = "A time-control plugin owns idle advancement";
+      needle = "In sim mode, a time-control plugin owns idle advancement";
     }
   ];
 
@@ -99,6 +103,10 @@
       needle = "qemu_plugin_has_time_control()";
     }
     {
+      label = "sim predicate model";
+      needle = "current_accel_name(void)";
+    }
+    {
       label = "realtime read suppression assertion";
       needle = "virtual_rt_clock_reads != 0";
     }
@@ -109,6 +117,14 @@
     {
       label = "plugin-authorized jump";
       needle = "qemu_plugin_update_ns(handle, 4096)";
+    }
+    {
+      label = "non-sim time-control inertness";
+      needle = "non_sim_time_control_keeps_upstream_warp=true";
+    }
+    {
+      label = "non-sim sleep-on timer inertness";
+      needle = "non_sim_time_control_keeps_upstream_sleep_on_timer=true";
     }
     {
       label = "stock negative control";
@@ -147,6 +163,7 @@ in
             mkdir -p accel/tcg include/qemu plugins qemu system migration qapi hw/core
             : > qemu/osdep.h
             : > qemu/cutils.h
+            : > qemu/accel.h
             : > qemu/main-loop.h
             : > qemu/option.h
             : > qemu/seqlock.h
@@ -372,6 +389,8 @@ in
             grep -q '^time_control_predicate_exercised=true$' "$out/result"
             grep -q '^time_control_suppresses_sleep_off_bias_warp=true$' "$out/result"
             grep -q '^time_control_suppresses_sleep_on_realtime_timer=true$' "$out/result"
+            grep -q '^non_sim_time_control_keeps_upstream_warp=true$' "$out/result"
+            grep -q '^non_sim_time_control_keeps_upstream_sleep_on_timer=true$' "$out/result"
             grep -q '^notify_preserved_under_time_control=true$' "$out/result"
             grep -q '^virtual_clock_reads_under_time_control=0$' "$out/result"
             grep -q '^realtime_clock_reads_under_time_control=0$' "$out/result"
@@ -391,7 +410,10 @@ in
             patched_fixture_exercised=true
             stock_negative_control=true
             ${qemuPackageResultLines}
+            sim_predicate=current_accel_name==sim
             time_control_predicate=qemu_plugin_has_time_control
+            non_sim_time_control_warp=upstream
+            non_sim_time_control_sleep_on_timer=upstream
             wall_clock_warp_under_time_control=false
             notify_preserved_under_time_control=true
             RESULT
