@@ -5,6 +5,7 @@
 //! QMP machine control. It exposes the synchronous backend boundary while
 //! keeping per-quantum timing and frame traffic on the shared-memory channel.
 
+use std::any::Any;
 use std::fmt;
 use std::process::Child;
 use std::time::Duration;
@@ -19,6 +20,12 @@ use crate::shutdown::{
     QemuChildWait, QemuReap, QemuShutdownError, QemuShutdownPolicy, QemuShutdownReport,
     QemuShutdownRung, QemuShutdownTarget, QemuShutdownTargetError, shutdown_qemu_child,
     signal_child, wait_child,
+};
+use crate::{
+    QemuAsyncCrashEscalationTarget, QemuAsyncDriverError, QemuAsyncDriverPolicy,
+    QemuAsyncDriverTargetError, QemuAsyncNodeStepOutcome, QemuAsyncNodeStepTarget,
+    QemuAsyncQuantumCompletion, QemuCrashDetector, QemuHostIoRuntime, QemuNodeRunStatus,
+    run_bounded_qemu_node_step,
 };
 
 /// The role assigned to one QEMU node channel.
@@ -50,6 +57,8 @@ pub struct QemuNodeChannelError {
     pub operation: &'static str,
     /// Deterministic failure detail.
     pub message: String,
+    /// Timeout budget when this channel error came from a bounded await timeout.
+    pub timeout: Option<Duration>,
 }
 
 impl QemuNodeChannelError {
@@ -59,7 +68,28 @@ impl QemuNodeChannelError {
         Self {
             operation,
             message: message.into(),
+            timeout: None,
         }
+    }
+
+    /// Creates a channel error classified as a bounded await timeout.
+    #[must_use]
+    pub fn bounded_await_timeout(
+        operation: &'static str,
+        message: impl Into<String>,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            operation,
+            message: message.into(),
+            timeout: Some(timeout),
+        }
+    }
+
+    /// Returns the bounded await timeout that caused this channel failure.
+    #[must_use]
+    pub const fn bounded_timeout(&self) -> Option<Duration> {
+        self.timeout
     }
 }
 
@@ -82,6 +112,20 @@ pub enum QemuNodeError {
         /// Underlying shutdown escalation error.
         source: QemuShutdownError,
     },
+    /// The bounded async driver failed around a node step.
+    #[error("bounded QEMU async driver failed: {source}")]
+    AsyncDriver {
+        /// Underlying async-driver failure.
+        source: QemuAsyncDriverError,
+    },
+    /// The bounded async driver classified the child as crashed and shut it down.
+    #[error("QEMU node crashed during bounded await: {status:?}; shutdown={shutdown:?}")]
+    Crashed {
+        /// Scheduler-facing crashed-node status.
+        status: Box<QemuNodeRunStatus>,
+        /// Shutdown escalation report.
+        shutdown: Box<QemuShutdownReport>,
+    },
 }
 
 impl QemuNodeError {
@@ -99,6 +143,12 @@ impl QemuNodeError {
     #[must_use]
     pub const fn from_shutdown(source: QemuShutdownError) -> Self {
         Self::Shutdown { source }
+    }
+
+    /// Attaches scheduler-node context to an async-driver failure.
+    #[must_use]
+    pub const fn from_async_driver(source: QemuAsyncDriverError) -> Self {
+        Self::AsyncDriver { source }
     }
 }
 
@@ -235,7 +285,33 @@ pub trait QemuShmemHotPathChannel {
     /// observed.
     fn current_icount(&mut self) -> Result<Icount, QemuNodeChannelError>;
 
+    /// Starts a split quantum by publishing `horizon` through shared memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the shared-memory hot path cannot
+    /// publish the scheduler ceiling or wake the plugin.
+    fn start_quantum(
+        &mut self,
+        horizon: ExecutionHorizon,
+    ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError>;
+
+    /// Finishes a split quantum after the bounded host-I/O runtime completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the shared-memory completion report
+    /// cannot be read.
+    fn finish_quantum(
+        &mut self,
+        pending: QemuNodePendingQuantum,
+    ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError>;
+
     /// Advances the node to `horizon` or until it pauses earlier.
+    ///
+    /// This helper is retained for direct channel tests and already-completed
+    /// quanta. [`QemuNode`] uses the split methods through the bounded async
+    /// driver.
     ///
     /// # Errors
     ///
@@ -244,7 +320,11 @@ pub trait QemuShmemHotPathChannel {
     fn advance_to_horizon(
         &mut self,
         horizon: ExecutionHorizon,
-    ) -> Result<AdvanceOutcome, QemuNodeChannelError>;
+    ) -> Result<AdvanceOutcome, QemuNodeChannelError> {
+        let pending = self.start_quantum(horizon)?;
+        self.finish_quantum(pending)
+            .map(|completion| completion.outcome)
+    }
 
     /// Delivers a deterministic frame through the shared-memory input ring.
     ///
@@ -273,6 +353,39 @@ pub trait QemuShmemHotPathChannel {
     ///
     /// Returns [`QemuNodeChannelError`] when the fingerprint cannot be read.
     fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeChannelError>;
+}
+
+/// Type-erased token returned after a shared-memory quantum is started.
+pub struct QemuNodePendingQuantum {
+    token: Box<dyn Any>,
+}
+
+impl QemuNodePendingQuantum {
+    /// Wraps a concrete pending-quantum token.
+    #[must_use]
+    pub fn new<T>(token: T) -> Self
+    where
+        T: Any,
+    {
+        Self {
+            token: Box::new(token),
+        }
+    }
+
+    /// Recovers the concrete token expected by the finishing channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the token came from a different
+    /// shared-memory channel implementation.
+    pub fn downcast<T>(self, operation: &'static str) -> Result<T, QemuNodeChannelError>
+    where
+        T: Any,
+    {
+        self.token.downcast().map(|token| *token).map_err(|_| {
+            QemuNodeChannelError::new(operation, "pending quantum token type mismatch")
+        })
+    }
 }
 
 /// QMP machine-control channel for snapshot and quit commands.
@@ -338,21 +451,30 @@ pub struct QemuNode {
     channels: QemuNodeChannels,
     lifecycle_state: QemuNodeLifecycleState,
     shutdown_policy: QemuShutdownPolicy,
+    async_policy: QemuAsyncDriverPolicy,
+    crash_detector: QemuCrashDetector,
+    host_io_runtime: Box<dyn QemuHostIoRuntime>,
 }
 
 impl QemuNode {
     /// Builds a QEMU scheduler node from one owned child handle and its channels.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         child: QemuNodeChild,
         channels: QemuNodeChannels,
         shutdown_policy: QemuShutdownPolicy,
+        async_policy: QemuAsyncDriverPolicy,
+        crash_detector: QemuCrashDetector,
+        host_io_runtime: impl QemuHostIoRuntime + 'static,
     ) -> Self {
         Self {
             child,
             channels,
             lifecycle_state: QemuNodeLifecycleState::Running,
             shutdown_policy,
+            async_policy,
+            crash_detector,
+            host_io_runtime: Box::new(host_io_runtime),
         }
     }
 
@@ -392,14 +514,30 @@ impl QemuNode {
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeError`] when the shared-memory hot path cannot advance.
+    /// Returns [`QemuNodeError`] when the bounded async driver, shared-memory hot
+    /// path, or timeout shutdown escalation fails.
     pub fn advance_to_ceiling(&mut self, ceiling: Icount) -> Result<AdvanceOutcome, QemuNodeError> {
-        self.channels
-            .shmem_hot_path
-            .advance_to_horizon(ExecutionHorizon { icount: ceiling })
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-            })
+        let mut target = QemuNodeAsyncStepTarget {
+            child: &mut self.child,
+            channels: &mut self.channels,
+            lifecycle_state: &mut self.lifecycle_state,
+            shutdown_policy: self.shutdown_policy,
+        };
+        let report = run_bounded_qemu_node_step(
+            &mut target,
+            self.host_io_runtime.as_mut(),
+            self.async_policy,
+            &self.crash_detector,
+            ExecutionHorizon { icount: ceiling },
+        )
+        .map_err(QemuNodeError::from_async_driver)?;
+        match report.outcome {
+            QemuAsyncNodeStepOutcome::Completed { advance } => Ok(advance),
+            QemuAsyncNodeStepOutcome::Crashed { status, shutdown } => Err(QemuNodeError::Crashed {
+                status: Box::new(status),
+                shutdown: Box::new(shutdown),
+            }),
+        }
     }
 
     /// Delivers deterministic input through shared memory.
@@ -458,12 +596,10 @@ impl QemuNode {
     ///
     /// Returns [`QemuNodeError`] when QMP cannot save the checkpoint.
     pub fn save_checkpoint(&mut self) -> Result<Checkpoint, QemuNodeError> {
-        self.channels
-            .qmp_machine_control
-            .save_checkpoint()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
-            })
+        match self.channels.qmp_machine_control.save_checkpoint() {
+            Ok(checkpoint) => Ok(checkpoint),
+            Err(source) => self.handle_qmp_channel_error(source),
+        }
     }
 
     /// Restores a checkpoint through QMP machine control.
@@ -472,12 +608,14 @@ impl QemuNode {
     ///
     /// Returns [`QemuNodeError`] when QMP cannot restore `checkpoint`.
     pub fn restore_checkpoint(&mut self, checkpoint: &Checkpoint) -> Result<(), QemuNodeError> {
-        self.channels
+        match self
+            .channels
             .qmp_machine_control
             .restore_checkpoint(checkpoint)
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
-            })
+        {
+            Ok(()) => Ok(()),
+            Err(source) => self.handle_qmp_channel_error(source),
+        }
     }
 
     /// Runs shutdown escalation for the owned child through the node's channels.
@@ -492,26 +630,97 @@ impl QemuNode {
     /// policy's final reap deadline or when the child cannot be signaled,
     /// queried, or reaped.
     pub fn shutdown_child(&mut self) -> Result<QemuShutdownReport, QemuNodeError> {
-        if self.child.reaped() {
-            self.lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
-            return Ok(QemuShutdownReport {
-                attempts: Vec::new(),
-                failures: Vec::new(),
-                reaped: true,
-                leaked: false,
-            });
-        }
-
-        let mut target = QemuNodeShutdownTarget {
-            child: &mut self.child,
-            plugin_control: self.channels.plugin_control.as_mut(),
-            qmp_machine_control: self.channels.qmp_machine_control.as_mut(),
-        };
-        let report = shutdown_qemu_child(&mut target, self.shutdown_policy)
-            .map_err(QemuNodeError::from_shutdown)?;
-        self.lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
-        Ok(report)
+        shutdown_node_child(
+            &mut self.child,
+            &mut self.channels,
+            &mut self.lifecycle_state,
+            self.shutdown_policy,
+        )
     }
+
+    fn handle_qmp_channel_error<T>(
+        &mut self,
+        source: QemuNodeChannelError,
+    ) -> Result<T, QemuNodeError> {
+        let Some(timeout) = source.bounded_timeout() else {
+            return Err(QemuNodeError::from_channel(
+                QemuNodeChannelPlane::QmpMachineControl,
+                source,
+            ));
+        };
+        let status = self
+            .crash_detector
+            .bounded_await_timeout(source.operation, timeout);
+        let shutdown = self.shutdown_child()?;
+        Err(QemuNodeError::Crashed {
+            status: Box::new(status),
+            shutdown: Box::new(shutdown),
+        })
+    }
+}
+
+struct QemuNodeAsyncStepTarget<'a> {
+    child: &'a mut QemuNodeChild,
+    channels: &'a mut QemuNodeChannels,
+    lifecycle_state: &'a mut QemuNodeLifecycleState,
+    shutdown_policy: QemuShutdownPolicy,
+}
+
+impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
+    fn shutdown_after_crash(&mut self) -> Result<QemuShutdownReport, QemuAsyncDriverTargetError> {
+        shutdown_node_child(
+            self.child,
+            self.channels,
+            self.lifecycle_state,
+            self.shutdown_policy,
+        )
+        .map_err(|error| QemuAsyncDriverTargetError::new("shutdown after crash", error.to_string()))
+    }
+}
+
+impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
+    type PendingQuantum = QemuNodePendingQuantum;
+
+    fn start_quantum(
+        &mut self,
+        horizon: ExecutionHorizon,
+    ) -> Result<Self::PendingQuantum, QemuNodeChannelError> {
+        self.channels.shmem_hot_path.start_quantum(horizon)
+    }
+
+    fn finish_quantum(
+        &mut self,
+        pending: Self::PendingQuantum,
+    ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
+        self.channels.shmem_hot_path.finish_quantum(pending)
+    }
+}
+
+fn shutdown_node_child(
+    child: &mut QemuNodeChild,
+    channels: &mut QemuNodeChannels,
+    lifecycle_state: &mut QemuNodeLifecycleState,
+    shutdown_policy: QemuShutdownPolicy,
+) -> Result<QemuShutdownReport, QemuNodeError> {
+    if child.reaped() {
+        *lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
+        return Ok(QemuShutdownReport {
+            attempts: Vec::new(),
+            failures: Vec::new(),
+            reaped: true,
+            leaked: false,
+        });
+    }
+
+    let mut target = QemuNodeShutdownTarget {
+        child,
+        plugin_control: channels.plugin_control.as_mut(),
+        qmp_machine_control: channels.qmp_machine_control.as_mut(),
+    };
+    let report =
+        shutdown_qemu_child(&mut target, shutdown_policy).map_err(QemuNodeError::from_shutdown)?;
+    *lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
+    Ok(report)
 }
 
 impl Backend for QemuNode {
@@ -594,12 +803,17 @@ fn channel_error_to_shutdown_error(error: QemuNodeChannelError) -> QemuShutdownT
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::VecDeque;
     use std::error::Error;
     use std::process::Command;
     use std::rc::Rc;
     use std::time::Duration;
 
     use crucible::{CheckpointKind, ContentHash, ExecutionHorizon, NodeId};
+
+    use crate::{
+        QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuQuantumOperation,
+    };
 
     use super::*;
 
@@ -608,8 +822,18 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum ChannelCall {
         ShmemCurrentIcount,
-        ShmemAdvance(u64),
-        ShmemDeliver { node: String, payload: Vec<u8> },
+        HostYield,
+        HostAwait {
+            wait: QemuAsyncWait,
+            timeout: Duration,
+            outcome: QemuAsyncWaitOutcome,
+        },
+        ShmemStart(u64),
+        ShmemFinish(u64),
+        ShmemDeliver {
+            node: String,
+            payload: Vec<u8>,
+        },
         ShmemEmit,
         ShmemIdle,
         ShmemFingerprint,
@@ -632,9 +856,16 @@ mod tests {
     }
 
     #[derive(Clone)]
+    struct ScriptedHostIoRuntime {
+        log: SharedLog,
+        outcomes: VecDeque<QemuAsyncWaitOutcome>,
+    }
+
+    #[derive(Clone)]
     struct ScriptedQmpMachineControl {
         log: SharedLog,
         fail_snapshot: bool,
+        timeout_snapshot: bool,
     }
 
     impl QemuPluginIpcControlChannel for ScriptedPluginControl {
@@ -653,20 +884,38 @@ mod tests {
             Ok(Icount { retired: 11 })
         }
 
-        fn advance_to_horizon(
+        fn start_quantum(
             &mut self,
             horizon: ExecutionHorizon,
-        ) -> Result<AdvanceOutcome, QemuNodeChannelError> {
+        ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
             self.log
                 .borrow_mut()
-                .push(ChannelCall::ShmemAdvance(horizon.icount.retired));
+                .push(ChannelCall::ShmemStart(horizon.icount.retired));
             if self.fail_advance {
                 return Err(QemuNodeChannelError::new(
                     "advance_to_horizon",
                     "futex wake failed",
                 ));
             }
-            Ok(AdvanceOutcome::ReachedHorizon)
+            Ok(QemuNodePendingQuantum::new(horizon.icount.retired))
+        }
+
+        fn finish_quantum(
+            &mut self,
+            pending: QemuNodePendingQuantum,
+        ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
+            let horizon = pending.downcast::<u64>("finish_quantum")?;
+            self.log
+                .borrow_mut()
+                .push(ChannelCall::ShmemFinish(horizon));
+            Ok(QemuAsyncQuantumCompletion {
+                outcome: AdvanceOutcome::ReachedHorizon,
+                operations: vec![
+                    QemuQuantumOperation::StoreSchedulerCeiling,
+                    QemuQuantumOperation::FutexWake,
+                    QemuQuantumOperation::ObservePluginReport,
+                ],
+            })
         }
 
         fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {
@@ -707,6 +956,13 @@ mod tests {
     impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         fn save_checkpoint(&mut self) -> Result<Checkpoint, QemuNodeChannelError> {
             self.log.borrow_mut().push(ChannelCall::QmpSnapshot);
+            if self.timeout_snapshot {
+                return Err(QemuNodeChannelError::bounded_await_timeout(
+                    "save_checkpoint",
+                    "QMP command timed out",
+                    Duration::from_millis(2),
+                ));
+            }
             if self.fail_snapshot {
                 return Err(QemuNodeChannelError::new("save_checkpoint", "QMP error"));
             }
@@ -726,6 +982,29 @@ mod tests {
         fn quit(&mut self) -> Result<(), QemuNodeChannelError> {
             self.log.borrow_mut().push(ChannelCall::QmpQuit);
             Ok(())
+        }
+    }
+
+    impl QemuHostIoRuntime for ScriptedHostIoRuntime {
+        fn yield_to_control_plane(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+            self.log.borrow_mut().push(ChannelCall::HostYield);
+            Ok(())
+        }
+
+        fn await_child(
+            &mut self,
+            wait: QemuAsyncWait,
+            timeout: Duration,
+        ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+            let outcome = self.outcomes.pop_front().ok_or_else(|| {
+                QemuAsyncDriverRuntimeError::new("await child", "no scripted outcome")
+            })?;
+            self.log.borrow_mut().push(ChannelCall::HostAwait {
+                wait,
+                timeout,
+                outcome,
+            });
+            Ok(outcome)
         }
     }
 
@@ -829,7 +1108,15 @@ mod tests {
             recorded(&log),
             vec![
                 ChannelCall::ShmemCurrentIcount,
-                ChannelCall::ShmemAdvance(19),
+                ChannelCall::HostYield,
+                ChannelCall::ShmemStart(19),
+                ChannelCall::HostAwait {
+                    wait: QemuAsyncWait::AdvanceCompletion,
+                    timeout: Duration::from_millis(4),
+                    outcome: QemuAsyncWaitOutcome::Completed,
+                },
+                ChannelCall::ShmemFinish(19),
+                ChannelCall::HostYield,
                 ChannelCall::ShmemDeliver {
                     node: String::from("vm-a"),
                     payload: vec![1, 2, 3],
@@ -863,12 +1150,63 @@ mod tests {
             result,
             Err(BackendError::Rejected {
                 message: String::from(
-                    "shmem hot path channel operation advance_to_horizon failed: futex wake failed"
+                    "bounded QEMU async driver failed: QEMU async shared-memory channel failed: advance_to_horizon failed: futex wake failed"
                 ),
             })
         );
-        assert_eq!(recorded(&log), vec![ChannelCall::ShmemAdvance(99)]);
+        assert_eq!(
+            recorded(&log),
+            vec![ChannelCall::HostYield, ChannelCall::ShmemStart(99)]
+        );
         assert!(node.shutdown_child()?.reaped);
+
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_node_timeout_reports_crash_and_runs_shutdown() -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let mut node = scripted_node_with_runtime(
+            Rc::clone(&log),
+            false,
+            false,
+            false,
+            [QemuAsyncWaitOutcome::TimedOut],
+        )?;
+
+        let result = Backend::advance_to_horizon(
+            &mut node,
+            ExecutionHorizon {
+                icount: Icount { retired: 31 },
+            },
+        );
+
+        match result {
+            Err(BackendError::Rejected { message }) => {
+                assert!(message.contains("QEMU node crashed during bounded await"));
+                assert!(message.contains("BoundedAwaitTimeout"));
+            }
+            other => panic!("expected bounded timeout crash, got {other:?}"),
+        }
+        assert!(node.child_reaped());
+        assert_eq!(
+            node.lifecycle_state(),
+            QemuNodeLifecycleState::ShutdownRequested
+        );
+        assert_eq!(
+            recorded(&log),
+            vec![
+                ChannelCall::HostYield,
+                ChannelCall::ShmemStart(31),
+                ChannelCall::HostAwait {
+                    wait: QemuAsyncWait::AdvanceCompletion,
+                    timeout: Duration::from_millis(4),
+                    outcome: QemuAsyncWaitOutcome::TimedOut,
+                },
+                ChannelCall::PluginQuit,
+                ChannelCall::QmpQuit,
+            ]
+        );
 
         Ok(())
     }
@@ -890,6 +1228,45 @@ mod tests {
         );
         assert_eq!(recorded(&log), vec![ChannelCall::QmpSnapshot]);
         assert!(node.shutdown_child()?.reaped);
+
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_node_qmp_timeout_reports_crash_and_runs_shutdown() -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let mut node = scripted_node_with_options(
+            Rc::clone(&log),
+            ScriptedNodeOptions {
+                qmp_snapshot_timeout: true,
+                ..ScriptedNodeOptions::default()
+            },
+            [QemuAsyncWaitOutcome::Completed],
+        )?;
+
+        let result = Backend::snapshot(&mut node);
+
+        match result {
+            Err(BackendError::Rejected { message }) => {
+                assert!(message.contains("QEMU node crashed during bounded await"));
+                assert!(message.contains("BoundedAwaitTimeout"));
+                assert!(message.contains("save_checkpoint"));
+            }
+            other => panic!("expected QMP timeout crash, got {other:?}"),
+        }
+        assert!(node.child_reaped());
+        assert_eq!(
+            node.lifecycle_state(),
+            QemuNodeLifecycleState::ShutdownRequested
+        );
+        assert_eq!(
+            recorded(&log),
+            vec![
+                ChannelCall::QmpSnapshot,
+                ChannelCall::PluginQuit,
+                ChannelCall::QmpQuit,
+            ]
+        );
 
         Ok(())
     }
@@ -952,18 +1329,60 @@ mod tests {
         fail_shmem_advance: bool,
         fail_qmp_snapshot: bool,
     ) -> Result<QemuNode, Box<dyn Error>> {
+        scripted_node_with_runtime(
+            log,
+            fail_plugin_quit,
+            fail_shmem_advance,
+            fail_qmp_snapshot,
+            [QemuAsyncWaitOutcome::Completed],
+        )
+    }
+
+    fn scripted_node_with_runtime(
+        log: SharedLog,
+        fail_plugin_quit: bool,
+        fail_shmem_advance: bool,
+        fail_qmp_snapshot: bool,
+        runtime_outcomes: impl IntoIterator<Item = QemuAsyncWaitOutcome>,
+    ) -> Result<QemuNode, Box<dyn Error>> {
+        scripted_node_with_options(
+            log,
+            ScriptedNodeOptions {
+                fail_plugin_quit,
+                fail_shmem_advance,
+                fail_qmp_snapshot,
+                qmp_snapshot_timeout: false,
+            },
+            runtime_outcomes,
+        )
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct ScriptedNodeOptions {
+        fail_plugin_quit: bool,
+        fail_shmem_advance: bool,
+        fail_qmp_snapshot: bool,
+        qmp_snapshot_timeout: bool,
+    }
+
+    fn scripted_node_with_options(
+        log: SharedLog,
+        options: ScriptedNodeOptions,
+        runtime_outcomes: impl IntoIterator<Item = QemuAsyncWaitOutcome>,
+    ) -> Result<QemuNode, Box<dyn Error>> {
         let channels = QemuNodeChannels::new(
             ScriptedPluginControl {
                 log: Rc::clone(&log),
-                fail_quit: fail_plugin_quit,
+                fail_quit: options.fail_plugin_quit,
             },
             ScriptedShmemHotPath {
                 log: Rc::clone(&log),
-                fail_advance: fail_shmem_advance,
+                fail_advance: options.fail_shmem_advance,
             },
             ScriptedQmpMachineControl {
-                log,
-                fail_snapshot: fail_qmp_snapshot,
+                log: Rc::clone(&log),
+                fail_snapshot: options.fail_qmp_snapshot,
+                timeout_snapshot: options.qmp_snapshot_timeout,
             },
         );
         let child = Command::new("sleep").arg("60").spawn()?;
@@ -971,6 +1390,12 @@ mod tests {
             QemuNodeChild::new(child),
             channels,
             node_shutdown_policy(),
+            QemuAsyncDriverPolicy::fast_test(),
+            QemuCrashDetector::new("vm-a"),
+            ScriptedHostIoRuntime {
+                log,
+                outcomes: runtime_outcomes.into_iter().collect(),
+            },
         ))
     }
 

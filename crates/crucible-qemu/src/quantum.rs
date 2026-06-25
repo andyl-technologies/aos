@@ -20,7 +20,8 @@ use crucible_shmem::{
 use thiserror::Error;
 
 use crate::{
-    QemuNodeChannelError, QemuNodeEmittedFrame, QemuNodeIdleState, QemuShmemHotPathChannel,
+    QemuAsyncQuantumCompletion, QemuNodeChannelError, QemuNodeEmittedFrame, QemuNodeIdleState,
+    QemuNodePendingQuantum, QemuShmemHotPathChannel,
 };
 
 const QUANTUM_FINGERPRINT_DOMAIN: &str = "crucible.qemu.quantum-shmem-fingerprint.v1";
@@ -733,12 +734,22 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
         Ok(self.current_icount_from_slot())
     }
 
-    fn advance_to_horizon(
+    fn start_quantum(
         &mut self,
         horizon: ExecutionHorizon,
-    ) -> Result<AdvanceOutcome, QemuNodeChannelError> {
-        self.run_one_quantum(horizon)
-            .map(|report| report.outcome)
+    ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
+        QemuQuantumShmemHotPath::start_quantum(self, horizon)
+            .map(QemuNodePendingQuantum::new)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    fn finish_quantum(
+        &mut self,
+        pending: QemuNodePendingQuantum,
+    ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
+        let pending = pending.downcast::<QemuPendingQuantum>("finish_quantum")?;
+        QemuQuantumShmemHotPath::finish_quantum(self, pending)
+            .map(QemuAsyncQuantumCompletion::from)
             .map_err(QemuNodeChannelError::from)
     }
 

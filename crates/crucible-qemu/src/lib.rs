@@ -14,12 +14,14 @@
 //! `setup_failure` owns setup-abort classification and teardown; `inertness`
 //! owns the sim-off/sim-on QEMU control-plane inertness assertion;
 //! `determinism_boundary` owns the QEMU hermeticity/fingerprint/microtest
-//! boundary assertion; `crash_detection` owns typed crashed-node status
-//! classification; `node` owns the scheduler-facing one-child/three-channel
-//! QEMU wrapper; `quantum` owns the per-quantum shared-memory hot path; `qmp`
-//! owns the minimal typed QMP client; `realization` owns the start/resume/fork
-//! instantiate branch coordinator; and `savevm_policy` owns the conservative
-//! thin-replay fallback for incomplete QEMU `savevm`/`loadvm` coverage.
+//! boundary assertion; `async_driver` owns the bounded host-I/O bridge between
+//! synchronous scheduler node steps and real-time child I/O; `crash_detection`
+//! owns typed crashed-node status classification; `node` owns the
+//! scheduler-facing one-child/three-channel QEMU wrapper; `quantum` owns the
+//! per-quantum shared-memory hot path; `qmp` owns the minimal typed QMP client;
+//! `realization` owns the start/resume/fork instantiate branch coordinator; and
+//! `savevm_policy` owns the conservative thin-replay fallback for incomplete
+//! QEMU `savevm`/`loadvm` coverage.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
 //! details stay private; public callers use a safe host-driver API that
@@ -29,6 +31,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod async_driver;
 mod crash_detection;
 mod determinism_boundary;
 mod inertness;
@@ -44,10 +47,18 @@ mod single_vm_fingerprint;
 #[cfg(target_os = "linux")]
 mod spawn;
 
+pub use async_driver::{
+    QemuAsyncCrashEscalationTarget, QemuAsyncDriverError, QemuAsyncDriverOperation,
+    QemuAsyncDriverPolicy, QemuAsyncDriverRuntimeError, QemuAsyncDriverTargetError,
+    QemuAsyncLifecycleAwaitOutcome, QemuAsyncLifecycleAwaitReport, QemuAsyncNodeStepOutcome,
+    QemuAsyncNodeStepReport, QemuAsyncNodeStepTarget, QemuAsyncQuantumCompletion, QemuAsyncWait,
+    QemuAsyncWaitOutcome, QemuHostIoRuntime, assert_async_driver_quantum_hot_path_is_shmem_only,
+    await_bounded_lifecycle_event, run_bounded_qemu_node_step,
+};
 pub use crash_detection::{
-    QemuChannelFailure, QemuChildExitProbe, QemuChildStatusProbeError, QemuCrashCause,
-    QemuCrashDetector, QemuCrashHandling, QemuCrashedNodeStatus, QemuIntendedCrashFaultStatus,
-    QemuNodeRunStatus, QemuProcessExit,
+    QemuBoundedAwaitTimeout, QemuChannelFailure, QemuChildExitProbe, QemuChildStatusProbeError,
+    QemuCrashCause, QemuCrashDetector, QemuCrashHandling, QemuCrashedNodeStatus,
+    QemuIntendedCrashFaultStatus, QemuNodeRunStatus, QemuProcessExit,
 };
 pub use determinism_boundary::{
     QEMU_EXECUTION_FINGERPRINT_CADENCE_ICOUNT, QemuDeterminismBoundaryError,
@@ -75,13 +86,15 @@ pub use launch::{
 pub use node::{
     QemuNode, QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeChannels, QemuNodeChild,
     QemuNodeEmittedFrame, QemuNodeError, QemuNodeIdleState, QemuNodeLifecycleState,
-    QemuPluginIpcControlChannel, QemuQmpMachineControlChannel, QemuShmemHotPathChannel,
+    QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuQmpMachineControlChannel,
+    QemuShmemHotPathChannel,
 };
 pub use qmp::{
-    QMP_CAPABILITIES_COMMAND, QMP_JOB_QUERY_INTERVAL, QMP_JOB_QUERY_LIMIT, QMP_QUERY_JOBS_COMMAND,
-    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
-    QMP_SNAPSHOT_VMSTATE_DEVICE, QmpClient, QmpCommandComplete, QmpCommandKind, QmpError,
-    QmpGreeting, QmpJobPollPolicy, QmpSnapshotTag,
+    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT, QMP_JOB_QUERY_INTERVAL,
+    QMP_JOB_QUERY_LIMIT, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND,
+    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QmpClient, QmpCommandComplete,
+    QmpCommandKind, QmpError, QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpSnapshotTag,
+    QmpTimeoutStream,
 };
 pub use quantum::{
     QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuDueInboundFrame, QemuInboundFrame,

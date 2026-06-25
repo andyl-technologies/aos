@@ -179,11 +179,11 @@
       }
       {
         label = "shutdown ladder invocation";
-        needle = "shutdown_qemu_child(&mut target, self.shutdown_policy)";
+        needle = "shutdown_qemu_child(&mut target, shutdown_policy)";
       }
       {
         label = "repeated shutdown guard";
-        needle = "if self.child.reaped()";
+        needle = "if child.reaped()";
       }
       {
         label = "repeated shutdown empty report";
@@ -310,8 +310,12 @@
         needle = "assert!(report.reaped);";
       }
       {
-        label = "shared-memory advance recorded";
-        needle = "ChannelCall::ShmemAdvance";
+        label = "shared-memory split start recorded";
+        needle = "ChannelCall::ShmemStart";
+      }
+      {
+        label = "bounded async wait recorded";
+        needle = "ChannelCall::HostAwait";
       }
       {
         label = "plugin quit recorded";

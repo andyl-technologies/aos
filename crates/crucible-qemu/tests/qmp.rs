@@ -4,13 +4,14 @@
 
 use std::error::Error;
 use std::io::{self, Cursor, Read, Write};
+use std::time::Duration;
 
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
-    QMP_CAPABILITIES_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE,
-    QemuSavevmCompletenessPolicy, QmpClient, QmpCommandKind, QmpError, QmpGreeting,
-    QmpJobPollPolicy, QmpSnapshotTag,
+    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT, QMP_QUERY_JOBS_COMMAND,
+    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
+    QMP_SNAPSHOT_VMSTATE_DEVICE, QemuSavevmCompletenessPolicy, QmpClient, QmpCommandKind, QmpError,
+    QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -41,7 +42,125 @@ fn qmp_connect_reads_greeting_and_negotiates_capabilities() -> Result<(), Box<dy
         execute_name(json_line(&lines, 0)),
         Some(QMP_CAPABILITIES_COMMAND)
     );
+    assert!(!stream.read_timeouts.is_empty());
+    assert!(
+        stream
+            .read_timeouts
+            .iter()
+            .all(|timeout| !timeout.is_zero() && *timeout <= QMP_GREETING_TIMEOUT)
+    );
+    assert_timeout_budget(&stream.write_timeouts, QMP_COMMAND_TIMEOUT);
     Ok(())
+}
+
+#[test]
+fn qmp_client_installs_explicit_stream_timeouts() -> Result<(), Box<dyn Error>> {
+    let mut client = QmpClient::connect_with_policies(
+        scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            r#"{"return":{}}"#,
+        ]),
+        QmpJobPollPolicy::fast_test(1),
+        QmpIoTimeoutPolicy::new(Duration::from_millis(7), Duration::from_millis(11)),
+    )?;
+
+    assert_eq!(client.quit()?.command, QmpCommandKind::Quit);
+    let stream = client.into_inner();
+    assert!(!stream.read_timeouts.is_empty());
+    assert!(
+        stream
+            .read_timeouts
+            .iter()
+            .all(|timeout| !timeout.is_zero() && *timeout <= Duration::from_millis(11))
+    );
+    assert!(stream.read_timeouts[0] <= Duration::from_millis(7));
+    assert_timeout_budget(&stream.write_timeouts, Duration::from_millis(11));
+    Ok(())
+}
+
+#[test]
+fn qmp_client_rejects_unbounded_stream_timeouts() {
+    match QmpClient::connect_with_policies(
+        scripted_qmp([r#"{"QMP":{"version":{},"capabilities":[]}}"#]),
+        QmpJobPollPolicy::fast_test(1),
+        QmpIoTimeoutPolicy::new(Duration::ZERO, Duration::from_millis(1)),
+    ) {
+        Ok(_) => panic!("expected zero greeting timeout rejection"),
+        Err(QmpError::UnboundedTimeout { operation }) => {
+            assert_eq!(operation, "read QMP greeting");
+        }
+        Err(other) => panic!("expected timeout policy error, got {other:?}"),
+    }
+
+    match QmpClient::connect_with_policies(
+        scripted_qmp([r#"{"QMP":{"version":{},"capabilities":[]}}"#]),
+        QmpJobPollPolicy::fast_test(1),
+        QmpIoTimeoutPolicy::new(Duration::from_millis(1), Duration::ZERO),
+    ) {
+        Ok(_) => panic!("expected zero command timeout rejection"),
+        Err(QmpError::UnboundedTimeout { operation }) => {
+            assert_eq!(operation, "QMP command");
+        }
+        Err(other) => panic!("expected timeout policy error, got {other:?}"),
+    }
+}
+
+#[test]
+fn qmp_client_bounds_async_event_floods() -> Result<(), Box<dyn Error>> {
+    let mut client = QmpClient::connect_with_policies(
+        scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            r#"{"event":"STOP"}"#,
+            r#"{"event":"RESUME"}"#,
+            r#"{"return":{}}"#,
+        ]),
+        QmpJobPollPolicy::fast_test(1),
+        QmpIoTimeoutPolicy::new(Duration::from_millis(7), Duration::from_millis(11))
+            .with_max_async_events_per_command(1),
+    )?;
+
+    match client.quit() {
+        Ok(_) => panic!("expected async event limit error"),
+        Err(QmpError::AsyncEventLimitExceeded { command, limit }) => {
+            assert_eq!(command, QmpCommandKind::Quit);
+            assert_eq!(limit, 1);
+        }
+        Err(other) => panic!("expected async event limit error, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn qmp_client_bounds_partial_line_progress() {
+    match QmpClient::connect_with_policies(
+        scripted_qmp([r#"{"QMP":{"version":{},"capabilities":[]}}"#]),
+        QmpJobPollPolicy::fast_test(1),
+        QmpIoTimeoutPolicy::new(Duration::from_millis(7), Duration::from_millis(11))
+            .with_max_line_bytes(8),
+    ) {
+        Ok(_) => panic!("expected QMP line limit error"),
+        Err(QmpError::LineTooLong {
+            operation,
+            max_bytes,
+        }) => {
+            assert_eq!(operation, "read QMP greeting");
+            assert_eq!(max_bytes, 8);
+        }
+        Err(other) => panic!("expected QMP line limit error, got {other:?}"),
+    }
+}
+
+#[test]
+fn qmp_timeout_errors_classify_node_channel_timeouts() {
+    let error = crucible_qemu::QemuNodeChannelError::from(QmpError::Timeout {
+        operation: "QMP command",
+        timeout: Duration::from_millis(11),
+    });
+
+    assert_eq!(error.operation, "QMP command");
+    assert_eq!(error.bounded_timeout(), Some(Duration::from_millis(11)));
 }
 
 #[test]
@@ -314,6 +433,8 @@ fn scripted_qmp<const N: usize>(lines: [&str; N]) -> ScriptedQmpStream {
     ScriptedQmpStream {
         read: Cursor::new(input),
         written: Vec::new(),
+        read_timeouts: Vec::new(),
+        write_timeouts: Vec::new(),
     }
 }
 
@@ -335,6 +456,15 @@ fn execute_name(value: &Value) -> Option<&str> {
     value.get("execute").and_then(Value::as_str)
 }
 
+fn assert_timeout_budget(timeouts: &[Duration], budget: Duration) {
+    assert!(!timeouts.is_empty());
+    assert!(
+        timeouts
+            .iter()
+            .all(|timeout| !timeout.is_zero() && *timeout <= budget)
+    );
+}
+
 fn checkpoint_with_hash_byte(byte: u8) -> Checkpoint {
     Checkpoint {
         id: content_hash_with_byte(byte),
@@ -351,6 +481,8 @@ fn content_hash_with_byte(byte: u8) -> ContentHash {
 struct ScriptedQmpStream {
     read: Cursor<Vec<u8>>,
     written: Vec<u8>,
+    read_timeouts: Vec<Duration>,
+    write_timeouts: Vec<Duration>,
 }
 
 impl Read for ScriptedQmpStream {
@@ -366,6 +498,18 @@ impl Write for ScriptedQmpStream {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl QmpTimeoutStream for ScriptedQmpStream {
+    fn set_qmp_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.read_timeouts.push(timeout);
+        Ok(())
+    }
+
+    fn set_qmp_write_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.write_timeouts.push(timeout);
         Ok(())
     }
 }
