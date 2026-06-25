@@ -339,6 +339,27 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          tag = \"v1\"\n\
          new_classes = [\"CoordinatorObject\"]\n\
          new_sqlite_classes = [\"TenantDb\"]\n\
+         \n\
+         [[ratelimits]]\n\
+         name = \"RL_BURST5\"\n\
+         namespace_id = \"1001\"\n\
+         [ratelimits.simple]\n\
+         limit = 5\n\
+         period = 60\n\
+         \n\
+         [[ratelimits]]\n\
+         name = \"RL_BURST10\"\n\
+         namespace_id = \"1002\"\n\
+         [ratelimits.simple]\n\
+         limit = 10\n\
+         period = 60\n\
+         \n\
+         [[ratelimits]]\n\
+         name = \"RL_BROWSE120\"\n\
+         namespace_id = \"1003\"\n\
+         [ratelimits.simple]\n\
+         limit = 120\n\
+         period = 60\n\
          {observability}",
         name = toml_string(&cfg.name),
         compat = COMPAT_DATE,

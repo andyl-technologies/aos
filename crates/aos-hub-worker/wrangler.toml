@@ -95,6 +95,31 @@ tag = "v1"
 new_classes = ["CoordinatorObject"]
 new_sqlite_classes = ["TenantDb"]
 
+# Edge Rate Limiting bindings (RFC-0004 ch.14, corrected): edge-local counters,
+# no network hop. One binding per budget tier (period 60); the worker routes a
+# rate class to the binding matching its budget. Names match
+# `handlers::bindings::RL_*`.
+[[ratelimits]]
+name = "RL_BURST5"
+namespace_id = "1001"
+[ratelimits.simple]
+limit = 5
+period = 60
+
+[[ratelimits]]
+name = "RL_BURST10"
+namespace_id = "1002"
+[ratelimits.simple]
+limit = 10
+period = 60
+
+[[ratelimits]]
+name = "RL_BROWSE120"
+namespace_id = "1003"
+[ratelimits.simple]
+limit = 120
+period = 60
+
 # The deferred-jobs queue (RFC-0004 ch.14 Phase D): the Worker is both a producer
 # (the write path enqueues post-write propagation) and the consumer (it drains
 # the batch in the `queue` event handler). The binding name must match
