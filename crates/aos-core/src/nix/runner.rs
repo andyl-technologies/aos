@@ -20,14 +20,19 @@
 
 use std::env;
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
+#[cfg(test)]
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
 use crate::error::AosError;
-use crate::nix::{NixEval, NixEvalConfig, aos_nix_command, select_evaluator_with_config};
+use crate::nix::{NixCli, NixEval, NixEvalConfig, aos_nix_command, select_evaluator_with_config};
+
+#[cfg(test)]
+type ReplRealizer = dyn Fn(&Path) -> Result<String> + Send + Sync;
 
 /// Wraps interactions with the Nix CLI tools (`nix-build`, `nix-instantiate`,
 /// `nix-store`, `nix-collect-garbage`, `nix-shell`).
@@ -38,6 +43,8 @@ pub struct NixRunner {
     eval_config: NixEvalConfig,
     verbose: u8,
     quiet: bool,
+    #[cfg(test)]
+    repl_realizer: Option<Arc<ReplRealizer>>,
 }
 
 impl NixRunner {
@@ -79,6 +86,8 @@ impl NixRunner {
             eval_config,
             verbose,
             quiet,
+            #[cfg(test)]
+            repl_realizer: None,
         })
     }
 
@@ -86,6 +95,11 @@ impl NixRunner {
     /// `default.nix`).
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Returns the selected evaluator's stable diagnostic name.
+    pub fn evaluator_name(&self) -> &'static str {
+        self.evaluator.name()
     }
 
     // ------------------------------------------------------------------
@@ -358,8 +372,11 @@ impl NixRunner {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Runs an interactive `nix repl` session loading the given Nix file,
-    /// blocking until the user exits the repl.
+    /// Runs an interactive REPL session loading the given Nix file.
+    ///
+    /// When the selected evaluator is `nix-cli`, this delegates to `nix repl`.
+    /// Native or shadow evaluators use the in-process AOS REPL backed by the
+    /// same [`NixEval`] implementation as non-interactive commands.
     ///
     /// Unlike the other operations, the child inherits the terminal
     /// directly (no output capture).
@@ -369,6 +386,10 @@ impl NixRunner {
     /// Returns an error if `nix` cannot be started or the repl exits
     /// with a non-zero status.
     pub fn repl(&self, nix_file: &Path) -> Result<()> {
+        if self.evaluator.name() != "nix-cli" {
+            return self.native_repl(nix_file);
+        }
+
         let mut command = aos_nix_command("nix");
         self.eval_config.apply_cli_env(&mut command);
         let status = command
@@ -380,6 +401,233 @@ impl NixRunner {
             anyhow::bail!("nix repl exited with status {status}");
         }
         Ok(())
+    }
+
+    fn native_repl(&self, nix_file: &Path) -> Result<()> {
+        let stdin = io::stdin();
+        let mut input = stdin.lock();
+        let stdout = io::stdout();
+        let mut output = stdout.lock();
+        self.run_native_repl_session(nix_file, &mut input, &mut output)
+    }
+
+    fn run_native_repl_session<R: BufRead, W: Write>(
+        &self,
+        nix_file: &Path,
+        input: &mut R,
+        output: &mut W,
+    ) -> Result<()> {
+        let mut state = NativeReplState {
+            loaded_file: Some(nix_file.to_path_buf()),
+        };
+        self.validate_repl_load(&state)?;
+        writeln!(
+            output,
+            "AOS native REPL ({}) loaded {}",
+            self.evaluator.name(),
+            nix_file.display()
+        )?;
+        writeln!(output, "Type :? for help, :q to quit.")?;
+
+        let mut line = String::new();
+        loop {
+            line.clear();
+            write!(output, "aos-nix> ")?;
+            output.flush()?;
+            if input.read_line(&mut line)? == 0 {
+                writeln!(output)?;
+                break;
+            }
+            if matches!(
+                self.handle_native_repl_line(&mut state, line.trim_end(), output)?,
+                ReplControl::Quit
+            ) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_native_repl_line<W: Write>(
+        &self,
+        state: &mut NativeReplState,
+        line: &str,
+        output: &mut W,
+    ) -> Result<ReplControl> {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return Ok(ReplControl::Continue);
+        }
+
+        if let Some(command) = trimmed.strip_prefix(':') {
+            return self.handle_native_repl_command(state, command.trim(), output);
+        }
+
+        self.write_repl_eval(state, trimmed, output)?;
+        Ok(ReplControl::Continue)
+    }
+
+    fn handle_native_repl_command<W: Write>(
+        &self,
+        state: &mut NativeReplState,
+        command: &str,
+        output: &mut W,
+    ) -> Result<ReplControl> {
+        let (name, rest) = command
+            .split_once(char::is_whitespace)
+            .unwrap_or((command, ""));
+        let rest = rest.trim();
+        match name {
+            "?" | "help" => {
+                write_native_repl_help(output)?;
+            }
+            "q" | "quit" => return Ok(ReplControl::Quit),
+            "l" | "load" => {
+                if rest.is_empty() {
+                    writeln!(output, "error: :load requires a file path")?;
+                } else {
+                    let path = self.resolve_repl_load_path(rest);
+                    let next_state = NativeReplState {
+                        loaded_file: Some(path.clone()),
+                    };
+                    match self.validate_repl_load(&next_state) {
+                        Ok(()) => {
+                            state.loaded_file = Some(path.clone());
+                            writeln!(output, "loaded {}", path.display())?;
+                        }
+                        Err(error) => writeln!(output, "error: {error:#}")?,
+                    }
+                }
+            }
+            "r" | "reload" => match &state.loaded_file {
+                Some(path) => match self.validate_repl_load(state) {
+                    Ok(()) => writeln!(output, "reloaded {}", path.display())?,
+                    Err(error) => writeln!(output, "error: {error:#}")?,
+                },
+                None => writeln!(output, "error: no file loaded")?,
+            },
+            "p" => {
+                if rest.is_empty() {
+                    writeln!(output, "error: :p requires an expression")?;
+                } else {
+                    self.write_repl_eval(state, rest, output)?;
+                }
+            }
+            "t" => {
+                if rest.is_empty() {
+                    writeln!(output, "error: :t requires an expression")?;
+                } else {
+                    self.write_repl_type(state, rest, output)?;
+                }
+            }
+            "b" => {
+                if rest.is_empty() {
+                    writeln!(output, "error: :b requires an expression")?;
+                } else {
+                    self.write_repl_build(state, rest, output)?;
+                }
+            }
+            _ => writeln!(output, "error: unknown command :{name}")?,
+        }
+        Ok(ReplControl::Continue)
+    }
+
+    fn write_repl_eval<W: Write>(
+        &self,
+        state: &NativeReplState,
+        expr: &str,
+        output: &mut W,
+    ) -> Result<()> {
+        match self
+            .evaluator
+            .eval_expr(&repl_context_expr(state.loaded_file.as_deref(), expr))
+        {
+            Ok(value) => writeln!(output, "{value}")?,
+            Err(error) => writeln!(output, "error: {error:#}")?,
+        }
+        Ok(())
+    }
+
+    fn write_repl_type<W: Write>(
+        &self,
+        state: &NativeReplState,
+        expr: &str,
+        output: &mut W,
+    ) -> Result<()> {
+        let type_expr = format!("builtins.typeOf ({expr})");
+        match self
+            .evaluator
+            .eval_expr(&repl_context_expr(state.loaded_file.as_deref(), &type_expr))
+        {
+            Ok(value) => match serde_json::from_str::<String>(&value) {
+                Ok(kind) => writeln!(output, "{kind}")?,
+                Err(_) => writeln!(output, "{value}")?,
+            },
+            Err(error) => writeln!(output, "error: {error:#}")?,
+        }
+        Ok(())
+    }
+
+    fn write_repl_build<W: Write>(
+        &self,
+        state: &NativeReplState,
+        expr: &str,
+        output: &mut W,
+    ) -> Result<()> {
+        match self
+            .evaluator
+            .instantiate_expr(&repl_context_expr(state.loaded_file.as_deref(), expr))
+        {
+            Ok(path) => match self.realise_repl_drv(&path) {
+                Ok(output_path) => writeln!(output, "{output_path}")?,
+                Err(error) => writeln!(output, "error: {error:#}")?,
+            },
+            Err(error) => writeln!(output, "error: {error:#}")?,
+        }
+        Ok(())
+    }
+
+    fn validate_repl_load(&self, state: &NativeReplState) -> Result<()> {
+        let Some(path) = state.loaded_file.as_deref() else {
+            return Ok(());
+        };
+        let kind_expr = repl_context_expr(Some(path), "builtins.typeOf __aos_repl_scope");
+        let rendered = self
+            .evaluator
+            .eval_expr(&kind_expr)
+            .with_context(|| format!("loading {}", path.display()))?;
+        let kind = serde_json::from_str::<String>(&rendered).with_context(|| {
+            format!(
+                "loading {} produced an invalid type response: {rendered}",
+                path.display()
+            )
+        })?;
+        if kind != "set" {
+            anyhow::bail!(
+                "loading {} produced {kind}, expected an attribute set",
+                path.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn realise_repl_drv(&self, drv: &Path) -> Result<String> {
+        #[cfg(test)]
+        if let Some(realizer) = &self.repl_realizer {
+            return realizer(drv);
+        }
+
+        let cli = NixCli::with_eval_config(self.verbose, self.eval_config.clone());
+        cli.realise(&drv.to_string_lossy())
+    }
+
+    fn resolve_repl_load_path(&self, path: &str) -> PathBuf {
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            path
+        } else {
+            self.root.join(path)
+        }
     }
 
     // ------------------------------------------------------------------
@@ -600,6 +848,62 @@ impl NixRunner {
     }
 }
 
+#[derive(Debug)]
+struct NativeReplState {
+    loaded_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ReplControl {
+    Continue,
+    Quit,
+}
+
+fn write_native_repl_help(output: &mut impl Write) -> Result<()> {
+    writeln!(output, ":load PATH, :l PATH   load a Nix file")?;
+    writeln!(output, ":reload, :r          reload the current file")?;
+    writeln!(output, ":p EXPR              evaluate EXPR as strict JSON")?;
+    writeln!(output, ":t EXPR              print the Nix type of EXPR")?;
+    writeln!(
+        output,
+        ":b EXPR              build EXPR and print its output path"
+    )?;
+    writeln!(output, ":quit, :q            exit")?;
+    Ok(())
+}
+
+fn repl_context_expr(loaded_file: Option<&Path>, expr: &str) -> String {
+    let Some(loaded_file) = loaded_file else {
+        return expr.to_string();
+    };
+    format!(
+        "let \
+         __aos_repl_loaded = import (builtins.toPath {}); \
+         __aos_repl_scope = if builtins.isFunction __aos_repl_loaded \
+         then __aos_repl_loaded {{}} else __aos_repl_loaded; \
+         in with __aos_repl_scope; ({expr})",
+        nix_string_literal(&loaded_file.to_string_lossy())
+    )
+}
+
+fn nix_string_literal(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '$' => escaped.push_str("\\$"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character => escaped.push(character),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
 fn command_accepts_eval_options(cmd: &str) -> bool {
     matches!(cmd, "nix-build" | "nix-instantiate")
 }
@@ -682,6 +986,7 @@ mod tests {
             eval_config,
             verbose: 0,
             quiet: true,
+            repl_realizer: None,
         }
     }
 
@@ -692,6 +997,17 @@ mod tests {
             eval_config: NixEvalConfig::default(),
             verbose: 0,
             quiet: true,
+            repl_realizer: None,
+        }
+    }
+
+    fn runner_with_evaluator_and_repl_realizer(
+        evaluator: Box<dyn NixEval>,
+        realizer: impl Fn(&Path) -> Result<String> + Send + Sync + 'static,
+    ) -> NixRunner {
+        NixRunner {
+            repl_realizer: Some(Arc::new(realizer)),
+            ..runner_with_evaluator(evaluator)
         }
     }
 
@@ -712,6 +1028,60 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "fake-eval"
+        }
+    }
+
+    #[derive(Default)]
+    struct ReplRecordingEval {
+        eval_exprs: Mutex<Vec<String>>,
+        instantiate_exprs: Mutex<Vec<String>>,
+    }
+
+    impl ReplRecordingEval {
+        fn eval_exprs(&self) -> Vec<String> {
+            self.eval_exprs.lock().expect("eval exprs lock").clone()
+        }
+
+        fn instantiate_exprs(&self) -> Vec<String> {
+            self.instantiate_exprs
+                .lock()
+                .expect("instantiate exprs lock")
+                .clone()
+        }
+    }
+
+    impl NixEval for Arc<ReplRecordingEval> {
+        fn instantiate(&self, _file: &Path, _attr: &str) -> Result<PathBuf> {
+            Ok(PathBuf::from("/nix/store/fake.drv"))
+        }
+
+        fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
+            self.instantiate_exprs
+                .lock()
+                .expect("instantiate exprs lock")
+                .push(expr.to_string());
+            Ok(PathBuf::from("/nix/store/fake-expr.drv"))
+        }
+
+        fn eval_expr(&self, expr: &str) -> Result<String> {
+            self.eval_exprs
+                .lock()
+                .expect("eval exprs lock")
+                .push(expr.to_string());
+            if expr.contains("bad.nix") {
+                anyhow::bail!("bad fixture");
+            }
+            if expr.contains("builtins.typeOf __aos_repl_scope")
+                || expr.contains("builtins.typeOf (pkgs)")
+            {
+                Ok(r#""set""#.to_string())
+            } else {
+                Ok(r#"{"ok":true}"#.to_string())
+            }
+        }
+
+        fn name(&self) -> &'static str {
+            "aos-nix"
         }
     }
 
@@ -1009,6 +1379,107 @@ mod tests {
                 "default.nix"
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_repl_context_wraps_loaded_file() {
+        let expr = repl_context_expr(Some(Path::new("/aos/default.nix")), "pkgs.hello");
+
+        assert!(expr.contains("__aos_repl_loaded = import (builtins.toPath"));
+        assert!(expr.contains(r#""/aos/default.nix""#));
+        assert!(expr.contains("with __aos_repl_scope; (pkgs.hello)"));
+    }
+
+    #[test]
+    fn native_repl_context_escapes_loaded_file_string() {
+        let expr = repl_context_expr(Some(Path::new("/aos/a\"${x}.nix")), "1");
+
+        assert!(expr.contains(r#""/aos/a\"\${x}.nix""#));
+    }
+
+    #[test]
+    fn native_repl_session_uses_selected_evaluator_and_meta_commands() -> Result<()> {
+        let evaluator = Arc::new(ReplRecordingEval::default());
+        let realised_drvs = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+        let realised_drvs_for_hook = Arc::clone(&realised_drvs);
+        let runner =
+            runner_with_evaluator_and_repl_realizer(Box::new(Arc::clone(&evaluator)), move |drv| {
+                realised_drvs_for_hook
+                    .lock()
+                    .expect("realised drvs lock")
+                    .push(drv.to_path_buf());
+                Ok("/nix/store/fake-output".to_string())
+            });
+        let mut input = io::Cursor::new(
+            b"pkgs.hello\n\
+              :t pkgs\n\
+              :b pkgs.hello\n\
+              :load systems/server.nix\n\
+              :reload\n\
+              :p config.system.build.toplevel\n\
+              :q\n",
+        );
+        let mut output = Vec::new();
+
+        runner.run_native_repl_session(Path::new("/aos/default.nix"), &mut input, &mut output)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("AOS native REPL (aos-nix) loaded /aos/default.nix"));
+        assert!(output.contains(r#"{"ok":true}"#));
+        assert!(output.contains("set"));
+        assert!(output.contains("/nix/store/fake-output"));
+        assert!(output.contains("loaded /aos/systems/server.nix"));
+        assert!(output.contains("reloaded /aos/systems/server.nix"));
+
+        let eval_exprs = evaluator.eval_exprs();
+        assert_eq!(eval_exprs.len(), 6);
+        assert!(eval_exprs[0].contains(r#""/aos/default.nix""#));
+        assert!(eval_exprs[0].contains("builtins.typeOf __aos_repl_scope"));
+        assert!(eval_exprs[1].contains("with __aos_repl_scope; (pkgs.hello)"));
+        assert!(eval_exprs[2].contains("builtins.typeOf (pkgs)"));
+        assert!(eval_exprs[3].contains(r#""/aos/systems/server.nix""#));
+        assert!(eval_exprs[3].contains("builtins.typeOf __aos_repl_scope"));
+        assert!(eval_exprs[4].contains(r#""/aos/systems/server.nix""#));
+        assert!(eval_exprs[4].contains("builtins.typeOf __aos_repl_scope"));
+        assert!(eval_exprs[5].contains(r#""/aos/systems/server.nix""#));
+        assert!(eval_exprs[5].contains("config.system.build.toplevel"));
+
+        let instantiate_exprs = evaluator.instantiate_exprs();
+        assert_eq!(instantiate_exprs.len(), 1);
+        assert!(instantiate_exprs[0].contains(r#""/aos/default.nix""#));
+        assert!(instantiate_exprs[0].contains("pkgs.hello"));
+
+        let realised_drvs = realised_drvs.lock().expect("realised drvs lock");
+        assert_eq!(
+            realised_drvs.as_slice(),
+            [PathBuf::from("/nix/store/fake-expr.drv")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_repl_load_error_keeps_previous_scope() -> Result<()> {
+        let evaluator = Arc::new(ReplRecordingEval::default());
+        let runner = runner_with_evaluator(Box::new(Arc::clone(&evaluator)));
+        let mut input = io::Cursor::new(
+            b":load bad.nix\n\
+              :p pkgs.hello\n\
+              :q\n",
+        );
+        let mut output = Vec::new();
+
+        runner.run_native_repl_session(Path::new("/aos/default.nix"), &mut input, &mut output)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("error: loading /aos/bad.nix"));
+
+        let eval_exprs = evaluator.eval_exprs();
+        assert_eq!(eval_exprs.len(), 3);
+        assert!(eval_exprs[0].contains(r#""/aos/default.nix""#));
+        assert!(eval_exprs[1].contains(r#""/aos/bad.nix""#));
+        assert!(eval_exprs[2].contains(r#""/aos/default.nix""#));
+        assert!(eval_exprs[2].contains("pkgs.hello"));
         Ok(())
     }
 }

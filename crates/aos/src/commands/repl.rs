@@ -1,8 +1,8 @@
 //! `aos repl` — an interactive Nix REPL with the AOS package set loaded.
 //!
-//! Launches `nix repl` on the repository's `default.nix`, so `pkgs`,
-//! `checks`, and the system attributes are available for interactive
-//! exploration. The REPL process inherits the terminal until it exits.
+//! Uses the selected evaluator from [`NixRunner`]. The `nix-cli` evaluator
+//! launches `nix repl` on the repository's `default.nix`; native or shadow
+//! evaluators run the in-process AOS REPL with the same loaded file context.
 
 use anyhow::Result;
 
@@ -13,12 +13,19 @@ use aos_core::output::Printer;
 ///
 /// # Errors
 ///
-/// Returns an error if the `nix repl` process cannot be spawned or exits
-/// unsuccessfully.
+/// Returns an error if the selected REPL cannot start or exits unsuccessfully.
 pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
     let nix_file = nix.root().join("default.nix");
 
-    printer.info(&format!("Starting Nix REPL with {}", nix_file.display()));
+    if nix.evaluator_name() == "nix-cli" {
+        printer.info(&format!("Starting Nix REPL with {}", nix_file.display()));
+    } else {
+        printer.info(&format!(
+            "Starting {} REPL with {}",
+            nix.evaluator_name(),
+            nix_file.display()
+        ));
+    }
 
     nix.repl(&nix_file)
 }
