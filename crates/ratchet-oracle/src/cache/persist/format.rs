@@ -1369,4 +1369,56 @@ impl PersistNodeMetadataIndex {
             .map(|(key, value)| PersistNodeMetadataIndexEntry::new(key, value))
             .collect())
     }
+
+    /// Rewrites the sidecar to the newest entry for every node metadata key.
+    ///
+    /// Entries are written in stable key order through a temporary file that is
+    /// renamed over the original index. The returned count is the number of
+    /// latest entries preserved after compaction. Callers must exclude all
+    /// concurrent sidecar writers across threads and processes while this
+    /// method runs; an append that races between the snapshot and rename can be
+    /// lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the index cannot be opened,
+    /// read, decoded, written, flushed, or renamed into place.
+    pub fn compact_latest_entries(&self) -> Result<usize, PersistNodeMetadataIndexError> {
+        let entries = self.latest_entries()?;
+        let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = self
+            .path
+            .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
+        {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)
+                .map_err(|source| PersistNodeMetadataIndexError::Write {
+                    path: tmp_path.clone(),
+                    source,
+                })?;
+            for entry in &entries {
+                file.write_all(&entry.encode_index_entry())
+                    .map_err(|source| PersistNodeMetadataIndexError::Write {
+                        path: tmp_path.clone(),
+                        source,
+                    })?;
+            }
+            file.flush()
+                .map_err(|source| PersistNodeMetadataIndexError::Write {
+                    path: tmp_path.clone(),
+                    source,
+                })?;
+        }
+        fs::rename(&tmp_path, &self.path).map_err(|source| {
+            let _ = fs::remove_file(&tmp_path);
+            PersistNodeMetadataIndexError::Write {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        Ok(entries.len())
+    }
 }

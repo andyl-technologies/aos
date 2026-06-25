@@ -952,8 +952,18 @@ alone (`M-1`/`Q-A`).
       keys while skipping no-op counters. This is caller-driven, append-only,
       and requires callers to serialize sidecar writes; evaluator demand
       accounting, automatic process-boundary orchestration, atomic writer
-      coordination, LMDB/redb node tables, compaction/GC, and AOS tuning remain
-      open (`C-13`/`C-14`/`S-14`).
+      coordination, LMDB/redb node tables, automatic compaction/GC policy, and
+      AOS tuning remain open (`C-13`/`C-14`/`S-14`).
+- [x] Current explicit node metadata sidecar compaction:
+      `PersistNodeMetadataIndex::compact_latest_entries` rewrites
+      `nodes/metadata.index` through a temporary file and rename so only the
+      newest record for each node metadata key remains in stable key order, and
+      `PersistCache::compact_node_metadata` exposes that operation through the
+      opened cache root. This is caller-driven and requires callers to
+      serialize sidecar writes; evaluator demand accounting, automatic
+      process-boundary orchestration, atomic writer coordination, LMDB/redb node
+      tables, automatic compaction/GC policy, and AOS tuning remain open
+      (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit materialization-to-pack adapter:
       `PersistCache::materialize_blob` consumes a caller-supplied
       `MaterializationDecision`, skips without hashing/writing on

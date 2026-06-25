@@ -987,6 +987,41 @@ fn node_metadata_index_lists_latest_entries_in_key_order() {
 }
 
 #[test]
+fn node_metadata_index_compacts_to_latest_entries() {
+    let root = temp_root();
+    let index_path = root.join("nodes").join("metadata.index");
+    let index = PersistNodeMetadataIndex::open(&index_path).expect("index opens");
+    let first_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"a"));
+    let second_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"b"));
+    let first = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(1, 2));
+    let stale = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(3, 4));
+    let latest = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(5, 6));
+
+    index
+        .append_entry(PersistNodeMetadataIndexEntry::new(second_key, stale))
+        .expect("stale entry appends");
+    index
+        .append_entry(PersistNodeMetadataIndexEntry::new(first_key, first))
+        .expect("first entry appends");
+    index
+        .append_entry(PersistNodeMetadataIndexEntry::new(second_key, latest))
+        .expect("latest entry appends");
+
+    assert_eq!(index.compact_latest_entries().expect("index compacts"), 2);
+    assert_eq!(
+        fs::metadata(index.path()).expect("index metadata").len(),
+        (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 2) as u64
+    );
+    assert_eq!(index.lookup(first_key).expect("first lookup"), Some(first));
+    assert_eq!(
+        index.lookup(second_key).expect("second lookup"),
+        Some(latest)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn node_metadata_index_open_rejects_truncated_records() {
     let root = temp_root();
     let index_path = root.join("nodes").join("metadata.index");

@@ -67,6 +67,7 @@ pub const PERSIST_NODE_METADATA_INDEX_ENTRY_LEN: usize =
 pub const PERSIST_MATERIALIZATION_REUSE_LEN: usize = 16;
 
 static SCHEMA_WRITE_ID: AtomicU64 = AtomicU64::new(0);
+static INDEX_REWRITE_ID: AtomicU64 = AtomicU64::new(0);
 const PERSIST_FILE_ARTIFACT_INDEX_TAG: u8 = 3;
 const PERSIST_FILE_ARTIFACT_KEY_PERSONALIZATION: &[u8] = b"aos-nix-persist-file-artifact-key-v1";
 const PERSIST_PARSE_ARTIFACT_INDEX_TAG: u8 = 4;

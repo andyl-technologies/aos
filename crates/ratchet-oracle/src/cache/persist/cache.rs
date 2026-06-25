@@ -393,6 +393,20 @@ impl PersistCache {
         Ok(recorded)
     }
 
+    /// Compacts node metadata to the newest record for every known demand node.
+    ///
+    /// This delegates to [`PersistNodeMetadataIndex::compact_latest_entries`].
+    /// Callers must serialize writes to the node metadata sidecar while this
+    /// method runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
+    /// be opened, read, decoded, written, flushed, or renamed into place.
+    pub fn compact_node_metadata(&self) -> Result<usize, PersistNodeMetadataIndexError> {
+        self.node_metadata_index.compact_latest_entries()
+    }
+
     /// Looks up a blob location through the sidecar index selected by `key`.
     ///
     /// # Errors

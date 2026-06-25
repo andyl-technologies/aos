@@ -430,6 +430,47 @@ fn cache_all_node_materialization_reuse_advances_changed_latest_entries() {
 }
 
 #[test]
+fn cache_node_metadata_compacts_to_latest_entries() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let other_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(1, 2))
+        .expect("stale reuse records");
+    cache
+        .record_node_materialization_reuse(other_key, MaterializationReuse::new(3, 4))
+        .expect("other reuse records");
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(5, 6))
+        .expect("latest reuse records");
+
+    assert_eq!(cache.compact_node_metadata().expect("metadata compacts"), 2);
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(key)
+            .expect("node reuse lookup succeeds"),
+        Some(MaterializationReuse::new(5, 6))
+    );
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(other_key)
+            .expect("other node reuse lookup succeeds"),
+        Some(MaterializationReuse::new(3, 4))
+    );
+    assert_eq!(
+        fs::metadata(cache.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 2) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_materialization_decision_can_skip_without_writing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
