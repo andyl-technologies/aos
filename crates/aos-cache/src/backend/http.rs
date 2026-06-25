@@ -320,7 +320,8 @@ impl CacheBackend for HttpBackend {
             "{}/aos.registry.v1.CacheService/MintCacheUploadCredentials",
             self.origin
         );
-        let body = serde_json::json!({ "cache_slug": slug, "path": path }).to_string();
+        // Connect-JSON uses the protobuf JSON mapping (camelCase field names).
+        let body = serde_json::json!({ "cacheSlug": slug, "path": path }).to_string();
         let mut req = TransferRequest::post(&url, body.into_bytes());
         req.headers
             .push(("Content-Type".to_string(), "application/json".to_string()));
@@ -341,7 +342,7 @@ impl CacheBackend for HttpBackend {
             .and_then(|body| {
                 #[derive(Deserialize)]
                 struct MintResponse {
-                    #[serde(default)]
+                    #[serde(default, rename = "uploadUrl")]
                     upload_url: String,
                 }
                 serde_json::from_slice::<MintResponse>(body).ok()
