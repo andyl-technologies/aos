@@ -761,10 +761,19 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     flags. The gate embeds that identity in a reproduction-artifact-shaped fixture
     and verifies both a matching artifact and a changed-build negative control, so
     replay is tied to the exact QEMU build that produced the run.
-- [ ] **T-DET-25** Stand up the adversarial-host test fixture (randomized
+- [x] **T-DET-25** Stand up the adversarial-host test fixture (randomized
   scheduling/affinity, injected jitter/load, varied core counts, skewed
   producer/consumer timing) shared by all determinism gates. — satisfies
   [DET-38]; spec §4.11.
+  - Completed by `checks.crucible.phase1.adversarialHostFixture`: the shared
+    `crucible_harness::adversarial` fixture now publishes the canonical
+    host-adversary profile matrix, seeded task-order and logical-affinity
+    planning that drives worker partitioning, deterministic jitter/load
+    injection, varied worker counts, and a role-aware producer/consumer skew
+    runner. The check runs the focused harness regression tests and the
+    model-side single-VM fingerprint adversarial matrix through the shared
+    runner while leaving the later `gate:adversarial-determinism` placeholder
+    untouched.
 - [ ] **T-DET-26** Implement `gate:e2e-determinism`: a representative multi-VM
   fault-injected scenario runs bit-identically under adversarial conditions and
   reproduces from its self-contained artifact. — satisfies [DET-40], [DET-4],
