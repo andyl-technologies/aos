@@ -562,7 +562,7 @@ alone (`M-1`/`Q-A`).
       thunks, canonical free-variable hashes, general memo lookup,
       remaining suspended non-literal/non-replayable captured thunk-cell free
       variables, arbitrary lazy-element list and lazy-binding attrset payloads,
-      position-bearing attrset payloads, and
+      evaluator-integrated position-bearing attrset payload observation/rehydration, and
       other composite value hashing, persistence, and cached/uncached harness proof remain open
       (`S-14`/`S-15`).
 - [x] Current pure closed force-cache hit substrate: `EvalCache` keeps per-node
@@ -857,10 +857,17 @@ alone (`M-1`/`Q-A`).
       but cannot cut off distinct bit patterns. `ValueHash` also hashes
       context-free string bytes, context-bearing string bytes plus canonical
       context elements, path bytes with or without canonical context elements,
-      empty lists, replayable list payloads whose element payloads are length-framed, and replayable attrset payloads whose binding names and value payloads are length-framed in separate durable BLAKE3 domains, using raw-byte-sorted binding order for canonical attrsets and a distinct source-order tag when construction order is observable.
-      Arbitrary non-literal lazy-element list and lazy-binding attrset cacheability, position-bearing attrset payloads, functions/thunks cacheability
-      policy, generic hash-cons value fields, `force_memoized` integration,
-      persistence, and harness proof remain open (`S-14`/`S-15`).
+      empty lists, replayable list payloads whose element payloads are length-framed,
+      replayable attrset payloads whose binding names and value payloads are
+      length-framed in separate durable BLAKE3 domains, and explicit in-memory
+      position-bearing attrset payload records whose binding position-presence
+      tags, module ids, and source spans participate in the hash; attrset
+      hashing uses raw-byte-sorted binding order for canonical attrsets and
+      distinct source-order tags when construction order is observable.
+      Arbitrary non-literal lazy-element list and lazy-binding attrset cacheability, evaluator-integrated position-bearing attrset payload observation/rehydration, positioned attrset payload persistence, functions/thunks cacheability
+      policy, generic hash-cons value fields, `force_memoized` integration, and
+      harness proof remain open (`S-14`/`S-15`). The gate includes positioned
+      attrset payload lookup/hash/no-persistence coverage.
 - [x] Current inline-value early-cutoff adapter:
       `DemandGraph::reconsider_inline_value_node` and
       `EvalCache::reconsider_inline_value_node` hash a recomputed inline scalar
