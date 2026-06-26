@@ -41,7 +41,6 @@ fn architecture_red_placeholder_gates_are_wired() {
         "gate:adversarial-determinism",
         "gate:campaign-continuity",
         "gate:control-responsive",
-        "gate:e2e-determinism",
         "gate:fleet-equivalence",
         "gate:perf-bench",
     ]);
@@ -100,6 +99,10 @@ fn architecture_red_placeholder_gates_are_wired() {
     ));
     assert!(matches!(
         find_gate("gate:patch-microtests").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
+        find_gate("gate:e2e-determinism").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
 

@@ -4,7 +4,8 @@
 //!
 //! This test-only workspace member will host the fingerprint comparator,
 //! divergence bisector, replay-oracle checker, ABI golden-vector runner, and
-//! adversarial-host driver described by RFC-0010 files 24 and 27.
+//! adversarial-host driver, and mock e2e gate driver described by RFC-0010
+//! files 24 and 27.
 //!
 //! The crate also exposes the canonical gate catalog used by the RFC lint and
 //! the red placeholder targets that make early phase wiring visible before the
@@ -12,10 +13,10 @@
 //! is not a shipped crate.
 //!
 //! Module map: [`abi`] compares golden vectors, [`adversarial`] compares
-//! hostile-profile runs, [`divergence`] localizes mismatches, [`fingerprint`]
-//! compares fingerprint streams, [`gate_targets`] indexes Cargo gate targets,
-//! [`replay_oracle`] compares replay hashes, and [`spec_index`] owns the
-//! crate-to-RFC map.
+//! hostile-profile runs, [`divergence`] localizes mismatches, [`e2e`] runs the
+//! mock end-to-end determinism gate, [`fingerprint`] compares fingerprint
+//! streams, [`gate_targets`] indexes Cargo gate targets, [`replay_oracle`]
+//! compares replay hashes, and [`spec_index`] owns the crate-to-RFC map.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -24,6 +25,7 @@
 pub mod abi;
 pub mod adversarial;
 pub mod divergence;
+pub mod e2e;
 pub mod fingerprint;
 pub mod gate_targets;
 pub mod replay_oracle;
@@ -210,7 +212,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:e2e-determinism",
         phase: GatePhase::Phase4,
         owner: "crucible-harness",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:perf-bench",
