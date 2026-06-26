@@ -22,6 +22,9 @@ use crucible_sim::{
 mod canonical;
 
 static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Minimum one-way logical link latency in virtual nanoseconds.
+pub const MIN_LINK_LATENCY: SimDuration = SimDuration { nanos: 1 };
+const MAX_LINK_LOSS_MILLIONTHS: u32 = 1_000_000;
 const REPLAY_ORACLE_SEARCH_SAMPLING_DOMAIN: &[u8] = b"crucible.replay-oracle.search-sampling.v1";
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x00000100000001b3;
@@ -647,7 +650,10 @@ impl World {
     /// [`WhiteBoxPolicy::Enabled`], [`EngineError::WorldLinkUnknownNode`] when
     /// a link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
     /// when a link's endpoints are equal, or [`EngineError::DuplicateWorldLink`]
-    /// when a canonical endpoint pair appears more than once.
+    /// when a canonical endpoint pair appears more than once. Returns
+    /// [`EngineError::WorldLinkLatencyBelowFloor`] or
+    /// [`EngineError::WorldLinkJitterBelowLatencyFloor`] when a link's
+    /// transport configuration violates the latency floor.
     pub fn from_nodes_and_links(
         nodes: Vec<WorldNode>,
         links: Vec<LinkDef>,
@@ -689,7 +695,10 @@ impl World {
     /// [`WhiteBoxPolicy::Enabled`], [`EngineError::WorldLinkUnknownNode`] when
     /// a link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
     /// when a link's endpoints are equal, or [`EngineError::DuplicateWorldLink`]
-    /// when a canonical endpoint pair appears more than once.
+    /// when a canonical endpoint pair appears more than once. Returns
+    /// [`EngineError::WorldLinkLatencyBelowFloor`] or
+    /// [`EngineError::WorldLinkJitterBelowLatencyFloor`] when a link's
+    /// transport configuration violates the latency floor.
     pub fn validate_topology(&self) -> Result<(), EngineError> {
         validate_world_nodes(&self.nodes)?;
         validate_world_links(&self.nodes, &self.links)
@@ -1391,10 +1400,57 @@ pub struct WorldNode {
 }
 
 /// One logical symmetric link between two nodes in a [`World`].
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LinkDef {
     endpoint_a: NodeId,
     endpoint_b: NodeId,
+    latency: SimDuration,
+    jitter: SimDuration,
+    loss: LinkLossProbability,
+    bandwidth_bps: Option<u64>,
+}
+
+/// A deterministic fixed-point link loss probability.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LinkLossProbability {
+    millionths: u32,
+}
+
+impl LinkLossProbability {
+    /// The lossless probability value.
+    pub const ZERO: Self = Self { millionths: 0 };
+
+    /// The always-drop probability value.
+    pub const ONE: Self = Self {
+        millionths: MAX_LINK_LOSS_MILLIONTHS,
+    };
+
+    /// Builds a probability from millionths in the closed range `[0, 1_000_000]`.
+    ///
+    /// `0` represents `0.0`, and `1_000_000` represents `1.0`. The fixed-point
+    /// representation avoids floating-point ambiguity in canonical link
+    /// material.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::LinkLossProbabilityOutOfRange`] when
+    /// `millionths` is greater than `1_000_000`.
+    pub fn from_millionths(millionths: u32) -> Result<Self, EngineError> {
+        if millionths > MAX_LINK_LOSS_MILLIONTHS {
+            return Err(EngineError::LinkLossProbabilityOutOfRange {
+                millionths,
+                maximum: MAX_LINK_LOSS_MILLIONTHS,
+            });
+        }
+
+        Ok(Self { millionths })
+    }
+
+    /// Returns this probability as millionths in the closed range `[0, 1_000_000]`.
+    #[must_use]
+    pub fn millionths(self) -> u32 {
+        self.millionths
+    }
 }
 
 impl LinkDef {
@@ -1402,34 +1458,102 @@ impl LinkDef {
     ///
     /// `LinkDef::new(a, b)` and `LinkDef::new(b, a)` produce equal links. A
     /// self-loop is rejected because a world link must reference exactly two
-    /// distinct node endpoints.
+    /// distinct node endpoints. The link uses the minimum legal latency, no
+    /// jitter, lossless delivery, and no bandwidth cap.
     ///
     /// # Errors
     ///
     /// Returns [`EngineError::WorldLinkSelfLoop`] when both endpoints name the
     /// same node.
     pub fn new(left: NodeId, right: NodeId) -> Result<Self, EngineError> {
+        Self::with_transport(
+            left,
+            right,
+            MIN_LINK_LATENCY,
+            SimDuration::default(),
+            LinkLossProbability::ZERO,
+            None,
+        )
+    }
+
+    /// Builds a link with explicit transport characteristics.
+    ///
+    /// Endpoints are canonically ordered before validation. `latency` is the
+    /// one-way base latency; `jitter` is the maximum subtractive jitter allowed
+    /// by the model; `loss` is a fixed-point probability; and `bandwidth_bps`
+    /// is an optional bits-per-virtual-second cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::WorldLinkSelfLoop`] when both endpoints name the
+    /// same node, [`EngineError::WorldLinkLatencyBelowFloor`] when `latency` is
+    /// below [`MIN_LINK_LATENCY`], or
+    /// [`EngineError::WorldLinkJitterBelowLatencyFloor`] when
+    /// `latency - jitter` could fall below [`MIN_LINK_LATENCY`].
+    pub fn with_transport(
+        left: NodeId,
+        right: NodeId,
+        latency: SimDuration,
+        jitter: SimDuration,
+        loss: LinkLossProbability,
+        bandwidth_bps: Option<u64>,
+    ) -> Result<Self, EngineError> {
         if left == right {
             return Err(EngineError::WorldLinkSelfLoop { node: left });
         }
 
-        if left <= right {
-            Ok(Self {
+        let link = if left <= right {
+            Self {
                 endpoint_a: left,
                 endpoint_b: right,
-            })
+                latency,
+                jitter,
+                loss,
+                bandwidth_bps,
+            }
         } else {
-            Ok(Self {
+            Self {
                 endpoint_a: right,
                 endpoint_b: left,
-            })
-        }
+                latency,
+                jitter,
+                loss,
+                bandwidth_bps,
+            }
+        };
+
+        validate_link_transport(&link)?;
+        Ok(link)
     }
 
     /// Returns the canonical endpoint pair.
     #[must_use]
     pub fn endpoints(&self) -> (&NodeId, &NodeId) {
         (&self.endpoint_a, &self.endpoint_b)
+    }
+
+    /// Returns the one-way base latency for this link.
+    #[must_use]
+    pub fn latency(&self) -> SimDuration {
+        self.latency
+    }
+
+    /// Returns the maximum deterministic latency jitter for this link.
+    #[must_use]
+    pub fn jitter(&self) -> SimDuration {
+        self.jitter
+    }
+
+    /// Returns the fixed-point frame-loss probability for this link.
+    #[must_use]
+    pub fn loss(&self) -> LinkLossProbability {
+        self.loss
+    }
+
+    /// Returns the optional bits-per-virtual-second bandwidth cap for this link.
+    #[must_use]
+    pub fn bandwidth_bps(&self) -> Option<u64> {
+        self.bandwidth_bps
     }
 }
 
@@ -4627,6 +4751,33 @@ pub enum EngineError {
         /// The duplicated link.
         link: LinkDef,
     },
+    /// A link's one-way base latency is below the model floor.
+    WorldLinkLatencyBelowFloor {
+        /// The invalid link.
+        link: LinkDef,
+        /// The configured one-way base latency.
+        latency: SimDuration,
+        /// The minimum legal link latency.
+        minimum: SimDuration,
+    },
+    /// A link's configured jitter can drive effective latency below the floor.
+    WorldLinkJitterBelowLatencyFloor {
+        /// The invalid link.
+        link: LinkDef,
+        /// The configured one-way base latency.
+        latency: SimDuration,
+        /// The configured maximum jitter.
+        jitter: SimDuration,
+        /// The minimum legal effective link latency.
+        minimum: SimDuration,
+    },
+    /// A fixed-point link loss probability is outside `[0.0, 1.0]`.
+    LinkLossProbabilityOutOfRange {
+        /// The invalid probability in millionths.
+        millionths: u32,
+        /// The maximum legal probability in millionths.
+        maximum: u32,
+    },
     /// An agent-signal ready point was configured without white-box opt-in.
     WhiteBoxReadyPointWithoutOptIn {
         /// The node whose ready-point configuration is invalid.
@@ -4721,6 +4872,15 @@ impl fmt::Display for EngineError {
             }
             Self::DuplicateWorldLink { .. } => {
                 f.write_str("world contains a duplicate canonical link")
+            }
+            Self::WorldLinkLatencyBelowFloor { .. } => {
+                f.write_str("world link latency is below the minimum floor")
+            }
+            Self::WorldLinkJitterBelowLatencyFloor { .. } => {
+                f.write_str("world link jitter can drive latency below the minimum floor")
+            }
+            Self::LinkLossProbabilityOutOfRange { .. } => {
+                f.write_str("world link loss probability is outside the legal range")
             }
             Self::WhiteBoxReadyPointWithoutOptIn { .. } => {
                 f.write_str("agent-signal ready point requires white-box opt-in")
@@ -5653,9 +5813,36 @@ fn validate_world_links(nodes: &[WorldNode], links: &[LinkDef]) -> Result<(), En
                 node: right.clone(),
             });
         }
-        if !seen.insert(link.clone()) {
+        validate_link_transport(link)?;
+        if !seen.insert((left.clone(), right.clone())) {
             return Err(EngineError::DuplicateWorldLink { link: link.clone() });
         }
+    }
+
+    Ok(())
+}
+
+fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError> {
+    let latency = link.latency();
+    let jitter = link.jitter();
+    if latency < MIN_LINK_LATENCY {
+        return Err(EngineError::WorldLinkLatencyBelowFloor {
+            link: link.clone(),
+            latency,
+            minimum: MIN_LINK_LATENCY,
+        });
+    }
+    if latency
+        .nanos
+        .checked_sub(jitter.nanos)
+        .is_none_or(|effective| effective < MIN_LINK_LATENCY.nanos)
+    {
+        return Err(EngineError::WorldLinkJitterBelowLatencyFloor {
+            link: link.clone(),
+            latency,
+            jitter,
+            minimum: MIN_LINK_LATENCY,
+        });
     }
 
     Ok(())
@@ -5669,7 +5856,17 @@ fn canonical_world_nodes(nodes: &[WorldNode]) -> Vec<WorldNode> {
 
 fn canonical_world_links(links: &[LinkDef]) -> Vec<LinkDef> {
     let mut links = links.to_vec();
-    links.sort();
+    links.sort_by(|left, right| {
+        let (left_a, left_b) = left.endpoints();
+        let (right_a, right_b) = right.endpoints();
+        left_a
+            .cmp(right_a)
+            .then_with(|| left_b.cmp(right_b))
+            .then_with(|| left.latency().cmp(&right.latency()))
+            .then_with(|| left.jitter().cmp(&right.jitter()))
+            .then_with(|| left.loss().cmp(&right.loss()))
+            .then_with(|| left.bandwidth_bps().cmp(&right.bandwidth_bps()))
+    });
     links
 }
 
@@ -5733,7 +5930,7 @@ fn world_nodes_material(nodes: &[WorldNode]) -> String {
 }
 
 fn world_links_material(links: &[LinkDef]) -> String {
-    let mut lines = Vec::with_capacity(links.len().saturating_mul(4) + 1);
+    let mut lines = Vec::with_capacity(links.len().saturating_mul(8) + 1);
     lines.push(format!("links={}", links.len()));
     for link in links {
         lines.push(world_link_material(link));
@@ -5754,11 +5951,16 @@ fn world_node_material(node: &WorldNode) -> String {
 fn world_link_material(link: &LinkDef) -> String {
     let (left, right) = link.endpoints();
     format!(
-        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}\nlink_latency_ns={}\nlink_jitter_ns={}\nlink_loss_millionths={}\nlink_bandwidth_bps={}",
         left.name.len(),
         left.name,
         right.name.len(),
-        right.name
+        right.name,
+        link.latency().nanos,
+        link.jitter().nanos,
+        link.loss().millionths(),
+        link.bandwidth_bps()
+            .map_or_else(|| String::from("none"), |bandwidth| bandwidth.to_string())
     )
 }
 

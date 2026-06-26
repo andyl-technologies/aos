@@ -35,13 +35,13 @@ pub use model::{
     DeviceId, DeviceOverlayDelta, DeviceRngState, EngineError, EventKey, EventLogOffset,
     FaultDecision, FaultId, FaultState, FrontierChild, FrontierCoveredChild,
     FrontierReductionPolicy, FrontierReductionReason, FrontierReductionReport, GenesisCheckpoint,
-    Icount, IrqVector, LinkDef, LocalDagStore, MaterializationPolicy, MaterializationTrigger,
-    MaterializedState, MemoryDagStore, NodeBlobRef, NodeClockSkew, NodeCounter, NodeId,
-    OverrideDecision, PartialOrderIndependenceProof, PartialOrderReductionKey,
-    PartialOrderReductionPolicy, PendingFrame, PreemptionDecision, PreemptionKind, ReadyPoint,
-    ReplayOracleCheck, RngDecision, RngStreamId, RngStreamPosition, RuntimeState,
-    SavevmCompletenessHedge, ScenarioDef, Schedule, ScheduleError, SchedulerState, SchedulingPoint,
-    SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
+    Icount, IrqVector, LinkDef, LinkLossProbability, LocalDagStore, MIN_LINK_LATENCY,
+    MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore, NodeBlobRef,
+    NodeClockSkew, NodeCounter, NodeId, OverrideDecision, PartialOrderIndependenceProof,
+    PartialOrderReductionKey, PartialOrderReductionPolicy, PendingFrame, PreemptionDecision,
+    PreemptionKind, ReadyPoint, ReplayOracleCheck, RngDecision, RngStreamId, RngStreamPosition,
+    RuntimeState, SavevmCompletenessHedge, ScenarioDef, Schedule, ScheduleError, SchedulerState,
+    SchedulingPoint, SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
     SearchReplayOracleSamplingReport, Shift, SimDuration, SimInstant, SimOffset, State,
     SymmetryClassId, SymmetryReductionClasses, SymmetryReductionKey, TemporalGraph,
     TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots, TemporalGraphReferenceCounts,
@@ -1670,6 +1670,123 @@ mod tests {
     }
 
     #[test]
+    fn world_link_transport_material_affects_world_identity() {
+        let nodes = two_ready_nodes();
+        let base = world_from_nodes_and_links(
+            nodes.clone(),
+            vec![transport_link("a", "b", 5, 1, 250_000, Some(1_000_000))],
+        );
+        let reordered = world_from_nodes_and_links(
+            nodes.clone().into_iter().rev().collect(),
+            vec![transport_link("b", "a", 5, 1, 250_000, Some(1_000_000))],
+        );
+        let changed_latency = world_from_nodes_and_links(
+            nodes.clone(),
+            vec![transport_link("a", "b", 6, 1, 250_000, Some(1_000_000))],
+        );
+        let changed_jitter = world_from_nodes_and_links(
+            nodes.clone(),
+            vec![transport_link("a", "b", 5, 2, 250_000, Some(1_000_000))],
+        );
+        let changed_loss = world_from_nodes_and_links(
+            nodes.clone(),
+            vec![transport_link("a", "b", 5, 1, 250_001, Some(1_000_000))],
+        );
+        let changed_bandwidth = world_from_nodes_and_links(
+            nodes,
+            vec![transport_link("a", "b", 5, 1, 250_000, Some(2_000_000))],
+        );
+        let base_baked = match bake(&base) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("base transport world should bake: {error}"),
+        };
+        let changed_latency_baked = match bake(&changed_latency) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("changed-latency transport world should bake: {error}"),
+        };
+
+        assert_eq!(base.id, reordered.id);
+        assert_eq!(base.links, reordered.links);
+        assert_eq!(base.links[0].latency(), SimDuration { nanos: 5 });
+        assert_eq!(base.links[0].jitter(), SimDuration { nanos: 1 });
+        assert_eq!(base.links[0].loss().millionths(), 250_000);
+        assert_eq!(base.links[0].bandwidth_bps(), Some(1_000_000));
+        assert_ne!(base.id, changed_latency.id);
+        assert_ne!(base.id, changed_jitter.id);
+        assert_ne!(base.id, changed_loss.id);
+        assert_ne!(base.id, changed_bandwidth.id);
+        assert_eq!(base.scenario_def(), reordered.scenario_def());
+        assert_ne!(base.scenario_def(), changed_latency.scenario_def());
+        assert_ne!(
+            base_baked.checkpoint.id,
+            changed_latency_baked.checkpoint.id
+        );
+    }
+
+    #[test]
+    fn world_link_transport_rejects_invalid_floor_and_loss() {
+        let below_floor = LinkDef::with_transport(
+            node_id("a"),
+            node_id("b"),
+            SimDuration { nanos: 0 },
+            SimDuration { nanos: 0 },
+            LinkLossProbability::ZERO,
+            None,
+        );
+        let jitter_below_floor = LinkDef::with_transport(
+            node_id("a"),
+            node_id("b"),
+            SimDuration { nanos: 5 },
+            SimDuration { nanos: 5 },
+            LinkLossProbability::ZERO,
+            None,
+        );
+        let loss_out_of_range = LinkLossProbability::from_millionths(1_000_001);
+        let duplicate_endpoint_pair = World::from_nodes_and_links(
+            two_ready_nodes(),
+            vec![
+                transport_link("a", "b", 5, 1, 0, None),
+                transport_link("b", "a", 6, 1, 0, None),
+            ],
+        );
+
+        assert_eq!(MIN_LINK_LATENCY, SimDuration { nanos: 1 });
+        assert_eq!(
+            LinkLossProbability::ONE.millionths(),
+            LinkLossProbability::from_millionths(1_000_000)
+                .map(|loss| loss.millionths())
+                .unwrap_or_default()
+        );
+        assert!(matches!(
+            below_floor,
+            Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
+                if latency == SimDuration { nanos: 0 } && minimum == MIN_LINK_LATENCY
+        ));
+        assert!(matches!(
+            jitter_below_floor,
+            Err(EngineError::WorldLinkJitterBelowLatencyFloor {
+                latency,
+                jitter,
+                minimum,
+                ..
+            }) if latency == SimDuration { nanos: 5 }
+                && jitter == SimDuration { nanos: 5 }
+                && minimum == MIN_LINK_LATENCY
+        ));
+        assert!(matches!(
+            loss_out_of_range,
+            Err(EngineError::LinkLossProbabilityOutOfRange {
+                millionths: 1_000_001,
+                maximum: 1_000_000,
+            })
+        ));
+        assert!(matches!(
+            duplicate_endpoint_pair,
+            Err(EngineError::DuplicateWorldLink { .. })
+        ));
+    }
+
+    #[test]
     fn world_ready_point_rejects_agent_signal_without_white_box_opt_in() {
         let invalid = World::from_nodes(vec![WorldNode {
             id: node_id("agent"),
@@ -2247,6 +2364,23 @@ mod tests {
         }
     }
 
+    fn two_ready_nodes() -> Vec<WorldNode> {
+        vec![
+            ready_node(
+                "a",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 1 },
+                },
+            ),
+            ready_node(
+                "b",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 2 },
+                },
+            ),
+        ]
+    }
+
     fn ready_node(name: &str, ready_point: ReadyPoint) -> WorldNode {
         WorldNode {
             id: node_id(name),
@@ -2259,6 +2393,31 @@ mod tests {
         match LinkDef::new(node_id(left), node_id(right)) {
             Ok(link) => link,
             Err(error) => panic!("test link should be valid: {error}"),
+        }
+    }
+
+    fn transport_link(
+        left: &str,
+        right: &str,
+        latency_ns: u64,
+        jitter_ns: u64,
+        loss_millionths: u32,
+        bandwidth_bps: Option<u64>,
+    ) -> LinkDef {
+        let loss = match LinkLossProbability::from_millionths(loss_millionths) {
+            Ok(loss) => loss,
+            Err(error) => panic!("test loss probability should be valid: {error}"),
+        };
+        match LinkDef::with_transport(
+            node_id(left),
+            node_id(right),
+            SimDuration { nanos: latency_ns },
+            SimDuration { nanos: jitter_ns },
+            loss,
+            bandwidth_bps,
+        ) {
+            Ok(link) => link,
+            Err(error) => panic!("test transport link should be valid: {error}"),
         }
     }
 
