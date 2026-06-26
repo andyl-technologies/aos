@@ -785,10 +785,17 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     fingerprints, verifies reproduction from the artifact, and rejects build
     identity, fault-corpus, and schedule-drift regressions. The CLI/AOS final
     acceptance target remains pending for the later real-backend work.
-- [ ] **T-DET-27** Add the `gate:replay-oracle` reproduction-artifact round-trip:
+- [x] **T-DET-27** Add the `gate:replay-oracle` reproduction-artifact round-trip:
   re-run from `(seed, scenario, schedule, build identity)` and assert
   fingerprint and oracle equality. — satisfies [DET-28], [DET-41], [DET-40];
   spec §4.8, §4.11.
+  - Completed by `checks.crucible.phase1.gates.replayOracle`: the replay-oracle
+    gate now builds a model-backed reproduction artifact carrying `(seed,
+    ScenarioDef, Schedule, build identity)`, replays it through the same
+    SimDouble fat-checkpoint/thin-reconstruction path, and requires both the
+    deterministic fingerprint and materialized oracle case to match exactly.
+    Negative controls reject build-identity drift, schedule drift, and
+    internally valid but non-identical oracle-case drift.
 - [ ] **T-DET-28** Implement the multi-vCPU Contract A driver: run a single
   `N > 1` vCPU node under single-threaded RR-TCG + icount with a recorded
   icount-stamped input list and a per-vCPU execution fingerprint (every vCPU's

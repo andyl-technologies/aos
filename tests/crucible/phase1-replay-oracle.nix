@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-DET-21" "T-HARN-12" "T-EXEC-4" "T-EXEC-11"],
+  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -189,6 +189,46 @@
         label = "wrong-order oracle failure";
         needle = "wrong-order thin reconstruction should fail the replay oracle";
       }
+      {
+        label = "reproduction artifact round-trip test";
+        needle = "gate_replay_oracle_reproduction_artifact_round_trips";
+      }
+      {
+        label = "reproduction artifact build identity drift test";
+        needle = "gate_replay_oracle_reproduction_artifact_rejects_build_identity_drift";
+      }
+      {
+        label = "reproduction artifact schedule drift test";
+        needle = "gate_replay_oracle_reproduction_artifact_detects_schedule_drift";
+      }
+      {
+        label = "reproduction artifact seed drift test";
+        needle = "gate_replay_oracle_reproduction_artifact_detects_seed_drift";
+      }
+      {
+        label = "reproduction artifact scenario drift test";
+        needle = "gate_replay_oracle_reproduction_artifact_detects_scenario_drift";
+      }
+      {
+        label = "reproduction artifact oracle equality test";
+        needle = "gate_replay_oracle_reproduction_artifact_detects_oracle_case_drift";
+      }
+      {
+        label = "representative reproduction artifact fixture";
+        needle = "fn representative_replay_oracle_reproduction_artifact(";
+      }
+      {
+        label = "replay artifact callback";
+        needle = "fn replay_reproduction_artifact(";
+      }
+      {
+        label = "artifact round-trip checker used by gate";
+        needle = "check_replay_oracle_reproduction_artifact_round_trip(";
+      }
+      {
+        label = "artifact carries deterministic seed";
+        needle = "seed = 0x0010_0027";
+      }
     ]
     ++ forbiddenFor "crates/crucible/tests/gate_replay_oracle.rs" replayGate [
       {
@@ -248,6 +288,66 @@
       {
         label = "fat checkpoint kind validation";
         needle = "case.kind != ReplayOracleCheckpointKind::Fat";
+      }
+      {
+        label = "reproduction artifact build identity";
+        needle = "pub struct ReplayOracleBuildIdentity";
+      }
+      {
+        label = "reproduction artifact run output";
+        needle = "pub struct ReplayOracleArtifactRun";
+      }
+      {
+        label = "reproduction artifact type";
+        needle = "pub struct ReplayOracleReproductionArtifact<Scenario, Schedule>";
+      }
+      {
+        label = "round-trip report";
+        needle = "pub struct ReplayOracleRoundTripReport";
+      }
+      {
+        label = "round-trip error";
+        needle = "pub enum ReplayOracleRoundTripError";
+      }
+      {
+        label = "round-trip checker";
+        needle = "pub fn check_replay_oracle_reproduction_artifact_round_trip<";
+      }
+      {
+        label = "build identity mismatch rejection";
+        needle = "ReplayOracleRoundTripError::BuildIdentityMismatch";
+      }
+      {
+        label = "replay failure rejection";
+        needle = "ReplayOracleRoundTripError::ReplayFailed";
+      }
+      {
+        label = "expected oracle mismatch rejection";
+        needle = "ReplayOracleRoundTripError::ExpectedOracleMismatch";
+      }
+      {
+        label = "reproduced oracle mismatch rejection";
+        needle = "ReplayOracleRoundTripError::ReproducedOracleMismatch";
+      }
+      {
+        label = "fingerprint mismatch rejection";
+        needle = "ReplayOracleRoundTripError::FingerprintMismatch";
+      }
+      {
+        label = "oracle case mismatch rejection";
+        needle = "ReplayOracleRoundTripError::OracleCaseMismatch";
+      }
+      {
+        label = "replay failure unit test";
+        needle = "reproduction_artifact_round_trip_reports_replay_failure";
+      }
+      {
+        label = "expected oracle mismatch unit test";
+        needle = "reproduction_artifact_round_trip_rejects_inconsistent_expected_oracle";
+      }
+      {
+        label = "reproduced oracle mismatch unit test";
+        needle = "reproduction_artifact_round_trip_rejects_inconsistent_reproduced_oracle";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
@@ -340,6 +440,10 @@
         needle = "\"T-DET-21\"";
       }
       {
+        label = "phase1 replay-oracle lists T-DET-27";
+        needle = "\"T-DET-27\"";
+      }
+      {
         label = "phase1 replay-oracle lists T-HARN-12";
         needle = "\"T-HARN-12\"";
       }
@@ -360,6 +464,10 @@
       {
         label = "T-DET-21 checklist complete";
         needle = "- [x] **T-DET-21**";
+      }
+      {
+        label = "T-DET-27 checklist complete";
+        needle = "- [x] **T-DET-27**";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
@@ -440,6 +548,14 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-replay-oracle-target" \
+              -p crucible-harness \
+              --lib \
+              replay_oracle \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-replay-oracle-target" \
               -p crucible-qemu \
               --lib \
               replay_oracle \
@@ -486,10 +602,14 @@ in
             gate=gate:replay-oracle
             tasks=${builtins.concatStringsSep "," taskIds}
             rust_test=crucible::gate_replay_oracle
+            harness_rust_test=crucible-harness::replay_oracle
             qemu_rust_test=crucible-qemu::realization::replay_oracle
             oracle=fat-materialized-equals-thin-from-ancestor
             qemu_oracle=loadvm-snapshot-equals-replay-from-ancestor
             qemu_oracle_probe_authorization=snapshot-completeness
+            artifact_round_trip=re-run-from-seed-scenario-schedule-build-identity
+            artifact_replay_assertions=fingerprint-equality,oracle-case-equality
+            artifact_replay_negative_controls=build-identity-drift,seed-drift,scenario-drift,schedule-drift,oracle-case-drift,replay-failure,expected-oracle-mismatch,reproduced-oracle-mismatch
             corpus=fixed-checkpoints
             guest_non_modification=launch-contract-gate
             required_guest_non_modification_gates=gate:any-guest,gate:replay-oracle
