@@ -1933,8 +1933,16 @@ impl TemporalGraph {
         if self.genesis_snapshot(&configuration.def).is_some() {
             self.record_thin_checkpoint(configuration)?;
         }
-        if let Some(checkpoint) = self.cached_snapshot(configuration) {
-            return Ok(checkpoint.clone());
+        if self.cached_snapshot(configuration).is_some() {
+            if self.has_replay_oracle_path(configuration)? {
+                self.replay_oracle_admit_cached_snapshot(configuration)?;
+            }
+            if let Some(checkpoint) = self.cached_snapshot(configuration) {
+                return Ok(checkpoint.clone());
+            }
+        }
+        if self.has_replay_oracle_path(configuration)? {
+            self.replay_oracle_admit_cached_ancestors(configuration)?;
         }
 
         let runtime = instantiate(self, configuration)?;
@@ -1972,6 +1980,11 @@ impl TemporalGraph {
         if self.genesis_snapshot(&configuration.def).is_some() {
             self.record_thin_checkpoint(configuration)?;
         }
+        if self.cached_snapshot(configuration).is_some()
+            && self.has_replay_oracle_path(configuration)?
+        {
+            self.replay_oracle_admit_cached_snapshot(configuration)?;
+        }
         if let Some(checkpoint) = self.cached_snapshot(configuration).cloned() {
             if hedge.allows_checkpoint(&checkpoint) {
                 return Ok(checkpoint);
@@ -1980,6 +1993,9 @@ impl TemporalGraph {
         }
         if !hedge.fat_snapshot_default() {
             return self.record_thin_checkpoint(configuration);
+        }
+        if self.has_replay_oracle_path(configuration)? {
+            self.replay_oracle_admit_cached_ancestors(configuration)?;
         }
 
         let runtime = instantiate(self, configuration)?;
@@ -2010,8 +2026,13 @@ impl TemporalGraph {
         policy: MaterializationPolicy,
         trigger: MaterializationTrigger,
     ) -> Result<Checkpoint, EngineError> {
-        if let Some(checkpoint) = self.cached_snapshot(configuration) {
-            return Ok(checkpoint.clone());
+        if self.cached_snapshot(configuration).is_some() {
+            if self.has_replay_oracle_path(configuration)? {
+                self.replay_oracle_admit_cached_snapshot(configuration)?;
+            }
+            if let Some(checkpoint) = self.cached_snapshot(configuration) {
+                return Ok(checkpoint.clone());
+            }
         }
         if policy.should_materialize(self.cached_snapshot_count(), trigger) {
             self.materialize_checkpoint(configuration)
@@ -2037,6 +2058,11 @@ impl TemporalGraph {
         trigger: MaterializationTrigger,
         hedge: &SavevmCompletenessHedge,
     ) -> Result<Checkpoint, EngineError> {
+        if self.cached_snapshot(configuration).is_some()
+            && self.has_replay_oracle_path(configuration)?
+        {
+            self.replay_oracle_admit_cached_snapshot(configuration)?;
+        }
         if let Some(checkpoint) = self.cached_snapshot(configuration).cloned() {
             if hedge.allows_checkpoint(&checkpoint) {
                 return Ok(checkpoint);
@@ -2101,6 +2127,71 @@ impl TemporalGraph {
         configuration: &Configuration,
     ) -> Result<Checkpoint, EngineError> {
         self.materialize_checkpoint(configuration)
+    }
+
+    /// Admits an exact cached snapshot only if it matches thin replay.
+    ///
+    /// Cached ancestors are admitted from genesis outward before the target is
+    /// checked, so a corrupt ancestor cannot make a corrupt descendant appear
+    /// valid. The exact target snapshot is never used to validate itself. On a
+    /// replay mismatch or incomplete materialized state, the fat cache entry is
+    /// evicted back to its thin checkpoint before the error is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns replay-oracle validation errors from [`Self::replay_checkpoint`].
+    /// Returns eviction errors if a corrupt cache entry cannot be converted
+    /// back to a thin checkpoint.
+    pub fn replay_oracle_admit_cached_snapshot(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<ReplayOracleCheck>, EngineError> {
+        let Some(checkpoint) = self.cached_snapshot(configuration).cloned() else {
+            return Ok(None);
+        };
+        if let Err(error) = self.replay_oracle_admit_cached_ancestors(configuration) {
+            if replay_oracle_failure_rejects_cache(&error) {
+                self.evict_fat_checkpoint_to_thin(configuration)?;
+            }
+            return Err(error);
+        }
+
+        match self.replay_checkpoint(configuration, &checkpoint) {
+            Ok(check) => Ok(Some(check)),
+            Err(error) => {
+                if replay_oracle_failure_rejects_cache(&error) {
+                    self.evict_fat_checkpoint_to_thin(configuration)?;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Validates every cached fat snapshot as a replay-oracle invariant.
+    ///
+    /// Cached checkpoints are admitted from shortest schedule to longest so a
+    /// corrupt ancestor is rejected before descendants can use it. The first
+    /// mismatch is surfaced and no later cache entry is silently repaired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when a cached checkpoint has
+    /// no independent thin replay path. Returns replay-oracle validation errors
+    /// from [`Self::replay_oracle_admit_cached_snapshot`].
+    pub fn validate_cached_snapshots_with_replay_oracle(
+        &mut self,
+    ) -> Result<Vec<ReplayOracleCheck>, EngineError> {
+        let mut configurations = self.cached_snapshot_configurations()?;
+        configurations
+            .sort_by_key(|configuration| (configuration.schedule.len(), configuration.id()));
+
+        let mut checks = Vec::new();
+        for configuration in configurations {
+            if let Some(check) = self.replay_oracle_admit_cached_snapshot(&configuration)? {
+                checks.push(check);
+            }
+        }
+        Ok(checks)
     }
 
     /// Checks a stored fat checkpoint against its thin replay derivation.
@@ -2345,6 +2436,58 @@ impl TemporalGraph {
         self.cow_delta_refs().into_iter().collect()
     }
 
+    fn has_replay_oracle_path(&self, configuration: &Configuration) -> Result<bool, EngineError> {
+        if configuration.is_genesis() {
+            return Ok(self.genesis_snapshot(&configuration.def).is_some());
+        }
+        Ok(self.genesis_snapshot(&configuration.def).is_some())
+    }
+
+    fn replay_oracle_admit_cached_ancestors(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<(), EngineError> {
+        let ancestors = self.cached_ancestor_configurations(configuration)?;
+        for ancestor in ancestors {
+            self.replay_oracle_admit_cached_snapshot(&ancestor)?;
+        }
+        Ok(())
+    }
+
+    fn cached_ancestor_configurations(
+        &self,
+        configuration: &Configuration,
+    ) -> Result<Vec<Configuration>, EngineError> {
+        let mut ancestors = Vec::new();
+        for prefix_len in 0..configuration.schedule.len() {
+            let schedule = configuration
+                .schedule
+                .prefix(prefix_len)
+                .map_err(EngineError::SchedulePrefix)?;
+            let ancestor = Configuration {
+                def: configuration.def.clone(),
+                schedule,
+            };
+            if self.cached_snapshot(&ancestor).is_some() {
+                ancestors.push(ancestor);
+            }
+        }
+        Ok(ancestors)
+    }
+
+    fn cached_snapshot_configurations(&self) -> Result<Vec<Configuration>, EngineError> {
+        let mut configurations = Vec::new();
+        for checkpoint in self.cached_snapshots.keys() {
+            let configuration = self.recorded_configurations.get(checkpoint).ok_or(
+                EngineError::CheckpointNotRecorded {
+                    checkpoint: *checkpoint,
+                },
+            )?;
+            configurations.push(configuration.clone());
+        }
+        Ok(configurations)
+    }
+
     fn record_checkpoint_closure(
         &mut self,
         configuration: &Configuration,
@@ -2484,6 +2627,9 @@ pub fn reduce(def: &ScenarioDef, schedule: &Schedule) -> Result<State, EngineErr
 
 /// Materializes `config` into a live runtime through `graph`.
 ///
+/// Exact cached snapshots are checked against the replay oracle before they are
+/// loaded whenever the graph has a baked genesis root for the scenario.
+///
 /// # Errors
 ///
 /// Returns [`EngineError::MissingBakedGenesis`] when materialization reaches
@@ -2505,6 +2651,9 @@ pub fn instantiate(
     }
 
     if let Some(snapshot) = graph.cached_snapshot(config) {
+        if graph.has_replay_oracle_path(config)? {
+            graph.replay_checkpoint(config, snapshot)?;
+        }
         return load_snapshot(config, snapshot);
     }
 
@@ -2867,6 +3016,10 @@ fn validate_loadable_checkpoint(
     validate_materialized_state(checkpoint)?;
 
     Ok(())
+}
+
+fn replay_oracle_failure_rejects_cache(error: &EngineError) -> bool {
+    !matches!(error, EngineError::MissingBakedGenesis { .. })
 }
 
 fn validate_materialized_state(checkpoint: &Checkpoint) -> Result<(), EngineError> {

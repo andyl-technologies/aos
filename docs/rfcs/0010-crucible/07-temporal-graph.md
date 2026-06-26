@@ -821,11 +821,23 @@ command.
     fat cache entries; and `marginal_fork_cow_delta_objects` proves a sibling
     fork with identical VM, overlay, and log deltas only adds its new schedule
     delta instead of copying full state.
-- [ ] **T-TEMP-7** Implement the replay oracle as a structural invariant and
+- [x] **T-TEMP-7** Implement the replay oracle as a structural invariant and
   CI gate: `hash(loadvm(fat)) == hash(replay-from-fat-ancestor)`, reject
   failing fat checkpoints to thin, localize failures via divergence bisection,
   and use it as the snapshot-completeness check. — satisfies [TEMP-18],
   [TEMP-19], [TEMP-20]; spec §6; cross-ref 24.
+  - Completed by `TemporalGraph::replay_oracle_admit_cached_snapshot`,
+    `TemporalGraph::validate_cached_snapshots_with_replay_oracle`, and
+    `checks.crucible.phase1.gates.replayOracle`: cached fat snapshots are
+    admitted through thin replay before materialization paths or direct
+    exact-cache realization trust them, and cached ancestors are admitted before
+    descendant targets so a corrupt replay source cannot validate a matching
+    corrupt descendant; a corrupt cached `MaterializedState` is evicted back to
+    the thin checkpoint and surfaces `ReplayOracleMismatch` while the
+    ancestor-replay derivation remains realizable; the gate also keeps the
+    harness first-mismatch /
+    divergence-bisection path and QEMU snapshot-completeness probes wired into
+    the replay-oracle result artifact.
 - [ ] **T-TEMP-8** Implement the content-addressed `DagStore`
   (`put`/`get`/`exists`, BLAKE3 keys, idempotent dedup, two-level on-disk
   layout) with a backend-agnostic trait for future remote backends and
