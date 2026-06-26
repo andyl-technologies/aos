@@ -615,6 +615,7 @@ impl World {
         Self {
             id,
             nodes: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -630,14 +631,38 @@ impl World {
     /// a node selects [`ReadyPoint::AgentSignal`] without enabling
     /// [`WhiteBoxPolicy::Enabled`].
     pub fn from_nodes(nodes: Vec<WorldNode>) -> Result<Self, EngineError> {
+        Self::from_nodes_and_links(nodes, Vec::new())
+    }
+
+    /// Builds a canonical world from node and link topology.
+    ///
+    /// Nodes are sorted by [`NodeId`] and links are sorted by endpoint pair
+    /// before hashing so authoring order does not affect world identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::DuplicateWorldNodeId`] when a node id appears
+    /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
+    /// node selects [`ReadyPoint::AgentSignal`] without enabling
+    /// [`WhiteBoxPolicy::Enabled`], [`EngineError::WorldLinkUnknownNode`] when
+    /// a link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
+    /// when a link's endpoints are equal, or [`EngineError::DuplicateWorldLink`]
+    /// when a canonical endpoint pair appears more than once.
+    pub fn from_nodes_and_links(
+        nodes: Vec<WorldNode>,
+        links: Vec<LinkDef>,
+    ) -> Result<Self, EngineError> {
         let nodes = canonical_world_nodes(&nodes);
+        let links = canonical_world_links(&links);
         validate_world_nodes(&nodes)?;
+        validate_world_links(&nodes, &links)?;
         Ok(Self {
             id: ContentHash::from_canonical_material(
                 "crucible.model.world.v1",
-                &world_nodes_material(&nodes),
+                &world_material(&nodes, &links),
             ),
             nodes,
+            links,
         })
     }
 
@@ -646,11 +671,28 @@ impl World {
     /// # Errors
     ///
     /// Returns [`EngineError::DuplicateWorldNodeId`] when a node id appears
-    /// more than once, or [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when
-    /// a node selects [`ReadyPoint::AgentSignal`] without enabling
-    /// [`WhiteBoxPolicy::Enabled`].
+    /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
+    /// node selects [`ReadyPoint::AgentSignal`] without enabling
+    /// [`WhiteBoxPolicy::Enabled`], or a link validation error from
+    /// [`World::validate_topology`].
     pub fn validate_ready_point_policies(&self) -> Result<(), EngineError> {
-        validate_world_nodes(&self.nodes)
+        self.validate_topology()
+    }
+
+    /// Validates the world's canonical node/link topology.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::DuplicateWorldNodeId`] when a node id appears
+    /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
+    /// node selects [`ReadyPoint::AgentSignal`] without enabling
+    /// [`WhiteBoxPolicy::Enabled`], [`EngineError::WorldLinkUnknownNode`] when
+    /// a link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
+    /// when a link's endpoints are equal, or [`EngineError::DuplicateWorldLink`]
+    /// when a canonical endpoint pair appears more than once.
+    pub fn validate_topology(&self) -> Result<(), EngineError> {
+        validate_world_nodes(&self.nodes)?;
+        validate_world_links(&self.nodes, &self.links)
     }
 
     /// Builds the canonical genesis scenario definition for this world.
@@ -1346,6 +1388,49 @@ pub struct WorldNode {
     pub ready_point: ReadyPoint,
     /// Whether this node opts into the white-box guest-host channel.
     pub white_box: WhiteBoxPolicy,
+}
+
+/// One logical symmetric link between two nodes in a [`World`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LinkDef {
+    endpoint_a: NodeId,
+    endpoint_b: NodeId,
+}
+
+impl LinkDef {
+    /// Builds a link with a canonical endpoint ordering.
+    ///
+    /// `LinkDef::new(a, b)` and `LinkDef::new(b, a)` produce equal links. A
+    /// self-loop is rejected because a world link must reference exactly two
+    /// distinct node endpoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::WorldLinkSelfLoop`] when both endpoints name the
+    /// same node.
+    pub fn new(left: NodeId, right: NodeId) -> Result<Self, EngineError> {
+        if left == right {
+            return Err(EngineError::WorldLinkSelfLoop { node: left });
+        }
+
+        if left <= right {
+            Ok(Self {
+                endpoint_a: left,
+                endpoint_b: right,
+            })
+        } else {
+            Ok(Self {
+                endpoint_a: right,
+                endpoint_b: left,
+            })
+        }
+    }
+
+    /// Returns the canonical endpoint pair.
+    #[must_use]
+    pub fn endpoints(&self) -> (&NodeId, &NodeId) {
+        (&self.endpoint_a, &self.endpoint_b)
+    }
 }
 
 /// The deterministic ready-point policy used by `bake`.
@@ -2429,6 +2514,8 @@ pub struct World {
     pub id: ContentHash,
     /// Canonicalized node ready-point configuration for this world.
     pub nodes: Vec<WorldNode>,
+    /// Canonicalized logical links for this world.
+    pub links: Vec<LinkDef>,
 }
 
 /// An abstract reduced state handle.
@@ -4523,6 +4610,23 @@ pub enum EngineError {
         /// The duplicate node id.
         node: NodeId,
     },
+    /// A world link connects a node to itself.
+    WorldLinkSelfLoop {
+        /// The repeated endpoint node.
+        node: NodeId,
+    },
+    /// A world link references a node that is not declared in the world.
+    WorldLinkUnknownNode {
+        /// The invalid link.
+        link: LinkDef,
+        /// The undeclared endpoint.
+        node: NodeId,
+    },
+    /// A world contains duplicate canonical links.
+    DuplicateWorldLink {
+        /// The duplicated link.
+        link: LinkDef,
+    },
     /// An agent-signal ready point was configured without white-box opt-in.
     WhiteBoxReadyPointWithoutOptIn {
         /// The node whose ready-point configuration is invalid.
@@ -4611,6 +4715,13 @@ impl fmt::Display for EngineError {
                 f.write_str("genesis snapshots must be registered as baked genesis checkpoints")
             }
             Self::DuplicateWorldNodeId { .. } => f.write_str("world contains a duplicate node id"),
+            Self::WorldLinkSelfLoop { .. } => f.write_str("world link endpoints must be distinct"),
+            Self::WorldLinkUnknownNode { .. } => {
+                f.write_str("world link references an undeclared node")
+            }
+            Self::DuplicateWorldLink { .. } => {
+                f.write_str("world contains a duplicate canonical link")
+            }
             Self::WhiteBoxReadyPointWithoutOptIn { .. } => {
                 f.write_str("agent-signal ready point requires white-box opt-in")
             }
@@ -5522,10 +5633,44 @@ fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
     Ok(())
 }
 
+fn validate_world_links(nodes: &[WorldNode], links: &[LinkDef]) -> Result<(), EngineError> {
+    let node_ids = nodes.iter().map(|node| &node.id).collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    for link in links {
+        let (left, right) = link.endpoints();
+        if left == right {
+            return Err(EngineError::WorldLinkSelfLoop { node: left.clone() });
+        }
+        if !node_ids.contains(left) {
+            return Err(EngineError::WorldLinkUnknownNode {
+                link: link.clone(),
+                node: left.clone(),
+            });
+        }
+        if !node_ids.contains(right) {
+            return Err(EngineError::WorldLinkUnknownNode {
+                link: link.clone(),
+                node: right.clone(),
+            });
+        }
+        if !seen.insert(link.clone()) {
+            return Err(EngineError::DuplicateWorldLink { link: link.clone() });
+        }
+    }
+
+    Ok(())
+}
+
 fn canonical_world_nodes(nodes: &[WorldNode]) -> Vec<WorldNode> {
     let mut nodes = nodes.to_vec();
     nodes.sort_by(|left, right| left.id.cmp(&right.id));
     nodes
+}
+
+fn canonical_world_links(links: &[LinkDef]) -> Vec<LinkDef> {
+    let mut links = links.to_vec();
+    links.sort();
+    links
 }
 
 fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
@@ -5562,10 +5707,19 @@ fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
 
 fn world_hash_material(world: &World) -> String {
     let nodes = canonical_world_nodes(&world.nodes);
+    let links = canonical_world_links(&world.links);
     format!(
         "world_id={}\n{}",
         content_hash_hex(world.id),
-        world_nodes_material(&nodes)
+        world_material(&nodes, &links)
+    )
+}
+
+fn world_material(nodes: &[WorldNode], links: &[LinkDef]) -> String {
+    format!(
+        "{}\n{}",
+        world_nodes_material(nodes),
+        world_links_material(links)
     )
 }
 
@@ -5578,6 +5732,15 @@ fn world_nodes_material(nodes: &[WorldNode]) -> String {
     lines.join("\n")
 }
 
+fn world_links_material(links: &[LinkDef]) -> String {
+    let mut lines = Vec::with_capacity(links.len().saturating_mul(4) + 1);
+    lines.push(format!("links={}", links.len()));
+    for link in links {
+        lines.push(world_link_material(link));
+    }
+    lines.join("\n")
+}
+
 fn world_node_material(node: &WorldNode) -> String {
     format!(
         "node_id_len={}\nnode_id={}\n{}\nwhite_box={}",
@@ -5585,6 +5748,17 @@ fn world_node_material(node: &WorldNode) -> String {
         node.id.name,
         ready_point_material(&node.ready_point),
         white_box_material(node.white_box)
+    )
+}
+
+fn world_link_material(link: &LinkDef) -> String {
+    let (left, right) = link.endpoints();
+    format!(
+        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+        left.name.len(),
+        left.name,
+        right.name.len(),
+        right.name
     )
 }
 
