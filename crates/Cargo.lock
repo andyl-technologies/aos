@@ -1537,7 +1537,9 @@ dependencies = [
  "crucible-protocol",
  "crucible-shmem",
  "crucible-sim",
+ "serde",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

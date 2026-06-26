@@ -30,8 +30,8 @@ pub use backend::{
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use model::{
     AppRandomDecision, AssertionDef, AssertionId, Checkpoint, CheckpointKind, CheckpointMeta,
-    ChoiceTag, ClockDriftRate, Configuration, ContentHash, CowDeltaKind, CowDeltaRef,
-    CowSharingStats, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
+    ChoiceTag, ClockDriftRate, Configuration, ContentAddressedBlobRef, ContentHash, CowDeltaKind,
+    CowDeltaRef, CowSharingStats, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
     DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
     EngineError, EventKey, EventLogOffset, FaultDecision, FaultId, FaultState, FaultTag,
     FrontierChild, FrontierCoveredChild, FrontierReductionPolicy, FrontierReductionReason,
@@ -43,8 +43,8 @@ pub use model::{
     PlanEntry, Predicate, PreemptionDecision, PreemptionKind, Properties, Property,
     ReachabilityExpectation, ReachableDisposition, ReadyPoint, ReplayOracleCheck, RestartPolicy,
     RngDecision, RngStreamId, RngStreamPosition, RuntimeState, SavevmCompletenessHedge,
-    ScenarioBuilder, ScenarioDef, Schedule, ScheduleError, SchedulerState, SchedulingPoint,
-    SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
+    ScenarioBuilder, ScenarioDef, ScenarioDefForm, Schedule, ScheduleError, SchedulerState,
+    SchedulingPoint, SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
     SearchReplayOracleSamplingReport, Seed, SeededRngStream, Shift, SimDuration, SimInstant,
     SimOffset, State, SymmetryClassId, SymmetryReductionClasses, SymmetryReductionKey,
     TemporalGraph, TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots,
@@ -1075,6 +1075,9 @@ mod tests {
                 icount: Icount { retired: 10 },
             },
             white_box: WhiteBoxPolicy::Disabled,
+            kernel: None,
+            root_image: None,
+            initrd: None,
         }]);
         let scenario = world.scenario_def();
         let genesis = Configuration::genesis(scenario.clone());
@@ -1145,6 +1148,9 @@ mod tests {
                 icount: Icount { retired: 12 },
             },
             white_box: WhiteBoxPolicy::Disabled,
+            kernel: None,
+            root_image: None,
+            initrd: None,
         }]);
         let scenario = world.scenario_def();
         let genesis = Configuration::genesis(scenario.clone());
@@ -1279,6 +1285,9 @@ mod tests {
                 icount: Icount { retired: 13 },
             },
             white_box: WhiteBoxPolicy::Disabled,
+            kernel: None,
+            root_image: None,
+            initrd: None,
         }]);
         let scenario = world.scenario_def();
         let genesis = Configuration::genesis(scenario.clone());
@@ -1523,6 +1532,9 @@ mod tests {
             id: node_id("d"),
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Enabled,
+            kernel: None,
+            root_image: None,
+            initrd: None,
         };
 
         let canonical = world_from_nodes(vec![
@@ -2646,6 +2658,9 @@ mod tests {
                     id: node_id("agent"),
                     ready_point: ReadyPoint::AgentSignal,
                     white_box: WhiteBoxPolicy::Enabled,
+                    kernel: None,
+                    root_image: None,
+                    initrd: None,
                 },
             ],
             vec![link("idle", "fixed"), link("console", "agent")],
@@ -2704,6 +2719,223 @@ mod tests {
                 .build(),
             Err(EngineError::WhiteBoxReadyPointWithoutOptIn { node })
                 if node == node_id("agent")
+        ));
+    }
+
+    #[test]
+    fn serializable_scenario_form_round_trips_and_rejects_host_paths() {
+        let kernel_ref = ContentAddressedBlobRef::from_hash(ContentHash::from_canonical_material(
+            "crucible.test.blob",
+            "kernel",
+        ));
+        let root_image_ref = ContentAddressedBlobRef::from_hash(
+            ContentHash::from_canonical_material("crucible.test.blob", "root-image"),
+        );
+        let initrd_ref = ContentAddressedBlobRef::from_hash(ContentHash::from_canonical_material(
+            "crucible.test.blob",
+            "initrd",
+        ));
+        let world = world_from_nodes_and_links(
+            vec![
+                WorldNode {
+                    id: node_id("a"),
+                    ready_point: ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 11 },
+                    },
+                    white_box: WhiteBoxPolicy::Disabled,
+                    kernel: Some(kernel_ref),
+                    root_image: Some(root_image_ref),
+                    initrd: Some(initrd_ref),
+                },
+                ready_node(
+                    "b",
+                    ReadyPoint::ConsoleMarker {
+                        marker: String::from("ready"),
+                    },
+                ),
+            ],
+            vec![transport_link("b", "a", 10, 1, 0, Some(1_000_000))],
+        );
+        let world_without_image_refs = world_from_nodes_and_links(
+            vec![
+                ready_node(
+                    "a",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 11 },
+                    },
+                ),
+                ready_node(
+                    "b",
+                    ReadyPoint::ConsoleMarker {
+                        marker: String::from("ready"),
+                    },
+                ),
+            ],
+            vec![transport_link("b", "a", 10, 1, 0, Some(1_000_000))],
+        );
+        let plan = Plan::from_entries_for_world(
+            &world,
+            vec![
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 10 },
+                    tag: tag("split"),
+                    fault: MembershipFault::Partition {
+                        endpoint_a: node_id("b"),
+                        endpoint_b: node_id("a"),
+                        direction: PartitionDirection::Bidirectional,
+                    },
+                },
+                PlanEntry::Heal {
+                    at: VirtualTime { ticks: 40 },
+                    tag: tag("split"),
+                },
+            ],
+        )
+        .unwrap_or_else(|error| panic!("serialized-form plan should be valid: {error}"));
+        let properties = Properties::from_assertions_for_world(
+            &world,
+            vec![assertion(
+                "safety",
+                "replicas never diverge",
+                Property::Reachable {
+                    predicate: Predicate::Once {
+                        predicate: Box::new(Predicate::AllOf {
+                            predicates: vec![
+                                named_predicate("node_alive", &["a"]),
+                                Predicate::Not {
+                                    predicate: Box::new(named_predicate("node_alive", &["b"])),
+                                },
+                            ],
+                        }),
+                    },
+                    expectation: ReachabilityExpectation::Reachable {
+                        on_unreached: ReachableDisposition::Fail,
+                    },
+                },
+            )],
+        )
+        .unwrap_or_else(|error| panic!("serialized-form properties should be valid: {error}"));
+        let seed = Seed::from_u64(0x0010_0016);
+        let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)
+            .unwrap_or_else(|error| panic!("scenario form should validate: {error}"));
+        let scenario = world
+            .scenario_def_with_plan_properties_and_seed(&plan, &properties, seed)
+            .unwrap_or_else(|error| panic!("manual scenario should validate: {error}"));
+        let toml = form
+            .to_canonical_toml()
+            .unwrap_or_else(|error| panic!("scenario form TOML should serialize: {error}"));
+        let binary = form.to_compact_binary();
+        let parsed_toml = ScenarioDefForm::from_canonical_toml(&toml)
+            .unwrap_or_else(|error| panic!("scenario form TOML should parse: {error}"));
+        let parsed_binary = ScenarioDefForm::from_compact_binary(&binary)
+            .unwrap_or_else(|error| panic!("scenario form binary should parse: {error}"));
+        let world_toml = world
+            .to_canonical_toml()
+            .unwrap_or_else(|error| panic!("world TOML should serialize: {error}"));
+        let plan_toml = plan
+            .to_canonical_toml()
+            .unwrap_or_else(|error| panic!("plan TOML should serialize: {error}"));
+        let properties_toml = properties
+            .to_canonical_toml()
+            .unwrap_or_else(|error| panic!("properties TOML should serialize: {error}"));
+        let seed_toml = seed
+            .to_canonical_toml()
+            .unwrap_or_else(|error| panic!("seed TOML should serialize: {error}"));
+        let blob_hash = kernel_ref.hash();
+        let blob_uri = kernel_ref.to_uri();
+        let blob = ContentAddressedBlobRef::parse("kernel", &blob_uri)
+            .unwrap_or_else(|error| panic!("blob ref should parse: {error}"));
+        let wrong_hash =
+            ContentHash::from_canonical_material("crucible.test.scenario-form", "wrong");
+        let wrong_id_toml = toml.replacen(
+            &format!("id = \"blake3:{}\"", form.id().to_hex()),
+            &format!("id = \"blake3:{}\"", wrong_hash.to_hex()),
+            1,
+        );
+        let empty_world = World::from_nodes_and_links(Vec::new(), Vec::new())
+            .unwrap_or_else(|error| panic!("empty world should serialize: {error}"));
+        let empty_world_toml = empty_world
+            .to_canonical_toml()
+            .unwrap_or_else(|error| panic!("empty world TOML should serialize: {error}"));
+        let wrong_empty_world_toml = empty_world_toml.replacen(
+            &format!("id = \"blake3:{}\"", empty_world.id().to_hex()),
+            &format!("id = \"blake3:{}\"", wrong_hash.to_hex()),
+            1,
+        );
+        let mut host_path_toml = toml.clone();
+        host_path_toml.push_str("\nkernel=\"/nix/store/not-a-content-ref/bzImage\"\n");
+
+        assert_eq!(form.scenario_def(), scenario);
+        assert_eq!(parsed_toml, form);
+        assert_eq!(parsed_binary, form);
+        assert_eq!(parsed_toml.canonical_bytes(), form.canonical_bytes());
+        assert_eq!(parsed_binary.canonical_bytes(), form.canonical_bytes());
+        assert_ne!(form.canonical_bytes(), binary);
+        assert_ne!(world_without_image_refs.id(), world.id());
+        assert!(toml.contains(&format!("kernel = \"{}\"", kernel_ref.to_uri())));
+        assert!(toml.contains(&format!("root_image = \"{}\"", root_image_ref.to_uri())));
+        assert!(toml.contains(&format!("initrd = \"{}\"", initrd_ref.to_uri())));
+        assert_eq!(
+            World::from_canonical_toml(&world_toml)
+                .unwrap_or_else(|error| panic!("world TOML should parse: {error}")),
+            world
+        );
+        assert_eq!(
+            World::from_compact_binary(&world.to_compact_binary())
+                .unwrap_or_else(|error| panic!("world binary should parse: {error}")),
+            world
+        );
+        assert_eq!(
+            Plan::from_canonical_toml_for_world(&world, &plan_toml)
+                .unwrap_or_else(|error| panic!("plan TOML should parse: {error}")),
+            plan
+        );
+        assert_eq!(
+            Plan::from_compact_binary_for_world(&world, &plan.to_compact_binary())
+                .unwrap_or_else(|error| panic!("plan binary should parse: {error}")),
+            plan
+        );
+        assert_eq!(
+            Properties::from_canonical_toml_for_world(&world, &properties_toml)
+                .unwrap_or_else(|error| panic!("properties TOML should parse: {error}")),
+            properties
+        );
+        assert_eq!(
+            Properties::from_compact_binary_for_world(&world, &properties.to_compact_binary())
+                .unwrap_or_else(|error| panic!("properties binary should parse: {error}")),
+            properties
+        );
+        assert_eq!(
+            Seed::from_canonical_toml(&seed_toml)
+                .unwrap_or_else(|error| panic!("seed TOML should parse: {error}")),
+            seed
+        );
+        assert_eq!(
+            Seed::from_compact_binary(&seed.to_compact_binary())
+                .unwrap_or_else(|error| panic!("seed binary should parse: {error}")),
+            seed
+        );
+        assert_eq!(blob.hash(), blob_hash);
+        assert_eq!(blob.to_uri(), blob_uri);
+        assert!(matches!(
+            ContentAddressedBlobRef::parse("kernel", "/nix/store/kernel"),
+            Err(EngineError::ScenarioImageReferenceNotContentAddressed { field, value })
+                if field == "kernel" && value == "/nix/store/kernel"
+        ));
+        assert!(matches!(
+            ScenarioDefForm::from_canonical_toml(&wrong_id_toml),
+            Err(EngineError::ScenarioSerializedIdMismatch { component, .. })
+                if component == "scenario"
+        ));
+        assert!(matches!(
+            World::from_canonical_toml(&wrong_empty_world_toml),
+            Err(EngineError::ScenarioSerializedIdMismatch { component, .. })
+                if component == "world"
+        ));
+        assert!(matches!(
+            ScenarioDefForm::from_canonical_toml(&host_path_toml),
+            Err(EngineError::ScenarioImageReferenceNotContentAddressed { field, .. })
+                if field == "kernel"
         ));
     }
 
@@ -2885,6 +3117,9 @@ mod tests {
             id: node_id("agent"),
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Disabled,
+            kernel: None,
+            root_image: None,
+            initrd: None,
         }]);
         let duplicate = World::from_nodes(vec![
             ready_node(
@@ -2904,6 +3139,9 @@ mod tests {
             id: node_id("agent"),
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Enabled,
+            kernel: None,
+            root_image: None,
+            initrd: None,
         }]);
 
         assert!(matches!(
@@ -2946,6 +3184,9 @@ mod tests {
                 id: node_id(&format!("node-{index}")),
                 ready_point,
                 white_box,
+                kernel: None,
+                root_image: None,
+                initrd: None,
             }]);
             let first = match bake(&world) {
                 Ok(genesis) => genesis,
@@ -2976,6 +3217,9 @@ mod tests {
                         icount: Icount { retired: 10 },
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    kernel: None,
+                    root_image: None,
+                    initrd: None,
                 },
                 WorldNode {
                     id: node_id("node"),
@@ -2983,6 +3227,9 @@ mod tests {
                         icount: Icount { retired: 11 },
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    kernel: None,
+                    root_image: None,
+                    initrd: None,
                 },
             ),
             (
@@ -2993,6 +3240,9 @@ mod tests {
                         window: SimDuration { nanos: 250 },
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    kernel: None,
+                    root_image: None,
+                    initrd: None,
                 },
                 WorldNode {
                     id: node_id("node"),
@@ -3000,6 +3250,9 @@ mod tests {
                         window: SimDuration { nanos: 251 },
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    kernel: None,
+                    root_image: None,
+                    initrd: None,
                 },
             ),
             (
@@ -3010,6 +3263,9 @@ mod tests {
                         marker: String::from("ready"),
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    kernel: None,
+                    root_image: None,
+                    initrd: None,
                 },
                 WorldNode {
                     id: node_id("node"),
@@ -3017,6 +3273,9 @@ mod tests {
                         marker: String::from("ready-v2"),
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    kernel: None,
+                    root_image: None,
+                    initrd: None,
                 },
             ),
             (
@@ -3025,6 +3284,9 @@ mod tests {
                     id: node_id("node"),
                     ready_point: ReadyPoint::AgentSignal,
                     white_box: WhiteBoxPolicy::Enabled,
+                    kernel: None,
+                    root_image: None,
+                    initrd: None,
                 },
                 WorldNode {
                     id: node_id("node"),
@@ -3032,6 +3294,9 @@ mod tests {
                         marker: String::from("agent-ready"),
                     },
                     white_box: WhiteBoxPolicy::Enabled,
+                    kernel: None,
+                    root_image: None,
+                    initrd: None,
                 },
             ),
             (
@@ -3042,6 +3307,9 @@ mod tests {
                         icount: Icount { retired: 10 },
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    kernel: None,
+                    root_image: None,
+                    initrd: None,
                 },
                 WorldNode {
                     id: node_id("node"),
@@ -3049,6 +3317,9 @@ mod tests {
                         icount: Icount { retired: 10 },
                     },
                     white_box: WhiteBoxPolicy::Enabled,
+                    kernel: None,
+                    root_image: None,
+                    initrd: None,
                 },
             ),
         ];
@@ -3528,6 +3799,9 @@ mod tests {
             id: node_id(name),
             ready_point,
             white_box: WhiteBoxPolicy::Disabled,
+            kernel: None,
+            root_image: None,
+            initrd: None,
         }
     }
 
