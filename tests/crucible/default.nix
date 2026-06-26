@@ -250,7 +250,7 @@ in {
       patchMicrotestsCheck = import ./phase2-patch-microtests.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.patchMicrotests";
-        taskIds = ["T-PLAN-3" "T-HARN-20" "T-PATCH-2"];
+        taskIds = ["T-PLAN-3" "T-HARN-20" "T-PATCH-2" "T-PATCH-20"];
       };
     in {
       abiConformance = import ./phase2-abi-conformance.nix {

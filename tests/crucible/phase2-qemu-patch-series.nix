@@ -2,13 +2,16 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPatchSeries",
-  taskIds ? ["T-PATCH-1"],
+  taskIds ? ["T-PATCH-1" "T-PATCH-20"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   packagingSpec = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  decisionRegister = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
+  pluginFailLoudCheck = builtins.readFile ./phase2-plugin-fail-loud.nix;
+  qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
 
   patchFiles =
     builtins.sort builtins.lessThan
@@ -300,11 +303,35 @@
     ++ lib.optionals (!(hasInfix "- [x] **T-PATCH-18**" qemuPatchSpec)) [
       "docs/rfcs/0010-crucible/11-qemu-patches.md: T-PATCH-18 diagnostic exclusion decision is not marked complete"
     ]
+    ++ lib.optionals (!(hasInfix "- [x] **T-PATCH-20**" qemuPatchSpec)) [
+      "docs/rfcs/0010-crucible/11-qemu-patches.md: T-PATCH-20 QEMU/plugin capability audit is not marked complete"
+    ]
     ++ lib.optionals (hasInfix "crucible-tcg-exec-diag.patch" qemuNix || hasInfix "crucible-virtserial-socket.patch" qemuNix) [
       "pkgs/emulation/qemu.nix: diagnostic-only patches must not be applied by the shipped package"
     ]
     ++ lib.optionals (!(hasInfix "The pinned QEMU version MUST be" packagingSpec && hasInfix "10.0" packagingSpec)) [
       "docs/rfcs/0010-crucible/26-packaging-aos-integration.md: PKG-9 QEMU >=10.0 requirement missing"
+    ]
+    ++ lib.optionals (!(hasInfix "qemu_version=10.0.0" decisionRegister)) [
+      "docs/rfcs/0010-crucible/31-decision-register.md: current QEMU version pin is not recorded"
+    ]
+    ++ lib.optionals (!(hasInfix "qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=" decisionRegister)) [
+      "docs/rfcs/0010-crucible/31-decision-register.md: current QEMU source hash pin is not recorded"
+    ]
+    ++ lib.optionals (!(hasInfix "missing_capability=distinct-errors" pluginFailLoudCheck)) [
+      "tests/crucible/phase2-plugin-fail-loud.nix: missing required capabilities must produce distinct diagnostics"
+    ]
+    ++ lib.optionals (!(hasInfix "wall_clock_fallback=forbidden" pluginFailLoudCheck)) [
+      "tests/crucible/phase2-plugin-fail-loud.nix: wall-clock fallback must be forbidden when capability setup fails"
+    ]
+    ++ lib.optionals (!(hasInfix "registration_order_fails_loud_when_exact_deadline_capability_missing" pluginFailLoudCheck)) [
+      "tests/crucible/phase2-plugin-fail-loud.nix: exact-deadline capability failure is not covered"
+    ]
+    ++ lib.optionals (!(hasInfix "registration_order_fails_loud_when_synchronous_idle_advance_missing" pluginFailLoudCheck)) [
+      "tests/crucible/phase2-plugin-fail-loud.nix: synchronous idle-advance capability failure is not covered"
+    ]
+    ++ lib.optionals (!(hasInfix "registration_coverage_on_requires_tcg_exec_callback_capability" pluginFailLoudCheck)) [
+      "tests/crucible/phase2-plugin-fail-loud.nix: coverage-on TCG exec capability failure is not covered"
     ];
 
   manifestLines =
@@ -393,15 +420,22 @@ in
               }
             ' "$out/manifest"
 
+            cp "${qemuPluginFailLoud}/result" "$out/qemu-plugin-fail-loud.result"
+            grep -q '^PASS$' "$out/qemu-plugin-fail-loud.result"
+            grep -q '^missing_capability=distinct-errors$' "$out/qemu-plugin-fail-loud.result"
+            grep -q '^wall_clock_fallback=forbidden$' "$out/qemu-plugin-fail-loud.result"
+
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             qemu_version=${series.qemuVersion}
+            qemu_minimum_version=10.0.0
             qemu_minimum_version_satisfied=true
             qemu_source_hash=${series.qemuSourceHash}
             gate=gate:patch-series
             carried_patch_count=${toString (builtins.length carriedPatches)}
+            plugin_api_capability_catalog_count=${toString (builtins.length carriedPatches)}
             patches=${builtins.concatStringsSep "," carriedPatchFiles}
             patch_manifest=pkgs/emulation/qemu-patches/_series.nix
             patch_manifest_matches_carried_catalog=true
@@ -414,6 +448,9 @@ in
             record_replay_start_scaffolding_absent=true
             no_patch_decisions=${builtins.concatStringsSep "," (map (decision: decision.item) noPatchDecisions)}
             no_patch_evidence=${builtins.concatStringsSep "," (map (decision: decision.evidence) noPatchDecisions)}
+            missing_required_capability_check=checks.crucible.phase2.qemuPluginFailLoud
+            qemu_plugin_fail_loud_gate_passed=true
+            missing_required_capability_fails_loud=true
             RESULT
           '';
         }

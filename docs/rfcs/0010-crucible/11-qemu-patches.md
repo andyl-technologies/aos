@@ -1415,9 +1415,16 @@ time-control primitives the whole design rests on.
     reproduction-artifact-shaped fixture pins that build identity and rejects a
     deliberate changed-build negative control, making a QEMU pin or patch change
     a re-gated event.
-- [ ] **T-PATCH-20** Pin and document the minimum QEMU version and the plugin-API
+- [x] **T-PATCH-20** Pin and document the minimum QEMU version and the plugin-API
   capability set; fail the build loudly if a required capability is missing. —
   satisfies [PATCH-40], [PATCH-42]; spec §11.10.
+  - Completed by `checks.crucible.phase2.qemuPatchSeries` and consumed by
+    `gate:patch-microtests`: the QEMU patch manifest pins QEMU 10.0.0 and its
+    source hash, every carried patch records its capability/invariant in the
+    checked series catalog, the shipped package applies the manifest-generated
+    series, and the aggregate gate now consumes
+    `checks.crucible.phase2.qemuPluginFailLoud` so missing required QEMU/plugin
+    capabilities fail with distinct diagnostics and no wall-clock fallback.
 - [ ] **T-PATCH-21** Implement `crucible-rr-quantum-icount`: make the
   single-threaded round-robin vCPU-switch boundary the pinned node-icount
   `rr_switch_quantum` (ascending rotation) in sim mode, supplied by the launch

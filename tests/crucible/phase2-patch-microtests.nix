@@ -2,13 +2,14 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.patchMicrotests",
-  taskIds ? ["T-HARN-20" "T-PATCH-2"],
+  taskIds ? ["T-HARN-20" "T-PATCH-2" "T-PATCH-20"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   defaultNix = builtins.readFile ./default.nix;
   qemuPatchSeries = import ./phase2-qemu-patch-series.nix {inherit pkgs lib;};
+  qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
   qemuPackage = pkgs.qemu-crucible;
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
@@ -331,6 +332,10 @@ in
             grep -q '^artifact_validator_rejects_mismatch=true$' "$out/patch-regeneration.result"
             grep -q '^artifact_mismatch_regates=true$' "$out/patch-regeneration.result"
             grep -q '^qemu_version_bump_regate_enforced=true$' "$out/patch-regeneration.result"
+            cp "${qemuPluginFailLoud}/result" "$out/qemu-plugin-fail-loud.result"
+            grep -q '^PASS$' "$out/qemu-plugin-fail-loud.result"
+            grep -q '^missing_capability=distinct-errors$' "$out/qemu-plugin-fail-loud.result"
+            grep -q '^wall_clock_fallback=forbidden$' "$out/qemu-plugin-fail-loud.result"
             cp "${qemuDoorbellNoPatch}/result" "$out/qemu-doorbell-no-patch.result"
             grep -q '^PASS$' "$out/qemu-doorbell-no-patch.result"
             grep -q '^gate=gate:patch-microtests$' "$out/qemu-doorbell-no-patch.result"
@@ -364,6 +369,8 @@ in
             qemu_build_identity_artifact_checked=true
             qemu_version_bump_regate_enforced=true
             qemu_package_patch_phase_generated_from_manifest=true
+            qemu_plugin_fail_loud_gate_passed=true
+            missing_required_capability_fails_loud=true
             qemu_doorbell_no_patch_gate_passed=true
             qemu_diagnostic_patches_dev_only_gate_passed=true
             apply_clean_pinned_qemu=true
