@@ -391,6 +391,13 @@ green.
       **Why this and not Phase B/C:** the measured floor *is* the per-request D1
       session cost; caching (C) and a coordinator (B) shave the edges but leave it
       intact. **Only removing D1 removes it** — which is exactly what this does.
+      **Validated live (2026-06-25)** on `aos-hub-preview` with `HUB_SQLITE_DO=1`:
+      warm home **I/O ~29 ms (min 9) / TTFB ~45–58 ms**, vs the D1 path's ~140 ms
+      I/O / ~180–200 ms TTFB — **~4× faster**, and a *correct* measurement (local
+      SQLite has no session cost regardless of data, unlike the fresh-D1 artifact
+      that misled the Phase-B reading). Runtime bug found+fixed by this validation:
+      DO SQLite forbids `PRAGMA` (`SQLITE_AUTH`), so migration version-tracking
+      moved from `PRAGMA user_version` to a `_do_migrations` table.
 - [deploy] DO read replicas for global readers; native streaming SQLite replication
       for HA + read scale. *Deploy-gated platform configuration on the above.*
 - [deploy] Decommission D1 as the tenant system of record once parity + data migration
