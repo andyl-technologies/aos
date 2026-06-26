@@ -948,11 +948,33 @@ fn host_identity_value(key: &str) -> Result<String> {
     })
 }
 
-/// Read `key` from the host's global git config (`~/.gitconfig`), returning
-/// `None` when the config or key is absent or empty.
+/// Read `key` from the host's global git configuration, returning `None`
+/// when the config or key is absent or empty.
+///
+/// "Global" matches what `git config --global` resolves, which is *two*
+/// files: the classic `~/.gitconfig` and the XDG
+/// `$XDG_CONFIG_HOME/git/config` (defaulting to `~/.config/git/config`).
+/// libgit2's [`git2::Config::find_global`] locates only the former, so the
+/// XDG file is loaded explicitly via [`git2::Config::find_xdg`]. Skipping it
+/// makes identities kept solely under `~/.config/git/config` — the
+/// home-manager default — invisible. When both files set `key`, the `global`
+/// level outranks `xdg`, exactly as git prioritizes the two.
 fn host_global_config_value(key: &str) -> Option<String> {
-    let path = git2::Config::find_global().ok()?;
-    let config = git2::Config::open(&path).ok()?;
+    let mut config = git2::Config::new().ok()?;
+    let mut loaded = false;
+    if let Ok(path) = git2::Config::find_xdg() {
+        loaded |= config
+            .add_file(&path, git2::ConfigLevel::XDG, false)
+            .is_ok();
+    }
+    if let Ok(path) = git2::Config::find_global() {
+        loaded |= config
+            .add_file(&path, git2::ConfigLevel::Global, false)
+            .is_ok();
+    }
+    if !loaded {
+        return None;
+    }
     let value = config.get_string(key).ok()?;
     (!value.is_empty()).then_some(value)
 }
