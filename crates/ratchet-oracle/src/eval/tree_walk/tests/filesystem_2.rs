@@ -268,6 +268,58 @@ fn read_file_primop_records_impure_input_trace() {
 }
 
 #[test]
+fn hash_file_primop_records_impure_input_trace() {
+    let (dir, path) = temp_file_with_bytes("hash-file-trace", b"trace-data");
+    let path = path_source(&path);
+    let outcome = eval_whnf_owned(&lower(&format!(
+        "builtins.hashFile \"sha256\" {}",
+        nix_string_literal(&path)
+    )))
+    .expect("source evaluates");
+    let hash = outcome
+        .heap()
+        .get_string(outcome.value())
+        .expect("hashFile result is a string");
+    let expected = vec![
+        ImpureInputFingerprint::read_file(path.as_bytes(), b"trace-data")
+            .expect("fingerprint builds"),
+    ];
+
+    assert_eq!(
+        hash.bytes(),
+        b"6baf94804418a468e20bcb66b608e524d8a890da9b128f47aadaedeaeeec22f4"
+    );
+    assert_eq!(outcome.impure_input_trace(), expected.as_slice());
+
+    let mut cache = EvalCache::new();
+    let observation = cache
+        .observe_impure_inputs(&outcome)
+        .expect("outcome trace observes");
+    assert_eq!(observation.status(), ImpureTraceStatus::Cacheable);
+    assert_eq!(observation.leaves().len(), 1);
+    assert_eq!(cache.len(), 1);
+
+    let first_class_outcome = eval_whnf_owned(&lower(&format!(
+        "let hash = builtins.hashFile \"sha256\"; in hash {}",
+        nix_string_literal(&path)
+    )))
+    .expect("first-class hashFile evaluates");
+    assert_eq!(
+        first_class_outcome.impure_input_trace(),
+        expected.as_slice()
+    );
+
+    let text_store_outcome = eval_whnf_owned(&lower(
+        r#"builtins.hashFile "sha256" (builtins.toFile "x" "trace-data")"#,
+    ))
+    .expect("text-store hashFile evaluates");
+    assert!(text_store_outcome.impure_input_trace().is_empty());
+    assert!(text_store_outcome.impure_input_trace_complete());
+
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
 fn read_file_primop_returns_context_free_strings() {
     let (dir, path) = temp_file_with_bytes(
         "read-file-context-free",

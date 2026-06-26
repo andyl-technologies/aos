@@ -249,8 +249,11 @@ fn configured_cache_preserves_guarded_hash_file_surface() {
     fs::write(&marker_path, b"present").expect("marker writes");
     let root = fs::canonicalize(&root).expect("source root canonicalizes");
     let marker_path = path_bytes(&root.join("marker"));
-    let expected_trace =
-        vec![ImpureInputFingerprint::path_exists(&marker_path, true).expect("fingerprint builds")];
+    let payload_path = path_bytes(&root.join("payload.txt"));
+    let expected_trace = vec![
+        ImpureInputFingerprint::path_exists(&marker_path, true).expect("fingerprint builds"),
+        ImpureInputFingerprint::read_file(&payload_path, payload).expect("fingerprint builds"),
+    ];
     let source = r#"let
              b = builtins;
              forced = b.pathExists ./marker;

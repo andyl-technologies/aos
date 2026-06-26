@@ -616,12 +616,14 @@ alone (`M-1`/`Q-A`).
       cacheable, wiring the expression node to the observed input leaves at the
       same time.
       The observation whitelist admits the existing pure subset plus cacheable
-      input primops (`import`, `getEnv`, `pathExists`, `readDir`, `readFile`,
-      `readFileType`) with safe children such as path literals, so stable
-      `pathExists` and canonical plain-file filesystem-import thunks reached
-      without symlinked path components now create expression/input edges while
-      `currentTime`, symlinked import routes, search-path literals, and
-      application-like forms still create no payload.
+      input primops (`import`, `getEnv`, `hashFile`, `pathExists`, `readDir`,
+      `readFile`, `readFileType`) with safe children such as path literals, so
+      stable `pathExists`, ordinary filesystem `hashFile`, and canonical
+      plain-file filesystem-import thunks reached without symlinked path
+      components now create expression/input edges while `currentTime`,
+      symlinked import routes, search-path literals, and application-like forms
+      outside the selected first-class cacheable impure call subset still create
+      no payload.
       Trace-backed payload records are tagged as requiring revalidation and are
       misses through the existing public lookup API; incomplete or uncacheable
       trace observations invalidate any existing payload for the same
@@ -1130,14 +1132,13 @@ alone (`M-1`/`Q-A`).
       `builtins.pathExists ./marker` guard with eval-cache disabled, with
       configured persistent force-cache demand/writeback on cold and
       materializing paths, and with a fresh-runtime persistent force-cache hit
-      for the guard,
+      for the guarded hashFile trace,
       then requires identical SHA-256 file-hash output across all runs and scans
       that output for synthetic root parse-cache-key and payload-content BLAKE3
-      sentinels, actual guard persistent force-cache trace/value canaries, and
-      hot xxh3 canaries. These sample selected `hashString`/`hashFile` output
-      surfaces only; they do not prove `hashFile` payload trace admission,
-      stale-payload invalidation, the full hash/fetch builtin leak-invariant gate
-      (`S-15`).
+      sentinels, actual guard/hashFile persistent force-cache trace/value
+      canaries, and hot xxh3 canaries. These sample selected
+      `hashString`/`hashFile` output surfaces only; they do not prove the full
+      hash/fetch builtin leak-invariant gate (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
@@ -1855,10 +1856,11 @@ alone (`M-1`/`Q-A`).
       tree-walk forced-expression lookup now tries the trace-verified
       persistent node-value load after an in-memory force-cache miss; pure
       values hit through the same path by using a zero-input trace record
-      rather than trace absence. Saturated first-class cacheable impure unary
-      calls (`import`, `pathExists`, `readDir`, `readFile`, `readFileType`, and
-      `getEnv`) share this path through a force-cache subject keyed by
-      apply-node identity, builtin name, and argument value hash. Hits
+      rather than trace absence. Selected saturated first-class cacheable
+      impure calls share this path through a force-cache subject keyed by
+      apply-node identity, builtin name, and argument value hashes: unary
+      `import`, `pathExists`, `readDir`, `readFile`, `readFileType`, and
+      `getEnv`, plus full-arity first-class `hashFile`. Hits
       rehydrate replayable payloads into the
       current evaluator heap, preserving source-order attrset metadata and
       root-or-own-module binding source positions when the durable payload carries those attrset
@@ -1874,12 +1876,12 @@ alone (`M-1`/`Q-A`).
       positioned payloads, and incompatible, multi-module, or non-own positioned
       payloads all fall back to ordinary forcing and clear stale
       durable payload links. This is replayable forced-expression hit selection only:
-      no dirty propagation beyond revalidation miss fallback, lazy-element list
-      or lazy-binding attrset values, broader multi-module/non-own binding-position
-      module-source remapping, transactionality with value
-      materialization, currentTime taint propagation through persisted
-      dependents, automatic compaction/GC, mmap reads, and cached/uncached
-      harness proof remain open
+      no dirty propagation beyond revalidation miss fallback, partially applied
+      `hashFile` payload caching, lazy-element list or lazy-binding attrset
+      values, broader multi-module/non-own binding-position module-source
+      remapping, transactionality with value materialization, currentTime taint
+      propagation through persisted dependents, automatic compaction/GC, mmap
+      reads, and cached/uncached harness proof remain open
       (`C-13`/`R-10`/`S-14`).
 - [x] Current persistent force-value `.drv` surface parity canary:
       `persistent_force_cache_hit_preserves_drv_surfaces` evaluates the same
@@ -2287,14 +2289,31 @@ alone (`M-1`/`Q-A`).
       allowed-path/IFD/fetch interactions, and edge-exactness harness coverage
       remain open (`R-10`).
 - [x] Current tree-walk impure-input observation trace: successful ordinary
-      filesystem `import`, `readFile`, `readDir`, `readFileType`,
+      filesystem `import`, `readFile`, `hashFile`, `readDir`, `readFileType`,
       `pathExists`, and impure-mode `getEnv` calls append `cache/input.rs`
-      fingerprints to `TreeWalk`/`EvalOutcome`; selected `currentTime` appends
-      an uncacheable marker. Trace construction failures mark the trace
-      incomplete/cache-unusable without changing Nix evaluation semantics. This
-      is an evaluator observation surface only; demand-graph leaves,
-      dependency wiring, persistence, allowed-path/IFD/fetch interactions, and
-      edge-exactness harness coverage remain open (`R-10`).
+      fingerprints to `TreeWalk`/`EvalOutcome`; ordinary filesystem `hashFile`
+      reuses the `ReadFile` fingerprint for the bytes it hashes; selected
+      `currentTime` appends an uncacheable marker. Trace construction failures
+      mark the trace incomplete/cache-unusable without changing Nix evaluation
+      semantics. This is an evaluator observation surface only; demand-graph
+      leaves, dependency wiring, persistence, allowed-path/IFD/fetch
+      interactions, and edge-exactness harness coverage remain open (`R-10`).
+- [x] Current `hashFile` impure-leaf force-cache canary:
+      `persistent_hash_file_force_cache_hit_and_stale_miss_preserve_drv_surfaces`
+      evaluates a derivation attr path whose `args` include
+      first-class `b.hashFile "sha256" ./input.txt`, materializes the first
+      file payload through configured persistent force-cache writeback, verifies
+      a fresh-runtime persistent hit for that `ReadFile`-fingerprinted payload
+      with no force-cache misses, mutates the hashed file, requires the stale
+      run to miss and recompute, then verifies same-runtime and fresh-runtime
+      hits for the changed payload with no force-cache misses while preserving
+      cache-on/cache-off `.drv` path and ATerm parity for both file versions.
+      This proves selected ordinary filesystem full-arity first-class
+      `hashFile` payload trace admission and stale-payload fallback inside a
+      derivation input surface only; partially applied hashFile payload caching,
+      allowed-path/IFD/fetch interactions, text-store-only paths, full automatic
+      demand-edge wiring, and edge-exactness harness coverage remain open
+      (`R-10`/`S-14`).
 - [x] Current cache-side impure leaf substrate: domain-separated
       `DemandCacheKey` construction from typed input identities,
       non-canonical `ValueHash` wrapping for observed input results, and
@@ -2379,7 +2398,7 @@ alone (`M-1`/`Q-A`).
       only; evaluator memo lookup, automatic taint propagation through
       already-memoized dependents, persistence, and edge-exactness harness
       coverage remain open (`R-10`/`S-14`).
-- [ ] Full impure-input edges remain: `import`/`readFile`/`readDir`/
+- [ ] Full impure-input edges remain: `import`/`readFile`/`hashFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable
       (`R-10`).

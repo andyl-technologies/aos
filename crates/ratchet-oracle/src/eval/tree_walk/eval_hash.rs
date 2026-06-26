@@ -513,7 +513,7 @@ impl TreeWalk {
                 })?
                 .contents
         } else {
-            fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
+            let contents = fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::FileRead {
                         id: path_id,
@@ -522,7 +522,9 @@ impl TreeWalk {
                     },
                     path_span,
                 )
-            })?
+            })?;
+            self.record_impure_input_result(ImpureInputFingerprint::read_file(&path, &contents));
+            contents
         };
         let digest = Self::hash_bytes(&contents, algorithm);
         self.alloc_hash_digest(id, span, &digest)
