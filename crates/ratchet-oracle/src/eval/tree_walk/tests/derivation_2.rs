@@ -176,22 +176,43 @@ fn derivation_strict_observes_aterm_early_cutoff_in_eval_cache() {
         )
     }
 
-    let source = r#"let d = derivationStrict {
+    let source = r#"derivationStrict {
         name = "x";
         system = "x86_64-linux";
         builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
         env = "same";
-    }; in d.drvPath"#;
+    }"#;
     let ir = lower(source);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let (identity, free_var_hashes) = TreeWalk::with_options_and_eval_cache(
+        &ir,
+        TreeWalkOptions::with_eval_cache_enabled(true),
+        cache.clone(),
+    )
+    .derivation_aterm_cache_subject_for_current_node(ir.root)
+    .expect("root derivation ATerm subject builds");
 
     let (first_path, first_aterm, first_cutoffs, first_hits, first_misses) =
         evaluate(&ir, cache.clone());
+    let first_cached_path = cache
+        .lock()
+        .expect("cache lock is valid")
+        .lookup_derivation_aterm_path(identity, free_var_hashes.iter().copied(), &first_aterm)
+        .expect("derivation ATerm path lookup succeeds")
+        .expect("first derivation ATerm path is recorded");
     let (second_path, second_aterm, second_cutoffs, second_hits, second_misses) =
         evaluate(&ir, cache.clone());
+    let second_cached_path = cache
+        .lock()
+        .expect("cache lock is valid")
+        .lookup_derivation_aterm_path(identity, free_var_hashes.iter().copied(), &second_aterm)
+        .expect("derivation ATerm path lookup succeeds")
+        .expect("second derivation ATerm path is recorded");
 
     assert_eq!(second_path, first_path);
     assert_eq!(second_aterm, first_aterm);
+    assert_eq!(first_cached_path, first_path.as_bytes());
+    assert_eq!(second_cached_path, second_path.as_bytes());
     assert_eq!(first_cutoffs, 0);
     assert_eq!(second_cutoffs, 1);
     assert_eq!((first_hits, first_misses), (0, 0));

@@ -603,6 +603,7 @@ impl TreeWalk {
                 return;
             }
         };
+        let drv_path_bytes = self.store_path_absolute_bytes(drv_path);
         let early_cutoff = {
             let Ok(mut cache) = self.eval_cache.lock() else {
                 tracing::warn!(
@@ -611,10 +612,11 @@ impl TreeWalk {
                 );
                 return;
             };
-            match cache.observe_derivation_aterm_expression(
+            match cache.observe_derivation_aterm_expression_path(
                 identity,
                 free_var_value_hashes.iter().copied(),
                 &aterm,
+                &drv_path_bytes,
             ) {
                 Ok(Some(reconsideration)) => reconsideration.decision() == CutoffDecision::CutOff,
                 Ok(None) => false,

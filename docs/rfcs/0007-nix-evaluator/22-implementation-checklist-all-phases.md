@@ -842,6 +842,18 @@ alone (`M-1`/`Q-A`).
       beyond hashable lexical captures, no SHA-256 short-circuiting, no
       persistence, and no full cached/uncached `.drv` parity proof
       (`S-14`/`S-15`).
+- [x] Current derivationStrict ATerm path-record writeback substrate:
+      tree-walk `derivationStrict` writes the already-computed absolute `.drv`
+      path bytes into the derivation ATerm cache side record through
+      `EvalCacheRuntime::observe_derivation_aterm_expression_path`, after
+      normal Nix-observed path computation has completed, when eval-cache
+      observation is enabled and derivation ATerm subject capture, runtime
+      locking, and serialization succeed. The path can be looked up from the
+      shared runtime for the same clean ATerm node, but tree-walk does not
+      consult that lookup before hashing or path construction. Evaluator
+      lookup wiring, persistence, dependency capture beyond hashable lexical
+      captures, SHA-256 short-circuiting, and full cached/uncached `.drv`
+      parity proof remain open (`S-14`/`S-15`).
 - [x] Current forced-payload early-cutoff stats substrate:
       trace-backed force-cache payload observation now reports its value-hash
       `Reconsideration`, first trace-backed insertion uses no synthetic prior
