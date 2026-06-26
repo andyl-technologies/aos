@@ -910,6 +910,348 @@ impl World {
     }
 }
 
+/// Reusable node settings for code-first scenario authoring.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NodeTemplate {
+    ready_point: ReadyPoint,
+    white_box: WhiteBoxPolicy,
+}
+
+impl NodeTemplate {
+    /// Builds a node template with the supplied ready point and white-box disabled.
+    #[must_use]
+    pub fn new(ready_point: ReadyPoint) -> Self {
+        Self {
+            ready_point,
+            white_box: WhiteBoxPolicy::Disabled,
+        }
+    }
+
+    /// Builds a template for a fixed-instruction ready point.
+    #[must_use]
+    pub fn fixed_icount(icount: Icount) -> Self {
+        Self::new(ReadyPoint::FixedIcount { icount })
+    }
+
+    /// Builds a template for a network-idle ready point.
+    #[must_use]
+    pub fn network_idle(window: SimDuration) -> Self {
+        Self::new(ReadyPoint::NetworkIdle { window })
+    }
+
+    /// Builds a template for a console-marker ready point.
+    #[must_use]
+    pub fn console_marker(marker: impl Into<String>) -> Self {
+        Self::new(ReadyPoint::ConsoleMarker {
+            marker: marker.into(),
+        })
+    }
+
+    /// Builds a template for an agent-signal ready point with white-box opt-in.
+    #[must_use]
+    pub fn agent_signal() -> Self {
+        Self {
+            ready_point: ReadyPoint::AgentSignal,
+            white_box: WhiteBoxPolicy::Enabled,
+        }
+    }
+
+    /// Builds a node template by copying another world node's settings.
+    #[must_use]
+    pub fn from_world_node(node: &WorldNode) -> Self {
+        Self {
+            ready_point: node.ready_point.clone(),
+            white_box: node.white_box,
+        }
+    }
+
+    /// Replaces the template ready point.
+    #[must_use]
+    pub fn ready_point(mut self, ready_point: ReadyPoint) -> Self {
+        self.ready_point = ready_point;
+        self
+    }
+
+    /// Replaces the template white-box policy.
+    #[must_use]
+    pub fn white_box(mut self, white_box: WhiteBoxPolicy) -> Self {
+        self.white_box = white_box;
+        self
+    }
+
+    fn instantiate(&self, id: NodeId) -> WorldNode {
+        WorldNode {
+            id,
+            ready_point: self.ready_point.clone(),
+            white_box: self.white_box,
+        }
+    }
+}
+
+impl From<WorldNode> for NodeTemplate {
+    fn from(node: WorldNode) -> Self {
+        Self::from_world_node(&node)
+    }
+}
+
+/// Code-first scenario authoring surface for the four orthogonal scenario layers.
+#[derive(Clone, Debug, Default)]
+pub struct ScenarioBuilder {
+    nodes: Vec<PendingScenarioNode>,
+    links: Vec<PendingScenarioLink>,
+    plan: Option<Plan>,
+    plan_entries: Vec<PlanEntry>,
+    properties: Option<Properties>,
+    assertions: Vec<AssertionDef>,
+    seed: Seed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum PendingScenarioNode {
+    Concrete(WorldNode),
+    Like { id: NodeId, template: NodeId },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum PendingScenarioLink {
+    Default {
+        left: NodeId,
+        right: NodeId,
+    },
+    Transport {
+        left: NodeId,
+        right: NodeId,
+        latency: SimDuration,
+        jitter: SimDuration,
+        loss: LinkLossProbability,
+        bandwidth_bps: Option<u64>,
+    },
+    Concrete(LinkDef),
+}
+
+impl ScenarioBuilder {
+    /// Starts an empty scenario builder with empty plan/properties and default seed.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Copies a complete world into the builder's world layer.
+    #[must_use]
+    pub fn world(mut self, world: &World) -> Self {
+        self.nodes.extend(
+            world
+                .nodes()
+                .iter()
+                .cloned()
+                .map(PendingScenarioNode::Concrete),
+        );
+        self.links.extend(
+            world
+                .links()
+                .iter()
+                .cloned()
+                .map(PendingScenarioLink::Concrete),
+        );
+        self
+    }
+
+    /// Adds a concrete node from a reusable node template.
+    #[must_use]
+    pub fn node(mut self, name: impl Into<String>, template: NodeTemplate) -> Self {
+        let id = NodeId { name: name.into() };
+        self.nodes
+            .push(PendingScenarioNode::Concrete(template.instantiate(id)));
+        self
+    }
+
+    /// Adds a node by copying another declared node's template settings at build time.
+    #[must_use]
+    pub fn node_like(mut self, name: impl Into<String>, template: impl Into<String>) -> Self {
+        self.nodes.push(PendingScenarioNode::Like {
+            id: NodeId { name: name.into() },
+            template: NodeId {
+                name: template.into(),
+            },
+        });
+        self
+    }
+
+    /// Adds a default logical world link between two node names.
+    #[must_use]
+    pub fn link(mut self, left: impl Into<String>, right: impl Into<String>) -> Self {
+        self.links.push(PendingScenarioLink::Default {
+            left: NodeId { name: left.into() },
+            right: NodeId { name: right.into() },
+        });
+        self
+    }
+
+    /// Adds a logical world link with explicit transport characteristics.
+    #[must_use]
+    pub fn link_with_transport(
+        mut self,
+        left: impl Into<String>,
+        right: impl Into<String>,
+        latency: SimDuration,
+        jitter: SimDuration,
+        loss: LinkLossProbability,
+        bandwidth_bps: Option<u64>,
+    ) -> Self {
+        self.links.push(PendingScenarioLink::Transport {
+            left: NodeId { name: left.into() },
+            right: NodeId { name: right.into() },
+            latency,
+            jitter,
+            loss,
+            bandwidth_bps,
+        });
+        self
+    }
+
+    /// Adds an already-constructed logical world link.
+    #[must_use]
+    pub fn link_def(mut self, link: LinkDef) -> Self {
+        self.links.push(PendingScenarioLink::Concrete(link));
+        self
+    }
+
+    /// Sets the complete plan layer.
+    #[must_use]
+    pub fn plan(mut self, plan: Plan) -> Self {
+        self.plan = Some(plan);
+        self.plan_entries.clear();
+        self
+    }
+
+    /// Adds one plan entry to the plan layer.
+    #[must_use]
+    pub fn plan_entry(mut self, entry: PlanEntry) -> Self {
+        self.plan = None;
+        self.plan_entries.push(entry);
+        self
+    }
+
+    /// Sets the complete properties layer.
+    #[must_use]
+    pub fn properties(mut self, properties: Properties) -> Self {
+        self.properties = Some(properties);
+        self.assertions.clear();
+        self
+    }
+
+    /// Adds one assertion to the properties layer.
+    #[must_use]
+    pub fn property(mut self, assertion: AssertionDef) -> Self {
+        self.properties = None;
+        self.assertions.push(assertion);
+        self
+    }
+
+    /// Sets the scenario root entropy.
+    #[must_use]
+    pub fn seed(mut self, seed: Seed) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    /// Builds, validates, canonicalizes, and content-addresses the scenario.
+    ///
+    /// # Errors
+    ///
+    /// Returns world validation errors for invalid node/link topology, plan
+    /// validation errors when plan entries cannot layer over the static world,
+    /// property validation errors when assertions reference undeclared nodes or
+    /// malformed compound predicates, or
+    /// [`EngineError::ScenarioBuilderUnknownNodeTemplate`] when a `node_like`
+    /// entry names no concrete node template.
+    pub fn build(self) -> Result<ScenarioDef, EngineError> {
+        let world = World::from_nodes_and_links(self.build_nodes()?, self.build_links()?)?;
+        let plan = self.build_plan(&world)?;
+        let properties = self.build_properties(&world)?;
+        world.scenario_def_with_plan_properties_and_seed(&plan, &properties, self.seed)
+    }
+
+    fn build_nodes(&self) -> Result<Vec<WorldNode>, EngineError> {
+        let mut templates = BTreeMap::new();
+        let mut nodes = Vec::with_capacity(self.nodes.len());
+
+        for pending in &self.nodes {
+            if let PendingScenarioNode::Concrete(node) = pending {
+                templates.insert(node.id.clone(), NodeTemplate::from_world_node(node));
+                nodes.push(node.clone());
+            }
+        }
+
+        for pending in &self.nodes {
+            if let PendingScenarioNode::Like { id, template } = pending {
+                let node_template = templates.get(template).ok_or_else(|| {
+                    EngineError::ScenarioBuilderUnknownNodeTemplate {
+                        node: id.clone(),
+                        template: template.clone(),
+                    }
+                })?;
+                nodes.push(node_template.instantiate(id.clone()));
+            }
+        }
+
+        Ok(nodes)
+    }
+
+    fn build_links(&self) -> Result<Vec<LinkDef>, EngineError> {
+        self.links
+            .iter()
+            .map(|pending| match pending {
+                PendingScenarioLink::Default { left, right } => {
+                    LinkDef::new(left.clone(), right.clone())
+                }
+                PendingScenarioLink::Transport {
+                    left,
+                    right,
+                    latency,
+                    jitter,
+                    loss,
+                    bandwidth_bps,
+                } => LinkDef::with_transport(
+                    left.clone(),
+                    right.clone(),
+                    *latency,
+                    *jitter,
+                    *loss,
+                    *bandwidth_bps,
+                ),
+                PendingScenarioLink::Concrete(link) => Ok(link.clone()),
+            })
+            .collect()
+    }
+
+    fn build_plan(&self, world: &World) -> Result<Plan, EngineError> {
+        if let Some(plan) = &self.plan {
+            plan.validate_for_world(world)?;
+            return Ok(plan.clone());
+        }
+
+        if self.plan_entries.is_empty() {
+            Ok(Plan::empty())
+        } else {
+            Plan::from_entries_for_world(world, self.plan_entries.clone())
+        }
+    }
+
+    fn build_properties(&self, world: &World) -> Result<Properties, EngineError> {
+        if let Some(properties) = &self.properties {
+            properties.validate_for_world(world)?;
+            return Ok(properties.clone());
+        }
+
+        if self.assertions.is_empty() {
+            Ok(Properties::empty())
+        } else {
+            Properties::from_assertions_for_world(world, self.assertions.clone())
+        }
+    }
+}
+
 /// The only identity-bearing execution configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Configuration {
@@ -5503,6 +5845,13 @@ pub enum EngineError {
         /// Stable name of the empty compound predicate kind.
         kind: &'static str,
     },
+    /// A scenario-builder node template reference names no concrete node.
+    ScenarioBuilderUnknownNodeTemplate {
+        /// The node that requested a copied template.
+        node: NodeId,
+        /// The missing template node name.
+        template: NodeId,
+    },
     /// A runtime was replayed from a configuration it does not materialize.
     RuntimeConfigurationMismatch {
         /// The runtime-state id whose metadata was invalid.
@@ -5628,6 +5977,9 @@ impl fmt::Display for EngineError {
             }
             Self::PropertyPredicateEmptyCompound { kind } => {
                 write!(f, "property predicate compound {kind} has no children")
+            }
+            Self::ScenarioBuilderUnknownNodeTemplate { .. } => {
+                f.write_str("scenario builder node template is unknown")
             }
             Self::RuntimeConfigurationMismatch { .. } => {
                 f.write_str("runtime configuration does not match replay start configuration")
