@@ -21,6 +21,10 @@ default = []
 # response header so the per-request D1 session cost is visible in `wrangler
 # tail` / the network panel. For the preview Worker only — off in production.
 query-timing = ["aos-hub-core/query-timing"]
+# One-time D1->HubDb data-replay admin path (`POST /_admin/sql`, seal-gated).
+# NOT in the production build — enable only to run a migration, then redeploy the
+# default build. RFC-0004 ch.14 Phase E cutover.
+cutover-admin = []
 
 [dependencies]
 # The pure, wasm-clean registry reader — the exact verifier the native hub
