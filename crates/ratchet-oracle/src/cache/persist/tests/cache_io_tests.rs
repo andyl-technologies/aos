@@ -233,6 +233,90 @@ fn cache_blob_pack_index_entries_rejects_corrupt_pack() {
 }
 
 #[test]
+fn cache_latest_blob_pack_index_entries_compacts_physical_duplicates() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+
+    assert!(
+        cache
+            .latest_blob_pack_index_entries(PersistBlobStore::Values)
+            .expect("empty value pack scans")
+            .is_empty()
+    );
+
+    let duplicate_payload = b"duplicate payload";
+    let duplicate_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(duplicate_payload));
+    let first_duplicate = cache
+        .append_blob(duplicate_key, duplicate_payload)
+        .expect("first duplicate appends");
+    let other_payload = b"other payload";
+    let other_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(other_payload));
+    let other_location = cache
+        .append_blob(other_key, other_payload)
+        .expect("other blob appends");
+    let latest_duplicate = cache
+        .append_blob(duplicate_key, duplicate_payload)
+        .expect("latest duplicate appends");
+
+    let mut expected = vec![
+        PersistBlobIndexEntry::new(duplicate_key, latest_duplicate),
+        PersistBlobIndexEntry::new(other_key, other_location),
+    ];
+    expected.sort_by_key(|entry| entry.key().index_bytes());
+
+    assert_eq!(
+        cache
+            .latest_blob_pack_index_entries(PersistBlobStore::Values)
+            .expect("latest value pack entries scan"),
+        expected
+    );
+    assert_eq!(
+        cache
+            .blob_pack_index_entries(PersistBlobStore::Values)
+            .expect("physical value pack entries scan"),
+        vec![
+            PersistBlobIndexEntry::new(duplicate_key, first_duplicate),
+            PersistBlobIndexEntry::new(other_key, other_location),
+            PersistBlobIndexEntry::new(duplicate_key, latest_duplicate),
+        ],
+        "physical scan should keep duplicates for repair tools that need them"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_latest_blob_pack_index_entries_keep_store_namespaces_separate() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"shared payload";
+    let hash = DurableBlake3Hash::for_bytes(payload);
+    let value_key = PersistBlobKey::for_value(hash);
+    let file_key = PersistBlobKey::for_file(hash);
+    let value_location = cache
+        .append_blob(value_key, payload)
+        .expect("value blob appends");
+    let file_location = cache
+        .append_blob(file_key, payload)
+        .expect("file blob appends");
+
+    assert_eq!(
+        cache
+            .latest_blob_pack_index_entries(PersistBlobStore::Values)
+            .expect("latest value pack entries scan"),
+        vec![PersistBlobIndexEntry::new(value_key, value_location)]
+    );
+    assert_eq!(
+        cache
+            .latest_blob_pack_index_entries(PersistBlobStore::Files)
+            .expect("latest file pack entries scan"),
+        vec![PersistBlobIndexEntry::new(file_key, file_location)]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

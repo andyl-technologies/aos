@@ -1030,6 +1030,32 @@ impl PersistCache {
         })
     }
 
+    /// Returns newest physical pack records as typed blob-index entries.
+    ///
+    /// This read-only adapter scans the selected store's pack and collapses
+    /// duplicate physical records for the same content hash with
+    /// newest-record-wins semantics. Entries are returned in stable encoded-key
+    /// order, matching the current fixed-record sidecar's latest-entry
+    /// encoded-key ordering. It does not write or repair the sidecar index,
+    /// select live roots, or compact the pack.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the selected pack cannot be opened,
+    /// inspected, seeked, or read, if any record header is malformed or
+    /// truncated, if a record points past the current packfile length, or if a
+    /// payload hash does not match its record header.
+    pub fn latest_blob_pack_index_entries(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<Vec<PersistBlobIndexEntry>, PersistBlobPackError> {
+        let mut latest = std::collections::BTreeMap::new();
+        for entry in self.blob_pack_index_entries(store)? {
+            latest.insert(entry.key().index_bytes(), entry);
+        }
+        Ok(latest.into_iter().map(|(_, entry)| entry).collect())
+    }
+
     /// Appends a blob and records its location in the sidecar index.
     ///
     /// This helper is explicit and non-transactional: if the pack append

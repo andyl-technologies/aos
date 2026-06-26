@@ -1202,6 +1202,15 @@ alone (`M-1`/`Q-A`).
       selection, repack/relocation writing, concurrent writer coordination,
       automatic GC policy, mmap reads, Attic transport, and harness proof remain
       open (`C-13`/`R-14`).
+- [x] Current newest physical blob-pack index-entry scan adapter:
+      `PersistCache::latest_blob_pack_index_entries` collapses the verified
+      physical pack scan to newest-record-wins `PersistBlobIndexEntry`
+      candidates per content hash in stable encoded-key order, matching sidecar
+      latest-entry encoded-key ordering while still including unindexed physical
+      records. This is read-only index-rebuild input only; index rewrite,
+      live-root selection, repack/relocation writing, concurrent writer
+      coordination, automatic GC policy, mmap reads, Attic transport, and
+      harness proof remain open (`C-13`/`R-14`).
 - [x] Current idempotent indexed blob materialization substrate:
       `PersistCache::ensure_blob_indexed` reuses an existing sidecar location
       only after the pointed pack record verifies for the requested
