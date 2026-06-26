@@ -7,8 +7,10 @@ use std::io::{Error as IoError, ErrorKind};
 
 use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
-    DeliveryOrderDecision, EventKey, FaultDecision, FaultId, NodeBlobRef, NodeId, RngDecision,
-    RngStreamId, ScenarioDef, Schedule, State, VirtualTime, reduce, step,
+    DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, GenesisCheckpoint,
+    Icount, MaterializedState, NodeBlobRef, NodeId, ReadyPoint, RngDecision, RngStreamId,
+    ScenarioDef, Schedule, SchedulerState, State, TemporalGraph, VirtualTime, WhiteBoxPolicy,
+    World, WorldNode, bake, instantiate, reduce, step,
 };
 use crucible_harness::replay_oracle::{
     ReplayOracleArtifactRun, ReplayOracleBuildIdentity, ReplayOracleCheckpointKind,
@@ -151,6 +153,204 @@ fn gate_replay_oracle_rejects_corrupt_materialized_checkpoint() -> Result<(), Bo
     assert_eq!(configuration_mismatch.checkpoint_id, "cp-1");
     assert_eq!(delta_mismatch.checkpoint_id, "cp-2");
     assert_eq!(body_mismatch.checkpoint_id, "cp-1");
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_materialized_state_loadvm_branch_captures_resume_components()
+-> Result<(), Box<dyn Error>> {
+    let node = oracle_node_id();
+    let world = World::from_nodes(vec![WorldNode {
+        id: node.clone(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 321 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+    }])?;
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world)?;
+    let state =
+        baked.checkpoint.state.as_ref().ok_or_else(|| {
+            IoError::new(ErrorKind::InvalidData, "baked checkpoint missing state")
+        })?;
+    let snapshot = state.vm_snapshots.get(&node).ok_or_else(|| {
+        IoError::new(
+            ErrorKind::InvalidData,
+            "baked state missing VM snapshot ref",
+        )
+    })?;
+    let graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked.clone())?;
+    let runtime = instantiate(&graph, &genesis)?;
+
+    assert_eq!(snapshot.icount, Icount { retired: 321 });
+    assert_eq!(
+        Some(&snapshot.blob),
+        graph
+            .genesis_snapshot(&scenario)
+            .and_then(|genesis| genesis.checkpoint.node_blob(&node))
+    );
+    assert!(state.device_overlays.is_empty());
+    assert_eq!(state.scheduler, SchedulerState::empty());
+    assert!(state.decision_rng.positions.is_empty());
+    assert_eq!(runtime.configuration, genesis.id());
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_saved_descendant_fat_checkpoint_carries_vm_snapshot_refs()
+-> Result<(), Box<dyn Error>> {
+    let node = oracle_node_id();
+    let world = World::from_nodes(vec![WorldNode {
+        id: node.clone(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 987 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+    }])?;
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world)?;
+    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
+    let target = step(
+        &genesis,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId {
+                name: String::from("save/descendant"),
+            },
+            value: 42,
+        }),
+    );
+    let checkpoint = graph.save_checkpoint(&target)?;
+    let state = checkpoint.state.as_ref().ok_or_else(|| {
+        IoError::new(
+            ErrorKind::InvalidData,
+            "saved descendant checkpoint missing state",
+        )
+    })?;
+    let snapshot = state.vm_snapshots.get(&node).ok_or_else(|| {
+        IoError::new(
+            ErrorKind::InvalidData,
+            "saved descendant missing VM snapshot",
+        )
+    })?;
+    let loaded = instantiate(&graph, &target)?;
+    let baked_blob = graph
+        .genesis_snapshot(&scenario)
+        .and_then(|genesis| genesis.checkpoint.node_blob(&node))
+        .ok_or_else(|| IoError::new(ErrorKind::InvalidData, "baked node blob missing"))?;
+
+    assert_eq!(snapshot.icount, Icount { retired: 988 });
+    assert_ne!(snapshot.blob.content_hash(), baked_blob.content_hash());
+    assert!(matches!(snapshot.blob, NodeBlobRef::CowDelta { .. }));
+    assert_eq!(checkpoint.node_blobs.len(), 1);
+    assert_eq!(checkpoint.node_icounts[&node], Icount { retired: 988 });
+    assert_eq!(loaded.configuration, target.id());
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_loadvm_rejects_incomplete_materialized_state() -> Result<(), Box<dyn Error>> {
+    let node = oracle_node_id();
+    let world = World::from_nodes(vec![WorldNode {
+        id: node.clone(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 654 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+    }])?;
+    let scenario = world.scenario_def();
+    let baked = bake(&world)?;
+    let mut missing_state = baked.checkpoint.clone();
+    missing_state.state = None;
+    let missing_error = match TemporalGraph::empty().with_baked_genesis(
+        &scenario,
+        GenesisCheckpoint {
+            checkpoint: missing_state,
+        },
+    ) {
+        Ok(_) => panic!("missing materialized state should be rejected"),
+        Err(error) => error,
+    };
+    let mut missing_snapshot = baked.checkpoint.clone();
+    let state = missing_snapshot
+        .state
+        .as_ref()
+        .ok_or_else(|| IoError::new(ErrorKind::InvalidData, "baked checkpoint missing state"))?;
+    let mut snapshots = state.vm_snapshots.clone();
+    snapshots.remove(&node);
+    missing_snapshot.state = Some(MaterializedState::from_components(
+        snapshots,
+        state.device_overlays.clone(),
+        state.scheduler.clone(),
+        state.decision_rng.clone(),
+        state.event_log,
+    ));
+    let snapshot_error = match TemporalGraph::empty().with_baked_genesis(
+        &scenario,
+        GenesisCheckpoint {
+            checkpoint: missing_snapshot,
+        },
+    ) {
+        Ok(_) => panic!("missing VM snapshot should be rejected"),
+        Err(error) => error,
+    };
+    let mut extra_snapshot = baked.checkpoint.clone();
+    let state = extra_snapshot
+        .state
+        .as_ref()
+        .ok_or_else(|| IoError::new(ErrorKind::InvalidData, "baked checkpoint missing state"))?;
+    let mut snapshots = state.vm_snapshots.clone();
+    snapshots.insert(
+        NodeId {
+            name: String::from("extra-node"),
+        },
+        snapshots
+            .get(&node)
+            .cloned()
+            .ok_or_else(|| IoError::new(ErrorKind::InvalidData, "fixture missing snapshot"))?,
+    );
+    extra_snapshot.state = Some(MaterializedState::from_components(
+        snapshots,
+        state.device_overlays.clone(),
+        state.scheduler.clone(),
+        state.decision_rng.clone(),
+        state.event_log,
+    ));
+    let extra_error = match TemporalGraph::empty().with_baked_genesis(
+        &scenario,
+        GenesisCheckpoint {
+            checkpoint: extra_snapshot,
+        },
+    ) {
+        Ok(_) => panic!("extra VM snapshot should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        missing_error,
+        EngineError::CheckpointMaterializedStateIncomplete {
+            reason: "missing-state",
+            ..
+        }
+    ));
+    assert!(matches!(
+        snapshot_error,
+        EngineError::CheckpointMaterializedStateIncomplete {
+            reason: "missing-vm-snapshot",
+            ..
+        }
+    ));
+    assert!(matches!(
+        extra_error,
+        EngineError::CheckpointMaterializedStateIncomplete {
+            reason: "extra-vm-snapshot",
+            ..
+        }
+    ));
 
     Ok(())
 }

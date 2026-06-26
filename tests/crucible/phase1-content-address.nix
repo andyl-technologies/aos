@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.contentAddress",
-  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2"],
+  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -146,6 +146,30 @@
         label = "checkpoint node dedup count";
         needle = "pub fn checkpoint_node_count(&self) -> usize";
       }
+      {
+        label = "materialized state VM snapshots";
+        needle = "pub vm_snapshots: BTreeMap<NodeId, VmSnapshotRef>";
+      }
+      {
+        label = "materialized state device overlays";
+        needle = "pub device_overlays: BTreeMap<DeviceId, DeviceOverlayDelta>";
+      }
+      {
+        label = "materialized state scheduler";
+        needle = "pub scheduler: SchedulerState";
+      }
+      {
+        label = "materialized state decision RNG";
+        needle = "pub decision_rng: DecisionRngState";
+      }
+      {
+        label = "materialized state event log";
+        needle = "pub event_log: EventLogOffset";
+      }
+      {
+        label = "materialized state component constructor";
+        needle = "pub fn from_components(";
+      }
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
       {
@@ -163,6 +187,26 @@
       {
         label = "explicit schedule decision encoding";
         needle = "fn write_decision(hasher: &mut MaterialHasher, decision: &Decision)";
+      }
+      {
+        label = "materialized state domain separator";
+        needle = "crucible.materialized-state.v1";
+      }
+      {
+        label = "materialized state VM snapshot hashing";
+        needle = "fn write_vm_snapshots(";
+      }
+      {
+        label = "materialized state device overlay hashing";
+        needle = "fn write_device_overlays(";
+      }
+      {
+        label = "materialized state scheduler hashing";
+        needle = "fn write_scheduler_state(";
+      }
+      {
+        label = "materialized state event-log hashing";
+        needle = "fn write_event_log_offset(";
       }
     ]
     ++ failuresFor "crates/crucible-sim/src/lib.rs" simLib [
@@ -247,6 +291,14 @@
       {
         label = "parent-chain schedule reconstruction";
         needle = "assert_eq!(reconstructed, second_config.schedule);";
+      }
+      {
+        label = "materialized state component hash test";
+        needle = "gate_content_address_materialized_state_hashes_loadvm_components";
+      }
+      {
+        label = "materialized state icount sensitivity";
+        needle = "assert_ne!(state.id, changed.id);";
       }
       {
         label = "missing parent reason";
@@ -372,6 +424,10 @@
         label = "phase1 content-address lists T-TEMP-2";
         needle = "\"T-TEMP-2\"";
       }
+      {
+        label = "phase1 content-address lists T-TEMP-3";
+        needle = "\"T-TEMP-3\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
@@ -394,6 +450,14 @@
       }
       {
         label = "T-TEMP-2 completion names content-address gate";
+        needle = "`checks.crucible.phase1.gates.contentAddress`";
+      }
+      {
+        label = "T-TEMP-3 checklist complete";
+        needle = "- [x] **T-TEMP-3**";
+      }
+      {
+        label = "T-TEMP-3 completion names content-address gate";
         needle = "`checks.crucible.phase1.gates.contentAddress`";
       }
     ];
@@ -487,6 +551,8 @@ in
             temporal_graph_dedup=configuration-id
             temporal_graph_parent_chain=schedule-prefix
             temporal_graph_frontier=checkpoint-dag
+            materialized_state_components=vm-snapshots,device-overlays,scheduler,decision-rng,event-log
+            materialized_state_identity=component-content-addressed
             RESULT
           '';
         }
