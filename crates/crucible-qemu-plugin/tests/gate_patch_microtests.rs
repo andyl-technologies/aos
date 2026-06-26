@@ -61,6 +61,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     );
     assert_contains(
         &aggregate,
+        "qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix",
+    );
+    assert_contains(
+        &aggregate,
         "qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix",
     );
     assert_contains(
@@ -76,6 +80,11 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "patch_regeneration_result_consumed=true");
     assert_contains(&aggregate, "qemu_build_identity_artifact_checked=true");
     assert_contains(&aggregate, "qemu_version_bump_regate_enforced=true");
+    assert_contains(&aggregate, "cp \"${qemuPluginFailLoud}/result\"");
+    assert_contains(&aggregate, "grep -q '^missing_capability=distinct-errors$'");
+    assert_contains(&aggregate, "grep -q '^wall_clock_fallback=forbidden$'");
+    assert_contains(&aggregate, "qemu_plugin_fail_loud_gate_passed=true");
+    assert_contains(&aggregate, "missing_required_capability_fails_loud=true");
     assert_contains(
         &aggregate,
         "grep -q '^regenerated_patch_bytes_match_committed=true$'",
@@ -192,6 +201,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     );
     assert_contains(
         &default_checks,
+        "qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix",
+    );
+    assert_contains(
+        &default_checks,
         "attrPath = \"checks.crucible.phase2.gates.qemuInert\";",
     );
     assert_contains(&default_checks, "patchMicrotests = patchMicrotestsCheck;");
@@ -249,6 +262,29 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         &qemu_patch_series,
         "patch_manifest_matches_carried_catalog=true",
     );
+    assert_contains(
+        &qemu_patch_series,
+        "decisionRegister = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md",
+    );
+    assert_contains(&qemu_patch_series, "qemu_version=10.0.0");
+    assert_contains(
+        &qemu_patch_series,
+        "qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=",
+    );
+    assert_contains(
+        &qemu_patch_series,
+        "qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix",
+    );
+    assert_contains(&qemu_patch_series, "cp \"${qemuPluginFailLoud}/result\"");
+    assert_contains(
+        &qemu_patch_series,
+        "grep -q '^missing_capability=distinct-errors$'",
+    );
+    assert_contains(
+        &qemu_patch_series,
+        "grep -q '^wall_clock_fallback=forbidden$'",
+    );
+    assert_contains(&qemu_patch_series, "qemu_plugin_fail_loud_gate_passed=true");
     assert_contains(&qemu_patch_series, "noPatchDecisions");
     assert_contains(
         &qemu_patch_series,
