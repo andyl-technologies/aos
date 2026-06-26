@@ -194,14 +194,16 @@ green.
       the Linux builder — its own D1 (`aos-hub-preview`), R2, KV, and the
       `CoordinatorObject` + `TenantDb` DOs; schema migrated; isolated from prod.
 - [x] On the preview, measure the per-request cost and record it here.
-      **Result (warm I/O = wallTime − cpuTime, 1 registry, controlled vs prod):**
-      the **home page floor dropped ~4× — prod ~140 ms → preview min 37 ms / med
-      45 ms**, confirming that removing the rate-limit D1 *write* and moving
-      coordination to the Durable Object (Phase B) eliminated the per-request
-      floor the investigation pinned. (The browse page is *not* a clean
-      comparison here — the preview registry has no indexed surface, so it hits
-      R2-404 content-negotiation + cold-DO paths; a surface-populated preview is
-      needed to compare it.)
+      **Result — and a correction.** The preview home read **37 ms** and I
+      initially credited Phase B. That was **wrong: a fresh-tiny-D1 artifact** —
+      a brand-new D1 has ~no session-establishment cost. Measured against the
+      **real prod database**, the decomposition is: `/login` (no DB) 5 ms;
+      `api_registry` (1 D1 read, no DO) **140 ms**; home (DO + reads) **240 ms**.
+      So the ~140 ms per-request **D1 session floor is unchanged** by Phase B, and
+      the DO coordinator *added* ~100 ms on top → a prod regression. **Lesson:
+      never benchmark this on a fresh/tiny D1; measure against prod-equivalent
+      data.** The real fix is Phase E (remove D1), not B/C. (`Server-Timing` (A1)
+      remains the per-statement vehicle on a `query-timing` build.)
 - [x] Split the per-request D1 session: read-only requests use
       `first-unconstrained` and **never** share a session with a write; assert no
       write precedes reads on a read path (`crates/aos-hub-worker/src/lib.rs`
@@ -228,14 +230,23 @@ green.
       `WorkerCoordinator` client (`coordinatorobj.rs`, compiles wasm). DO runtime
       behavior is verified on deploy (needs the `[[durable_objects.bindings]]`
       wrangler config — added in the deploy-prep item).
-- [x] Reimplement the rate limiter over `Coordinator` (DO on Worker, in-process on
-      native); delete `D1RateLimiter` and remove all `rate_limits` writes from read
-      paths.
-      *Done:* shared `CoordinatorRateLimiter` (`ratelimit.rs`, tested over
-      `InMemoryCoordinator`); the Worker builds it over the DO `WorkerCoordinator`.
-      `workerlimit.rs` (`D1RateLimiter` + the `rate_limits` `CREATE TABLE`/upsert)
-      **deleted** — no D1 write on the browse read path. Native keeps its existing
-      in-process token-bucket limiter (already off-DB).
+- [x] Reimplement the rate limiter — **NOT over a Durable Object** (corrected
+      2026-06-25). Delete `D1RateLimiter`; remove all `rate_limits` writes from
+      read paths.
+      *Done:* the Worker rate-limits via Cloudflare's **edge-local Rate Limiting
+      binding** (`EdgeRateLimiter`, `env.rate_limiter().limit({key})`, no network
+      hop) — three bindings by budget tier (5/10/120, `period=60`), keyed
+      `{class}:{key}`, behind the shared `RateLimiter` trait. **`workerlimit.rs`
+      (`D1RateLimiter`) deleted.** Native keeps its in-process token-bucket
+      limiter (parity).
+      **Correction:** I first put the limiter on a single global `CoordinatorObject`
+      Durable Object. **That regressed prod 140→240 ms** — a single DO has one
+      location, so every request paid a ~100 ms cross-region hop, *and* the D1
+      session floor on the first read was left intact. The DO coordinator now
+      backs only the **write-path publish lease** (`CoordinatorLease`, hop paid
+      only on a publish). The edge binding is the correct read-path tool. The
+      `CoordinatorRateLimiter` (`ratelimit.rs`, tested) remains as the budget/
+      class-name source but is no longer wired to a DO on the hot path.
 - [x] Move the publish lease off D1 (`workerlease.rs` `D1PublishLease`) onto the
       `Coordinator`.
       *Done:* shared `CoordinatorLease` (`lease.rs`, tested); the Worker builds it
@@ -363,14 +374,23 @@ green.
       colocated inside each tenant's DO over `SqlDoBackend`. `wrangler.toml`
       declares it under a `new_sqlite_classes` migration. Compiles wasm; the DO
       runtime + backup/retire ops are exercised under a deploy.
-- [x] Route tenant reads/writes to the tenant DO; keep the Phase D global
-      directory for cross-tenant listing/search.
-      *Routing primitive done:* `TenantDbRouter` (`tenantdb.rs`) resolves a tenant
-      to its DO via `id_from_name(tenant)` and forwards a `SqlCommand`
-      (`query`/`execute`, JSON `Value` marshalling) to its colocated SQLite; the
-      Phase D directory is the cross-tenant read model. *Remaining (structural):*
-      drive this from the request path for every tenant DB op (a large, separately
-      reviewable migration); the primitive it builds on is implemented.
+- [x] Route requests to the colocated SQLite DO; keep the Phase D global
+      directory for cross-tenant listing/search. **Done — this is the real "get
+      off D1" (the actual floor fix).**
+      *Done:* `router_from` is now **backend-parameterized** (takes a built
+      `Database`), so the *same* shared router runs over D1 *or* colocated SQLite.
+      The **`HubDb` Durable Object** (`lib.rs`) runs the **full request handler**
+      over a `SqlDoBackend` whose SQLite is in the DO's own thread (self-migrated
+      via `PRAGMA user_version`); when `HUB_SQLITE_DO="1"`, `fetch` forwards every
+      request to `HubDb` (`id_from_name("hub")`) — **one hop to the DO's region,
+      then every query is local (µs), no ~120 ms D1 session cost.** This is the
+      chapter's "single hub DO pinned to your region — D1, but colocated" option;
+      `TenantDbRouter`/`TenantDb` remain the per-tenant-sharded variant for scale.
+      The D1 path stays the default until data is migrated (the cutover flips the
+      flag). `HUB_DB` binding + `HubDb` migration emitted by the generator.
+      **Why this and not Phase B/C:** the measured floor *is* the per-request D1
+      session cost; caching (C) and a coordinator (B) shave the edges but leave it
+      intact. **Only removing D1 removes it** — which is exactly what this does.
 - [deploy] DO read replicas for global readers; native streaming SQLite replication
       for HA + read scale. *Deploy-gated platform configuration on the above.*
 - [deploy] Decommission D1 as the tenant system of record once parity + data migration
