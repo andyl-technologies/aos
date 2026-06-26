@@ -1499,13 +1499,16 @@ alone (`M-1`/`Q-A`).
       `PersistCache::compact_storage` runs all current sidecar compaction and
       then trims value/file blob-pack tails, returning
       `PersistStorageMaintenance` with sidecar counts and per-pack trim stats
-      while `PersistStorageMaintenanceError` preserves the failing phase. This
-      is sequential caller-driven maintenance only; automatic compaction/GC
-      policy, transactionality across sidecar and pack phases, cross-process
-      writer coordination, full pack repack/relocation, LMDB/redb indexes, mmap
-      reads, Attic transport, and cached/uncached harness proof remain open
-      (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the storage maintenance cache
-      test.
+      while `PersistStorageMaintenanceError` preserves the failing phase.
+      Verification-read failure coverage pins the non-transactional
+      boundaries: sidecar compaction remains committed when value-pack root
+      verification fails, and value-pack trimming remains committed when
+      file-pack root verification fails. This is sequential caller-driven
+      maintenance only; automatic compaction/GC policy, transactionality across
+      sidecar and pack phases, cross-process writer coordination, full pack
+      repack/relocation, LMDB/redb indexes, mmap reads, Attic transport, and
+      cached/uncached harness proof remain open (`C-13`/`R-10`/`R-14`/`S-14`).
+      The gate is the storage maintenance cache tests.
 - [x] Current force-cache persistent trace writeback:
       after tree-walk `force_value` gets an accepted forced-expression
       observation and successfully materializes its value payload, it appends a

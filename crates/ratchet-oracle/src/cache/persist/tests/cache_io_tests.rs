@@ -971,6 +971,253 @@ fn cache_storage_maintenance_compacts_sidecars_and_trims_blob_tails() {
 }
 
 #[test]
+fn cache_storage_maintenance_value_trim_failure_keeps_sidecar_compaction() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+
+    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"expected value"));
+    let wrong_value_payload = b"wrong value payload";
+    let wrong_value_key =
+        PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(wrong_value_payload));
+    let wrong_value_location = cache
+        .append_blob(wrong_value_key, wrong_value_payload)
+        .expect("wrong value blob appends");
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(
+            value_key,
+            PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
+        ))
+        .expect("stale value index entry appends");
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(value_key, wrong_value_location))
+        .expect("wrong value index entry appends");
+
+    let file_payload = b"file live payload";
+    let file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_payload));
+    cache
+        .file_index()
+        .append_entry(PersistBlobIndexEntry::new(
+            file_key,
+            PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
+        ))
+        .expect("stale file index entry appends");
+    let file_materialized = cache
+        .materialize_blob_indexed(file_key, file_payload, MaterializationDecision::Materialize)
+        .expect("file blob materializes");
+    let PersistMaterialization::Materialized(file_location) = file_materialized else {
+        panic!("file blob should materialize");
+    };
+
+    let file_tail_payload = b"file tail remains";
+    let file_tail_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_tail_payload));
+    let file_tail_location = cache
+        .append_blob(file_tail_key, file_tail_payload)
+        .expect("file tail appends");
+    let value_pack_before = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata before maintenance")
+        .len();
+    let file_pack_before = fs::metadata(cache.file_pack().path())
+        .expect("file pack metadata before maintenance")
+        .len();
+
+    let error = cache
+        .compact_storage()
+        .expect_err("value trim failure aborts storage maintenance");
+
+    assert!(matches!(
+        error,
+        PersistStorageMaintenanceError::ValueBlobPack {
+            source: PersistBlobPackTrimError::Read {
+                source: PersistBlobPackError::RecordHashMismatch { .. },
+            },
+        }
+    ));
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata after failed maintenance")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64,
+        "sidecar compaction should remain committed before value trim fails"
+    );
+    assert_eq!(
+        fs::metadata(cache.file_index().path())
+            .expect("file index metadata after failed maintenance")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64,
+        "later sidecar compactions also run before any blob-pack trim"
+    );
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata after failed maintenance")
+            .len(),
+        value_pack_before,
+        "failed value verification must not truncate the value pack"
+    );
+    assert_eq!(
+        fs::metadata(cache.file_pack().path())
+            .expect("file pack metadata after failed maintenance")
+            .len(),
+        file_pack_before,
+        "file trim should not run after value trim fails"
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(value_key)
+            .expect("compacted value index lookup succeeds"),
+        Some(wrong_value_location)
+    );
+    assert_eq!(
+        cache
+            .read_blob(wrong_value_key, wrong_value_location)
+            .expect("wrong value record remains after failed trim")
+            .as_slice(),
+        wrong_value_payload
+    );
+    assert_eq!(
+        cache
+            .read_blob_indexed(file_key)
+            .expect("indexed file read succeeds")
+            .expect("indexed file remains")
+            .as_slice(),
+        file_payload
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(file_key)
+            .expect("compacted file index lookup succeeds"),
+        Some(file_location)
+    );
+    assert_eq!(
+        cache
+            .read_blob(file_tail_key, file_tail_location)
+            .expect("file pack is untouched after value trim failure")
+            .as_slice(),
+        file_tail_payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_storage_maintenance_file_trim_failure_keeps_value_trim() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+
+    let value_payload = b"value live payload";
+    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(value_payload));
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(
+            value_key,
+            PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
+        ))
+        .expect("stale value index entry appends");
+    let value_materialized = cache
+        .materialize_blob_indexed(
+            value_key,
+            value_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("value blob materializes");
+    let PersistMaterialization::Materialized(value_location) = value_materialized else {
+        panic!("value blob should materialize");
+    };
+    let value_tail_payload = b"value tail";
+    let value_tail_key =
+        PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(value_tail_payload));
+    let value_tail_location = cache
+        .append_blob(value_tail_key, value_tail_payload)
+        .expect("value tail appends");
+
+    let file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"expected file"));
+    let wrong_file_payload = b"wrong file payload";
+    let wrong_file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(wrong_file_payload));
+    let wrong_file_location = cache
+        .append_blob(wrong_file_key, wrong_file_payload)
+        .expect("wrong file blob appends");
+    cache
+        .file_index()
+        .append_entry(PersistBlobIndexEntry::new(
+            file_key,
+            PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
+        ))
+        .expect("stale file index entry appends");
+    cache
+        .file_index()
+        .append_entry(PersistBlobIndexEntry::new(file_key, wrong_file_location))
+        .expect("wrong file index entry appends");
+    let file_pack_before = fs::metadata(cache.file_pack().path())
+        .expect("file pack metadata before maintenance")
+        .len();
+
+    let error = cache
+        .compact_storage()
+        .expect_err("file trim failure aborts storage maintenance");
+
+    assert!(matches!(
+        error,
+        PersistStorageMaintenanceError::FileBlobPack {
+            source: PersistBlobPackTrimError::Read {
+                source: PersistBlobPackError::RecordHashMismatch { .. },
+            },
+        }
+    ));
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata after failed maintenance")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.file_index().path())
+            .expect("file index metadata after failed maintenance")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata after failed maintenance")
+            .len(),
+        value_location.record_offset()
+            + PERSIST_BLOB_RECORD_HEADER_LEN as u64
+            + value_payload.len() as u64,
+        "value tail trim should stay committed before file trim fails"
+    );
+    assert!(
+        cache
+            .read_blob(value_tail_key, value_tail_location)
+            .is_err(),
+        "value tail should already be truncated"
+    );
+    assert_eq!(
+        cache
+            .read_blob_indexed(value_key)
+            .expect("indexed value read succeeds")
+            .expect("indexed value remains")
+            .as_slice(),
+        value_payload
+    );
+    assert_eq!(
+        fs::metadata(cache.file_pack().path())
+            .expect("file pack metadata after failed maintenance")
+            .len(),
+        file_pack_before,
+        "failed file verification must not truncate the file pack"
+    );
+    assert_eq!(
+        cache
+            .read_blob(wrong_file_key, wrong_file_location)
+            .expect("wrong file record remains after failed trim")
+            .as_slice(),
+        wrong_file_payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_traces_compacts_to_latest_entries() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
