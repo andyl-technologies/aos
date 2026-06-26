@@ -2,6 +2,12 @@
   pkgs,
   lib,
 }: let
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = pkgs.fetchCargoDeps {
+    src = crucibleSrc;
+    sourceRoot = "source/crates";
+    hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
+  };
   simLib = builtins.readFile ../../crates/crucible-sim/src/lib.rs;
   contractA = builtins.readFile ../../crates/crucible-sim/src/contract_a.rs;
   contractATests = builtins.readFile ../../crates/crucible-sim/tests/contract_a.rs;
@@ -63,6 +69,10 @@
         needle = "pub struct RecordedInput";
       }
       {
+        label = "vCPU register-file sample request";
+        needle = "pub struct VcpuRegisterFileRequest";
+      }
+      {
         label = "single-VM driver";
         needle = "pub struct ContractADriver";
       }
@@ -73,6 +83,10 @@
       {
         label = "recorded input injection boundary";
         needle = "fn inject_recorded_input(";
+      }
+      {
+        label = "vCPU register-file sampling boundary";
+        needle = "fn sample_vcpu_register_file(";
       }
       {
         label = "aggregate retire request";
@@ -97,6 +111,34 @@
       {
         label = "RR vCPU cursor";
         needle = "fn vcpu_for_icount";
+      }
+      {
+        label = "multi-vCPU fingerprint sample";
+        needle = "pub struct ContractAMultiVcpuFingerprintSample";
+      }
+      {
+        label = "per-vCPU register-file fingerprint entry";
+        needle = "pub struct ContractAVcpuRegisterFileSample";
+      }
+      {
+        label = "RR cursor fingerprint entry";
+        needle = "pub struct ContractARoundRobinCursorSample";
+      }
+      {
+        label = "run carries multi-vCPU fingerprint trajectory";
+        needle = "pub multi_vcpu_fingerprint_trajectory: Vec<ContractAMultiVcpuFingerprintSample>";
+      }
+      {
+        label = "aggregate-icount RR cursor helper";
+        needle = "fn rr_cursor_for_aggregate_icount";
+      }
+      {
+        label = "multi-vCPU fingerprint helper";
+        needle = "fn multi_vcpu_fingerprint_sample";
+      }
+      {
+        label = "vCPU register sample error";
+        needle = "VmVcpuRegisterSample";
       }
       {
         label = "run fingerprint";
@@ -127,6 +169,18 @@
       {
         label = "RR cursor isolation test marker";
         needle = "contract_a_driver_models_fixed_rr_vcpu_cursor_without_live_peers";
+      }
+      {
+        label = "all-vCPU fingerprint test marker";
+        needle = "contract_a_multi_vcpu_fingerprint_includes_every_vcpu_and_rr_cursor";
+      }
+      {
+        label = "bit-identical multi-vCPU trajectory test marker";
+        needle = "contract_a_multi_vcpu_fingerprint_trajectory_is_bit_identical_across_runs";
+      }
+      {
+        label = "register-file sensitivity test marker";
+        needle = "contract_a_multi_vcpu_fingerprint_changes_when_register_file_changes";
       }
       {
         label = "non-monotonic input rejection test marker";
@@ -160,6 +214,10 @@
         label = "T-DET-7 checklist complete";
         needle = "- [x] **T-DET-7**";
       }
+      {
+        label = "T-DET-28 checklist complete";
+        needle = "- [x] **T-DET-28**";
+      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -169,6 +227,10 @@
       {
         label = "layer0 gate lists T-DET-7";
         needle = "\"T-DET-7\"";
+      }
+      {
+        label = "layer0 gate lists T-DET-28";
+        needle = "\"T-DET-28\"";
       }
       {
         label = "layer0 gate depends on Contract A isolation";
@@ -182,13 +244,59 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase1-contract-a-isolation";
       version = "0";
-      src = null;
+      src = crucibleSrc;
 
-      buildDeps = [pkgs.coreutils];
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.rust
+        pkgs.sed
+      ];
 
       phases = [
         {
-          name = "record-contract-a-isolation";
+          name = "unpack";
+          script = ''
+            cp -R "$src" source
+            chmod -R u+w source
+            cd source
+          '';
+        }
+        {
+          name = "configure";
+          script = ''
+            export CARGO_HOME="$TMPDIR/cargo"
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            mkdir -p "$CARGO_HOME" .cargo
+            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+                > .cargo/config.toml
+            else
+              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+                > .cargo/config.toml
+            fi
+          '';
+        }
+        {
+          name = "run-contract-a-isolation";
+          script = ''
+            set -eu
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            cd crates
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-contract-a-isolation-target" \
+              -p crucible-sim \
+              --test contract_a \
+              -- --test-threads=1
+          '';
+        }
+        {
+          name = "write-result";
           script = ''
             set -eu
             mkdir -p "$out"
@@ -196,13 +304,18 @@ in
             PASS
             check=checks.crucible.phase1.contractAIsolation
             gate=gate:layer0-determinism
-            tasks=T-DET-7
+            tasks=T-DET-7,T-DET-28
             driver=crucible-sim::contract_a::ContractADriver
             inputs=icount-stamped-recorded-list
             live_scheduler_transport=false
             rr_vcpu_cursor=fixed-content-addressed
+            multi_vcpu_driver=N>1-single-node-rr-icount-model
+            multi_vcpu_fingerprint=per-vcpu-register-files-plus-rr-cursor
+            aggregate_icount_trajectory=bit-identical-across-runs
+            fingerprint_key=node-aggregate-icount
             recorded_inputs_enforced=monotonic-within-run
-            status=contract-a-isolated-single-vm-model
+            rust_test=crucible-sim::contract_a
+            status=contract-a-isolated-single-vm-and-multi-vcpu-model
             RESULT
           '';
         }

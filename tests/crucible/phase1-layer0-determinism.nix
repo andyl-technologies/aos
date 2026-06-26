@@ -288,11 +288,13 @@ in
               "global_default=nokaslr,norandmaps"
             require_leaf ${contractAIsolation} \
               "gate=gate:layer0-determinism" \
-              "tasks=T-DET-7" \
+              "tasks=T-DET-7,T-DET-28" \
               "driver=crucible-sim::contract_a::ContractADriver" \
               "inputs=icount-stamped-recorded-list" \
               "live_scheduler_transport=false" \
               "rr_vcpu_cursor=fixed-content-addressed" \
+              "multi_vcpu_fingerprint=per-vcpu-register-files-plus-rr-cursor" \
+              "aggregate_icount_trajectory=bit-identical-across-runs" \
               "recorded_inputs_enforced=monotonic-within-run"
             require_leaf ${timeContractADeterminism} \
               "gate=gate:layer0-determinism" \
@@ -386,7 +388,7 @@ in
             evidence.E8=guestEntropyLaunch.firmware_seed_source+guest_csprng_same_seed_reproducible
             evidence.E9=qemuDeterministicEntropy.qemu_seed_option_controls_guest_random+qemu_seed_option_controls_glib_global_prng+qemuDeterministicGetrandom.qemu_guest_getrandom_sim_unseeded_policy
             evidence.E10=deterministicLaunch.cpu+singleVmFingerprint.run_model
-            evidence.E13=deterministicLaunch.smp_vcpus+contractAIsolation.rr_vcpu_cursor+timeMultiVcpuAggregateClock.aggregate_node_clock
+            evidence.E13=deterministicLaunch.smp_vcpus+contractAIsolation.rr_vcpu_cursor+contractAIsolation.multi_vcpu_fingerprint+timeMultiVcpuAggregateClock.aggregate_node_clock
             evidence.E14=noWarpWithPlugin.time_control_predicate+notify_preserved_under_time_control+pluginTimeAdvance.qemu_time_advance_bh_drain+clockDeadline.deadline_source
             evidence.E15=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E16=deterministicLaunch.machine_reset+ram_reset

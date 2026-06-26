@@ -137,6 +137,7 @@ in {
           "T-DET-5"
           "T-DET-6"
           "T-DET-7"
+          "T-DET-28"
           "T-DET-8"
           "T-DET-9"
           "T-DET-10"
