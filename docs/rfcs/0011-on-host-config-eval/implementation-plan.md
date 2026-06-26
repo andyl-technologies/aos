@@ -7,9 +7,32 @@ exercises every load-bearing decision; P2 changes only discovery efficiency,
 the bounding mechanism, and eval speed — not the registry format, the module
 contract, or the generations.
 
+## T0 — Characterization suite (the FIRST code in the PR; green on master before any refactor)
+
+Pin current behavior so every later phase runs under a regression net. Written
+and verified green on master *before* P0 touches rendering. Full strategy in
+[`test-plan.md`](test-plan.md).
+
+- [ ] **Pure-eval toplevel golden** — `lib/testing/rfc-0011-characterization.nix`
+      + `tests/fixtures/rfc-0011-goldens/<system>/` (etcDump, unit bodies,
+      substituted `activate.sh.in`, os-release). Added to `checks.eval`.
+      **Comparator normalizes job scripts to text** (the only intentional P0
+      byte change, review C2).
+- [ ] **Flat-merge Rust golden** — `crates/aos-package/tests/golden_config_artifact.rs`
+      + fixtures: snapshot `render_package_config()`, re-render shuffled ⇒ stable
+      ⇒ matches golden. Becomes the `checks.config-parity` oracle.
+- [ ] **Activate + substrate fleet assertions** — extend
+      `apm-system-upgrade`/`install-from-image`/`measured-boot` from "boots" to
+      pin observable outcomes (repart/cryptsetup status, partition sizes, `/var`
+      mount, `/var/etc` allowlist survival, post-swap `systemctl --failed` empty).
+- [ ] Commit the goldens at the branch base; an unexpected golden diff in CI is a
+      caught regression (barrier pattern).
+
 ## P0 — render/assemble split (no behavior change)
 
 The enabling refactor; ships independently and de-risks everything after it.
+**Runs under the T0 toplevel golden** — the only allowed golden change is the
+job-script normalization, documented in the commit.
 
 - [ ] Make `lib/modules/systemd/lib.nix` `generateUnits` a **pure function**
       returning `{ unitName → { text; mode; … } }` instead of a derivation.
@@ -208,8 +231,10 @@ before the items marked ⟂ are implementable.
 
 ## Gates
 
-- **P0:** image hash + `checks.vm.boot` unchanged after the render/assemble
-  refactor.
+- **T0:** the characterization goldens (toplevel snapshot, flat-merge Rust
+  goldens) are **green on master** and committed at the branch base before P0.
+- **P0:** image hash + `checks.vm.boot` unchanged, and the **T0 toplevel golden
+  stays green** after the render/assemble refactor (job scripts compared as text).
 - **P1:** `checks.config-eval` + `checks.config-parity` green; fleet
   conflict-no-op + dry-run-matches-realized + pointer-only-rollback green;
   on-host eval within the perf budget.

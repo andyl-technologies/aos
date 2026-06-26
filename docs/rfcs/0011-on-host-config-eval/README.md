@@ -50,6 +50,10 @@ the invariants, and the resolved decisions; the topic files hold the detail:
 - [`operability.md`](operability.md) — `apm switch --dry-run` + the off-host CI
   preflight, eval-failure observability, GC of config closures, the
   flat-merge ↔ module-eval parity gate, and the perf budget + test plan.
+- [`test-plan.md`](test-plan.md) — the **characterization-first TDD** strategy:
+  the preserve-vs-change split, the three golden/snapshot artifacts written and
+  green on master *before* implementation (the first code into the PR), the
+  barrier pattern, and the red-first new-subsystem test specs.
 - [`implementation-plan.md`](implementation-plan.md) — the phased checklist.
 - [`known-issues.md`](known-issues.md) — the adversarial-review accounting: the
   **three open decisions** (F1 root-measurement, F2 job-script rendering, F3
