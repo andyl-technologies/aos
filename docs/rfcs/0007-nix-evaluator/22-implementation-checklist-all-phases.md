@@ -1571,6 +1571,19 @@ alone (`M-1`/`Q-A`).
       cutoff, dirty propagation beyond fallback, same-run post-recompute reuse
       behavior, lazy replay payloads, mmap reads, GC/repack, and future
       value-memoization safety net remain open (`S-14`).
+- [x] Current uncacheable `currentTime` `.drv` surface canary:
+      `persistent_current_time_force_cache_no_replay_preserves_drv_surfaces`
+      evaluates a derivation attr path whose `args` depend on
+      `builtins.currentTime` through a forced string conversion, requires
+      same-time configured cached runs to match cache-disabled `.drv` path and
+      ATerm bytes without reporting force-cache hits, then changes the
+      configured current time and requires the cached run to match the changed
+      cache-disabled surface instead of replaying the older one. Each run
+      records the uncacheable currentTime trace. This samples currentTime inside
+      one derivation input surface; general currentTime taint propagation
+      through persisted dependents, full cached-vs-uncached closure parity,
+      derivationStrict-node SHA-256 early cutoff, mmap reads, GC/repack, and
+      future value-memoization safety net remain open (`S-14`/`R-10`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips

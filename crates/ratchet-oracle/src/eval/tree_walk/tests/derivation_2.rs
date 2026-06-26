@@ -1368,6 +1368,106 @@ fn persistent_effectful_force_cache_hit_preserves_drv_surfaces() {
     fs::remove_dir_all(root).expect("source temp directory removes");
 }
 
+#[test]
+fn persistent_current_time_force_cache_no_replay_preserves_drv_surfaces() {
+    let persist_root = unique_temp_dir("force-cache-current-time-drv-surface-parity");
+    let source = r#"let
+             b = builtins;
+           in {
+             pkg = derivationStrict {
+               name = "force-cache-current-time-drv-surface";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ (builtins.toString b.currentTime) ];
+             };
+           }"#;
+    let ir = lower(source);
+    let expected_trace = vec![ImpureInputFingerprint::current_time()];
+
+    let uncached_first_options =
+        TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
+    let uncached_first = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        uncached_first_options,
+        EvalCacheRuntime::disabled(),
+    );
+    assert_eq!(uncached_first.trace, expected_trace);
+    assert_eq!(uncached_first.cache_hits, 0);
+    assert_eq!(uncached_first.force_cache_hits, 0);
+    assert_eq!(uncached_first.force_cache_misses, 0);
+
+    let mut first_options =
+        TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
+    first_options.set_eval_cache_enabled(true);
+    first_options.set_persist_cache_root(&persist_root);
+    let first = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        first_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(first.path, uncached_first.path);
+    assert_eq!(first.aterm, uncached_first.aterm);
+    assert_eq!(first.trace, expected_trace);
+    assert_eq!(first.cache_hits, 0);
+    assert_eq!(first.force_cache_hits, 0);
+
+    let mut replay_options =
+        TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
+    replay_options.set_eval_cache_enabled(true);
+    replay_options.set_persist_cache_root(&persist_root);
+    let replay = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        replay_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(replay.path, uncached_first.path);
+    assert_eq!(replay.aterm, uncached_first.aterm);
+    assert_eq!(replay.trace, expected_trace);
+    assert!(
+        replay.thunks_forced > 0,
+        "uncacheable currentTime should recompute instead of hitting persistent force cache"
+    );
+    assert_eq!(replay.cache_hits, 0);
+    assert_eq!(replay.force_cache_hits, 0);
+
+    let uncached_changed_options =
+        TreeWalkOptions::with_current_time(1_700_000_123).expect("currentTime is valid");
+    let uncached_changed = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        uncached_changed_options,
+        EvalCacheRuntime::disabled(),
+    );
+    assert_eq!(uncached_changed.trace, expected_trace);
+    assert_ne!(uncached_changed.path, uncached_first.path);
+    assert_ne!(uncached_changed.aterm, uncached_first.aterm);
+
+    let mut changed_options =
+        TreeWalkOptions::with_current_time(1_700_000_123).expect("currentTime is valid");
+    changed_options.set_eval_cache_enabled(true);
+    changed_options.set_persist_cache_root(&persist_root);
+    let changed = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        changed_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(changed.path, uncached_changed.path);
+    assert_eq!(changed.aterm, uncached_changed.aterm);
+    assert_eq!(changed.trace, expected_trace);
+    assert!(
+        changed.thunks_forced > 0,
+        "changed currentTime should recompute instead of reusing the old surface"
+    );
+    assert_eq!(changed.cache_hits, 0);
+    assert_eq!(changed.force_cache_hits, 0);
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
 #[derive(Debug)]
 struct EffectfulDerivationSurface {
     path: String,
