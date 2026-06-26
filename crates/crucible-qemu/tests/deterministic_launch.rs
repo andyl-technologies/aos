@@ -346,6 +346,36 @@ fn pre_spawn_launch_validation_rejects_bad_icount_and_mttcg() {
     replace_option_value(
         &mut args,
         "-icount",
+        "shift=0,sleep=on,align=off,rr_switch_quantum=4096",
+    );
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::IcountOptionInvalid {
+            key: "sleep",
+            expected: "off",
+            value: String::from("on"),
+        })
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(
+        &mut args,
+        "-icount",
+        "shift=0,sleep=off,align=on,rr_switch_quantum=4096",
+    );
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::IcountOptionInvalid {
+            key: "align",
+            expected: "off",
+            value: String::from("on"),
+        })
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(
+        &mut args,
+        "-icount",
         "shift=0,sleep=off,align=off,rr_switch_quantum=4096,rr_switch_quantum=8192",
     );
     assert_eq!(
@@ -456,6 +486,30 @@ fn pre_spawn_launch_validation_rejects_host_cpu_timing_and_entropy() {
             QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
                 argument: String::from("-netdev=user,id=net1"),
                 reason: "host-timing user networking",
+            }
+        )
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    args.extend(qemu_args(["-realtime", "mlock=on"]));
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(
+            QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
+                argument: String::from("-realtime"),
+                reason: "host realtime clocking",
+            }
+        )
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    args.extend(qemu_args(["-real-time", "mlock=off"]));
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(
+            QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
+                argument: String::from("-real-time"),
+                reason: "host realtime clocking",
             }
         )
     );

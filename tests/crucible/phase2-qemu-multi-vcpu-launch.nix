@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuMultiVcpuLaunch",
-  taskIds ? ["T-QEMU-15"],
+  taskIds ? ["T-QEMU-15" "T-DET-29"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -14,6 +14,7 @@
   launchLib = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
   validationLib = builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs;
   launchTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+  determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   spatialSpec = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -45,7 +46,21 @@
     requirements;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismSpec [
+      {
+        label = "T-DET-29 checklist complete";
+        needle = "- [x] **T-DET-29**";
+      }
+      {
+        label = "T-DET-29 completion note names launch gate";
+        needle = "`checks.crucible.phase2.qemuMultiVcpuLaunch`";
+      }
+      {
+        label = "T-DET-29 completion note names MTTCG rejection";
+        needle = "rejects MTTCG";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
       {
         label = "T-QEMU-15 checklist complete";
         needle = "- [x] **T-QEMU-15**";
@@ -165,6 +180,18 @@
         needle = "QemuPreSpawnLaunchValidationError::RrSwitchQuantumUnpinned";
       }
       {
+        label = "sleep realtime switching rejected";
+        needle = "validate_required_icount_value(icount, \"sleep\", \"off\")?;";
+      }
+      {
+        label = "align realtime switching rejected";
+        needle = "validate_required_icount_value(icount, \"align\", \"off\")?;";
+      }
+      {
+        label = "realtime launch option rejected";
+        needle = "\"-realtime\" | \"-real-time\" => Err(";
+      }
+      {
         label = "zero RR quantum rejected";
         needle = "QemuPreSpawnLaunchValidationError::RrSwitchQuantumZero";
       }
@@ -221,6 +248,18 @@
       {
         label = "mixed current and RFC alias assertion";
         needle = "rr_switch_quantum=4096,crucible-rr-quantum-icount=4096";
+      }
+      {
+        label = "sleep realtime switching assertion";
+        needle = "shift=0,sleep=on,align=off,rr_switch_quantum=4096";
+      }
+      {
+        label = "align realtime switching assertion";
+        needle = "shift=0,sleep=off,align=on,rr_switch_quantum=4096";
+      }
+      {
+        label = "realtime option assertion";
+        needle = "\"-realtime\", \"mlock=on\"";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -295,6 +334,7 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
+            gate=gate:layer0-determinism
             tasks=${taskList}
             check_scope=task-level
             qemu_5=single-threaded-round-robin-tcg-with-smp-N
@@ -309,6 +349,8 @@ in
             rr_vcpu_rotation=ascending-vcpu-id
             rejects_mttcg=true
             rejects_unpinned_rr_switch_quantum=true
+            rejects_adaptive_rr_quantum=true
+            rejects_realtime_switching=true
             scenario_hash_folds=smp_vcpus,rr_switch_quantum,rr_vcpu_rotation
             rust_test=crucible-qemu::deterministic_launch::multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed
             RESULT

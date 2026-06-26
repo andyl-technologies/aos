@@ -809,11 +809,18 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     fingerprint, and proves replayed aggregate-icount trajectories are
     bit-identical. The later launch rejection, content-hash quantum pinning, and
     IPI/entropy details remain covered by the following tasks.
-- [ ] **T-DET-29** Pin the RR switch quantum: fix `rr_switch_quantum` (node-icount
+- [x] **T-DET-29** Pin the RR switch quantum: fix `rr_switch_quantum` (node-icount
   units) and the ascending vCPU rotation, fold `rr_switch_quantum`/`N`/rotation
   into the scenario content hash, and reject MTTCG (`thread=multi`), the adaptive
   `rr_quantum`, and any realtime-based switching in the launch config. —
   satisfies [DET-23], [DET-42]; spec §4.6 (E13, E21), §4.2.1.
+  - Completed by `checks.crucible.phase2.qemuMultiVcpuLaunch`, consumed by
+    `checks.crucible.phase1.gates.layer0Determinism`: the deterministic QEMU
+    launch profile emits `-accel tcg,thread=single`, fixed `-smp N`, fixed
+    `rr_switch_quantum` in node-icount units, and records ascending vCPU rotation
+    plus `N`/quantum/rotation in scenario hash material. The pre-spawn validator
+    rejects MTTCG, missing/duplicate RR quantum declarations, adaptive icount
+    mode, realtime icount switching, and QEMU realtime launch flags before spawn.
 - [ ] **T-DET-30** Verify per-vCPU entropy uniformity and IPI determinism: a
   uniform `-cpu` pin across all vCPUs, per-vCPU TSC/RNG derived from node icount
   (E23), inter-vCPU IPI delivered at a deterministic node-icount via a fixed

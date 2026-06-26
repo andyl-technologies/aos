@@ -10,6 +10,11 @@
   guestEntropyLaunch = import ./phase1-guest-entropy-launch.nix {inherit pkgs lib;};
   kaslrAslrDefault = import ./phase1-kaslr-aslr-default.nix {inherit pkgs lib;};
   contractAIsolation = import ./phase1-contract-a-isolation.nix {inherit pkgs lib;};
+  qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {
+    inherit pkgs lib;
+    attrPath = "checks.crucible.phase1.qemuMultiVcpuLaunch";
+    taskIds = ["T-DET-29"];
+  };
   timeContractADeterminism = import ./phase1-time-contract-a-determinism.nix {inherit pkgs lib;};
   timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix {inherit pkgs lib;};
   clockDeadline = import ./phase1-clock-deadline.nix {inherit pkgs lib;};
@@ -195,6 +200,10 @@
         label = "layer0 gate lists T-DET-10";
         needle = "\"T-DET-10\"";
       }
+      {
+        label = "phase1 exposes multi-vCPU launch evidence";
+        needle = "qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
       {
@@ -296,6 +305,18 @@ in
               "multi_vcpu_fingerprint=per-vcpu-register-files-plus-rr-cursor" \
               "aggregate_icount_trajectory=bit-identical-across-runs" \
               "recorded_inputs_enforced=monotonic-within-run"
+            require_leaf ${qemuMultiVcpuLaunch} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-29" \
+              "accelerator=tcg,thread=single" \
+              "smp_vcpus=N>=1" \
+              "rr_switch_quantum=content-addressed-node-icount" \
+              "rr_vcpu_rotation=ascending-vcpu-id" \
+              "rejects_mttcg=true" \
+              "rejects_unpinned_rr_switch_quantum=true" \
+              "rejects_adaptive_rr_quantum=true" \
+              "rejects_realtime_switching=true" \
+              "scenario_hash_folds=smp_vcpus,rr_switch_quantum,rr_vcpu_rotation"
             require_leaf ${timeContractADeterminism} \
               "gate=gate:layer0-determinism" \
               "tasks=T-TIME-8" \
@@ -388,12 +409,12 @@ in
             evidence.E8=guestEntropyLaunch.firmware_seed_source+guest_csprng_same_seed_reproducible
             evidence.E9=qemuDeterministicEntropy.qemu_seed_option_controls_guest_random+qemu_seed_option_controls_glib_global_prng+qemuDeterministicGetrandom.qemu_guest_getrandom_sim_unseeded_policy
             evidence.E10=deterministicLaunch.cpu+singleVmFingerprint.run_model
-            evidence.E13=deterministicLaunch.smp_vcpus+contractAIsolation.rr_vcpu_cursor+contractAIsolation.multi_vcpu_fingerprint+timeMultiVcpuAggregateClock.aggregate_node_clock
+            evidence.E13=deterministicLaunch.smp_vcpus+qemuMultiVcpuLaunch.rr_switch_quantum+qemuMultiVcpuLaunch.rr_vcpu_rotation+qemuMultiVcpuLaunch.rejects_mttcg+contractAIsolation.rr_vcpu_cursor+contractAIsolation.multi_vcpu_fingerprint+timeMultiVcpuAggregateClock.aggregate_node_clock
             evidence.E14=noWarpWithPlugin.time_control_predicate+notify_preserved_under_time_control+pluginTimeAdvance.qemu_time_advance_bh_drain+clockDeadline.deadline_source
             evidence.E15=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E16=deterministicLaunch.machine_reset+ram_reset
             evidence.E17=deterministicLaunch.input_policy+contractAIsolation.recorded_inputs_enforced
-            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,qemuDeterministicGetrandom,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,timeContractADeterminism,timeMultiVcpuAggregateClock,clockDeadline,noWarpWithPlugin,pluginTimeAdvance,icountNoRealtime,blockRtcRead,singleVmFingerprint
+            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,qemuDeterministicGetrandom,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,qemuMultiVcpuLaunch,timeContractADeterminism,timeMultiVcpuAggregateClock,clockDeadline,noWarpWithPlugin,pluginTimeAdvance,icountNoRealtime,blockRtcRead,singleVmFingerprint
             RESULT
           '';
         }
