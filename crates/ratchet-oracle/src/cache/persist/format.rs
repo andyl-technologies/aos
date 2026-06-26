@@ -2234,6 +2234,7 @@ fn ensure_node_trace_log_file(path: &Path) -> Result<(), PersistNodeTraceLogErro
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .map_err(|source| PersistNodeTraceLogError::Open {
             path: path.to_path_buf(),

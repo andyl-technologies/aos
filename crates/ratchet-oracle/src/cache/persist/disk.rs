@@ -39,6 +39,7 @@ pub(super) fn ensure_blob_index_file(path: &Path) -> Result<(), PersistBlobIndex
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .map_err(|source| PersistBlobIndexError::Open {
             path: path.to_path_buf(),
@@ -89,6 +90,7 @@ pub(super) fn ensure_file_artifact_index_file(
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .map_err(|source| PersistFileArtifactIndexError::Open {
             path: path.to_path_buf(),
@@ -144,6 +146,7 @@ pub(super) fn ensure_parse_artifact_index_file(
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .map_err(|source| PersistParseArtifactIndexError::Open {
             path: path.to_path_buf(),
@@ -199,6 +202,7 @@ pub(super) fn ensure_node_metadata_index_file(
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .map_err(|source| PersistNodeMetadataIndexError::Open {
             path: path.to_path_buf(),
@@ -252,6 +256,7 @@ pub(super) fn ensure_blob_pack_file(path: &Path) -> Result<(), PersistBlobPackEr
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .map_err(|source| PersistBlobPackError::Open {
             path: path.to_path_buf(),
