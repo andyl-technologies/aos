@@ -1,0 +1,382 @@
+{
+  pkgs,
+  lib,
+  attrPath ? "checks.crucible.phase2.abiConformance",
+  taskIds ? ["T-HARN-17" "T-API-11" "T-API-12"],
+}: let
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = pkgs.fetchCargoDeps {
+    src = crucibleSrc;
+    sourceRoot = "source/crates";
+    hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
+  };
+
+  harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
+  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
+  harnessGateTest = builtins.readFile ../../crates/crucible-harness/tests/gate_abi_conformance.rs;
+  shmemGateTest = builtins.readFile ../../crates/crucible-shmem/tests/gate_abi_conformance.rs;
+  protocolGateTest = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
+  protocolGoldenTest = builtins.readFile ../../crates/crucible-protocol/tests/golden_vectors.rs;
+  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
+  apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
+  apiGateTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
+  harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  apiSpec = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
+  defaultChecks = builtins.readFile ./default.nix;
+
+  taskList = builtins.concatStringsSep "," taskIds;
+
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
+
+  failuresFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (!(hasInfix requirement.needle content)) [
+          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  failures =
+    failuresFor "crates/crucible-harness/src/lib.rs" harnessLib [
+      {
+        label = "canonical gate implemented";
+        needle = ''
+          name: "gate:abi-conformance",
+                  phase: GatePhase::Phase2,
+                  owner: "crucible-harness",
+                  status: GateStatus::Implemented,'';
+      }
+    ]
+    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+      {
+        label = "harness ABI target implemented";
+        needle = ''
+          gate: "gate:abi-conformance",
+                  package: "crucible-harness",
+                  test_target: "gate_abi_conformance",
+                  required_features: &[],
+                  placeholder: false,'';
+      }
+      {
+        label = "protocol ABI target implemented";
+        needle = ''
+          gate: "gate:abi-conformance",
+                  package: "crucible-protocol",
+                  test_target: "gate_abi_conformance",
+                  required_features: &[],
+                  placeholder: false,'';
+      }
+      {
+        label = "API ABI target implemented";
+        needle = ''
+          gate: "gate:abi-conformance",
+                  package: "crucible-api",
+                  test_target: "gate_abi_conformance",
+                  required_features: &[],
+                  placeholder: false,'';
+      }
+    ]
+    ++ failuresFor "crates/crucible-harness/tests/gate_abi_conformance.rs" harnessGateTest [
+      {
+        label = "catalog implementation assertion";
+        needle = "gate_abi_conformance_is_implemented_in_catalog_and_targets";
+      }
+      {
+        label = "golden vector runner success case";
+        needle = "golden_vector_runner_accepts_matching_vectors";
+      }
+      {
+        label = "golden vector runner drift cases";
+        needle = "golden_vector_runner_rejects_version_and_byte_drift";
+      }
+    ]
+    ++ failuresFor "crates/crucible-shmem/tests/gate_abi_conformance.rs" shmemGateTest [
+      {
+        label = "generated header and golden vector aggregate";
+        needle = "gate_abi_conformance_checks_generated_header_and_golden_vectors";
+      }
+      {
+        label = "version bump regeneration guard";
+        needle = "assert_version_bump_regenerates_vectors";
+      }
+    ]
+    ++ failuresFor "crates/crucible-protocol/tests/gate_abi_conformance.rs" protocolGateTest [
+      {
+        label = "protocol version check";
+        needle = "protocol_golden_vector_versions_are_explicit";
+      }
+      {
+        label = "protocol byte-for-byte check";
+        needle = "protocol_golden_vectors_match_live_codec_bytes";
+      }
+      {
+        label = "protocol literal bytes";
+        needle = "protocol_golden_vectors_freeze_literal_frame_bytes";
+      }
+    ]
+    ++ failuresFor "crates/crucible-protocol/tests/golden_vectors.rs" protocolGoldenTest [
+      {
+        label = "protocol golden vector corpus still covered";
+        needle = "golden_vectors_match_canonical_codec_bytes";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+      {
+        label = "RPC ABI module";
+        needle = "pub mod rpc_abi;";
+      }
+      {
+        label = "RPC ABI exports";
+        needle = "GOLDEN_RPC_VECTORS";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/src/rpc_abi.rs" apiRpcAbi [
+      {
+        label = "explicit major version";
+        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 1;";
+      }
+      {
+        label = "explicit minor version";
+        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 0;";
+      }
+      {
+        label = "explicit patch version";
+        needle = "pub const RPC_PROTOCOL_PATCH: u16 = 0;";
+      }
+      {
+        label = "build identifier";
+        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v1\";";
+      }
+      {
+        label = "golden vector protocol version";
+        needle = "pub const GOLDEN_VECTOR_RPC_PROTOCOL_VERSION";
+      }
+      {
+        label = "regeneration rule";
+        needle = "GOLDEN_VECTOR_RPC_REGENERATION_RULE";
+      }
+      {
+        label = "open-set payload kinds";
+        needle = "pub const RPC_OPEN_SET_PAYLOAD_KINDS";
+      }
+      {
+        label = "golden vector struct";
+        needle = "pub struct RpcGoldenVector";
+      }
+      {
+        label = "golden vector message enum";
+        needle = "pub enum RpcGoldenVectorMessage";
+      }
+      {
+        label = "major mismatch typed error";
+        needle = "MajorVersionMismatch";
+      }
+      {
+        label = "major mismatch negotiation";
+        needle = "peer.major != RPC_PROTOCOL_VERSION.major";
+      }
+      {
+        label = "RPC golden corpus";
+        needle = "pub const GOLDEN_RPC_VECTORS";
+      }
+      {
+        label = "Hello request vector";
+        needle = "name: \"hello-request\"";
+      }
+      {
+        label = "Hello response vector";
+        needle = "name: \"hello-response\"";
+      }
+      {
+        label = "Attached vector";
+        needle = "name: \"attached\"";
+      }
+      {
+        label = "command request vector";
+        needle = "name: \"send-command-request\"";
+      }
+      {
+        label = "command response vector";
+        needle = "name: \"send-command-response\"";
+      }
+      {
+        label = "event vector";
+        needle = "name: \"event-fault-injected\"";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" apiGateTest [
+      {
+        label = "major mismatch test";
+        needle = "rpc_protocol_version_is_explicit_and_rejects_major_mismatch";
+      }
+      {
+        label = "request response event coverage test";
+        needle = "rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds";
+      }
+      {
+        label = "live encoder byte comparison";
+        needle = "rpc_golden_vectors_match_live_encoder";
+      }
+      {
+        label = "literal byte freeze";
+        needle = "rpc_golden_vectors_freeze_literal_wire_bytes";
+      }
+      {
+        label = "wire drift negative control";
+        needle = "rpc_golden_vector_negative_control_detects_wire_drift";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessSpec [
+      {
+        label = "T-HARN-17 checklist complete";
+        needle = "- [x] **T-HARN-17**";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/21-api.md" apiSpec [
+      {
+        label = "T-API-11 checklist complete";
+        needle = "- [x] **T-API-11**";
+      }
+      {
+        label = "T-API-12 checklist complete";
+        needle = "- [x] **T-API-12**";
+      }
+      {
+        label = "reference client remains pending";
+        needle = "- [ ] **T-API-13**";
+      }
+    ]
+    ++ failuresFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase2 exposes ABI conformance check";
+        needle = "abiConformance = import ./phase2-abi-conformance.nix";
+      }
+      {
+        label = "phase2 gate passes task IDs";
+        needle = "taskIds = [\"T-PLAN-3\" \"T-HARN-17\" \"T-API-11\" \"T-API-12\"]";
+      }
+    ];
+in
+  if failures != []
+  then throw "crucible phase2 ABI conformance check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase2-abi-conformance";
+      version = "0";
+      src = crucibleSrc;
+
+      buildDeps = [
+        pkgs.rust
+        pkgs.sed
+      ];
+
+      phases = [
+        {
+          name = "unpack";
+          script = ''
+            cp -R "$src" source
+            chmod -R u+w source
+            cd source
+          '';
+        }
+        {
+          name = "configure";
+          script = ''
+            export CARGO_HOME="$TMPDIR/cargo"
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            mkdir -p "$CARGO_HOME" .cargo
+            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+                > .cargo/config.toml
+            else
+              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+                > .cargo/config.toml
+            fi
+          '';
+        }
+        {
+          name = "run-abi-conformance-gate";
+          script = ''
+            set -eu
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-harness \
+              --test gate_abi_conformance \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-shmem \
+              --test gate_abi_conformance \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-protocol \
+              --test gate_abi_conformance \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-protocol \
+              --test golden_vectors \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-api \
+              --test gate_abi_conformance \
+              -- --test-threads=1
+          '';
+        }
+        {
+          name = "write-result";
+          script = ''
+            set -eu
+            mkdir -p "$out"
+            cat > "$out/result" <<'RESULT'
+            PASS
+            check=${attrPath}
+            tasks=${taskList}
+            gate=gate:abi-conformance
+            shmem_vectors=generated-header,layout-fixture,spsc-structure-aware
+            protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit
+            rpc_vectors=hello-request,hello-response,attached,send-command-request,send-command-response,event-fault-injected
+            version_bump_rule=shmem+protocol+rpc-golden-corpora
+            rpc_major_mismatch_rejection=true
+            reference_client_scope=pending-T-API-13
+            RESULT
+          '';
+        }
+      ];
+    }

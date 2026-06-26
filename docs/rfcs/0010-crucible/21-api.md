@@ -640,13 +640,19 @@ ran in-process against the double or over the wire against QEMU.
   (INVALID_STATE/NOT_FOUND/INVALID_ARGUMENT/UNSUPPORTED/INTERNAL), total and
   side-effect-free, never closing the stream. — satisfies [API-24]; spec §21.5.3;
   cross-ref 20 §11.
-- [ ] **T-API-11** Implement explicit protocol versioning (major.minor.patch +
+- [x] **T-API-11** Implement explicit protocol versioning (major.minor.patch +
   build) in Hello/Attached, major-bump on wire-incompatible change, detect+refuse
   on major mismatch. — satisfies [API-25]; spec §21.6.
-- [ ] **T-API-12** Freeze golden vectors for the RPC ABI (requests, responses,
+- [x] **T-API-12** Freeze golden vectors for the RPC ABI (requests, responses,
   events, payload kinds) wired into `gate:abi-conformance` as the RPC third of the
   boundary-ABI suite; regenerate-in-the-same-change discipline. — satisfies
   [API-26]; spec §21.6; cross-ref 24 §8.
+  Completed by `crucible-api::rpc_abi` and
+  `checks.crucible.phase2.gates.abiConformance`: the seed RPC ABI corpus freezes
+  Hello request/response, Attached, one command request/response, one event, and
+  the advertised open-set payload kinds with explicit
+  `major.minor.patch+build` versioning and typed major-mismatch rejection. The
+  full reference-client lifecycle suite remains T-API-13.
 - [ ] **T-API-13** Build the reference client + conformance suite driving the full
   lifecycle (Hello…DestroySession incl. both attach paths, faults, breakpoints,
   savepoint, fork, GetReproduction, epoch-guard rejection) against BOTH the QEMU

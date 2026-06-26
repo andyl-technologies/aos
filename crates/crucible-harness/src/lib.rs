@@ -192,7 +192,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:abi-conformance",
         phase: GatePhase::Phase2,
         owner: "crucible-harness",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:patch-microtests",

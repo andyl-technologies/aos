@@ -245,6 +245,7 @@ in {
     shmemControlFlags = import ./phase2-shmem-control-flags.nix {inherit pkgs lib;};
     shmemMultiVcpuNodeSlot = import ./phase2-shmem-multi-vcpu-node-slot.nix {inherit pkgs lib;};
     shmemDeliverability = import ./phase2-shmem-deliverability.nix {inherit pkgs lib;};
+    abiConformance = import ./phase2-abi-conformance.nix {inherit pkgs lib;};
     gates = let
       patchMicrotestsCheck = import ./phase2-patch-microtests.nix {
         inherit pkgs lib;
@@ -252,13 +253,10 @@ in {
         taskIds = ["T-PLAN-3" "T-HARN-20" "T-PATCH-2"];
       };
     in {
-      abiConformance = redGate {
+      abiConformance = import ./phase2-abi-conformance.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.abiConformance";
-        gateName = "gate:abi-conformance";
-        owner = "crucible-harness";
-        phase = "phase2";
-        taskIds = ["T-PLAN-3" "T-HARN-17"];
-        reason = "ABI conformance gate is intentionally pending";
+        taskIds = ["T-PLAN-3" "T-HARN-17" "T-API-11" "T-API-12"];
       };
       qemuInert = import ./phase2-qemu-inert.nix {
         inherit pkgs lib;
