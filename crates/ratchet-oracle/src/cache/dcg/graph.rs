@@ -362,6 +362,67 @@ impl DemandGraph {
         DirtyFrontier::new(ready, blocked)
     }
 
+    /// Recomputes ready dirty nodes until the dirty frontier is empty or blocked.
+    ///
+    /// The loop snapshots [`Self::dirty_frontier`], recomputes ready dirty nodes
+    /// in deterministic node-id order through `recompute`, and applies
+    /// [`Self::reconsider_node`] to each returned value hash. Reconsideration
+    /// handles early cutoff: unchanged hashes clean the node without dirtying
+    /// dependents, while changed hashes dirty direct dependents for a later pass.
+    ///
+    /// The returned [`RecomputeReadyDirty`] contains every reconsideration in
+    /// loop order plus the final frontier. A non-empty final frontier has no ready
+    /// nodes, which means dirty nodes are blocked by dirty upstream dependencies
+    /// such as a dirty cycle.
+    ///
+    /// This is a graph-level scheduling primitive only. It does not know how to
+    /// evaluate expressions, derive canonical value hashes, record dynamic
+    /// dependencies, or integrate persistence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DemandGraphError::RecomputeLoopAllocationFailed`] if the loop
+    /// cannot reserve ready-node or reconsideration storage. Returns any error
+    /// from `recompute`, or [`DemandGraphError::UnknownNode`] if graph
+    /// bookkeeping observes an invalid node while reconsidering. If `recompute`
+    /// returns an error after earlier nodes in the same call were reconsidered,
+    /// those graph mutations are retained and the partial reconsideration list is
+    /// not returned.
+    pub fn recompute_ready_dirty_nodes<E, F>(
+        &mut self,
+        mut recompute: F,
+    ) -> Result<RecomputeReadyDirty, E>
+    where
+        E: From<DemandGraphError>,
+        F: FnMut(DemandNodeId) -> Result<ValueHash, E>,
+    {
+        let mut reconsiderations = Vec::new();
+        loop {
+            let frontier = self.dirty_frontier();
+            if frontier.ready_nodes().is_empty() {
+                return Ok(RecomputeReadyDirty::new(reconsiderations, frontier));
+            }
+            let ready_nodes = frontier.ready_nodes();
+            let mut ready = Vec::new();
+            ready.try_reserve_exact(ready_nodes.len()).map_err(|_| {
+                DemandGraphError::RecomputeLoopAllocationFailed {
+                    entries: ready_nodes.len(),
+                }
+            })?;
+            ready.extend_from_slice(ready_nodes);
+            reconsiderations.try_reserve(ready.len()).map_err(|_| {
+                DemandGraphError::RecomputeLoopAllocationFailed {
+                    entries: reconsiderations.len().saturating_add(ready.len()),
+                }
+            })?;
+            for node in ready {
+                let recomputed = recompute(node)?;
+                let reconsideration = self.reconsider_node(node, recomputed)?;
+                reconsiderations.push(reconsideration);
+            }
+        }
+    }
+
     fn dirty_upstream_blockers(&self, id: DemandNodeId) -> Vec<DemandNodeId> {
         let Some(node) = self.nodes.get(id.index()) else {
             return Vec::new();

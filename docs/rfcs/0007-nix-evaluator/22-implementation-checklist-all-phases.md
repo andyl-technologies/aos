@@ -452,6 +452,18 @@ alone (`M-1`/`Q-A`).
       graph-side diagnostic only; SCC-specific errors, evaluator scheduling
       integration, dynamic dependency tracing, persistence, and cached/uncached
       harness proof remain open (`S-14`/`C-20`).
+- [x] Current graph-only ready-dirty recomputation loop substrate:
+      `DemandGraph::recompute_ready_dirty_nodes` repeatedly snapshots the dirty
+      frontier, calls a caller-supplied recompute callback for each ready dirty
+      node's new `ValueHash` in deterministic node order, applies
+      `reconsider_node` for early cutoff and dependent dirtying, and returns the
+      ordered reconsiderations plus the final frontier. The loop cleans stable
+      nodes, propagates changed hashes until the frontier is empty, and stops
+      with a blocked frontier for dirty cycles or other dirty upstream blockers.
+      This is graph-side scheduling only; evaluator node lifecycle integration,
+      dynamic dependency capture, canonical value hashing, impure-input leaf
+      integration, persistence, parallel/SCC-aware scheduling, and
+      cached/uncached `.drv` harness proof remain open (`S-14`/`C-20`).
 - [x] Current EvalCache dirty-frontier adapter:
       `EvalCache::dirty_frontier` exposes the graph-side `DirtyFrontier`
       snapshot through caller-owned evaluator cache state, and
@@ -469,12 +481,13 @@ alone (`M-1`/`Q-A`).
       cacheable recomputes and clearing them on incomplete or uncacheable
       recomputes. This is explicit graph/runtime edge maintenance only; typed
       dependency groups, automatic evaluator-owned dynamic dependency capture,
-      separate inner/outer observers, ready-dirty recomputation, persistence,
-      and cached/uncached `.drv` parity proof remain open (`S-14`/`C-20`).
+      separate inner/outer observers, evaluator-integrated ready-dirty
+      recomputation, persistence, and cached/uncached `.drv` parity proof remain
+      open (`S-14`/`C-20`).
 - [ ] Full demand-driven incremental graph remains: create nodes on actual
       force/eval demand, capture dependencies dynamically Adapton-style,
-      separate inner/outer observers, run the full ready-dirty recomputation
-      loop, integrate impure-input leaves and persistence, and prove
+      separate inner/outer observers, connect the ready-dirty recomputation loop
+      to evaluator demand, integrate impure-input leaves and persistence, and prove
       cached/uncached `.drv` parity.
 - [x] Current `force_memoized` claimed-thunk boundary: tree-walk `force_value`
       delegates newly claimed thunk forcing to `force_memoized_claimed_thunk`,

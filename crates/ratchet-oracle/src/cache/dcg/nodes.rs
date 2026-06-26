@@ -85,3 +85,26 @@ impl Reconsideration {
         &self.dirtied_dependents
     }
 }
+
+impl RecomputeReadyDirty {
+    pub(super) fn new(reconsiderations: Vec<Reconsideration>, remaining: DirtyFrontier) -> Self {
+        Self {
+            reconsiderations,
+            remaining,
+        }
+    }
+
+    /// Returns reconsiderations in the order the loop recomputed nodes.
+    pub fn reconsiderations(&self) -> &[Reconsideration] {
+        &self.reconsiderations
+    }
+
+    /// Returns the dirty frontier that remained after the loop stopped.
+    ///
+    /// An empty frontier means the loop cleaned every dirty node it could see.
+    /// A non-empty frontier has no ready nodes and contains the dirty nodes still
+    /// blocked by dirty upstream dependencies.
+    pub fn remaining_frontier(&self) -> &DirtyFrontier {
+        &self.remaining
+    }
+}
