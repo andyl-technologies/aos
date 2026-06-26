@@ -18,6 +18,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod canonical;
 
 static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+const REPLAY_ORACLE_SEARCH_SAMPLING_DOMAIN: &[u8] = b"crucible.replay-oracle.search-sampling.v1";
+const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x00000100000001b3;
 
 /// A stable content address used by the execution-model spine.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -2233,6 +2236,80 @@ impl MaterializationPolicy {
     }
 }
 
+/// Deterministic replay-oracle sampling policy for active graph search.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SearchReplayOracleSamplingConfig {
+    numerator: u64,
+    denominator: u64,
+    seed_tag: String,
+}
+
+impl SearchReplayOracleSamplingConfig {
+    /// Builds a deterministic sampling-rate configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InvalidSearchReplayOracleSamplingConfig`] when the
+    /// denominator is zero, numerator is zero, numerator exceeds denominator, or
+    /// the seed tag is empty.
+    pub fn new(
+        numerator: u64,
+        denominator: u64,
+        seed_tag: impl Into<String>,
+    ) -> Result<Self, EngineError> {
+        if denominator == 0 {
+            return Err(EngineError::InvalidSearchReplayOracleSamplingConfig {
+                reason: "sampling denominator must be non-zero",
+            });
+        }
+        if numerator == 0 {
+            return Err(EngineError::InvalidSearchReplayOracleSamplingConfig {
+                reason: "sampling numerator must be non-zero",
+            });
+        }
+        if numerator > denominator {
+            return Err(EngineError::InvalidSearchReplayOracleSamplingConfig {
+                reason: "sampling numerator cannot exceed denominator",
+            });
+        }
+        let seed_tag = seed_tag.into();
+        if seed_tag.is_empty() {
+            return Err(EngineError::InvalidSearchReplayOracleSamplingConfig {
+                reason: "sampling seed tag must be non-empty",
+            });
+        }
+
+        Ok(Self {
+            numerator,
+            denominator,
+            seed_tag,
+        })
+    }
+
+    /// Returns the sampling-rate numerator.
+    #[must_use]
+    pub const fn numerator(&self) -> u64 {
+        self.numerator
+    }
+
+    /// Returns the sampling-rate denominator.
+    #[must_use]
+    pub const fn denominator(&self) -> u64 {
+        self.denominator
+    }
+
+    /// Returns the deterministic sampling seed tag.
+    #[must_use]
+    pub fn seed_tag(&self) -> &str {
+        &self.seed_tag
+    }
+
+    fn samples(&self, sequence: u64, checkpoint: ContentHash) -> bool {
+        search_replay_oracle_sampling_score(&self.seed_tag, sequence, checkpoint) % self.denominator
+            < self.numerator
+    }
+}
+
 /// Policy for hedging incomplete backend `savevm` coverage.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SavevmCompletenessHedge {
@@ -2857,22 +2934,105 @@ impl TemporalGraph {
     where
         I: IntoIterator<Item = Decision>,
     {
+        self.search_inner(
+            frontier,
+            decisions,
+            reduction_policy,
+            materialization_policy,
+            trigger,
+            None,
+        )
+    }
+
+    /// Searches one frontier while sampling fat checkpoints through the replay oracle.
+    ///
+    /// Each explored child is materialized according to `materialization_policy`.
+    /// Every returned fat checkpoint is considered for deterministic sampling;
+    /// sampled fat checkpoints are immediately reconstructed through thin replay
+    /// and compared before search returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::SearchReplayOracleMismatch`] when a sampled fat
+    /// checkpoint differs from its thin reconstruction. Other graph,
+    /// materialization, or replay-oracle validation errors are returned as
+    /// [`EngineError`].
+    pub fn search_with_replay_oracle_sampling<I>(
+        &mut self,
+        frontier: &Configuration,
+        decisions: I,
+        reduction_policy: FrontierReductionPolicy,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+        sampling_config: &SearchReplayOracleSamplingConfig,
+    ) -> Result<TemporalGraphSearch, EngineError>
+    where
+        I: IntoIterator<Item = Decision>,
+    {
+        self.search_inner(
+            frontier,
+            decisions,
+            reduction_policy,
+            materialization_policy,
+            trigger,
+            Some(sampling_config),
+        )
+    }
+
+    fn search_inner<I>(
+        &mut self,
+        frontier: &Configuration,
+        decisions: I,
+        reduction_policy: FrontierReductionPolicy,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+        sampling_config: Option<&SearchReplayOracleSamplingConfig>,
+    ) -> Result<TemporalGraphSearch, EngineError>
+    where
+        I: IntoIterator<Item = Decision>,
+    {
         let frontier_id = frontier.id();
         let frontier_report =
             self.enumerate_frontier_reduced(frontier, decisions, reduction_policy)?;
         let mut materialized = Vec::new();
-        for child in &frontier_report.explored {
-            materialized.push(self.materialize_hot_checkpoint(
+        let mut replay_oracle_sampling =
+            sampling_config.map(|_| SearchReplayOracleSamplingReport::default());
+        for (sequence, child) in frontier_report.explored.iter().enumerate() {
+            let sequence = sequence as u64;
+            let checkpoint = match self.materialize_hot_checkpoint(
                 &child.configuration,
                 materialization_policy,
                 trigger,
-            )?);
+            ) {
+                Ok(checkpoint) => checkpoint,
+                Err(error) => {
+                    return Err(match sampling_config {
+                        Some(config) => sampled_search_replay_oracle_error(sequence, config, error),
+                        None => error,
+                    });
+                }
+            };
+
+            if let (Some(config), Some(report)) = (sampling_config, replay_oracle_sampling.as_mut())
+            {
+                sample_search_replay_oracle_checkpoint(
+                    self,
+                    &child.configuration,
+                    &checkpoint,
+                    sequence,
+                    config,
+                    report,
+                )?;
+            }
+
+            materialized.push(checkpoint);
         }
 
         Ok(TemporalGraphSearch {
             frontier: frontier_id,
             frontier_report,
             materialized,
+            replay_oracle_sampling,
         })
     }
 
@@ -3894,6 +4054,30 @@ pub struct ReplayOracleCheck {
     pub thin_checkpoint: ContentHash,
 }
 
+/// Bisection requested after an active-search replay-oracle mismatch.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SearchReplayOracleBisectionRequest {
+    /// Stable search materialization sequence where the mismatch was observed.
+    pub sequence: u64,
+    /// Fat checkpoint whose sampled replay-oracle comparison failed.
+    pub checkpoint: ContentHash,
+    /// Stable reason for the bisection request.
+    pub reason: &'static str,
+}
+
+/// Deterministic sampling report for active graph-search replay-oracle checks.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SearchReplayOracleSamplingReport {
+    /// Number of fat search materializations considered.
+    pub considered: usize,
+    /// Number of fat search materializations replay-oracle checked.
+    pub sampled: usize,
+    /// Number of fat search materializations not sampled.
+    pub skipped: usize,
+    /// Checkpoints selected by the deterministic sampler.
+    pub sampled_checkpoints: Vec<ContentHash>,
+}
+
 /// One unique child produced by frontier decision enumeration.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FrontierChild {
@@ -4016,6 +4200,8 @@ pub struct TemporalGraphSearch {
     pub frontier_report: FrontierReductionReport,
     /// Checkpoints returned by hot/cold materialization policy for explored children.
     pub materialized: Vec<Checkpoint>,
+    /// Replay-oracle sampling report when active search sampling was enabled.
+    pub replay_oracle_sampling: Option<SearchReplayOracleSamplingReport>,
 }
 
 /// Canonical-relabeling fingerprint for symmetry reduction.
@@ -4332,6 +4518,22 @@ pub enum EngineError {
         /// The supplied fat checkpoint's materialized-state identity.
         actual: ContentHash,
     },
+    /// A sampled search materialization failed the replay oracle and needs bisection.
+    SearchReplayOracleMismatch {
+        /// Bisection request for the fat/thin reconstruction pair.
+        bisection: SearchReplayOracleBisectionRequest,
+        /// The fat checkpoint under test.
+        checkpoint: ContentHash,
+        /// The materialized-state identity reconstructed by thin replay.
+        expected: ContentHash,
+        /// The supplied fat checkpoint's materialized-state identity.
+        actual: ContentHash,
+    },
+    /// Active-search replay-oracle sampling was configured with an invalid rate.
+    InvalidSearchReplayOracleSamplingConfig {
+        /// Stable reason for the validation failure.
+        reason: &'static str,
+    },
     /// A schedule prefix or suffix could not be constructed.
     SchedulePrefix(
         /// The schedule prefix error.
@@ -4385,6 +4587,12 @@ impl fmt::Display for EngineError {
             }
             Self::ReplayOracleMismatch { .. } => {
                 f.write_str("replay oracle mismatch between fat checkpoint and thin derivation")
+            }
+            Self::SearchReplayOracleMismatch { .. } => {
+                f.write_str("sampled search checkpoint does not match thin replay derivation")
+            }
+            Self::InvalidSearchReplayOracleSamplingConfig { reason } => {
+                write!(f, "invalid search replay-oracle sampling config: {reason}")
             }
             Self::SchedulePrefix(error) => write!(f, "schedule prefix failed: {error}"),
         }
@@ -4556,6 +4764,85 @@ fn validate_loadable_checkpoint(
 
 fn replay_oracle_failure_rejects_cache(error: &EngineError) -> bool {
     !matches!(error, EngineError::MissingBakedGenesis { .. })
+}
+
+fn sample_search_replay_oracle_checkpoint(
+    graph: &TemporalGraph,
+    configuration: &Configuration,
+    checkpoint: &Checkpoint,
+    sequence: u64,
+    config: &SearchReplayOracleSamplingConfig,
+    report: &mut SearchReplayOracleSamplingReport,
+) -> Result<(), EngineError> {
+    if checkpoint.kind != CheckpointKind::Fat {
+        return Ok(());
+    }
+
+    report.considered += 1;
+    if !config.samples(sequence, checkpoint.id) {
+        report.skipped += 1;
+        return Ok(());
+    }
+
+    report.sampled += 1;
+    report.sampled_checkpoints.push(checkpoint.id);
+    graph
+        .replay_checkpoint(configuration, checkpoint)
+        .map(|_| ())
+        .map_err(|error| search_replay_oracle_error(sequence, error))
+}
+
+fn search_replay_oracle_error(sequence: u64, error: EngineError) -> EngineError {
+    match error {
+        EngineError::ReplayOracleMismatch {
+            checkpoint,
+            expected,
+            actual,
+        } => EngineError::SearchReplayOracleMismatch {
+            bisection: SearchReplayOracleBisectionRequest {
+                sequence,
+                checkpoint,
+                reason: "sampled fat checkpoint differs from thin reconstruction",
+            },
+            checkpoint,
+            expected,
+            actual,
+        },
+        other => other,
+    }
+}
+
+fn sampled_search_replay_oracle_error(
+    sequence: u64,
+    config: &SearchReplayOracleSamplingConfig,
+    error: EngineError,
+) -> EngineError {
+    match error {
+        EngineError::ReplayOracleMismatch {
+            checkpoint,
+            expected,
+            actual,
+        } if config.samples(sequence, checkpoint) => EngineError::SearchReplayOracleMismatch {
+            bisection: SearchReplayOracleBisectionRequest {
+                sequence,
+                checkpoint,
+                reason: "sampled fat checkpoint differs from thin reconstruction",
+            },
+            checkpoint,
+            expected,
+            actual,
+        },
+        EngineError::ReplayOracleMismatch {
+            checkpoint,
+            expected,
+            actual,
+        } => EngineError::ReplayOracleMismatch {
+            checkpoint,
+            expected,
+            actual,
+        },
+        other => other,
+    }
 }
 
 fn validate_materialized_state(checkpoint: &Checkpoint) -> Result<(), EngineError> {
@@ -5559,6 +5846,26 @@ fn local_store_temp_path(path: &Path, key: &ContentHash) -> PathBuf {
     let index = LOCAL_DAG_STORE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let file_name = format!("{}.tmp.{}.{}", key.to_hex(), std::process::id(), index);
     path.with_file_name(file_name)
+}
+
+fn search_replay_oracle_sampling_score(
+    seed_tag: &str,
+    sequence: u64,
+    checkpoint: ContentHash,
+) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    hash = fold_fnv_bytes(hash, REPLAY_ORACLE_SEARCH_SAMPLING_DOMAIN);
+    hash = fold_fnv_bytes(hash, seed_tag.as_bytes());
+    hash = fold_fnv_bytes(hash, &sequence.to_le_bytes());
+    fold_fnv_bytes(hash, checkpoint.to_hex().as_bytes())
+}
+
+fn fold_fnv_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
 }
 
 fn content_hash_hex(hash: ContentHash) -> String {

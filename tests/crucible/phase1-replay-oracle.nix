@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-7" "T-TEMP-9" "T-TEMP-11"],
+  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-HARN-13" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-7" "T-TEMP-9" "T-TEMP-11"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -120,6 +120,18 @@
         needle = "pub enum MaterializationTrigger";
       }
       {
+        label = "active search replay-oracle sampling config";
+        needle = "pub struct SearchReplayOracleSamplingConfig";
+      }
+      {
+        label = "active search replay-oracle sampling report";
+        needle = "pub struct SearchReplayOracleSamplingReport";
+      }
+      {
+        label = "active search replay-oracle bisection request";
+        needle = "pub struct SearchReplayOracleBisectionRequest";
+      }
+      {
         label = "hot-node budget rule";
         needle = "trigger.is_hot() && current_fat_checkpoints < self.max_fat_checkpoints";
       }
@@ -212,6 +224,22 @@
         needle = "pub fn search<I>(";
       }
       {
+        label = "graph active search replay-oracle API";
+        needle = "pub fn search_with_replay_oracle_sampling<I>(";
+      }
+      {
+        label = "graph search samples inline replay oracle";
+        needle = "sample_search_replay_oracle_checkpoint(";
+      }
+      {
+        label = "sampled search mismatch error";
+        needle = "SearchReplayOracleMismatch";
+      }
+      {
+        label = "search sampling score namespace";
+        needle = "crucible.replay-oracle.search-sampling.v1";
+      }
+      {
         label = "graph replay uses stored fat checkpoint";
         needle = "self.cached_snapshot(configuration).cloned()";
       }
@@ -280,6 +308,14 @@
       {
         label = "graph search result export";
         needle = "TemporalGraphSearch";
+      }
+      {
+        label = "active search replay-oracle sampling config export";
+        needle = "SearchReplayOracleSamplingConfig";
+      }
+      {
+        label = "active search replay-oracle sampling report export";
+        needle = "SearchReplayOracleSamplingReport";
       }
       {
         label = "thin source-of-truth test";
@@ -404,6 +440,34 @@
       {
         label = "materialized replay-oracle checker";
         needle = "check_materialized_replay_oracle(&corpus)";
+      }
+      {
+        label = "temporal graph search sampling test";
+        needle = "gate_replay_oracle_samples_temporal_graph_search_fat_materializations";
+      }
+      {
+        label = "temporal graph search sampling mismatch test";
+        needle = "gate_replay_oracle_search_sampling_mismatch_requests_bisection";
+      }
+      {
+        label = "temporal graph search sampling skip test";
+        needle = "gate_replay_oracle_search_sampling_rate_can_skip_materializations";
+      }
+      {
+        label = "active search sampling rate configurable";
+        needle = "SearchReplayOracleSamplingConfig::new(1, 1, \"gate-replay-oracle-graph-search\")";
+      }
+      {
+        label = "active search fractional sampling rate";
+        needle = "SearchReplayOracleSamplingConfig::new(1, u64::MAX, \"gate-replay-oracle-graph-search-skip\")";
+      }
+      {
+        label = "active search uses sampling API";
+        needle = "graph.search_with_replay_oracle_sampling(";
+      }
+      {
+        label = "active search mismatch requests bisection";
+        needle = "EngineError::SearchReplayOracleMismatch";
       }
       {
         label = "schedule-order sensitivity";
@@ -602,6 +666,34 @@
         needle = "ReplayOracleRoundTripError::OracleCaseMismatch";
       }
       {
+        label = "search sampling config";
+        needle = "pub struct ReplayOracleSamplingConfig";
+      }
+      {
+        label = "search materialization record";
+        needle = "pub struct ReplayOracleSearchMaterialization";
+      }
+      {
+        label = "search sampling report";
+        needle = "pub struct ReplayOracleSearchSamplingReport";
+      }
+      {
+        label = "search sampling error";
+        needle = "pub enum ReplayOracleSearchSamplingError";
+      }
+      {
+        label = "search sampling checker";
+        needle = "pub fn check_sampled_search_replay_oracle(";
+      }
+      {
+        label = "search sampling bisection checker";
+        needle = "pub fn check_sampled_search_replay_oracle_with_bisection";
+      }
+      {
+        label = "search sampling score namespace";
+        needle = "crucible.replay-oracle.search-sampling.v1";
+      }
+      {
         label = "replay failure unit test";
         needle = "reproduction_artifact_round_trip_reports_replay_failure";
       }
@@ -728,6 +820,10 @@
         needle = "\"T-HARN-12\"";
       }
       {
+        label = "phase1 replay-oracle lists T-HARN-13";
+        needle = "\"T-HARN-13\"";
+      }
+      {
         label = "phase1 replay-oracle lists T-EXEC-4";
         needle = "\"T-EXEC-4\"";
       }
@@ -756,6 +852,12 @@
         needle = "\"T-TEMP-11\"";
       }
     ]
+    ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase6 still marks T-HARN-13 pending";
+        needle = "taskIds = [\"T-PLAN-3\" \"T-HARN-12\" \"T-HARN-13\"];\n        reason = \"search-time replay oracle gate is intentionally pending\";";
+      }
+    ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
       {
         label = "T-DET-18 checklist complete";
@@ -774,6 +876,38 @@
       {
         label = "T-HARN-12 checklist complete";
         needle = "- [x] **T-HARN-12**";
+      }
+      {
+        label = "T-HARN-13 checklist complete";
+        needle = "- [x] **T-HARN-13**";
+      }
+      {
+        label = "T-HARN-13 completion names sampling config";
+        needle = "`ReplayOracleSamplingConfig`";
+      }
+      {
+        label = "T-HARN-13 completion names active search config";
+        needle = "`SearchReplayOracleSamplingConfig`";
+      }
+      {
+        label = "T-HARN-13 completion names active search API";
+        needle = "`TemporalGraph::search_with_replay_oracle_sampling`";
+      }
+      {
+        label = "T-HARN-13 completion names sampled mismatch error";
+        needle = "`EngineError::SearchReplayOracleMismatch`";
+      }
+      {
+        label = "T-HARN-13 completion names sampling checker";
+        needle = "`check_sampled_search_replay_oracle`";
+      }
+      {
+        label = "T-HARN-13 completion names bisection checker";
+        needle = "`check_sampled_search_replay_oracle_with_bisection`";
+      }
+      {
+        label = "T-HARN-13 completion names replay-oracle gate";
+        needle = "`checks.crucible.phase1.gates.replayOracle`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
@@ -1006,6 +1140,9 @@ in
             gc_cache_collection=thin-replay-oracle-preserved
             graph_user_operations=save,resume,fork,replay,search
             graph_operation_realization=instantiate
+            search_oracle_sampling=temporal-graph-fat-materializations
+            search_oracle_sampling_rate=configurable
+            search_oracle_mismatch=bisection-request
             artifact_round_trip=re-run-from-seed-scenario-schedule-build-identity
             artifact_replay_assertions=fingerprint-equality,oracle-case-equality
             artifact_replay_negative_controls=build-identity-drift,seed-drift,scenario-drift,schedule-drift,oracle-case-drift,replay-failure,expected-oracle-mismatch,reproduced-oracle-mismatch

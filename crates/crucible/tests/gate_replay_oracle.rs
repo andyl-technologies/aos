@@ -10,8 +10,8 @@ use crucible::{
     DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, FrontierReductionPolicy,
     GenesisCheckpoint, Icount, MaterializationPolicy, MaterializationTrigger, MaterializedState,
     MemoryDagStore, NodeBlobRef, NodeId, ReadyPoint, RngDecision, RngStreamId, ScenarioDef,
-    Schedule, SchedulerState, State, TemporalGraph, VirtualTime, WhiteBoxPolicy, World, WorldNode,
-    bake, instantiate, reduce, step,
+    Schedule, SchedulerState, SearchReplayOracleSamplingConfig, State, TemporalGraph, VirtualTime,
+    WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
 };
 use crucible_harness::replay_oracle::{
     ReplayOracleArtifactRun, ReplayOracleBuildIdentity, ReplayOracleCheckpointKind,
@@ -430,6 +430,180 @@ fn gate_replay_oracle_samples_materialized_checkpoints_during_search() -> Result
     assert_eq!(report.sampled, corpus.len());
     assert_eq!(report.skipped, 0);
     assert_eq!(report.sampled_checkpoints.len(), corpus.len());
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_samples_temporal_graph_search_fat_materializations()
+-> Result<(), Box<dyn Error>> {
+    let node = oracle_node_id();
+    let world = World::from_nodes(vec![WorldNode {
+        id: node,
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 222 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+    }])?;
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world)?;
+    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
+    let config = SearchReplayOracleSamplingConfig::new(1, 1, "gate-replay-oracle-graph-search")?;
+    let search = graph.search_with_replay_oracle_sampling(
+        &genesis,
+        vec![
+            rng_decision("search-oracle/a", 1),
+            rng_decision("search-oracle/b", 2),
+            rng_decision("search-oracle/c", 3),
+        ],
+        FrontierReductionPolicy::none(),
+        MaterializationPolicy::with_budget(3),
+        MaterializationTrigger::RepeatedForkSource,
+        &config,
+    )?;
+    let report = search.replay_oracle_sampling.as_ref().ok_or_else(|| {
+        IoError::new(
+            ErrorKind::InvalidData,
+            "search replay-oracle sampling report missing",
+        )
+    })?;
+
+    assert_eq!(search.frontier_report.explored.len(), 3);
+    assert_eq!(search.materialized.len(), 3);
+    assert!(
+        search
+            .materialized
+            .iter()
+            .all(|checkpoint| checkpoint.kind == CheckpointKind::Fat)
+    );
+    assert_eq!(report.considered, search.materialized.len());
+    assert_eq!(report.sampled, search.materialized.len());
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.sampled_checkpoints.len(), search.materialized.len());
+    assert_eq!(
+        report.sampled_checkpoints,
+        search
+            .materialized
+            .iter()
+            .map(|checkpoint| checkpoint.id)
+            .collect::<Vec<_>>()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_search_sampling_rate_can_skip_materializations() -> Result<(), Box<dyn Error>>
+{
+    let node = oracle_node_id();
+    let world = World::from_nodes(vec![WorldNode {
+        id: node,
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 222 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+    }])?;
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world)?;
+    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
+    let config =
+        SearchReplayOracleSamplingConfig::new(1, u64::MAX, "gate-replay-oracle-graph-search-skip")?;
+    let search = graph.search_with_replay_oracle_sampling(
+        &genesis,
+        vec![
+            rng_decision("search-oracle/skip-a", 1),
+            rng_decision("search-oracle/skip-b", 2),
+            rng_decision("search-oracle/skip-c", 3),
+        ],
+        FrontierReductionPolicy::none(),
+        MaterializationPolicy::with_budget(3),
+        MaterializationTrigger::RepeatedForkSource,
+        &config,
+    )?;
+    let report = search.replay_oracle_sampling.as_ref().ok_or_else(|| {
+        IoError::new(
+            ErrorKind::InvalidData,
+            "search replay-oracle sampling report missing",
+        )
+    })?;
+
+    assert_eq!(search.materialized.len(), 3);
+    assert_eq!(report.considered, search.materialized.len());
+    assert_eq!(report.sampled, 0);
+    assert_eq!(report.skipped, search.materialized.len());
+    assert!(report.sampled_checkpoints.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_search_sampling_mismatch_requests_bisection() -> Result<(), Box<dyn Error>> {
+    let node = oracle_node_id();
+    let world = World::from_nodes(vec![WorldNode {
+        id: node.clone(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 222 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+    }])?;
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world)?;
+    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
+    let decision = rng_decision("search-oracle/corrupt", 4);
+    let child = step(&genesis, decision.clone());
+    let corrupt_checkpoint = Checkpoint::from_recorded_configuration(
+        &child,
+        Some(&genesis),
+        VirtualTime::default(),
+        std::collections::BTreeMap::from([(
+            node.clone(),
+            Icount {
+                retired: 222 + child.schedule.len() as u64,
+            },
+        )]),
+        CheckpointKind::Fat,
+        std::collections::BTreeMap::from([(
+            node,
+            NodeBlobRef::baked(ContentHash::from_canonical_material(
+                "crucible.test.replay-oracle.search-corrupt-cache",
+                "wrong-fat-vm-blob",
+            )),
+        )]),
+    )?;
+    graph.cache_snapshot(&child, corrupt_checkpoint)?;
+    let config = SearchReplayOracleSamplingConfig::new(1, 1, "gate-replay-oracle-graph-search")?;
+
+    let error = match graph.search_with_replay_oracle_sampling(
+        &genesis,
+        vec![decision],
+        FrontierReductionPolicy::none(),
+        MaterializationPolicy::with_budget(1),
+        MaterializationTrigger::RepeatedForkSource,
+        &config,
+    ) {
+        Ok(_) => panic!("sampled corrupt search materialization should fail with bisection"),
+        Err(error) => error,
+    };
+    let EngineError::SearchReplayOracleMismatch {
+        bisection,
+        checkpoint,
+        expected,
+        actual,
+    } = error
+    else {
+        panic!("sampled corrupt search materialization should request bisection");
+    };
+
+    assert_eq!(bisection.sequence, 0);
+    assert_eq!(bisection.checkpoint, checkpoint);
+    assert_eq!(
+        bisection.reason,
+        "sampled fat checkpoint differs from thin reconstruction"
+    );
+    assert_ne!(expected, actual);
 
     Ok(())
 }

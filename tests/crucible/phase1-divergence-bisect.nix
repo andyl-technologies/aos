@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.divergenceBisect",
-  taskIds ? ["T-HARN-9" "T-HARN-10" "T-DET-20" "T-EXEC-12"],
+  taskIds ? ["T-HARN-9" "T-HARN-10" "T-HARN-13" "T-DET-20" "T-EXEC-12"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -301,6 +301,10 @@
         needle = "\"T-HARN-10\"";
       }
       {
+        label = "phase1 divergence-bisect lists T-HARN-13";
+        needle = "\"T-HARN-13\"";
+      }
+      {
         label = "phase1 divergence-bisect lists T-DET-20";
         needle = "\"T-DET-20\"";
       }
@@ -317,6 +321,14 @@
       {
         label = "T-HARN-10 checklist complete";
         needle = "- [x] **T-HARN-10**";
+      }
+      {
+        label = "T-HARN-13 checklist complete";
+        needle = "- [x] **T-HARN-13**";
+      }
+      {
+        label = "T-HARN-13 completion names bisection checker";
+        needle = "`check_sampled_search_replay_oracle_with_bisection`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
@@ -414,6 +426,7 @@ in
             rust_test=crucible-harness::gate_divergence_bisect
             localization=coarse-fingerprint-plus-exact-icount-bisection
             oracle_failure_localization=fat-thin-divergence-bisection
+            replay_oracle_search_bisection=sampled-mismatch-localized
             first_different_decision=canonical-schedule-bytes
             first_different_instruction=exact-icount
             no_repair_or_retry=true
