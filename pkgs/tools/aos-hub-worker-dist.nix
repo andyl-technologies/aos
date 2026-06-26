@@ -72,6 +72,10 @@
   nodejs,
   protobuf,
   stdenv,
+  # Extra cargo feature flags for the worker build (e.g. "cutover-admin" for the
+  # one-time D1->HubDb data-replay admin path). Space-separated; empty for the
+  # default production build. RFC-0004 ch.14 Phase E.
+  cargoFeatures ? "",
 }: let
   version = "0.1.0";
 
@@ -147,6 +151,7 @@ in
             --release \
             --frozen \
             --offline \
+            ${lib.optionalString (cargoFeatures != "") "--features ${cargoFeatures}"} \
             -j"$NIX_BUILD_CORES"
 
           test -f target/wasm32-unknown-unknown/release/aos_hub_worker.wasm
