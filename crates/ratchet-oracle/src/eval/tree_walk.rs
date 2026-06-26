@@ -56,8 +56,9 @@ use crate::cache::{
     DurableBlake3Hash, EvalCacheRuntime, FileTypeForInput, ImpureInputFingerprint,
     ImpureInputIdentity, ImpureInputKind, ImpureInputMode, ImpureInputRevalidator,
     ImpureInputTraceSource, InputFingerprintError, MaterializationCosts, MaterializationDecision,
-    ParseCache, ParseCacheError, ParseFileKey, PersistCache, PersistMaterialization,
-    PersistNodeMetadataKey, PersistNodeTracePayload, ValueHash, lowered_ir_fingerprint,
+    MemoizationSubject, ParseCache, ParseCacheError, ParseFileKey, PersistCache,
+    PersistMaterialization, PersistNodeMetadataKey, PersistNodeTracePayload, ValueHash,
+    lowered_ir_fingerprint,
 };
 use crate::compile::{
     FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,

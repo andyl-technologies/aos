@@ -763,6 +763,21 @@ alone (`M-1`/`Q-A`).
       policy-driven `force_memoized` admission,
       persistence/materialization decisions, and measured AOS tuning remain open
       (`M-11`).
+- [x] Current force-cache memoization demand signal bridge: enabled
+      `EvalCacheRuntime` records same-run `MemoizationDemand` by the same
+      expression identity plus ordered free-variable hashes used for force-cache
+      payload keys, returns the current `MemoizationSubject` default admission
+      decision, and exposes read-only demand telemetry without allocating
+      demand-graph expression nodes. Tree-walk claimed-thunk forcing now reports
+      `MemoizationSubject::Thunk` demand with the current cheap-value-hash signal
+      before the existing force-cache lookup, while disabled runtimes remain
+      no-ops. This is telemetry only: the decision does not yet bypass, probe,
+      populate, persist, or materialize force-cache payloads, and aggregate
+      hit/miss semantics are unchanged. Cardinality-analysis signals, measured
+      value-hash cost sampling, policy-driven `force_memoized` admission,
+      persistence/materialization decisions, and AOS tuning remain open
+      (`M-11`). The gate covers `cache::runtime` memoization-demand tests plus
+      the source-backed force-cache demand bridge test.
 - [x] Current force-cache hit/overhead stats precursor: `EvalStats` reports
       force-cache-specific hits, misses, and probes separately from aggregate
       evaluator cache hits/misses, and the stats tracing event emits

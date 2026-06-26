@@ -836,6 +836,31 @@ impl TreeWalk {
         }
     }
 
+    pub(super) fn record_force_cache_memoization_demand(&mut self, subject: &ForceCacheSubject) {
+        let Some(identity) = subject.lookup_identity else {
+            return;
+        };
+        let Ok(mut cache) = self.eval_cache.lock() else {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                "tree-walk evaluator cache lock was poisoned; skipping forced expression memoization demand"
+            );
+            return;
+        };
+        if let Err(error) = cache.record_memoization_demand(
+            identity,
+            subject.free_var_value_hashes.iter().copied(),
+            MemoizationSubject::Thunk,
+            true,
+        ) {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator forced expression memoization demand failed"
+            );
+        }
+    }
+
     pub(super) fn lookup_forced_inline_expression_result(
         &mut self,
         subject: Option<ForceCacheSubject>,

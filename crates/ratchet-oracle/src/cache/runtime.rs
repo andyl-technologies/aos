@@ -1,10 +1,11 @@
 //! Caller-owned evaluator cache runtime substrate.
 //!
 //! This module ties evaluator observation traces to the in-memory demand graph
-//! without owning evaluation or memoization policy. Callers explicitly decide
-//! when to observe a completed evaluation outcome.
+//! while keeping evaluator policy decisions explicit at call sites. Callers
+//! choose which computations to observe, which memoization subject applies, and
+//! which value-hash cost signals are available.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use thiserror::Error;
 
@@ -17,8 +18,9 @@ use super::cutoff::{
 use super::{
     CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey, DemandGraph, DemandGraphError,
     DemandNodeId, DirtyFrontier, DurableBlake3Hash, ImpureInputFingerprint, ImpureInputIdentity,
-    ImpureTraceObservation, ImpureTraceStatus, NodeFreshness, RecomputeReadyDirty, Reconsideration,
-    UncacheableInput, ValueHash, ValueHashError,
+    ImpureTraceObservation, ImpureTraceStatus, MemoizationDecision, MemoizationDemand,
+    MemoizationSubject, NodeFreshness, RecomputeReadyDirty, Reconsideration, UncacheableInput,
+    ValueHash, ValueHashError,
 };
 use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};
 use crate::value::Value;
@@ -116,6 +118,29 @@ impl ExpressionTraceObservation {
     /// Consumes this observation into its node and trace parts.
     pub fn into_parts(self) -> (Option<DemandNodeId>, ImpureTraceObservation) {
         (self.node, self.trace)
+    }
+}
+
+/// A same-run memoization demand observation and its admission decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoizationObservation {
+    demand: MemoizationDemand,
+    decision: MemoizationDecision,
+}
+
+impl MemoizationObservation {
+    const fn new(demand: MemoizationDemand, decision: MemoizationDecision) -> Self {
+        Self { demand, decision }
+    }
+
+    /// Returns the demand count after recording the current demand.
+    pub const fn demand(self) -> MemoizationDemand {
+        self.demand
+    }
+
+    /// Returns the policy decision for the updated demand and caller signals.
+    pub const fn decision(self) -> MemoizationDecision {
+        self.decision
     }
 }
 
@@ -585,6 +610,7 @@ pub struct EvalCache {
     graph: DemandGraph,
     inline_values: BTreeMap<DemandNodeId, InlineValueRecord>,
     derivation_aterm_paths: BTreeMap<DemandNodeId, DerivationAtermPathRecord>,
+    memoization_demands: HashMap<DemandCacheKey, MemoizationDemand>,
 }
 
 impl EvalCache {
@@ -599,6 +625,7 @@ impl EvalCache {
             graph,
             inline_values: BTreeMap::new(),
             derivation_aterm_paths: BTreeMap::new(),
+            memoization_demands: HashMap::new(),
         }
     }
 
@@ -628,6 +655,63 @@ impl EvalCache {
     /// does not recompute nodes, mutate freshness, or schedule evaluator work.
     pub fn dirty_frontier(&self) -> DirtyFrontier {
         self.graph.dirty_frontier()
+    }
+
+    /// Records same-run memoization demand and evaluates the subject policy.
+    ///
+    /// This API stores admission signals beside the demand graph without
+    /// allocating graph nodes or probing/persisting value payloads. Callers
+    /// supply the computation subject and whether the value hash is cheap or
+    /// already available; the cache records one current-run demand for the
+    /// expression key and returns the default policy decision for the updated
+    /// demand.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails.
+    pub fn record_memoization_demand<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        subject: MemoizationSubject,
+        cheap_value_hash: bool,
+    ) -> Result<MemoizationObservation, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
+            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        let demand = self
+            .memoization_demands
+            .entry(key)
+            .or_default()
+            .record_current_demand();
+        self.memoization_demands.insert(key, demand);
+        let decision = subject
+            .default_class()
+            .decide(demand.signals(cheap_value_hash));
+        Ok(MemoizationObservation::new(demand, decision))
+    }
+
+    /// Returns same-run memoization demand for an expression key.
+    ///
+    /// This read path is telemetry-only: it does not allocate demand-graph
+    /// nodes, mutate demand counters, or evaluate admission policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails.
+    pub fn memoization_demand<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+    ) -> Result<Option<MemoizationDemand>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
+            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        Ok(self.memoization_demands.get(&key).copied())
     }
 
     /// Recomputes ready dirty graph nodes through a caller-supplied callback.
@@ -2305,6 +2389,59 @@ impl EvalCacheRuntime {
             .map(Some)
     }
 
+    /// Records same-run memoization demand when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity. Enabled runtimes delegate to
+    /// [`EvalCache::record_memoization_demand`]. This records telemetry and
+    /// evaluates the caller-selected subject policy; it does not probe, insert,
+    /// or invalidate memoized value payloads.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to build the expression cache key.
+    pub fn record_memoization_demand<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        subject: MemoizationSubject,
+        cheap_value_hash: bool,
+    ) -> Result<Option<MemoizationObservation>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .record_memoization_demand(identity, free_var_value_hashes, subject, cheap_value_hash)
+            .map(Some)
+    }
+
+    /// Returns same-run memoization demand when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity. Enabled runtimes delegate to [`EvalCache::memoization_demand`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to build the expression cache key.
+    pub fn memoization_demand<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+    ) -> Result<Option<MemoizationDemand>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache() else {
+            return Ok(None);
+        };
+        cache.memoization_demand(identity, free_var_value_hashes)
+    }
+
     /// Looks up a clean inline expression result when cache observation is enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without validating the expression
@@ -2655,7 +2792,8 @@ impl EvalCacheRuntime {
 mod tests {
     use super::*;
     use crate::cache::{
-        CutoffDecision, DemandCacheKey, ImpureTraceStatus, NodeFreshness, UncacheableInput,
+        CutoffDecision, DemandCacheKey, ImpureTraceStatus, MemoizationDecision, MemoizationDemand,
+        MemoizationSubject, NodeFreshness, UncacheableInput,
     };
     use crate::compile::IrId;
     use crate::string::{ContextElement, StringContext};
@@ -2811,6 +2949,103 @@ mod tests {
     fn key(node: u32, label: &[u8]) -> DemandCacheKey {
         DemandCacheKey::for_free_vars(identity(label, node), [durable_hash(label)])
             .expect("key builds")
+    }
+
+    #[test]
+    fn memoization_demand_admits_conditional_subject_on_second_cheap_demand() {
+        let identity = identity(b"source", 1);
+        let free_vars = [durable_hash(b"captured")];
+        let mut cache = EvalCache::new();
+
+        let first = cache
+            .record_memoization_demand(identity, free_vars, MemoizationSubject::Thunk, true)
+            .expect("first demand records");
+        assert_eq!(first.demand(), MemoizationDemand::new(1));
+        assert_eq!(first.decision(), MemoizationDecision::Bypass);
+        assert!(
+            cache.is_empty(),
+            "policy telemetry must not allocate demand-graph nodes"
+        );
+
+        let second = cache
+            .record_memoization_demand(identity, free_vars, MemoizationSubject::Thunk, true)
+            .expect("second demand records");
+        assert_eq!(second.demand(), MemoizationDemand::new(2));
+        assert_eq!(second.decision(), MemoizationDecision::Admit);
+        assert_eq!(
+            cache
+                .memoization_demand(identity, free_vars)
+                .expect("demand reads"),
+            Some(MemoizationDemand::new(2))
+        );
+        assert!(
+            cache.is_empty(),
+            "policy telemetry remains separate from expression nodes"
+        );
+    }
+
+    #[test]
+    fn memoization_demand_keeps_conditional_subject_bypassed_when_hash_is_expensive() {
+        let identity = identity(b"source", 2);
+        let free_vars = [durable_hash(b"captured")];
+        let mut cache = EvalCache::new();
+
+        cache
+            .record_memoization_demand(identity, free_vars, MemoizationSubject::Thunk, false)
+            .expect("first demand records");
+        let second = cache
+            .record_memoization_demand(identity, free_vars, MemoizationSubject::Thunk, false)
+            .expect("second demand records");
+
+        assert_eq!(second.demand(), MemoizationDemand::new(2));
+        assert_eq!(second.decision(), MemoizationDecision::Bypass);
+    }
+
+    #[test]
+    fn memoization_demand_uses_subject_default_class() {
+        let mut cache = EvalCache::new();
+
+        let derivation = cache
+            .record_memoization_demand(
+                identity(b"drv", 3),
+                std::iter::empty::<DurableBlake3Hash>(),
+                MemoizationSubject::DerivationStrict,
+                false,
+            )
+            .expect("always-cache demand records");
+        assert_eq!(derivation.demand(), MemoizationDemand::new(1));
+        assert_eq!(derivation.decision(), MemoizationDecision::Admit);
+
+        let trivial = cache
+            .record_memoization_demand(
+                identity(b"trivial", 4),
+                std::iter::empty::<DurableBlake3Hash>(),
+                MemoizationSubject::Trivial,
+                true,
+            )
+            .expect("never-cache demand records");
+        assert_eq!(trivial.demand(), MemoizationDemand::new(1));
+        assert_eq!(trivial.decision(), MemoizationDecision::Bypass);
+    }
+
+    #[test]
+    fn disabled_runtime_memoization_demand_is_noop() {
+        let identity = identity(b"source", 5);
+        let free_vars = [durable_hash(b"captured")];
+        let mut runtime = EvalCacheRuntime::disabled();
+
+        assert_eq!(
+            runtime
+                .record_memoization_demand(identity, free_vars, MemoizationSubject::Thunk, true)
+                .expect("disabled demand records"),
+            None
+        );
+        assert_eq!(
+            runtime
+                .memoization_demand(identity, free_vars)
+                .expect("disabled demand reads"),
+            None
+        );
     }
 
     fn node_with_hash(graph: &mut DemandGraph, node: u32, label: &'static [u8]) -> DemandNodeId {

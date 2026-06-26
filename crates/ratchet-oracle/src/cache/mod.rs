@@ -76,5 +76,5 @@ pub use policy::{
 pub use runtime::{
     CachedExpressionValue, CachedExpressionValuePayloadError, EvalCache, EvalCacheRuntime,
     ExpressionCacheability, ExpressionTraceObservation, ImpureInputRevalidator,
-    ImpureInputTraceSource,
+    ImpureInputTraceSource, MemoizationObservation,
 };

@@ -821,6 +821,80 @@ fn source_backed_forced_inline_thunks_update_shared_eval_cache() {
 }
 
 #[test]
+fn source_backed_forced_inline_thunks_record_memoization_policy_demand() {
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for expected_demands in 1..=2 {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "expr.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("a remains a suspended thunk");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("force-cache subject builds")
+        };
+        let identity = subject
+            .lookup_identity
+            .expect("node thunk has a lookup identity");
+        {
+            let runtime = cache.lock().expect("cache lock is valid");
+            if expected_demands == 1 {
+                assert!(
+                    runtime.cache().expect("cache is enabled").is_empty(),
+                    "building a force-cache subject must not allocate graph nodes"
+                );
+                assert_eq!(
+                    runtime
+                        .memoization_demand(
+                            identity,
+                            subject.free_var_value_hashes.iter().copied(),
+                        )
+                        .expect("demand reads"),
+                    None,
+                    "building a force-cache subject must not record demand"
+                );
+            }
+        }
+
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("thunk force succeeds");
+        assert_eq!(forced.as_int(), Ok(3));
+
+        let runtime = cache.lock().expect("cache lock is valid");
+        let demand = runtime
+            .memoization_demand(identity, subject.free_var_value_hashes.iter().copied())
+            .expect("demand reads")
+            .expect("force records memoization demand");
+        assert_eq!(demand.current_run_demands(), expected_demands);
+        assert_eq!(
+            runtime.cache().expect("cache is enabled").len(),
+            1,
+            "policy demand telemetry must not allocate extra demand nodes"
+        );
+    }
+}
+
+#[test]
 fn source_backed_force_cache_creates_expression_node_only_on_force() {
     let source = "{ a = 1 + 2; }";
     let ir = lower(source);

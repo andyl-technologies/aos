@@ -753,6 +753,9 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let cache_subject =
             self.force_cache_subject_for_thunk(EvalNodeRef::new(self.current_module, id), thunk);
+        if let Some(subject) = &cache_subject {
+            self.record_force_cache_memoization_demand(subject);
+        }
         if let Some(value) = self.lookup_forced_inline_expression_result(cache_subject.clone()) {
             let value = guard.finish(value).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
