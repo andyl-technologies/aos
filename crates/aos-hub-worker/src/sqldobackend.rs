@@ -76,14 +76,61 @@ fn from_sql(value: SqlStorageValue) -> Value {
     }
 }
 
+/// Rewrites numbered sqlite placeholders (`?1`, `?2`, …) to **anonymous
+/// positional** `?` and returns the parameter list in appearance order.
+///
+/// Durable Object SQLite's `exec` binds variadic values **positionally** to `?`
+/// placeholders; it does not honor sqlite's numbered `?N` binding (a `?N` query
+/// silently fails to bind, so a `WHERE col = ?1` matches nothing — the bug that
+/// 404'd nested registries and broke sign-in). This expands the caller's
+/// `?N`-numbered params (which the hub's SQL uses, and which `prepare(Sqlite)`
+/// preserves) into the per-appearance order DO SQLite needs, duplicating a
+/// reused `?N`. `?N` tokens inside single-quoted string literals are left alone.
+fn numbered_to_positional(sql: &str, params: &[Value]) -> (String, Vec<Value>) {
+    let mut out = String::with_capacity(sql.len());
+    let mut bound = Vec::new();
+    let mut chars = sql.chars().peekable();
+    let mut in_string = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if c == '\'' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '\'' => {
+                in_string = true;
+                out.push(c);
+            }
+            '?' if chars.peek().is_some_and(|d| d.is_ascii_digit()) => {
+                let mut n = 0usize;
+                while let Some(d) = chars.peek().and_then(|d| d.to_digit(10)) {
+                    n = n * 10 + d as usize;
+                    chars.next();
+                }
+                out.push('?');
+                if let Some(p) = n.checked_sub(1).and_then(|i| params.get(i)) {
+                    bound.push(p.clone());
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    (out, bound)
+}
+
 impl SqlDoBackend {
     /// Translates + binds `sql`/`params` and runs them on the local engine,
     /// returning the cursor.
     fn run(&self, sql: &str, params: &[Value]) -> Result<worker::SqlCursor> {
         let (translated, ordered) = prepare(Dialect::Sqlite, sql, params)?;
-        let bindings: Vec<SqlStorageValue> = ordered.iter().map(to_sql).collect();
+        // DO SQLite binds `?` positionally, not sqlite's numbered `?N`.
+        let (positional_sql, positional_params) = numbered_to_positional(&translated, &ordered);
+        let bindings: Vec<SqlStorageValue> = positional_params.iter().map(to_sql).collect();
         self.sql
-            .exec(translated.as_str(), bindings)
+            .exec(positional_sql.as_str(), bindings)
             .map_err(|err| anyhow!("DO sql exec: {err}"))
     }
 }

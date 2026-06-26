@@ -929,6 +929,7 @@ mod entry {
             HubDb { state, env }
         }
 
+        #[cfg_attr(not(feature = "cutover-admin"), allow(unused_mut))]
         async fn fetch(&self, mut req: Request) -> Result<Response> {
             let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage().sql());
             if let Err(err) = crate::tenantdb::ensure_migrated(&backend).await {
