@@ -92,6 +92,11 @@ in {
     noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
     qemuDeterministicEntropy = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;};
     qemuDeterministicGetrandom = import ./phase1-qemu-deterministic-getrandom.nix {inherit pkgs lib;};
+    qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase1.qemuMultiVcpuLaunch";
+      taskIds = ["T-DET-29"];
+    };
     qemuNetDeterministic = import ./phase1-qemu-net-deterministic.nix {inherit pkgs lib;};
     qemuNetTxCallback = import ./phase1-qemu-net-tx-callback.nix {inherit pkgs lib;};
     qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix {inherit pkgs lib;};
@@ -138,6 +143,7 @@ in {
           "T-DET-6"
           "T-DET-7"
           "T-DET-28"
+          "T-DET-29"
           "T-DET-8"
           "T-DET-9"
           "T-DET-10"
