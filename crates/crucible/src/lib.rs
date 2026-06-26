@@ -2123,6 +2123,150 @@ mod tests {
         assert!(replaced_tag_heals_after_first_activation.is_ok());
     }
 
+    #[test]
+    fn plan_content_address_is_orthogonal_and_canonical() {
+        let world = world_from_nodes_and_links(
+            two_ready_nodes(),
+            vec![transport_link("a", "b", 10, 1, 0, None)],
+        );
+        let changed_world = world_from_nodes_and_links(
+            vec![
+                ready_node(
+                    "a",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 11 },
+                    },
+                ),
+                ready_node(
+                    "b",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 12 },
+                    },
+                ),
+            ],
+            vec![transport_link("a", "b", 20, 1, 0, None)],
+        );
+        let incompatible_world = world_from_nodes_and_links(two_ready_nodes(), Vec::new());
+        let authored_order = vec![
+            PlanEntry::Heal {
+                at: VirtualTime { ticks: 40 },
+                tag: tag("split"),
+            },
+            PlanEntry::Activate {
+                at: VirtualTime { ticks: 10 },
+                tag: tag("split"),
+                fault: MembershipFault::Partition {
+                    endpoint_a: node_id("b"),
+                    endpoint_b: node_id("a"),
+                    direction: PartitionDirection::Bidirectional,
+                },
+            },
+            PlanEntry::Activate {
+                at: VirtualTime { ticks: 20 },
+                tag: tag("crash-b"),
+                fault: MembershipFault::Crash {
+                    node: node_id("b"),
+                    restart: RestartPolicy::FromLastCheckpoint,
+                },
+            },
+        ];
+        let canonical_order = vec![
+            PlanEntry::Activate {
+                at: VirtualTime { ticks: 10 },
+                tag: tag("split"),
+                fault: MembershipFault::Partition {
+                    endpoint_a: node_id("a"),
+                    endpoint_b: node_id("b"),
+                    direction: PartitionDirection::Bidirectional,
+                },
+            },
+            PlanEntry::Activate {
+                at: VirtualTime { ticks: 20 },
+                tag: tag("crash-b"),
+                fault: MembershipFault::Crash {
+                    node: node_id("b"),
+                    restart: RestartPolicy::FromLastCheckpoint,
+                },
+            },
+            PlanEntry::Heal {
+                at: VirtualTime { ticks: 40 },
+                tag: tag("split"),
+            },
+        ];
+
+        let plan = match Plan::from_entries_for_world(&world, authored_order) {
+            Ok(plan) => plan,
+            Err(error) => panic!("authored-order plan should be valid: {error}"),
+        };
+        let same_plan = match Plan::from_entries_for_world(&world, canonical_order) {
+            Ok(plan) => plan,
+            Err(error) => panic!("canonical-order plan should be valid: {error}"),
+        };
+        let same_plan_changed_world =
+            match Plan::from_entries_for_world(&changed_world, same_plan.entries().to_vec()) {
+                Ok(plan) => plan,
+                Err(error) => panic!("same plan should apply to compatible world: {error}"),
+            };
+        let changed_plan = match Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Activate {
+                at: VirtualTime { ticks: 11 },
+                tag: tag("split"),
+                fault: MembershipFault::Partition {
+                    endpoint_a: node_id("a"),
+                    endpoint_b: node_id("b"),
+                    direction: PartitionDirection::Bidirectional,
+                },
+            }],
+        ) {
+            Ok(plan) => plan,
+            Err(error) => panic!("changed plan should be valid: {error}"),
+        };
+        let empty_plan = Plan::empty();
+
+        assert_eq!(plan.content_hash(), same_plan.content_hash());
+        assert_eq!(plan.entries(), same_plan.entries());
+        assert_eq!(plan.content_hash(), same_plan_changed_world.content_hash());
+        assert_ne!(plan.content_hash(), changed_plan.content_hash());
+        assert_eq!(
+            world.scenario_def(),
+            world
+                .scenario_def_with_plan(&empty_plan)
+                .unwrap_or_else(|error| panic!("empty plan should compose: {error}"))
+        );
+        assert_eq!(
+            world
+                .scenario_def_with_plan(&plan)
+                .unwrap_or_else(|error| panic!("plan should compose: {error}")),
+            world
+                .scenario_def_with_plan(&same_plan)
+                .unwrap_or_else(|error| panic!("same plan should compose: {error}"))
+        );
+        assert_ne!(
+            world.scenario_def(),
+            world
+                .scenario_def_with_plan(&plan)
+                .unwrap_or_else(|error| panic!("plan should affect scenario identity: {error}"))
+        );
+        assert_ne!(
+            world
+                .scenario_def_with_plan(&plan)
+                .unwrap_or_else(|error| panic!("plan should compose: {error}")),
+            changed_world
+                .scenario_def_with_plan(&same_plan_changed_world)
+                .unwrap_or_else(|error| panic!(
+                    "same plan should compose with compatible world: {error}"
+                ))
+        );
+        assert!(matches!(
+            incompatible_world.scenario_def_with_plan(&plan),
+            Err(EngineError::PlanFaultUnknownLink {
+                endpoint_a,
+                endpoint_b,
+            }) if endpoint_a == node_id("a") && endpoint_b == node_id("b")
+        ));
+    }
+
     #[cfg(feature = "test-double")]
     #[test]
     fn world_logical_topology_ignores_physical_transport_layout() {

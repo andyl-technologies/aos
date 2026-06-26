@@ -83,8 +83,8 @@
         needle = "bandwidth_bps: Option<u64>";
       }
       {
-        label = "scenario id derives from world material";
-        needle = "world_hash_material(self)";
+        label = "scenario id derives from world component identity";
+        needle = "content_hash_hex(canonical_world_identity(world))";
       }
       {
         label = "non-empty world identity is recomputed from logical material";
@@ -92,7 +92,7 @@
       }
       {
         label = "opaque world compatibility path is explicit";
-        needle = "opaque_world_id={}";
+        needle = "return world.id;";
       }
       {
         label = "world material is nodes and links";

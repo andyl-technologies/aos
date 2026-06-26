@@ -128,6 +128,7 @@ in {
     spatialLinkTransport = import ./phase1-spatial-link-transport.nix {inherit pkgs lib;};
     spatialLogicalTopology = import ./phase1-spatial-logical-topology.nix {inherit pkgs lib;};
     spatialMembershipFaults = import ./phase1-spatial-membership-faults.nix {inherit pkgs lib;};
+    spatialPlanComponent = import ./phase1-spatial-plan-component.nix {inherit pkgs lib;};
     spatialStaticTopology = import ./phase1-spatial-static-topology.nix {inherit pkgs lib;};
     spatialWorldTopology = import ./phase1-spatial-world-topology.nix {inherit pkgs lib;};
     standaloneDependencies = import ./phase1-standalone-dependencies.nix {inherit pkgs lib;};
