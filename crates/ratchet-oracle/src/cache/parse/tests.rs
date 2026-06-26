@@ -52,6 +52,24 @@ fn resolved_single_symbol(symbols: SymbolTable, symbol: Symbol) -> ResolvedAst {
     }
 }
 
+fn resolved_single_symbol_with_scopes(scopes: ScopeTables) -> ResolvedAst {
+    let mut symbols = SymbolTable::new();
+    let x = symbols.intern(b"x").expect("x symbol interns");
+    ResolvedAst {
+        root: NodeId::new(0),
+        arena: AstArena::from_raw_parts(
+            vec![Node::new(
+                NodeKind::GlobalVar,
+                Span::new(0, 1),
+                NodeData::Symbol(x),
+            )],
+            Vec::new(),
+        ),
+        symbols,
+        scopes,
+    }
+}
+
 fn bundle_with_meta(bundle: &ParseArtifactBundle, meta: ParseCacheMeta) -> ParseArtifactBundle {
     ParseArtifactBundle::new(
         bundle.resolved_bytes(),
@@ -873,6 +891,38 @@ fn duplicate_serialized_symbols_are_rejected() {
 
     let error = decode_symbols(&bytes).expect_err("duplicate symbol is invalid");
     assert!(error.contains("duplicate symbol"));
+}
+
+#[test]
+fn resolved_artifact_validation_rejects_out_of_range_node_frame_ids() {
+    let resolved = resolved_single_symbol_with_scopes(ScopeTables::from_raw_parts(
+        Vec::new(),
+        vec![Some(FrameId::new(0))],
+        Vec::new(),
+        Vec::new(),
+        vec![None],
+    ));
+    let symbols = resolved.symbols.clone();
+    let bytes = encode_resolved_ir(&resolved).expect("resolved artifact encodes");
+    let error = decode_resolved_ir(&bytes, symbols).expect_err("invalid frame id is rejected");
+
+    assert!(error.contains("frame id out of range"), "{error}");
+}
+
+#[test]
+fn resolved_artifact_validation_rejects_out_of_range_node_inherit_ids() {
+    let resolved = resolved_single_symbol_with_scopes(ScopeTables::from_raw_parts(
+        Vec::new(),
+        vec![None],
+        Vec::new(),
+        Vec::new(),
+        vec![Some(InheritGroupId::new(0))],
+    ));
+    let symbols = resolved.symbols.clone();
+    let bytes = encode_resolved_ir(&resolved).expect("resolved artifact encodes");
+    let error = decode_resolved_ir(&bytes, symbols).expect_err("invalid inherit id is rejected");
+
+    assert!(error.contains("inherit id out of range"), "{error}");
 }
 
 #[test]
