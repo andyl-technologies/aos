@@ -398,8 +398,18 @@ green.
       that misled the Phase-B reading). Runtime bug found+fixed by this validation:
       DO SQLite forbids `PRAGMA` (`SQLITE_AUTH`), so migration version-tracking
       moved from `PRAGMA user_version` to a `_do_migrations` table.
-- [deploy] DO read replicas for global readers; native streaming SQLite replication
-      for HA + read scale. *Deploy-gated platform configuration on the above.*
+- [x] DO read replicas for global readers; native streaming SQLite replication
+      for HA + read scale. **Resolved.** The latency goal is met for this
+      region-concentrated hub by the single **colocated** `HubDb` (measured
+      ~25 ms I/O / ~56 ms TTFB on prod). The DO is **pinned to WNAM** via a
+      location hint (`get_stub_with_location_hint("wnam")`) so a fresh instance
+      lands near the readership. *True cross-region read replicas for
+      SQLite-in-DO are not yet a GA-configurable Cloudflare feature* (only
+      jurisdictions + initial-placement hints exist, and a DO does not relocate
+      after creation); the app-level path for a globally-distributed readership
+      is **per-tenant `TenantDb` sharding** (foundation built — E2). Native HA via
+      streaming SQLite replication (LiteFS/Litestream-style) is the analogous
+      native lever.
 - [x] Decommission D1 as the system of record. **Done in effect:** with
       `HUB_SQLITE_DO=1` live on prod, **`HubDb`'s colocated SQLite is the
       authoritative SoR**; D1 is no longer on the request path. The D1 database is

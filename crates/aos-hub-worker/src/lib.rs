@@ -580,10 +580,17 @@ mod entry {
             .map(|v| v.to_string() == "1")
             .unwrap_or(false)
         {
+            // Pin the single hub DO to the primary region (RFC-0004 ch.14 Phase
+            // E / E4): the location hint places a *fresh* instance in Western
+            // North America (the hub's WNAM home), so the colocated SQLite is
+            // near the concentrated readership. (Cloudflare does not relocate a
+            // DO after creation, and SQLite-in-DO read replicas are not yet a
+            // GA-configurable feature; per-tenant `TenantDb` sharding is the
+            // app-level scale path for a globally-distributed readership.)
             let stub = env
                 .durable_object(crate::handlers::bindings::HUB_DB)?
                 .id_from_name("hub")
-                .and_then(|id| id.get_stub())?;
+                .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
             return stub.fetch_with_request(req).await;
         }
 
