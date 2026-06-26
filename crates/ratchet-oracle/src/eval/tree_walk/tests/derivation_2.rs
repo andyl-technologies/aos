@@ -453,6 +453,131 @@ fn derivation_strict_cached_aterm_paths_miss_outside_configured_store() {
 }
 
 #[test]
+fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
+    for source in [
+        r#"derivationStrict {
+            name = "static";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            env = "same";
+        }"#,
+        r#"derivationStrict {
+            name = "floating";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            __contentAddressed = true;
+            outputHashAlgo = "sha256";
+            outputHashMode = "recursive";
+        }"#,
+        r#"derivationStrict {
+            name = "impure";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            __impure = true;
+        }"#,
+    ] {
+        let ir = lower(source);
+        let uncached = eval_single_derivation_with_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            Arc::new(Mutex::new(EvalCacheRuntime::disabled())),
+        );
+        let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+        let first =
+            eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+        let reuse = eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache);
+
+        assert_eq!(first.path, uncached.path);
+        assert_eq!(reuse.path, uncached.path);
+        assert_eq!(first.aterm, uncached.aterm);
+        assert_eq!(reuse.aterm, uncached.aterm);
+        assert_eq!(uncached.path_reuses, 0);
+        assert_eq!(first.path_reuses, 0);
+        assert_eq!(reuse.path_reuses, 1);
+    }
+}
+
+#[test]
+fn derivation_strict_cached_aterm_path_reuse_preserves_deferred_surfaces() {
+    fn derivation_surfaces(outcome: &EvalOutcome) -> Vec<(String, Vec<u8>)> {
+        let mut surfaces = outcome
+            .derivations()
+            .iter()
+            .map(|derivation| {
+                (
+                    derivation.absolute_path().to_owned(),
+                    derivation
+                        .aterm_bytes()
+                        .expect("derivation has ATerm bytes")
+                        .to_vec(),
+                )
+            })
+            .collect::<Vec<_>>();
+        surfaces.sort_by(|left, right| left.0.cmp(&right.0));
+        surfaces
+    }
+
+    let source = r#"let
+        base = derivationStrict {
+            name = "base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            __contentAddressed = true;
+            outputHashAlgo = "sha256";
+            outputHashMode = "recursive";
+        };
+    in derivationStrict {
+        name = "downstream";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        input = base.out;
+    }"#;
+    let ir = lower(source);
+    let uncached = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        None,
+        Arc::new(Mutex::new(EvalCacheRuntime::disabled())),
+    )
+    .expect("uncached derivation graph evaluates");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let first = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        enabled_eval_cache_options(),
+        None,
+        cache.clone(),
+    )
+    .expect("first cached derivation graph evaluates");
+    let reuse = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        enabled_eval_cache_options(),
+        None,
+        cache,
+    )
+    .expect("reuse derivation graph evaluates");
+    let uncached_surfaces = derivation_surfaces(&uncached);
+    let first_surfaces = derivation_surfaces(&first);
+    let reuse_surfaces = derivation_surfaces(&reuse);
+
+    assert_eq!(uncached_surfaces.len(), 2);
+    assert!(
+        uncached_surfaces
+            .iter()
+            .any(|(path, _)| path.ends_with("-base.drv"))
+    );
+    assert!(
+        uncached_surfaces
+            .iter()
+            .any(|(path, _)| path.ends_with("-downstream.drv"))
+    );
+    assert_eq!(first_surfaces, uncached_surfaces);
+    assert_eq!(reuse_surfaces, uncached_surfaces);
+    assert_eq!(uncached.stats().derivation_aterm_path_reuses(), 0);
+    assert_eq!(first.stats().derivation_aterm_path_reuses(), 0);
+    assert_eq!(reuse.stats().derivation_aterm_path_reuses(), 1);
+}
+
+#[test]
 fn derivation_strict_aterm_observation_separates_captured_free_vars() {
     let source = r#"let
         mk = env: (derivationStrict {

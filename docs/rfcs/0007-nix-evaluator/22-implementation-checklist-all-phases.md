@@ -871,6 +871,15 @@ alone (`M-1`/`Q-A`).
       deferred-placeholder derivations, persistence, dependency capture beyond
       hashable lexical captures, full SHA-256 store-path short-circuiting, and
       full cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
+- [x] Current cached derivationStrict `.drv` surface parity canary:
+      tree-walk tests compare cache-off, cache-on first-observation, and
+      cache-on path-reuse runs for root static, floating-CA, and impure
+      derivations, plus a deferred-placeholder downstream graph, requiring
+      identical recorded `.drv` paths and ATerm bytes across those runs. This
+      is selected in-memory reuse parity only; full-closure cached/uncached
+      parity, persistent reuse, dynamic dependency capture beyond hashable
+      lexical captures, output-path/modulo hash shortcuts, and full SHA-256
+      store-path short-circuiting remain open (`S-14`/`S-15`).
 - [x] Current forced-payload early-cutoff stats substrate:
       trace-backed force-cache payload observation now reports its value-hash
       `Reconsideration`, first trace-backed insertion uses no synthetic prior
