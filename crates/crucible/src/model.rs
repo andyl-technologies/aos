@@ -27,6 +27,11 @@ static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Minimum one-way logical link latency in virtual nanoseconds.
 pub const MIN_LINK_LATENCY: SimDuration = SimDuration { nanos: 1 };
 const MAX_LINK_LOSS_MILLIONTHS: u32 = 1_000_000;
+const MAX_FAMILY_FAULT_DENSITY_MILLIONTHS: u32 = 1_000_000;
+const MAX_SCENARIO_FAMILY_SEEDS: u32 = 1_000_000;
+const MAX_SCENARIO_FAMILY_TOPOLOGY_SIZE: u32 = 256;
+const FAMILY_FAULT_STEP_TICKS: u64 = 20;
+const FAMILY_FAULT_HEAL_DELAY_TICKS: u64 = 5;
 const REPLAY_ORACLE_SEARCH_SAMPLING_DOMAIN: &[u8] = b"crucible.replay-oracle.search-sampling.v1";
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x00000100000001b3;
@@ -1378,6 +1383,697 @@ impl ScenarioBuilder {
             Ok(Properties::empty())
         } else {
             Properties::from_assertions_for_world(world, self.assertions.clone())
+        }
+    }
+}
+
+/// A deterministic fixed-point fault density for [`ScenarioFamily`] generation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FaultDensity {
+    millionths: u32,
+}
+
+impl FaultDensity {
+    /// The density that generates no family faults.
+    pub const ZERO: Self = Self { millionths: 0 };
+
+    /// The density that selects every deterministic fault candidate.
+    pub const ONE: Self = Self {
+        millionths: MAX_FAMILY_FAULT_DENSITY_MILLIONTHS,
+    };
+
+    /// Builds a density from millionths in the closed range `[0, 1_000_000]`.
+    ///
+    /// `0` means no generated faults, and `1_000_000` means every candidate fault
+    /// for the generated topology. The fixed-point representation avoids
+    /// floating-point ambiguity in family parameter points.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::FaultDensityOutOfRange`] when `millionths` is greater
+    /// than `1_000_000`.
+    pub fn from_millionths(millionths: u32) -> Result<Self, EngineError> {
+        if millionths > MAX_FAMILY_FAULT_DENSITY_MILLIONTHS {
+            return Err(EngineError::FaultDensityOutOfRange {
+                millionths,
+                maximum: MAX_FAMILY_FAULT_DENSITY_MILLIONTHS,
+            });
+        }
+
+        Ok(Self { millionths })
+    }
+
+    /// Returns this density as millionths in the closed range `[0, 1_000_000]`.
+    #[must_use]
+    pub fn millionths(self) -> u32 {
+        self.millionths
+    }
+
+    fn scaled_count(self, candidates: usize) -> usize {
+        if self.millionths == 0 || candidates == 0 {
+            return 0;
+        }
+
+        let numerator = (candidates as u128) * u128::from(self.millionths);
+        let denominator = u128::from(MAX_FAMILY_FAULT_DENSITY_MILLIONTHS);
+        ((numerator + denominator - 1) / denominator) as usize
+    }
+}
+
+/// Inclusive finite range of family fault-density values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FaultDensityRange {
+    min: FaultDensity,
+    max: FaultDensity,
+}
+
+impl FaultDensityRange {
+    /// Builds an inclusive fault-density range.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyInvalidSpace`] when `min > max`.
+    pub fn new(min: FaultDensity, max: FaultDensity) -> Result<Self, EngineError> {
+        if min > max {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "fault density range minimum exceeds maximum",
+            });
+        }
+
+        Ok(Self { min, max })
+    }
+
+    /// Returns the minimum density in the range.
+    #[must_use]
+    pub fn min(self) -> FaultDensity {
+        self.min
+    }
+
+    /// Returns the maximum density in the range.
+    #[must_use]
+    pub fn max(self) -> FaultDensity {
+        self.max
+    }
+
+    /// Returns whether `density` is in this range.
+    #[must_use]
+    pub fn contains(self, density: FaultDensity) -> bool {
+        self.min <= density && density <= self.max
+    }
+
+    fn len(self) -> u64 {
+        u64::from(self.max.millionths - self.min.millionths) + 1
+    }
+
+    fn at(self, index: u64) -> Result<FaultDensity, EngineError> {
+        if index >= self.len() {
+            return Err(EngineError::ScenarioFamilyParameterOutOfSpace {
+                parameter: "fault_density",
+            });
+        }
+        FaultDensity::from_millionths(self.min.millionths + index as u32)
+    }
+}
+
+/// Inclusive finite range of generated family topology sizes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TopologySizeRange {
+    min: u32,
+    max: u32,
+}
+
+impl TopologySizeRange {
+    /// Builds an inclusive topology-size range.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyInvalidSpace`] when the range is empty,
+    /// starts at zero, or exceeds the implementation's bounded generation limit.
+    pub fn new(min: u32, max: u32) -> Result<Self, EngineError> {
+        if min == 0 {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "topology size range must start above zero",
+            });
+        }
+        if min > max {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "topology size range minimum exceeds maximum",
+            });
+        }
+        if max > MAX_SCENARIO_FAMILY_TOPOLOGY_SIZE {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "topology size range exceeds family generation limit",
+            });
+        }
+
+        Ok(Self { min, max })
+    }
+
+    /// Returns the minimum generated node count.
+    #[must_use]
+    pub fn min(self) -> u32 {
+        self.min
+    }
+
+    /// Returns the maximum generated node count.
+    #[must_use]
+    pub fn max(self) -> u32 {
+        self.max
+    }
+
+    /// Returns whether `size` is in this range.
+    #[must_use]
+    pub fn contains(self, size: u32) -> bool {
+        self.min <= size && size <= self.max
+    }
+
+    fn len(self) -> u64 {
+        u64::from(self.max - self.min) + 1
+    }
+
+    fn at(self, index: u64) -> Result<u32, EngineError> {
+        if index >= self.len() {
+            return Err(EngineError::ScenarioFamilyParameterOutOfSpace {
+                parameter: "topology_size",
+            });
+        }
+        Ok(self.min + index as u32)
+    }
+}
+
+/// Topology shape axis for [`ScenarioFamily`] generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TopologyShape {
+    /// Connect each node to its successor, wrapping the last node to the first.
+    Ring,
+    /// Connect every non-center node to `node-0`.
+    Star,
+    /// Connect every node pair.
+    Mesh,
+    /// Build a deterministic seed-derived connected graph.
+    Random,
+}
+
+/// Finite seed axis for [`ScenarioFamily`] generation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SeedSpace {
+    kind: SeedSpaceKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum SeedSpaceKind {
+    Explicit(Vec<Seed>),
+    Generated { meta_seed: Seed, count: u32 },
+}
+
+impl SeedSpace {
+    /// Builds a seed space from an explicit set of seeds.
+    ///
+    /// The stored set is sorted for deterministic sampling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyInvalidSpace`] when `seeds` is empty,
+    /// too large, or contains duplicates.
+    pub fn explicit(seeds: Vec<Seed>) -> Result<Self, EngineError> {
+        if seeds.is_empty() {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "seed space must not be empty",
+            });
+        }
+        if seeds.len() > MAX_SCENARIO_FAMILY_SEEDS as usize {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "seed space exceeds family generation limit",
+            });
+        }
+
+        let mut seeds = seeds;
+        seeds.sort();
+        if seeds.windows(2).any(|window| window[0] == window[1]) {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "seed space contains duplicate seeds",
+            });
+        }
+
+        Ok(Self {
+            kind: SeedSpaceKind::Explicit(seeds),
+        })
+    }
+
+    /// Builds a finite seed space deterministically derived from `meta_seed`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyInvalidSpace`] when `count` is zero or
+    /// exceeds the implementation's bounded generation limit.
+    pub fn generated(meta_seed: Seed, count: u32) -> Result<Self, EngineError> {
+        if count == 0 {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "generated seed space must not be empty",
+            });
+        }
+        if count > MAX_SCENARIO_FAMILY_SEEDS {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "seed space exceeds family generation limit",
+            });
+        }
+
+        Ok(Self {
+            kind: SeedSpaceKind::Generated { meta_seed, count },
+        })
+    }
+
+    /// Returns the number of seeds in this finite seed space.
+    #[must_use]
+    pub fn len(&self) -> u64 {
+        match &self.kind {
+            SeedSpaceKind::Explicit(seeds) => seeds.len() as u64,
+            SeedSpaceKind::Generated { count, .. } => u64::from(*count),
+        }
+    }
+
+    /// Returns whether this seed space is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the seed at `index`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyParameterOutOfSpace`] when `index` is
+    /// outside this finite seed space.
+    pub fn seed_at(&self, index: u64) -> Result<Seed, EngineError> {
+        if index >= self.len() {
+            return Err(EngineError::ScenarioFamilyParameterOutOfSpace { parameter: "seed" });
+        }
+
+        match &self.kind {
+            SeedSpaceKind::Explicit(seeds) => Ok(seeds[index as usize]),
+            SeedSpaceKind::Generated { meta_seed, .. } => Ok(derive_family_seed(*meta_seed, index)),
+        }
+    }
+
+    fn contains(&self, seed: Seed) -> bool {
+        match &self.kind {
+            SeedSpaceKind::Explicit(seeds) => seeds.binary_search(&seed).is_ok(),
+            SeedSpaceKind::Generated { count, meta_seed } => {
+                (0..u64::from(*count)).any(|index| derive_family_seed(*meta_seed, index) == seed)
+            }
+        }
+    }
+}
+
+/// The deterministic parameter space a [`ScenarioFamily`] ranges over.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FamilySpace {
+    seeds: SeedSpace,
+    fault_density: FaultDensityRange,
+    topology_size: TopologySizeRange,
+    topology_shapes: Vec<TopologyShape>,
+}
+
+impl FamilySpace {
+    /// Builds a finite family parameter space.
+    ///
+    /// Shapes are sorted and deduplicated so sampling is deterministic regardless
+    /// of authoring order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyInvalidSpace`] when `topology_shapes`
+    /// is empty.
+    pub fn new(
+        seeds: SeedSpace,
+        fault_density: FaultDensityRange,
+        topology_size: TopologySizeRange,
+        topology_shapes: Vec<TopologyShape>,
+    ) -> Result<Self, EngineError> {
+        if topology_shapes.is_empty() {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "topology shape set must not be empty",
+            });
+        }
+
+        let mut topology_shapes = topology_shapes;
+        topology_shapes.sort();
+        topology_shapes.dedup();
+
+        Ok(Self {
+            seeds,
+            fault_density,
+            topology_size,
+            topology_shapes,
+        })
+    }
+
+    /// Returns this space's seed axis.
+    #[must_use]
+    pub fn seeds(&self) -> &SeedSpace {
+        &self.seeds
+    }
+
+    /// Returns this space's fault-density axis.
+    #[must_use]
+    pub fn fault_density(&self) -> FaultDensityRange {
+        self.fault_density
+    }
+
+    /// Returns this space's topology-size axis.
+    #[must_use]
+    pub fn topology_size(&self) -> TopologySizeRange {
+        self.topology_size
+    }
+
+    /// Returns this space's canonical topology-shape axis.
+    #[must_use]
+    pub fn topology_shapes(&self) -> &[TopologyShape] {
+        &self.topology_shapes
+    }
+
+    /// Returns whether `params` lies inside this space.
+    #[must_use]
+    pub fn contains(&self, params: FamilyParams) -> bool {
+        self.seeds.contains(params.seed)
+            && self.fault_density.contains(params.fault_density)
+            && self.topology_size.contains(params.topology_size)
+            && self
+                .topology_shapes
+                .binary_search(&params.topology_shape)
+                .is_ok()
+    }
+
+    /// Returns the finite cardinality of this family space.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyInvalidSpace`] if the finite space size
+    /// overflows `u64`.
+    pub fn cardinality(&self) -> Result<u64, EngineError> {
+        let seed_count = self.seeds.len();
+        let shape_count = self.topology_shapes.len() as u64;
+        let size_count = self.topology_size.len();
+        let density_count = self.fault_density.len();
+        let total = seed_count
+            .checked_mul(shape_count)
+            .and_then(|count| count.checked_mul(size_count))
+            .and_then(|count| count.checked_mul(density_count))
+            .ok_or(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "family space cardinality overflows u64",
+            })?;
+        if total == 0 {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "family space must not be empty",
+            });
+        }
+
+        Ok(total)
+    }
+
+    /// Deterministically samples one parameter point by cartesian index.
+    ///
+    /// The finite axes are traversed in seed, shape, size, then density order.
+    /// Callers that want an unbounded fuzz counter should explicitly wrap by
+    /// [`Self::cardinality`] so exhaustive enumeration can still reject an
+    /// out-of-space index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyParameterOutOfSpace`] when `index` is
+    /// greater than or equal to [`Self::cardinality`].
+    pub fn sample(&self, index: u64) -> Result<FamilyParams, EngineError> {
+        let total = self.cardinality()?;
+        if index >= total {
+            return Err(EngineError::ScenarioFamilyParameterOutOfSpace {
+                parameter: "sample_index",
+            });
+        }
+
+        let seed_count = self.seeds.len();
+        let shape_count = self.topology_shapes.len() as u64;
+        let size_count = self.topology_size.len();
+        let density_count = self.fault_density.len();
+        let mut index = index;
+        let seed = self.seeds.seed_at(index % seed_count)?;
+        index /= seed_count;
+        let topology_shape = self.topology_shapes[(index % shape_count) as usize];
+        index /= shape_count;
+        let topology_size = self.topology_size.at(index % size_count)?;
+        index /= size_count;
+        let fault_density = self.fault_density.at(index % density_count)?;
+
+        Ok(FamilyParams {
+            seed,
+            fault_density,
+            topology_size,
+            topology_shape,
+        })
+    }
+
+    fn validate_params(&self, params: FamilyParams) -> Result<(), EngineError> {
+        if !self.seeds.contains(params.seed) {
+            return Err(EngineError::ScenarioFamilyParameterOutOfSpace { parameter: "seed" });
+        }
+        if !self.fault_density.contains(params.fault_density) {
+            return Err(EngineError::ScenarioFamilyParameterOutOfSpace {
+                parameter: "fault_density",
+            });
+        }
+        if !self.topology_size.contains(params.topology_size) {
+            return Err(EngineError::ScenarioFamilyParameterOutOfSpace {
+                parameter: "topology_size",
+            });
+        }
+        if self
+            .topology_shapes
+            .binary_search(&params.topology_shape)
+            .is_err()
+        {
+            return Err(EngineError::ScenarioFamilyParameterOutOfSpace {
+                parameter: "topology_shape",
+            });
+        }
+
+        Ok(())
+    }
+}
+
+/// One concrete point sampled from a [`ScenarioFamily`] parameter space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FamilyParams {
+    /// Concrete root seed for the pinned scenario.
+    pub seed: Seed,
+    /// Concrete exact fault density used to generate the plan.
+    pub fault_density: FaultDensity,
+    /// Concrete generated node count.
+    pub topology_size: u32,
+    /// Concrete generated topology shape.
+    pub topology_shape: TopologyShape,
+}
+
+/// Parametric generator over concrete, validated scenario definitions.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ScenarioFamily {
+    space: FamilySpace,
+    node_template: NodeTemplate,
+    assertions: Vec<AssertionDef>,
+}
+
+impl ScenarioFamily {
+    /// Builds a scenario family from a parameter space and reusable node template.
+    #[must_use]
+    pub fn new(space: FamilySpace, node_template: NodeTemplate) -> Self {
+        Self {
+            space,
+            node_template,
+            assertions: Vec::new(),
+        }
+    }
+
+    /// Returns the parameter space this family ranges over.
+    #[must_use]
+    pub fn space(&self) -> &FamilySpace {
+        &self.space
+    }
+
+    /// Adds one assertion to every generated scenario's properties layer.
+    #[must_use]
+    pub fn property(mut self, assertion: AssertionDef) -> Self {
+        self.assertions.push(assertion);
+        self
+    }
+
+    /// Instantiates a concrete validated scenario at `params`.
+    ///
+    /// The returned [`PinnedScenario`] contains the concrete [`ScenarioDefForm`]
+    /// used by execution and reproduction. It carries no reference back to this
+    /// family, so callers can only run the pinned scenario definition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyParameterOutOfSpace`] when `params`
+    /// does not lie in the family space, or the usual world/plan/properties
+    /// validation errors if the generated scenario is invalid.
+    pub fn instantiate(&self, params: FamilyParams) -> Result<PinnedScenario, EngineError> {
+        self.space.validate_params(params)?;
+        let world = self.build_world(params)?;
+        let plan = self.build_plan(&world, params)?;
+        let properties = Properties::from_assertions_for_world(&world, self.assertions.clone())?;
+        let form = ScenarioDefForm::from_components(&world, &plan, &properties, params.seed)?;
+        Ok(PinnedScenario { params, form })
+    }
+
+    /// Samples and instantiates one deterministic parameter point.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`FamilySpace::sample`] or [`Self::instantiate`].
+    pub fn instantiate_sample(&self, index: u64) -> Result<PinnedScenario, EngineError> {
+        let params = self.space.sample(index)?;
+        self.instantiate(params)
+    }
+
+    fn build_world(&self, params: FamilyParams) -> Result<World, EngineError> {
+        let nodes = (0..params.topology_size)
+            .map(|index| self.node_template.instantiate(family_node_id(index)))
+            .collect::<Vec<_>>();
+        let links = family_links(params)?;
+        World::from_nodes_and_links(nodes, links)
+    }
+
+    fn build_plan(&self, world: &World, params: FamilyParams) -> Result<Plan, EngineError> {
+        let candidates = family_fault_candidates(world);
+        let fault_count = params.fault_density.scaled_count(candidates.len());
+        let mut entries = Vec::with_capacity(fault_count.saturating_mul(2));
+        for (index, candidate) in candidates.into_iter().take(fault_count).enumerate() {
+            let activate_at = VirtualTime {
+                ticks: FAMILY_FAULT_STEP_TICKS
+                    .checked_mul(index as u64 + 1)
+                    .ok_or(EngineError::ScenarioFamilyInvalidSpace {
+                        reason: "generated family fault time overflows u64",
+                    })?,
+            };
+            let heal_at = VirtualTime {
+                ticks: activate_at
+                    .ticks
+                    .checked_add(FAMILY_FAULT_HEAL_DELAY_TICKS)
+                    .ok_or(EngineError::ScenarioFamilyInvalidSpace {
+                        reason: "generated family heal time overflows u64",
+                    })?,
+            };
+            let tag = FaultTag::from_name(format!("family-fault-{index}"));
+            entries.push(PlanEntry::Activate {
+                at: activate_at,
+                tag: tag.clone(),
+                fault: candidate.into_fault(),
+            });
+            entries.push(PlanEntry::Heal { at: heal_at, tag });
+        }
+
+        Plan::from_entries_for_world(world, entries)
+    }
+}
+
+/// A concrete scenario pinned from a [`ScenarioFamily`] parameter point.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PinnedScenario {
+    params: FamilyParams,
+    form: ScenarioDefForm,
+}
+
+impl PinnedScenario {
+    /// Returns the family parameters that produced this pinned instance.
+    #[must_use]
+    pub fn params(&self) -> FamilyParams {
+        self.params
+    }
+
+    /// Returns the materialized concrete scenario form.
+    #[must_use]
+    pub fn form(&self) -> &ScenarioDefForm {
+        &self.form
+    }
+
+    /// Consumes this pinned instance and returns its concrete scenario form.
+    #[must_use]
+    pub fn into_form(self) -> ScenarioDefForm {
+        self.form
+    }
+
+    /// Reconstructs the concrete scenario definition used by execution.
+    #[must_use]
+    pub fn scenario_def(&self) -> ScenarioDef {
+        self.form.scenario_def()
+    }
+
+    /// Builds the genesis execution configuration while retaining the concrete form.
+    #[must_use]
+    pub fn genesis_configuration(&self) -> PinnedConfiguration {
+        PinnedConfiguration {
+            scenario: self.form.clone(),
+            configuration: Configuration::genesis(self.scenario_def()),
+        }
+    }
+
+    /// Returns the concrete scenario id.
+    #[must_use]
+    pub fn id(&self) -> ContentHash {
+        self.form.id()
+    }
+}
+
+/// A run configuration pinned to a concrete materialized scenario form.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PinnedConfiguration {
+    scenario: ScenarioDefForm,
+    configuration: Configuration,
+}
+
+impl PinnedConfiguration {
+    /// Returns the concrete materialized scenario form for reproduction.
+    #[must_use]
+    pub fn scenario_form(&self) -> &ScenarioDefForm {
+        &self.scenario
+    }
+
+    /// Returns the executable configuration handle for the pinned scenario.
+    #[must_use]
+    pub fn configuration(&self) -> &Configuration {
+        &self.configuration
+    }
+
+    /// Consumes this pinned configuration into its concrete parts.
+    #[must_use]
+    pub fn into_parts(self) -> (ScenarioDefForm, Configuration) {
+        (self.scenario, self.configuration)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum FamilyFaultCandidate {
+    Crash(NodeId),
+    Partition {
+        endpoint_a: NodeId,
+        endpoint_b: NodeId,
+    },
+}
+
+impl FamilyFaultCandidate {
+    fn into_fault(self) -> MembershipFault {
+        match self {
+            Self::Crash(node) => MembershipFault::Crash {
+                node,
+                restart: RestartPolicy::FromReadyPoint,
+            },
+            Self::Partition {
+                endpoint_a,
+                endpoint_b,
+            } => MembershipFault::Partition {
+                endpoint_a,
+                endpoint_b,
+                direction: PartitionDirection::Bidirectional,
+            },
         }
     }
 }
@@ -6222,6 +6918,13 @@ pub enum EngineError {
         /// The maximum legal probability in millionths.
         maximum: u32,
     },
+    /// A fixed-point family fault density is outside `[0.0, 1.0]`.
+    FaultDensityOutOfRange {
+        /// The invalid density in millionths.
+        millionths: u32,
+        /// The maximum legal density in millionths.
+        maximum: u32,
+    },
     /// An agent-signal ready point was configured without white-box opt-in.
     WhiteBoxReadyPointWithoutOptIn {
         /// The node whose ready-point configuration is invalid.
@@ -6302,6 +7005,16 @@ pub enum EngineError {
         expected: ContentHash,
         /// The content address recomputed from parsed content.
         actual: ContentHash,
+    },
+    /// A scenario family has an invalid finite parameter space.
+    ScenarioFamilyInvalidSpace {
+        /// Stable reason for the parameter-space rejection.
+        reason: &'static str,
+    },
+    /// A requested family parameter point is outside the family space.
+    ScenarioFamilyParameterOutOfSpace {
+        /// Stable parameter axis name.
+        parameter: &'static str,
     },
     /// A runtime was replayed from a configuration it does not materialize.
     RuntimeConfigurationMismatch {
@@ -6402,6 +7115,9 @@ impl fmt::Display for EngineError {
             Self::LinkLossProbabilityOutOfRange { .. } => {
                 f.write_str("world link loss probability is outside the legal range")
             }
+            Self::FaultDensityOutOfRange { .. } => {
+                f.write_str("scenario family fault density is outside the legal range")
+            }
             Self::WhiteBoxReadyPointWithoutOptIn { .. } => {
                 f.write_str("agent-signal ready point requires white-box opt-in")
             }
@@ -6445,6 +7161,15 @@ impl fmt::Display for EngineError {
                 write!(
                     f,
                     "scenario serialized {component} id does not match parsed content"
+                )
+            }
+            Self::ScenarioFamilyInvalidSpace { reason } => {
+                write!(f, "scenario family parameter space is invalid: {reason}")
+            }
+            Self::ScenarioFamilyParameterOutOfSpace { parameter } => {
+                write!(
+                    f,
+                    "scenario family parameter {parameter} is outside the space"
                 )
             }
             Self::RuntimeConfigurationMismatch { .. } => {
@@ -9434,6 +10159,101 @@ fn link_minimum_latency(link: &LinkDef) -> SimDuration {
     SimDuration {
         nanos: link.latency().nanos.saturating_sub(link.jitter().nanos),
     }
+}
+
+fn derive_family_seed(meta_seed: Seed, index: u64) -> Seed {
+    let hash = ContentHash::from_canonical_material(
+        "crucible.model.scenario-family.seed.v1",
+        &format!("{}\nseed_index={index}", seed_material(meta_seed)),
+    );
+    Seed::from_bytes(hash.bytes)
+}
+
+fn family_node_id(index: u32) -> NodeId {
+    NodeId {
+        name: format!("node-{index}"),
+    }
+}
+
+fn family_links(params: FamilyParams) -> Result<Vec<LinkDef>, EngineError> {
+    let mut pairs = BTreeSet::new();
+    match params.topology_shape {
+        TopologyShape::Ring => {
+            if params.topology_size > 1 {
+                for left in 0..params.topology_size {
+                    add_family_link_pair(&mut pairs, left, (left + 1) % params.topology_size);
+                }
+            }
+        }
+        TopologyShape::Star => {
+            for node in 1..params.topology_size {
+                add_family_link_pair(&mut pairs, 0, node);
+            }
+        }
+        TopologyShape::Mesh => {
+            for left in 0..params.topology_size {
+                for right in (left + 1)..params.topology_size {
+                    add_family_link_pair(&mut pairs, left, right);
+                }
+            }
+        }
+        TopologyShape::Random => {
+            for left in 0..params.topology_size.saturating_sub(1) {
+                add_family_link_pair(&mut pairs, left, left + 1);
+            }
+
+            let mut stream = params.seed.decision_rng().fork_in_domain(
+                "crucible.model.scenario-family.random-topology.v1",
+                &format!(
+                    "topology_shape=random\ntopology_size={}",
+                    params.topology_size
+                ),
+            );
+            for left in 0..params.topology_size {
+                for right in (left + 1)..params.topology_size {
+                    if pairs.contains(&(left, right)) {
+                        continue;
+                    }
+                    if stream.next_u64() & 1 == 1 {
+                        add_family_link_pair(&mut pairs, left, right);
+                    }
+                }
+            }
+        }
+    }
+
+    pairs
+        .into_iter()
+        .map(|(left, right)| LinkDef::new(family_node_id(left), family_node_id(right)))
+        .collect()
+}
+
+fn add_family_link_pair(pairs: &mut BTreeSet<(u32, u32)>, left: u32, right: u32) {
+    if left == right {
+        return;
+    }
+    let pair = if left < right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    pairs.insert(pair);
+}
+
+fn family_fault_candidates(world: &World) -> Vec<FamilyFaultCandidate> {
+    let mut candidates =
+        Vec::with_capacity(world.links().len().saturating_add(world.nodes().len()));
+    for link in world.links() {
+        let (endpoint_a, endpoint_b) = link.endpoints();
+        candidates.push(FamilyFaultCandidate::Partition {
+            endpoint_a: endpoint_a.clone(),
+            endpoint_b: endpoint_b.clone(),
+        });
+    }
+    for node in world.nodes() {
+        candidates.push(FamilyFaultCandidate::Crash(node.id.clone()));
+    }
+    candidates
 }
 
 fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {

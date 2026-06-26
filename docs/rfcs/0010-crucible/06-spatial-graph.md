@@ -1142,9 +1142,24 @@ authority for its shape. The contract those files may rely on:
     `checks.crucible.phase1.spatialSerializableForm` gate cover scenario/component
     round-trip equality, id mismatch rejection, and content-addressed-reference-only
     image validation.
-- [ ] **T-SPAT-17** Implement `ScenarioFamily` parametric over seed/fault-density/
+- [x] **T-SPAT-17** Implement `ScenarioFamily` parametric over seed/fault-density/
   topology-size(+shape) producing concrete validated `ScenarioDef`s, with a run
   pinning exactly one instance. — satisfies [SPAT-26], [SPAT-27]; spec §7.
+  - Completed in `crates/crucible/src/model.rs`: `ScenarioFamily` now owns a
+    deterministic finite `FamilySpace` over `SeedSpace`, exact fixed-point
+    `FaultDensity`, `TopologySizeRange`, and `TopologyShape`, with bounded
+    cardinality and non-wrapping sample enumeration. Instantiating a `FamilyParams`
+    point builds a concrete `World`, density-scaled `Plan`, and `Properties`,
+    validates them through the same component constructors as the code-first
+    builder, and returns a `PinnedScenario` carrying only the concrete
+    `ScenarioDefForm` plus its parameter point. `PinnedScenario::genesis_configuration`
+    pairs the executable `Configuration` with the concrete form, so runs pin one
+    concrete `ScenarioDef` and retain the self-contained scenario material without
+    executing a family handle. The focused
+    `scenario_family_pins_concrete_validated_instances` test and
+    `checks.crucible.phase1.spatialScenarioFamily` gate cover deterministic
+    sampling, seed/density/topology identity sensitivity, out-of-space rejection,
+    and pinned-instance execution.
 - [ ] **T-SPAT-18** Implement the self-contained `(seed, scenario, schedule)`
   reproduction artifact, content-addressed and offline-replayable, verified by the
   replay oracle. — satisfies [SPAT-28], [SPAT-29]; spec §7.1.
