@@ -185,6 +185,10 @@ mod tests {
         ValueHash::from_inline_value(value).expect("inline value hashes")
     }
 
+    fn derivation_aterm_hash(aterm: &[u8]) -> ValueHash {
+        ValueHash::from_derivation_aterm_bytes(aterm)
+    }
+
     fn durable_hash(bytes: &[u8]) -> DurableBlake3Hash {
         DurableBlake3Hash::for_bytes(bytes)
     }
@@ -1046,6 +1050,62 @@ mod tests {
                 .expect("dependency exists")
                 .value_hash(),
             Some(inline_value_hash(Value::int(2)))
+        );
+    }
+
+    #[test]
+    fn unchanged_derivation_aterm_cuts_off_without_dirtying_dependents() {
+        let mut graph = DemandGraph::new();
+        let aterm = b"Derive([],[],[],\":\",\":\",[],[])";
+        let dependency = graph
+            .get_or_insert_node(key(1, b"derivation"), Some(derivation_aterm_hash(aterm)))
+            .expect("dependency inserts");
+        let dependent = node_with_hash(&mut graph, 2, b"dependent");
+        graph
+            .add_dependency(dependent, dependency)
+            .expect("edge records");
+
+        let result = graph
+            .reconsider_derivation_aterm_node(dependency, aterm)
+            .expect("node reconsiders");
+
+        assert_eq!(result.decision(), CutoffDecision::CutOff);
+        assert!(result.dirtied_dependents().is_empty());
+        assert_eq!(
+            graph.node(dependent).expect("dependent exists").freshness(),
+            NodeFreshness::Clean
+        );
+    }
+
+    #[test]
+    fn changed_derivation_aterm_dirties_direct_dependents() {
+        let mut graph = DemandGraph::new();
+        let prior = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"old\")])";
+        let changed = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"new\")])";
+        let dependency = graph
+            .get_or_insert_node(key(1, b"derivation"), Some(derivation_aterm_hash(prior)))
+            .expect("dependency inserts");
+        let dependent = node_with_hash(&mut graph, 2, b"dependent");
+        graph
+            .add_dependency(dependent, dependency)
+            .expect("edge records");
+
+        let result = graph
+            .reconsider_derivation_aterm_node(dependency, changed)
+            .expect("node reconsiders");
+
+        assert_eq!(result.decision(), CutoffDecision::Propagate);
+        assert_eq!(result.dirtied_dependents(), &[dependent]);
+        assert_eq!(
+            graph.node(dependent).expect("dependent exists").freshness(),
+            NodeFreshness::Dirty
+        );
+        assert_eq!(
+            graph
+                .node(dependency)
+                .expect("dependency exists")
+                .value_hash(),
+            Some(derivation_aterm_hash(changed))
         );
     }
 

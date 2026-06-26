@@ -960,6 +960,30 @@ impl EvalCache {
         Ok(reconsideration)
     }
 
+    /// Observes one recomputed derivation ATerm expression.
+    ///
+    /// Callers still provide the expression identity and ordered free-variable
+    /// hashes. The cache hashes the recorded `.drv` ATerm bytes as a comparison
+    /// key and reconsiders the expression node, but it does not memoize a value
+    /// payload or compute Nix-observed SHA-256 `.drv` hashes or store paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails, node
+    /// insertion fails, or the node cannot be reconsidered.
+    pub fn observe_derivation_aterm_expression<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        aterm: &[u8],
+    ) -> Result<Reconsideration, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
+        self.graph.reconsider_derivation_aterm_node(node, aterm)
+    }
+
     /// Invalidates an existing inline expression payload.
     ///
     /// If the expression key already exists, the node is marked dirty and any
@@ -1138,6 +1162,22 @@ impl EvalCache {
         value: Value,
     ) -> Result<Reconsideration, DemandGraphError> {
         self.graph.reconsider_inline_value_node(id, value)
+    }
+
+    /// Reconsiders one node from recomputed derivation ATerm bytes.
+    ///
+    /// This delegates to [`DemandGraph::reconsider_derivation_aterm_node`]. It
+    /// does not compute Nix-observed SHA-256 `.drv` hashes or store paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if the node is unknown.
+    pub fn reconsider_derivation_aterm_node(
+        &mut self,
+        id: DemandNodeId,
+        aterm: &[u8],
+    ) -> Result<Reconsideration, DemandGraphError> {
+        self.graph.reconsider_derivation_aterm_node(id, aterm)
     }
 
     fn invalidate_existing_inline_payload(
@@ -2338,6 +2378,33 @@ impl EvalCacheRuntime {
             .map(Some)
     }
 
+    /// Observes one derivation ATerm expression when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity or ATerm bytes. Enabled runtimes delegate to
+    /// [`EvalCache::observe_derivation_aterm_expression`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to insert/reconsider the expression node.
+    pub fn observe_derivation_aterm_expression<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        aterm: &[u8],
+    ) -> Result<Option<Reconsideration>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .observe_derivation_aterm_expression(identity, free_var_value_hashes, aterm)
+            .map(Some)
+    }
+
     /// Invalidates one inline expression payload when cache observation is enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without validating the expression
@@ -2511,6 +2578,10 @@ mod tests {
 
     fn value_hash(bytes: &[u8]) -> ValueHash {
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(bytes))
+    }
+
+    fn derivation_aterm_hash(aterm: &[u8]) -> ValueHash {
+        ValueHash::from_derivation_aterm_bytes(aterm)
     }
 
     fn durable_hash(bytes: &[u8]) -> DurableBlake3Hash {
@@ -4631,6 +4702,96 @@ mod tests {
             cache.graph().node(node).expect("node exists").value_hash(),
             Some(ValueHash::from_inline_value(Value::int(2)).expect("inline value hashes"))
         );
+    }
+
+    #[test]
+    fn eval_cache_observes_derivation_aterm_expression() {
+        let mut cache = EvalCache::new();
+        let prior = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"old\")])";
+        let changed = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"new\")])";
+
+        let first = cache
+            .observe_derivation_aterm_expression(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                prior,
+            )
+            .expect("first derivation ATerm observes");
+        let same = cache
+            .observe_derivation_aterm_expression(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                prior,
+            )
+            .expect("same derivation ATerm observes");
+        let changed_reconsideration = cache
+            .observe_derivation_aterm_expression(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                changed,
+            )
+            .expect("changed derivation ATerm observes");
+        let node = cache
+            .get_or_insert_expression_node(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                None,
+            )
+            .expect("existing expression node returns");
+
+        assert_eq!(first.decision(), CutoffDecision::Propagate);
+        assert_eq!(same.decision(), CutoffDecision::CutOff);
+        assert_eq!(
+            changed_reconsideration.decision(),
+            CutoffDecision::Propagate
+        );
+        assert_eq!(
+            cache.graph().node(node).expect("node exists").value_hash(),
+            Some(derivation_aterm_hash(changed))
+        );
+    }
+
+    #[test]
+    fn disabled_eval_cache_runtime_skips_derivation_aterm_observation() {
+        let mut runtime = EvalCacheRuntime::disabled();
+
+        let observation = runtime
+            .observe_derivation_aterm_expression(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                b"Derive([],[],[],\":\",\":\",[],[])",
+            )
+            .expect("disabled observation succeeds");
+
+        assert!(observation.is_none());
+        assert!(runtime.cache().is_none());
+    }
+
+    #[test]
+    fn enabled_eval_cache_runtime_delegates_derivation_aterm_observation() {
+        let mut runtime = EvalCacheRuntime::enabled();
+        let aterm = b"Derive([],[],[],\":\",\":\",[],[])";
+
+        let first = runtime
+            .observe_derivation_aterm_expression(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+            )
+            .expect("enabled observation succeeds")
+            .expect("enabled runtime observes derivation ATerm");
+        let same = runtime
+            .observe_derivation_aterm_expression(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+            )
+            .expect("enabled observation succeeds")
+            .expect("enabled runtime observes derivation ATerm");
+
+        assert_eq!(first.decision(), CutoffDecision::Propagate);
+        assert_eq!(same.decision(), CutoffDecision::CutOff);
+        assert_eq!(runtime.cache().expect("cache is enabled").len(), 1);
     }
 
     #[test]

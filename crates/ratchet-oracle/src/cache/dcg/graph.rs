@@ -504,6 +504,26 @@ impl DemandGraph {
         self.reconsider_node(id, recomputed)
     }
 
+    /// Reconsiders one node with recomputed derivation ATerm bytes.
+    ///
+    /// This hashes recorded `.drv` ATerm bytes as a comparison key before
+    /// mutating graph state, then delegates to [`Self::reconsider_node`]. It is
+    /// a derivationStrict early-cutoff precursor only and does not compute
+    /// Nix-observed SHA-256 `.drv` hashes or store paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DemandGraphError::UnknownNode`] if `id` does not belong to
+    /// this graph.
+    pub fn reconsider_derivation_aterm_node(
+        &mut self,
+        id: DemandNodeId,
+        aterm: &[u8],
+    ) -> Result<Reconsideration, DemandGraphError> {
+        let recomputed = ValueHash::from_derivation_aterm_bytes(aterm);
+        self.reconsider_node(id, recomputed)
+    }
+
     fn node_mut(&mut self, id: DemandNodeId) -> Result<&mut DemandNode, DemandGraphError> {
         self.nodes
             .get_mut(id.index())

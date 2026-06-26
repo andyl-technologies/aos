@@ -808,6 +808,16 @@ alone (`M-1`/`Q-A`).
       comparison-key precursor only; evaluator-owned derivationStrict demand
       nodes, dependency capture, SHA-256 short-circuiting, persistence, and
       cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
+- [x] Current derivation ATerm cache observation adapter:
+      `DemandGraph::reconsider_derivation_aterm_node`,
+      `EvalCache::observe_derivation_aterm_expression`, and
+      `EvalCacheRuntime::observe_derivation_aterm_expression` expose
+      caller-owned early-cutoff observation over recorded `.drv` ATerm bytes,
+      with disabled runtimes returning `None` without mutating cache state.
+      This is an explicit cache API only; evaluator-owned derivationStrict
+      demand-node lifecycle, expression identity/free-variable production,
+      dependency capture, SHA-256 short-circuiting, persistence, and
+      cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
 - [x] Current forced-payload early-cutoff stats substrate:
       trace-backed force-cache payload observation now reports its value-hash
       `Reconsideration`, first trace-backed insertion uses no synthetic prior
