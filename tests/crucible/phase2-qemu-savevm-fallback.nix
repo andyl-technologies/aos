@@ -12,6 +12,7 @@
   };
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
+  qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   savevmPolicy = builtins.readFile ../../crates/crucible-qemu/src/savevm_policy.rs;
   savevmTest = builtins.readFile ../../crates/crucible-qemu/tests/savevm_fallback.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
@@ -140,6 +141,24 @@
       {
         label = "loadvm command authorization export";
         needle = "QemuLoadvmCommandAuthorization";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
+      {
+        label = "replay oracle probe entry point";
+        needle = "pub fn check_qemu_replay_oracle";
+      }
+      {
+        label = "fat probe load path";
+        needle = "load_exact_snapshot_for_replay_oracle_probe";
+      }
+      {
+        label = "probe-only loadvm authorization";
+        needle = "policy.authorize_loadvm_probe(),";
+      }
+      {
+        label = "thin replay comparison path";
+        needle = "realize_qemu_replay_oracle_thin_path";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/savevm_policy.rs" savevmPolicy [
@@ -341,6 +360,7 @@ in
             fi
             if grep -R -n 'authorize_loadvm_probe' crates/*/src crates/*/tests \
               | grep -v '^crates/crucible-qemu/src/savevm_policy.rs:' \
+              | grep -v '^crates/crucible-qemu/src/realization.rs:' \
               | grep -v '^crates/crucible-qemu/tests/qmp.rs:' \
               | grep -v '^crates/crucible-qemu/tests/savevm_fallback.rs:' \
               > "$TMPDIR/loadvm-probe-authorization-uses.txt"; then
@@ -373,7 +393,7 @@ in
             runtime_loadvm_command_authorization=disabled
             probe_loadvm_command_authorization=snapshot-completeness-only
             production_loadvm_runtime_calls=none
-            production_loadvm_probe_authorization_uses=none
+            production_loadvm_probe_authorization_uses=replay-oracle-only
             loadvm_requires_replay_oracle_validation=true
             RESULT
           '';

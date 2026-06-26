@@ -31,7 +31,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  #include "qemu/plugin-memory.h"
  #include "qemu/plugin.h"
  
-@@ -134,3 +135,14 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+@@ -130,3 +131,14 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
                           RUN_ON_CPU_HOST_ULONG(new_time));
      }
  }

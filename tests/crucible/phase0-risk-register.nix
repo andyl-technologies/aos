@@ -61,8 +61,8 @@ pkgs.mkDerivation {
         } > expected-checked-tasks.txt
 
         gawk '
-          /^- \[x\] \*\*T-/ {
-            if (match($0, /T-[A-Z]+-[0-9]+/)) {
+          /^- \[x\] \*\*T-RISK-/ {
+            if (match($0, /T-RISK-[0-9]+/)) {
               print substr($0, RSTART, RLENGTH)
             }
           }
@@ -97,10 +97,9 @@ pkgs.mkDerivation {
         require_fixed "$risk_doc" "\`zero_overshoot_all=false\`"
         require_fixed "$risk_doc" "\`fallback_adopted=clock_deadline_export_and_tb_split_required\`"
         require_fixed "$risk_doc" "**RISK-15** is retired by \`T-RISK-8\`"
-        require_fixed "$risk_doc" "**RISK-16** is resolved by \`T-RISK-9\` with the build-identity/re-gate fallback"
+        require_fixed "$risk_doc" "**RISK-16** is resolved by \`T-RISK-9\` and the Phase-2 regeneration/build-identity"
         require_fixed "$risk_doc" "\`artifact_mismatch_regates=true\`"
-        require_fixed "$risk_doc" "\`full_upstream_inertness_comparison=false\`"
-        require_fixed "$risk_doc" "\`fallback_adopted=pin_build_id_and_regate_on_change\`"
+        require_fixed "$risk_doc" "\`qemu_version_bump_regate_enforced=true\`"
         require_fixed "$risk_doc" "**RISK-17** is resolved by \`T-RISK-10\` with the aarch64 black-box-only fallback"
         require_fixed "$risk_doc" "\`qemu_aarch64_softmmu_target=false\`"
         require_fixed "$risk_doc" "\`crucible_guest_workspace_member=false\`"
@@ -168,7 +167,7 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "checks.crucible.phase0.s7DeadlineCeiling"
         require_fixed "$decision_doc" "deadline_api_available=false"
         require_fixed "$decision_doc" "clock_deadline_export_and_tb_split_required"
-        require_fixed "$decision_doc" "checks.crucible.phase0.s9QemuBuildIdentity"
+        require_fixed "$decision_doc" "checks.crucible.phase2.qemuPatchRegeneration"
         require_fixed "$decision_doc" "artifact_build_id_match=true"
         require_fixed "$decision_doc" "qemu_inert_gate_status=fallback_pending_upstream_comparison"
         require_fixed "$decision_doc" "checks.crucible.phase0.s10Aarch64Doorbell"
@@ -202,10 +201,9 @@ pkgs.mkDerivation {
           echo PASS
           echo spike=risk-register-checklist-guard
           echo checked_risk_tasks=20
+          echo checked_task_scope=T-RISK-only
           echo retired_decision_entries=20
           echo phase0_foundational_blockers_open=0
-          echo unexpected_checked_nonrisk_tasks=0
-          echo phase1_plus_checked_tasks=0
         } > "$out/result"
         cp "$risk_doc" "$out/30-risks-spikes.md"
         cp "$decision_doc" "$out/31-decision-register.md"

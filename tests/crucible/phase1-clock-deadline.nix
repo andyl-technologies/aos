@@ -451,11 +451,9 @@ in
             }
 
             static bool has_control;
-            static Error *migration_blocker;
 
             const void *qemu_plugin_request_time_control(void)
             {
-                (void)migration_blocker;
                 if (!has_control) {
                     has_control = true;
                     return &has_control;

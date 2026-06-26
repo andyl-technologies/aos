@@ -6,16 +6,11 @@
 #include <string.h>
 #include <sys/types.h>
 
-typedef struct Error Error;
 typedef struct CPUState CPUState;
 
 typedef struct run_on_cpu_data {
   long host_ulong;
 } run_on_cpu_data;
-
-struct Error {
-  const char *message;
-};
 
 struct CPUState {
   int unused;
@@ -25,24 +20,6 @@ static CPUState fake_cpu;
 static CPUState *current_cpu = &fake_cpu;
 
 #define RUN_ON_CPU_HOST_ULONG(value) ((run_on_cpu_data){.host_ulong = (value)})
-
-static void
-error_setg(Error **errp, const char *message, ...)
-{
-  static Error error;
-
-  error.message = message;
-  if (errp != NULL) {
-    *errp = &error;
-  }
-}
-
-static void
-migrate_add_blocker(Error **errp, void *unused)
-{
-  (void)errp;
-  (void)unused;
-}
 
 static void
 qemu_clock_advance_virtual_time(int64_t new_time)

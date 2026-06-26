@@ -417,8 +417,6 @@ in
             #define QEMU_CLOCK_VIRTUAL 1
 
             extern CPUState *current_cpu;
-            void error_setg(Error **errp, const char *message, ...);
-            void migrate_add_blocker(Error **errp, void *unused);
             void async_run_on_cpu(CPUState *cpu,
                                   void (*fn)(CPUState *, run_on_cpu_data),
                                   run_on_cpu_data data);
@@ -431,7 +429,6 @@ in
              * Time control
              */
             static bool has_control;
-            static Error *migration_blocker;
 
             bool qemu_plugin_has_time_control(void)
             {
@@ -442,9 +439,6 @@ in
             {
                 if (!has_control) {
                     has_control = true;
-                    error_setg(&migration_blocker,
-                               "TCG plugin time control does not support migration");
-                    migrate_add_blocker(&migration_blocker, NULL);
                     return &has_control;
                 }
                 return NULL;

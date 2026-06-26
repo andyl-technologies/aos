@@ -108,7 +108,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  #include "qapi/error.h"
  #include "migration/blocker.h"
  #include "hw/boards.h"
-@@ -136,6 +137,114 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+@@ -132,6 +133,114 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
      }
  }
  

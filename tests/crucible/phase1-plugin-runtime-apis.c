@@ -6,7 +6,6 @@
 
 typedef struct AioContext AioContext;
 typedef struct CPUState CPUState;
-typedef struct Error Error;
 typedef struct NetClientState NetClientState;
 typedef void IOHandler(void *opaque);
 #define CRUCIBLE_IOHANDLER_DEFINED 1
@@ -18,10 +17,6 @@ struct AioContext {
 struct CPUState {
   unsigned int cpu_index;
   int exit_request;
-};
-
-struct Error {
-  const char *message;
 };
 
 static AioContext main_aio_context;
@@ -42,24 +37,6 @@ static int main_loop_wait_last_nonblocking = -1;
 static unsigned int tcg_callback_count;
 static unsigned int tcg_callback_vcpu = UINT32_MAX;
 static uint64_t tcg_callback_icount;
-
-static void
-error_setg(Error **errp, const char *message, ...)
-{
-  static Error error;
-
-  error.message = message;
-  if (errp != NULL) {
-    *errp = &error;
-  }
-}
-
-static void
-migrate_add_blocker(Error **errp, void *unused)
-{
-  (void)errp;
-  (void)unused;
-}
 
 bool
 bql_locked(void)

@@ -1059,20 +1059,34 @@ register.
     `qmp_human_monitor_command_available=true`,
     `qmp_legacy_savevm_loadvm_available=false`, `hmp_savevm_used=false`,
     `restore_transport=snapshot_save_load`,
-    `vmstate_node=qcow2_internal_snapshot`, `snapshot_points=1`,
+    `vmstate_node=qcow2_internal_snapshot`, `snapshot_points=3`,
     `snapshot_point_0=diskless_boot_window`,
-    `snapshot_icount=100000000`, `suffix_segment_icount=50000000`,
-    `suffix_logical_horizon=150000000`,
+    `snapshot_point_1=cpu_timer_window`,
+    `snapshot_point_2=block_pending_io`,
+    `snapshot_icount=100000008`,
+    `cpu_timer_snapshot_icount=150000010`,
+    `mid_io_snapshot_icount=6211647588`,
+    `mid_io_active_medium=block`, `mid_io_pause_io_events=1`,
+    `mid_io_pause_hlt_events=1`, `mid_io_guest_block_direct=true`,
+    `suffix_segment_icount=50000000`,
+    `suffix_logical_horizon=150000008`,
+    `all_suffix_fingerprints_match=false`,
+    `boot_window_suffix_fingerprint_match=true`,
+    `cpu_timer_suffix_fingerprint_match=true`,
+    `mid_io_suffix_fingerprint_match=false`,
     `suffix_fingerprint_match=true`,
-    `suffix_stream_hash=f6defe3619623dd8`, `register_hash_match=true`,
-    `suffix_register_hash=9ceff31179cf3b96`, `ram_hash_match=true`,
-    `suffix_ram_hash=4b38bd1adad92f0c`, `suffix_ram_bytes=268967936`,
-    `suffix_state_hash=7e48fe1730d53378`,
-    `device_event_hash_match=not_measured_in_diskless_scope`,
+    `suffix_stream_hash=bdb7658e9d86101e`, `register_hash_match=true`,
+    `suffix_register_hash=75b96364eff3a764`, `ram_hash_match=true`,
+    `suffix_ram_hash=78d57d4a3984e159`, `suffix_ram_bytes=1074274304`,
+    `suffix_state_hash=53227fe12f11d54a`,
+    `device_event_hash_match=false`,
     `current_vmstate_snapshot_smoke=true`,
-    `current_vmstate_snapshot_scope=diskless_single_vcpu_qemu_vmstate`,
+    `current_vmstate_snapshot_scope=diskless_and_cpu_timer_single_vcpu_qemu_vmstate_plus_block_pending_negative_control`,
+    `mid_io_burst_snapshot_exercised=true`,
     `mid_io_burst_snapshot_covered=false`,
-    `plugin_time_control_snapshot_covered=false`,
+    `plugin_time_control_snapshot_covered=true`,
+    `device_timer_snapshot_covered=true`,
+    `replay_oracle_fat_thin_match=false`,
     `full_fat_checkpoint_complete=false`,
     `crucible_owned_state_roundtrip=true`,
     `ring_snapshot_restore=pass`, `ring_live_hash=a3e895964e3c9a45`,
@@ -1084,12 +1098,13 @@ register.
     `risk8_status=mitigated_by_fallback_not_retired_for_fat_snapshot`,
     `risk9_status=retired_thin_replay_default`,
     `s3_fallback_adopted=true`.
-  - **Scope:** validates only the currently available QMP
-    `snapshot-save`/`snapshot-load` path for a diskless single-vCPU VMState
-    snapshot and a suffix replay comparison, plus a host-side Crucible-owned
-    ring/overlay/RNG round-trip. It deliberately does not claim the full S3 pass
-    criterion for a restored fat checkpoint at several snapshot points, a
-    mid-I/O burst, device-event state hashing, or plugin time-control state.
+  - **Scope:** validates the currently available QMP
+    `snapshot-save`/`snapshot-load` path for diskless and CPU-timer
+    single-vCPU VMState snapshots under plugin time control, plus a host-side
+    Crucible-owned ring/overlay/RNG round-trip. It also exercises a marked block
+    pending-I/O snapshot as a negative control and records the restored suffix
+    divergence, so it deliberately does not claim the full S3 pass criterion for
+    fat checkpoints.
   - **Fallback:** adopted. `instantiate` and the temporal graph default to thin
     checkpoint realization by replay from genesis or a verified ancestor; the
     fat-snapshot `loadvm` branch remains disabled until a later S3 rerun proves
@@ -1239,12 +1254,12 @@ register.
   - **Current result:** `qemu_package=qemu-crucible`, `qemu_version=10.0.0`,
     `qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=`,
     `patch_count=27`,
-    `patch_series_hash=2ed729cda5e0b78b208a6ef61b7b07af658435a71e50e247e701314c26bd57f8`,
+    `patch_series_hash=0e9a335295d577f51cf93395f7d8c7ba6a0b3d54083e06a7357f558f115e8566`,
     `patch_branch_ref=crucible/qemu-10.0.0`,
-    `patch_branch_bundle_hash=6661ad51927d0e61744e180a2989072da83e9342e6d2f37908bc2dfd20c0dfb1`,
-    `patch_branch_head_commit=1ca198288b0ca503b8dd86b459dfe03cd1959e46`,
-    `patch_branch_material_hash=6b325a5a18abb07d7d7576012e562aac10eecab8ce3a042d1080102cf20c0e97`,
-    `qemu_build_id=3c402016048ce1d4c4e84d4e183b39a409d13cf7dff14f09954d9fb4b2ffd374`,
+    `patch_branch_bundle_hash=1d969b51af280458fe3fc5405d1a49eb302afdeac2d3cb88382d3aa2f734efd2`,
+    `patch_branch_head_commit=1b2b6240a2e0887244f7c4c5aef0653754503365`,
+    `patch_branch_material_hash=5167675402324af5e1e5010451bfa1e19c41d34dfa40e5e5c68e0d9ed10ffb8e`,
+    `qemu_build_id=ca7044e84a68ebaf9df0c55b52e291803d95f062ff8bfc8d1ee70d44e3fde318`,
     `qemu_nix_hash=35aad46df419155f4ce336d66dd4eac329348b333b1d202937ad05a0d94add09`,
     `qemu_configure_flags_hash=716c3de64e42d5fee65c1b0ebb4dc213f282aba1d916820e1896ee36bc0db5f8`,
     `regenerated_patch_bytes_match_committed=true`,
@@ -1523,15 +1538,13 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=20`, `retired_decision_entries=20`,
-    `phase0_foundational_blockers_open=0`, `unexpected_checked_nonrisk_tasks=0`,
-    `phase1_plus_checked_tasks=0`.
+  - **Result:** `checked_risk_tasks=20`, `checked_task_scope=T-RISK-only`,
+    `retired_decision_entries=20`, `phase0_foundational_blockers_open=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike
     has a retirement or fallback-adoption record and a decision-register check
-    name, all foundational blockers are either passed or fallback-adopted, and no
-    non-risk checklist item is marked complete while foundational blockers remain
-    open. The full RFC coverage/gate catalog lint remains owned by `T-PLAN-1`;
-    this check is the narrower RISK-23/RISK-24 guard.
+    name, and all foundational blockers are either passed or fallback-adopted.
+    The full RFC coverage/gate catalog lint remains owned by `T-PLAN-1`; this
+    check is the narrower RISK-23/RISK-24 guard.
   - **Fallback:** none adopted.
 
 - **RISK-25 / T-RISK-17 — diskless multi-vCPU RR-TCG fingerprint**
