@@ -1357,6 +1357,21 @@ alone (`M-1`/`Q-A`).
       cached-vs-uncached closure parity, derivationStrict-node SHA-256 early
       cutoff, lazy replay payloads, stale-input miss surfaces, mmap reads,
       GC/repack, and future value-memoization safety net remain open (`S-14`).
+- [x] Current stale effectful persistent force-value `.drv` surface parity
+      canary: `persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces`
+      materializes a trace-verified `builtins.pathExists ./marker`
+      forced-value payload inside derivation `args`, removes the marker, then
+      evaluates through the same persistent cache root. It requires the stale
+      persistent observation not to reuse the old marker-present payload,
+      requires recomputation to replay the new path-exists fingerprint, and
+      requires the resulting `.drv` path and ATerm bytes to match a cache-off
+      marker-missing run while differing from the marker-present materialized
+      surface. This samples the current stale-input fallback inside a
+      derivation input surface; full
+      cached-vs-uncached closure parity, derivationStrict-node SHA-256 early
+      cutoff, dirty propagation beyond fallback, same-run post-recompute reuse
+      behavior, lazy replay payloads, mmap reads, GC/repack, and future
+      value-memoization safety net remain open (`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips

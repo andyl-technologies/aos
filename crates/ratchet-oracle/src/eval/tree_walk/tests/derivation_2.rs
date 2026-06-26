@@ -471,53 +471,6 @@ fn persistent_force_cache_hit_preserves_drv_surfaces() {
 
 #[test]
 fn persistent_effectful_force_cache_hit_preserves_drv_surfaces() {
-    fn evaluate_derivation_surface(
-        ir: &Ir,
-        source: &str,
-        options: TreeWalkOptions,
-        eval_cache: EvalCacheRuntime,
-    ) -> (
-        String,
-        Vec<u8>,
-        Vec<ImpureInputFingerprint>,
-        u64,
-        u64,
-        u64,
-        u64,
-    ) {
-        let attr_path = vec![b"pkg".to_vec()];
-        let outcome =
-            eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
-                ir,
-                &attr_path,
-                options,
-                "force-cache-effectful-drv-surface.nix",
-                source,
-                None,
-                Arc::new(Mutex::new(eval_cache)),
-            )
-            .expect("derivation attr-path eval succeeds");
-        let [derivation] = outcome.derivations() else {
-            panic!(
-                "expected one recorded derivation, got {:?}",
-                outcome.derivations()
-            );
-        };
-        let aterm = derivation
-            .aterm_bytes()
-            .expect("static derivation has ATerm bytes")
-            .to_vec();
-        (
-            derivation.absolute_path().to_owned(),
-            aterm,
-            outcome.impure_input_trace().to_vec(),
-            outcome.stats().thunks_forced(),
-            outcome.stats().cache_hits(),
-            outcome.stats().force_cache_hits(),
-            outcome.stats().force_cache_misses(),
-        )
-    }
-
     let persist_root = unique_temp_dir("force-cache-effectful-drv-surface-parity");
     let root = unique_temp_dir("force-cache-effectful-drv-source");
     fs::write(root.join("marker"), b"present").expect("marker exists");
@@ -541,91 +494,221 @@ fn persistent_effectful_force_cache_hit_preserves_drv_surfaces() {
     uncached_options
         .set_path_literal_base(path_bytes(&root))
         .expect("path base configures");
-    let (
-        uncached_path,
-        uncached_aterm,
-        uncached_trace,
-        _uncached_thunks_forced,
-        uncached_cache_hits,
-        uncached_force_hits,
-        uncached_force_misses,
-    ) = evaluate_derivation_surface(&ir, source, uncached_options, EvalCacheRuntime::disabled());
-    assert_eq!(uncached_trace, expected_trace);
-    assert_eq!(uncached_cache_hits, 0);
-    assert_eq!(uncached_force_hits, 0);
-    assert_eq!(uncached_force_misses, 0);
+    let uncached = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        uncached_options,
+        EvalCacheRuntime::disabled(),
+    );
+    assert_eq!(uncached.trace, expected_trace);
+    assert_eq!(uncached.cache_hits, 0);
+    assert_eq!(uncached.force_cache_hits, 0);
+    assert_eq!(uncached.force_cache_misses, 0);
 
     let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
     first_options
         .set_path_literal_base(path_bytes(&root))
         .expect("path base configures");
     first_options.set_persist_cache_root(&persist_root);
-    let (
-        first_path,
-        first_aterm,
-        first_trace,
-        _first_thunks_forced,
-        first_cache_hits,
-        first_force_hits,
-        first_force_misses,
-    ) = evaluate_derivation_surface(&ir, source, first_options, EvalCacheRuntime::enabled());
-    assert_eq!(first_path, uncached_path);
-    assert_eq!(first_aterm, uncached_aterm);
-    assert_eq!(first_trace, expected_trace);
-    assert_eq!(first_cache_hits, 0);
-    assert_eq!(first_force_hits, 0);
-    assert_eq!(first_force_misses, 1);
+    let first = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        first_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(first.path, uncached.path);
+    assert_eq!(first.aterm, uncached.aterm);
+    assert_eq!(first.trace, expected_trace);
+    assert_eq!(first.cache_hits, 0);
+    assert_eq!(first.force_cache_hits, 0);
+    assert_eq!(first.force_cache_misses, 1);
 
     let mut materialize_options = TreeWalkOptions::with_eval_cache_enabled(true);
     materialize_options
         .set_path_literal_base(path_bytes(&root))
         .expect("path base configures");
     materialize_options.set_persist_cache_root(&persist_root);
-    let (
-        materialize_path,
-        materialize_aterm,
-        materialize_trace,
-        materialize_thunks_forced,
-        materialize_cache_hits,
-        materialize_force_hits,
-        materialize_force_misses,
-    ) = evaluate_derivation_surface(
+    let materialize = evaluate_effectful_derivation_surface(
         &ir,
         source,
         materialize_options,
         EvalCacheRuntime::enabled(),
     );
-    assert_eq!(materialize_path, uncached_path);
-    assert_eq!(materialize_aterm, uncached_aterm);
-    assert_eq!(materialize_trace, expected_trace);
-    assert_eq!(materialize_cache_hits, 0);
-    assert_eq!(materialize_force_hits, 0);
-    assert_eq!(materialize_force_misses, 1);
+    assert_eq!(materialize.path, uncached.path);
+    assert_eq!(materialize.aterm, uncached.aterm);
+    assert_eq!(materialize.trace, expected_trace);
+    assert_eq!(materialize.cache_hits, 0);
+    assert_eq!(materialize.force_cache_hits, 0);
+    assert_eq!(materialize.force_cache_misses, 1);
 
     let mut hit_options = TreeWalkOptions::with_eval_cache_enabled(true);
     hit_options
         .set_path_literal_base(path_bytes(&root))
         .expect("path base configures");
     hit_options.set_persist_cache_root(&persist_root);
-    let (
-        hit_path,
-        hit_aterm,
-        hit_trace,
-        hit_thunks_forced,
-        hit_cache_hits,
-        hit_force_hits,
-        hit_force_misses,
-    ) = evaluate_derivation_surface(&ir, source, hit_options, EvalCacheRuntime::enabled());
-    assert_eq!(hit_path, uncached_path);
-    assert_eq!(hit_aterm, uncached_aterm);
-    assert_eq!(hit_trace, expected_trace);
+    let hit = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        hit_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(hit.path, uncached.path);
+    assert_eq!(hit.aterm, uncached.aterm);
+    assert_eq!(hit.trace, expected_trace);
     assert!(
-        hit_thunks_forced < materialize_thunks_forced,
+        hit.thunks_forced < materialize.thunks_forced,
         "fresh-runtime persistent hits should force fewer thunks than materializing recomputation"
     );
-    assert_eq!(hit_cache_hits, 1);
-    assert_eq!(hit_force_hits, 1);
-    assert_eq!(hit_force_misses, 0);
+    assert_eq!(hit.cache_hits, 1);
+    assert_eq!(hit.force_cache_hits, 1);
+    assert_eq!(hit.force_cache_misses, 0);
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+    fs::remove_dir_all(root).expect("source temp directory removes");
+}
+
+#[derive(Debug)]
+struct EffectfulDerivationSurface {
+    path: String,
+    aterm: Vec<u8>,
+    trace: Vec<ImpureInputFingerprint>,
+    thunks_forced: u64,
+    cache_hits: u64,
+    force_cache_hits: u64,
+    force_cache_misses: u64,
+}
+
+fn evaluate_effectful_derivation_surface(
+    ir: &Ir,
+    source: &str,
+    options: TreeWalkOptions,
+    eval_cache: EvalCacheRuntime,
+) -> EffectfulDerivationSurface {
+    let attr_path = vec![b"pkg".to_vec()];
+    let outcome = eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
+        ir,
+        &attr_path,
+        options,
+        "force-cache-effectful-drv-surface.nix",
+        source,
+        None,
+        Arc::new(Mutex::new(eval_cache)),
+    )
+    .expect("derivation attr-path eval succeeds");
+    let [derivation] = outcome.derivations() else {
+        panic!(
+            "expected one recorded derivation, got {:?}",
+            outcome.derivations()
+        );
+    };
+    EffectfulDerivationSurface {
+        path: derivation.absolute_path().to_owned(),
+        aterm: derivation
+            .aterm_bytes()
+            .expect("static derivation has ATerm bytes")
+            .to_vec(),
+        trace: outcome.impure_input_trace().to_vec(),
+        thunks_forced: outcome.stats().thunks_forced(),
+        cache_hits: outcome.stats().cache_hits(),
+        force_cache_hits: outcome.stats().force_cache_hits(),
+        force_cache_misses: outcome.stats().force_cache_misses(),
+    }
+}
+
+#[test]
+fn persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces() {
+    let persist_root = unique_temp_dir("force-cache-effectful-drv-stale-parity");
+    let root = unique_temp_dir("force-cache-effectful-drv-stale-source");
+    fs::write(root.join("marker"), b"present").expect("marker exists");
+    let root = fs::canonicalize(&root).expect("source root canonicalizes");
+    let marker_path = path_bytes(&root.join("marker"));
+    let present_trace =
+        vec![ImpureInputFingerprint::path_exists(&marker_path, true).expect("fingerprint builds")];
+    let missing_trace =
+        vec![ImpureInputFingerprint::path_exists(&marker_path, false).expect("fingerprint builds")];
+    let source = r#"let
+             b = builtins;
+           in {
+             pkg = derivationStrict {
+               name = "force-cache-effectful-drv-stale-surface";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ (if b.pathExists ./marker then "present" else "missing") ];
+             };
+           }"#;
+    let ir = lower(source);
+
+    let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    first_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    first_options.set_persist_cache_root(&persist_root);
+    let first = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        first_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(first.trace, present_trace);
+    assert_eq!(first.cache_hits, 0);
+    assert_eq!(first.force_cache_hits, 0);
+    assert_eq!(first.force_cache_misses, 1);
+
+    let mut materialize_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    materialize_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    materialize_options.set_persist_cache_root(&persist_root);
+    let materialize = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        materialize_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(materialize.path, first.path);
+    assert_eq!(materialize.aterm, first.aterm);
+    assert_eq!(materialize.trace, present_trace);
+    assert_eq!(materialize.cache_hits, 0);
+    assert_eq!(materialize.force_cache_hits, 0);
+    assert_eq!(materialize.force_cache_misses, 1);
+
+    fs::remove_file(root.join("marker")).expect("marker removed");
+
+    let mut uncached_options = TreeWalkOptions::new();
+    uncached_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    let uncached_missing = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        uncached_options,
+        EvalCacheRuntime::disabled(),
+    );
+    assert_eq!(uncached_missing.trace, missing_trace);
+    assert_eq!(uncached_missing.cache_hits, 0);
+    assert_eq!(uncached_missing.force_cache_hits, 0);
+    assert_eq!(uncached_missing.force_cache_misses, 0);
+    assert_ne!(uncached_missing.path, materialize.path);
+    assert_ne!(uncached_missing.aterm, materialize.aterm);
+
+    let mut stale_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    stale_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    stale_options.set_persist_cache_root(&persist_root);
+    let stale = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        stale_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(stale.path, uncached_missing.path);
+    assert_eq!(stale.aterm, uncached_missing.aterm);
+    assert_eq!(stale.trace, missing_trace);
+    assert!(
+        stale.thunks_forced > 0,
+        "stale persistent observations should fall back to ordinary forcing"
+    );
 
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
     fs::remove_dir_all(root).expect("source temp directory removes");
