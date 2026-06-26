@@ -178,8 +178,8 @@
         needle = "protocolCodecFuzz = import ./phase2-protocol-codec-fuzz.nix";
       }
       {
-        label = "ABI conformance gate remains red";
-        needle = "abiConformance = redGate {";
+        label = "ABI conformance gate is implemented";
+        needle = "abiConformance = import ./phase2-abi-conformance.nix";
       }
     ];
 in

@@ -916,9 +916,14 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   white-box path is consumed as a separate unused, non-perturbing host/plugin
   contract. Broader off-the-shelf guest image coverage remains outside this
   completed initial matrix.
-- [ ] **T-HARN-17** Freeze the boundary-ABI golden vectors (shmem layout,
+- [x] **T-HARN-17** Freeze the boundary-ABI golden vectors (shmem layout,
   protocol frames, RPC messages) and implement `gate:abi-conformance` with version
   checks and the bump-on-change rule. — satisfies [HARN-32], [G-8]; spec §8.1.
+  Completed by `checks.crucible.phase2.gates.abiConformance`: the gate aggregates
+  the shmem generated-header/layout fixture, protocol frame golden vectors, and
+  the RPC golden-vector corpus, with explicit version constants, byte-for-byte
+  live encoder comparisons, and typed RPC major-mismatch rejection. The full API
+  reference-client lifecycle conformance suite remains T-API-13.
 - [x] **T-HARN-18** Implement the SPSC queue concurrency model-checker + property
   tests (no loss/dup, FIFO, full/empty, wraparound). — satisfies [HARN-33];
   spec §8.2.

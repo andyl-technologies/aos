@@ -38,7 +38,6 @@ fn architecture_red_placeholder_gates_are_wired() {
         })
         .collect();
     let expected = BTreeSet::from([
-        "gate:abi-conformance",
         "gate:adversarial-determinism",
         "gate:campaign-continuity",
         "gate:control-responsive",
@@ -89,6 +88,10 @@ fn architecture_red_placeholder_gates_are_wired() {
     ));
     assert!(matches!(
         find_gate("gate:qemu-inert").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
+        find_gate("gate:abi-conformance").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
     assert!(matches!(

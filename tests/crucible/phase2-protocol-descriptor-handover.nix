@@ -227,12 +227,12 @@
         needle = "protocolDescriptorHandover = import ./phase2-protocol-descriptor-handover.nix";
       }
       {
-        label = "canonical ABI conformance gate remains red";
-        needle = "abiConformance = redGate {";
+        label = "canonical ABI conformance gate is implemented";
+        needle = "abiConformance = import ./phase2-abi-conformance.nix";
       }
       {
-        label = "canonical ABI conformance pending reason";
-        needle = "reason = \"ABI conformance gate is intentionally pending\";";
+        label = "canonical ABI conformance task list";
+        needle = "taskIds = [\"T-PLAN-3\" \"T-HARN-17\" \"T-API-11\" \"T-API-12\"]";
       }
     ];
 in

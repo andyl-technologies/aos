@@ -130,12 +130,12 @@
     ]
     ++ failuresFor "crates/crucible-protocol/tests/gate_abi_conformance.rs" protocolAbiGate [
       {
-        label = "canonical protocol ABI gate remains placeholder";
-        needle = "#[ignore = \"T-HARN-17 implements gate:abi-conformance\"]";
+        label = "canonical protocol ABI gate implemented";
+        needle = "protocol_golden_vectors_match_live_codec_bytes";
       }
       {
-        label = "canonical protocol ABI gate still fails when explicitly run";
-        needle = "gate:abi-conformance implementation is pending T-HARN-17";
+        label = "canonical protocol ABI gate literal byte freeze";
+        needle = "protocol_golden_vectors_freeze_literal_frame_bytes";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
@@ -150,12 +150,12 @@
         needle = "protocolFrameFormat = import ./phase2-protocol-frame-format.nix";
       }
       {
-        label = "canonical ABI conformance gate remains red";
-        needle = "abiConformance = redGate {";
+        label = "canonical ABI conformance gate is implemented";
+        needle = "abiConformance = import ./phase2-abi-conformance.nix";
       }
       {
-        label = "canonical ABI conformance pending reason";
-        needle = "reason = \"ABI conformance gate is intentionally pending\";";
+        label = "canonical ABI conformance task list";
+        needle = "taskIds = [\"T-PLAN-3\" \"T-HARN-17\" \"T-API-11\" \"T-API-12\"]";
       }
     ];
 in
