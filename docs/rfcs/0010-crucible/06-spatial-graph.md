@@ -1069,9 +1069,19 @@ authority for its shape. The contract those files may rely on:
     rejects undeclared node/link targets, premature heals, and not-yet-joined
     holds scheduled after `t = 0`. `checks.crucible.phase1.spatialMembershipFaults`
     gates the task.
-- [ ] **T-SPAT-12** Carry `Plan` as an orthogonal content-addressed component
+- [x] **T-SPAT-12** Carry `Plan` as an orthogonal content-addressed component
   (defined in 17) with build-time validation of node/link references and
   virtual-time scheduling. — satisfies [SPAT-19], [SPAT-20]; spec §5.1.
+  - Completed in `crates/crucible/src/model.rs`: `Plan` now carries an
+    independent content hash over canonical `PlanEntry` material, entries are
+    canonicalized by virtual time and semantic fault material, and
+    `World::scenario_def_with_plan` composes `World` and `Plan` component
+    hashes without folding the plan into topology. The focused
+    `plan_content_address_is_orthogonal_and_canonical` test covers
+    authoring-order independence, plan reuse across compatible worlds, virtual
+    time ordering, scenario identity sensitivity to the plan, and continued
+    build-time node/link validation. `checks.crucible.phase1.spatialPlanComponent`
+    gates the task.
 - [ ] **T-SPAT-13** Carry `Properties` as an orthogonal content-addressed component
   (defined in 18) with build-time predicate node-reference validation. — satisfies
   [SPAT-21]; spec §5.2.

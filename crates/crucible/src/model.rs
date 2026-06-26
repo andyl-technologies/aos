@@ -762,17 +762,35 @@ impl World {
         }
     }
 
-    /// Builds the canonical genesis scenario definition for this world.
+    /// Builds the canonical genesis scenario definition for this world and an empty plan.
     ///
-    /// The full `ScenarioDef` schema will carry `World`, plan, properties, and
-    /// seed components. Until that schema lands, this helper makes the model's
-    /// world-to-genesis relationship explicit without weakening checkpoint
-    /// validation.
+    /// Later spatial-graph tasks add `Properties` and `Seed`; until then this
+    /// helper composes the independently hashed `World` and empty `Plan`
+    /// components.
     #[must_use]
     pub fn scenario_def(&self) -> ScenarioDef {
+        self.scenario_def_from_plan_identity(&Plan::empty())
+    }
+
+    /// Builds the canonical scenario definition for this world and plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::PlanFaultUnknownNode`],
+    /// [`EngineError::PlanFaultUnknownLink`],
+    /// [`EngineError::PlanHealUnknownTag`],
+    /// [`EngineError::PlanHealBeforeActivate`], or
+    /// [`EngineError::PlanNotYetJoinedAfterStart`] when `plan` cannot be
+    /// layered over this world's static topology.
+    pub fn scenario_def_with_plan(&self, plan: &Plan) -> Result<ScenarioDef, EngineError> {
+        plan.validate_for_world(self)?;
+        Ok(self.scenario_def_from_plan_identity(plan))
+    }
+
+    fn scenario_def_from_plan_identity(&self, plan: &Plan) -> ScenarioDef {
         ScenarioDef::from_canonical_material(
-            "crucible.model.world-scenario.v1",
-            &world_hash_material(self),
+            "crucible.model.world-plan-scenario.v1",
+            &scenario_world_plan_material(self, plan),
         )
     }
 }
@@ -1825,18 +1843,25 @@ pub enum PlanEntry {
 }
 
 /// A declarative fault plan layered over a static [`World`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Plan {
+    /// The independently content-addressed plan identity.
+    id: ContentHash,
     entries: Vec<PlanEntry>,
+}
+
+impl Default for Plan {
+    fn default() -> Self {
+        Self::empty()
+    }
 }
 
 impl Plan {
     /// Builds an empty plan.
     #[must_use]
     pub fn empty() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
+        let entries = Vec::new();
+        Self::from_canonical_entries(entries)
     }
 
     /// Builds a plan after validating every entry against `world`.
@@ -1856,13 +1881,21 @@ impl Plan {
         entries: Vec<PlanEntry>,
     ) -> Result<Self, EngineError> {
         validate_plan_entries_for_world(world, &entries)?;
-        Ok(Self { entries })
+        Ok(Self::from_canonical_entries(canonical_plan_entries(
+            &entries,
+        )))
     }
 
-    /// Returns plan entries in their declared order.
+    /// Returns plan entries in their canonical order.
     #[must_use]
     pub fn entries(&self) -> &[PlanEntry] {
         &self.entries
+    }
+
+    /// Computes the canonical identity of this plan.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        self.id
     }
 
     /// Validates this plan against `world`.
@@ -1877,6 +1910,16 @@ impl Plan {
     /// layered over the static world topology.
     pub fn validate_for_world(&self, world: &World) -> Result<(), EngineError> {
         validate_plan_entries_for_world(world, &self.entries)
+    }
+
+    fn from_canonical_entries(entries: Vec<PlanEntry>) -> Self {
+        Self {
+            id: ContentHash::from_canonical_material(
+                "crucible.model.plan.v1",
+                &plan_material(&entries),
+            ),
+            entries,
+        }
     }
 }
 
@@ -6217,6 +6260,86 @@ fn canonical_link_endpoint_pair(left: &NodeId, right: &NodeId) -> (NodeId, NodeI
     }
 }
 
+fn canonical_plan_entries(entries: &[PlanEntry]) -> Vec<PlanEntry> {
+    let mut entries = entries.iter().map(canonical_plan_entry).collect::<Vec<_>>();
+    entries.sort_by(plan_entry_cmp);
+    entries
+}
+
+fn canonical_plan_entry(entry: &PlanEntry) -> PlanEntry {
+    match entry {
+        PlanEntry::Activate { at, tag, fault } => PlanEntry::Activate {
+            at: *at,
+            tag: tag.clone(),
+            fault: canonical_membership_fault(fault),
+        },
+        PlanEntry::Heal { at, tag } => PlanEntry::Heal {
+            at: *at,
+            tag: tag.clone(),
+        },
+    }
+}
+
+fn canonical_membership_fault(fault: &MembershipFault) -> MembershipFault {
+    match fault {
+        MembershipFault::Crash { node, restart } => MembershipFault::Crash {
+            node: node.clone(),
+            restart: *restart,
+        },
+        MembershipFault::Partition {
+            endpoint_a,
+            endpoint_b,
+            direction,
+        } => {
+            if endpoint_a <= endpoint_b {
+                MembershipFault::Partition {
+                    endpoint_a: endpoint_a.clone(),
+                    endpoint_b: endpoint_b.clone(),
+                    direction: *direction,
+                }
+            } else {
+                MembershipFault::Partition {
+                    endpoint_a: endpoint_b.clone(),
+                    endpoint_b: endpoint_a.clone(),
+                    direction: inverted_partition_direction(*direction),
+                }
+            }
+        }
+        MembershipFault::Isolate { node } => MembershipFault::Isolate { node: node.clone() },
+        MembershipFault::NotYetJoined { node } => {
+            MembershipFault::NotYetJoined { node: node.clone() }
+        }
+    }
+}
+
+fn inverted_partition_direction(direction: PartitionDirection) -> PartitionDirection {
+    match direction {
+        PartitionDirection::Bidirectional => PartitionDirection::Bidirectional,
+        PartitionDirection::EndpointAToEndpointB => PartitionDirection::EndpointBToEndpointA,
+        PartitionDirection::EndpointBToEndpointA => PartitionDirection::EndpointAToEndpointB,
+    }
+}
+
+fn plan_entry_cmp(left: &PlanEntry, right: &PlanEntry) -> std::cmp::Ordering {
+    plan_entry_time(left)
+        .cmp(&plan_entry_time(right))
+        .then_with(|| plan_entry_kind_order(left).cmp(&plan_entry_kind_order(right)))
+        .then_with(|| plan_entry_material(left).cmp(&plan_entry_material(right)))
+}
+
+fn plan_entry_time(entry: &PlanEntry) -> VirtualTime {
+    match entry {
+        PlanEntry::Activate { at, .. } | PlanEntry::Heal { at, .. } => *at,
+    }
+}
+
+fn plan_entry_kind_order(entry: &PlanEntry) -> u8 {
+    match entry {
+        PlanEntry::Activate { .. } => 0,
+        PlanEntry::Heal { .. } => 1,
+    }
+}
+
 fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError> {
     let latency = link.latency();
     let jitter = link.jitter();
@@ -6358,20 +6481,6 @@ fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
         .collect()
 }
 
-fn world_hash_material(world: &World) -> String {
-    let nodes = canonical_world_nodes(&world.nodes);
-    let links = canonical_world_links(&world.links);
-    if nodes.is_empty() && links.is_empty() {
-        return format!(
-            "opaque_world_id={}\n{}",
-            content_hash_hex(world.id),
-            world_material(&nodes, &links)
-        );
-    }
-
-    world_material(&nodes, &links)
-}
-
 fn canonical_world_identity(world: &World) -> ContentHash {
     let nodes = canonical_world_nodes(&world.nodes);
     let links = canonical_world_links(&world.links);
@@ -6380,6 +6489,14 @@ fn canonical_world_identity(world: &World) -> ContentHash {
     }
 
     ContentHash::from_canonical_material("crucible.model.world.v1", &world_material(&nodes, &links))
+}
+
+fn scenario_world_plan_material(world: &World, plan: &Plan) -> String {
+    format!(
+        "world_ref={}\nplan_ref={}",
+        content_hash_hex(canonical_world_identity(world)),
+        content_hash_hex(plan.content_hash())
+    )
 }
 
 fn world_material(nodes: &[WorldNode], links: &[LinkDef]) -> String {
@@ -6432,6 +6549,89 @@ fn world_link_material(link: &LinkDef) -> String {
         link.bandwidth_bps()
             .map_or_else(|| String::from("none"), |bandwidth| bandwidth.to_string())
     )
+}
+
+fn plan_material(entries: &[PlanEntry]) -> String {
+    let mut lines = Vec::with_capacity(entries.len().saturating_mul(12) + 1);
+    lines.push(format!("entries={}", entries.len()));
+    for entry in entries {
+        lines.push(plan_entry_material(entry));
+    }
+    lines.join("\n")
+}
+
+fn plan_entry_material(entry: &PlanEntry) -> String {
+    match entry {
+        PlanEntry::Activate { at, tag, fault } => {
+            format!(
+                "plan_entry=activate\nplan_at_ticks={}\n{}\n{}",
+                at.ticks,
+                fault_tag_material(tag),
+                membership_fault_material(fault)
+            )
+        }
+        PlanEntry::Heal { at, tag } => {
+            format!(
+                "plan_entry=heal\nplan_at_ticks={}\n{}",
+                at.ticks,
+                fault_tag_material(tag)
+            )
+        }
+    }
+}
+
+fn membership_fault_material(fault: &MembershipFault) -> String {
+    match fault {
+        MembershipFault::Crash { node, restart } => {
+            format!(
+                "fault=crash\n{}\nrestart={}",
+                node_ref_material("node", node),
+                restart_policy_label(*restart)
+            )
+        }
+        MembershipFault::Partition {
+            endpoint_a,
+            endpoint_b,
+            direction,
+        } => {
+            format!(
+                "fault=partition\n{}\n{}\ndirection={}",
+                node_ref_material("endpoint_a", endpoint_a),
+                node_ref_material("endpoint_b", endpoint_b),
+                partition_direction_label(*direction)
+            )
+        }
+        MembershipFault::Isolate { node } => {
+            format!("fault=isolate\n{}", node_ref_material("node", node))
+        }
+        MembershipFault::NotYetJoined { node } => {
+            format!("fault=not-yet-joined\n{}", node_ref_material("node", node))
+        }
+    }
+}
+
+fn fault_tag_material(tag: &FaultTag) -> String {
+    format!("tag_len={}\ntag={}", tag.name.len(), tag.name)
+}
+
+fn node_ref_material(prefix: &str, node: &NodeId) -> String {
+    format!("{prefix}_len={}\n{prefix}={}", node.name.len(), node.name)
+}
+
+fn restart_policy_label(policy: RestartPolicy) -> &'static str {
+    match policy {
+        RestartPolicy::FromReadyPoint => "from-ready-point",
+        RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
+        RestartPolicy::StayDown => "stay-down",
+    }
+}
+
+fn partition_direction_label(direction: PartitionDirection) -> &'static str {
+    match direction {
+        PartitionDirection::Bidirectional => "bidirectional",
+        PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
+        PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
+    }
 }
 
 fn ready_point_material(ready_point: &ReadyPoint) -> String {

@@ -100,8 +100,8 @@
         needle = "baked_node_blobs(world)";
       }
       {
-        label = "world hash material helper";
-        needle = "fn world_hash_material(world: &World) -> String";
+        label = "scenario component material helper";
+        needle = "fn scenario_world_plan_material(world: &World, plan: &Plan) -> String";
       }
       {
         label = "stable hash hex helper";
