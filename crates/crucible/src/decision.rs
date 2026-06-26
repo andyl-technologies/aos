@@ -25,14 +25,14 @@ pub struct DecisionRecorder {
 }
 
 impl DecisionRecorder {
-    /// Builds a recorder from the current configuration and scenario seed.
+    /// Builds a recorder from the current configuration's scenario seed.
     ///
     /// Existing [`Decision::RngDraw`] entries in the schedule advance the
     /// corresponding stream positions so resumed recording does not repeat
     /// prior draws.
     #[must_use]
-    pub fn new(configuration: Configuration, seed: u64) -> Self {
-        let rng = DecisionRng::new(seed);
+    pub fn new(configuration: Configuration) -> Self {
+        let rng = configuration.def.seed().decision_rng();
         let streams = hydrate_streams(&rng, configuration.schedule.decisions());
         Self {
             configuration,
@@ -346,7 +346,7 @@ fn hydrate_streams(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContentHash, NodeId, ScenarioDef};
+    use crate::{NodeId, ScenarioDef, Seed};
 
     #[test]
     fn decision_recorder_records_rng_draws_and_fault_outcomes() {
@@ -366,14 +366,13 @@ mod tests {
         let edited_config = Configuration::genesis(scenario_from_world_material(
             "world.nodes=node-a,node-z\nworld.links=\nseed=7",
         ));
-        let seed = 0x0010_c001;
         let stable_stream = rng_stream("node-a/faults");
         let unrelated_stream = rng_stream("node-z/faults");
 
         assert_ne!(baseline_config.def, edited_config.def);
 
-        let mut baseline = DecisionRecorder::new(baseline_config, seed);
-        let mut edited = DecisionRecorder::new(edited_config, seed);
+        let mut baseline = DecisionRecorder::new(baseline_config);
+        let mut edited = DecisionRecorder::new(edited_config);
 
         let baseline_draw = baseline.draw_u64(stable_stream.clone());
         let _unrelated_draw = edited.draw_u64(unrelated_stream.clone());
@@ -401,10 +400,9 @@ mod tests {
         let config = Configuration::genesis(scenario_from_world_material(
             "world.nodes=shared\nworld.links=shared\nseed=domain",
         ));
-        let seed = 0x0010_c001;
         let node_stream = RngStreamId::for_node("shared");
         let link_stream = RngStreamId::for_link("shared");
-        let mut recorder = DecisionRecorder::new(config, seed);
+        let mut recorder = DecisionRecorder::new(config);
 
         let node_draw = recorder.draw_u64(node_stream.clone());
         let link_draw = recorder.draw_u64(link_stream.clone());
@@ -426,11 +424,9 @@ mod tests {
 
     #[test]
     fn decision_recorder_records_app_random_after_rng_draw() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
+        let config = Configuration::genesis(default_scenario());
         let stream = rng_stream("node-a/app");
-        let mut recorder = DecisionRecorder::new(config, 7);
+        let mut recorder = DecisionRecorder::new(config);
 
         let value = match recorder.serve_app_random(node("node-a"), stream.clone(), 12) {
             Ok(value) => value,
@@ -459,11 +455,9 @@ mod tests {
 
     #[test]
     fn decision_recorder_records_app_random_guest_request_id() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
+        let config = Configuration::genesis(default_scenario());
         let stream = rng_stream("node-a/app");
-        let mut recorder = DecisionRecorder::new(config, 7);
+        let mut recorder = DecisionRecorder::new(config);
 
         let value =
             match recorder.serve_app_random_request(node("node-a"), stream.clone(), 0xfeed, 16) {
@@ -493,10 +487,8 @@ mod tests {
 
     #[test]
     fn decision_recorder_rejects_invalid_app_random_widths() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
-        let mut recorder = DecisionRecorder::new(config, 7);
+        let config = Configuration::genesis(default_scenario());
+        let mut recorder = DecisionRecorder::new(config);
 
         assert_eq!(
             recorder.serve_app_random(node("node-a"), rng_stream("node-a/app"), 0),
@@ -511,23 +503,22 @@ mod tests {
 
     #[test]
     fn decision_recorder_resumes_stream_positions_from_existing_schedule() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
-        let seed = 0x0010_c001;
+        let seed = Seed::from_u64(0x0010_c001);
+        let config = Configuration::genesis(scenario_from_seed(seed));
         let stream = rng_stream("node-a/app");
-        let mut recorder = DecisionRecorder::new(config, seed);
+        let mut recorder = DecisionRecorder::new(config);
 
         let first = recorder.draw_u64(stream.clone());
         let served = match recorder.serve_app_random(node("node-a"), stream.clone(), 8) {
             Ok(value) => value,
             Err(error) => panic!("valid app-random width should record: {error}"),
         };
-        let mut resumed = DecisionRecorder::new(recorder.into_configuration(), seed);
+        let mut resumed = DecisionRecorder::new(recorder.into_configuration());
         let resumed_draw = resumed.draw_u64(stream.clone());
 
-        let mut expected_stream =
-            crucible_sim::DecisionRng::new(seed).fork_in_domain(&stream.domain, &stream.name);
+        let mut expected_stream = seed
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
         let expected_first = expected_stream.next_u64();
         let expected_served_raw = expected_stream.next_u64();
         let expected_resumed = expected_stream.next_u64();
@@ -548,8 +539,8 @@ mod tests {
         let config = Configuration::genesis(scenario_from_world_material(
             "world.nodes=node-a\nseed=preemption",
         ));
-        let first = DecisionRecorder::new(config.clone(), 0x0010_c001);
-        let second = DecisionRecorder::new(config, 0x0010_c001);
+        let first = DecisionRecorder::new(config.clone());
+        let second = DecisionRecorder::new(config);
 
         let first_switch =
             match first.default_rr_preemption(node("node-a"), Icount { retired: 4096 }, 4096, 4) {
@@ -580,10 +571,8 @@ mod tests {
 
     #[test]
     fn decision_recorder_records_preemption_overrides_in_schedule() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
-        let mut recorder = DecisionRecorder::new(config, 0x0010_c001);
+        let config = Configuration::genesis(default_scenario());
+        let mut recorder = DecisionRecorder::new(config);
         let switch = PreemptionDecision {
             node: node("node-a"),
             at: Icount { retired: 1024 },
@@ -624,10 +613,8 @@ mod tests {
 
     #[test]
     fn decision_recorder_rejects_invalid_default_preemption_shape() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
-        let recorder = DecisionRecorder::new(config, 0x0010_c001);
+        let config = Configuration::genesis(default_scenario());
+        let recorder = DecisionRecorder::new(config);
 
         assert_eq!(
             recorder.default_rr_preemption(node("node-a"), Icount { retired: 1 }, 0, 1),
@@ -656,10 +643,8 @@ mod tests {
 
     #[test]
     fn decision_recorder_derives_default_rr_preemption_without_overflow() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
-        let recorder = DecisionRecorder::new(config, 0x0010_c001);
+        let config = Configuration::genesis(default_scenario());
+        let recorder = DecisionRecorder::new(config);
 
         let switch = match recorder.default_rr_preemption(
             node("node-a"),
@@ -687,13 +672,10 @@ mod tests {
 
     #[test]
     fn decision_recorder_serves_app_random_override_without_rerolling_stream() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
-        let seed = 0x0010_c001;
+        let config = Configuration::genesis(scenario_from_seed(Seed::from_u64(0x0010_c001)));
         let stream = rng_stream("node-a/app");
-        let mut baseline = DecisionRecorder::new(config.clone(), seed);
-        let mut overridden = DecisionRecorder::new(config, seed);
+        let mut baseline = DecisionRecorder::new(config.clone());
+        let mut overridden = DecisionRecorder::new(config);
 
         let expected_first_draw = baseline.draw_u64(stream.clone());
         let override_value = match overridden.serve_app_random_override(AppRandomDecision {
@@ -729,10 +711,8 @@ mod tests {
 
     #[test]
     fn decision_recorder_rejects_invalid_app_random_override_values() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
-        let mut recorder = DecisionRecorder::new(config, 0x0010_c001);
+        let config = Configuration::genesis(default_scenario());
+        let mut recorder = DecisionRecorder::new(config);
 
         assert_eq!(
             recorder.serve_app_random_override(AppRandomDecision {
@@ -761,14 +741,12 @@ mod tests {
     }
 
     fn assert_decision_rng_branch_coverage() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
+        let config = Configuration::genesis(default_scenario());
         let stream = rng_stream("node-a/faults");
         let fault = FaultId {
             name: String::from("loss"),
         };
-        let mut recorder = DecisionRecorder::new(config, 0x0010_c001);
+        let mut recorder = DecisionRecorder::new(config);
 
         let raw = recorder.draw_u64(stream.clone());
         let fired = recorder.decide_fault(
@@ -796,14 +774,10 @@ mod tests {
     }
 
     fn assert_per_entity_rng_forking_coverage() {
-        let first_config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
-        let second_config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
-        let mut before = DecisionRecorder::new(first_config, 0x0010_c001);
-        let mut after = DecisionRecorder::new(second_config, 0x0010_c001);
+        let first_config = Configuration::genesis(default_scenario());
+        let second_config = Configuration::genesis(default_scenario());
+        let mut before = DecisionRecorder::new(first_config);
+        let mut after = DecisionRecorder::new(second_config);
 
         let node_a_before = before.draw_u64(rng_stream("node-a/faults"));
         let _node_b_before = before.draw_u64(rng_stream("node-b/faults"));
@@ -820,6 +794,18 @@ mod tests {
 
     fn scenario_from_world_material(material: &str) -> ScenarioDef {
         ScenarioDef::from_canonical_material("crucible.test.world", material)
+    }
+
+    fn default_scenario() -> ScenarioDef {
+        scenario_from_seed(Seed::default())
+    }
+
+    fn scenario_from_seed(seed: Seed) -> ScenarioDef {
+        ScenarioDef::from_canonical_material_with_seed(
+            "crucible.test.decision",
+            "scenario=stub",
+            seed,
+        )
     }
 
     fn node(name: &str) -> NodeId {

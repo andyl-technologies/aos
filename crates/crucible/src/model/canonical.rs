@@ -21,7 +21,8 @@ pub(super) fn content_hash_from_canonical_material(domain: &str, material: &str)
 pub(super) fn configuration_hash(configuration: &Configuration) -> ContentHash {
     let mut hasher = MaterialHasher::new();
     hasher.write_bytes(b"crucible.configuration.v1");
-    write_content_hash(&mut hasher, &configuration.def.id);
+    write_content_hash(&mut hasher, &configuration.def.id());
+    write_seed(&mut hasher, configuration.def.seed());
     write_schedule(&mut hasher, &configuration.schedule);
     ContentHash {
         bytes: hasher.finish(),
@@ -40,7 +41,8 @@ pub(super) fn schedule_hash(schedule: &Schedule) -> ContentHash {
 pub(super) fn reduced_state_hash(def: &ScenarioDef, schedule: &Schedule) -> ContentHash {
     let mut hasher = MaterialHasher::new();
     hasher.write_bytes(b"crucible.reduce.state.v1");
-    write_content_hash(&mut hasher, &def.id);
+    write_content_hash(&mut hasher, &def.id());
+    write_seed(&mut hasher, def.seed());
     write_schedule(&mut hasher, schedule);
     ContentHash {
         bytes: hasher.finish(),
@@ -272,6 +274,10 @@ fn write_node_id(hasher: &mut MaterialHasher, node: &NodeId) {
 
 fn write_content_hash(hasher: &mut MaterialHasher, hash: &ContentHash) {
     hasher.write_bytes(&hash.bytes);
+}
+
+fn write_seed(hasher: &mut MaterialHasher, seed: super::Seed) {
+    hasher.write_bytes(&seed.bytes());
 }
 
 fn write_icount(hasher: &mut MaterialHasher, icount: Icount) {

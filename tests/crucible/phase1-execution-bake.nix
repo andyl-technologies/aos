@@ -101,7 +101,7 @@
       }
       {
         label = "scenario component material helper";
-        needle = "fn scenario_world_plan_properties_material";
+        needle = "fn scenario_world_plan_properties_seed_material";
       }
       {
         label = "stable hash hex helper";

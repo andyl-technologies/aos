@@ -3,10 +3,9 @@
 #![forbid(unsafe_code)]
 
 use crucible::{
-    AdvanceOutcome, Backend, BackendInput, Configuration, ContentHash, Decision,
-    ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, RngDecision, RngStreamId, ScenarioDef,
-    Schedule, ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, SimBackend, VirtualTime,
-    step,
+    AdvanceOutcome, Backend, BackendInput, Configuration, Decision, ExecutionFingerprint,
+    ExecutionHorizon, Icount, NodeId, RngDecision, RngStreamId, ScenarioDef, Schedule,
+    ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, SimBackend, VirtualTime, step,
 };
 
 #[test]
@@ -35,9 +34,10 @@ fn gate_layer0_determinism_reduces_sim_backend_twice() {
 
 #[test]
 fn gate_layer0_determinism_keeps_schedule_decisions_explicitly_ordered() {
-    let genesis = Configuration::genesis(ScenarioDef {
-        id: ContentHash::from_canonical_material("layer0-gate", "scenario"),
-    });
+    let genesis = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "layer0-gate",
+        "scenario",
+    ));
     let first = rng_decision("node-a", 1);
     let second = rng_decision("node-b", 1);
 

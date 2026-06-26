@@ -122,11 +122,11 @@
       }
       {
         label = "scenario world-plan-properties domain";
-        needle = "\"crucible.model.world-plan-properties-scenario.v1\"";
+        needle = "\"crucible.model.world-plan-properties-seed-scenario.v1\"";
       }
       {
         label = "scenario component material";
-        needle = "fn scenario_world_plan_properties_material";
+        needle = "fn scenario_world_plan_properties_seed_material";
       }
       {
         label = "scenario includes properties component hash";

@@ -256,7 +256,7 @@
       }
       {
         label = "scenario identity folded into reduce";
-        needle = "write_content_hash(&mut hasher, &def.id);";
+        needle = "write_content_hash(&mut hasher, &def.id());";
       }
       {
         label = "schedule folded into reduce";

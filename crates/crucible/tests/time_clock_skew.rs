@@ -69,8 +69,8 @@ fn clock_skew_material_keeps_default_byte_identical_to_absence() {
     assert!(with_skew.contains("clock_skew_offset_ns=-25"));
     assert!(with_skew.contains("clock_drift_rate=999/1000"));
     assert_ne!(
-        ScenarioDef::from_canonical_material("crucible.test.clock-skew.public", &no_skew).id,
-        ScenarioDef::from_canonical_material("crucible.test.clock-skew.public", &with_skew).id,
+        ScenarioDef::from_canonical_material("crucible.test.clock-skew.public", &no_skew).id(),
+        ScenarioDef::from_canonical_material("crucible.test.clock-skew.public", &with_skew).id(),
     );
 }
 

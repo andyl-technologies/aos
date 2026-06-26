@@ -203,7 +203,7 @@
       }
       {
         label = "shift change enters scenario identity";
-        needle = "assert_ne!(base_scenario.id, shifted_scenario.id);";
+        needle = "assert_ne!(base_scenario.id(), shifted_scenario.id());";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [

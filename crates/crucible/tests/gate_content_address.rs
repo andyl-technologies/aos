@@ -84,7 +84,7 @@ fn gate_content_address_hashes_equal_content_to_equal_ids() {
         schedule: second_schedule.clone(),
     };
 
-    assert_eq!(first_scenario.id, second_scenario.id);
+    assert_eq!(first_scenario.id(), second_scenario.id());
     assert_eq!(
         first_schedule.content_hash(),
         second_schedule.content_hash()
@@ -102,8 +102,10 @@ fn gate_content_address_hashes_equal_content_to_equal_ids() {
 #[test]
 fn gate_content_address_changes_on_single_byte_mutations() {
     assert_ne!(
-        ScenarioDef::from_canonical_material("crucible.test.content-address.scenario", "seed=1").id,
-        ScenarioDef::from_canonical_material("crucible.test.content-address.scenario", "seed=2").id
+        ScenarioDef::from_canonical_material("crucible.test.content-address.scenario", "seed=1")
+            .id(),
+        ScenarioDef::from_canonical_material("crucible.test.content-address.scenario", "seed=2")
+            .id()
     );
     assert_ne!(
         ContentHash::from_canonical_material("crucible.test.content-address.snapshot", "page=A"),
@@ -267,7 +269,7 @@ fn gate_content_address_checkpoint_identity_matches_configuration_id() {
 
         assert_eq!(checkpoint.id, configuration.id());
         assert_eq!(checkpoint.configuration, configuration.id());
-        assert_eq!(checkpoint.scenario_ref, scenario.id);
+        assert_eq!(checkpoint.scenario_ref, scenario.id());
         assert_eq!(checkpoint.parent, Some(parent.id()));
         assert_eq!(checkpoint.schedule_delta, schedule_delta);
         assert_eq!(checkpoint.virtual_time, VirtualTime { ticks: seed * 23 });
@@ -1164,7 +1166,7 @@ fn gate_content_address_rejects_corrupt_checkpoint_cache_topology() {
     };
     let valid = recorded_fat_checkpoint(&configuration);
     let mut wrong_scenario = valid.clone();
-    wrong_scenario.scenario_ref = scenario("scenario=other-cache\nseed=144\n").id;
+    wrong_scenario.scenario_ref = scenario("scenario=other-cache\nseed=144\n").id();
     let mut wrong_parent = valid.clone();
     wrong_parent.parent = None;
     let mut wrong_delta = valid.clone();
@@ -1735,7 +1737,7 @@ fn gate_content_address_temporal_graph_requires_baked_genesis_root() {
 
     assert!(matches!(
         error,
-        EngineError::MissingBakedGenesis { scenario: missing } if missing == scenario.id
+        EngineError::MissingBakedGenesis { scenario: missing } if missing == scenario.id()
     ));
     assert_eq!(graph.checkpoint_node_count(), 0);
     assert_eq!(graph.recorded_configuration_count(), 0);
@@ -1746,7 +1748,7 @@ fn gate_content_address_temporal_graph_requires_baked_genesis_root() {
 
     assert!(matches!(
         error,
-        EngineError::MissingBakedGenesis { scenario: missing } if missing == scenario.id
+        EngineError::MissingBakedGenesis { scenario: missing } if missing == scenario.id()
     ));
     assert_eq!(graph.checkpoint_node_count(), 0);
     assert_eq!(graph.recorded_configuration_count(), 0);
@@ -2094,7 +2096,7 @@ fn fixed_vectors(
     state: &State,
 ) -> [(&'static str, String); 7] {
     [
-        ("scenario", hash_hex(scenario.id)),
+        ("scenario", hash_hex(scenario.id())),
         ("schedule", hash_hex(schedule.content_hash())),
         ("configuration", hash_hex(configuration.content_hash())),
         ("state", hash_hex(state.id)),

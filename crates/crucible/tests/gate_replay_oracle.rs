@@ -910,7 +910,7 @@ fn replay_oracle_artifact_fingerprint(
     let state = reduce(scenario, schedule)?;
     let material = format!(
         "seed={seed}\nscenario={}\nschedule={}\nstate={}\n",
-        hash_hex(scenario.id),
+        hash_hex(scenario.id()),
         hash_hex(schedule.content_hash()),
         hash_hex(state.id)
     );

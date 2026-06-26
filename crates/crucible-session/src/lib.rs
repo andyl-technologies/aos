@@ -785,15 +785,16 @@ impl<L: QuantumLoop> SessionActor<L> {
 mod tests {
     use super::*;
     use crucible::{
-        Checkpoint, CheckpointKind, ContentHash, Decision, DeliveryOrderDecision, EventKey,
-        GenesisCheckpoint, ScenarioDef, VirtualTime, step,
+        Checkpoint, CheckpointKind, Decision, DeliveryOrderDecision, EventKey, GenesisCheckpoint,
+        ScenarioDef, Seed, VirtualTime, step,
     };
 
     #[test]
     fn session_driver_delegates_to_quantum_loop() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
+        let config = Configuration::genesis(ScenarioDef::from_canonical_material(
+            "crucible.test.session.quantum-loop",
+            "scenario=stub",
+        ));
         let request = QuantumRequest {
             configuration: config.clone(),
             control: Vec::new(),
@@ -1305,9 +1306,10 @@ mod tests {
     }
 
     fn generated_scenario(seed: u64) -> ScenarioDef {
-        ScenarioDef::from_canonical_material(
+        ScenarioDef::from_canonical_material_with_seed(
             "crucible.session.test.scenario",
             &format!("seed={seed}"),
+            Seed::from_u64(seed),
         )
     }
 

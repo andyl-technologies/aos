@@ -934,8 +934,8 @@ fn launch_profile_records_per_node_clock_skew_material() {
         "node clock skew material must be sorted by node id"
     );
     assert_ne!(
-        ScenarioDef::from_canonical_material("crucible.scenario.v1.qemu-launch", &no_skew).id,
-        ScenarioDef::from_canonical_material("crucible.scenario.v1.qemu-launch", &with_skew).id,
+        ScenarioDef::from_canonical_material("crucible.scenario.v1.qemu-launch", &no_skew).id(),
+        ScenarioDef::from_canonical_material("crucible.scenario.v1.qemu-launch", &with_skew).id(),
     );
 }
 
@@ -1275,10 +1275,10 @@ fn launch_command_hash_material_feeds_scenario_identity() {
     );
 
     assert_eq!(scenario, repeated_scenario);
-    assert_ne!(scenario.id, changed_slot_scenario.id);
-    assert_ne!(scenario.id, changed_kernel_scenario.id);
-    assert_ne!(scenario.id, changed_qemu_scenario.id);
-    assert_ne!(scenario.id, changed_path_scenario.id);
+    assert_ne!(scenario.id(), changed_slot_scenario.id());
+    assert_ne!(scenario.id(), changed_kernel_scenario.id());
+    assert_ne!(scenario.id(), changed_qemu_scenario.id());
+    assert_ne!(scenario.id(), changed_path_scenario.id());
 }
 
 #[test]
@@ -1487,5 +1487,5 @@ fn launch_material_feeds_scenario_identity() {
     );
 
     assert_eq!(base_scenario, repeated_scenario);
-    assert_ne!(base_scenario.id, shifted_scenario.id);
+    assert_ne!(base_scenario.id(), shifted_scenario.id());
 }
