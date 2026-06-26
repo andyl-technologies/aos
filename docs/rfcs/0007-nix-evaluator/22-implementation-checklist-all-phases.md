@@ -1314,6 +1314,15 @@ alone (`M-1`/`Q-A`).
       live-record relocation, automatic GC policy, cross-process/raw-writer
       coordination, mmap reads, Attic transport, and harness proof remain open
       (`C-13`/`R-14`).
+- [x] Current read-only node value-root plan:
+      `PersistCache::plan_node_value_roots` snapshots latest node metadata,
+      resolves materialized value hashes through the `values/` blob index, and
+      verifies resolved value-pack records while reporting metadata links whose
+      value hash is missing from the blob index. This is diagnostic
+      node-to-value reachability only; retention windows, metadata pruning,
+      pack rewriting/deletion, live-record relocation, automatic GC policy,
+      cross-process/raw-writer coordination, mmap reads, Attic transport, and
+      harness proof remain open (`C-13`/`R-14`).
 - [x] Current blob-pack integrity scan primitive:
       `PersistBlobPack::records` scans a pack in record order, validates every
       record header and payload hash, rejects truncated or corrupt tails instead

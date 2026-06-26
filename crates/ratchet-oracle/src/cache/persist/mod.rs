@@ -113,7 +113,8 @@ mod pack;
 pub use cache::{
     PersistBlobIndexRebuild, PersistBlobIndexRebuildPlan, PersistBlobIndexStaleEntry,
     PersistBlobLiveRoot, PersistBlobLiveRootSource, PersistBlobPackLivenessPlan,
-    PersistBlobPackTrim, PersistCache, PersistCompaction, PersistStorageMaintenance,
+    PersistBlobPackTrim, PersistCache, PersistCompaction, PersistMissingNodeValueRoot,
+    PersistNodeValueRoot, PersistNodeValueRootPlan, PersistStorageMaintenance,
 };
 pub use error::{
     PersistBlobIndexError, PersistBlobIndexRebuildError, PersistBlobIndexRebuildPlanError,
@@ -126,12 +127,12 @@ pub use error::{
     PersistFileArtifactHydrationError, PersistFileArtifactIndexError,
     PersistFileArtifactIndexedHydrationError, PersistFileArtifactIndexedWriteError,
     PersistNodeMetadataIndexError, PersistNodeTraceLogError, PersistNodeTraceLogFormatError,
-    PersistNodeTracePayloadError, PersistPackFormatError, PersistParseArtifactHydrationError,
-    PersistParseArtifactIndexError, PersistParseArtifactIndexedHydrationError,
-    PersistParseArtifactIndexedWriteError, PersistParseArtifactMaterializationError,
-    PersistParseBytesIndexedLoadError, PersistParseFileIndexedHydrationError,
-    PersistParseFileIndexedLoadError, PersistParseSourceIndexedLoadError,
-    PersistStorageMaintenanceError,
+    PersistNodeTracePayloadError, PersistNodeValueRootPlanError, PersistPackFormatError,
+    PersistParseArtifactHydrationError, PersistParseArtifactIndexError,
+    PersistParseArtifactIndexedHydrationError, PersistParseArtifactIndexedWriteError,
+    PersistParseArtifactMaterializationError, PersistParseBytesIndexedLoadError,
+    PersistParseFileIndexedHydrationError, PersistParseFileIndexedLoadError,
+    PersistParseSourceIndexedLoadError, PersistStorageMaintenanceError,
 };
 pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,

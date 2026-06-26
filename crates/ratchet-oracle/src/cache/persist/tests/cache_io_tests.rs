@@ -4626,6 +4626,107 @@ fn cache_cached_expression_node_payload_materializes_and_loads_by_node_key() {
 }
 
 #[test]
+fn cache_node_value_root_plan_resolves_latest_metadata_links() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let missing_node_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"missing node"));
+    let reuse_only_node_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"reuse-only node"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let missing_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"missing value"));
+    let result = cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    let PersistMaterialization::Materialized(location) = result else {
+        panic!("node payload should materialize");
+    };
+    cache
+        .record_node_materialized_value_hash(missing_node_key, missing_value_hash)
+        .expect("missing value metadata records");
+    cache
+        .record_node_materialization_reuse(reuse_only_node_key, MaterializationReuse::new(3, 4))
+        .expect("reuse-only metadata records");
+
+    let plan = cache
+        .plan_node_value_roots()
+        .expect("node value root plan builds");
+
+    assert!(plan.repair_needed());
+    assert_eq!(plan.resolved_roots().len(), 1);
+    let resolved = plan.resolved_roots()[0];
+    assert_eq!(resolved.node_key(), node_key);
+    assert_eq!(resolved.value_hash(), value_hash);
+    assert_eq!(
+        resolved.blob_key(),
+        PersistBlobKey::for_value(value_hash.as_durable_hash())
+    );
+    assert_eq!(resolved.location(), location);
+    assert_eq!(plan.missing_roots().len(), 1);
+    let missing = plan.missing_roots()[0];
+    assert_eq!(missing.node_key(), missing_node_key);
+    assert_eq!(missing.value_hash(), missing_value_hash);
+    assert_eq!(
+        missing.blob_key(),
+        PersistBlobKey::for_value(missing_value_hash.as_durable_hash())
+    );
+    assert!(
+        plan.missing_roots()
+            .iter()
+            .all(|root| root.node_key() != reuse_only_node_key),
+        "metadata without a materialized value hash is not a value root"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_node_value_root_plan_rejects_corrupt_indexed_value_blob() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let result = cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    let PersistMaterialization::Materialized(location) = result else {
+        panic!("node payload should materialize");
+    };
+    let payload_offset = location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(cache.value_pack().path())
+        .expect("value pack opens for mutation");
+    file.seek(SeekFrom::Start(payload_offset))
+        .expect("payload offset seeks");
+    file.write_all(b"X").expect("payload corrupts");
+    file.flush().expect("payload corruption flushes");
+
+    let error = cache
+        .plan_node_value_roots()
+        .expect_err("corrupt value root blocks plan");
+
+    assert!(matches!(
+        error,
+        PersistNodeValueRootPlanError::Read {
+            source: PersistBlobPackError::PayloadHashMismatch { .. },
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_cached_expression_node_payload_load_with_trace_revalidation_hits_matching_trace() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

@@ -402,6 +402,113 @@ impl PersistBlobPackLivenessPlan {
     }
 }
 
+/// A latest node-metadata value link resolved to a verified value blob.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PersistNodeValueRoot {
+    node_key: PersistNodeMetadataKey,
+    value_hash: ValueHash,
+    location: PersistBlobLocation,
+}
+
+impl PersistNodeValueRoot {
+    const fn new(
+        node_key: PersistNodeMetadataKey,
+        value_hash: ValueHash,
+        location: PersistBlobLocation,
+    ) -> Self {
+        Self {
+            node_key,
+            value_hash,
+            location,
+        }
+    }
+
+    /// Returns the demand-node metadata key that published this value root.
+    pub const fn node_key(self) -> PersistNodeMetadataKey {
+        self.node_key
+    }
+
+    /// Returns the materialized value hash linked from node metadata.
+    pub const fn value_hash(self) -> ValueHash {
+        self.value_hash
+    }
+
+    /// Returns the typed value-blob lookup key for this root.
+    pub const fn blob_key(self) -> PersistBlobKey {
+        PersistBlobKey::for_value(self.value_hash.as_durable_hash())
+    }
+
+    /// Returns the verified value-pack location for this root.
+    pub const fn location(self) -> PersistBlobLocation {
+        self.location
+    }
+}
+
+/// A latest node-metadata value link with no value-blob index location.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PersistMissingNodeValueRoot {
+    node_key: PersistNodeMetadataKey,
+    value_hash: ValueHash,
+}
+
+impl PersistMissingNodeValueRoot {
+    const fn new(node_key: PersistNodeMetadataKey, value_hash: ValueHash) -> Self {
+        Self {
+            node_key,
+            value_hash,
+        }
+    }
+
+    /// Returns the demand-node metadata key that published this value link.
+    pub const fn node_key(self) -> PersistNodeMetadataKey {
+        self.node_key
+    }
+
+    /// Returns the materialized value hash missing from the value-blob index.
+    pub const fn value_hash(self) -> ValueHash {
+        self.value_hash
+    }
+
+    /// Returns the typed value-blob lookup key for the missing root.
+    pub const fn blob_key(self) -> PersistBlobKey {
+        PersistBlobKey::for_value(self.value_hash.as_durable_hash())
+    }
+}
+
+/// Read-only diagnostics for node-metadata value roots.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PersistNodeValueRootPlan {
+    resolved_roots: Vec<PersistNodeValueRoot>,
+    missing_roots: Vec<PersistMissingNodeValueRoot>,
+}
+
+impl PersistNodeValueRootPlan {
+    fn new(
+        resolved_roots: Vec<PersistNodeValueRoot>,
+        missing_roots: Vec<PersistMissingNodeValueRoot>,
+    ) -> Self {
+        Self {
+            resolved_roots,
+            missing_roots,
+        }
+    }
+
+    /// Returns latest node-metadata value links that resolve to verified blobs.
+    pub fn resolved_roots(&self) -> &[PersistNodeValueRoot] {
+        &self.resolved_roots
+    }
+
+    /// Returns latest node-metadata value links missing from the blob index.
+    pub fn missing_roots(&self) -> &[PersistMissingNodeValueRoot] {
+        &self.missing_roots
+    }
+
+    /// Returns whether any node-metadata value link is missing from the blob index.
+    pub fn repair_needed(&self) -> bool {
+        !self.missing_roots.is_empty()
+    }
+}
+
 /// Results from an explicit persistent storage maintenance sweep.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PersistStorageMaintenance {
@@ -1300,6 +1407,66 @@ impl PersistCache {
         Ok(self
             .lookup_node_metadata(key)?
             .and_then(PersistNodeMetadataIndexValue::materialized_value_hash))
+    }
+
+    /// Plans node-metadata value roots for future persistent value GC.
+    ///
+    /// This read-only diagnostic snapshots the latest demand-node metadata
+    /// records plus the latest `values/` blob-index entries, resolves each
+    /// materialized value hash through that value-index snapshot, and verifies
+    /// resolved pack records without materializing payloads. Metadata records
+    /// without a value hash are ignored. Metadata
+    /// links whose value hash is missing from the blob index are reported as
+    /// missing roots. The method does not rewrite sidecars, choose a retention
+    /// window, delete blobs, relocate records, or coordinate with cross-process
+    /// writers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeValueRootPlanError`] if the same-root value-index
+    /// or node-metadata lock is poisoned, if either sidecar cannot be
+    /// snapshotted, or if a blob location selected by node metadata cannot be
+    /// verified against the linked value hash.
+    pub fn plan_node_value_roots(
+        &self,
+    ) -> Result<PersistNodeValueRootPlan, PersistNodeValueRootPlanError> {
+        let _value_guard = self
+            .root_locks
+            .lock_blob_index(PersistBlobStore::Values)
+            .map_err(|source| PersistNodeValueRootPlanError::BlobIndex { source })?;
+        let _metadata_guard = self
+            .root_locks
+            .lock_node_metadata()
+            .map_err(|source| PersistNodeValueRootPlanError::Metadata { source })?;
+        let metadata_entries = self
+            .node_metadata_index
+            .latest_entries()
+            .map_err(|source| PersistNodeValueRootPlanError::Metadata { source })?;
+        let value_entries = self
+            .value_index
+            .latest_entries()
+            .map_err(|source| PersistNodeValueRootPlanError::BlobIndex { source })?;
+        let mut value_locations = BTreeMap::new();
+        for entry in value_entries {
+            value_locations.insert(entry.key().index_bytes(), entry.location());
+        }
+        let mut resolved_roots = Vec::new();
+        let mut missing_roots = Vec::new();
+        for entry in metadata_entries {
+            let Some(value_hash) = entry.value().materialized_value_hash() else {
+                continue;
+            };
+            let blob_key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+            let Some(location) = value_locations.get(&blob_key.index_bytes()).copied() else {
+                missing_roots.push(PersistMissingNodeValueRoot::new(entry.key(), value_hash));
+                continue;
+            };
+            self.value_pack
+                .verify_blob(location, blob_key.hash())
+                .map_err(|source| PersistNodeValueRootPlanError::Read { source })?;
+            resolved_roots.push(PersistNodeValueRoot::new(entry.key(), value_hash, location));
+        }
+        Ok(PersistNodeValueRootPlan::new(resolved_roots, missing_roots))
     }
 
     /// Records one current-run demand observation for a demand node.

@@ -816,6 +816,29 @@ pub enum PersistBlobPackLivenessPlanError {
     },
 }
 
+/// Persistent node-metadata value-root planning failed.
+#[derive(Debug, Error)]
+pub enum PersistNodeValueRootPlanError {
+    /// Node metadata roots could not be locked or snapshotted.
+    #[error("failed to lock or snapshot persistent node metadata value roots")]
+    Metadata {
+        /// The underlying node metadata error.
+        source: PersistNodeMetadataIndexError,
+    },
+    /// The value blob index could not be locked or read.
+    #[error("failed to lock or read persistent value blob index for node value roots")]
+    BlobIndex {
+        /// The underlying value blob-index error.
+        source: PersistBlobIndexError,
+    },
+    /// A value blob root could not be verified.
+    #[error("failed to verify persistent value blob for node value root")]
+    Read {
+        /// The underlying packfile read error.
+        source: PersistBlobPackError,
+    },
+}
+
 /// Persistent blob-index rebuild planning failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexRebuildPlanError {
