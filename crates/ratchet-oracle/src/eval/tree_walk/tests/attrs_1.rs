@@ -6712,6 +6712,80 @@ fn strict_attrset_payloads_skip_position_bearing_attrsets() {
 }
 
 #[test]
+fn source_backed_position_bearing_attrset_literals_skip_force_cache_payloads() {
+    let source = r#"{ a = { b = 1; }; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for _ in 0..2 {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "position-bearing-attrs-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("a is a node thunk");
+            let body = thunk.body().expect("a has a lowered attrset body");
+            let node = ir.arena.node(body).expect("attrset body exists");
+            assert_eq!(node.kind, IrKind::AttrSet);
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("position-bearing attrset subject builds")
+        };
+        assert!(subject.lookup_identity.is_some());
+        assert!(subject.pure_observation_identity.is_some());
+        assert!(subject.free_var_value_hashes.is_empty());
+        assert_eq!(
+            subject.memoization_admission,
+            ForceCacheMemoizationAdmission::ConditionalThunk,
+            "position-bearing attrsets must not pre-admit as closed composite payloads"
+        );
+
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("position-bearing attrset thunk force succeeds");
+        let attrs = evaluator
+            .heap()
+            .get_attrs(forced)
+            .expect("forced value is an attrset");
+
+        assert_eq!(attrs.get(b).expect("b exists").as_int(), Ok(1));
+        assert!(
+            attrset_has_binding_position(attrs),
+            "source-backed literal bindings must carry positions"
+        );
+        assert_eq!(evaluator.stats().cache_hits(), 0);
+        assert!(
+            evaluator.stats().force_cache_memoization_admits() > 0,
+            "position-bearing attrset force must reach an admitted cache probe"
+        );
+        assert_eq!(evaluator.stats().force_cache_probes(), 1);
+        assert_eq!(evaluator.stats().force_cache_misses(), 1);
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "source-backed position-bearing attrset literals need position-aware payloads before observation"
+    );
+}
+
+#[test]
 fn source_ordered_attrset_payloads_rehydrate_after_heap_lookup() {
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
