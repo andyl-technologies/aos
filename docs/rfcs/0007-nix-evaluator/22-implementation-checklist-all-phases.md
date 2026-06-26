@@ -1926,6 +1926,17 @@ alone (`M-1`/`Q-A`).
       closure surface, not the full cached-vs-uncached AOS closure harness or
       future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
+- [x] Current native semantic-no-op leaf edit closure canary:
+      `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`
+      evaluates a file-root attr path whose selected derivation depends on a
+      leaf import through an input derivation, seeds configured parse/persist
+      cache with the first leaf source, rewrites only comments/whitespace in
+      that leaf, and then requires cache-disabled and cached runs to keep the
+      two-derivation `.drv` closure byte-identical while the changed leaf
+      reparses into the fresh cache root. This samples one comment/whitespace
+      leaf edit, not bounded recomputation measurement, full AOS closure
+      coverage, or future value-memoization safety net
+      ([12](12-incremental-evaluation-cache.md) §8.3).
 - [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
       future incremental persistence/value memoization, and CI must periodically
       run cold cached-vs-uncached full-closure `.drv` revalidation
