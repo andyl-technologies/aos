@@ -1786,6 +1786,39 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "test-double")]
+    #[test]
+    fn world_logical_topology_ignores_physical_transport_layout() {
+        let compact_layout = shmem_layout(2, 16, 3);
+        let expanded_layout = shmem_layout(2, 64, 3);
+        let world = world_from_nodes_and_links(
+            two_ready_nodes(),
+            vec![transport_link("a", "b", 5, 1, 0, None)],
+        );
+        let compact_world = world_with_physical_layout_id(&world, compact_layout, 4096);
+        let expanded_world = world_with_physical_layout_id(&world, expanded_layout, 65_536);
+        let compact_baked = match bake(&compact_world) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("compact-layout world should bake: {error}"),
+        };
+        let expanded_baked = match bake(&expanded_world) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("expanded-layout world should bake: {error}"),
+        };
+
+        assert_ne!(compact_layout, expanded_layout);
+        assert_ne!(
+            compact_layout.queue_capacity,
+            expanded_layout.queue_capacity
+        );
+        assert_ne!(compact_layout.region_size, expanded_layout.region_size);
+        assert_ne!(compact_world.id, expanded_world.id);
+        assert_eq!(compact_world.nodes, expanded_world.nodes);
+        assert_eq!(compact_world.links, expanded_world.links);
+        assert_eq!(compact_world.scenario_def(), expanded_world.scenario_def());
+        assert_eq!(compact_baked.checkpoint.id, expanded_baked.checkpoint.id);
+    }
+
     #[test]
     fn world_ready_point_rejects_agent_signal_without_white_box_opt_in() {
         let invalid = World::from_nodes(vec![WorldNode {
@@ -2379,6 +2412,51 @@ mod tests {
                 },
             ),
         ]
+    }
+
+    #[cfg(feature = "test-double")]
+    fn shmem_layout(
+        vm_node_count: u32,
+        queue_capacity: u32,
+        icount_shift: u32,
+    ) -> crucible_shmem::RegionLayout {
+        match crucible_shmem::RegionLayout::for_config(crucible_shmem::RegionConfig::new(
+            vm_node_count,
+            queue_capacity,
+            icount_shift,
+        )) {
+            Ok(layout) => layout,
+            Err(error) => panic!("shmem region layout should be valid: {error}"),
+        }
+    }
+
+    #[cfg(feature = "test-double")]
+    fn world_with_physical_layout_id(
+        world: &World,
+        layout: crucible_shmem::RegionLayout,
+        host_page_size: u64,
+    ) -> World {
+        World {
+            id: ContentHash::from_canonical_material(
+                "crucible.test.physical-transport-layout",
+                &format!(
+                    "vm_node_count={}\nnode_count={}\nqueue_capacity={}\nring_count={}\nnode_slots_off={}\nring_hdr_off={}\nring_data_off={}\nentry_stride={}\nregion_size={}\nicount_shift={}\nhost_page_size={}",
+                    layout.vm_node_count,
+                    layout.node_count,
+                    layout.queue_capacity,
+                    layout.ring_count,
+                    layout.node_slots_off,
+                    layout.ring_hdr_off,
+                    layout.ring_data_off,
+                    layout.entry_stride,
+                    layout.region_size,
+                    layout.icount_shift,
+                    host_page_size
+                ),
+            ),
+            nodes: world.nodes.clone(),
+            links: world.links.clone(),
+        }
     }
 
     fn ready_node(name: &str, ready_point: ReadyPoint) -> WorldNode {

@@ -5871,6 +5871,7 @@ fn canonical_world_links(links: &[LinkDef]) -> Vec<LinkDef> {
 }
 
 fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
+    let world_identity = canonical_world_identity(world);
     canonical_world_nodes(&world.nodes)
         .into_iter()
         .map(|node| {
@@ -5878,7 +5879,7 @@ fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
                 "crucible.model.node-baked-blob.v1",
                 &format!(
                     "world_id={}\n{}",
-                    content_hash_hex(world.id),
+                    content_hash_hex(world_identity),
                     world_node_material(&node)
                 ),
             );
@@ -5905,11 +5906,25 @@ fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
 fn world_hash_material(world: &World) -> String {
     let nodes = canonical_world_nodes(&world.nodes);
     let links = canonical_world_links(&world.links);
-    format!(
-        "world_id={}\n{}",
-        content_hash_hex(world.id),
-        world_material(&nodes, &links)
-    )
+    if nodes.is_empty() && links.is_empty() {
+        return format!(
+            "opaque_world_id={}\n{}",
+            content_hash_hex(world.id),
+            world_material(&nodes, &links)
+        );
+    }
+
+    world_material(&nodes, &links)
+}
+
+fn canonical_world_identity(world: &World) -> ContentHash {
+    let nodes = canonical_world_nodes(&world.nodes);
+    let links = canonical_world_links(&world.links);
+    if nodes.is_empty() && links.is_empty() {
+        return world.id;
+    }
+
+    ContentHash::from_canonical_material("crucible.model.world.v1", &world_material(&nodes, &links))
 }
 
 fn world_material(nodes: &[WorldNode], links: &[LinkDef]) -> String {

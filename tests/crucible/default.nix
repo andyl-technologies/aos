@@ -126,6 +126,7 @@ in {
     singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {inherit pkgs lib;};
     singleSchedulerBoundary = import ./phase1-single-scheduler-boundary.nix {inherit pkgs lib;};
     spatialLinkTransport = import ./phase1-spatial-link-transport.nix {inherit pkgs lib;};
+    spatialLogicalTopology = import ./phase1-spatial-logical-topology.nix {inherit pkgs lib;};
     spatialWorldTopology = import ./phase1-spatial-world-topology.nix {inherit pkgs lib;};
     standaloneDependencies = import ./phase1-standalone-dependencies.nix {inherit pkgs lib;};
     testingStandards = import ./phase1-testing-standards.nix {inherit pkgs lib;};
