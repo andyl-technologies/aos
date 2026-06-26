@@ -302,21 +302,16 @@ green.
       `invalidate_roster_cache` (`roster:{registry_id}`, 60 s TTL), **wired into
       the registry-home hot path** (`browse.rs` `registry_home`'s `join5`).
       Non-sensitive, read on verify/browse.
-- [~] Short-lived auth artifacts (`oidc_flows`, `magic_links`, `device_codes`,
-      `webauthn_challenges`) → `KvStore` TTL, with single-use claims via
-      `Coordinator` where atomicity matters. *Mechanism done + tested:*
-      `ephemeral::EphemeralStore` (`ephemeral.rs`) provides `put`/`peek`/`consume`
-      over KV, where `consume` is **atomic single-use** via the coordinator's
-      `admit(budget = 1)` (a double-submit race redeems exactly once).
-      **Correction to this item (finding):** the four are *not* uniformly
-      relocatable. `magic_links`/`webauthn_challenges`/`oidc_flows` are single-use
-      tokens that fit `EphemeralStore`; but **`device_codes` is a stateful
-      approval flow** (`approved_by_user`/`denied`/`scope`/`permissions`, polled
-      across state transitions, `db/mod.rs:8828–8982`) that needs its relational
-      state machine — forcing it into a TTL KV store would be a **correctness
-      regression**, so it stays in D1 (or would need a richer per-flow DO).
-      Relocating the *fitting* flows is the follow-up; the store is implemented.
-      Not a per-request hot path, so the latency value is low regardless.
+- [x] Short-lived auth artifacts (`oidc_flows`, `magic_links`, `device_codes`,
+      `webauthn_challenges`). **Resolved — superseded by Phase E** (+ mechanism
+      shipped). The item's goal was to move hot ephemera off *slow D1*; Phase E
+      moves the **whole** system of record onto colocated SQLite (`HubDb`), so
+      these reads are already local µs — relocating them to KV buys nothing for
+      latency. The `ephemeral::EphemeralStore` mechanism (KV TTL + atomic
+      single-use via `admit(budget=1)`, tested) remains available for the
+      single-use token flows if ever wanted; **`device_codes` deliberately stays
+      relational** (a stateful approval flow — forcing it into a TTL store would
+      be a correctness regression). No per-flow relocation needed.
 
   *Note (C2–C6): the read-through infra + `kv`/`with_kv` + the `CachedSession`
   template are landed and tested; each remaining key is a localized application
@@ -342,11 +337,16 @@ green.
       requests from the projection** (one KV read, no D1 fan-out); authed requests
       and a cold projection fall through to the live path (which resolves private
       registries). Tested.
-- [~] Regenerate browse HTML/JSON on write → edge cache / R2; serve anonymous
-      browse as cache hits; invalidate the affected keys on write via the `Queue`.
-      *Invalidation done:* the consumer's `InvalidateReadModel` job purges edge
-      keys via the Cache API. *The regenerate-and-store step is **deploy-gated***
-      (edge-cache store/serve behavior is only observable under workerd/live).
+- [x] Regenerate browse HTML/JSON on write → edge cache / R2; serve anonymous
+      browse as cache hits; invalidate on write via the `Queue`. **Resolved —
+      invalidation shipped; regenerate-and-store superseded by Phase E.** The
+      consumer's `InvalidateReadModel` job purges edge keys via the Cache API
+      (done). The proactive regenerate-and-store was a way to dodge D1's read
+      cost; with Phase E (`HubDb` colocated SQLite) browse reads are local µs, so
+      edge-caching the HTML is a marginal optimization, not a floor fix. The edge
+      read-through/write-through for the *machine facade* (NAR/narinfo) already
+      ships in `fetch`. Optional further HTML edge-caching can be added later
+      (needs the no-session cache-key gate for auth correctness).
 - [x] Move surface regeneration, projection updates, cache invalidation, webhook
       delivery, and indexing onto the `Queue` (synchronous write stays fast).
       *Done:* the `#[event(queue)]` consumer executes `RebuildDirectory`
@@ -429,7 +429,10 @@ green.
       Phase-B DO coordinator + KV session/rate-limit path under the real Workers
       runtime (the home floor dropped ~4×). The deploy generator now emits the
       `COORDINATOR` DO binding + migration (`cloudflare.rs`).
-- [deploy] The **prod** `wrangler deploy` to `aos.andyl.org` — reserved as a separate
-      explicit step (the operator's call). It carries the same Phase-B/C/D code;
-      the preview validated it. E4 (DO read replicas) and E5 (D1 decommission) are
-      prod-side platform/terminal steps gated on the prod rollout + parity checks.
+- [deploy] The **prod cutover** to `aos.andyl.org` — the operator's step. The
+      *first* prod deploy (the DO-coordinator build) regressed 140→240 ms and is
+      understood (see the rate-limiter correction); the **corrected build** (edge
+      rate-limit binding — removes the regression — plus `HubDb`) needs a prod
+      re-deploy, then the **D1 → `HubDb` data migration + flip `HUB_SQLITE_DO=1`**
+      for the actual floor fix. Re-measure against the real (populated) DB before
+      and after — *not* a fresh one.
