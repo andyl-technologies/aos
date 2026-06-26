@@ -251,6 +251,100 @@ fn blob_pack_payload_window_validates_lookup_bounds_without_hashing_payload() {
 }
 
 #[test]
+fn blob_pack_verify_blob_streams_payload_hash_without_materializing() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    let payload = vec![b'x'; 16 * 1024 + 17];
+    let hash = DurableBlake3Hash::for_bytes(&payload);
+    let location = pack
+        .append_blob(hash, &payload)
+        .expect("large blob appends");
+
+    let window = pack
+        .verify_blob(location, hash)
+        .expect("large payload verifies");
+
+    assert_eq!(window.location(), location);
+    assert_eq!(window.hash(), hash);
+    assert_eq!(
+        window.payload_end(),
+        location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64 + payload.len() as u64
+    );
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(pack.path())
+        .expect("pack opens for mutation");
+    file.seek(SeekFrom::Start(window.payload_start() + 3))
+        .expect("payload offset seeks");
+    file.write_all(b"y").expect("payload corrupts");
+    file.flush().expect("payload corruption flushes");
+
+    let error = pack
+        .verify_blob(location, hash)
+        .expect_err("corrupt payload verification errors");
+    assert!(matches!(
+        error,
+        PersistBlobPackError::PayloadHashMismatch { .. }
+    ));
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
+fn blob_pack_payload_matches_compares_verified_payload_bytes() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    let payload = b"payload";
+    let hash = DurableBlake3Hash::for_bytes(payload);
+    let location = pack.append_blob(hash, payload).expect("blob appends");
+
+    assert!(
+        pack.payload_matches(location, hash, payload)
+            .expect("matching payload verifies")
+    );
+    assert!(
+        !pack
+            .payload_matches(location, hash, b"payloae")
+            .expect("same-length mismatch verifies")
+    );
+    assert!(
+        !pack
+            .payload_matches(location, hash, b"payload with suffix")
+            .expect("length mismatch validates metadata")
+    );
+    let wrong_hash = DurableBlake3Hash::for_bytes(b"other payload");
+    let error = pack
+        .payload_matches(location, wrong_hash, payload)
+        .expect_err("wrong hash errors");
+    assert!(matches!(
+        error,
+        PersistBlobPackError::RecordHashMismatch { .. }
+    ));
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(pack.path())
+        .expect("pack opens for mutation");
+    file.seek(SeekFrom::Start(
+        location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64,
+    ))
+    .expect("payload offset seeks");
+    file.write_all(b"X").expect("payload corrupts");
+    file.flush().expect("payload corruption flushes");
+
+    let error = pack
+        .payload_matches(location, hash, payload)
+        .expect_err("corrupt matching payload errors");
+    assert!(matches!(
+        error,
+        PersistBlobPackError::PayloadHashMismatch { .. }
+    ));
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
 fn blob_pack_records_scans_verified_records_in_pack_order() {
     let path = temp_root().join("values").join("pack.blob");
     let pack = PersistBlobPack::open(&path).expect("pack opens");

@@ -408,22 +408,6 @@ impl PersistBlobIndexRebuild {
     }
 }
 
-fn blob_record_end(location: PersistBlobLocation) -> Result<u64, PersistBlobPackError> {
-    let payload_start = location
-        .record_offset()
-        .checked_add(PERSIST_BLOB_RECORD_HEADER_LEN as u64)
-        .ok_or(PersistBlobPackError::RecordBoundsOverflow {
-            record_offset: location.record_offset(),
-            payload_len: location.payload_len(),
-        })?;
-    payload_start.checked_add(location.payload_len()).ok_or(
-        PersistBlobPackError::RecordBoundsOverflow {
-            record_offset: location.record_offset(),
-            payload_len: location.payload_len(),
-        },
-    )
-}
-
 fn push_blob_index_roots(
     roots: &mut Vec<(PersistBlobKey, PersistBlobLocation)>,
     entries: Vec<PersistBlobIndexEntry>,
@@ -1369,11 +1353,10 @@ impl PersistCache {
         let pack = self.blob_pack(store);
         let mut live_end = PERSIST_BLOB_PACK_HEADER_LEN as u64;
         for (key, location) in &roots {
-            pack.read_blob(*location, key.hash())
+            let window = pack
+                .verify_blob(*location, key.hash())
                 .map_err(|source| PersistBlobPackTrimError::Read { source })?;
-            let record_end = blob_record_end(*location)
-                .map_err(|source| PersistBlobPackTrimError::Read { source })?;
-            live_end = live_end.max(record_end);
+            live_end = live_end.max(window.payload_end());
         }
         let bytes_before = pack
             .len()
@@ -1659,7 +1642,11 @@ impl PersistCache {
     ) -> Result<PersistBlobIndexEntry, PersistBlobIndexedWriteError> {
         let _write_guard = self.root_locks.lock(key.store())?;
         if let Ok(Some(location)) = self.lookup_blob_location(key) {
-            if matches!(self.read_blob(key, location), Ok(existing) if existing == payload) {
+            let pack = self.blob_pack(key.store());
+            if matches!(
+                pack.payload_matches(location, key.hash(), payload),
+                Ok(true)
+            ) {
                 return Ok(PersistBlobIndexEntry::new(key, location));
             }
         }
