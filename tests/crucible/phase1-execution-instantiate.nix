@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionInstantiate",
-  taskIds ? ["T-EXEC-6"],
+  taskIds ? ["T-EXEC-6" "T-PAT-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -15,6 +15,7 @@
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -179,6 +180,24 @@
         label = "T-EXEC-6 completion note";
         needle = "Completed by `crates/crucible/src/model.rs`: `instantiate` now resolves exact";
       }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+      {
+        label = "T-PAT-9 checklist complete";
+        needle = "- [x] **T-PAT-9**";
+      }
+      {
+        label = "T-PAT-9 completion names instantiate";
+        needle = "`crucible::instantiate`";
+      }
+      {
+        label = "T-PAT-9 completion names baked genesis";
+        needle = "`TemporalGraph::with_baked_genesis`";
+      }
+      {
+        label = "T-PAT-9 completion names execution instantiate gate";
+        needle = "`checks.crucible.phase1.executionInstantiate`";
+      }
     ];
 in
   if failures != []
@@ -248,6 +267,7 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             instantiate_branches=exact-snapshot,ancestor-replay,baked-genesis
+            pattern_PAT_11=recursive-instantiate
             hot_loop_cold_boot=false
             RESULT
           '';

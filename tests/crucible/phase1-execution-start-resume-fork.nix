@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionStartResumeFork",
-  taskIds ? ["T-EXEC-7"],
+  taskIds ? ["T-EXEC-7" "T-PAT-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -15,6 +15,7 @@
   realization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -70,8 +71,12 @@
         needle = "mod realization;";
       }
       {
-        label = "lifecycle exports";
-        needle = "fork_qemu_vm, instantiate_qemu_vm, resume_qemu_vm, start_qemu_vm";
+        label = "lifecycle exports instantiate/fork";
+        needle = "bake_qemu_genesis_vm, check_qemu_replay_oracle, fork_qemu_vm, instantiate_qemu_vm,";
+      }
+      {
+        label = "lifecycle exports start/resume";
+        needle = "resume_qemu_vm, start_qemu_vm,";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization.rs" realization [
@@ -163,6 +168,24 @@
         label = "phase1 exposes start/resume/fork execution check";
         needle = "executionStartResumeFork = import ./phase1-execution-start-resume-fork.nix";
       }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+      {
+        label = "T-PAT-9 checklist complete";
+        needle = "- [x] **T-PAT-9**";
+      }
+      {
+        label = "T-PAT-9 completion names shared QEMU instantiate";
+        needle = "`crucible_qemu::instantiate_qemu_vm`";
+      }
+      {
+        label = "T-PAT-9 completion names lifecycle wrappers";
+        needle = "`crucible_qemu::start_qemu_vm`, `crucible_qemu::resume_qemu_vm`,";
+      }
+      {
+        label = "T-PAT-9 completion names execution start/resume/fork gate";
+        needle = "`checks.crucible.phase1.executionStartResumeFork`";
+      }
     ];
 in
   if failures != []
@@ -233,6 +256,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             lifecycle_ops=start,resume,fork
             shared_entrypoint=instantiate_qemu_vm
+            pattern_PAT_11=start-resume-fork-share-instantiate
             hot_lifecycle_cold_boot=false
             RESULT
           '';
