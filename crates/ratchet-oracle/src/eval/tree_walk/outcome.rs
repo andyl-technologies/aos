@@ -122,6 +122,8 @@ pub struct EvalStats {
     pub(crate) deopts: u64,
     pub(crate) force_cache_hits: u64,
     pub(crate) force_cache_misses: u64,
+    pub(crate) force_cache_memoization_admits: u64,
+    pub(crate) force_cache_memoization_bypasses: u64,
     pub(crate) cache_hits: u64,
     pub(crate) cache_misses: u64,
     pub(crate) early_cutoffs: u64,
@@ -201,6 +203,22 @@ impl EvalStats {
     pub const fn force_cache_probes(&self) -> u64 {
         self.force_cache_hits
             .saturating_add(self.force_cache_misses)
+    }
+
+    /// Returns force-cache memoization-policy decisions that admitted memoization.
+    pub const fn force_cache_memoization_admits(&self) -> u64 {
+        self.force_cache_memoization_admits
+    }
+
+    /// Returns force-cache memoization-policy decisions that bypassed memoization.
+    pub const fn force_cache_memoization_bypasses(&self) -> u64 {
+        self.force_cache_memoization_bypasses
+    }
+
+    /// Returns force-cache memoization-policy demands with a recorded decision.
+    pub const fn force_cache_memoization_demands(&self) -> u64 {
+        self.force_cache_memoization_admits
+            .saturating_add(self.force_cache_memoization_bypasses)
     }
 
     /// Returns the aggregate number of evaluator cache hits.

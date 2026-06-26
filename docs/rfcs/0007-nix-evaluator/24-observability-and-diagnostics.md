@@ -562,9 +562,10 @@ The governing rule binds every item: **presentation is not parity.** How an erro
       `TreeWalk::stats()` snapshots carry it, successful public evaluation paths
       emit stable field names on the `aos_nix::eval::stats` tracing target, and
       the P1 tree-walk currently increments implemented thunk
-      allocation/force/reuse, cache hit/miss, and heap/arena-derived fields
-      while future subsystem fields remain schema-stable zeroes until those
-      subsystems land (§7.1; [15](15-differential-testing-and-benchmarking.md)
+      allocation/force/reuse, cache hit/miss, force-cache policy decision, and
+      heap/arena-derived fields while future subsystem fields remain
+      schema-stable zeroes until those subsystems land (§7.1;
+      [15](15-differential-testing-and-benchmarking.md)
       §4.2) — `D-OBS-4`; gate: stats outcome/tracing tests plus the
       `aos-nix` check.
 - [ ] Full all-internal and `aos-nix` subsystem instrumentation remains: wire

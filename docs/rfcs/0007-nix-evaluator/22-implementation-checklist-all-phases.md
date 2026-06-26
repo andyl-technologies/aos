@@ -778,6 +778,17 @@ alone (`M-1`/`Q-A`).
       persistence/materialization decisions, and AOS tuning remain open
       (`M-11`). The gate covers `cache::runtime` memoization-demand tests plus
       the source-backed force-cache demand bridge test.
+- [x] Current force-cache memoization policy stats precursor: `EvalStats` and
+      the `aos_nix::eval::stats` tracing event report
+      `force_cache_memoization_admits`, `force_cache_memoization_bypasses`, and
+      derived `force_cache_memoization_demands` from the existing runtime
+      demand bridge. These counters expose the current policy decision stream
+      only; they do not gate lookup, population, persistence, materialization,
+      or force-cache hit/miss accounting. Cardinality analysis, measured
+      value-hash cost sampling, policy-driven `force_memoized` admission,
+      persistence/materialization decisions, and AOS tuning remain open
+      (`M-11`). The gate covers stats trace tests plus the source-backed demand
+      bridge stats test.
 - [x] Current force-cache hit/overhead stats precursor: `EvalStats` reports
       force-cache-specific hits, misses, and probes separately from aggregate
       evaluator cache hits/misses, and the stats tracing event emits

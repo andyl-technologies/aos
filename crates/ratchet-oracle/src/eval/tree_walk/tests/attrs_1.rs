@@ -879,6 +879,17 @@ fn source_backed_forced_inline_thunks_record_memoization_policy_demand() {
             .force_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("thunk force succeeds");
         assert_eq!(forced.as_int(), Ok(3));
+        assert_eq!(evaluator.stats().force_cache_memoization_demands(), 1);
+        assert_eq!(
+            evaluator.stats().force_cache_memoization_bypasses(),
+            u64::from(expected_demands == 1),
+            "first observed thunk demand should bypass the conditional policy"
+        );
+        assert_eq!(
+            evaluator.stats().force_cache_memoization_admits(),
+            u64::from(expected_demands == 2),
+            "second observed thunk demand should admit through the conditional policy"
+        );
 
         let runtime = cache.lock().expect("cache lock is valid");
         let demand = runtime

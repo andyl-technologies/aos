@@ -19,6 +19,8 @@ impl TreeWalk {
             deopts: self.stats.deopts,
             force_cache_hits: self.stats.force_cache_hits,
             force_cache_misses: self.stats.force_cache_misses,
+            force_cache_memoization_admits: self.stats.force_cache_memoization_admits,
+            force_cache_memoization_bypasses: self.stats.force_cache_memoization_bypasses,
             cache_hits: self
                 .stats
                 .force_cache_hits
@@ -54,6 +56,9 @@ impl TreeWalk {
             force_cache_hits = stats.force_cache_hits(),
             force_cache_misses = stats.force_cache_misses(),
             force_cache_probes = stats.force_cache_probes(),
+            force_cache_memoization_admits = stats.force_cache_memoization_admits(),
+            force_cache_memoization_bypasses = stats.force_cache_memoization_bypasses(),
+            force_cache_memoization_demands = stats.force_cache_memoization_demands(),
             cache_hits = stats.cache_hits(),
             cache_misses = stats.cache_misses(),
             early_cutoffs = stats.early_cutoffs(),
@@ -83,6 +88,24 @@ impl TreeWalk {
 
     pub(super) fn increment_eval_cache_miss(&mut self) {
         self.stats.force_cache_misses = self.stats.force_cache_misses.saturating_add(1);
+    }
+
+    pub(super) fn increment_force_cache_memoization_decision(
+        &mut self,
+        decision: MemoizationDecision,
+    ) {
+        match decision {
+            MemoizationDecision::Admit => {
+                self.stats.force_cache_memoization_admits =
+                    self.stats.force_cache_memoization_admits.saturating_add(1);
+            }
+            MemoizationDecision::Bypass => {
+                self.stats.force_cache_memoization_bypasses = self
+                    .stats
+                    .force_cache_memoization_bypasses
+                    .saturating_add(1);
+            }
+        }
     }
 
     pub(super) fn increment_early_cutoffs(&mut self) {

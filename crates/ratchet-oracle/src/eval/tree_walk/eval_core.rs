@@ -847,17 +847,26 @@ impl TreeWalk {
             );
             return;
         };
-        if let Err(error) = cache.record_memoization_demand(
+        let decision = match cache.record_memoization_demand(
             identity,
             subject.free_var_value_hashes.iter().copied(),
             MemoizationSubject::Thunk,
             true,
         ) {
-            tracing::warn!(
-                target: "aos_nix::cache",
-                error = %error,
-                "tree-walk evaluator forced expression memoization demand failed"
-            );
+            Ok(Some(observation)) => Some(observation.decision()),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator forced expression memoization demand failed"
+                );
+                None
+            }
+        };
+        drop(cache);
+        if let Some(decision) = decision {
+            self.increment_force_cache_memoization_decision(decision);
         }
     }
 
