@@ -8,7 +8,6 @@
 
 typedef struct AioContext AioContext;
 typedef struct CPUState CPUState;
-typedef struct Error Error;
 typedef struct NetClientState NetClientState;
 typedef struct NetQueue NetQueue;
 
@@ -24,10 +23,6 @@ struct CPUState {
   unsigned int interrupt_request;
 };
 
-struct Error {
-  const char *message;
-};
-
 static AioContext main_aio_context;
 static CPUState fake_cpu;
 static CPUState *current_cpu = &fake_cpu;
@@ -36,24 +31,6 @@ static CPUState *current_cpu = &fake_cpu;
 #define QEMU_CLOCK_VIRTUAL 1
 #define QEMU_TIMER_ATTR_ALL 0
 #define QEMU_NET_PACKET_FLAG_NONE 0
-
-static void
-error_setg(Error **errp, const char *message, ...)
-{
-  static Error error;
-
-  error.message = message;
-  if (errp != NULL) {
-    *errp = &error;
-  }
-}
-
-static void
-migrate_add_blocker(Error **errp, void *unused)
-{
-  (void)errp;
-  (void)unused;
-}
 
 static void
 async_run_on_cpu(CPUState *cpu, void (*fn)(CPUState *, run_on_cpu_data),

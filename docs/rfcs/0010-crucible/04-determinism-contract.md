@@ -711,10 +711,13 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   wire `gate:replay-oracle` to enforce [INV-2] continuously (fat ≡ thin;
   materialize ≡ re-reduce). — satisfies [DET-28], [DET-41], [INV-2]; spec §4.8,
   §4.11.
-- [ ] **T-DET-19** Run the snapshot/restore-completeness spike: verify `loadvm`
-  preserves icount, bias, TCG/device/timer and time-control state so a restored
-  fat checkpoint passes the replay oracle. — satisfies [DET-32], [DET-18] (E20);
-  spec §4.9.
+- [x] **T-DET-19** Run the snapshot/restore-completeness spike: the S3 rerun
+  verifies QMP `snapshot-save`/`snapshot-load` for diskless and CPU-timer
+  windows under plugin time control, and it exercises a marked block pending-I/O
+  negative control whose restored suffix diverges from replay. The recorded
+  outcome keeps `full_fat_checkpoint_complete=false` and the thin/replay
+  realization as the default until a future S3 rerun proves fat snapshots across
+  the full surface. — satisfies [DET-32], [DET-18] (E20); spec §4.9.
 - [x] **T-DET-20** Implement `gate:divergence-bisect`: on any fingerprint or
   Schedule mismatch, localize to the first differing decision and the first
   differing instruction; never tolerate or retry. — satisfies [DET-30],

@@ -797,10 +797,11 @@ determinism contract (04).
   loadvm-realized runtime. — satisfies [QEMU-21], [QEMU-22]; spec §10.4,
   forward-ref §30.
   Completed as PASS WITH FALLBACK, not full fat-snapshot validation: the Phase 2
-  check codifies the Phase 0 S3 fallback record, keeps fat `loadvm` realization
-  disabled, and requires replay-oracle validation before any future `loadvm`
-  runtime can be accepted. The full S3 pass remains open with
-  `full_fat_checkpoint_complete=false`.
+  check codifies the Phase 0 S3 record where diskless and CPU-timer suffixes
+  match under plugin time control but the marked block pending-I/O negative
+  control diverges. Fat `loadvm` realization remains disabled, and any future
+  `loadvm` runtime still requires replay-oracle validation. The full S3 pass
+  remains open with `full_fat_checkpoint_complete=false`.
 - [x] **T-QEMU-6** Implement the VM `instantiate` realization with three branches
   (loadvm / ancestor-replay / baked-genesis load) plus `bake`'s single cold boot
   to the ready point; wire `start`/`resume`/`fork` as the same call differing

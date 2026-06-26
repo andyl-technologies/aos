@@ -21,7 +21,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 diff --git a/plugins/api-system.c b/plugins/api-system.c
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -192,6 +192,13 @@ uint64_t qemu_plugin_icount_raw(void)
+@@ -188,6 +188,13 @@ uint64_t qemu_plugin_icount_raw(void)
      return (uint64_t)raw_icount;
  }
  

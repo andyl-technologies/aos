@@ -35,15 +35,15 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 diff --git a/plugins/api-system.c b/plugins/api-system.c
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -104,6 +104,7 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+@@ -103,6 +103,7 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+  * Time control
   */
  static bool has_control;
- static Error *migration_blocker;
 +static int qemu_plugin_wake_fd = -1;
  
  bool qemu_plugin_has_time_control(void)
  {
-@@ -199,6 +200,39 @@ void qemu_plugin_force_vcpu_exit(void)
+@@ -195,6 +196,39 @@ void qemu_plugin_force_vcpu_exit(void)
      }
  }
  

@@ -16,10 +16,6 @@ typedef struct CPUState {
   int unused;
 } CPUState;
 
-typedef struct Error {
-  int unused;
-} Error;
-
 typedef struct run_on_cpu_data {
   uintptr_t host_ulong;
 } run_on_cpu_data;
@@ -53,7 +49,6 @@ static int64_t timer_mod_deadline;
 static unsigned int virtual_rt_clock_reads;
 static unsigned int virtual_deadline_reads;
 static unsigned int warning_count;
-static unsigned int migration_blockers_added;
 static unsigned int async_requests;
 static unsigned int plugin_authorized_jumps;
 static const char *current_accel = "tcg";
@@ -166,25 +161,6 @@ warn_report_once(const char *message)
 }
 
 static void
-error_setg(Error **errp, const char *message)
-{
-  static Error error;
-
-  (void)message;
-  if (errp) {
-    *errp = &error;
-  }
-}
-
-static void
-migrate_add_blocker(Error **reasonp, Error **errp)
-{
-  (void)reasonp;
-  (void)errp;
-  migration_blockers_added++;
-}
-
-static void
 qemu_clock_advance_virtual_time(int64_t new_time)
 {
   virtual_time_ns = new_time;
@@ -225,7 +201,6 @@ reset_common(void)
   virtual_rt_clock_reads = 0;
   virtual_deadline_reads = 0;
   warning_count = 0;
-  migration_blockers_added = 0;
   async_requests = 0;
   plugin_authorized_jumps = 0;
 }
@@ -414,12 +389,10 @@ test_time_control_single_owner(void)
   const void *first = qemu_plugin_request_time_control();
   const void *second = qemu_plugin_request_time_control();
 
-  if (!first || second || !qemu_plugin_has_time_control() ||
-      migration_blockers_added != 1) {
+  if (!first || second || !qemu_plugin_has_time_control()) {
     fprintf(stderr,
-            "time-control ownership mismatch: first=%p second=%p held=%d blockers=%u\n",
-            first, second, qemu_plugin_has_time_control(),
-            migration_blockers_added);
+            "time-control ownership mismatch: first=%p second=%p held=%d\n",
+            first, second, qemu_plugin_has_time_control());
     return 1;
   }
 

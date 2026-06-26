@@ -288,13 +288,17 @@ run_9p_reads(const char *root)
 int
 main(int argc, char **argv)
 {
-  if (argc != 3) {
-    fprintf(stderr, "usage: %s BLOCK_DEVICE NINEP_ROOT\n", argv[0]);
+  if (argc != 2 && argc != 3) {
+    fprintf(stderr, "usage: %s BLOCK_DEVICE [NINEP_ROOT]\n", argv[0]);
     return 1;
   }
 
   if (run_block_reads(argv[1]) != 0) {
     return 1;
+  }
+  if (argc == 2) {
+    puts("CRUCIBLE_S2_BLOCK_ONLY_DONE");
+    return 0;
   }
   if (run_9p_reads(argv[2]) != 0) {
     return 1;

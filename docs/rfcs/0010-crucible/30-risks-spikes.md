@@ -1413,17 +1413,30 @@ enabling fat snapshots as the default. The check found typed
 `snapshot-save`/`snapshot-load`, `migrate`, `migrate-incoming`, and
 `human-monitor-command` in QMP, confirmed typed legacy `savevm`/`loadvm` are not
 available, and used `snapshot-save`/`snapshot-load` against a qcow2 `vmstate`
-node rather than HMP. It snapshotted a diskless single-vCPU stock Linux VM at
-`snapshot_icount=100000000`, restored into a fresh plugin-loaded child, advanced
-`suffix_segment_icount=50000000`, and compared the restored suffix against an
-uninterrupted replay suffix at the same logical horizon. The run reported
+node rather than HMP. It tested three snapshot points:
+`snapshot_point_0=diskless_boot_window`,
+`snapshot_point_1=cpu_timer_window`, and
+`snapshot_point_2=block_pending_io`. The diskless and CPU-timer restored suffixes
+matched replay, while the marked block pending-I/O negative control reached
+`mid_io_active_medium=block`, `mid_io_pause_io_events=1`,
+`mid_io_pause_hlt_events=1`, and `mid_io_guest_block_direct=true`, then diverged
+after restore with `mid_io_suffix_fingerprint_match=false`. The run reported
+`snapshot_icount=100000008`, `cpu_timer_snapshot_icount=150000010`,
+`mid_io_snapshot_icount=6211647588`,
+`all_suffix_fingerprints_match=false`,
+`boot_window_suffix_fingerprint_match=true`,
+`cpu_timer_suffix_fingerprint_match=true`,
 `suffix_fingerprint_match=true`, `register_hash_match=true`,
-`ram_hash_match=true`, `suffix_stream_hash=f6defe3619623dd8`,
-`suffix_register_hash=9ceff31179cf3b96`,
-`suffix_ram_hash=4b38bd1adad92f0c`, `suffix_ram_bytes=268967936`,
-`current_vmstate_snapshot_scope=diskless_single_vcpu_qemu_vmstate`,
+`ram_hash_match=true`, `suffix_stream_hash=bdb7658e9d86101e`,
+`suffix_register_hash=75b96364eff3a764`,
+`suffix_ram_hash=78d57d4a3984e159`, `suffix_ram_bytes=1074274304`,
+`current_vmstate_snapshot_scope=diskless_and_cpu_timer_single_vcpu_qemu_vmstate_plus_block_pending_negative_control`,
+`mid_io_burst_snapshot_exercised=true`,
 `mid_io_burst_snapshot_covered=false`,
-`plugin_time_control_snapshot_covered=false`,
+`plugin_time_control_snapshot_covered=true`,
+`device_timer_snapshot_covered=true`,
+`device_event_hash_match=false`,
+`replay_oracle_fat_thin_match=false`,
 `full_fat_checkpoint_complete=false`,
 `crucible_owned_state_roundtrip=true`,
 `ring_snapshot_restore=pass`, `overlay_delta_roundtrip=pass`,
@@ -1434,10 +1447,10 @@ uninterrupted replay suffix at the same logical horizon. The run reported
 `risk9_status=retired_thin_replay_default`. This adopts the [QEMU-21] /
 [QEMU-26] fallback for Phase 0: checkpoint realization defaults to thin replay
 from genesis or a verified ancestor, and the `loadvm` branch remains disabled
-until a later S3 rerun proves fat snapshots across the full required surface,
-including a mid-I/O burst and plugin time-control state. RISK-9 is retired for
-the default realization discipline; RISK-8 is mitigated by non-use of unverified
-fat snapshots, not retired for the fat-snapshot optimization.
+until a later S3 rerun proves fat snapshots across the full required surface.
+RISK-9 is retired for the default realization discipline; RISK-8 is mitigated by
+non-use of unverified fat snapshots, not retired for the fat-snapshot
+optimization.
 
 **RISK-12** is retired by `T-RISK-5`:
 `checks.crucible.phase0.s5VirtualMemory` booted a diskless stock Linux guest and
@@ -1527,11 +1540,11 @@ per-patch commit/tree entry match the manifest, regenerates all 27 committed pat
 files byte-for-byte with `--unified=3`, applies the regenerated stack with fuzz
 disabled, and emits a manifest-derived QEMU build identity. The run reported
 `qemu_version=10.0.0`,
-`patch_series_hash=2ed729cda5e0b78b208a6ef61b7b07af658435a71e50e247e701314c26bd57f8`,
-`patch_branch_bundle_hash=6661ad51927d0e61744e180a2989072da83e9342e6d2f37908bc2dfd20c0dfb1`,
-`patch_branch_head_commit=1ca198288b0ca503b8dd86b459dfe03cd1959e46`,
-`patch_branch_material_hash=6b325a5a18abb07d7d7576012e562aac10eecab8ce3a042d1080102cf20c0e97`,
-`qemu_build_id=3c402016048ce1d4c4e84d4e183b39a409d13cf7dff14f09954d9fb4b2ffd374`,
+`patch_series_hash=0e9a335295d577f51cf93395f7d8c7ba6a0b3d54083e06a7357f558f115e8566`,
+`patch_branch_bundle_hash=1d969b51af280458fe3fc5405d1a49eb302afdeac2d3cb88382d3aa2f734efd2`,
+`patch_branch_head_commit=1b2b6240a2e0887244f7c4c5aef0653754503365`,
+`patch_branch_material_hash=5167675402324af5e1e5010451bfa1e19c41d34dfa40e5e5c68e0d9ed10ffb8e`,
+`qemu_build_id=ca7044e84a68ebaf9df0c55b52e291803d95f062ff8bfc8d1ee70d44e3fde318`,
 `qemu_nix_hash=35aad46df419155f4ce336d66dd4eac329348b333b1d202937ad05a0d94add09`,
 `qemu_configure_flags_hash=716c3de64e42d5fee65c1b0ebb4dc213f282aba1d916820e1896ee36bc0db5f8`,
 `artifact_build_id_match=true`, `artifact_validator_rejects_mismatch=true`,
@@ -1686,11 +1699,9 @@ step/reverse-step, but runtime enforcement is not implemented yet.
 `checks.crucible.phase0.riskRegisterGate` verifies that every completed Phase-0
 risk spike has a decision-register entry and a concrete check name, that the
 foundational Phase-0 blockers are either passed or fallback-adopted before
-dependent work proceeds, and that no non-risk checklist item is marked complete
-while those blockers remain open. The run reported
-`checked_risk_tasks=20`,
-`retired_decision_entries=20`, `phase0_foundational_blockers_open=0`,
-`unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
+dependent work proceeds. The run reported `checked_risk_tasks=20`,
+`checked_task_scope=T-RISK-only`, `retired_decision_entries=20`, and
+`phase0_foundational_blockers_open=0`.
 
 ## 30.14 Summary
 

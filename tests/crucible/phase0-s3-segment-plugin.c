@@ -13,6 +13,17 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #define FNV1A64_OFFSET 1469598103934665603ULL
 #define FNV1A64_PRIME 1099511628211ULL
 #define MAX_TRACKED_VCPUS 32U
+#define MARKER_POST_BOOT 0xc0100301U
+#define MARKER_BLOCK_BEGIN 0xc0100201U
+#define MARKER_BLOCK_END 0xc0100202U
+#define MARKER_9P_BEGIN 0xc0100901U
+#define MARKER_9P_END 0xc0100902U
+
+enum medium {
+  MEDIUM_NONE = 0,
+  MEDIUM_BLOCK = 1,
+  MEDIUM_9P = 2
+};
 
 struct traced_insn {
   uint64_t vaddr;
@@ -37,6 +48,21 @@ static uint64_t stream_hash = FNV1A64_OFFSET;
 static bool segment_started;
 static bool stop_requested;
 static bool extended_fingerprint;
+static bool request_time_control;
+static bool time_control_requested;
+static bool pause_on_post_boot;
+static bool pause_on_io;
+static bool pause_on_io_idle;
+static bool operation_active;
+static enum medium active_medium;
+static enum medium pause_medium;
+static uint64_t marker_errors;
+static uint64_t io_events;
+static uint64_t operation_io_events;
+static uint64_t operation_hlt_events;
+static uint64_t pause_io_events;
+static uint64_t pause_hlt_events;
+static uint64_t post_boot_markers;
 static unsigned int tracked_vcpus = 1;
 static uint64_t register_read_failures;
 static struct register_set register_sets[MAX_TRACKED_VCPUS];
@@ -69,6 +95,138 @@ fnv1a_cstr(uint64_t hash, const char *text)
   }
   hash = fnv1a_bytes(hash, (const unsigned char *)text, strlen(text));
   return fnv1a_u64(hash, 0xffU);
+}
+
+static const char *
+medium_name(enum medium medium)
+{
+  switch (medium) {
+  case MEDIUM_NONE:
+    return "none";
+  case MEDIUM_BLOCK:
+    return "block";
+  case MEDIUM_9P:
+    return "ninep";
+  }
+
+  return "unknown";
+}
+
+static bool
+parse_medium_name(const char *text, enum medium *medium)
+{
+  if (strcmp(text, "any") == 0 || strcmp(text, "none") == 0) {
+    *medium = MEDIUM_NONE;
+    return true;
+  }
+  if (strcmp(text, "block") == 0) {
+    *medium = MEDIUM_BLOCK;
+    return true;
+  }
+  if (strcmp(text, "ninep") == 0) {
+    *medium = MEDIUM_9P;
+    return true;
+  }
+
+  return false;
+}
+
+static bool
+pause_medium_matches(enum medium medium)
+{
+  return pause_medium == MEDIUM_NONE || pause_medium == medium;
+}
+
+static bool
+is_hlt(const struct traced_insn *insn)
+{
+  return insn->size == 1 && insn->bytes[0] == 0xf4;
+}
+
+static bool
+decode_marker(const struct traced_insn *insn, uint32_t *marker)
+{
+  if (insn->size < 4) {
+    return false;
+  }
+
+  for (size_t offset = 0; offset + 4 <= insn->size; offset++) {
+    const uint32_t candidate =
+        ((uint32_t)insn->bytes[offset]) |
+        ((uint32_t)insn->bytes[offset + 1] << 8U) |
+        ((uint32_t)insn->bytes[offset + 2] << 16U) |
+        ((uint32_t)insn->bytes[offset + 3] << 24U);
+
+    switch (candidate) {
+    case MARKER_POST_BOOT:
+    case MARKER_BLOCK_BEGIN:
+    case MARKER_BLOCK_END:
+    case MARKER_9P_BEGIN:
+    case MARKER_9P_END:
+      *marker = candidate;
+      return true;
+    default:
+      break;
+    }
+  }
+
+  return false;
+}
+
+static bool
+marker_to_operation(uint32_t marker, enum medium *medium, bool *begin)
+{
+  switch (marker) {
+  case MARKER_BLOCK_BEGIN:
+    *medium = MEDIUM_BLOCK;
+    *begin = true;
+    return true;
+  case MARKER_BLOCK_END:
+    *medium = MEDIUM_BLOCK;
+    *begin = false;
+    return true;
+  case MARKER_9P_BEGIN:
+    *medium = MEDIUM_9P;
+    *begin = true;
+    return true;
+  case MARKER_9P_END:
+    *medium = MEDIUM_9P;
+    *begin = false;
+    return true;
+  default:
+    return false;
+  }
+}
+
+static void
+begin_operation(enum medium medium)
+{
+  if (operation_active) {
+    marker_errors++;
+    return;
+  }
+
+  operation_active = true;
+  active_medium = medium;
+  operation_io_events = 0;
+  operation_hlt_events = 0;
+}
+
+static void
+end_operation(enum medium medium)
+{
+  if (!operation_active) {
+    return;
+  }
+  if (active_medium != medium) {
+    marker_errors++;
+    return;
+  }
+
+  operation_active = false;
+  active_medium = MEDIUM_NONE;
+  operation_io_events = 0;
+  operation_hlt_events = 0;
 }
 
 static bool
@@ -187,6 +345,7 @@ record_sample(bool pause_sample)
       extended_fingerprint ? qemu_plugin_crucible_rr_cursor_position() : 0;
   const uint64_t rr_switch_quantum =
       extended_fingerprint ? qemu_plugin_crucible_rr_switch_quantum() : 0;
+  const bool has_time_control = qemu_plugin_has_time_control();
   uint64_t state_hash = FNV1A64_OFFSET;
 
   state_hash = fnv1a_u64(state_hash, stream_hash);
@@ -197,6 +356,15 @@ record_sample(bool pause_sample)
   state_hash = fnv1a_u64(state_hash, rr_current_vcpu);
   state_hash = fnv1a_u64(state_hash, rr_cursor_position);
   state_hash = fnv1a_u64(state_hash, rr_switch_quantum);
+  state_hash = fnv1a_u64(state_hash, has_time_control ? 1U : 0U);
+  state_hash = fnv1a_u64(state_hash, io_events);
+  state_hash = fnv1a_u64(state_hash, operation_active ? 1U : 0U);
+  state_hash = fnv1a_u64(state_hash, (uint64_t)active_medium);
+  state_hash = fnv1a_u64(state_hash, (uint64_t)pause_medium);
+  state_hash = fnv1a_u64(state_hash, operation_io_events);
+  state_hash = fnv1a_u64(state_hash, operation_hlt_events);
+  state_hash = fnv1a_u64(state_hash, pause_io_events);
+  state_hash = fnv1a_u64(state_hash, pause_hlt_events);
 
   fprintf(
       trace_file,
@@ -213,6 +381,18 @@ record_sample(bool pause_sample)
       ",\"rr_current_vcpu\":%" PRIu64
       ",\"rr_cursor_position\":%" PRIu64
       ",\"rr_switch_quantum\":%" PRIu64
+      ",\"time_control_requested\":%s"
+      ",\"has_time_control\":%s"
+      ",\"operation_active\":%s"
+      ",\"active_medium\":\"%s\""
+      ",\"pause_medium\":\"%s\""
+      ",\"io_events\":%" PRIu64
+      ",\"operation_io_events\":%" PRIu64
+      ",\"operation_hlt_events\":%" PRIu64
+      ",\"pause_io_events\":%" PRIu64
+      ",\"pause_hlt_events\":%" PRIu64
+      ",\"post_boot_markers\":%" PRIu64
+      ",\"marker_errors\":%" PRIu64
       ",\"state_hash\":\"%016" PRIx64 "\""
       ",\"sample_register_failures\":%" PRIu64
       ",\"register_read_failures\":%" PRIu64
@@ -230,6 +410,18 @@ record_sample(bool pause_sample)
       rr_current_vcpu,
       rr_cursor_position,
       rr_switch_quantum,
+      time_control_requested ? "true" : "false",
+      has_time_control ? "true" : "false",
+      operation_active ? "true" : "false",
+      medium_name(active_medium),
+      medium_name(pause_medium),
+      io_events,
+      operation_io_events,
+      operation_hlt_events,
+      pause_io_events,
+      pause_hlt_events,
+      post_boot_markers,
+      marker_errors,
       state_hash,
       sample_failures,
       register_read_failures);
@@ -253,6 +445,9 @@ static void
 on_insn(unsigned int vcpu_index, void *userdata)
 {
   const struct traced_insn *insn = userdata;
+  uint32_t marker = 0;
+  enum medium marker_medium = MEDIUM_NONE;
+  bool marker_begin = false;
 
   retired_total++;
 
@@ -268,6 +463,39 @@ on_insn(unsigned int vcpu_index, void *userdata)
     return;
   }
 
+  if (decode_marker(insn, &marker)) {
+    if (marker == MARKER_POST_BOOT) {
+      post_boot_markers++;
+      if (pause_on_post_boot && !stop_requested) {
+        request_pause();
+      }
+      return;
+    }
+
+    if (marker_to_operation(marker, &marker_medium, &marker_begin)) {
+      if (marker_begin) {
+        begin_operation(marker_medium);
+      } else {
+        end_operation(marker_medium);
+      }
+      return;
+    }
+
+    marker_errors++;
+    return;
+  }
+
+  if (operation_active && is_hlt(insn)) {
+    operation_hlt_events++;
+    if (pause_on_io_idle && !stop_requested &&
+        pause_medium_matches(active_medium) && operation_io_events > 0) {
+      pause_io_events = operation_io_events;
+      pause_hlt_events = operation_hlt_events;
+      request_pause();
+      return;
+    }
+  }
+
   segment_started = true;
   segment_retired++;
   stream_hash = fnv1a_u64(stream_hash, vcpu_index);
@@ -277,6 +505,37 @@ on_insn(unsigned int vcpu_index, void *userdata)
 
   if (stop_after != 0 && segment_retired >= stop_after && !stop_requested) {
     request_pause();
+  }
+}
+
+static void
+on_mem(
+    unsigned int vcpu_index,
+    qemu_plugin_meminfo_t info,
+    uint64_t vaddr,
+    void *userdata)
+{
+  (void)vcpu_index;
+  (void)userdata;
+
+  if (retired_total <= start_at) {
+    return;
+  }
+  if (stop_after != 0 && segment_retired >= stop_after) {
+    return;
+  }
+
+  const struct qemu_plugin_hwaddr *hwaddr = qemu_plugin_get_hwaddr(info, vaddr);
+
+  if (hwaddr != NULL && qemu_plugin_hwaddr_is_io(hwaddr)) {
+    io_events++;
+    if (operation_active) {
+      operation_io_events++;
+      if (pause_on_io && !stop_requested && pause_medium_matches(active_medium)) {
+        pause_io_events = operation_io_events;
+        request_pause();
+      }
+    }
   }
 }
 
@@ -303,6 +562,8 @@ on_tb_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 
     qemu_plugin_register_vcpu_insn_exec_cb(
         qinsn, on_insn, QEMU_PLUGIN_CB_NO_REGS, insn);
+    qemu_plugin_register_vcpu_mem_cb(
+        qinsn, on_mem, QEMU_PLUGIN_CB_NO_REGS, QEMU_PLUGIN_MEM_RW, NULL);
   }
 }
 
@@ -381,6 +642,19 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
       }
     } else if (strncmp(argv[i], "extended=", 9) == 0) {
       extended_fingerprint = parse_bool_flag(argv[i] + 9);
+    } else if (strncmp(argv[i], "time_control=", 13) == 0) {
+      request_time_control = parse_bool_flag(argv[i] + 13);
+    } else if (strncmp(argv[i], "pause_on_post_boot=", 19) == 0) {
+      pause_on_post_boot = parse_bool_flag(argv[i] + 19);
+    } else if (strncmp(argv[i], "pause_on_io=", 12) == 0) {
+      pause_on_io = parse_bool_flag(argv[i] + 12);
+    } else if (strncmp(argv[i], "pause_on_io_idle=", 17) == 0) {
+      pause_on_io_idle = parse_bool_flag(argv[i] + 17);
+    } else if (strncmp(argv[i], "pause_medium=", 13) == 0) {
+      if (!parse_medium_name(argv[i] + 13, &pause_medium)) {
+        qemu_plugin_outs("phase0-s3-segment-plugin: invalid pause_medium\n");
+        return -1;
+      }
     } else if (strncmp(argv[i], "vcpus=", 6) == 0) {
       uint64_t parsed = 0;
       if (!parse_u64(argv[i] + 6, &parsed) || parsed == 0 ||
@@ -405,6 +679,14 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
   if (trace_file == NULL) {
     qemu_plugin_outs("phase0-s3-segment-plugin: failed to open output\n");
     return -1;
+  }
+
+  if (request_time_control) {
+    time_control_requested = qemu_plugin_request_time_control() != NULL;
+    if (!time_control_requested || !qemu_plugin_has_time_control()) {
+      qemu_plugin_outs("phase0-s3-segment-plugin: time control unavailable\n");
+      return -1;
+    }
   }
 
   qemu_plugin_register_vcpu_init_cb(id, on_vcpu_init);
