@@ -1381,9 +1381,7 @@ mod tests {
             id: ContentHash::default(),
         });
         let decision = crate::Decision::RngDraw(crate::RngDecision {
-            stream: crate::RngStreamId {
-                name: String::from("scheduler"),
-            },
+            stream: crate::RngStreamId::from_name("scheduler"),
             value: 7,
         });
         let child = step(&config, decision.clone());

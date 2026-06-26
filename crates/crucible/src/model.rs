@@ -15,6 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crucible_sim::{
+    DECISION_RNG_LINK_STREAM_DOMAIN, DECISION_RNG_NAME_HASH_DOMAIN, DECISION_RNG_NODE_STREAM_DOMAIN,
+};
+
 mod canonical;
 
 static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1467,8 +1471,39 @@ pub struct FaultId {
 /// A deterministic decision-stream identifier.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RngStreamId {
+    /// The stable stream domain.
+    pub domain: String,
     /// The canonical stream name.
     pub name: String,
+}
+
+impl RngStreamId {
+    /// Builds a stream id in the default decision-RNG name-hash domain.
+    #[must_use]
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self::new(DECISION_RNG_NAME_HASH_DOMAIN, name)
+    }
+
+    /// Builds a node-scoped stream id.
+    #[must_use]
+    pub fn for_node(name: impl Into<String>) -> Self {
+        Self::new(DECISION_RNG_NODE_STREAM_DOMAIN, name)
+    }
+
+    /// Builds a link-scoped stream id.
+    #[must_use]
+    pub fn for_link(name: impl Into<String>) -> Self {
+        Self::new(DECISION_RNG_LINK_STREAM_DOMAIN, name)
+    }
+
+    /// Builds a stream id in a caller-supplied stable domain.
+    #[must_use]
+    pub fn new(domain: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            domain: domain.into(),
+            name: name.into(),
+        }
+    }
 }
 
 /// A scheduling point identifier used by override decisions.
@@ -5363,8 +5398,7 @@ fn push_symmetry_scheduler_lines(
 fn push_symmetry_device_rng_lines(prefix: &str, state: &DeviceRngState, lines: &mut Vec<String>) {
     lines.push(format!("{prefix}.streams={}", state.streams.len()));
     for (stream, position) in &state.streams {
-        lines.push(format!("{prefix}.stream_len={}", stream.name.len()));
-        lines.push(format!("{prefix}.stream={}", stream.name));
+        push_rng_stream_lines(prefix, stream, lines);
         lines.push(format!("{prefix}.draws={}", position.draws));
     }
 }
@@ -5376,10 +5410,19 @@ fn push_symmetry_decision_rng_lines(
 ) {
     lines.push(format!("{prefix}.positions={}", state.positions.len()));
     for (stream, position) in &state.positions {
-        lines.push(format!("{prefix}.stream_len={}", stream.name.len()));
-        lines.push(format!("{prefix}.stream={}", stream.name));
+        push_rng_stream_lines(prefix, stream, lines);
         lines.push(format!("{prefix}.draws={}", position.draws));
     }
+}
+
+fn push_rng_stream_lines(prefix: &str, stream: &RngStreamId, lines: &mut Vec<String>) {
+    lines.push(format!(
+        "{prefix}.stream_domain_len={}",
+        stream.domain.len()
+    ));
+    lines.push(format!("{prefix}.stream_domain={}", stream.domain));
+    lines.push(format!("{prefix}.stream_len={}", stream.name.len()));
+    lines.push(format!("{prefix}.stream={}", stream.name));
 }
 
 fn push_symmetry_event_log_lines(event_log: EventLogOffset, lines: &mut Vec<String>) {
@@ -5785,8 +5828,7 @@ fn push_decision_lines(index: usize, decision: &Decision, lines: &mut Vec<String
         }
         Decision::RngDraw(draw) => {
             lines.push(format!("{prefix}.kind=rng-draw"));
-            lines.push(format!("{prefix}.stream_len={}", draw.stream.name.len()));
-            lines.push(format!("{prefix}.stream={}", draw.stream.name));
+            push_rng_stream_lines(&prefix, &draw.stream, lines);
             lines.push(format!("{prefix}.value={}", draw.value));
         }
         Decision::Override(override_decision) => {
@@ -5824,8 +5866,7 @@ fn push_decision_lines(index: usize, decision: &Decision, lines: &mut Vec<String
             lines.push(format!("{prefix}.kind=app-random"));
             lines.push(format!("{prefix}.node_len={}", random.node.name.len()));
             lines.push(format!("{prefix}.node={}", random.node.name));
-            lines.push(format!("{prefix}.stream_len={}", random.stream.name.len()));
-            lines.push(format!("{prefix}.stream={}", random.stream.name));
+            push_rng_stream_lines(&prefix, &random.stream, lines);
             lines.push(format!("{prefix}.request_id={}", random.request_id));
             lines.push(format!("{prefix}.width={}", random.width));
             lines.push(format!("{prefix}.value={}", random.value));

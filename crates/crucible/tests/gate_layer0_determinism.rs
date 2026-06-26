@@ -114,9 +114,7 @@ fn drive_backend(backend: &mut SimBackend, input: BackendInput, horizon: u64) {
 
 fn rng_decision(stream: &str, value: u64) -> Decision {
     Decision::RngDraw(RngDecision {
-        stream: RngStreamId {
-            name: stream.to_owned(),
-        },
+        stream: RngStreamId::from_name(stream),
         value,
     })
 }

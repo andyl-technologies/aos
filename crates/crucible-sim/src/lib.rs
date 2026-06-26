@@ -30,6 +30,12 @@ pub const DECISION_RNG_ALGORITHM: &str = "splitmix64-v1";
 /// The stable hash domain used for decision-stream name forking.
 pub const DECISION_RNG_NAME_HASH_DOMAIN: &str = "crucible.decision-rng.name-hash.v1";
 
+/// The stable domain used for node-scoped decision streams.
+pub const DECISION_RNG_NODE_STREAM_DOMAIN: &str = "crucible.decision-rng.node-stream.v1";
+
+/// The stable domain used for link-scoped decision streams.
+pub const DECISION_RNG_LINK_STREAM_DOMAIN: &str = "crucible.decision-rng.link-stream.v1";
+
 /// Marks the future RFC-0007 integration boundary for content-addressing code.
 ///
 /// Crucible ships standalone today: the stable hashing primitives below are
@@ -85,10 +91,38 @@ impl DecisionRng {
         self.seed ^ stable_name_hash(entity_name)
     }
 
+    /// Returns the fork seed for `entity_name` inside `stream_domain`.
+    ///
+    /// The seed is computed as `root_seed XOR stable_domain_name_hash`, keeping
+    /// node and link streams with the same entity name independent when callers
+    /// use the fixed node/link domains.
+    #[must_use]
+    pub fn stream_seed_in_domain(&self, stream_domain: &str, entity_name: &str) -> u64 {
+        self.seed ^ stable_domain_name_hash(stream_domain, entity_name)
+    }
+
     /// Forks a deterministic decision stream for `entity_name`.
     #[must_use]
     pub fn fork(&self, entity_name: &str) -> DecisionStream {
         DecisionStream::from_seed(self.stream_seed(entity_name))
+    }
+
+    /// Forks a deterministic node-scoped decision stream for `node_name`.
+    #[must_use]
+    pub fn fork_for_node(&self, node_name: &str) -> DecisionStream {
+        self.fork_in_domain(DECISION_RNG_NODE_STREAM_DOMAIN, node_name)
+    }
+
+    /// Forks a deterministic link-scoped decision stream for `link_name`.
+    #[must_use]
+    pub fn fork_for_link(&self, link_name: &str) -> DecisionStream {
+        self.fork_in_domain(DECISION_RNG_LINK_STREAM_DOMAIN, link_name)
+    }
+
+    /// Forks a deterministic decision stream inside a fixed stream domain.
+    #[must_use]
+    pub fn fork_in_domain(&self, stream_domain: &str, entity_name: &str) -> DecisionStream {
+        DecisionStream::from_seed(self.stream_seed_in_domain(stream_domain, entity_name))
     }
 }
 
@@ -136,6 +170,19 @@ impl DecisionStream {
 pub fn stable_name_hash(entity_name: &str) -> u64 {
     let mut hasher = StableHasher::new();
     hasher.write_tag(DECISION_RNG_NAME_HASH_DOMAIN);
+    hasher.write_bytes(entity_name.as_bytes());
+    let digest = hasher.finish();
+    let mut seed_bytes = [0; 8];
+    seed_bytes.copy_from_slice(&digest.bytes[..8]);
+    u64::from_le_bytes(seed_bytes)
+}
+
+/// Returns a stable cross-platform hash for a decision-stream domain and name.
+#[must_use]
+pub fn stable_domain_name_hash(stream_domain: &str, entity_name: &str) -> u64 {
+    let mut hasher = StableHasher::new();
+    hasher.write_tag(DECISION_RNG_NAME_HASH_DOMAIN);
+    hasher.write_tag(stream_domain);
     hasher.write_bytes(entity_name.as_bytes());
     let digest = hasher.finish();
     let mut seed_bytes = [0; 8];

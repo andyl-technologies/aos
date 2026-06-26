@@ -43,15 +43,15 @@ fn gate_content_address_keeps_fixed_vectors_stable() {
             ),
             (
                 "schedule",
-                "26714bc8d41b4e9e29443ba658b71de1c0edf4a87879cde0661029b1043a2cde"
+                "1297d71f37a009c71edb6c69ca577f18a03339bacbdb2aae6566903c73918b26"
             ),
             (
                 "configuration",
-                "5bdb16ae8ac9702c711e3d340e61b8ed60c6e2462d0928da377a19fba6f8521c",
+                "73bc547c3c19437d0dc06f282d4f7d91ca526379f785b3cdf0a28a75396fff21",
             ),
             (
                 "state",
-                "90db4fac84b59501c7804fd618508b312754c4bf7d4e768dd92328e2d860ab65"
+                "cabde9105f04951843d1fbf30dcb5e6be277e81f51e814d64a14ab36187939ed"
             ),
             (
                 "world-component",
@@ -119,18 +119,14 @@ fn gate_content_address_changes_on_single_byte_mutations() {
     let first = step(
         &base,
         Decision::RngDraw(RngDecision {
-            stream: RngStreamId {
-                name: String::from("node-a/fault"),
-            },
+            stream: RngStreamId::for_node("node-a/fault"),
             value: 1,
         }),
     );
     let changed = step(
         &base,
         Decision::RngDraw(RngDecision {
-            stream: RngStreamId {
-                name: String::from("node-a/fault"),
-            },
+            stream: RngStreamId::for_node("node-a/fault"),
             value: 2,
         }),
     );
@@ -150,9 +146,7 @@ fn gate_content_address_changes_on_single_byte_mutations() {
 fn gate_content_address_is_sensitive_to_schedule_order() {
     let scenario = scenario("scenario=order\nnodes=a,b\nseed=13");
     let draw = Decision::RngDraw(RngDecision {
-        stream: RngStreamId {
-            name: String::from("scheduler/order"),
-        },
+        stream: RngStreamId::from_name("scheduler/order"),
         value: 9,
     });
     let delivery = Decision::DeliveryOrder(DeliveryOrderDecision {
@@ -302,9 +296,7 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
     let fault = FaultId {
         name: String::from("partition-a-b"),
     };
-    let stream = RngStreamId {
-        name: String::from("device/disk-a"),
-    };
+    let stream = RngStreamId::from_name("device/disk-a");
     let parent_blob =
         ContentHash::from_canonical_material("crucible.test.materialized-state", "parent-blob");
     let delta_blob =
@@ -1596,9 +1588,7 @@ fn gate_content_address_temporal_graph_partial_order_reduction_explores_when_dep
     let frontier = step(&genesis, first.clone());
     let same_node = preemption_decision("node-a", 32);
     let unknown = Decision::RngDraw(RngDecision {
-        stream: RngStreamId {
-            name: String::from("global"),
-        },
+        stream: RngStreamId::from_name("global"),
         value: 9,
     });
     let same_stream_a = app_random_decision("node-a", "shared", 1);
@@ -1859,9 +1849,7 @@ fn fixed_schedule() -> Schedule {
             node: NodeId {
                 name: String::from("node-a"),
             },
-            stream: RngStreamId {
-                name: String::from("guest/request"),
-            },
+            stream: RngStreamId::for_node("guest/request"),
             request_id: 12,
             width: 32,
             value: 0xabcd_1234,
@@ -1894,9 +1882,7 @@ fn generated_decision(seed: u64, index: u64) -> Decision {
             fired: index % 2 == 0,
         }),
         _ => Decision::RngDraw(RngDecision {
-            stream: RngStreamId {
-                name: format!("stream-{seed}"),
-            },
+            stream: RngStreamId::from_name(format!("stream-{seed}")),
             value: seed ^ index,
         }),
     }
@@ -1935,9 +1921,7 @@ fn preemption_decision(node: &str, retired: u64) -> Decision {
 fn app_random_decision(node: &str, stream: &str, value: u64) -> Decision {
     Decision::AppRandom(AppRandomDecision {
         node: node_id(node),
-        stream: RngStreamId {
-            name: String::from(stream),
-        },
+        stream: RngStreamId::for_node(stream),
         request_id: value,
         width: 64,
         value,

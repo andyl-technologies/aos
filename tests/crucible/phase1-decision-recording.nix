@@ -2,13 +2,16 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.decisionRecording",
-  taskIds ? ["T-DET-16" "T-EXEC-19" "T-EXEC-20" "T-DET-31"],
+  taskIds ? ["T-DET-16" "T-DET-31" "T-EXEC-19" "T-EXEC-20" "T-PAT-5"],
 }: let
   root = ../..;
   decisionRust = builtins.readFile ../../crates/crucible/src/decision.rs;
+  modelRust = builtins.readFile ../../crates/crucible/src/model.rs;
   libRust = builtins.readFile ../../crates/crucible/src/lib.rs;
   manifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
+  executionModel = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let
@@ -90,8 +93,8 @@
         needle = "streams: BTreeMap<RngStreamId, DecisionStream>";
       }
       {
-        label = "name-hash fork path";
-        needle = ".or_insert_with(|| self.rng.fork(&stream.name))";
+        label = "domain-aware name-hash fork path";
+        needle = ".or_insert_with(|| self.rng.fork_in_domain(&stream.domain, &stream.name))";
       }
       {
         label = "existing schedule hydration";
@@ -102,12 +105,20 @@
         needle = "Decision::RngDraw";
       }
       {
+        label = "recorded raw draw carries stream id";
+        needle = "Decision::RngDraw(RngDecision { stream, value })";
+      }
+      {
         label = "probabilistic fault is recorded";
         needle = "Decision::FaultFires";
       }
       {
         label = "app-random draw is recorded";
         needle = "Decision::AppRandom";
+      }
+      {
+        label = "app-random draw carries stream id";
+        needle = "Decision::AppRandom(AppRandomDecision {\n            node,\n            stream,";
       }
       {
         label = "app-random request-id path";
@@ -138,6 +149,10 @@
         needle = "assert_per_entity_rng_forking_coverage(";
       }
       {
+        label = "node/link domain separation coverage marker";
+        needle = "decision_recorder_domain_separates_same_name_node_and_link_streams";
+      }
+      {
         label = "resume coverage marker";
         needle = "decision_recorder_resumes_stream_positions_from_existing_schedule";
       }
@@ -165,6 +180,40 @@
         label = "app-random override coverage marker";
         needle = "decision_recorder_serves_app_random_override_without_rerolling_stream";
       }
+      {
+        label = "domain-aware resume expected stream";
+        needle = "fork_in_domain(&stream.domain, &stream.name)";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/model.rs" modelRust [
+      {
+        label = "RngStreamId type";
+        needle = "pub struct RngStreamId";
+      }
+      {
+        label = "RngStreamId domain field";
+        needle = "pub domain: String";
+      }
+      {
+        label = "RngStreamId default constructor";
+        needle = "pub fn from_name(name: impl Into<String>) -> Self";
+      }
+      {
+        label = "RngStreamId node constructor";
+        needle = "pub fn for_node(name: impl Into<String>) -> Self";
+      }
+      {
+        label = "RngStreamId link constructor";
+        needle = "pub fn for_link(name: impl Into<String>) -> Self";
+      }
+      {
+        label = "RngStreamId node domain constant";
+        needle = "DECISION_RNG_NODE_STREAM_DOMAIN";
+      }
+      {
+        label = "RngStreamId link domain constant";
+        needle = "DECISION_RNG_LINK_STREAM_DOMAIN";
+      }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" libRust [
       {
@@ -190,6 +239,38 @@
       {
         label = "T-DET-31 checklist complete";
         needle = "- [x] **T-DET-31**";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
+      {
+        label = "T-EXEC-2 checklist complete";
+        needle = "- [x] **T-EXEC-2**";
+      }
+      {
+        label = "EXEC-9 requires recorded RngStreamId";
+        needle = "A `Decision::RngDraw` MUST record its\n  `RngStreamId`";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+      {
+        label = "T-PAT-5 checklist complete";
+        needle = "- [x] **T-PAT-5**";
+      }
+      {
+        label = "T-PAT-5 completion names decision recorder";
+        needle = "`crucible::decision::DecisionRecorder`";
+      }
+      {
+        label = "T-PAT-5 completion names RngStreamId";
+        needle = "`RngStreamId`";
+      }
+      {
+        label = "T-PAT-5 completion says RngStreamId is domain-qualified";
+        needle = "domain-qualified `RngStreamId`";
+      }
+      {
+        label = "T-PAT-5 completion names decision recording gate";
+        needle = "`checks.crucible.phase1.decisionRecording`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -238,8 +319,20 @@
     ]
     ++ forbiddenFor "crates/crucible/src outside decision.rs" engineCodeOutsideDecision [
       {
-        label = "direct decision RNG use outside recorder";
-        needle = "DecisionRng";
+        label = "direct decision RNG import outside recorder";
+        needle = "use crucible_sim::DecisionRng";
+      }
+      {
+        label = "direct decision RNG grouped import outside recorder";
+        needle = "DecisionRng,";
+      }
+      {
+        label = "direct decision RNG construction outside recorder";
+        needle = "DecisionRng::new";
+      }
+      {
+        label = "direct decision RNG field outside recorder";
+        needle = "rng: DecisionRng,";
       }
       {
         label = "direct decision stream use outside recorder";
@@ -278,6 +371,7 @@ in
             default_preemption=derived-audit-only
             app_random_request_id=caller-supplied
             app_random_override=recorded-value-no-reroll
+            pattern_PAT_7_recording=draws-carry-rng-stream-id
             engine_ambient_randomness=false
             ambient_fw_cfg_entropy=separate-launch-entropy
             RESULT

@@ -77,9 +77,7 @@ mod tests {
             id: ContentHash::default(),
         });
         let decision = Decision::RngDraw(RngDecision {
-            stream: RngStreamId {
-                name: String::from("root"),
-            },
+            stream: RngStreamId::from_name("root"),
             value: 42,
         });
 
@@ -117,9 +115,7 @@ mod tests {
     #[test]
     fn schedule_prefix_bounds_are_checked() {
         let schedule = Schedule::empty().appended(Decision::RngDraw(RngDecision {
-            stream: RngStreamId {
-                name: String::from("root"),
-            },
+            stream: RngStreamId::from_name("root"),
             value: 1,
         }));
 
@@ -360,9 +356,7 @@ mod tests {
         let same_scenario =
             ScenarioDef::from_canonical_material("crucible.test.configuration", "node=a\nseed=1");
         let base_schedule = Schedule::empty().appended(Decision::RngDraw(RngDecision {
-            stream: RngStreamId {
-                name: String::from("node-a/faults"),
-            },
+            stream: RngStreamId::for_node("node-a/faults"),
             value: 7,
         }));
         let same = Configuration {
@@ -453,9 +447,7 @@ mod tests {
         let other_scenario =
             ScenarioDef::from_canonical_material("crucible.test.reduce", "node=a\nseed=2");
         let first_decision = Decision::RngDraw(RngDecision {
-            stream: RngStreamId {
-                name: String::from("node-a/faults"),
-            },
+            stream: RngStreamId::for_node("node-a/faults"),
             value: 7,
         });
         let second_decision = Decision::FaultFires(FaultDecision {
@@ -500,9 +492,7 @@ mod tests {
                 node: NodeId {
                     name: String::from("node-a"),
                 },
-                stream: RngStreamId {
-                    name: String::from("app/request"),
-                },
+                stream: RngStreamId::for_node("app/request"),
                 request_id: 3,
                 width: 16,
                 value: 0xace,
@@ -2212,9 +2202,7 @@ mod tests {
     fn record_representative_decision(recorder: &mut DecisionRecorder, index: u64) {
         match index % 3 {
             0 => {
-                let _ = recorder.draw_u64(RngStreamId {
-                    name: format!("node-a/faults/{index}"),
-                });
+                let _ = recorder.draw_u64(RngStreamId::for_node(format!("node-a/faults/{index}")));
             }
             1 => {
                 let _ = recorder.decide_fault(
@@ -2222,9 +2210,7 @@ mod tests {
                     FaultId {
                         name: format!("link-a-b/drop-{index}"),
                     },
-                    RngStreamId {
-                        name: String::from("node-b/faults"),
-                    },
+                    RngStreamId::for_node("node-b/faults"),
                     u64::MAX / 2,
                 );
             }
@@ -2233,9 +2219,7 @@ mod tests {
                     NodeId {
                         name: String::from("node-a"),
                     },
-                    RngStreamId {
-                        name: String::from("node-a/app-random"),
-                    },
+                    RngStreamId::for_node("node-a/app-random"),
                     16,
                 );
                 assert!(served.is_ok());
@@ -2361,9 +2345,7 @@ mod tests {
                 fired: index.is_multiple_of(2),
             }),
             2 => Decision::RngDraw(RngDecision {
-                stream: RngStreamId {
-                    name: format!("node-{seed}/stream-{index}"),
-                },
+                stream: RngStreamId::for_node(format!("node-{seed}/stream-{index}")),
                 value: seed.rotate_left((index % 31) as u32) ^ index,
             }),
             3 => Decision::Override(OverrideDecision {
@@ -2390,9 +2372,7 @@ mod tests {
                 node: NodeId {
                     name: format!("node-{seed}"),
                 },
-                stream: RngStreamId {
-                    name: format!("app-random-{index}"),
-                },
+                stream: RngStreamId::for_node(format!("app-random-{index}")),
                 request_id: index,
                 width: 32,
                 value: seed.wrapping_mul(0x9e37_79b9) ^ index,
