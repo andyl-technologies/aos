@@ -735,7 +735,8 @@ alone (`M-1`/`Q-A`).
       combiner, so repeated captured inline/string/path/replayable-composite
       thunks hit only when their free-variable value hashes match and miss when
       those captured values differ. This deliberately skips dynamic `with`
-      scopes, scoped-import globals, arbitrary lazy-element lists, lazy-binding attrsets,
+      scopes, scoped-import globals, arbitrary non-literal lazy-element lists,
+      arbitrary non-literal lazy-binding attrsets,
       position-bearing attrsets, lambdas, primops,
       suspended non-literal/non-replayable thunk-cell captures including computed
       values not already forced in the captured slot, captured bodies with nested lexical-frame introducers, apply/select
@@ -751,8 +752,9 @@ alone (`M-1`/`Q-A`).
       lexical-frame subject-skip canaries, captured lambda/primop value
       subject-skip canaries, synthetic apply/apply2/select thunk subject-skip
       canaries, captured position-bearing attrset subject-skip and source-order
-      attrset admission canaries, captured lazy-element list and lazy-binding attrset subject-skip
-      canaries, and representative captured unsupported free-variable skips
+      attrset admission canaries, captured closed-literal lazy-element list and
+      lazy-binding attrset admission canaries, captured computed lazy-element list
+      and lazy-binding attrset subject-skip canaries, and representative captured unsupported free-variable skips
       (`C-1`/`C-2`).
 - [x] Current node-span force-cache identity precursor: source-backed and
       source-less node-thunk expression identities now fold the lowered node's

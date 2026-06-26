@@ -7529,6 +7529,106 @@ fn captured_lazy_element_list_values_do_not_build_force_cache_subjects() {
 }
 
 #[test]
+fn captured_closed_literal_lazy_element_lists_build_force_cache_subjects_without_forcing() {
+    let ir = manual_ir(
+        IrId::new(2),
+        vec![
+            pure_node(IrKind::LocalVar, Span::new(0, 1), IrData::Local { slot: 0 }),
+            pure_node(
+                IrKind::List,
+                Span::new(5, 7),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            pure_node(
+                IrKind::BinOp,
+                Span::new(0, 7),
+                IrData::Binary {
+                    op: BinOpKind::Concat,
+                    lhs: IrId::new(0),
+                    rhs: IrId::new(1),
+                },
+            ),
+            pure_node(IrKind::Int, Span::new(12, 13), IrData::Int(1)),
+        ],
+    );
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-closed-literal-lazy-element-list-value.nix",
+        "x ++ []",
+        cache.clone(),
+    );
+    let lazy_element = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(3)))
+        .expect("lazy element thunk allocates");
+    let captured_x = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![lazy_element]))
+        .expect("lazy-element list allocates");
+    let element_thunk = evaluator
+        .heap()
+        .get_thunk(lazy_element)
+        .expect("lazy element is a thunk");
+    assert_eq!(element_thunk.cell().state(), Ok(ThunkState::Suspended));
+
+    let frame = EvalFrame::new(1).expect("capture frame allocates");
+    frame.set(0, captured_x).expect("capture frame slot sets");
+    let env = EvalEnv::capture(&[frame]).expect("capture env allocates");
+    let thunk_value = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::with_env(EvalModuleId::ROOT, ir.root, env))
+        .expect("lazy-element list capture thunk allocates");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("concat is a node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_some(),
+        "captured closed literal lazy-element lists should hash into demand keys"
+    );
+    let element_thunk = evaluator
+        .heap()
+        .get_thunk(lazy_element)
+        .expect("lazy element remains a thunk");
+    assert_eq!(
+        element_thunk.cell().state(),
+        Ok(ThunkState::Suspended),
+        "probing the force-cache subject must not force closed literal lazy elements"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured closed literal lazy-element list value force succeeds");
+    let list = evaluator
+        .heap()
+        .get_list(forced)
+        .expect("concat result is heap-owned");
+    let element = list.get(0).expect("lazy result element exists");
+    assert!(element.raw_eq(lazy_element));
+    let element_thunk = evaluator
+        .heap()
+        .get_thunk(element)
+        .expect("lazy result element remains a thunk");
+    assert_eq!(
+        element_thunk.cell().state(),
+        Ok(ThunkState::Suspended),
+        "list concat should not force captured closed literal lazy elements"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "captured closed literal lazy-element lists should create one demand node"
+    );
+}
+
+#[test]
 fn captured_position_bearing_attrset_values_do_not_build_force_cache_subjects() {
     let source = "let x = { a = 1; }; in builtins.seq x { a = x.a == 1; }";
     let ir = lower(source);
@@ -7833,6 +7933,103 @@ fn captured_lazy_binding_attrset_values_do_not_build_force_cache_subjects() {
     assert!(
         runtime.cache().expect("cache is enabled").is_empty(),
         "captured lazy-binding attrsets need binding payloads before observation"
+    );
+}
+
+#[test]
+fn captured_closed_literal_lazy_binding_attrsets_build_force_cache_subjects_without_forcing() {
+    let mut symbols = SymbolTable::new();
+    let a = symbols.intern(b"a").expect("a interns");
+    let path = IrAttrPathId::new(0);
+    let ir = manual_ir_with_attr_paths(
+        IrId::new(1),
+        vec![
+            pure_node(IrKind::LocalVar, Span::new(0, 1), IrData::Local { slot: 0 }),
+            pure_node(
+                IrKind::HasAttr,
+                Span::new(0, 5),
+                IrData::HasAttr {
+                    site: IrInlineCacheSiteId::new(0),
+                    receiver: IrId::new(0),
+                    path,
+                },
+            ),
+            pure_node(IrKind::Int, Span::new(10, 11), IrData::Int(1)),
+        ],
+        symbols,
+        vec![Box::new([IrAttrPathSegment::Static(a)])],
+    );
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-closed-literal-lazy-binding-attrset-value.nix",
+        "x ? a",
+        cache.clone(),
+    );
+    let lazy_binding = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("lazy binding thunk allocates");
+    let attrs = FlatAttrs::new(vec![AttrEntry::new(a, lazy_binding)], &evaluator.symbols)
+        .expect("lazy-binding attrset builds");
+    let captured_x = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("lazy-binding attrset allocates");
+    let binding_thunk = evaluator
+        .heap()
+        .get_thunk(lazy_binding)
+        .expect("lazy binding is a thunk");
+    assert_eq!(binding_thunk.cell().state(), Ok(ThunkState::Suspended));
+
+    let frame = EvalFrame::new(1).expect("capture frame allocates");
+    frame.set(0, captured_x).expect("capture frame slot sets");
+    let env = EvalEnv::capture(&[frame]).expect("capture env allocates");
+    let thunk_value = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::with_env(EvalModuleId::ROOT, ir.root, env))
+        .expect("lazy-binding attrset capture thunk allocates");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("hasAttr is a node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_some(),
+        "captured closed literal lazy-binding attrsets should hash into demand keys"
+    );
+    let binding_thunk = evaluator
+        .heap()
+        .get_thunk(lazy_binding)
+        .expect("lazy binding remains a thunk");
+    assert_eq!(
+        binding_thunk.cell().state(),
+        Ok(ThunkState::Suspended),
+        "probing the force-cache subject must not force closed literal lazy bindings"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured closed literal lazy-binding attrset value force succeeds");
+    assert_eq!(forced.as_bool(), Ok(true));
+    let binding_thunk = evaluator
+        .heap()
+        .get_thunk(lazy_binding)
+        .expect("lazy binding remains a thunk after hasAttr");
+    assert_eq!(
+        binding_thunk.cell().state(),
+        Ok(ThunkState::Suspended),
+        "hasAttr should not force captured closed literal lazy bindings"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "captured closed literal lazy-binding attrsets should create one demand node"
     );
 }
 
