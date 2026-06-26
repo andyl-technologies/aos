@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-7" "T-TEMP-9"],
+  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-7" "T-TEMP-9" "T-TEMP-11"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -191,6 +191,34 @@
         label = "instantiate validates exact cache before load";
         needle = "graph.replay_checkpoint(config, snapshot)?;";
       }
+      {
+        label = "graph save operation API";
+        needle = "pub fn save<S>(";
+      }
+      {
+        label = "graph resume operation API";
+        needle = "pub fn resume(&mut self, tip: &Configuration)";
+      }
+      {
+        label = "graph fork operation API";
+        needle = "pub fn fork<I>(";
+      }
+      {
+        label = "graph replay operation API";
+        needle = "pub fn replay(&self, configuration: &Configuration)";
+      }
+      {
+        label = "graph search operation API";
+        needle = "pub fn search<I>(";
+      }
+      {
+        label = "graph replay uses stored fat checkpoint";
+        needle = "self.cached_snapshot(configuration).cloned()";
+      }
+      {
+        label = "graph resume records thin closure before instantiate";
+        needle = "self.record_checkpoint_closure(tip)?;";
+      }
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
       {
@@ -236,6 +264,22 @@
       {
         label = "savevm hedge export";
         needle = "SavevmCompletenessHedge";
+      }
+      {
+        label = "graph save result export";
+        needle = "TemporalGraphSave";
+      }
+      {
+        label = "graph resume result export";
+        needle = "TemporalGraphRuntime";
+      }
+      {
+        label = "graph fork result export";
+        needle = "TemporalGraphFork";
+      }
+      {
+        label = "graph search result export";
+        needle = "TemporalGraphSearch";
       }
       {
         label = "thin source-of-truth test";
@@ -420,6 +464,22 @@
       {
         label = "saved descendant materialized state test";
         needle = "gate_replay_oracle_saved_descendant_fat_checkpoint_carries_vm_snapshot_refs";
+      }
+      {
+        label = "temporal graph user operations instantiate test";
+        needle = "gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path";
+      }
+      {
+        label = "resume operation matches instantiate";
+        needle = "assert_eq!(resumed.runtime, direct);";
+      }
+      {
+        label = "search operation result matches instantiate";
+        needle = "assert_eq!(search_runtime.runtime, search_direct);";
+      }
+      {
+        label = "replay operation rejects thin-only checkpoint";
+        needle = "thin-only fork should not replay as a stored fat checkpoint";
       }
       {
         label = "baked VM snapshot icount assertion";
@@ -691,6 +751,10 @@
         label = "phase1 replay-oracle lists T-TEMP-9";
         needle = "\"T-TEMP-9\"";
       }
+      {
+        label = "phase1 replay-oracle lists T-TEMP-11";
+        needle = "\"T-TEMP-11\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
       {
@@ -773,6 +837,22 @@
       }
       {
         label = "T-TEMP-9 completion names replay-oracle gate";
+        needle = "`checks.crucible.phase1.gates.replayOracle`";
+      }
+      {
+        label = "T-TEMP-11 checklist complete";
+        needle = "- [x] **T-TEMP-11**";
+      }
+      {
+        label = "T-TEMP-11 completion names replay operation";
+        needle = "`TemporalGraph::replay`";
+      }
+      {
+        label = "T-TEMP-11 completion names search operation";
+        needle = "`TemporalGraph::search`";
+      }
+      {
+        label = "T-TEMP-11 completion names replay-oracle gate";
         needle = "`checks.crucible.phase1.gates.replayOracle`";
       }
     ];
@@ -924,6 +1004,8 @@ in
             replay_oracle_cached_admission=corrupt-fat-cache-evicted-to-thin
             replay_oracle_structural_invariant=all-cached-fat-snapshots
             gc_cache_collection=thin-replay-oracle-preserved
+            graph_user_operations=save,resume,fork,replay,search
+            graph_operation_realization=instantiate
             artifact_round_trip=re-run-from-seed-scenario-schedule-build-identity
             artifact_replay_assertions=fingerprint-equality,oracle-case-equality
             artifact_replay_negative_controls=build-identity-drift,seed-drift,scenario-drift,schedule-drift,oracle-case-drift,replay-failure,expected-oracle-mismatch,reproduced-oracle-mismatch

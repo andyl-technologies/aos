@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.contentAddress",
-  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10"],
+  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -466,6 +466,50 @@
         label = "symmetry domain separator";
         needle = "crucible.model.symmetry-reduction.v1";
       }
+      {
+        label = "graph save operation result";
+        needle = "pub struct TemporalGraphSave";
+      }
+      {
+        label = "graph resume operation result";
+        needle = "pub struct TemporalGraphRuntime";
+      }
+      {
+        label = "graph fork operation result";
+        needle = "pub struct TemporalGraphFork";
+      }
+      {
+        label = "graph search operation result";
+        needle = "pub struct TemporalGraphSearch";
+      }
+      {
+        label = "graph save operation API";
+        needle = "pub fn save<S>(";
+      }
+      {
+        label = "graph resume operation API";
+        needle = "pub fn resume(&mut self, tip: &Configuration)";
+      }
+      {
+        label = "graph fork operation API";
+        needle = "pub fn fork<I>(";
+      }
+      {
+        label = "graph replay operation API";
+        needle = "pub fn replay(&self, configuration: &Configuration)";
+      }
+      {
+        label = "graph search operation API";
+        needle = "pub fn search<I>(";
+      }
+      {
+        label = "graph save persists closure through store";
+        needle = "self.persist_checkpoint_closure(store, configuration)?;";
+      }
+      {
+        label = "graph save reports save checkpoint engine operation";
+        needle = "operation: \"save-checkpoint\"";
+      }
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
       {
@@ -809,6 +853,18 @@
         needle = "PartialOrderReductionPolicy::new().with_independent_pair";
       }
       {
+        label = "temporal graph user operation test";
+        needle = "gate_content_address_temporal_graph_user_operations_share_single_dag";
+      }
+      {
+        label = "save operation persists store keys";
+        needle = ".save(&store, &saved)";
+      }
+      {
+        label = "search operation materializes explored identities";
+        needle = "assert_eq!(materialized_ids, explored_ids);";
+      }
+      {
         label = "symmetry class map used by tests";
         needle = "SymmetryReductionClasses::new()";
       }
@@ -956,6 +1012,10 @@
         label = "phase1 content-address lists T-TEMP-10";
         needle = "\"T-TEMP-10\"";
       }
+      {
+        label = "phase1 content-address lists T-TEMP-11";
+        needle = "\"T-TEMP-11\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
@@ -1054,6 +1114,22 @@
       }
       {
         label = "T-TEMP-10 completion names content-address gate";
+        needle = "`checks.crucible.phase1.gates.contentAddress`";
+      }
+      {
+        label = "T-TEMP-11 checklist complete";
+        needle = "- [x] **T-TEMP-11**";
+      }
+      {
+        label = "T-TEMP-11 completion names save operation";
+        needle = "`TemporalGraph::save`";
+      }
+      {
+        label = "T-TEMP-11 completion names fork operation";
+        needle = "`TemporalGraph::fork`";
+      }
+      {
+        label = "T-TEMP-11 completion names content-address gate";
         needle = "`checks.crucible.phase1.gates.contentAddress`";
       }
     ];
@@ -1169,6 +1245,8 @@ in
             search_reduction_scope=graph-level-content-addressed-dag
             symmetry_reduction=explicit-classes-coverage-full-state-canonical-relabeling
             partial_order_reduction=explicit-proof-disjoint-node-recorded-representative
+            graph_user_operations=save,resume,fork,replay,search
+            graph_operation_state=single-temporal-dag
             RESULT
           '';
         }

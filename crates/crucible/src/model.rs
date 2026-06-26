@@ -2721,6 +2721,161 @@ impl TemporalGraph {
         self.materialize_checkpoint(configuration)
     }
 
+    /// Saves `configuration` as a graph checkpoint and persists its DAG-store closure.
+    ///
+    /// This is the user-facing save operation expressed on the temporal graph:
+    /// it realizes the configuration via [`instantiate`], validates the fat
+    /// checkpoint against thin replay, keeps the thin checkpoint as the DAG
+    /// source of truth, and writes the content-addressed closure through
+    /// `store`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemporalGraphStoreError::Engine`] when materialization or
+    /// replay-oracle validation fails. Returns [`TemporalGraphStoreError::Store`]
+    /// when `store` cannot persist an object.
+    pub fn save<S>(
+        &mut self,
+        store: &S,
+        configuration: &Configuration,
+    ) -> Result<TemporalGraphSave, TemporalGraphStoreError>
+    where
+        S: DagStore + ?Sized,
+    {
+        let checkpoint = self.save_checkpoint(configuration).map_err(|source| {
+            TemporalGraphStoreError::Engine {
+                operation: "save-checkpoint",
+                source,
+            }
+        })?;
+        let store_keys = self.persist_checkpoint_closure(store, configuration)?;
+        Ok(TemporalGraphSave {
+            configuration: configuration.id(),
+            checkpoint: checkpoint.id,
+            checkpoint_kind: checkpoint.kind,
+            store_keys,
+        })
+    }
+
+    /// Resumes `tip` by instantiating it through the temporal graph.
+    ///
+    /// The graph records the thin checkpoint closure before calling
+    /// [`instantiate`], so resume uses the same exact-snapshot, cached-ancestor,
+    /// or baked-genesis path as every other operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when no baked root can
+    /// realize the configuration, or another [`EngineError`] if checkpoint
+    /// metadata is invalid.
+    pub fn resume(&mut self, tip: &Configuration) -> Result<TemporalGraphRuntime, EngineError> {
+        self.record_checkpoint_closure(tip)?;
+        let runtime = instantiate(self, tip)?;
+        Ok(TemporalGraphRuntime {
+            configuration: tip.id(),
+            checkpoint: tip.id(),
+            runtime,
+        })
+    }
+
+    /// Forks from `base` by instantiating it and appending `decisions`.
+    ///
+    /// The returned branch is recorded as a thin checkpoint in the same DAG.
+    /// Forking therefore creates no state representation outside the temporal
+    /// graph; later save or search operations may materialize the branch through
+    /// the usual replay-oracle-checked path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when `base` cannot be instantiated or the branch
+    /// cannot be recorded as a valid checkpoint edge.
+    pub fn fork<I>(
+        &mut self,
+        base: &Configuration,
+        decisions: I,
+    ) -> Result<TemporalGraphFork, EngineError>
+    where
+        I: IntoIterator<Item = Decision>,
+    {
+        let base_runtime = self.resume(base)?;
+        let mut branch = base.clone();
+        for decision in decisions {
+            branch = step(&branch, decision);
+        }
+        let branch_checkpoint = self.record_thin_checkpoint(&branch)?;
+        Ok(TemporalGraphFork {
+            base: base_runtime,
+            branch,
+            branch_checkpoint,
+        })
+    }
+
+    /// Replays the stored fat checkpoint for `configuration` on demand.
+    ///
+    /// The operation checks the exact cached snapshot, or baked genesis for the
+    /// genesis configuration, against the independent thin replay path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointNotRecorded`] when no stored fat
+    /// checkpoint exists for `configuration`. Returns replay-oracle validation
+    /// errors from [`Self::replay_checkpoint`] when the fat and thin paths do
+    /// not match.
+    pub fn replay(&self, configuration: &Configuration) -> Result<ReplayOracleCheck, EngineError> {
+        let checkpoint = if configuration.is_genesis() {
+            self.genesis_snapshot(&configuration.def)
+                .map(|genesis| genesis.checkpoint.clone())
+        } else {
+            self.cached_snapshot(configuration).cloned()
+        }
+        .ok_or(EngineError::CheckpointNotRecorded {
+            checkpoint: configuration.id(),
+        })?;
+        self.replay_checkpoint(configuration, &checkpoint)
+    }
+
+    /// Searches one frontier by reducing, deduplicating, and materializing children.
+    ///
+    /// Frontier expansion uses [`Self::enumerate_frontier_reduced`]. Every
+    /// explored child is then passed through [`Self::materialize_hot_checkpoint`]
+    /// with the supplied materialization policy and trigger; covered children
+    /// are reported but never materialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the frontier cannot be recorded, a child
+    /// checkpoint cannot be represented, or a requested hot materialization
+    /// cannot be replay-oracle validated.
+    pub fn search<I>(
+        &mut self,
+        frontier: &Configuration,
+        decisions: I,
+        reduction_policy: FrontierReductionPolicy,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+    ) -> Result<TemporalGraphSearch, EngineError>
+    where
+        I: IntoIterator<Item = Decision>,
+    {
+        let frontier_id = frontier.id();
+        let frontier_report =
+            self.enumerate_frontier_reduced(frontier, decisions, reduction_policy)?;
+        let mut materialized = Vec::new();
+        for child in &frontier_report.explored {
+            materialized.push(self.materialize_hot_checkpoint(
+                &child.configuration,
+                materialization_policy,
+                trigger,
+            )?);
+        }
+
+        Ok(TemporalGraphSearch {
+            frontier: frontier_id,
+            frontier_report,
+            materialized,
+        })
+    }
+
     /// Admits an exact cached snapshot only if it matches thin replay.
     ///
     /// Cached ancestors are admitted from genesis outward before the target is
@@ -3815,6 +3970,52 @@ pub struct FrontierReductionReport {
     pub explored: Vec<FrontierChild>,
     /// Children covered by explored representatives.
     pub covered: Vec<FrontierCoveredChild>,
+}
+
+/// Result of a graph-level save operation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TemporalGraphSave {
+    /// Configuration saved by the operation.
+    pub configuration: ContentHash,
+    /// Checkpoint identity saved for the configuration.
+    pub checkpoint: ContentHash,
+    /// Storage shape of the saved checkpoint.
+    pub checkpoint_kind: CheckpointKind,
+    /// DAG-store keys persisted for the saved closure.
+    pub store_keys: TemporalGraphStoreKeys,
+}
+
+/// Result of a graph-level runtime realization.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TemporalGraphRuntime {
+    /// Configuration realized by [`instantiate`].
+    pub configuration: ContentHash,
+    /// Checkpoint identity used as the graph operation target.
+    pub checkpoint: ContentHash,
+    /// Runtime state returned by [`instantiate`].
+    pub runtime: RuntimeState,
+}
+
+/// Result of a graph-level fork operation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TemporalGraphFork {
+    /// Runtime produced for the fork base.
+    pub base: TemporalGraphRuntime,
+    /// Branch configuration produced by appending fork decisions.
+    pub branch: Configuration,
+    /// Thin checkpoint recorded for the branch.
+    pub branch_checkpoint: Checkpoint,
+}
+
+/// Result of a graph-level search frontier expansion.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TemporalGraphSearch {
+    /// Frontier configuration expanded by the operation.
+    pub frontier: ContentHash,
+    /// Reduced frontier enumeration report.
+    pub frontier_report: FrontierReductionReport,
+    /// Checkpoints returned by hot/cold materialization policy for explored children.
+    pub materialized: Vec<Checkpoint>,
 }
 
 /// Canonical-relabeling fingerprint for symmetry reduction.

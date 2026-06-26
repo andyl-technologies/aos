@@ -905,7 +905,20 @@ command.
     already recorded, and explores when coverage, materialized state, symmetry
     classes, touched nodes, representative state, or ordering resources are
     unknown.
-- [ ] **T-TEMP-11** Wire save/resume/fork/replay/search as operations on the
+- [x] **T-TEMP-11** Wire save/resume/fork/replay/search as operations on the
   temporal graph via `instantiate`, with no checkpoint store or state
   representation outside the DAG. — satisfies [TEMP-30]; spec §10; cross-ref
   05 §9, 22.
+  - Completed by `TemporalGraph::save`, `TemporalGraph::resume`,
+    `TemporalGraph::fork`, `TemporalGraph::replay`, `TemporalGraph::search`,
+    `crucible::TemporalGraphSave`, `crucible::TemporalGraphRuntime`,
+    `crucible::TemporalGraphFork`, `crucible::TemporalGraphSearch`,
+    `checks.crucible.phase1.gates.contentAddress`, and
+    `checks.crucible.phase1.gates.replayOracle`: save materializes a
+    replay-oracle-checked fat checkpoint and persists the same graph closure to
+    the DAG store; resume records the thin closure before realizing through
+    `instantiate`; fork realizes the base and records the branch as a thin graph
+    checkpoint; replay validates the stored fat checkpoint against thin replay;
+    and search expands a reduced frontier, materializing only explored children
+    through the configured checkpoint policy. No separate checkpoint-store state
+    representation is introduced.
