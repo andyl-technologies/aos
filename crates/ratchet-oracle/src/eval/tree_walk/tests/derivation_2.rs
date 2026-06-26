@@ -163,6 +163,7 @@ struct DerivationCacheRun {
     force_misses: u64,
     path_reuses: u64,
     output_path_reuses: u64,
+    hash_calculations: u64,
 }
 
 fn eval_single_derivation_with_cache(
@@ -191,6 +192,7 @@ fn eval_single_derivation_with_cache(
         force_misses: outcome.stats().force_cache_misses(),
         path_reuses: outcome.stats().derivation_aterm_path_reuses(),
         output_path_reuses: outcome.stats().static_derivation_output_path_reuses(),
+        hash_calculations: outcome.stats().derivation_hash_calculations(),
     }
 }
 
@@ -621,6 +623,10 @@ fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
         assert_eq!(uncached.output_path_reuses, 0);
         assert_eq!(first.output_path_reuses, 0);
         assert_eq!(reuse.output_path_reuses, expected_output_path_reuses);
+        if expected_output_path_reuses > 0 {
+            assert!(first.hash_calculations > 0);
+            assert_eq!(reuse.hash_calculations, 0);
+        }
     }
 }
 
@@ -693,8 +699,12 @@ fn derivation_strict_cached_static_closure_reuse_preserves_drv_surfaces() {
     assert_eq!(uncached.stats().static_derivation_output_path_reuses(), 0);
     assert_eq!(first.stats().derivation_aterm_path_reuses(), 0);
     assert_eq!(first.stats().static_derivation_output_path_reuses(), 0);
+    assert!(first.stats().derivation_hash_calculations() > 0);
     assert_eq!(reuse.stats().derivation_aterm_path_reuses(), 2);
     assert_eq!(reuse.stats().static_derivation_output_path_reuses(), 2);
+    assert!(
+        reuse.stats().derivation_hash_calculations() < first.stats().derivation_hash_calculations()
+    );
     assert_eq!(
         cache
             .lock()

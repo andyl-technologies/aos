@@ -532,19 +532,12 @@ impl TreeWalk {
                     DerivationOutputResolution::DeferredPlaceholders,
                 )
             } else {
-                let hash = self.hash_derivation_modulo_with_inputs(
-                    id,
-                    span,
-                    &derivation,
-                    &input_hashes.hashes,
-                )?;
                 let known_hash = self.resolve_static_derivation_outputs_with_cache(
                     id,
                     span,
                     &name,
                     &mut derivation,
                     &input_hashes,
-                    &hash,
                 )?;
                 let drv_path = self.calculate_derivation_path_with_aterm_cache(
                     id,
@@ -584,7 +577,6 @@ impl TreeWalk {
         name: &str,
         derivation: &mut nix_compat::derivation::Derivation,
         input_hashes: &KnownDerivationInputHashes,
-        hash: &DerivationHashModulo,
     ) -> Result<DerivationHashModulo, TreeWalkError> {
         let pre_output_aterm =
             self.derivation_aterm_bytes_with_input_hashes(derivation, &input_hashes.hashes);
@@ -598,7 +590,9 @@ impl TreeWalk {
             }
         }
 
-        self.calculate_output_paths(id, span, name, derivation, hash)?;
+        let hash =
+            self.hash_derivation_modulo_with_inputs(id, span, derivation, &input_hashes.hashes)?;
+        self.calculate_output_paths(id, span, name, derivation, &hash)?;
         let known_hash =
             self.hash_derivation_modulo_with_inputs(id, span, derivation, &input_hashes.hashes)?;
         self.observe_static_derivation_output_paths(id, &pre_output_aterm, derivation, known_hash);

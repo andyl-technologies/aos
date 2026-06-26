@@ -34,6 +34,7 @@ impl TreeWalk {
             early_cutoffs: self.stats.early_cutoffs,
             derivation_aterm_path_reuses: self.stats.derivation_aterm_path_reuses,
             static_derivation_output_path_reuses: self.stats.static_derivation_output_path_reuses,
+            derivation_hash_calculations: self.stats.derivation_hash_calculations,
             heap_chunks: arena.chunks as u64,
             heap_reserved_bytes: arena.reserved_bytes as u64,
             heap_used_bytes: arena.used_bytes as u64,
@@ -65,6 +66,7 @@ impl TreeWalk {
             early_cutoffs = stats.early_cutoffs(),
             derivation_aterm_path_reuses = stats.derivation_aterm_path_reuses(),
             static_derivation_output_path_reuses = stats.static_derivation_output_path_reuses(),
+            derivation_hash_calculations = stats.derivation_hash_calculations(),
             heap_chunks = stats.heap_chunks(),
             heap_reserved_bytes = stats.heap_reserved_bytes(),
             heap_used_bytes = stats.heap_used_bytes(),
@@ -124,5 +126,10 @@ impl TreeWalk {
             .stats
             .static_derivation_output_path_reuses
             .saturating_add(1);
+    }
+
+    pub(super) fn increment_derivation_hash_calculations(&mut self) {
+        self.stats.derivation_hash_calculations =
+            self.stats.derivation_hash_calculations.saturating_add(1);
     }
 }

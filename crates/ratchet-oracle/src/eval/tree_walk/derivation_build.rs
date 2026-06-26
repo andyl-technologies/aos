@@ -343,12 +343,13 @@ impl TreeWalk {
     }
 
     pub(super) fn hash_derivation_modulo_with_inputs(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         derivation: &nix_compat::derivation::Derivation,
         input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
     ) -> Result<DerivationHashModulo, TreeWalkError> {
+        self.increment_derivation_hash_calculations();
         if let Some(digest) = self.fixed_output_derivation_digest(id, span, derivation)? {
             return Ok(digest);
         }
@@ -555,11 +556,12 @@ impl TreeWalk {
     }
 
     pub(super) fn hash_floating_ca_derivation_modulo_with_inputs(
-        &self,
+        &mut self,
         derivation: &nix_compat::derivation::Derivation,
         floating_ca_output: FloatingCaOutput,
         input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
     ) -> DerivationHashModulo {
+        self.increment_derivation_hash_calculations();
         let aterm = self.floating_ca_derivation_aterm_bytes(
             derivation,
             floating_ca_output,
