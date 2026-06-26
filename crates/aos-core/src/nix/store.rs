@@ -221,6 +221,42 @@ impl NixCli {
             .collect())
     }
 
+    /// Returns the union recursive closure of many store paths in a single
+    /// `nix-store -qR` invocation.
+    ///
+    /// Equivalent to calling [`closure`](Self::closure) for each path and
+    /// unioning the results, but with one subprocess instead of one per path —
+    /// the difference between a handful of milliseconds and tens of seconds for a
+    /// few-hundred-path installable set. The result is **not** deduplicated or
+    /// ordered (overlapping closures repeat); callers that need a unique set
+    /// should `sort`/`dedup`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nix-store` cannot be spawned, the query fails (e.g. a
+    /// path is not valid), or the output is not UTF-8.
+    pub fn closure_many(&self, paths: &[&str]) -> Result<Vec<String>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let output = Command::new("nix-store")
+            .envs(aos_nix_env())
+            .arg("-qR")
+            .args(paths)
+            .stderr(Stdio::inherit())
+            .output()
+            .context("failed to run nix-store -qR")?;
+        if !output.status.success() {
+            anyhow::bail!("nix-store -qR failed");
+        }
+        let text = String::from_utf8(output.stdout).context("invalid utf-8 from nix-store -qR")?;
+        Ok(text
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect())
+    }
+
     /// Queries metadata for a store path via individual `nix-store -q`
     /// commands (`--hash`, `--size`, `--references`, `--deriver`).
     ///
