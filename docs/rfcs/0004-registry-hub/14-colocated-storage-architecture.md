@@ -410,12 +410,28 @@ green.
       is **per-tenant `TenantDb` sharding** (foundation built — E2). Native HA via
       streaming SQLite replication (LiteFS/Litestream-style) is the analogous
       native lever.
-- [x] Decommission D1 as the system of record. **Done in effect:** with
-      `HUB_SQLITE_DO=1` live on prod, **`HubDb`'s colocated SQLite is the
-      authoritative SoR**; D1 is no longer on the request path. The D1 database is
-      **retained as a cold fallback/archive** (unset the flag to fail back), not
-      deleted — the safe terminal state. Full deletion is an optional later
-      housekeeping step once `HubDb` has soaked.
+- [x] Decommission D1 as the system of record. **DONE — D1 is killed in the
+      runtime.** The worker has **no D1 at all**: `fetch` always forwards to
+      `HubDb`; the Cron + queue forward to the DO's seal-gated `/_internal/{cron,
+      job}` and run the indexer/jobs over `SqlDoBackend` (the indexer functions
+      now take `Box<dyn Backend>`); `d1backend.rs`, the `REGISTRY_DB` binding, the
+      `HUB_SQLITE_DO` flag, the read-replica bookmark/session code, and the worker
+      `d1` feature are all deleted; `wrangler.toml` has no `[[d1_databases]]`.
+      Live on `aos.andyl.org` (~45 ms warm), reads/writes/auth all green. The prod
+      D1 database still physically exists but is **unbound and unreferenced** —
+      delete at will.
+  - **Cutover bug fixed (the real reason prod 404'd):** DO SQLite binds `?`
+      **positionally**, not sqlite's numbered `?N`, so every parameterized query
+      silently matched nothing (`registry_by_slug`, auth). `SqlDoBackend` now
+      rewrites `?N`→`?` with appearance-order expansion. Data was migrated D1→
+      `HubDb` via a seal-gated `/_admin/sql` replay (FK-ordered, DELETE-then-
+      INSERT to clear migration-seeded rows), re-gated behind `cutover-admin`.
+  - **Follow-up (not in the running system):** the native CLI's deploy/seed
+      tooling in `cloudflare.rs` (`render_wrangler_toml`'s D1 block, `provision`'s
+      D1 creation, and `WranglerD1Backend` / the `--target d1:` init/migrate/
+      registry-add commands) still contains D1 code. Removing it means rewiring
+      the CLI's data ops to target `HubDb` through the worker API — tracked as the
+      remaining D1-code-removal task.
 
 ### Cross-cutting gates (every phase)
 
