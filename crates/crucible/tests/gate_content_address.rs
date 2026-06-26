@@ -7,11 +7,11 @@ use std::fmt::Debug;
 
 use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash,
-    Decision, DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta,
-    DeviceRngState, EngineError, EventKey, EventLogOffset, FaultDecision, FaultId, FaultState,
-    Icount, MaterializedState, NodeBlobRef, NodeId, PendingFrame, RngDecision, RngStreamId,
-    RngStreamPosition, ScenarioDef, Schedule, SchedulerState, State, TemporalGraph, TimerId,
-    TimerRegistry, TimerState, VirtualTime, VmSnapshotRef, World, bake, reduce, step,
+    CowDeltaKind, CowDeltaRef, Decision, DecisionRngState, DeliveryOrderDecision, DeviceId,
+    DeviceOverlayDelta, DeviceRngState, EngineError, EventKey, EventLogOffset, FaultDecision,
+    FaultId, FaultState, Icount, MaterializedState, NodeBlobRef, NodeId, PendingFrame, RngDecision,
+    RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerState, State, TemporalGraph,
+    TimerId, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef, World, bake, reduce, step,
 };
 
 #[test]
@@ -392,6 +392,81 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
 }
 
 #[test]
+fn gate_content_address_cow_sharing_dedups_identical_fork_deltas() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "cow-sharing-root",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(
+            &scenario,
+            bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    let first = step(&genesis, generated_decision(377, 0));
+    let second = step(&genesis, generated_decision(377, 1));
+    let shared_vm_delta =
+        ContentHash::from_canonical_material("crucible.test.cow-sharing.vm", "dirty-page=7");
+    let shared_overlay_delta =
+        ContentHash::from_canonical_material("crucible.test.cow-sharing.overlay", "sector=22");
+    let shared_log_prefix =
+        ContentHash::from_canonical_material("crucible.test.cow-sharing.log", "shared-prefix");
+    let shared_log_segment =
+        ContentHash::from_canonical_material("crucible.test.cow-sharing.log", "events=boot-ready");
+    let first_checkpoint = cow_fork_checkpoint(
+        &first,
+        &genesis,
+        shared_vm_delta,
+        shared_overlay_delta,
+        shared_log_prefix,
+        shared_log_segment,
+    );
+    let second_checkpoint = cow_fork_checkpoint(
+        &second,
+        &genesis,
+        shared_vm_delta,
+        shared_overlay_delta,
+        shared_log_prefix,
+        shared_log_segment,
+    );
+    let first_refs: BTreeSet<_> = first_checkpoint.cow_delta_refs().into_iter().collect();
+    let second_refs: BTreeSet<_> = second_checkpoint.cow_delta_refs().into_iter().collect();
+
+    assert!(first_refs.contains(&CowDeltaRef::new(CowDeltaKind::VmMemory, shared_vm_delta)));
+    assert!(first_refs.contains(&CowDeltaRef::new(
+        CowDeltaKind::DeviceOverlay,
+        shared_overlay_delta
+    )));
+    assert!(first_refs.contains(&CowDeltaRef::new(
+        CowDeltaKind::EventLogSegment,
+        shared_log_segment
+    )));
+    assert_eq!(first_refs.len(), 4);
+    assert_eq!(second_refs.len(), 4);
+    assert_eq!(
+        graph.marginal_fork_cow_delta_objects(&first_checkpoint),
+        first_refs.len()
+    );
+
+    graph
+        .cache_snapshot(&first, first_checkpoint)
+        .unwrap_or_else(|error| panic!("first fork should cache: {error}"));
+
+    assert_eq!(graph.marginal_fork_cow_delta_objects(&second_checkpoint), 1);
+
+    graph
+        .cache_snapshot(&second, second_checkpoint)
+        .unwrap_or_else(|error| panic!("second fork should cache: {error}"));
+    let stats = graph.cow_sharing_stats();
+
+    assert_eq!(stats.unique_objects, 5);
+    assert_eq!(stats.logical_references, 10);
+    assert_eq!(stats.deduped_references(), 5);
+}
+
+#[test]
 fn gate_content_address_checkpoint_rejects_malformed_parent_edges() {
     let scenario_def = scenario("scenario=checkpoint-parent\nseed=89\n");
     let parent = Configuration {
@@ -733,6 +808,68 @@ fn generated_decision(seed: u64, index: u64) -> Decision {
             value: seed ^ index,
         }),
     }
+}
+
+fn cow_fork_checkpoint(
+    configuration: &Configuration,
+    parent: &Configuration,
+    vm_delta: ContentHash,
+    overlay_delta: ContentHash,
+    log_prefix: ContentHash,
+    log_segment: ContentHash,
+) -> Checkpoint {
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let device = DeviceId {
+        name: String::from("disk-a"),
+    };
+    let parent_vm =
+        ContentHash::from_canonical_material("crucible.test.cow-sharing.vm", "parent-ready");
+    let resolved_vm =
+        ContentHash::from_canonical_material("crucible.test.cow-sharing.vm", "resolved-dirty");
+    let parent_overlay =
+        ContentHash::from_canonical_material("crucible.test.cow-sharing.overlay", "base");
+    let resolved_overlay =
+        ContentHash::from_canonical_material("crucible.test.cow-sharing.overlay", "resolved");
+    let icount = Icount { retired: 33 };
+    let node_blobs = BTreeMap::from([(
+        node.clone(),
+        NodeBlobRef::cow_delta(parent_vm, vm_delta, resolved_vm),
+    )]);
+    let node_icounts = BTreeMap::from([(node.clone(), icount)]);
+    let state = MaterializedState::from_components(
+        BTreeMap::from([(
+            node,
+            VmSnapshotRef::new(
+                NodeBlobRef::cow_delta(parent_vm, vm_delta, resolved_vm),
+                icount,
+            ),
+        )]),
+        BTreeMap::from([(
+            device,
+            DeviceOverlayDelta::new(
+                parent_overlay,
+                overlay_delta,
+                resolved_overlay,
+                DeviceRngState::empty(),
+            ),
+        )]),
+        SchedulerState::empty(),
+        DecisionRngState::empty(),
+        EventLogOffset::with_appended_segment(log_prefix, 96, 3, log_segment),
+    );
+
+    Checkpoint::from_recorded_configuration(
+        configuration,
+        Some(parent),
+        VirtualTime::default(),
+        node_icounts,
+        CheckpointKind::Fat,
+        node_blobs,
+    )
+    .unwrap_or_else(|error| panic!("CoW fork checkpoint should be recorded-shaped: {error}"))
+    .with_materialized_state(Some(state))
 }
 
 fn recorded_fat_checkpoint(configuration: &Configuration) -> Checkpoint {

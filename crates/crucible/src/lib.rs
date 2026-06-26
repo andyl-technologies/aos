@@ -30,16 +30,17 @@ pub use backend::{
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use model::{
     AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, ChoiceTag, ClockDriftRate,
-    Configuration, ContentHash, Decision, DecisionRngState, DeliveryOrderDecision, DeviceId,
-    DeviceOverlayDelta, DeviceRngState, EngineError, EventKey, EventLogOffset, FaultDecision,
-    FaultId, FaultState, FrontierChild, GenesisCheckpoint, Icount, IrqVector,
-    MaterializationPolicy, MaterializationTrigger, MaterializedState, NodeBlobRef, NodeClockSkew,
-    NodeCounter, NodeId, OverrideDecision, PendingFrame, PreemptionDecision, PreemptionKind,
-    ReadyPoint, ReplayOracleCheck, RngDecision, RngStreamId, RngStreamPosition, RuntimeState,
-    SavevmCompletenessHedge, ScenarioDef, Schedule, ScheduleError, SchedulerState, SchedulingPoint,
-    Shift, SimDuration, SimInstant, SimOffset, State, TemporalGraph, TimeConversionError, TimerId,
-    TimerRegistry, TimerState, VcpuId, VirtualInstant, VirtualTime, VmSnapshotRef, WhiteBoxPolicy,
-    World, WorldNode, bake, instantiate, reduce, step,
+    Configuration, ContentHash, CowDeltaKind, CowDeltaRef, CowSharingStats, Decision,
+    DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
+    EngineError, EventKey, EventLogOffset, FaultDecision, FaultId, FaultState, FrontierChild,
+    GenesisCheckpoint, Icount, IrqVector, MaterializationPolicy, MaterializationTrigger,
+    MaterializedState, NodeBlobRef, NodeClockSkew, NodeCounter, NodeId, OverrideDecision,
+    PendingFrame, PreemptionDecision, PreemptionKind, ReadyPoint, ReplayOracleCheck, RngDecision,
+    RngStreamId, RngStreamPosition, RuntimeState, SavevmCompletenessHedge, ScenarioDef, Schedule,
+    ScheduleError, SchedulerState, SchedulingPoint, Shift, SimDuration, SimInstant, SimOffset,
+    State, TemporalGraph, TimeConversionError, TimerId, TimerRegistry, TimerState, VcpuId,
+    VirtualInstant, VirtualTime, VmSnapshotRef, WhiteBoxPolicy, World, WorldNode, bake,
+    instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,

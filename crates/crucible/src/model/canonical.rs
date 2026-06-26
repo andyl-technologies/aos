@@ -231,6 +231,13 @@ fn write_rng_stream_position(hasher: &mut MaterialHasher, position: RngStreamPos
 
 fn write_event_log_offset(hasher: &mut MaterialHasher, offset: EventLogOffset) {
     write_content_hash(hasher, &offset.prefix);
+    match offset.appended_segment {
+        Some(segment) => {
+            hasher.write_bool(true);
+            write_content_hash(hasher, &segment);
+        }
+        None => hasher.write_bool(false),
+    }
     hasher.write_u64(offset.bytes);
     hasher.write_u64(offset.events);
 }
