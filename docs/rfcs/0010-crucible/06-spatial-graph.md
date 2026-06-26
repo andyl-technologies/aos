@@ -981,9 +981,19 @@ authority for its shape. The contract those files may rely on:
   (arch, content-addressed kernel/root/initrd, cmdline, memory, fixed vCPU count,
   fixed icount shift, ready point, white-box opt-in); test no host-path leakage.
   — satisfies [SPAT-7], [SPAT-8]; spec §3.1.
-- [ ] **T-SPAT-6** Implement the `ReadyPoint` policy set (fixed-icount /
+- [x] **T-SPAT-6** Implement the `ReadyPoint` policy set (fixed-icount /
   network-idle / console-marker / agent-signal) and gate white-box ready points
   behind the white-box opt-in. — satisfies [SPAT-9]; spec §3.1.
+  - Completed by `crates/crucible/src/model.rs`: `WorldNode` carries the
+    canonical `ReadyPoint` and `WhiteBoxPolicy`, the `ReadyPoint` enum includes
+    `FixedIcount`, `NetworkIdle`, `ConsoleMarker`, and `AgentSignal`, and
+    `World::validate_ready_point_policies` rejects `AgentSignal` unless
+    `WhiteBoxPolicy::Enabled` is set. Model `bake` and QEMU bake validation call
+    the shared validator before producing a genesis snapshot, and ready-point
+    material is part of the canonical world/bake hash input. `crates/crucible/src/lib.rs`
+    covers canonical hashing, material sensitivity, all four policies, and
+    white-box opt-in rejection; `checks.crucible.phase1.executionReadyPoint`
+    gates the task.
 - [ ] **T-SPAT-7** Implement `LinkDef` with canonically-ordered endpoints
   validated against declared nodes. — satisfies [SPAT-10]; spec §3.2.
 - [ ] **T-SPAT-8** Implement the `MIN_LINK_LATENCY` floor and reject zero/negative
