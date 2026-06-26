@@ -82,7 +82,9 @@ fn native_file_instantiation_materializes_persistent_root_parse_cache() -> Resul
 
 #[test]
 fn native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closure() -> Result<()> {
-    use crate::cache::{ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey};
+    use crate::cache::{
+        DurableBlake3Hash, ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey,
+    };
 
     let root = unique_temp_dir("aos-nix-native-instantiate-file-cache-parity");
     fs::create_dir_all(&root)?;
@@ -136,6 +138,14 @@ fn native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closur
     let first_parse_cache = ParseCache::new(&first_parse_root);
     let parse_key = first_parse_cache.key_for_source(&source);
     let file_key = ParseFileKey::for_source(&realpath, &source);
+    let mut canaries = durable_hash_surface_canaries(
+        "file root parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(parse_key.as_bytes()),
+    );
+    canaries.extend(durable_hash_surface_canaries(
+        "file root content BLAKE3",
+        file_key.content_hash(),
+    ));
     assert!(first_parse_cache.entry_for_key(parse_key).is_complete());
     assert!(
         PersistCache::open(&persist_root)?
@@ -163,6 +173,21 @@ fn native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closur
     let hit = hit_native.instantiate_closure(&file, "pkgs.hello")?;
 
     assert_eq!(hit, uncached);
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached native file closure",
+        &uncached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cache-on native file miss closure",
+        &miss,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "persistent-hit native file closure",
+        &hit,
+        &canaries,
+    );
     assert!(
         ParseCache::new(&second_parse_root)
             .entry_for_key(parse_key)

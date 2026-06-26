@@ -1868,10 +1868,13 @@ alone (`M-1`/`Q-A`).
       disabled, with configured parse/persist/eval cache on the miss/write
       path, and with a fresh parse root hydrated from a persistent file-artifact
       hit. It requires the selected root `.drv` path and every recorded
-      input/root ATerm byte payload to be identical and records the persistent
-      file-index hit. This samples the current native file-instantiation
-      closure surface, not the full cached-vs-uncached AOS closure harness or
-      future value-memoization safety net (`S-14`).
+      input/root ATerm byte payload to be identical, records the persistent
+      file-index hit, and scans cache-off, cache-on miss, and persistent-hit
+      closure paths/ATerm bytes for the exercised file-root parse-cache and
+      file-content BLAKE3 renderings (hex, raw bytes, and Nix base32). This
+      samples the current native file-instantiation closure surface, not the
+      full cached-vs-uncached AOS closure harness, full leak-invariant harness,
+      or future value-memoization safety net (`S-14`/`S-15`).
 - [x] Current raw native expression durable parse-cache integration:
       `NixNative::lower_native_source_bytes`, when called without a canonical
       source path and with both `parse_cache_root` and `persist_cache_root`
@@ -2016,9 +2019,12 @@ alone (`M-1`/`Q-A`).
       disabled, with configured parse/persist/eval cache on the miss/write
       path, and with a fresh parse root hydrated from a persistent raw
       parse-artifact hit. It requires the root `.drv` path and every recorded
-      input/root ATerm byte payload to be identical and records the persistent
-      parse-index hit. This samples the current native raw-instantiation
-      closure surface, not the full cached-vs-uncached AOS closure harness or
+      input/root ATerm byte payload to be identical, records the persistent
+      parse-index hit, and scans cache-off, cache-on miss, and persistent-hit
+      closure paths/ATerm bytes for the exercised raw-wrapper parse-cache
+      BLAKE3 renderings (hex, raw bytes, and Nix base32). This samples the
+      current native raw-instantiation closure surface, not the full
+      cached-vs-uncached AOS closure harness, full leak-invariant harness, or
       future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [x] Current native file-instantiation cache-off/cached closure parity canary:
@@ -2027,10 +2033,13 @@ alone (`M-1`/`Q-A`).
       disabled, with configured parse/persist/eval cache on the miss/write
       path, and with a fresh parse root hydrated from a persistent file-artifact
       hit. It requires the selected root `.drv` path and every recorded
-      input/root ATerm byte payload to be identical and records the persistent
-      file-index hit. This samples the current native file-instantiation
-      closure surface, not the full cached-vs-uncached AOS closure harness or
-      future value-memoization safety net
+      input/root ATerm byte payload to be identical, records the persistent
+      file-index hit, and scans cache-off, cache-on miss, and persistent-hit
+      closure paths/ATerm bytes for the exercised file-root parse-cache and
+      file-content BLAKE3 renderings (hex, raw bytes, and Nix base32). This
+      samples the current native file-instantiation closure surface, not the
+      full cached-vs-uncached AOS closure harness, full leak-invariant harness,
+      or future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [x] Current native semantic-no-op leaf edit closure canary:
       `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`
