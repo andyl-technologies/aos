@@ -388,8 +388,8 @@ impl TreeWalk {
                 span,
             ));
         }
-        let cache_subject =
-            self.force_cache_subject_for_first_class_get_env_call(id, builtin, &args);
+        let cache_subject = self
+            .force_cache_subject_for_first_class_cacheable_impure_unary_call(id, builtin, &args);
         let memoization_decision = cache_subject
             .as_ref()
             .map(|subject| self.record_force_cache_memoization_demand(subject))

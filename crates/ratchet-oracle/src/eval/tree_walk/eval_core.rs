@@ -1514,19 +1514,14 @@ impl TreeWalk {
         })
     }
 
-    pub(super) fn force_cache_subject_for_first_class_get_env_call(
+    pub(super) fn force_cache_subject_for_first_class_cacheable_impure_unary_call(
         &self,
         id: IrId,
         builtin: Builtin,
         args: &[EvalPrimOpArg],
     ) -> Option<ForceCacheSubject> {
-        if !matches!(
-            builtin.execution(),
-            BuiltinExecution::StrictUnary {
-                primop: StrictUnaryPrimOp::GetEnv,
-                ..
-            }
-        ) || args.len() != 1
+        if !Self::builtin_execution_is_cacheable_impure_unary_call(builtin.execution())
+            || args.len() != 1
             || !self.with_scopes.is_empty()
             || !self.scoped_globals.is_empty()
         {
@@ -1546,6 +1541,21 @@ impl TreeWalk {
             free_var_value_hashes,
             memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
         })
+    }
+
+    const fn builtin_execution_is_cacheable_impure_unary_call(execution: BuiltinExecution) -> bool {
+        matches!(
+            execution,
+            BuiltinExecution::Import
+                | BuiltinExecution::PathExists
+                | BuiltinExecution::ReadDir
+                | BuiltinExecution::ReadFile
+                | BuiltinExecution::ReadFileType
+                | BuiltinExecution::StrictUnary {
+                    primop: StrictUnaryPrimOp::GetEnv,
+                    ..
+                }
+        )
     }
 
     fn inline_free_var_value_hashes_for_body(

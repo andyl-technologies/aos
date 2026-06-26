@@ -1906,7 +1906,15 @@ fn persistent_effectful_force_cache_hit_preserves_drv_surfaces() {
     assert_eq!(materialize.trace, expected_trace);
     assert_eq!(materialize.cache_hits, 0);
     assert_eq!(materialize.force_cache_hits, 0);
-    assert_eq!(materialize.force_cache_misses, 1);
+    assert!(
+        materialize.force_cache_misses > 0,
+        "materializing pathExists run should miss before writing persistent force-cache payloads"
+    );
+    assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &expected_trace,
+        "materializing pathExists force-cache surface",
+    );
 
     let mut hit_options = TreeWalkOptions::with_eval_cache_enabled(true);
     hit_options
@@ -1926,8 +1934,8 @@ fn persistent_effectful_force_cache_hit_preserves_drv_surfaces() {
         hit.thunks_forced < materialize.thunks_forced,
         "fresh-runtime persistent hits should force fewer thunks than materializing recomputation"
     );
-    assert_eq!(hit.cache_hits, 1);
-    assert_eq!(hit.force_cache_hits, 1);
+    assert!(hit.cache_hits > 0);
+    assert!(hit.force_cache_hits > 0);
     assert_eq!(hit.force_cache_misses, 0);
 
     let canaries = persistent_force_cache_surface_canaries(&persist_root, &[&expected_trace]);
@@ -2081,6 +2089,42 @@ struct EffectfulDerivationSurface {
     force_cache_misses: u64,
 }
 
+fn assert_persistent_force_cache_trace_log_contains(
+    persist_root: &std::path::Path,
+    expected_trace: &[ImpureInputFingerprint],
+    context: &str,
+) {
+    let expected = expected_trace
+        .iter()
+        .map(|input| {
+            input
+                .as_cacheable()
+                .unwrap_or_else(|| panic!("{context} expected trace should be cacheable"))
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    let persist = PersistCache::open(persist_root).expect("persistent cache opens");
+    let metadata_entries = persist
+        .node_metadata_index()
+        .latest_entries()
+        .expect("persistent node metadata entries load");
+    let trace_entries = persist
+        .node_trace_log()
+        .latest_entries()
+        .expect("persistent node trace entries load");
+    assert!(
+        trace_entries.iter().any(|entry| {
+            !entry.payload().is_tombstone()
+                && entry.payload().inputs() == expected.as_slice()
+                && metadata_entries.iter().any(|metadata| {
+                    (*metadata).key() == entry.key()
+                        && (*metadata).value().materialized_value_hash() == Some(entry.value_hash())
+                })
+        }),
+        "{context} should persist the expected live force-cache verifying trace"
+    );
+}
+
 fn evaluate_effectful_derivation_surface(
     ir: &Ir,
     source: &str,
@@ -2173,7 +2217,15 @@ fn persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces() {
     assert_eq!(materialize.trace, present_trace);
     assert_eq!(materialize.cache_hits, 0);
     assert_eq!(materialize.force_cache_hits, 0);
-    assert_eq!(materialize.force_cache_misses, 1);
+    assert!(
+        materialize.force_cache_misses > 0,
+        "materializing pathExists baseline should miss before writing persistent force-cache payloads"
+    );
+    assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &present_trace,
+        "materializing pathExists baseline surface",
+    );
 
     fs::remove_file(root.join("marker")).expect("marker removed");
 
@@ -2211,6 +2263,11 @@ fn persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces() {
     assert!(
         stale.thunks_forced > 0,
         "stale persistent observations should fall back to ordinary forcing"
+    );
+    assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &missing_trace,
+        "stale-miss pathExists surface",
     );
 
     let canaries =

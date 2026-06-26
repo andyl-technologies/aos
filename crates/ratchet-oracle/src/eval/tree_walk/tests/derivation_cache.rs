@@ -21,6 +21,42 @@ fn assert_derivation_surface_canaries_absent(
     assert_drv_surface_canaries_absent(surface_name, &surface.path, &surface.aterm, canaries);
 }
 
+fn assert_persistent_force_cache_trace_log_contains(
+    persist_root: &Path,
+    expected_trace: &[ImpureInputFingerprint],
+    context: &str,
+) {
+    let expected = expected_trace
+        .iter()
+        .map(|input| {
+            input
+                .as_cacheable()
+                .unwrap_or_else(|| panic!("{context} expected trace should be cacheable"))
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    let persist = PersistCache::open(persist_root).expect("persistent cache opens");
+    let metadata_entries = persist
+        .node_metadata_index()
+        .latest_entries()
+        .expect("persistent node metadata entries load");
+    let trace_entries = persist
+        .node_trace_log()
+        .latest_entries()
+        .expect("persistent node trace entries load");
+    assert!(
+        trace_entries.iter().any(|entry| {
+            !entry.payload().is_tombstone()
+                && entry.payload().inputs() == expected.as_slice()
+                && metadata_entries.iter().any(|metadata| {
+                    (*metadata).key() == entry.key()
+                        && (*metadata).value().materialized_value_hash() == Some(entry.value_hash())
+                })
+        }),
+        "{context} should persist the expected live force-cache verifying trace"
+    );
+}
+
 fn evaluate_cached_derivation_surface(
     ir: &Ir,
     source: &str,
@@ -106,7 +142,15 @@ fn assert_cacheable_impure_leaf_force_hit_preserves_drv_surface(
     assert_eq!(materialize.trace, expected_trace);
     assert_eq!(materialize.cache_hits, 0);
     assert_eq!(materialize.force_cache_hits, 0);
-    assert_eq!(materialize.force_cache_misses, 1);
+    assert!(
+        materialize.force_cache_misses > 0,
+        "materializing run should miss before writing persistent force-cache payloads"
+    );
+    assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &expected_trace,
+        "materializing force-cache surface",
+    );
 
     let mut hit_options = TreeWalkOptions::with_eval_cache_enabled(true);
     configure_options(&mut hit_options);
@@ -120,8 +164,8 @@ fn assert_cacheable_impure_leaf_force_hit_preserves_drv_surface(
         hit.thunks_forced < materialize.thunks_forced,
         "fresh-runtime persistent hits should force fewer thunks than materializing recomputation"
     );
-    assert_eq!(hit.cache_hits, 1);
-    assert_eq!(hit.force_cache_hits, 1);
+    assert!(hit.cache_hits > 0);
+    assert!(hit.force_cache_hits > 0);
     assert_eq!(hit.force_cache_misses, 0);
 
     let canaries = persistent_force_cache_surface_canaries(&persist_root, &[&expected_trace]);
@@ -176,7 +220,15 @@ fn assert_cacheable_impure_leaf_force_stale_miss_preserves_drv_surface(
     assert_eq!(materialize.trace, first_trace);
     assert_eq!(materialize.cache_hits, 0);
     assert_eq!(materialize.force_cache_hits, 0);
-    assert_eq!(materialize.force_cache_misses, 1);
+    assert!(
+        materialize.force_cache_misses > 0,
+        "materializing stale baseline should miss before writing persistent force-cache payloads"
+    );
+    assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &first_trace,
+        "materializing stale-miss baseline surface",
+    );
 
     mutate_input();
 
@@ -207,6 +259,11 @@ fn assert_cacheable_impure_leaf_force_stale_miss_preserves_drv_surface(
         stale.thunks_forced > 0,
         "stale persistent observations should fall back to ordinary forcing"
     );
+    assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &changed_trace,
+        "stale-miss recomputed force-cache surface",
+    );
 
     let canaries =
         persistent_force_cache_surface_canaries(&persist_root, &[&first_trace, &changed_trace]);
@@ -224,6 +281,67 @@ fn assert_cacheable_impure_leaf_force_stale_miss_preserves_drv_surface(
     assert_derivation_surface_canaries_absent("stale-miss force-cache surface", &stale, &canaries);
 
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
+#[test]
+fn persistent_first_class_import_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
+    let root = unique_temp_dir("force-cache-import-drv-source");
+    let imported = root.join("imported.nix");
+    let original_source = br#""import payload""#;
+    let changed_source = br#""changed import payload""#;
+    fs::write(&imported, original_source).expect("import source writes");
+    let root = fs::canonicalize(root).expect("source root canonicalizes");
+    let imported = fs::canonicalize(root.join("imported.nix")).expect("import path canonicalizes");
+    let imported_path = path_bytes(&imported);
+    let source = r#"let
+             b = builtins;
+           in {
+             pkg = derivationStrict {
+               name = "force-cache-import-drv-surface";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ (b.import ./imported.nix) ];
+             };
+           }"#;
+    let ir = lower(source);
+    let expected_trace = vec![
+        ImpureInputFingerprint::import(&imported_path, original_source)
+            .expect("fingerprint builds"),
+    ];
+    let changed_trace = vec![
+        ImpureInputFingerprint::import(&imported_path, changed_source)
+            .expect("changed fingerprint builds"),
+    ];
+
+    assert_cacheable_impure_leaf_force_hit_preserves_drv_surface(
+        "force-cache-import-drv-surface-parity",
+        &ir,
+        source,
+        expected_trace.clone(),
+        |options| {
+            options
+                .set_path_literal_base(path_bytes(&root))
+                .expect("path base configures");
+        },
+    );
+
+    assert_cacheable_impure_leaf_force_stale_miss_preserves_drv_surface(
+        "force-cache-import-drv-stale-parity",
+        &ir,
+        source,
+        expected_trace,
+        changed_trace,
+        |options| {
+            options
+                .set_path_literal_base(path_bytes(&root))
+                .expect("path base configures");
+        },
+        || {
+            fs::write(&imported, changed_source).expect("changed import source writes");
+        },
+    );
+
+    fs::remove_dir_all(root).expect("source temp directory removes");
 }
 
 #[test]
@@ -327,6 +445,11 @@ fn persistent_get_env_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
     assert_eq!(materialize.cache_hits, 0);
     assert_eq!(materialize.force_cache_hits, 0);
     assert_eq!(materialize.force_cache_misses, 1);
+    assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &expected_trace,
+        "materializing getEnv surface",
+    );
 
     let mut hit_options = TreeWalkOptions::with_eval_cache_enabled(true);
     hit_options.set_env_var(name.to_vec(), b"env payload".to_vec());
@@ -373,6 +496,11 @@ fn persistent_get_env_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
     assert!(
         changed_replay.thunks_forced > 0,
         "stale persistent getEnv observations should fall back to ordinary forcing"
+    );
+    assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &changed_trace,
+        "changed getEnv replay surface",
     );
 
     let canaries =
