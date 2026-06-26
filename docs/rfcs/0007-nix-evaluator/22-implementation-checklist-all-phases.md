@@ -2342,6 +2342,22 @@ alone (`M-1`/`Q-A`).
       measurement, full AOS closure coverage, the full leak invariant, or
       future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
+- [x] Current native forced-expression sidecar leak canary:
+      `native_instantiation_expr_force_cache_sidecar_hashes_do_not_leak_into_drv_closure`
+      drives the raw-instantiation `NixNative` path through cache-off,
+      persistent demand observation, durable forced-value materialization, and
+      a fresh-runtime persistent pass for a configured `currentSystem` thunk.
+      The final fresh-runtime pass must report a force-cache hit, and the
+      canary scanner only admits persistent node metadata entries whose linked
+      value loads through the cached-expression payload decoder. The canary
+      then scans the resulting `.drv` path and ATerm closure surfaces for
+      forced-expression node metadata BLAKE3 addresses, materialized value
+      BLAKE3 addresses, trace-side BLAKE3 addresses when present, and a
+      representative context-free `NixString` xxh3 hot-hash sentinel. This
+      extends the current native closure safety net to forced-expression
+      persistent sidecars; it is not the full cache-off AOS closure harness,
+      full internal-hash leak invariant, or future value-memoization safety net
+      ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
       future incremental persistence/value memoization, and CI must periodically
       run cold cached-vs-uncached full-closure `.drv` revalidation

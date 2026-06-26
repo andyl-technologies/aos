@@ -209,6 +209,123 @@ fn native_instantiation_expr_cache_off_on_and_persistent_hit_preserve_drv_closur
     Ok(())
 }
 
+fn instantiate_expr_closure_with_stats(
+    native: &NixNative,
+    expr: &str,
+) -> Result<(NativeDrvClosure, crate::eval::EvalStats)> {
+    let source = derivation_path_wrapper_source(expr);
+    let ir = native.lower_native_source(&source, None, None)?;
+    let outcome = native.eval_instantiation_ir(&ir)?;
+    let stats = *outcome.stats();
+    let closure = native.native_drv_closure_from_outcome(outcome)?;
+    Ok((closure, stats))
+}
+
+#[test]
+fn native_instantiation_expr_force_cache_sidecar_hashes_do_not_leak_into_drv_closure() -> Result<()>
+{
+    let root = unique_temp_dir("native-instantiation-force-cache-leak");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let _cleanup = TempTreeCleanup::new(root.clone());
+    let store = root.join("store");
+    let persist_root = root.join("persist");
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+    let expr = r#"let
+         b = builtins;
+       in derivationStrict {
+         name = "native-force-cache-leak";
+         system = "x86_64-linux";
+         builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+         args = [ b.currentSystem ];
+       }"#;
+
+    let mut uncached_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    uncached_options.set_store_dir(store_bytes.clone())?;
+    let (uncached, uncached_stats) =
+        instantiate_expr_closure_with_stats(&NixNative::with_options(0, uncached_options)?, expr)?;
+    assert_eq!(uncached_stats.force_cache_hits(), 0);
+    assert_eq!(uncached_stats.force_cache_misses(), 0);
+    assert_eq!(uncached.drvs().len(), 1);
+    assert!(
+        uncached.root().starts_with(&store),
+        "{}",
+        uncached.root().display()
+    );
+
+    let mut first_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    first_options.set_store_dir(store_bytes.clone())?;
+    first_options.set_persist_cache_root(&persist_root);
+    first_options.set_eval_cache_enabled(true);
+    let (first, first_stats) =
+        instantiate_expr_closure_with_stats(&NixNative::with_options(0, first_options)?, expr)?;
+    assert_eq!(first, uncached);
+    assert_eq!(first_stats.force_cache_hits(), 0);
+    assert!(
+        first_stats.force_cache_misses() > 0,
+        "first native force-cache run should miss before recording demand"
+    );
+
+    let mut materialize_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    materialize_options.set_store_dir(store_bytes.clone())?;
+    materialize_options.set_persist_cache_root(&persist_root);
+    materialize_options.set_eval_cache_enabled(true);
+    let (materialized, materialized_stats) = instantiate_expr_closure_with_stats(
+        &NixNative::with_options(0, materialize_options)?,
+        expr,
+    )?;
+    assert_eq!(materialized, uncached);
+    assert_eq!(materialized_stats.force_cache_hits(), 0);
+    assert!(
+        materialized_stats.force_cache_misses() > 0,
+        "materializing native force-cache run should miss before writing persistent payloads"
+    );
+
+    let mut hit_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    hit_options.set_store_dir(store_bytes)?;
+    hit_options.set_persist_cache_root(&persist_root);
+    hit_options.set_eval_cache_enabled(true);
+    let (hit, hit_stats) =
+        instantiate_expr_closure_with_stats(&NixNative::with_options(0, hit_options)?, expr)?;
+    assert_eq!(hit, uncached);
+    assert!(
+        hit_stats.force_cache_hits() > 0,
+        "fresh native runtime should load the persistent force-cache payload"
+    );
+    assert_eq!(
+        hit_stats.force_cache_misses(),
+        0,
+        "fresh native runtime should not recompute the materialized force-cache payload"
+    );
+
+    let mut canaries = assert_persistent_force_cache_payload_entries(&persist_root)?;
+    let hot_canary = context_free_nix_string_xxh3(b"x86_64-linux");
+    canaries.extend(hot_xxh3_surface_canaries("hot xxh3", hot_canary));
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached native force-cache closure",
+        &uncached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "first native force-cache closure",
+        &first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "materialized native force-cache closure",
+        &materialized,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "persistent-hit native force-cache closure",
+        &hit,
+        &canaries,
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 #[test]
 fn native_instantiation_reified_builtins_do_not_force_nix_path() -> Result<()> {
     let (native, root, store) = native_with_temp_store("native-reified-builtins")?;
