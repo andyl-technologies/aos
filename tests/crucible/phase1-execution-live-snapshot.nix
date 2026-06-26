@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionLiveSnapshot",
-  taskIds ? ["T-EXEC-15"],
+  taskIds ? ["T-EXEC-15" "T-SESS-2"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -17,6 +17,7 @@
   gateTargetRust = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  sessionControlPlane = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -116,6 +117,10 @@
         needle = "gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip";
       }
       {
+        label = "current-thread gate runtime";
+        needle = ''#[tokio::test(flavor = "current_thread")]'';
+      }
+      {
         label = "lock-free live snapshot read";
         needle = "live.read()";
       }
@@ -138,6 +143,14 @@
       {
         label = "bounded stop acknowledgement";
         needle = "stop command should be acknowledged within bounded actor yields";
+      }
+      {
+        label = "post-request quantum measurement";
+        needle = "let stop_requested_after = live.read();";
+      }
+      {
+        label = "one quantum acknowledgement bound";
+        needle = "quanta_after_stop_request <= 1";
       }
       {
         label = "resolved event publication";
@@ -196,6 +209,24 @@
       {
         label = "T-EXEC-15 completion note";
         needle = "Completed by `crates/crucible-session/src/lib.rs`: `LiveSnapshot`";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionControlPlane [
+      {
+        label = "T-SESS-2 checked off";
+        needle = "- [x] **T-SESS-2**";
+      }
+      {
+        label = "T-SESS-2 completion names session-side control-responsive target";
+        needle = "`gate_control_responsive` target observes mailbox-free live progress";
+      }
+      {
+        label = "T-SESS-2 completion names one-quantum stop acknowledgement";
+        needle = "one-quantum stop acknowledgement";
+      }
+      {
+        label = "T-SESS-2 completion names live snapshot gate";
+        needle = "`checks.crucible.phase1.executionLiveSnapshot`";
       }
     ];
 in
@@ -269,6 +300,7 @@ in
             mirror=lock-free-atomics
             reads=mailbox-free
             progress=monotone-quanta
+            control_responsive_bound=quanta-delta-lte-1
             RESULT
           '';
         }

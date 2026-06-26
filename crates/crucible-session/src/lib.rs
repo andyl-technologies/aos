@@ -631,7 +631,7 @@ pub struct SessionRunReport {
 ///
 /// `SessionActor` owns the [`Engine`], polls the command mailbox at state
 /// boundaries, drives at most one scheduler quantum per running-loop iteration,
-/// and yields after each quantum.
+/// and yields after each applied command or scheduler quantum.
 pub struct SessionActor<L> {
     engine: Engine<L>,
     mailbox: mpsc::Receiver<SessionCommand>,
@@ -765,9 +765,9 @@ impl<L: QuantumLoop> SessionActor<L> {
             self.yielded_after_quanta = self
                 .yielded_after_quanta
                 .saturating_add(self.engine.quanta() - quanta_before);
-            tokio::task::yield_now().await;
         }
         self.commands_applied = self.commands_applied.saturating_add(1);
+        tokio::task::yield_now().await;
         Ok(())
     }
 
@@ -1292,16 +1292,16 @@ mod tests {
     }
 
     fn genesis_checkpoint(configuration: &Configuration) -> GenesisCheckpoint {
-        GenesisCheckpoint {
-            checkpoint: Checkpoint::new(
-                ContentHash::from_canonical_material(
-                    "crucible.session.test.baked-genesis",
-                    &format!("{:?}", configuration.id().bytes),
-                ),
-                configuration.id(),
-                CheckpointKind::Fat,
-            ),
-        }
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            configuration,
+            None,
+            VirtualTime::default(),
+            std::collections::BTreeMap::new(),
+            CheckpointKind::Fat,
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap_or_else(|error| panic!("genesis checkpoint should be recorded-shaped: {error}"));
+        GenesisCheckpoint { checkpoint }
     }
 
     fn generated_scenario(seed: u64) -> ScenarioDef {
