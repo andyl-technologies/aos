@@ -244,12 +244,16 @@ enum WorkerCommand {
     Deploy(WorkerArgs),
     /// Provision the provider resources only (no deploy).
     Provision(WorkerArgs),
-    /// Convenience: `worker deploy` then `init --target d1:<name>` in one shot.
+    /// Convenience: provision + deploy + set secrets in one shot.
     ///
-    /// Provisions + deploys + sets secrets, then migrates the schema and (if
-    /// `--root-email` is given) bootstraps the root admin — all CLI-driven over
-    /// D1, with no public init endpoint.
+    /// `HubDb` migrates its own schema on first use (no D1); when `--root-email`
+    /// is given the root admin is bootstrapped via the seal-gated `HubDb`
+    /// endpoint (auto when a `--domain` is bound, else the printed
+    /// `worker bootstrap-root` command).
     Install(WorkerArgs),
+    /// Create the instance root admin against a deployed Worker's seal-gated
+    /// `HubDb` bootstrap endpoint (the D1-free replacement for `init` bootstrap).
+    BootstrapRoot(BootstrapRootArgs),
     /// Authenticate with the hosting provider (browser OAuth, as an alternative
     /// to a provider API token in the environment).
     Login(ProviderOpt),
@@ -267,6 +271,28 @@ struct ProviderOpt {
     provider: Provider,
 }
 
+/// Options for `worker bootstrap-root`: a direct seal-authenticated HTTP call to
+/// a deployed Worker's `HubDb` root-bootstrap endpoint (no provider auth).
+#[derive(Args)]
+struct BootstrapRootArgs {
+    /// Base URL of the deployed Worker (e.g. `https://hub.example.com` or the
+    /// `*.workers.dev` URL).
+    #[arg(long)]
+    url: String,
+    /// The root admin's email.
+    #[arg(long)]
+    email: String,
+    /// The root admin's password (read interactively/stdin if omitted).
+    #[arg(long)]
+    password: Option<String>,
+    /// Read the password from stdin.
+    #[arg(long)]
+    password_stdin: bool,
+    /// The deployment's `HUB_SEAL_KEY` (falls back to the `HUB_SEAL_KEY` env var).
+    #[arg(long)]
+    seal_key: Option<String>,
+}
+
 /// Shared options for the `worker` deployment commands.
 #[derive(Args)]
 struct WorkerArgs {
@@ -278,9 +304,6 @@ struct WorkerArgs {
     /// install — important because those names are unique per Cloudflare account.
     #[arg(long, default_value = "aos-hub")]
     name: String,
-    /// The D1 database name (default: the Worker `--name`).
-    #[arg(long)]
-    d1_name: Option<String>,
     /// The R2 bucket holding the registry surfaces (default: `<name>-surfaces`).
     /// R2 bucket names are unique per account, so the default is derived from
     /// `--name` rather than a fixed string that would collide across installs.
@@ -348,11 +371,6 @@ struct WorkerArgs {
 }
 
 impl WorkerArgs {
-    /// The D1 database name, defaulting to the Worker `--name`.
-    fn d1_name(&self) -> String {
-        self.d1_name.clone().unwrap_or_else(|| self.name.clone())
-    }
-
     /// The R2 bucket name, defaulting to `<name>-surfaces` (R2 bucket names are
     /// unique per account, so the default is per-install).
     fn bucket(&self) -> String {
@@ -2325,14 +2343,32 @@ fn read_password(password: Option<String>, from_stdin: bool) -> Result<String> {
 ///
 /// Returns an error if the provider is unsupported, asset resolution fails, or
 /// any provisioning/deploy/migration step fails.
-async fn run_worker_command(root: &Option<PathBuf>, command: WorkerCommand) -> Result<()> {
+async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> Result<()> {
     use aos_hub::cloudflare;
+
+    // `bootstrap-root` is a direct seal-authenticated HTTP call to the deployed
+    // Worker's `HubDb` endpoint — it needs no provider assets/auth, so handle it
+    // before the provider/asset setup.
+    if let WorkerCommand::BootstrapRoot(args) = &command {
+        let seal = args
+            .seal_key
+            .clone()
+            .or_else(|| std::env::var("HUB_SEAL_KEY").ok())
+            .context("no seal key: pass --seal-key or set HUB_SEAL_KEY (the deploy value)")?;
+        let plaintext = read_password(args.password.clone(), args.password_stdin)?;
+        let id =
+            cloudflare::bootstrap_root_remote(&args.url, &seal, &args.email, &plaintext).await?;
+        println!("root admin '{}' ready (user id {id})", args.email);
+        return Ok(());
+    }
 
     let provider = match &command {
         WorkerCommand::Deploy(a) | WorkerCommand::Provision(a) | WorkerCommand::Install(a) => {
             a.provider
         }
         WorkerCommand::Login(p) | WorkerCommand::Logout(p) | WorkerCommand::Whoami(p) => p.provider,
+        // Handled above with an early return.
+        WorkerCommand::BootstrapRoot(_) => Provider::Cloudflare,
     };
     // Only Cloudflare is implemented; the match documents the extension point
     // for future providers (each would resolve its own assets + auth).
@@ -2345,27 +2381,46 @@ async fn run_worker_command(root: &Option<PathBuf>, command: WorkerCommand) -> R
         WorkerCommand::Login(_) => cloudflare::login(&assets).await?,
         WorkerCommand::Logout(_) => cloudflare::logout(&assets).await?,
         WorkerCommand::Whoami(_) => cloudflare::whoami(&assets).await?,
+        // Handled by the early return at the top of this function.
+        WorkerCommand::BootstrapRoot(_) => {}
         WorkerCommand::Provision(args) => {
             let cfg = provision_worker(&assets, args).await?;
-            println!(
-                "provisioned: D1 {} (id {}), R2 {}, KV id {}",
-                cfg.d1_name, cfg.d1_id, cfg.bucket, cfg.kv_id
-            );
+            println!("provisioned: R2 {}, KV id {}", cfg.bucket, cfg.kv_id);
         }
         WorkerCommand::Deploy(args) => {
             deploy_worker(&assets, args).await?;
         }
         WorkerCommand::Install(args) => {
-            deploy_worker(&assets, args).await?;
-            // Migrate + bootstrap root over D1 via the CLI (no public endpoint),
-            // exactly as `init --target d1:<name>` would.
-            let target = format!("d1:{}", args.d1_name());
-            let db = open_db(root, &target).await?;
-            println!("schema migrated ({target})");
+            // RFC-0004 ch.14 Phase E: there is no D1. `HubDb` migrates its own
+            // schema on first use; the root admin is created via the seal-gated
+            // `HubDb` bootstrap endpoint (the D1-free replacement for the old
+            // `init --target d1:` step).
+            let seal = deploy_worker(&assets, args).await?;
             if let Some(email) = &args.root_email {
                 let plaintext = read_password(args.root_password.clone(), args.root_password_stdin)?;
-                let (email, id) = ensure_root(&db, email, &plaintext).await?;
-                println!("root admin '{email}' ready (user id {id})");
+                let Some(seal) = seal else {
+                    anyhow::bail!(
+                        "cannot bootstrap root: this deploy preserved an existing \
+                         HUB_SEAL_KEY it does not know — pass --seal-key (the value \
+                         used at deploy), or run `aos-hub worker bootstrap-root` \
+                         against the deployed URL"
+                    );
+                };
+                if let Some(domain) = args.domains.first() {
+                    let base = format!("https://{domain}");
+                    let id = aos_hub::cloudflare::bootstrap_root_remote(
+                        &base, &seal, email, &plaintext,
+                    )
+                    .await?;
+                    println!("root admin '{email}' ready (user id {id})");
+                } else {
+                    println!(
+                        "deploy done — create the root admin against the Worker's \
+                         *.workers.dev URL:\n  aos-hub worker bootstrap-root \
+                         --url https://<name>.<subdomain>.workers.dev --email {email} \
+                         --seal-key {seal}"
+                    );
+                }
             }
             if args.domains.is_empty() {
                 println!(
@@ -2391,7 +2446,6 @@ async fn provision_worker(
     let mut cfg = aos_hub::cloudflare::provision(
         assets,
         &args.name,
-        &args.d1_name(),
         &args.bucket(),
         &args.kv_title(),
         "",
@@ -2412,10 +2466,15 @@ async fn provision_worker(
 /// Provisions, deploys the bundled Worker wasm, and applies its runtime secrets.
 ///
 /// Does **not** migrate the database — that is the provider-neutral `init` step.
+/// Deploys the worker and returns the **effective** `HUB_SEAL_KEY` — the value
+/// supplied via `--seal-key`/`HUB_SEAL_KEY`, or the one freshly minted by this
+/// deploy — so the caller (`worker install`) can authenticate the seal-gated
+/// `HubDb` root-bootstrap call. `None` when the seal was preserved from a prior
+/// deploy (so this run does not know it).
 async fn deploy_worker(
     assets: &aos_hub::cloudflare::Assets,
     args: &WorkerArgs,
-) -> Result<()> {
+) -> Result<Option<String>> {
     use aos_hub::cloudflare;
 
     let cfg = provision_worker(assets, args).await?;
@@ -2442,7 +2501,12 @@ async fn deploy_worker(
     } else {
         println!("deployed: bound to {}", args.domains.join(", "));
     }
-    Ok(())
+    // The effective seal: supplied wins, else the env value, else a fresh mint.
+    Ok(args
+        .seal_key
+        .clone()
+        .or_else(|| std::env::var("HUB_SEAL_KEY").ok())
+        .or(applied.minted_seal_key))
 }
 
 /// Handle the `mirror add`/`sync`/`status` subcommands.
@@ -3248,32 +3312,20 @@ fn resolve_root(root: Option<PathBuf>, dev: bool) -> Result<PathBuf> {
 /// Returns an error for an unknown `--target`, or if the local file / D1 backend
 /// cannot be opened.
 async fn open_db(root: &Option<PathBuf>, target: &str) -> Result<Database> {
-    use aos_hub::cloudflare;
-
     if target == "local" {
         let root = resolve_root(root.clone(), false)?;
         return Database::open(&root.join("hub.db")).await;
     }
-    // RFC-0004 ch.14 Phase E follow-up: the worker runtime no longer uses D1
-    // (HubDb colocated SQLite is the system of record), but the CLI's
-    // `--target d1:` admin path (schema migrate + root bootstrap) still drives a
-    // live D1 until a HubDb root-bootstrap endpoint replaces it. Tracked in
-    // docs/rfcs/0004-registry-hub/14-colocated-storage-architecture.md.
-    let (name, local) = match (target.strip_prefix("d1:"), target.strip_prefix("d1-local:")) {
-        (Some(name), _) => (name, false),
-        (_, Some(name)) => (name, true),
-        _ => anyhow::bail!(
-            "unknown --target '{target}' (expected: local, d1:<name>, or d1-local:<name>)"
-        ),
-    };
-    let assets = cloudflare::Assets::from_env()?;
-    let db_id = if local {
-        "local".to_string()
-    } else {
-        cloudflare::resolve_d1_id(&assets, name).await?
-    };
-    let backend = cloudflare::WranglerD1Backend::create(assets, name.to_string(), &db_id, !local)?;
-    Database::with_backend(Box::new(backend)).await
+    // RFC-0004 ch.14 Phase E: there is no D1. The Cloudflare hub's system of
+    // record is the `HubDb` Durable Object's colocated SQLite, which migrates
+    // itself and is administered through the Worker's seal-gated endpoints
+    // (`worker bootstrap-root`, the publish/RPC API) — not by the CLI opening the
+    // database directly. The CLI's `open_db` serves only a `local` native-hub DB.
+    anyhow::bail!(
+        "unknown --target '{target}' (expected: local). The Cloudflare hub uses the \
+         HubDb Durable Object — there is no D1 to open; use `aos-hub worker …` \
+         (bootstrap-root / deploy) or the Worker API to administer it."
+    )
 }
 
 /// Rejects a non-local `--target` for commands that read or write the local

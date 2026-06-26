@@ -5345,6 +5345,36 @@ impl Database {
         Ok(())
     }
 
+    /// Creates (or updates) the instance root admin: a user with `email` and
+    /// `plaintext` password, granted [`Role::Owner`](crate::domain::Role::Owner)
+    /// at the instance-root scope (`""`).
+    ///
+    /// Single source of truth for root bootstrap, shared by the native CLI
+    /// (`aos-hub init`/`worker install`) and the worker's seal-gated
+    /// `HubDb` bootstrap endpoint (RFC-0004 ch.14 Phase E), so both shells create
+    /// an identical root. Idempotent: re-running resets the password and
+    /// re-asserts the grant. Returns the normalized email and the user id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `plaintext` is empty, password hashing fails, or any
+    /// database operation fails.
+    pub async fn bootstrap_root(&self, email: &str, plaintext: &str) -> Result<(String, i64)> {
+        let email = email.trim().to_lowercase();
+        if plaintext.is_empty() {
+            bail!("password must not be empty");
+        }
+        let user_id = self.find_or_create_user(&email).await?;
+        let hash = crate::auth::password::hash_password(plaintext)?;
+        self.set_user_password(user_id, &hash).await?;
+        // `Role::Owner` at root (`""`) carries `Permission::IamAdmin`, making this
+        // a true instance administrator (can create orgs, administer the whole
+        // instance) rather than a login-only account under invite-only signup.
+        self.grant_membership("user", user_id, "", crate::domain::Role::Owner.as_str())
+            .await?;
+        Ok((email, user_id))
+    }
+
     /// Revoke a principal's grant at a scope.
     ///
     /// A no-op when no such grant exists.
