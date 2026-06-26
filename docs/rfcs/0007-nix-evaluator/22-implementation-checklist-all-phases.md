@@ -1662,9 +1662,25 @@ alone (`M-1`/`Q-A`).
       samples the current replayable filesystem impure-leaf hit paths inside
       derivation input surfaces; it does not cover `getEnv`, full
       cached-vs-uncached closure parity, derivationStrict-node SHA-256 early
-      cutoff, stale-input miss surfaces for these leaves, lazy replay payloads,
-      mmap reads, GC/repack, or future value-memoization safety net
-      (`R-10`/`S-14`).
+      cutoff, stale-input miss surfaces beyond the readFile canary below, lazy
+      replay payloads, mmap reads, GC/repack, or future value-memoization safety
+      net (`R-10`/`S-14`).
+- [x] Current stale filesystem impure-leaf persistent force-value `.drv`
+      surface canary:
+      `persistent_read_file_force_cache_stale_miss_preserves_drv_surfaces`
+      materializes a trace-verified `builtins.readFile ./input.txt`
+      forced-value payload inside derivation `args`, rewrites the file content,
+      then evaluates through the same persistent cache root. It requires the
+      stale persistent observation not to reuse the old file-content payload,
+      requires recomputation to replay the changed readFile fingerprint, and
+      requires the resulting `.drv` path and ATerm bytes to match a cache-off
+      changed-file run while differing from the original materialized surface.
+      This samples one stale filesystem leaf fallback inside a derivation input
+      surface; it does not cover `readDir`/`readFileType` stale surfaces,
+      `getEnv`, full cached-vs-uncached closure parity, derivationStrict-node
+      SHA-256 early cutoff, dirty propagation beyond fallback, same-run
+      post-recompute reuse behavior, lazy replay payloads, mmap reads,
+      GC/repack, or future value-memoization safety net (`R-10`/`S-14`).
 - [x] Current stale effectful persistent force-value `.drv` surface parity
       canary: `persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces`
       materializes a trace-verified `builtins.pathExists ./marker`
