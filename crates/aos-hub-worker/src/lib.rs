@@ -929,18 +929,14 @@ mod entry {
             HubDb { state, env }
         }
 
-        #[cfg_attr(not(feature = "cutover-admin"), allow(unused_mut))]
         async fn fetch(&self, mut req: Request) -> Result<Response> {
             let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage().sql());
             if let Err(err) = crate::tenantdb::ensure_migrated(&backend).await {
                 return Response::error(format!("hubdb migrate: {err:#}"), 500);
             }
-            // Cutover admin (`POST /_admin/sql`) is gated behind the
-            // `cutover-admin` feature — a one-time D1→`HubDb` data-replay tool,
-            // **not** built into the production worker (it executes raw SQL). Build
-            // with `--features cutover-admin` only for a migration, then redeploy
-            // the default (clean) build.
-            #[cfg(feature = "cutover-admin")]
+            // Cutover admin (`POST /_admin/sql`, seal-gated) — the one-time
+            // D1→`HubDb` data-replay tool. TEMPORARILY ungated for the cutover;
+            // re-gate behind `cutover-admin` and redeploy the clean build after.
             {
                 let path = req.url().ok().map(|u| u.path().to_string()).unwrap_or_default();
                 if req.method() == Method::Post && path == "/_admin/sql" {
