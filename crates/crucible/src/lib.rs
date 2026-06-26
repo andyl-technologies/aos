@@ -35,7 +35,7 @@ pub use model::{
     DeviceId, DeviceOverlayDelta, DeviceRngState, EngineError, EventKey, EventLogOffset,
     FaultDecision, FaultId, FaultState, FrontierChild, FrontierCoveredChild,
     FrontierReductionPolicy, FrontierReductionReason, FrontierReductionReport, GenesisCheckpoint,
-    Icount, IrqVector, LocalDagStore, MaterializationPolicy, MaterializationTrigger,
+    Icount, IrqVector, LinkDef, LocalDagStore, MaterializationPolicy, MaterializationTrigger,
     MaterializedState, MemoryDagStore, NodeBlobRef, NodeClockSkew, NodeCounter, NodeId,
     OverrideDecision, PartialOrderIndependenceProof, PartialOrderReductionKey,
     PartialOrderReductionPolicy, PendingFrame, PreemptionDecision, PreemptionKind, ReadyPoint,
@@ -1546,6 +1546,7 @@ mod tests {
         let manually_reordered = World {
             id: canonical.id,
             nodes: canonical.nodes.iter().rev().cloned().collect(),
+            links: canonical.links.iter().rev().cloned().collect(),
         };
         let manually_baked = match bake(&manually_reordered) {
             Ok(genesis) => genesis,
@@ -1566,6 +1567,106 @@ mod tests {
                 Err(error) => panic!("changed ready-point world should bake: {error}"),
             }
         );
+    }
+
+    #[test]
+    fn world_topology_hashes_nodes_and_links_canonically() {
+        let node_a = ready_node(
+            "a",
+            ReadyPoint::FixedIcount {
+                icount: Icount { retired: 1 },
+            },
+        );
+        let node_b = ready_node(
+            "b",
+            ReadyPoint::FixedIcount {
+                icount: Icount { retired: 2 },
+            },
+        );
+
+        let canonical =
+            world_from_nodes_and_links(vec![node_a.clone(), node_b.clone()], vec![link("a", "b")]);
+        let reordered =
+            world_from_nodes_and_links(vec![node_b.clone(), node_a.clone()], vec![link("b", "a")]);
+        let without_link = world_from_nodes(vec![node_b, node_a]);
+        let baked = match bake(&canonical) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("canonical linked world should bake: {error}"),
+        };
+        let baked_again = match bake(&reordered) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("reordered linked world should bake: {error}"),
+        };
+        let unlinked_baked = match bake(&without_link) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("unlinked world should bake: {error}"),
+        };
+
+        assert_eq!(canonical.id, reordered.id);
+        assert_eq!(canonical.nodes, reordered.nodes);
+        assert_eq!(canonical.links, reordered.links);
+        assert_eq!(canonical.links, vec![link("a", "b")]);
+        assert_eq!(canonical.scenario_def(), reordered.scenario_def());
+        assert_eq!(baked, baked_again);
+        assert_ne!(canonical.id, without_link.id);
+        assert_ne!(canonical.scenario_def(), without_link.scenario_def());
+        assert_ne!(baked.checkpoint.id, unlinked_baked.checkpoint.id);
+    }
+
+    #[test]
+    fn world_topology_rejects_invalid_links() {
+        let nodes = vec![
+            ready_node(
+                "a",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 1 },
+                },
+            ),
+            ready_node(
+                "b",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 2 },
+                },
+            ),
+        ];
+        let duplicate_node = World::from_nodes_and_links(
+            vec![
+                ready_node(
+                    "dup",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 1 },
+                    },
+                ),
+                ready_node(
+                    "dup",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 2 },
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        let duplicate =
+            World::from_nodes_and_links(nodes.clone(), vec![link("a", "b"), link("b", "a")]);
+        let unknown = World::from_nodes_and_links(nodes, vec![link("a", "missing")]);
+        let self_loop = LinkDef::new(node_id("a"), node_id("a"));
+
+        assert!(matches!(
+            duplicate_node,
+            Err(EngineError::DuplicateWorldNodeId { .. })
+        ));
+        assert!(matches!(
+            duplicate,
+            Err(EngineError::DuplicateWorldLink { .. })
+        ));
+        assert!(matches!(
+            unknown,
+            Err(EngineError::WorldLinkUnknownNode { node, .. }) if node == node_id("missing")
+        ));
+        assert!(matches!(
+            self_loop,
+            Err(EngineError::WorldLinkSelfLoop { node }) if node == node_id("a")
+        ));
     }
 
     #[test]
@@ -2139,11 +2240,25 @@ mod tests {
         }
     }
 
+    fn world_from_nodes_and_links(nodes: Vec<WorldNode>, links: Vec<LinkDef>) -> World {
+        match World::from_nodes_and_links(nodes, links) {
+            Ok(world) => world,
+            Err(error) => panic!("test world topology should be valid: {error}"),
+        }
+    }
+
     fn ready_node(name: &str, ready_point: ReadyPoint) -> WorldNode {
         WorldNode {
             id: node_id(name),
             ready_point,
             white_box: WhiteBoxPolicy::Disabled,
+        }
+    }
+
+    fn link(left: &str, right: &str) -> LinkDef {
+        match LinkDef::new(node_id(left), node_id(right)) {
+            Ok(link) => link,
+            Err(error) => panic!("test link should be valid: {error}"),
         }
     }
 

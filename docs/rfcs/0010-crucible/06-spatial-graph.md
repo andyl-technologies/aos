@@ -974,9 +974,15 @@ authority for its shape. The contract those files may rely on:
   `Plan`, and `Properties`, and cross-reuse tests (one `World` across many defs; one
   `Plan`/`Properties` across many worlds). — satisfies [SPAT-3], [SPAT-5]; spec §2,
   §8.
-- [ ] **T-SPAT-4** Implement `World = (nodes[], links[])` with unique `NodeId`s and
+- [x] **T-SPAT-4** Implement `World = (nodes[], links[])` with unique `NodeId`s and
   canonical ordering; reject duplicate ids at build time. — satisfies [SPAT-6];
   spec §3.
+  - Completed by `crates/crucible/src/model.rs`: `World` now carries canonical
+    `nodes` and `links`, `World::from_nodes_and_links` sorts both collections
+    before hashing, and build-time validation rejects duplicate `NodeId`s.
+    `crates/crucible/src/lib.rs` covers authoring-order-insensitive topology
+    hashes and link material changing scenario/bake identity;
+    `checks.crucible.phase1.spatialWorldTopology` gates the task.
 - [ ] **T-SPAT-5** Implement `NodeDef`/`VmDef` carrying only launch-time inputs
   (arch, content-addressed kernel/root/initrd, cmdline, memory, fixed vCPU count,
   fixed icount shift, ready point, white-box opt-in); test no host-path leakage.
@@ -994,8 +1000,14 @@ authority for its shape. The contract those files may rely on:
     covers canonical hashing, material sensitivity, all four policies, and
     white-box opt-in rejection; `checks.crucible.phase1.executionReadyPoint`
     gates the task.
-- [ ] **T-SPAT-7** Implement `LinkDef` with canonically-ordered endpoints
+- [x] **T-SPAT-7** Implement `LinkDef` with canonically-ordered endpoints
   validated against declared nodes. — satisfies [SPAT-10]; spec §3.2.
+  - Completed by `crates/crucible/src/model.rs`: `LinkDef::new` canonicalizes
+    endpoint order and rejects self-loops, `World::validate_topology` rejects
+    links to undeclared nodes and duplicate canonical links, and the canonical
+    world material includes the sorted link endpoint pairs. The
+    `world_topology_rejects_invalid_links` regression and
+    `checks.crucible.phase1.spatialWorldTopology` gate cover the validation.
 - [ ] **T-SPAT-8** Implement the `MIN_LINK_LATENCY` floor and reject zero/negative
   latency, sub-floor `latency - jitter`, and out-of-range loss at build time. —
   satisfies [SPAT-11], [SPAT-12], [SPAT-13]; spec §3.2, §9.

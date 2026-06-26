@@ -1811,6 +1811,7 @@ mod tests {
                 ready_point: ReadyPoint::AgentSignal,
                 white_box: WhiteBoxPolicy::Disabled,
             }],
+            links: Vec::new(),
         };
         let log = shared_log();
         let mut executor = scripted_executor(Rc::clone(&log));
