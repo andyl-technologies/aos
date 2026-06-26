@@ -1055,9 +1055,20 @@ authority for its shape. The contract those files may rely on:
     `world_static_topology_is_derived_from_world_only` test covers schedule
     independence and canonical derivation, while
     `checks.crucible.phase1.spatialStaticTopology` gates the task.
-- [ ] **T-SPAT-11** Model membership dynamics (crash/restart/partition/heal/
+- [x] **T-SPAT-11** Model membership dynamics (crash/restart/partition/heal/
   isolate/rejoin) as `Plan` faults over the static topology; verify a not-yet-joined
   participant is a declared node held inactive. — satisfies [SPAT-17]; spec §4.
+  - Completed in `crates/crucible/src/model.rs`: `Plan` and `PlanEntry`
+    carry typed `MembershipFault` values (`Crash`, `Partition`, `Isolate`, and
+    `NotYetJoined`) plus `Heal` entries, and `Plan::from_entries_for_world`
+    validates every membership fault against declared `World` nodes and links.
+    The focused `membership_plan_faults_layer_over_static_world_topology` test
+    proves not-yet-joined nodes remain declared participants and bake nodes,
+    with rejoin expressed as healing the `NotYetJoined` tag after activation,
+    while `membership_plan_rejects_dynamic_or_undeclared_topology_targets`
+    rejects undeclared node/link targets, premature heals, and not-yet-joined
+    holds scheduled after `t = 0`. `checks.crucible.phase1.spatialMembershipFaults`
+    gates the task.
 - [ ] **T-SPAT-12** Carry `Plan` as an orthogonal content-addressed component
   (defined in 17) with build-time validation of node/link references and
   virtual-time scheduling. — satisfies [SPAT-19], [SPAT-20]; spec §5.1.
