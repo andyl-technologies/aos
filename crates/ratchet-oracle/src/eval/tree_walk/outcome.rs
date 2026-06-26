@@ -128,6 +128,7 @@ pub struct EvalStats {
     pub(crate) cache_misses: u64,
     pub(crate) early_cutoffs: u64,
     pub(crate) derivation_aterm_path_reuses: u64,
+    pub(crate) static_derivation_output_path_reuses: u64,
     pub(crate) heap_chunks: u64,
     pub(crate) heap_reserved_bytes: u64,
     pub(crate) heap_used_bytes: u64,
@@ -239,6 +240,11 @@ impl EvalStats {
     /// Returns the number of `.drv` paths reused from clean derivation ATerm records.
     pub const fn derivation_aterm_path_reuses(&self) -> u64 {
         self.derivation_aterm_path_reuses
+    }
+
+    /// Returns the number of static derivation output path sets reused from clean records.
+    pub const fn static_derivation_output_path_reuses(&self) -> u64 {
+        self.static_derivation_output_path_reuses
     }
 
     /// Returns the number of bump-arena chunks allocated by the evaluator heap.

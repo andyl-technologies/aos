@@ -73,6 +73,7 @@ pub use policy::{
     MemoizationClass, MemoizationDecision, MemoizationDemand, MemoizationSignals,
     MemoizationSubject,
 };
+pub(crate) use runtime::{CachedDerivationOutputPath, CachedDerivationOutputPaths};
 pub use runtime::{
     CachedExpressionValue, CachedExpressionValuePayloadError, EvalCache, EvalCacheRuntime,
     ExpressionCacheability, ExpressionTraceObservation, ImpureInputRevalidator,

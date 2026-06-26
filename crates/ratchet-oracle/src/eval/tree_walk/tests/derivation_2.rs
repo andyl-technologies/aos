@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::cache::{
-    CutoffDecision, DemandNodeId, DurableBlake3Hash, EarlyCutoff, PARSE_CACHE_SCHEMA_VERSION,
-    ParseCache, ParseCacheFlags, ParseCacheKey, ParseFileKey, PersistCache, PersistFileArtifactKey,
-    ValueHash,
+    CachedDerivationOutputPath, CachedDerivationOutputPaths, CutoffDecision, DemandNodeId,
+    DurableBlake3Hash, EarlyCutoff, PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags,
+    ParseCacheKey, ParseFileKey, PersistCache, PersistFileArtifactKey, ValueHash,
 };
 use crate::string::NixString;
 
@@ -162,6 +162,7 @@ struct DerivationCacheRun {
     force_hits: u64,
     force_misses: u64,
     path_reuses: u64,
+    output_path_reuses: u64,
 }
 
 fn eval_single_derivation_with_cache(
@@ -189,6 +190,7 @@ fn eval_single_derivation_with_cache(
         force_hits: outcome.stats().force_cache_hits(),
         force_misses: outcome.stats().force_cache_misses(),
         path_reuses: outcome.stats().derivation_aterm_path_reuses(),
+        output_path_reuses: outcome.stats().static_derivation_output_path_reuses(),
     }
 }
 
@@ -200,6 +202,38 @@ fn derivation_aterm_cache_subject(
     TreeWalk::with_options_and_eval_cache(ir, options, cache)
         .derivation_aterm_cache_subject_for_current_node(ir.root)
         .expect("root derivation ATerm subject builds")
+}
+
+fn static_derivation_outputs_cache_subject(
+    ir: &Ir,
+    options: TreeWalkOptions,
+    cache: Arc<Mutex<EvalCacheRuntime>>,
+) -> (CacheExprIdentity, Vec<DurableBlake3Hash>) {
+    TreeWalk::with_options_and_eval_cache(ir, options, cache)
+        .static_derivation_outputs_cache_subject_for_current_node(ir.root)
+        .expect("root static derivation output subject builds")
+}
+
+fn static_derivation_pre_output_aterm() -> Vec<u8> {
+    let ir = lower("null");
+    let eval = TreeWalk::new(&ir);
+    let mut derivation = nix_compat::derivation::Derivation::default();
+    derivation
+        .outputs
+        .insert("out".to_owned(), nix_compat::derivation::Output::default());
+    derivation.builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder".to_owned();
+    derivation.system = "x86_64-linux".to_owned();
+    derivation
+        .environment
+        .insert("builder".to_owned(), derivation.builder.clone().into());
+    derivation.environment.insert("name".to_owned(), "x".into());
+    derivation
+        .environment
+        .insert("out".to_owned(), Vec::new().into());
+    derivation
+        .environment
+        .insert("system".to_owned(), derivation.system.clone().into());
+    eval.derivation_aterm_bytes(&derivation)
 }
 
 fn enabled_eval_cache_options() -> TreeWalkOptions {
@@ -255,6 +289,8 @@ fn derivation_strict_observes_aterm_early_cutoff_in_eval_cache() {
     assert_eq!((second.force_hits, second.force_misses), (0, 0));
     assert_eq!(first.path_reuses, 0);
     assert_eq!(second.path_reuses, 1);
+    assert_eq!(first.output_path_reuses, 0);
+    assert_eq!(second.output_path_reuses, 1);
     assert_eq!(
         cache
             .lock()
@@ -262,7 +298,7 @@ fn derivation_strict_observes_aterm_early_cutoff_in_eval_cache() {
             .cache()
             .expect("runtime is enabled")
             .len(),
-        1
+        2
     );
 }
 
@@ -299,6 +335,8 @@ fn derivation_strict_reuses_aterm_paths_for_floating_and_impure_outputs() {
         assert_eq!((second.force_hits, second.force_misses), (0, 0));
         assert_eq!(first.path_reuses, 0);
         assert_eq!(second.path_reuses, 1);
+        assert_eq!(first.output_path_reuses, 0);
+        assert_eq!(second.output_path_reuses, 0);
     }
 }
 
@@ -372,6 +410,8 @@ fn derivation_strict_cached_aterm_paths_miss_for_store_dir_mismatches() {
     assert_eq!(first.aterm, second.aterm);
     assert_eq!(first.path_reuses, 0);
     assert_eq!(second.path_reuses, 0);
+    assert_eq!(first.output_path_reuses, 0);
+    assert_eq!(second.output_path_reuses, 0);
     fs::remove_dir_all(first_store).expect("first store temp directory removes");
     fs::remove_dir_all(second_store).expect("second store temp directory removes");
 }
@@ -411,6 +451,7 @@ fn derivation_strict_cached_aterm_paths_miss_for_invalid_cached_path_names() {
 
     assert_eq!(second.path, first.path);
     assert_eq!(second.path_reuses, 0);
+    assert_eq!(second.output_path_reuses, 1);
     assert_eq!(repaired_path, first.path.as_bytes());
 }
 
@@ -449,19 +490,79 @@ fn derivation_strict_cached_aterm_paths_miss_outside_configured_store() {
 
     assert_eq!(second.path, first.path);
     assert_eq!(second.path_reuses, 0);
+    assert_eq!(second.output_path_reuses, 1);
     assert_eq!(repaired_path, first.path.as_bytes());
 }
 
 #[test]
+fn derivation_strict_cached_static_output_paths_miss_for_invalid_cached_path_names() {
+    let source = r#"derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+    }"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let first = eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+    let (identity, free_var_hashes) =
+        static_derivation_outputs_cache_subject(&ir, enabled_eval_cache_options(), cache.clone());
+    let pre_output_aterm = static_derivation_pre_output_aterm();
+    cache
+        .lock()
+        .expect("cache lock is valid")
+        .observe_static_derivation_output_paths(
+            identity,
+            free_var_hashes.iter().copied(),
+            &pre_output_aterm,
+            CachedDerivationOutputPaths::new(
+                [9; 32],
+                vec![CachedDerivationOutputPath::new(
+                    b"out".to_vec(),
+                    b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-wrong".to_vec(),
+                )],
+            ),
+        )
+        .expect("corrupt static output path record writes");
+
+    let second =
+        eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+    let repaired = cache
+        .lock()
+        .expect("cache lock is valid")
+        .lookup_static_derivation_output_paths(
+            identity,
+            free_var_hashes.iter().copied(),
+            &pre_output_aterm,
+        )
+        .expect("repaired static output path lookup succeeds")
+        .expect("repaired static output path record exists");
+
+    assert_eq!(second.path, first.path);
+    assert_eq!(second.aterm, first.aterm);
+    assert_eq!(second.output_path_reuses, 0);
+    assert_eq!(repaired.output_paths().len(), 1);
+    assert_eq!(repaired.output_paths()[0].name(), b"out");
+    assert!(repaired.output_paths()[0].path().ends_with(b"-x"));
+    assert_ne!(
+        repaired.output_paths()[0].path(),
+        b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-wrong"
+    );
+}
+
+#[test]
 fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
-    for source in [
-        r#"derivationStrict {
+    for (source, expected_output_path_reuses) in [
+        (
+            r#"derivationStrict {
             name = "static";
             system = "x86_64-linux";
             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
             env = "same";
         }"#,
-        r#"derivationStrict {
+            1,
+        ),
+        (
+            r#"derivationStrict {
             name = "floating";
             system = "x86_64-linux";
             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
@@ -469,12 +570,17 @@ fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
             outputHashAlgo = "sha256";
             outputHashMode = "recursive";
         }"#,
-        r#"derivationStrict {
+            0,
+        ),
+        (
+            r#"derivationStrict {
             name = "impure";
             system = "x86_64-linux";
             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
             __impure = true;
         }"#,
+            0,
+        ),
     ] {
         let ir = lower(source);
         let uncached = eval_single_derivation_with_cache(
@@ -494,6 +600,9 @@ fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
         assert_eq!(uncached.path_reuses, 0);
         assert_eq!(first.path_reuses, 0);
         assert_eq!(reuse.path_reuses, 1);
+        assert_eq!(uncached.output_path_reuses, 0);
+        assert_eq!(first.output_path_reuses, 0);
+        assert_eq!(reuse.output_path_reuses, expected_output_path_reuses);
     }
 }
 

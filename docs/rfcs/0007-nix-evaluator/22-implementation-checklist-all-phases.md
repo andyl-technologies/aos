@@ -902,8 +902,8 @@ alone (`M-1`/`Q-A`).
       observation is enabled and derivation ATerm subject capture, runtime
       locking, and serialization succeed. The later cached `.drv` path reuse
       precursor now consults this side record for eligible static, floating-CA,
-      and impure derivations, but output path computation, derivation modulo
-      hashing, and deferred-placeholder `.drv` paths still use normal
+      and impure derivations, but static-output misses, deferred-placeholder
+      `.drv` paths, and the initial derivation modulo hash still use normal
       construction. Persistence, dependency capture beyond hashable lexical
       captures, full SHA-256 store-path short-circuiting, and full
       cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
@@ -918,19 +918,42 @@ alone (`M-1`/`Q-A`).
       accounting unchanged; misses, stale records, disabled runtimes,
       unsupported captured values, invalid cached paths, configured-store
       mismatches, and wrong derivation names fall back to normal path
-      construction. Output path computation, derivation modulo hashing,
+      construction. Initial derivation modulo hashing, static-output misses,
       deferred-placeholder derivations, persistence, dependency capture beyond
       hashable lexical captures, full SHA-256 store-path short-circuiting, and
       full cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
+- [x] Current static derivation output-path reuse precursor:
+      tree-walk `derivationStrict` records a clean crate-private side payload
+      for static derivations keyed by a separate input-hash-substituted
+      pre-output ATerm identity, containing resolved output store paths plus
+      the final derivation hash modulo. The demand-graph value hash for this
+      side record binds the pre-output ATerm, output path payload, and final
+      modulo hash, so changed payload observations propagate even when the
+      pre-output ATerm key is unchanged. Later unchanged static derivations
+      probe that record after the first
+      derivation-modulo hash, validate that every cached output belongs to the
+      current output set, is inside the configured store, and has the expected
+      output basename, then restore output paths and skip the input-addressed
+      output path computation and second modulo hash. Reuse increments
+      `static_derivation_output_path_reuses` but does not count as a generic
+      force-cache hit; disabled runtimes, unsupported captured values,
+      stale/dirty/changed records, invalid payloads, and output-set mismatches
+      fall back to normal construction. Initial derivation modulo hashing,
+      final ATerm serialization, final `.drv` path lookup/construction,
+      deferred-placeholder derivations, persistence, dynamic dependency capture
+      beyond hashable lexical captures, and full cached/uncached `.drv` parity
+      proof remain open (`S-14`/`S-15`).
 - [x] Current cached derivationStrict `.drv` surface parity canary:
       tree-walk tests compare cache-off, cache-on first-observation, and
       cache-on path-reuse runs for root static, floating-CA, and impure
       derivations, plus a deferred-placeholder downstream graph, requiring
-      identical recorded `.drv` paths and ATerm bytes across those runs. This
-      is selected in-memory reuse parity only; full-closure cached/uncached
-      parity, persistent reuse, dynamic dependency capture beyond hashable
-      lexical captures, output-path/modulo hash shortcuts, and full SHA-256
-      store-path short-circuiting remain open (`S-14`/`S-15`).
+      identical recorded `.drv` paths and ATerm bytes across those runs. The
+      static root case also proves one static-output-path reuse before final
+      `.drv` path reuse. This is selected in-memory reuse parity only;
+      full-closure cached/uncached parity, persistent reuse, dynamic dependency
+      capture beyond hashable lexical captures, initial modulo-hash shortcuts,
+      and full SHA-256 store-path short-circuiting remain open
+      (`S-14`/`S-15`).
 - [x] Current forced-payload early-cutoff stats substrate:
       trace-backed force-cache payload observation now reports its value-hash
       `Reconsideration`, first trace-backed insertion uses no synthetic prior

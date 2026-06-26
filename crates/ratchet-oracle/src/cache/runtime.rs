@@ -26,6 +26,8 @@ use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};
 use crate::value::Value;
 
 const MAX_CACHED_EXPRESSION_PAYLOAD_NESTING: usize = 64;
+const STATIC_DERIVATION_OUTPUT_PATHS_VALUE_HASH_DOMAIN_VERSION: &[u8] =
+    b"aos-nix-static-derivation-output-paths-value-hash-v1";
 
 /// A source of evaluator-observed impure input trace entries.
 pub trait ImpureInputTraceSource {
@@ -152,6 +154,79 @@ impl MemoizationObservation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CachedExpressionValue {
     payload: InlineValuePayload,
+}
+
+/// A cached derivation output store path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CachedDerivationOutputPath {
+    name: Vec<u8>,
+    path: Vec<u8>,
+}
+
+impl CachedDerivationOutputPath {
+    /// Creates a cached output path entry from an output name and absolute path bytes.
+    pub(crate) fn new(name: Vec<u8>, path: Vec<u8>) -> Self {
+        Self { name, path }
+    }
+
+    /// Returns the output name bytes.
+    pub(crate) fn name(&self) -> &[u8] {
+        &self.name
+    }
+
+    /// Returns the absolute output path bytes.
+    pub(crate) fn path(&self) -> &[u8] {
+        &self.path
+    }
+}
+
+/// Cached static output paths for a resolved `derivationStrict` expression.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CachedDerivationOutputPaths {
+    hash_derivation_modulo: [u8; 32],
+    output_paths: Vec<CachedDerivationOutputPath>,
+}
+
+impl CachedDerivationOutputPaths {
+    /// Creates a cached static-output-path record.
+    pub(crate) fn new(
+        hash_derivation_modulo: [u8; 32],
+        mut output_paths: Vec<CachedDerivationOutputPath>,
+    ) -> Self {
+        output_paths.sort_unstable_by(|left, right| {
+            left.name.cmp(&right.name).then(left.path.cmp(&right.path))
+        });
+        Self {
+            hash_derivation_modulo,
+            output_paths,
+        }
+    }
+
+    /// Returns the resolved derivation hash modulo bytes.
+    pub(crate) const fn hash_derivation_modulo(&self) -> [u8; 32] {
+        self.hash_derivation_modulo
+    }
+
+    /// Returns the cached output path entries.
+    pub(crate) fn output_paths(&self) -> &[CachedDerivationOutputPath] {
+        &self.output_paths
+    }
+
+    fn value_hash(&self, pre_output_aterm: &[u8]) -> ValueHash {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(STATIC_DERIVATION_OUTPUT_PATHS_VALUE_HASH_DOMAIN_VERSION);
+        hasher.update(b"pre-output-aterm");
+        update_static_derivation_output_paths_hash_chunk(&mut hasher, pre_output_aterm);
+        hasher.update(b"hash-derivation-modulo");
+        hasher.update(&self.hash_derivation_modulo);
+        hasher.update(b"output-paths");
+        hasher.update(&(self.output_paths.len() as u128).to_le_bytes());
+        for output_path in &self.output_paths {
+            update_static_derivation_output_paths_hash_chunk(&mut hasher, &output_path.name);
+            update_static_derivation_output_paths_hash_chunk(&mut hasher, &output_path.path);
+        }
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))
+    }
 }
 
 impl CachedExpressionValue {
@@ -610,6 +685,7 @@ pub struct EvalCache {
     graph: DemandGraph,
     inline_values: BTreeMap<DemandNodeId, InlineValueRecord>,
     derivation_aterm_paths: BTreeMap<DemandNodeId, DerivationAtermPathRecord>,
+    static_derivation_output_paths: BTreeMap<DemandNodeId, StaticDerivationOutputPathRecord>,
     memoization_demands: HashMap<DemandCacheKey, MemoizationDemand>,
 }
 
@@ -625,6 +701,7 @@ impl EvalCache {
             graph,
             inline_values: BTreeMap::new(),
             derivation_aterm_paths: BTreeMap::new(),
+            static_derivation_output_paths: BTreeMap::new(),
             memoization_demands: HashMap::new(),
         }
     }
@@ -841,6 +918,49 @@ impl EvalCache {
             return Ok(None);
         }
         Ok(Some(record.path_bytes()))
+    }
+
+    /// Looks up clean cached static derivation output paths for matching ATerm bytes.
+    ///
+    /// This is a pre-output-path precursor for future `derivationStrict`
+    /// SHA-256 short-circuiting. It returns stored output paths and the final
+    /// derivation hash modulo only when the caller-supplied expression key
+    /// exists, the demand node is clean, a static-output side record exists,
+    /// the side record's pre-output hash matches `pre_output_aterm`, and the
+    /// graph node's value hash still matches the full side payload hash.
+    /// Unknown, dirty, missing, and stale records are misses.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails.
+    pub(crate) fn lookup_static_derivation_output_paths<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        pre_output_aterm: &[u8],
+    ) -> Result<Option<CachedDerivationOutputPaths>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
+            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        let Some(node) = self.graph.node_id_for_key(key) else {
+            return Ok(None);
+        };
+        let graph_node = self.graph.node(node)?;
+        if graph_node.freshness() != NodeFreshness::Clean {
+            return Ok(None);
+        }
+        let Some(record) = self.static_derivation_output_paths.get(&node) else {
+            return Ok(None);
+        };
+        let pre_output_value_hash = ValueHash::from_derivation_aterm_bytes(pre_output_aterm);
+        if record.pre_output_value_hash != pre_output_value_hash
+            || graph_node.value_hash() != Some(record.payload_value_hash)
+        {
+            return Ok(None);
+        }
+        Ok(Some(record.output_paths()))
     }
 
     /// Looks up a clean expression payload after impure-input revalidation.
@@ -1140,6 +1260,38 @@ impl EvalCache {
         Ok(reconsideration)
     }
 
+    /// Observes resolved static derivation output paths for pre-output ATerm bytes.
+    ///
+    /// This records a side payload containing caller-supplied output paths and
+    /// the final derivation hash modulo. The payload is usable only through
+    /// [`Self::lookup_static_derivation_output_paths`] while the graph node
+    /// remains clean, the same pre-output ATerm hash still matches, and the
+    /// graph node still carries the full side payload hash. This API does not
+    /// compute Nix-observed SHA-256 output paths itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails, node
+    /// insertion fails, or the node cannot be reconsidered.
+    pub(crate) fn observe_static_derivation_output_paths<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        pre_output_aterm: &[u8],
+        output_paths: CachedDerivationOutputPaths,
+    ) -> Result<Reconsideration, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
+        let record = StaticDerivationOutputPathRecord::new(pre_output_aterm, output_paths);
+        let reconsideration = self
+            .graph
+            .reconsider_node(node, record.payload_value_hash)?;
+        self.static_derivation_output_paths.insert(node, record);
+        Ok(reconsideration)
+    }
+
     /// Invalidates an existing inline expression payload.
     ///
     /// If the expression key already exists, the node is marked dirty and any
@@ -1343,6 +1495,8 @@ impl EvalCache {
         if let Some(node) = node {
             self.graph.mark_dirty(node)?;
             self.inline_values.remove(&node);
+            self.derivation_aterm_paths.remove(&node);
+            self.static_derivation_output_paths.remove(&node);
         }
         Ok(())
     }
@@ -1408,6 +1562,13 @@ struct DerivationAtermPathRecord {
     path: Vec<u8>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StaticDerivationOutputPathRecord {
+    pre_output_value_hash: ValueHash,
+    payload_value_hash: ValueHash,
+    output_paths: CachedDerivationOutputPaths,
+}
+
 impl DerivationAtermPathRecord {
     fn new(aterm: &[u8], path: &[u8]) -> Self {
         Self {
@@ -1419,6 +1580,26 @@ impl DerivationAtermPathRecord {
     fn path_bytes(&self) -> Vec<u8> {
         self.path.clone()
     }
+}
+
+impl StaticDerivationOutputPathRecord {
+    fn new(pre_output_aterm: &[u8], output_paths: CachedDerivationOutputPaths) -> Self {
+        let payload_value_hash = output_paths.value_hash(pre_output_aterm);
+        Self {
+            pre_output_value_hash: ValueHash::from_derivation_aterm_bytes(pre_output_aterm),
+            payload_value_hash,
+            output_paths,
+        }
+    }
+
+    fn output_paths(&self) -> CachedDerivationOutputPaths {
+        self.output_paths.clone()
+    }
+}
+
+fn update_static_derivation_output_paths_hash_chunk(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u128).to_le_bytes());
+    hasher.update(bytes);
 }
 
 impl InlineValueRecord {
@@ -2546,6 +2727,35 @@ impl EvalCacheRuntime {
         cache.lookup_derivation_aterm_path(identity, free_var_value_hashes, aterm)
     }
 
+    /// Looks up cached static derivation output paths for matching ATerm bytes when enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity or pre-output ATerm bytes. Enabled runtimes delegate to
+    /// [`EvalCache::lookup_static_derivation_output_paths`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to build the expression cache key.
+    pub(crate) fn lookup_static_derivation_output_paths<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        pre_output_aterm: &[u8],
+    ) -> Result<Option<CachedDerivationOutputPaths>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache() else {
+            return Ok(None);
+        };
+        cache.lookup_static_derivation_output_paths(
+            identity,
+            free_var_value_hashes,
+            pre_output_aterm,
+        )
+    }
+
     /// Looks up a clean expression payload with impure-input revalidation when enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without validating the expression
@@ -2687,6 +2897,39 @@ impl EvalCacheRuntime {
                 free_var_value_hashes,
                 aterm,
                 drv_path,
+            )
+            .map(Some)
+    }
+
+    /// Observes resolved static derivation output paths when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity, pre-output ATerm bytes, or output path payload. Enabled
+    /// runtimes delegate to [`EvalCache::observe_static_derivation_output_paths`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to insert/reconsider the expression node.
+    pub(crate) fn observe_static_derivation_output_paths<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        pre_output_aterm: &[u8],
+        output_paths: CachedDerivationOutputPaths,
+    ) -> Result<Option<Reconsideration>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .observe_static_derivation_output_paths(
+                identity,
+                free_var_value_hashes,
+                pre_output_aterm,
+                output_paths,
             )
             .map(Some)
     }
@@ -5162,6 +5405,38 @@ mod tests {
     }
 
     #[test]
+    fn eval_cache_looks_up_clean_static_derivation_output_paths() {
+        let mut cache = EvalCache::new();
+        let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
+        let output_paths = CachedDerivationOutputPaths::new(
+            [7; 32],
+            vec![CachedDerivationOutputPath::new(
+                b"out".to_vec(),
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x".to_vec(),
+            )],
+        );
+
+        let reconsideration = cache
+            .observe_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+                output_paths.clone(),
+            )
+            .expect("static derivation output paths observe");
+        let lookup = cache
+            .lookup_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+            )
+            .expect("static derivation output path lookup succeeds");
+
+        assert_eq!(reconsideration.decision(), CutoffDecision::Propagate);
+        assert_eq!(lookup, Some(output_paths));
+    }
+
+    #[test]
     fn derivation_aterm_path_lookup_misses_without_path_record() {
         let mut cache = EvalCache::new();
         let aterm = b"Derive([],[],[],\":\",\":\",[],[])";
@@ -5227,6 +5502,135 @@ mod tests {
     }
 
     #[test]
+    fn static_derivation_output_path_lookup_misses_for_changed_or_dirty_nodes() {
+        let mut cache = EvalCache::new();
+        let prior = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
+        let changed =
+            b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[(\"env\",\"new\")])";
+        let output_paths = CachedDerivationOutputPaths::new(
+            [8; 32],
+            vec![CachedDerivationOutputPath::new(
+                b"out".to_vec(),
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x".to_vec(),
+            )],
+        );
+        cache
+            .observe_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                prior,
+                output_paths,
+            )
+            .expect("static derivation output paths observe");
+
+        let changed_lookup = cache
+            .lookup_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                changed,
+            )
+            .expect("changed static derivation output path lookup succeeds");
+        assert!(changed_lookup.is_none());
+
+        let node = cache
+            .get_or_insert_expression_node(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                None,
+            )
+            .expect("existing static derivation output node returns");
+        cache.graph.mark_dirty(node).expect("node dirties");
+        let dirty_lookup = cache
+            .lookup_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                prior,
+            )
+            .expect("dirty static derivation output path lookup succeeds");
+
+        assert!(dirty_lookup.is_none());
+    }
+
+    #[test]
+    fn static_derivation_output_path_observation_reconsiders_full_payload() {
+        let mut cache = EvalCache::new();
+        let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
+        let first = CachedDerivationOutputPaths::new(
+            [1; 32],
+            vec![CachedDerivationOutputPath::new(
+                b"out".to_vec(),
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x".to_vec(),
+            )],
+        );
+        let changed_path = CachedDerivationOutputPaths::new(
+            [1; 32],
+            vec![CachedDerivationOutputPath::new(
+                b"out".to_vec(),
+                b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-x".to_vec(),
+            )],
+        );
+        let changed_hash = CachedDerivationOutputPaths::new(
+            [2; 32],
+            vec![CachedDerivationOutputPath::new(
+                b"out".to_vec(),
+                b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-x".to_vec(),
+            )],
+        );
+
+        let first_reconsideration = cache
+            .observe_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+                first,
+            )
+            .expect("first static output observation succeeds");
+        let changed_path_reconsideration = cache
+            .observe_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+                changed_path,
+            )
+            .expect("changed-path static output observation succeeds");
+        let changed_hash_reconsideration = cache
+            .observe_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+                changed_hash.clone(),
+            )
+            .expect("changed-hash static output observation succeeds");
+        let same_reconsideration = cache
+            .observe_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+                changed_hash.clone(),
+            )
+            .expect("same static output observation succeeds");
+        let lookup = cache
+            .lookup_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+            )
+            .expect("static output lookup succeeds");
+
+        assert_eq!(first_reconsideration.decision(), CutoffDecision::Propagate);
+        assert_eq!(
+            changed_path_reconsideration.decision(),
+            CutoffDecision::Propagate
+        );
+        assert_eq!(
+            changed_hash_reconsideration.decision(),
+            CutoffDecision::Propagate
+        );
+        assert_eq!(same_reconsideration.decision(), CutoffDecision::CutOff);
+        assert_eq!(lookup, Some(changed_hash));
+    }
+
+    #[test]
     fn disabled_eval_cache_runtime_skips_derivation_aterm_path_lookup_and_observation() {
         let mut runtime = EvalCacheRuntime::disabled();
         let aterm = b"Derive([],[],[],\":\",\":\",[],[])";
@@ -5246,6 +5650,39 @@ mod tests {
                 aterm,
             )
             .expect("disabled lookup succeeds");
+
+        assert!(observation.is_none());
+        assert!(lookup.is_none());
+        assert!(runtime.cache().is_none());
+    }
+
+    #[test]
+    fn disabled_eval_cache_runtime_skips_static_derivation_output_path_lookup_and_observation() {
+        let mut runtime = EvalCacheRuntime::disabled();
+        let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
+        let output_paths = CachedDerivationOutputPaths::new(
+            [9; 32],
+            vec![CachedDerivationOutputPath::new(
+                b"out".to_vec(),
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x".to_vec(),
+            )],
+        );
+
+        let observation = runtime
+            .observe_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+                output_paths,
+            )
+            .expect("disabled static output observation succeeds");
+        let lookup = runtime
+            .lookup_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+            )
+            .expect("disabled static output lookup succeeds");
 
         assert!(observation.is_none());
         assert!(lookup.is_none());
@@ -5277,6 +5714,39 @@ mod tests {
 
         assert_eq!(observation.decision(), CutoffDecision::Propagate);
         assert_eq!(lookup.as_deref(), Some(drv_path.as_slice()));
+    }
+
+    #[test]
+    fn enabled_eval_cache_runtime_delegates_static_derivation_output_path_roundtrip() {
+        let mut runtime = EvalCacheRuntime::enabled();
+        let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
+        let output_paths = CachedDerivationOutputPaths::new(
+            [10; 32],
+            vec![CachedDerivationOutputPath::new(
+                b"out".to_vec(),
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x".to_vec(),
+            )],
+        );
+
+        let observation = runtime
+            .observe_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+                output_paths.clone(),
+            )
+            .expect("enabled static output observation succeeds")
+            .expect("enabled runtime observes static output paths");
+        let lookup = runtime
+            .lookup_static_derivation_output_paths(
+                identity(b"derivation-outputs", 7),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+            )
+            .expect("enabled static output lookup succeeds");
+
+        assert_eq!(observation.decision(), CutoffDecision::Propagate);
+        assert_eq!(lookup, Some(output_paths));
     }
 
     #[test]

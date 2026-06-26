@@ -1563,6 +1563,18 @@ impl TreeWalk {
         Some((identity, free_var_value_hashes))
     }
 
+    pub(super) fn static_derivation_outputs_cache_subject_for_current_node(
+        &self,
+        id: IrId,
+    ) -> Option<(CacheExprIdentity, Vec<DurableBlake3Hash>)> {
+        if !self.with_scopes.is_empty() || !self.scoped_globals.is_empty() {
+            return None;
+        }
+        let identity = self.static_derivation_outputs_cache_identity_for_current_node(id)?;
+        let free_var_value_hashes = self.inline_free_var_value_hashes_for_current_node(id)?;
+        Some((identity, free_var_value_hashes))
+    }
+
     pub(super) fn eval_cache_runtime_enabled(&self) -> bool {
         match self.eval_cache.lock() {
             Ok(cache) => cache.is_enabled(),
@@ -1812,12 +1824,28 @@ impl TreeWalk {
         &self,
         id: IrId,
     ) -> Option<CacheExprIdentity> {
+        self.derivation_cache_identity_for_current_node(id, b"final-aterm-path-v1")
+    }
+
+    fn static_derivation_outputs_cache_identity_for_current_node(
+        &self,
+        id: IrId,
+    ) -> Option<CacheExprIdentity> {
+        self.derivation_cache_identity_for_current_node(id, b"static-output-paths-v1")
+    }
+
+    fn derivation_cache_identity_for_current_node(
+        &self,
+        id: IrId,
+        stage: &[u8],
+    ) -> Option<CacheExprIdentity> {
         let module = self.modules.get(self.current_module.index())?;
         let module_hash = Self::cache_module_identity_hash(module)?;
         let node = module.ir.arena.node(id)?;
         let mut hasher = blake3::Hasher::new();
         hasher.update(DERIVATION_ATERM_EXPRESSION_IDENTITY_DOMAIN_VERSION);
         hasher.update(b"node-v1");
+        hasher.update(stage);
         hasher.update(&module_hash.as_bytes());
         hasher.update(&node.span.start.to_le_bytes());
         hasher.update(&node.span.end.to_le_bytes());

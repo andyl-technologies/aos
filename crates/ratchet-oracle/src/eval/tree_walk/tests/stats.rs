@@ -117,6 +117,7 @@ fn eval_outcome_reports_mirrored_stats() {
     assert_eq!(stats.force_cache_memoization_demands(), 0);
     assert_eq!(stats.early_cutoffs(), 0);
     assert_eq!(stats.derivation_aterm_path_reuses(), 0);
+    assert_eq!(stats.static_derivation_output_path_reuses(), 0);
 }
 
 #[test]
@@ -146,5 +147,6 @@ fn eval_stats_are_emitted_through_tracing() {
     assert!(stats_event.contains("cache_hits="));
     assert!(stats_event.contains("early_cutoffs=0"));
     assert!(stats_event.contains("derivation_aterm_path_reuses=0"));
+    assert!(stats_event.contains("static_derivation_output_path_reuses=0"));
     assert!(stats_event.contains("heap_used_bytes="));
 }
