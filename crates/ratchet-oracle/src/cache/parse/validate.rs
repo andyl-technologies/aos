@@ -15,10 +15,8 @@ pub(super) fn validate_resolved_artifact(resolved: &ResolvedAst) -> Result<(), S
     for node in resolved.arena.nodes() {
         validate_node_data(resolved, node.data)?;
     }
-    for frame in resolved.scopes.node_frames() {
-        if let Some(frame) = frame {
-            check_frame_id(resolved, *frame)?;
-        }
+    for frame in resolved.scopes.node_frames().iter().flatten() {
+        check_frame_id(resolved, *frame)?;
     }
     for chain in resolved.scopes.with_chains() {
         for scope in chain.scopes.as_ref() {
@@ -34,10 +32,8 @@ pub(super) fn validate_resolved_artifact(resolved: &ResolvedAst) -> Result<(), S
             check_node_id(resolved, source.source, "inherit source")?;
         }
     }
-    for inherit in resolved.scopes.node_inherits() {
-        if let Some(inherit) = inherit {
-            check_inherit_id(resolved, *inherit)?;
-        }
+    for inherit in resolved.scopes.node_inherits().iter().flatten() {
+        check_inherit_id(resolved, *inherit)?;
     }
     Ok(())
 }
