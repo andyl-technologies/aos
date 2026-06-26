@@ -1020,10 +1020,18 @@ authority for its shape. The contract those files may rely on:
     jitter, loss, and bandwidth. `crates/crucible/src/lib.rs` covers identity
     sensitivity and rejection cases, and
     `checks.crucible.phase1.spatialLinkTransport` gates the task.
-- [ ] **T-SPAT-9** Guarantee the `World` encodes only logical topology with no
+- [x] **T-SPAT-9** Guarantee the `World` encodes only logical topology with no
   physical-transport-layout leak, and that `ScenarioDef::id` is invariant under
   transport-layout/host-geometry changes. — satisfies [SPAT-14], [SPAT-15]; spec
   §3.3.
+  - Completed by `crates/crucible/src/model.rs`: `World` exposes only logical
+    `nodes` and `links`, `LinkDef` records logical link characteristics, and
+    canonical world material excludes shmem region geometry, queue sizing, slot
+    indices, and host-memory geometry. `crates/crucible/src/lib.rs` covers
+    distinct physical-transport-layout and host-memory-geometry variants that
+    leave `ScenarioDef::id` and baked checkpoint identity unchanged, while the
+    physical layout types remain isolated in `crates/crucible-shmem/src/lib.rs`.
+    `checks.crucible.phase1.spatialLogicalTopology` gates the task.
 - [ ] **T-SPAT-10** Make the topology static (no add/remove node, no link-set
   mutation) and verify the participant set, RNG-stream set, lookahead graph, and
   bake set are functions of `World` alone. — satisfies [SPAT-16], [SPAT-18]; spec
