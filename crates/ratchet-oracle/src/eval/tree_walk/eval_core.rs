@@ -599,6 +599,10 @@ impl TreeWalk {
         if !self.options.eval_cache_enabled() {
             return None;
         }
+        if payload.retains_attr_positions() {
+            self.clear_persist_forced_expression_payload(subject);
+            return None;
+        }
         let Some(identity) = subject.metadata_identity else {
             return None;
         };
@@ -947,30 +951,50 @@ impl TreeWalk {
                 let IrAttrPathSegment::Static(symbol) = binding.key else {
                     return None;
                 };
-                if binding.position.is_some() {
-                    return None;
-                }
                 let name = try_clone_bytes(module.ir.symbols.resolve(symbol)?).ok()?;
-                entries.push((name, binding.value));
+                let position = binding
+                    .position
+                    .map(|span| AttrPosition::new(module_id.as_u32(), span));
+                entries.push((name, position, binding.value));
             }
             entries
         };
         let source_order_is_lexicographic = entries.windows(2).all(|pair| pair[0].0 < pair[1].0);
+        let has_positions = entries.iter().any(|(_, position, _)| position.is_some());
         let mut payload_entries = Vec::new();
         payload_entries.try_reserve_exact(entries.len()).ok()?;
-        for (name, value) in entries {
+        for (name, position, value) in entries {
             payload_entries.push((
                 name,
+                position,
                 self.force_cache_payload_for_closed_ir_node(
                     EvalNodeRef::new(module_id, value),
                     depth.saturating_add(1),
                 )?,
             ));
         }
-        if source_order_is_lexicographic {
-            CachedExpressionValue::strict_attrs(payload_entries).ok()
+        if has_positions {
+            if source_order_is_lexicographic {
+                CachedExpressionValue::positioned_attrs(payload_entries).ok()
+            } else {
+                CachedExpressionValue::source_ordered_positioned_attrs(payload_entries).ok()
+            }
+        } else if source_order_is_lexicographic {
+            CachedExpressionValue::strict_attrs(
+                payload_entries
+                    .into_iter()
+                    .map(|(name, _, value)| (name, value))
+                    .collect(),
+            )
+            .ok()
         } else {
-            CachedExpressionValue::source_ordered_attrs(payload_entries).ok()
+            CachedExpressionValue::source_ordered_attrs(
+                payload_entries
+                    .into_iter()
+                    .map(|(name, _, value)| (name, value))
+                    .collect(),
+            )
+            .ok()
         }
     }
 
@@ -1031,36 +1055,55 @@ impl TreeWalk {
                     entries.try_reserve_exact(attrs.len()).ok()?;
                     let source_order_is_lexicographic =
                         attrs.source_order() == attrs.iteration_order();
+                    let has_positions =
+                        attrs.iter_by_symbol().any(|entry| entry.position.is_some());
                     if source_order_is_lexicographic {
                         for entry in attrs.iter_lexicographic() {
-                            if entry.position.is_some() {
-                                return None;
-                            }
                             let name = self.symbols.resolve(entry.key)?;
                             entries.push((
                                 try_clone_bytes(name).ok()?,
+                                entry.position,
                                 self.force_cache_payload_for_value_with_depth(
                                     entry.value,
                                     depth.saturating_add(1),
                                 )?,
                             ));
                         }
-                        CachedExpressionValue::strict_attrs(entries).ok()
                     } else {
                         for entry in attrs.iter_source_order() {
-                            if entry.position.is_some() {
-                                return None;
-                            }
                             let name = self.symbols.resolve(entry.key)?;
                             entries.push((
                                 try_clone_bytes(name).ok()?,
+                                entry.position,
                                 self.force_cache_payload_for_value_with_depth(
                                     entry.value,
                                     depth.saturating_add(1),
                                 )?,
                             ));
                         }
-                        CachedExpressionValue::source_ordered_attrs(entries).ok()
+                    }
+                    if has_positions {
+                        if source_order_is_lexicographic {
+                            CachedExpressionValue::positioned_attrs(entries).ok()
+                        } else {
+                            CachedExpressionValue::source_ordered_positioned_attrs(entries).ok()
+                        }
+                    } else if source_order_is_lexicographic {
+                        CachedExpressionValue::strict_attrs(
+                            entries
+                                .into_iter()
+                                .map(|(name, _, value)| (name, value))
+                                .collect(),
+                        )
+                        .ok()
+                    } else {
+                        CachedExpressionValue::source_ordered_attrs(
+                            entries
+                                .into_iter()
+                                .map(|(name, _, value)| (name, value))
+                                .collect(),
+                        )
+                        .ok()
                     }
                 }
             }
@@ -1368,16 +1411,20 @@ impl TreeWalk {
         if payload.is_empty_attrs() {
             return self.heap.alloc_attrs(0, FlatAttrs::empty()).ok();
         }
-        if let Some(attr_payloads) = payload.attrs_entries() {
+        if let Some(attr_payloads) = payload.attrs_entries_with_positions() {
             let mut entries = Vec::new();
             entries.try_reserve_exact(attr_payloads.len()).ok()?;
-            for (name, value_payload) in attr_payloads {
+            for (name, position, value_payload) in attr_payloads {
                 let symbol = self.symbols.intern(&name).ok()?;
                 let value = self.value_for_cached_expression_payload_with_depth(
                     value_payload,
                     depth.saturating_add(1),
                 )?;
-                entries.push(AttrEntry::new(symbol, value));
+                let entry = match position {
+                    Some(position) => AttrEntry::with_position(symbol, value, position),
+                    None => AttrEntry::new(symbol, value),
+                };
+                entries.push(entry);
             }
             let attrs = FlatAttrs::new(entries, &self.symbols).ok()?;
             return self.heap.alloc_attrs(0, attrs).ok();
@@ -1714,6 +1761,9 @@ impl TreeWalk {
             }
             ValueTag::List | ValueTag::Attrs => {
                 let payload = self.force_cache_payload_for_value(value)?;
+                if payload.retains_attr_positions() {
+                    return None;
+                }
                 let value_hash = payload.value_hash().ok()?;
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
@@ -1775,6 +1825,9 @@ impl TreeWalk {
             return Some(DurableBlake3Hash::from_hasher(hasher));
         }
 
+        if payload.retains_attr_positions() {
+            return None;
+        }
         let value_hash = payload.value_hash().ok()?;
         hasher.update(b"composite");
         hasher.update(&value_hash.as_durable_hash().as_bytes());

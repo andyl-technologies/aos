@@ -542,9 +542,9 @@ alone (`M-1`/`Q-A`).
       context, a Nix path payload with or without context, a replayable Nix list
       whose existing spine elements are non-thunk replayable payloads or
       suspended closed literal thunks with replayable static payloads, or a
-      position-free replayable Nix attrset that preserves source-order metadata
-      when present and whose existing bindings are non-thunk replayable payloads
-      or suspended closed literal thunks with replayable static payloads. The
+      replayable Nix attrset that preserves source-order metadata and binding
+      source positions when present and whose existing bindings are non-thunk
+      replayable payloads or suspended closed literal thunks with replayable static payloads. The
       precursor expression identity uses a domain-separated hash of source name,
       source bytes, module path-literal base, evaluator-option salt, and the
       lowered node source span, then pairs that expression-positioned artifact
@@ -562,9 +562,10 @@ alone (`M-1`/`Q-A`).
       thunks, canonical free-variable hashes, general memo lookup,
       remaining suspended non-literal/non-replayable captured thunk-cell free
       variables, arbitrary lazy-element list and lazy-binding attrset payloads,
-      evaluator-integrated position-bearing attrset payload observation/rehydration, and
-      other composite value hashing, persistence, and cached/uncached harness proof remain open
-      (`S-14`/`S-15`).
+      captured position-bearing attrset free-variable hashes, positioned attrset payload
+      persistence, and other composite value hashing, persistence, and cached/uncached harness proof remain open
+      (`S-14`/`S-15`). The gate includes positioned attrset force-cache hit and
+      `unsafeGetAttrPos` provenance canaries.
 - [x] Current pure closed force-cache hit substrate: `EvalCache` keeps per-node
       scalar/string/path/replayable-list/replayable-attrset payload records beside demand-graph value
       hashes, `EvalCacheRuntime::lookup_inline_expression_payload` returns a
@@ -573,7 +574,7 @@ alone (`M-1`/`Q-A`).
       evaluating a policy-admitted newly claimed closed source-backed thunk whose
       entire body subtree is both speculable and in the conservative
       self-contained IR-kind whitelist. Hits publish immediate scalars directly and rehydrate
-      context-free string bytes, context-bearing string bytes plus context, path bytes with or without context, replayable Nix lists, or replayable Nix attrsets into the evaluator-local heap before finishing
+      context-free string bytes, context-bearing string bytes plus context, path bytes with or without context, replayable Nix lists, or replayable Nix attrsets with source-order metadata and binding source positions into the evaluator-local heap before finishing
       the thunk cell; closed literal lazy list elements and attrset bindings
       rehydrate as strict static replayable payload values, so thunk identity
       and laziness from the cold run are not preserved across the cached
@@ -586,12 +587,14 @@ alone (`M-1`/`Q-A`).
       explicit option and impure-input keys, synthetic apply/select
       thunks, canonical free-variable hashes, remaining suspended
       non-literal/non-replayable captured thunk-cell free variables, arbitrary
-      non-literal lazy-element lists and lazy-binding attrsets, and other composite payloads,
+      non-literal lazy-element lists and lazy-binding attrsets, captured
+      position-bearing attrset free-variable hashes, positioned attrset payload
+      persistence, and other composite payloads,
       transitive dirty scheduling, persistence, `derivationStrict` SHA-256
       short-circuiting, and cached/uncached harness proof remain open
       (`S-14`/`S-15`). The gate includes `cache::runtime` lookup tests,
-      source-backed force-cache hit/skip tests, and closed-literal lazy
-      composite hit canaries.
+      source-backed force-cache hit/skip tests, positioned attrset
+      hit/provenance canaries, and closed-literal lazy composite hit canaries.
 - [x] Current force-time inline impure-edge substrate: tree-walk force slices the
       impure-input trace observed while a closed source-backed thunk body
       evaluates, and
@@ -864,7 +867,7 @@ alone (`M-1`/`Q-A`).
       tags, module ids, and source spans participate in the hash; attrset
       hashing uses raw-byte-sorted binding order for canonical attrsets and
       distinct source-order tags when construction order is observable.
-      Arbitrary non-literal lazy-element list and lazy-binding attrset cacheability, evaluator-integrated position-bearing attrset payload observation/rehydration, positioned attrset payload persistence, functions/thunks cacheability
+      Arbitrary non-literal lazy-element list and lazy-binding attrset cacheability, captured position-bearing attrset free-variable hashes, positioned attrset payload persistence, functions/thunks cacheability
       policy, generic hash-cons value fields, `force_memoized` integration, and
       harness proof remain open (`S-14`/`S-15`). The gate includes positioned
       attrset payload lookup/hash/no-persistence coverage.

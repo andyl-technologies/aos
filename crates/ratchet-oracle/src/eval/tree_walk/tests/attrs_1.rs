@@ -6662,7 +6662,7 @@ fn strict_attrset_payloads_rehydrate_after_heap_lookup() {
 }
 
 #[test]
-fn strict_attrset_payloads_skip_position_bearing_attrsets() {
+fn strict_attrset_payloads_preserve_position_bearing_attrsets_in_memory() {
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
         DurableBlake3Hash::for_bytes(b"force-position-attrs-result"),
@@ -6681,11 +6681,12 @@ fn strict_attrset_payloads_skip_position_bearing_attrsets() {
     let mut evaluator =
         TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache.clone());
     let a = evaluator.symbols.intern(b"a").expect("a interns");
+    let expected_position = AttrPosition::new(0, Span::new(0, 1));
     let attrs = FlatAttrs::new(
         vec![AttrEntry::with_position(
             a,
             Value::int(1),
-            AttrPosition::new(0, Span::new(0, 1)),
+            expected_position,
         )],
         &evaluator.symbols,
     )
@@ -6696,7 +6697,7 @@ fn strict_attrset_payloads_skip_position_bearing_attrsets() {
         .expect("attrs allocate");
 
     evaluator.observe_forced_inline_expression_result(
-        Some(subject),
+        Some(subject.clone()),
         value,
         ImpureInputTraceSegment {
             trace: Vec::new(),
@@ -6704,22 +6705,45 @@ fn strict_attrset_payloads_skip_position_bearing_attrsets() {
         },
     );
 
-    let runtime = cache.lock().expect("cache lock is valid");
+    {
+        let runtime = cache.lock().expect("cache lock is valid");
+        assert_eq!(
+            runtime.cache().expect("cache is enabled").len(),
+            1,
+            "position-bearing attrsets should populate the in-memory payload cache"
+        );
+    }
+
+    let mut second = TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache);
+    let hit = second
+        .lookup_forced_inline_expression_result(Some(subject))
+        .expect("position-bearing attrset payload hits");
+    let a = second.symbols.intern(b"a").expect("a interns");
+    let attrs = second
+        .heap()
+        .get_attrs(hit)
+        .expect("position-bearing attrset rehydrates into this evaluator heap");
+    assert_eq!(attrs.get(a).expect("a exists").as_int(), Ok(1));
     assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "position-bearing attrsets need position-aware payloads before observation"
+        attrset_has_binding_position(attrs),
+        "position-bearing attrset payload hits must retain binding positions"
+    );
+    assert_eq!(
+        attrs.get_entry(a).expect("a entry exists").position,
+        Some(expected_position),
+        "position-bearing attrset payload hits must retain exact binding provenance"
     );
 }
 
 #[test]
-fn source_backed_position_bearing_attrset_literals_skip_force_cache_payloads() {
+fn source_backed_position_bearing_attrset_literals_hit_force_cache_payloads() {
     let source = r#"{ a = { b = 1; }; }"#;
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
     let b = symbol_for(&ir, b"b");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
 
-    for _ in 0..2 {
+    for expected_hit in [false, true] {
         let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
             &ir,
             TreeWalkOptions::new(),
@@ -6752,8 +6776,8 @@ fn source_backed_position_bearing_attrset_literals_skip_force_cache_payloads() {
         assert!(subject.free_var_value_hashes.is_empty());
         assert_eq!(
             subject.memoization_admission,
-            ForceCacheMemoizationAdmission::ConditionalThunk,
-            "position-bearing attrsets must not pre-admit as closed composite payloads"
+            ForceCacheMemoizationAdmission::SelectedSubstrate,
+            "position-bearing attrsets should pre-admit once payloads carry positions"
         );
 
         let forced = evaluator
@@ -6769,24 +6793,31 @@ fn source_backed_position_bearing_attrset_literals_skip_force_cache_payloads() {
             attrset_has_binding_position(attrs),
             "source-backed literal bindings must carry positions"
         );
-        assert_eq!(evaluator.stats().cache_hits(), 0);
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
         assert!(
             evaluator.stats().force_cache_memoization_admits() > 0,
             "position-bearing attrset force must reach an admitted cache probe"
         );
         assert_eq!(evaluator.stats().force_cache_probes(), 1);
-        assert_eq!(evaluator.stats().force_cache_misses(), 1);
+        if expected_hit {
+            assert_eq!(evaluator.stats().force_cache_hits(), 1);
+            assert_eq!(evaluator.stats().force_cache_misses(), 0);
+        } else {
+            assert_eq!(evaluator.stats().force_cache_hits(), 0);
+            assert_eq!(evaluator.stats().force_cache_misses(), 1);
+        }
     }
 
     let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "source-backed position-bearing attrset literals need position-aware payloads before observation"
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "source-backed position-bearing attrset literals should use one in-memory payload"
     );
 }
 
 #[test]
-fn unsafe_get_attr_pos_observes_position_bearing_attrsets_without_force_cache_payloads() {
+fn unsafe_get_attr_pos_observes_position_bearing_attrsets_from_force_cache_payloads() {
     let source = r#"{ a = { b = 1; }; }"#;
     let source_name = "position-bearing-attrs-position.nix";
     let ir = lower(source);
@@ -6794,97 +6825,106 @@ fn unsafe_get_attr_pos_observes_position_bearing_attrsets_without_force_cache_pa
     let b = symbol_for(&ir, b"b");
     let (expected_line, expected_column) = source_line_column(source, "b = 1");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
-    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
-        &ir,
-        TreeWalkOptions::new(),
-        source_name,
-        source,
-        cache.clone(),
-    );
-    let file = evaluator.symbols.intern(b"file").expect("file interns");
-    let line = evaluator.symbols.intern(b"line").expect("line interns");
-    let column = evaluator.symbols.intern(b"column").expect("column interns");
-    let root = evaluator.eval_root().expect("attrset evaluates");
-    let a_thunk = {
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            source_name,
+            source,
+            cache.clone(),
+        );
+        let file = evaluator.symbols.intern(b"file").expect("file interns");
+        let line = evaluator.symbols.intern(b"line").expect("line interns");
+        let column = evaluator.symbols.intern(b"column").expect("column interns");
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let a_thunk = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(a_thunk)
+                .expect("a is a node thunk");
+            let body = thunk.body().expect("a has a lowered attrset body");
+            let node = ir.arena.node(body).expect("attrset body exists");
+            assert_eq!(node.kind, IrKind::AttrSet);
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("position-bearing attrset subject builds")
+        };
+        assert!(subject.lookup_identity.is_some());
+        assert!(subject.pure_observation_identity.is_some());
+        assert!(subject.free_var_value_hashes.is_empty());
+        assert_eq!(
+            subject.memoization_admission,
+            ForceCacheMemoizationAdmission::SelectedSubstrate,
+            "position-bearing attrsets should pre-admit once payloads carry positions"
+        );
+
+        let forced_a = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), a_thunk)
+            .expect("position-bearing attrset thunk force succeeds");
         let attrs = evaluator
             .heap()
-            .get_attrs(root)
-            .expect("attrset is heap-owned");
-        attrs.get(a).expect("a exists")
-    };
-    let subject = {
-        let thunk = evaluator
+            .get_attrs(forced_a)
+            .expect("forced value is an attrset");
+        assert_eq!(attrs.get(b).expect("b exists").as_int(), Ok(1));
+        assert!(
+            attrset_has_binding_position(attrs),
+            "source-backed literal bindings must carry positions"
+        );
+        assert_eq!(evaluator.stats().force_cache_probes(), 1);
+        if expected_hit {
+            assert_eq!(evaluator.stats().force_cache_hits(), 1);
+            assert_eq!(evaluator.stats().force_cache_misses(), 0);
+        } else {
+            assert_eq!(evaluator.stats().force_cache_hits(), 0);
+            assert_eq!(evaluator.stats().force_cache_misses(), 1);
+        }
+        assert!(
+            evaluator.stats().force_cache_memoization_admits() > 0,
+            "position-bearing attrset force must reach an admitted cache probe"
+        );
+
+        let position = evaluator
+            .eval_unsafe_get_attr_pos_attrs_value(
+                ir.root,
+                Span::new(0, 0),
+                b,
+                ir.root,
+                Span::new(0, source.len() as u32),
+                forced_a,
+            )
+            .expect("unsafeGetAttrPos succeeds");
+        let position_attrs = evaluator
             .heap()
-            .get_thunk(a_thunk)
-            .expect("a is a node thunk");
-        let body = thunk.body().expect("a has a lowered attrset body");
-        let node = ir.arena.node(body).expect("attrset body exists");
-        assert_eq!(node.kind, IrKind::AttrSet);
-        evaluator
-            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
-            .expect("position-bearing attrset subject builds")
-    };
-    assert!(subject.lookup_identity.is_some());
-    assert!(subject.pure_observation_identity.is_some());
-    assert!(subject.free_var_value_hashes.is_empty());
-    assert_eq!(
-        subject.memoization_admission,
-        ForceCacheMemoizationAdmission::ConditionalThunk,
-        "position-bearing attrsets must not pre-admit as closed composite payloads"
-    );
-
-    let forced_a = evaluator
-        .force_admitted_value(ir.root, Span::new(0, 0), a_thunk)
-        .expect("position-bearing attrset thunk force succeeds");
-    let attrs = evaluator
-        .heap()
-        .get_attrs(forced_a)
-        .expect("forced value is an attrset");
-    assert_eq!(attrs.get(b).expect("b exists").as_int(), Ok(1));
-    assert!(
-        attrset_has_binding_position(attrs),
-        "source-backed literal bindings must carry positions"
-    );
-    assert_eq!(evaluator.stats().force_cache_probes(), 1);
-    assert_eq!(evaluator.stats().force_cache_misses(), 1);
-    assert!(
-        evaluator.stats().force_cache_memoization_admits() > 0,
-        "position-bearing attrset force must reach an admitted cache probe"
-    );
-
-    let position = evaluator
-        .eval_unsafe_get_attr_pos_attrs_value(
-            ir.root,
-            Span::new(0, 0),
-            b,
-            ir.root,
-            Span::new(0, source.len() as u32),
-            forced_a,
-        )
-        .expect("unsafeGetAttrPos succeeds");
-    let position_attrs = evaluator
-        .heap()
-        .get_attrs(position)
-        .expect("unsafeGetAttrPos returns an attrset");
-    let file_value = position_attrs.get(file).expect("file exists");
-    let file_string = evaluator
-        .heap()
-        .get_string(file_value)
-        .expect("file is a string");
-    assert_eq!(file_string.bytes(), source_name.as_bytes());
-    assert_eq!(
-        position_attrs.get(line).expect("line exists").as_int(),
-        Ok(expected_line as i64)
-    );
-    assert_eq!(
-        position_attrs.get(column).expect("column exists").as_int(),
-        Ok(expected_column as i64)
-    );
+            .get_attrs(position)
+            .expect("unsafeGetAttrPos returns an attrset");
+        let file_value = position_attrs.get(file).expect("file exists");
+        let file_string = evaluator
+            .heap()
+            .get_string(file_value)
+            .expect("file is a string");
+        assert_eq!(file_string.bytes(), source_name.as_bytes());
+        assert_eq!(
+            position_attrs.get(line).expect("line exists").as_int(),
+            Ok(expected_line as i64)
+        );
+        assert_eq!(
+            position_attrs.get(column).expect("column exists").as_int(),
+            Ok(expected_column as i64)
+        );
+    }
 
     let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "observably positioned attrsets must not populate force-cache payloads"
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "observably positioned attrsets should populate in-memory force-cache payloads"
     );
 }
 
@@ -7873,9 +7913,10 @@ fn captured_position_bearing_attrset_values_do_not_build_force_cache_subjects() 
 
     assert_eq!(forced.as_bool(), Ok(true));
     let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "captured position-bearing attrsets need position-aware payloads before observation"
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "forcing the captured position-bearing attrset itself should observe a positioned payload"
     );
 }
 
@@ -8607,16 +8648,16 @@ fn dynamic_with_scoped_thunks_do_not_build_force_cache_subjects() {
         subject.is_none(),
         "dynamic with-scoped thunks must not be hashed into demand keys"
     );
-
     let forced = evaluator
         .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("with-scoped attr force succeeds");
 
     assert_eq!(forced.as_int(), Ok(3));
     let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "with-scoped thunk subjects should skip expression node allocation"
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "forcing through a dynamic with scope may observe the closed with-scope attrset, but not the with-scoped thunk subject"
     );
 }
 
@@ -9409,6 +9450,91 @@ fn persistent_source_order_attrset_payloads_rehydrate_source_order() {
         second.persist_force_cache_hit_keys.len(),
         1,
         "fresh runtime should load the durable source-order attrset payload"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn positioned_attrset_payloads_clear_persistent_materialization() {
+    let persist_root = unique_temp_dir("force-cache-persistent-positioned-attrs-clear");
+    let source = "{ a = { b = 1; }; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "persistent-positioned-attrs-clear.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let thunk_value =
+        seed_prior_persistent_demand_for_attr(&mut evaluator, &ir, a, &persist_root, "a");
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("positioned attrset force succeeds");
+    let attrs = evaluator
+        .heap()
+        .get_attrs(forced)
+        .expect("forced value is an attrset");
+    assert!(
+        attrset_has_binding_position(attrs),
+        "fixture must force a position-bearing attrset"
+    );
+    assert_eq!(evaluator.stats().cache_hits(), 0);
+    assert_eq!(evaluator.stats().cache_misses(), 1);
+    drop(evaluator);
+
+    let mut verifier = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "persistent-positioned-attrs-clear.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let root = verifier.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = verifier
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = verifier
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a suspended thunk");
+        verifier
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("a force-cache subject builds")
+    };
+    let identity = subject
+        .metadata_identity
+        .expect("a has persistent metadata identity");
+    let key = PersistNodeMetadataKey::for_expression(
+        identity,
+        subject.free_var_value_hashes.iter().copied(),
+    );
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent value lookup succeeds"),
+        None,
+        "position-bearing payloads should not materialize persistent values yet"
+    );
+    assert!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds")
+            .map(|trace| trace.payload().is_tombstone())
+            .unwrap_or(true),
+        "position-bearing payloads should leave no live persistent force trace"
     );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");

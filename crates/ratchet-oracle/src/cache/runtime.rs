@@ -868,7 +868,11 @@ impl CachedExpressionValue {
         }
     }
 
-    pub(crate) fn attrs_entries(&self) -> Option<Vec<(Vec<u8>, Self)>> {
+    /// Returns cached attrset entries without binding positions, if this payload is an attrset.
+    ///
+    /// Position-bearing attrset payloads return `None` so callers do not
+    /// accidentally drop provenance needed by `builtins.unsafeGetAttrPos`.
+    pub fn attrs_entries(&self) -> Option<Vec<(Vec<u8>, Self)>> {
         match &self.payload {
             InlineValuePayload::EmptyAttrs => Some(Vec::new()),
             InlineValuePayload::Attrs(entries)
@@ -947,6 +951,10 @@ impl CachedExpressionValue {
             | InlineValuePayload::EmptyList
             | InlineValuePayload::List(_) => None,
         }
+    }
+
+    pub(crate) fn retains_attr_positions(&self) -> bool {
+        self.payload.retains_attr_positions()
     }
 }
 
@@ -2338,6 +2346,26 @@ impl InlineValuePayload {
             | Self::SourceOrderedPositionedAttrs(_) => {
                 Ok(self.value_hash_from_persistent_payload())
             }
+        }
+    }
+
+    fn retains_attr_positions(&self) -> bool {
+        match self {
+            Self::PositionedAttrs(_) | Self::SourceOrderedPositionedAttrs(_) => true,
+            Self::List(elements) => elements.iter().any(Self::retains_attr_positions),
+            Self::Attrs(entries) | Self::SourceOrderedAttrs(entries) => entries
+                .iter()
+                .any(|entry| entry.value.retains_attr_positions()),
+            Self::Int(_)
+            | Self::Float(_)
+            | Self::Bool(_)
+            | Self::Null
+            | Self::ContextFreeString(_)
+            | Self::ContextString { .. }
+            | Self::Path(_)
+            | Self::ContextPath { .. }
+            | Self::EmptyList
+            | Self::EmptyAttrs => false,
         }
     }
 
