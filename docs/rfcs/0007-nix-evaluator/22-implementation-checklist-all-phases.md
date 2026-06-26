@@ -746,7 +746,8 @@ alone (`M-1`/`Q-A`).
       tests, preforced computed string thunk-cell capture tests, fulfilled
       replayable-attrset thunk-cell hash tests, direct suspended thunk-cell skip tests, caller-level
       suspended computed capture subject-skip canary, dynamic `with`/scoped-import
-      global subject-skip canaries, and representative captured
+      global subject-skip canaries, lambda/recursive-attrset nested
+      lexical-frame subject-skip canaries, and representative captured
       unsupported free-variable skips (`C-1`/`C-2`).
 - [x] Current node-span force-cache identity precursor: source-backed and
       source-less node-thunk expression identities now fold the lowered node's

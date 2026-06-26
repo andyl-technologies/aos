@@ -7131,6 +7131,152 @@ fn lazy_element_list_capture_state(
     }
 }
 
+fn subtree_contains_upval_capture(ir: &Ir, root: IrId) -> bool {
+    let mut visited = BTreeSet::new();
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id.as_u32()) {
+            continue;
+        }
+        let Some(node) = ir.arena.node(id) else {
+            return false;
+        };
+        match node.data {
+            IrData::Upval { .. } => return true,
+            IrData::None
+            | IrData::Int(_)
+            | IrData::Float(_)
+            | IrData::Bool(_)
+            | IrData::Symbol(_)
+            | IrData::Local { .. } => {}
+            IrData::SearchPath { search_path, .. } => stack.extend(search_path),
+            IrData::Node(child) => stack.push(child),
+            IrData::Pair { first, second } => {
+                stack.push(first);
+                stack.push(second);
+            }
+            IrData::Triple {
+                first,
+                second,
+                third,
+            } => {
+                stack.push(first);
+                stack.push(second);
+                stack.push(third);
+            }
+            IrData::Children(children) => {
+                let Some(children) = ir.arena.child_slice(children) else {
+                    return false;
+                };
+                stack.extend(children.iter().copied());
+            }
+            IrData::Bindings(bindings) => {
+                if !push_binding_values_and_dynamic_keys(ir, bindings, &mut stack) {
+                    return false;
+                }
+            }
+            IrData::Binary { op, lhs, rhs } => {
+                if matches!(op, BinOpKind::PipeLeft | BinOpKind::PipeRight) {
+                    return false;
+                }
+                stack.push(lhs);
+                stack.push(rhs);
+            }
+            IrData::Unary { operand, .. } => stack.push(operand),
+            IrData::Select {
+                receiver,
+                path,
+                default,
+                ..
+            } => {
+                stack.push(receiver);
+                stack.extend(default);
+                if !push_attr_path_dynamic_segments(ir, path, &mut stack) {
+                    return false;
+                }
+            }
+            IrData::HasAttr { receiver, path, .. } => {
+                stack.push(receiver);
+                if !push_attr_path_dynamic_segments(ir, path, &mut stack) {
+                    return false;
+                }
+            }
+            IrData::PrimOp { args, .. } => {
+                let Some(args) = ir.arena.child_slice(args) else {
+                    return false;
+                };
+                stack.extend(args.iter().copied());
+            }
+            IrData::DialectNode { argument, .. } => stack.push(argument),
+            IrData::DialectScopeVar { chain, .. } => {
+                let Some(chain) = usize::try_from(chain)
+                    .ok()
+                    .and_then(|index| ir.with_chains.get(index))
+                else {
+                    return false;
+                };
+                stack.extend(chain.scopes.iter().copied());
+            }
+            IrData::Lambda { pattern, body, .. } => {
+                stack.push(pattern);
+                stack.push(body);
+            }
+            IrData::Let { bindings, body, .. } => {
+                stack.push(body);
+                if !push_binding_values_and_dynamic_keys(ir, bindings, &mut stack) {
+                    return false;
+                }
+            }
+            IrData::AttrSet { bindings, .. } => {
+                if !push_binding_values_and_dynamic_keys(ir, bindings, &mut stack) {
+                    return false;
+                }
+            }
+            IrData::FormalSet { formals, .. } => {
+                let Some(formals) = ir.arena.child_slice(formals) else {
+                    return false;
+                };
+                stack.extend(formals.iter().copied());
+            }
+            IrData::Formal { default, .. } => stack.extend(default),
+        }
+    }
+    false
+}
+
+fn push_binding_values_and_dynamic_keys(
+    ir: &Ir,
+    bindings: IrBindingSlice,
+    stack: &mut Vec<IrId>,
+) -> bool {
+    let start = bindings.start as usize;
+    let Some(end) = start.checked_add(bindings.len()) else {
+        return false;
+    };
+    let Some(bindings) = ir.bindings.get(start..end) else {
+        return false;
+    };
+    for binding in bindings {
+        stack.push(binding.value);
+        if let IrAttrPathSegment::Dynamic(segment) = binding.key {
+            stack.push(segment);
+        }
+    }
+    true
+}
+
+fn push_attr_path_dynamic_segments(ir: &Ir, path: IrAttrPathId, stack: &mut Vec<IrId>) -> bool {
+    let Some(segments) = ir.attr_paths.get(path.index()) else {
+        return false;
+    };
+    for segment in segments.as_ref() {
+        if let IrAttrPathSegment::Dynamic(segment) = segment {
+            stack.push(*segment);
+        }
+    }
+    true
+}
+
 #[test]
 fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
     let source = "let f = x: { a = builtins.length x == 1; }; in f [ (1 / 0) ]";
@@ -7388,6 +7534,134 @@ fn scoped_import_global_thunks_do_not_build_force_cache_subjects() {
     );
 
     fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn captured_lambda_body_thunks_do_not_build_force_cache_subjects() {
+    let source = "let x = 1; in { a = y: x + y; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-lambda-body.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a node thunk");
+        let body = thunk.body().expect("a has a lowered lambda body");
+        let node = ir.arena.node(body).expect("lambda body exists");
+        assert!(
+            matches!(node.data, IrData::Lambda { .. }),
+            "fixture must exercise a lambda body"
+        );
+        assert!(
+            subtree_contains_upval_capture(&ir, body),
+            "fixture lambda body must contain an upvalue capture"
+        );
+        let env = thunk.env().expect("a captures the outer let frame");
+        assert!(
+            !env.frames().is_empty(),
+            "fixture must capture a lexical frame"
+        );
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "captured lambda bodies must not be hashed into demand keys"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured lambda body force succeeds");
+
+    assert_eq!(forced.tag(), ValueTag::Lambda);
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "captured lambda-body thunk subjects should skip expression node allocation"
+    );
+}
+
+#[test]
+fn captured_recursive_attrset_body_thunks_do_not_build_force_cache_subjects() {
+    let source = "let x = 1; in { a = rec { y = x; }; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-recursive-attrset-body.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a node thunk");
+        let body = thunk.body().expect("a has a lowered attrset body");
+        let node = ir.arena.node(body).expect("attrset body exists");
+        assert!(
+            matches!(
+                node.data,
+                IrData::AttrSet {
+                    recursive: true,
+                    ..
+                }
+            ),
+            "fixture must exercise a recursive attrset body"
+        );
+        assert!(
+            subtree_contains_upval_capture(&ir, body),
+            "fixture recursive attrset body must contain an upvalue capture"
+        );
+        let env = thunk.env().expect("a captures the outer let frame");
+        assert!(
+            !env.frames().is_empty(),
+            "fixture must capture a lexical frame"
+        );
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "captured recursive attrset bodies must not be hashed into demand keys"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured recursive attrset body force succeeds");
+
+    assert_eq!(forced.tag(), ValueTag::Attrs);
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "captured recursive-attrset thunk subjects should skip expression node allocation"
+    );
 }
 
 #[test]
