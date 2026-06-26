@@ -1054,7 +1054,7 @@ alone (`M-1`/`Q-A`).
       It computes the actual current parse-cache BLAKE3 keys for the root and
       imported sources, the `ParseFileKey` content hash for the imported file,
       the persisted force-cache node metadata keys, materialized value hashes,
-      node-trace value hashes and input observation hashes, and the
+      node-trace value hashes plus input identity and observation hashes, and the
       evaluator-local xxh3 structural hash for the derivation name string, then
       checks both recorded
       `.drv` ATerm bytes and the `.drv` store path for absence of those

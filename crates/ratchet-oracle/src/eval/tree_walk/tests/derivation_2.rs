@@ -1504,11 +1504,20 @@ fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
         .node_trace_log()
         .latest_entries()
         .expect("persistent node trace entries load");
+    let marker_fingerprint = ImpureInputFingerprint::path_exists(&path_bytes(&marker_path), true)
+        .expect("marker pathExists fingerprint builds");
+    let marker_cacheable_fingerprint = marker_fingerprint
+        .as_cacheable()
+        .expect("marker pathExists fingerprint is cacheable");
     assert!(
-        trace_entries
-            .iter()
-            .any(|entry| !entry.payload().is_tombstone() && !entry.payload().inputs().is_empty()),
-        "canary should persist at least one effectful forced-expression trace"
+        trace_entries.iter().any(|entry| {
+            !entry.payload().is_tombstone()
+                && entry
+                    .payload()
+                    .inputs()
+                    .contains(marker_cacheable_fingerprint)
+        }),
+        "canary should persist the marker pathExists forced-expression trace"
     );
     let hot_canary = NixString::from_bytes(b"leak-canary".to_vec())
         .structural_hash_xxh3()
@@ -1549,6 +1558,10 @@ fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
             entry.value_hash().as_durable_hash(),
         ));
         for input in entry.payload().inputs() {
+            canaries.extend(durable_hash_surface_canaries(
+                "force trace identity BLAKE3",
+                input.identity().hash(),
+            ));
             canaries.extend(durable_hash_surface_canaries(
                 "force trace observation BLAKE3",
                 input.observation_hash(),
