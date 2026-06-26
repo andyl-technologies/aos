@@ -21,6 +21,8 @@ pub(crate) const CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] =
     b"aos-nix-context-path-value-hash-v1";
 pub(crate) const LIST_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-list-value-hash-v1";
 pub(crate) const ATTRS_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-attrs-value-hash-v1";
+pub(crate) const DERIVATION_ATERM_VALUE_HASH_DOMAIN_VERSION: &[u8] =
+    b"aos-nix-derivation-aterm-value-hash-v1";
 
 /// A durable hash of a canonical evaluated value.
 ///
@@ -182,6 +184,20 @@ impl ValueHash {
         hasher.update(ATTRS_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"attrs");
         hasher.update(&0u128.to_le_bytes());
+        Self(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    /// Hashes serialized `.drv` ATerm bytes as a derivationStrict value-hash precursor.
+    ///
+    /// This is a derivationStrict comparison key only. It deliberately stays in
+    /// the BLAKE3 value-hash domain and must not feed Nix-observed SHA-256
+    /// store paths or `.drv` hashes.
+    pub fn from_derivation_aterm_bytes(aterm: &[u8]) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(DERIVATION_ATERM_VALUE_HASH_DOMAIN_VERSION);
+        hasher.update(b"derivation");
+        hasher.update(&(aterm.len() as u128).to_le_bytes());
+        hasher.update(aterm);
         Self(DurableBlake3Hash::from_hasher(hasher))
     }
 
@@ -427,6 +443,33 @@ mod tests {
             hash,
             ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"attrs"))
         );
+    }
+
+    #[test]
+    fn derivation_aterm_hashes_include_domain_and_payload() {
+        let aterm = b"Derive([(\"out\",\"/nix/store/example\",\"\")],[],[],\":\",\":\",[],[])";
+        let hash = ValueHash::from_derivation_aterm_bytes(aterm);
+
+        assert_eq!(hash, ValueHash::from_derivation_aterm_bytes(aterm));
+        assert_ne!(
+            hash,
+            ValueHash::from_derivation_aterm_bytes(
+                b"Derive([(\"out\",\"/nix/store/changed\",\"\")],[],[],\":\",\":\",[],[])"
+            )
+        );
+        assert_ne!(hash, ValueHash::from_context_free_string_bytes(aterm));
+        assert_ne!(
+            hash,
+            ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(aterm))
+        );
+    }
+
+    #[test]
+    fn derivation_aterm_hashes_participate_in_cutoff_decisions() {
+        let hash = ValueHash::from_derivation_aterm_bytes(b"Derive([],[],[],\":\",\":\",[],[])");
+        let decision = EarlyCutoff::decide(Some(hash), hash);
+
+        assert_eq!(decision, CutoffDecision::CutOff);
     }
 
     #[test]

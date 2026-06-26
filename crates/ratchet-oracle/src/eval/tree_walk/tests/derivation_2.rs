@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::cache::{
-    PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags, ParseCacheKey, ParseFileKey,
-    PersistCache, PersistFileArtifactKey,
+    CutoffDecision, EarlyCutoff, PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags,
+    ParseCacheKey, ParseFileKey, PersistCache, PersistFileArtifactKey, ValueHash,
 };
 use crate::string::NixString;
 
@@ -104,6 +104,50 @@ fn derivation_strict_preserves_non_utf8_environment_values() {
             .windows(b"raw-\xff-byte".len())
             .any(|window| window == b"raw-\xff-byte"),
         "{aterm:?}"
+    );
+}
+
+#[test]
+fn derivation_strict_aterm_value_hash_precursor_tracks_recorded_drv_bytes() {
+    fn recorded_aterm(source: &str) -> Vec<u8> {
+        let outcome = eval_whnf_owned(&lower(source)).expect("derivation evaluates");
+        outcome
+            .derivations()
+            .iter()
+            .find_map(EvalDerivation::aterm_bytes)
+            .expect("static derivation has ATerm bytes")
+            .to_vec()
+    }
+
+    let first_source = r#"let d = derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        env = "same";
+    }; in d.drvPath"#;
+    let changed_source = r#"let d = derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        env = "changed";
+    }; in d.drvPath"#;
+
+    let first_aterm = recorded_aterm(first_source);
+    let same_aterm = recorded_aterm(first_source);
+    let changed_aterm = recorded_aterm(changed_source);
+    let first_hash = ValueHash::from_derivation_aterm_bytes(&first_aterm);
+    let same_hash = ValueHash::from_derivation_aterm_bytes(&same_aterm);
+    let changed_hash = ValueHash::from_derivation_aterm_bytes(&changed_aterm);
+
+    assert_eq!(first_hash, same_hash);
+    assert_ne!(first_hash, changed_hash);
+    assert_eq!(
+        EarlyCutoff::decide(Some(first_hash), same_hash),
+        CutoffDecision::CutOff
+    );
+    assert_eq!(
+        EarlyCutoff::decide(Some(first_hash), changed_hash),
+        CutoffDecision::Propagate
     );
 }
 

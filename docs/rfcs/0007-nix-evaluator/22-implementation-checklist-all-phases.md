@@ -800,6 +800,14 @@ alone (`M-1`/`Q-A`).
       value-hash production, `force_memoized`, evaluator node lifecycle,
       automatic `NixNative` use, persistence, and harness proof remain open
       (`S-14`/`S-15`).
+- [x] Current derivation ATerm value-hash precursor:
+      `ValueHash::from_derivation_aterm_bytes` hashes recorded `.drv` ATerm
+      bytes in a separate durable BLAKE3 value-hash domain and can drive
+      `EarlyCutoff` equality for repeated derivationStrict surfaces while
+      staying out of Nix-observed SHA-256 path and `.drv` hashing. This is a
+      comparison-key precursor only; evaluator-owned derivationStrict demand
+      nodes, dependency capture, SHA-256 short-circuiting, persistence, and
+      cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
 - [x] Current forced-payload early-cutoff stats substrate:
       trace-backed force-cache payload observation now reports its value-hash
       `Reconsideration`, first trace-backed insertion uses no synthetic prior
