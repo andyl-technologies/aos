@@ -236,8 +236,9 @@ pub struct MaterializedState {
     /// The byte offset into the totally-ordered event log (19) at which this
     /// checkpoint sits. A resume continues appending at this offset; the log
     /// prefix up to it is shared CoW with ancestors (§5). The event log is
-    /// defined by 19; this file stores only the offset and the prefix ref.
-    pub event_log_offset: EventLogOffset, // offset + content ref to the shared log prefix
+    /// defined by 19; this file stores only the offset, the shared-prefix ref,
+    /// and the appended segment ref.
+    pub event_log_offset: EventLogOffset, // offset + shared prefix ref + appended segment ref
 }
 ```
 
@@ -806,11 +807,20 @@ command.
     `materialize_hot_checkpoint_with_savevm_hedge` keep such nodes thin, and
     `thin_replay_until_full_s3` evicts an already-hot fat checkpoint back to
     the thin ancestor-replay path while preserving the realized runtime hash.
-- [ ] **T-TEMP-6** Implement CoW sharing across the DAG: a fork stores only
+- [x] **T-TEMP-6** Implement CoW sharing across the DAG: a fork stores only
   dirty VM pages, dirty overlay pages, its schedule delta, and its appended log
   segment; unchanged pieces resolve by reference; all deltas BLAKE3-keyed and
   deduped; assert marginal fork cost ∝ delta size. — satisfies [TEMP-15],
   [TEMP-16], [TEMP-17]; spec §5.
+  - Completed by `crucible::CowDeltaRef`, `crucible::CowSharingStats`, and
+    `checks.crucible.phase1.gates.contentAddress`: checkpoints now enumerate
+    typed CoW delta refs for dirty VM memory, dirty device overlays,
+    `schedule_delta`, and explicit appended event-log segments while preserving
+    the inherited log prefix as a shared reference; `TemporalGraph`
+    computes logical vs unique CoW object counts across recorded DAG nodes and
+    fat cache entries; and `marginal_fork_cow_delta_objects` proves a sibling
+    fork with identical VM, overlay, and log deltas only adds its new schedule
+    delta instead of copying full state.
 - [ ] **T-TEMP-7** Implement the replay oracle as a structural invariant and
   CI gate: `hash(loadvm(fat)) == hash(replay-from-fat-ancestor)`, reject
   failing fat checkpoints to thin, localize failures via divergence bisection,

@@ -844,6 +844,15 @@ impl NodeBlobRef {
             Self::CowDelta { resolved, .. } => *resolved,
         }
     }
+
+    /// Returns the stored CoW delta object, when this blob is layered.
+    #[must_use]
+    pub fn cow_delta_ref(&self) -> Option<CowDeltaRef> {
+        match self {
+            Self::Baked(_) => None,
+            Self::CowDelta { delta, .. } => Some(CowDeltaRef::new(CowDeltaKind::VmMemory, *delta)),
+        }
+    }
 }
 
 /// A vCPU identifier within one node.
@@ -1063,6 +1072,12 @@ impl DeviceOverlayDelta {
             rng,
         }
     }
+
+    /// Returns the stored CoW object for this device overlay delta.
+    #[must_use]
+    pub fn cow_delta_ref(&self) -> CowDeltaRef {
+        CowDeltaRef::new(CowDeltaKind::DeviceOverlay, self.delta)
+    }
 }
 
 /// A pending cross-node frame captured in scheduler state.
@@ -1172,6 +1187,8 @@ impl DecisionRngState {
 pub struct EventLogOffset {
     /// Content address of the shared event-log prefix.
     pub prefix: ContentHash,
+    /// Content address of the segment appended after the parent checkpoint.
+    pub appended_segment: Option<ContentHash>,
     /// Byte offset at which resume continues appending.
     pub bytes: u64,
     /// Event count at which resume continues appending.
@@ -1184,9 +1201,98 @@ impl EventLogOffset {
     pub fn new(prefix: ContentHash, bytes: u64, events: u64) -> Self {
         Self {
             prefix,
+            appended_segment: None,
             bytes,
             events,
         }
+    }
+
+    /// Builds an event-log offset with an appended segment delta.
+    #[must_use]
+    pub fn with_appended_segment(
+        prefix: ContentHash,
+        bytes: u64,
+        events: u64,
+        appended_segment: ContentHash,
+    ) -> Self {
+        Self {
+            prefix,
+            appended_segment: Some(appended_segment),
+            bytes,
+            events,
+        }
+    }
+
+    /// Returns the stored event-log segment delta, when one was appended.
+    #[must_use]
+    pub fn cow_delta_ref(self) -> Option<CowDeltaRef> {
+        self.appended_segment
+            .map(|segment| CowDeltaRef::new(CowDeltaKind::EventLogSegment, segment))
+    }
+}
+
+/// The CoW namespace for a content-addressed delta object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CowDeltaKind {
+    /// Dirty VM memory or device-state pages for one node.
+    VmMemory,
+    /// Dirty block/9p overlay pages for one device.
+    DeviceOverlay,
+    /// Decisions appended after a checkpoint parent.
+    ScheduleDelta,
+    /// Event-log bytes appended after a checkpoint parent.
+    EventLogSegment,
+}
+
+/// A typed content-addressed CoW delta object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CowDeltaRef {
+    /// The delta namespace.
+    pub kind: CowDeltaKind,
+    /// The canonical content hash of the stored delta bytes.
+    pub content: ContentHash,
+}
+
+impl CowDeltaRef {
+    /// Builds a typed CoW delta reference.
+    #[must_use]
+    pub fn new(kind: CowDeltaKind, content: ContentHash) -> Self {
+        Self { kind, content }
+    }
+}
+
+/// CoW sharing accounting for a checkpoint set.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct CowSharingStats {
+    /// Total logical references to CoW objects before content-address dedup.
+    pub logical_references: usize,
+    /// Unique typed content hashes that must be stored.
+    pub unique_objects: usize,
+}
+
+impl CowSharingStats {
+    /// Computes sharing stats from logical CoW references.
+    #[must_use]
+    pub fn from_refs<I>(refs: I) -> Self
+    where
+        I: IntoIterator<Item = CowDeltaRef>,
+    {
+        let mut logical_references = 0;
+        let mut unique_refs = BTreeSet::new();
+        for cow_ref in refs {
+            logical_references += 1;
+            unique_refs.insert(cow_ref);
+        }
+        Self {
+            logical_references,
+            unique_objects: unique_refs.len(),
+        }
+    }
+
+    /// Returns references eliminated by content-addressed sharing.
+    #[must_use]
+    pub fn deduped_references(&self) -> usize {
+        self.logical_references.saturating_sub(self.unique_objects)
     }
 }
 
@@ -1276,6 +1382,26 @@ impl MaterializedState {
             DecisionRngState::empty(),
             EventLogOffset::default(),
         )
+    }
+
+    /// Enumerates logical CoW delta refs stored by this materialized state.
+    #[must_use]
+    pub fn cow_delta_refs(&self) -> Vec<CowDeltaRef> {
+        let mut refs = Vec::new();
+        refs.extend(
+            self.vm_snapshots
+                .values()
+                .filter_map(|snapshot| snapshot.blob.cow_delta_ref()),
+        );
+        refs.extend(
+            self.device_overlays
+                .values()
+                .map(DeviceOverlayDelta::cow_delta_ref),
+        );
+        if let Some(event_log) = self.event_log.cow_delta_ref() {
+            refs.push(event_log);
+        }
+        refs
     }
 }
 
@@ -1430,6 +1556,22 @@ impl Checkpoint {
     #[must_use]
     pub fn node_blob(&self, node: &NodeId) -> Option<&NodeBlobRef> {
         self.node_blobs.get(node)
+    }
+
+    /// Enumerates logical CoW delta refs stored by this checkpoint.
+    #[must_use]
+    pub fn cow_delta_refs(&self) -> Vec<CowDeltaRef> {
+        let mut refs = Vec::new();
+        if !self.schedule_delta.is_empty() {
+            refs.push(CowDeltaRef::new(
+                CowDeltaKind::ScheduleDelta,
+                self.schedule_delta.content_hash(),
+            ));
+        }
+        if let Some(state) = &self.state {
+            refs.extend(state.cow_delta_refs());
+        }
+        refs
     }
 }
 
@@ -2155,6 +2297,28 @@ impl TemporalGraph {
         self.cached_snapshots.len()
     }
 
+    /// Returns CoW sharing stats for recorded DAG nodes and exact-snapshot cache entries.
+    #[must_use]
+    pub fn cow_sharing_stats(&self) -> CowSharingStats {
+        CowSharingStats::from_refs(self.cow_delta_refs())
+    }
+
+    /// Returns how many new CoW objects `checkpoint` would add to this graph.
+    ///
+    /// Existing objects are matched by typed content hash, so a sibling fork
+    /// that dirties the same VM page, device overlay page, or event-log segment
+    /// pays no additional storage for that already-present delta object.
+    #[must_use]
+    pub fn marginal_fork_cow_delta_objects(&self, checkpoint: &Checkpoint) -> usize {
+        let existing = self.cow_delta_ref_set();
+        checkpoint
+            .cow_delta_refs()
+            .into_iter()
+            .filter(|cow_ref| !existing.contains(cow_ref))
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
     fn record_configuration(&mut self, configuration: Configuration) -> bool {
         let id = configuration.id();
         match self.recorded_configurations.entry(id) {
@@ -2164,6 +2328,21 @@ impl TemporalGraph {
             }
             Entry::Occupied(_) => false,
         }
+    }
+
+    fn cow_delta_refs(&self) -> Vec<CowDeltaRef> {
+        let mut refs = Vec::new();
+        for checkpoint in self.checkpoint_nodes.values() {
+            refs.extend(checkpoint.cow_delta_refs());
+        }
+        for checkpoint in self.cached_snapshots.values() {
+            refs.extend(checkpoint.cow_delta_refs());
+        }
+        refs
+    }
+
+    fn cow_delta_ref_set(&self) -> BTreeSet<CowDeltaRef> {
+        self.cow_delta_refs().into_iter().collect()
     }
 
     fn record_checkpoint_closure(

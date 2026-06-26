@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.contentAddress",
-  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3"],
+  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -167,8 +167,52 @@
         needle = "pub event_log: EventLogOffset";
       }
       {
+        label = "event log appended segment field";
+        needle = "pub appended_segment: Option<ContentHash>";
+      }
+      {
+        label = "event log appended segment constructor";
+        needle = "pub fn with_appended_segment(";
+      }
+      {
         label = "materialized state component constructor";
         needle = "pub fn from_components(";
+      }
+      {
+        label = "CoW delta kind";
+        needle = "pub enum CowDeltaKind";
+      }
+      {
+        label = "CoW delta ref";
+        needle = "pub struct CowDeltaRef";
+      }
+      {
+        label = "CoW sharing stats";
+        needle = "pub struct CowSharingStats";
+      }
+      {
+        label = "node blob CoW delta ref";
+        needle = "pub fn cow_delta_ref(&self) -> Option<CowDeltaRef>";
+      }
+      {
+        label = "device overlay CoW delta ref";
+        needle = "pub fn cow_delta_ref(&self) -> CowDeltaRef";
+      }
+      {
+        label = "checkpoint CoW delta refs";
+        needle = "pub fn cow_delta_refs(&self) -> Vec<CowDeltaRef>";
+      }
+      {
+        label = "temporal graph CoW stats";
+        needle = "pub fn cow_sharing_stats(&self) -> CowSharingStats";
+      }
+      {
+        label = "marginal fork CoW cost";
+        needle = "pub fn marginal_fork_cow_delta_objects(&self, checkpoint: &Checkpoint) -> usize";
+      }
+      {
+        label = "CoW refs are deduped by typed content hash";
+        needle = "unique_refs.insert(cow_ref);";
       }
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
@@ -207,6 +251,10 @@
       {
         label = "materialized state event-log hashing";
         needle = "fn write_event_log_offset(";
+      }
+      {
+        label = "event-log appended segment hashing";
+        needle = "offset.appended_segment";
       }
     ]
     ++ failuresFor "crates/crucible-sim/src/lib.rs" simLib [
@@ -299,6 +347,26 @@
       {
         label = "materialized state icount sensitivity";
         needle = "assert_ne!(state.id, changed.id);";
+      }
+      {
+        label = "CoW sharing sibling fork test";
+        needle = "gate_content_address_cow_sharing_dedups_identical_fork_deltas";
+      }
+      {
+        label = "CoW marginal fork assertion";
+        needle = "graph.marginal_fork_cow_delta_objects(&second_checkpoint)";
+      }
+      {
+        label = "CoW test separates log prefix from segment";
+        needle = "shared_log_prefix";
+      }
+      {
+        label = "CoW test uses explicit appended segment";
+        needle = "EventLogOffset::with_appended_segment(log_prefix, 96, 3, log_segment)";
+      }
+      {
+        label = "CoW unique object accounting";
+        needle = "assert_eq!(stats.unique_objects, 5);";
       }
       {
         label = "missing parent reason";
@@ -428,6 +496,10 @@
         label = "phase1 content-address lists T-TEMP-3";
         needle = "\"T-TEMP-3\"";
       }
+      {
+        label = "phase1 content-address lists T-TEMP-6";
+        needle = "\"T-TEMP-6\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
@@ -458,6 +530,26 @@
       }
       {
         label = "T-TEMP-3 completion names content-address gate";
+        needle = "`checks.crucible.phase1.gates.contentAddress`";
+      }
+      {
+        label = "T-TEMP-6 checklist complete";
+        needle = "- [x] **T-TEMP-6**";
+      }
+      {
+        label = "T-TEMP-6 completion names CoW refs";
+        needle = "`crucible::CowDeltaRef`";
+      }
+      {
+        label = "T-TEMP-6 completion names marginal fork API";
+        needle = "`marginal_fork_cow_delta_objects`";
+      }
+      {
+        label = "T-TEMP-6 completion says log prefix is shared";
+        needle = "inherited log prefix as a shared reference";
+      }
+      {
+        label = "T-TEMP-6 completion names content-address gate";
         needle = "`checks.crucible.phase1.gates.contentAddress`";
       }
     ];
@@ -553,6 +645,9 @@ in
             temporal_graph_frontier=checkpoint-dag
             materialized_state_components=vm-snapshots,device-overlays,scheduler,decision-rng,event-log
             materialized_state_identity=component-content-addressed
+            cow_sharing=typed-content-addressed-delta-refs
+            cow_marginal_fork_cost=delta-objects-not-full-state
+            cow_dedup=identical-deltas-stored-once
             RESULT
           '';
         }
