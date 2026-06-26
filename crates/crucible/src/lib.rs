@@ -48,7 +48,11 @@ pub use scheduler::{
     horizon_from_exact_local_event, ordered_scheduled_events, ordered_timeline_keys,
 };
 #[cfg(feature = "test-double")]
-pub use sim_backend::{SimBackend, SimBackendState};
+pub use sim_backend::{
+    SimBackend, SimBackendState, SimDeliveredFrame, SimDouble, SimDoubleConfig,
+    SimDoubleControlEvent, SimDoubleError, SimInstructionScript, SimInstructionStep,
+    SimOutboundFrame,
+};
 
 #[cfg(test)]
 mod tests {

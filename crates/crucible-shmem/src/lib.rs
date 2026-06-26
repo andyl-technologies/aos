@@ -705,6 +705,21 @@ impl RegionAllocation {
     /// cannot fit in memory indexes on this host.
     pub fn new(config: RegionConfig) -> Result<Self, RegionLayoutError> {
         validate_layout_target()?;
+        Self::new_model(config)
+    }
+
+    /// Allocates and initializes a typed shared-memory model without target validation.
+    ///
+    /// This constructor is for in-process harnesses that need the canonical
+    /// slot, ring, and frame-entry topology on developer hosts that are not the
+    /// pinned ABI target. Use [`Self::new`] when the allocation is evidence for
+    /// the mapped shared-memory ABI on the pinned target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionLayoutError`] if the requested layout is invalid or a
+    /// computed count cannot fit in memory indexes on this host.
+    pub fn new_model(config: RegionConfig) -> Result<Self, RegionLayoutError> {
         let layout = RegionLayout::for_config(config)?;
         let header = RegionHeader::new(layout);
         let slots = (0..MAX_NODES)
@@ -765,6 +780,161 @@ impl RegionAllocation {
     pub fn layout(&self) -> RegionLayout {
         self.layout
     }
+
+    /// Returns a node slot by physical slot index.
+    #[must_use]
+    pub fn node_slot(&self, slot_index: u32) -> Option<&NodeSlot> {
+        usize::try_from(slot_index)
+            .ok()
+            .and_then(|index| self.slots.get(index))
+    }
+
+    /// Enqueues a frame into the directed ring from `src_slot` to `dst_slot`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionAllocationAccessError`] when the directed ring does not
+    /// exist, the backing range cannot be represented locally, or the SPSC
+    /// enqueue operation rejects the frame.
+    pub fn enqueue_directed_frame(
+        &mut self,
+        src_slot: u32,
+        dst_slot: u32,
+        frame: &FrameEntry,
+    ) -> Result<(), RegionAllocationAccessError> {
+        let ring_index = self.ring_index(src_slot, dst_slot)?;
+        let entry_range = self.entry_range(ring_index)?;
+        self.ring_headers[ring_index].enqueue(&mut self.frame_entries[entry_range], frame)?;
+        Ok(())
+    }
+
+    /// Returns the head frame of a directed ring without consuming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionAllocationAccessError`] when the directed ring does not
+    /// exist, the backing range cannot be represented locally, or the SPSC peek
+    /// operation rejects the ring state.
+    pub fn peek_directed_frame(
+        &self,
+        src_slot: u32,
+        dst_slot: u32,
+    ) -> Result<Option<FrameEntry>, RegionAllocationAccessError> {
+        let ring_index = self.ring_index(src_slot, dst_slot)?;
+        let entry_range = self.entry_range(ring_index)?;
+        Ok(self.ring_headers[ring_index].peek(&self.frame_entries[entry_range])?)
+    }
+
+    /// Returns the head frame's delivery icount without consuming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionAllocationAccessError`] when the directed ring does not
+    /// exist, the backing range cannot be represented locally, or the SPSC peek
+    /// operation rejects the ring state.
+    pub fn peek_directed_delivery_icount(
+        &self,
+        src_slot: u32,
+        dst_slot: u32,
+    ) -> Result<Option<u64>, RegionAllocationAccessError> {
+        let ring_index = self.ring_index(src_slot, dst_slot)?;
+        let entry_range = self.entry_range(ring_index)?;
+        Ok(self.ring_headers[ring_index].peek_delivery_icount(&self.frame_entries[entry_range])?)
+    }
+
+    /// Dequeues the head frame from a directed ring.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionAllocationAccessError`] when the directed ring does not
+    /// exist, the backing range cannot be represented locally, or the SPSC
+    /// dequeue operation rejects the ring state.
+    pub fn dequeue_directed_frame(
+        &self,
+        src_slot: u32,
+        dst_slot: u32,
+    ) -> Result<Option<FrameEntry>, RegionAllocationAccessError> {
+        let ring_index = self.ring_index(src_slot, dst_slot)?;
+        let entry_range = self.entry_range(ring_index)?;
+        Ok(self.ring_headers[ring_index].dequeue(&self.frame_entries[entry_range])?)
+    }
+
+    fn ring_index(
+        &self,
+        src_slot: u32,
+        dst_slot: u32,
+    ) -> Result<usize, RegionAllocationAccessError> {
+        let ring = self
+            .rings
+            .iter()
+            .find(|ring| ring.src_slot == src_slot && ring.dst_slot == dst_slot)
+            .ok_or(RegionAllocationAccessError::UnknownDirectedRing { src_slot, dst_slot })?;
+        usize::try_from(ring.index).map_err(|_error| {
+            RegionAllocationAccessError::RingIndexOutOfRange {
+                ring_index: ring.index,
+            }
+        })
+    }
+
+    fn entry_range(
+        &self,
+        ring_index: usize,
+    ) -> Result<std::ops::Range<usize>, RegionAllocationAccessError> {
+        let reported_ring_index = u32::try_from(ring_index).unwrap_or(u32::MAX);
+        let capacity = usize::try_from(self.layout.queue_capacity).map_err(|_error| {
+            RegionAllocationAccessError::RingEntryRangeOverflow {
+                ring_index: reported_ring_index,
+            }
+        })?;
+        let start = ring_index.checked_mul(capacity).ok_or(
+            RegionAllocationAccessError::RingEntryRangeOverflow {
+                ring_index: reported_ring_index,
+            },
+        )?;
+        let end = start.checked_add(capacity).ok_or(
+            RegionAllocationAccessError::RingEntryRangeOverflow {
+                ring_index: reported_ring_index,
+            },
+        )?;
+        if end > self.frame_entries.len() {
+            return Err(RegionAllocationAccessError::RingEntryRangeOverflow {
+                ring_index: reported_ring_index,
+            });
+        }
+        Ok(start..end)
+    }
+}
+
+/// An error produced while accessing a typed region allocation.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum RegionAllocationAccessError {
+    /// A directed shared-memory ring does not exist.
+    #[error("region allocation has no directed ring from slot {src_slot} to slot {dst_slot}")]
+    UnknownDirectedRing {
+        /// Producer slot.
+        src_slot: u32,
+        /// Consumer slot.
+        dst_slot: u32,
+    },
+    /// A ring index could not be represented as a local vector index.
+    #[error("region allocation ring index {ring_index} is outside the local ring table")]
+    RingIndexOutOfRange {
+        /// Rejected ring index.
+        ring_index: u32,
+    },
+    /// A ring's backing frame-entry range overflowed.
+    #[error("region allocation frame-entry range overflowed for ring {ring_index}")]
+    RingEntryRangeOverflow {
+        /// Rejected ring index.
+        ring_index: u32,
+    },
+    /// The shared-memory SPSC ring operation failed.
+    #[error("region allocation SPSC ring operation failed")]
+    SpscRing {
+        /// Underlying SPSC ring error.
+        #[from]
+        source: SpscRingError,
+    },
 }
 
 /// Validates that the current compilation target matches the pinned ABI target.
@@ -1044,6 +1214,24 @@ impl RingHeader {
 
         let slot = (head & (capacity - 1)) as usize;
         Ok(Some(entries[slot].delivery_icount))
+    }
+
+    /// Returns the next frame without consuming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when `entries` has invalid capacity or the ring
+    /// indices describe more live entries than the capacity can hold.
+    pub fn peek(&self, entries: &[FrameEntry]) -> Result<Option<FrameEntry>, SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Relaxed);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        if live_count(head, tail, capacity)? == 0 {
+            return Ok(None);
+        }
+
+        let slot = (head & (capacity - 1)) as usize;
+        Ok(Some(entries[slot].clone()))
     }
 
     /// Dequeues one frame from consumer-owned storage.
