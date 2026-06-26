@@ -1185,6 +1185,14 @@ alone (`M-1`/`Q-A`).
       repack/relocation, concurrent writer coordination, automatic GC policy,
       mmap reads, Attic transport, and harness proof remain open
       (`C-13`/`R-14`).
+- [x] Current blob-pack integrity scan primitive:
+      `PersistBlobPack::records` scans a pack in record order, validates every
+      record header and payload hash, rejects truncated or corrupt tails instead
+      of returning partial metadata, and returns `PersistBlobPackRecord`
+      hash/location entries for maintenance callers. This is read-only buffered
+      scan metadata only; live-root selection, repack/relocation writing,
+      concurrent writer coordination, automatic GC policy, mmap reads, Attic
+      transport, and harness proof remain open (`C-13`/`R-14`).
 - [x] Current idempotent indexed blob materialization substrate:
       `PersistCache::ensure_blob_indexed` reuses an existing sidecar location
       only after the pointed pack record verifies for the requested

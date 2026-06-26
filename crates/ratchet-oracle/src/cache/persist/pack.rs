@@ -5,6 +5,36 @@
 
 use super::*;
 
+const PERSIST_BLOB_SCAN_BUFFER_LEN: usize = 8 * 1024;
+
+/// Verified metadata for one immutable blob-pack record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PersistBlobPackRecord {
+    hash: DurableBlake3Hash,
+    location: PersistBlobLocation,
+}
+
+impl PersistBlobPackRecord {
+    const fn new(hash: DurableBlake3Hash, location: PersistBlobLocation) -> Self {
+        Self { hash, location }
+    }
+
+    /// Returns the durable BLAKE3 content address declared by this record.
+    pub const fn hash(self) -> DurableBlake3Hash {
+        self.hash
+    }
+
+    /// Returns this record's byte location in the packfile.
+    pub const fn location(self) -> PersistBlobLocation {
+        self.location
+    }
+
+    /// Returns this record as a typed blob lookup key for `store`.
+    pub const fn key(self, store: PersistBlobStore) -> PersistBlobKey {
+        PersistBlobKey::new(store, self.hash)
+    }
+}
+
 /// An initialized immutable blob packfile.
 #[derive(Clone, Debug)]
 pub struct PersistBlobPack {
@@ -47,6 +77,109 @@ impl PersistBlobPack {
                 path: self.path.clone(),
                 source,
             })
+    }
+
+    /// Returns all verified blob records in packfile order.
+    ///
+    /// This reads each record header and payload, verifies that the payload
+    /// bytes hash to the record's declared content address, and returns only
+    /// record metadata. It is a buffered integrity-scan helper for future
+    /// maintenance paths; hot cache-hit reads still use direct indexed lookups.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
+    /// inspected, seeked, or read, if any record header is malformed or
+    /// truncated, if a record points past the current packfile length, if a
+    /// payload length cannot fit in memory, or if a payload hash does not match
+    /// the record header.
+    pub fn records(&self) -> Result<Vec<PersistBlobPackRecord>, PersistBlobPackError> {
+        let mut file = open_validated_blob_pack_for_read(&self.path)?;
+        let pack_len = file
+            .metadata()
+            .map_err(|source| PersistBlobPackError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        let mut offset = PERSIST_BLOB_PACK_HEADER_LEN as u64;
+        let mut records = Vec::new();
+        while offset < pack_len {
+            let remaining = pack_len - offset;
+            if remaining < PERSIST_BLOB_RECORD_HEADER_LEN as u64 {
+                return Err(PersistBlobPackError::Format {
+                    path: self.path.clone(),
+                    source: PersistPackFormatError::ShortRecordHeader {
+                        expected: PERSIST_BLOB_RECORD_HEADER_LEN,
+                        actual: remaining as usize,
+                    },
+                });
+            }
+            file.seek(SeekFrom::Start(offset))
+                .map_err(|source| PersistBlobPackError::Seek {
+                    path: self.path.clone(),
+                    source,
+                })?;
+            let mut record_header = [0; PERSIST_BLOB_RECORD_HEADER_LEN];
+            file.read_exact(&mut record_header)
+                .map_err(|source| PersistBlobPackError::Read {
+                    path: self.path.clone(),
+                    source,
+                })?;
+            let record = PersistBlobRecordHeader::decode(&record_header).map_err(|source| {
+                PersistBlobPackError::Format {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?;
+            let payload_start = offset
+                .checked_add(PERSIST_BLOB_RECORD_HEADER_LEN as u64)
+                .ok_or(PersistBlobPackError::RecordBoundsOverflow {
+                    record_offset: offset,
+                    payload_len: record.payload_len(),
+                })?;
+            let payload_end = payload_start.checked_add(record.payload_len()).ok_or(
+                PersistBlobPackError::RecordBoundsOverflow {
+                    record_offset: offset,
+                    payload_len: record.payload_len(),
+                },
+            )?;
+            if payload_end > pack_len {
+                return Err(PersistBlobPackError::RecordExtendsPastEnd {
+                    payload_end,
+                    pack_len,
+                });
+            }
+            let mut remaining = record.payload_len();
+            let mut hasher = blake3::Hasher::new();
+            let mut buffer = [0; PERSIST_BLOB_SCAN_BUFFER_LEN];
+            while remaining > 0 {
+                let chunk_len = usize::try_from(remaining.min(PERSIST_BLOB_SCAN_BUFFER_LEN as u64))
+                    .map_err(|_| PersistBlobPackError::PayloadTooLarge {
+                        payload_len: record.payload_len() as u128,
+                    })?;
+                file.read_exact(&mut buffer[..chunk_len])
+                    .map_err(|source| PersistBlobPackError::Read {
+                        path: self.path.clone(),
+                        source,
+                    })?;
+                hasher.update(&buffer[..chunk_len]);
+                remaining -= chunk_len as u64;
+            }
+            let actual = DurableBlake3Hash::from_bytes(hasher.finalize().into());
+            if actual != record.hash() {
+                return Err(PersistBlobPackError::PayloadHashMismatch {
+                    expected: record.hash(),
+                    actual,
+                });
+            }
+            records.push(PersistBlobPackRecord::new(
+                record.hash(),
+                PersistBlobLocation::new(offset, record.payload_len()),
+            ));
+            offset = payload_end;
+        }
+        Ok(records)
     }
 
     /// Appends `payload` as a content-addressed immutable blob.

@@ -202,6 +202,65 @@ fn blob_pack_appends_and_reads_verified_payloads() {
 }
 
 #[test]
+fn blob_pack_records_scans_verified_records_in_pack_order() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    let first_payload = b"first payload";
+    let first_hash = DurableBlake3Hash::for_bytes(first_payload);
+    let second_payload = b"second payload";
+    let second_hash = DurableBlake3Hash::for_bytes(second_payload);
+
+    assert!(pack.records().expect("empty pack scan succeeds").is_empty());
+    let first = pack
+        .append_blob(first_hash, first_payload)
+        .expect("first blob appends");
+    let second = pack
+        .append_blob(second_hash, second_payload)
+        .expect("second blob appends");
+
+    let records = pack.records().expect("pack records scan");
+
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].hash(), first_hash);
+    assert_eq!(records[0].location(), first);
+    assert_eq!(
+        records[0].key(PersistBlobStore::Values),
+        PersistBlobKey::for_value(first_hash)
+    );
+    assert_eq!(records[1].hash(), second_hash);
+    assert_eq!(records[1].location(), second);
+    assert_eq!(
+        records[1].key(PersistBlobStore::Files),
+        PersistBlobKey::for_file(second_hash)
+    );
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
+fn blob_pack_records_accepts_zero_length_payloads() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    let payload = b"";
+    let hash = DurableBlake3Hash::for_bytes(payload);
+    let location = pack.append_blob(hash, payload).expect("empty blob appends");
+
+    let records = pack.records().expect("pack records scan");
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].hash(), hash);
+    assert_eq!(records[0].location(), location);
+    assert_eq!(
+        pack.read_blob(location, hash)
+            .expect("empty blob reads")
+            .as_slice(),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
 fn blob_pack_rejects_append_payload_hash_mismatch() {
     let path = temp_root().join("values").join("pack.blob");
     let pack = PersistBlobPack::open(&path).expect("pack opens");
@@ -290,6 +349,72 @@ fn blob_pack_read_rejects_truncated_payload_before_allocation() {
 }
 
 #[test]
+fn blob_pack_records_rejects_truncated_tail_record() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    let first_payload = b"first payload";
+    let first_hash = DurableBlake3Hash::for_bytes(first_payload);
+    let second_payload = b"second payload";
+    let second_hash = DurableBlake3Hash::for_bytes(second_payload);
+    let first = pack
+        .append_blob(first_hash, first_payload)
+        .expect("first blob appends");
+    let second = pack
+        .append_blob(second_hash, second_payload)
+        .expect("second blob appends");
+    let second_payload_offset = second.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
+    OpenOptions::new()
+        .write(true)
+        .open(pack.path())
+        .expect("pack opens for truncation")
+        .set_len(second_payload_offset + 1)
+        .expect("pack truncates");
+
+    let error = pack.records().expect_err("truncated scan errors");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackError::RecordExtendsPastEnd { .. }
+    ));
+    assert_eq!(
+        pack.read_blob(first, first_hash)
+            .expect("first record remains readable")
+            .as_slice(),
+        first_payload
+    );
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
+fn blob_pack_records_rejects_short_trailing_record_header() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    let payload = b"payload";
+    let hash = DurableBlake3Hash::for_bytes(payload);
+    pack.append_blob(hash, payload).expect("blob appends");
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(pack.path())
+        .expect("pack opens for append");
+    file.write_all(&[0; PERSIST_BLOB_RECORD_HEADER_LEN - 1])
+        .expect("short header appends");
+    file.flush().expect("short header flushes");
+
+    let error = pack.records().expect_err("short trailing header errors");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackError::Format {
+            source: PersistPackFormatError::ShortRecordHeader { actual, .. },
+            ..
+        } if actual == PERSIST_BLOB_RECORD_HEADER_LEN - 1
+    ));
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
 fn blob_pack_read_rejects_corrupt_payload() {
     let path = temp_root().join("values").join("pack.blob");
     let pack = PersistBlobPack::open(&path).expect("pack opens");
@@ -309,6 +434,33 @@ fn blob_pack_read_rejects_corrupt_payload() {
     let error = pack
         .read_blob(location, hash)
         .expect_err("corrupt payload errors");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackError::PayloadHashMismatch { .. }
+    ));
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
+fn blob_pack_records_rejects_corrupt_payload() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    let payload = b"payload";
+    let hash = DurableBlake3Hash::for_bytes(payload);
+    let location = pack.append_blob(hash, payload).expect("blob appends");
+    let payload_offset = location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(pack.path())
+        .expect("pack opens for mutation");
+    file.seek(SeekFrom::Start(payload_offset))
+        .expect("payload offset seeks");
+    file.write_all(b"X").expect("payload corrupts");
+    file.flush().expect("payload corruption flushes");
+
+    let error = pack.records().expect_err("corrupt scan errors");
 
     assert!(matches!(
         error,
