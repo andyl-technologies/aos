@@ -2585,6 +2585,142 @@ fn read_file_string_payload_thunks_hit_after_revalidation() {
 }
 
 #[test]
+fn hash_file_string_payload_thunks_hit_and_miss_after_binary_revalidation() {
+    let root = unique_temp_dir("force-cache-hash-file-string-payload");
+    let first_payload = b"payload\0\xffbytes";
+    let changed_payload = b"changed\0\xffbytes";
+    fs::write(root.join("target"), first_payload).expect("target writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let target_path = path_bytes(&root.join("target"));
+    let source = r#"{ a = builtins.hashFile "sha256" ./target; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let first_root = eval.eval_root().expect("attrset evaluates");
+    let first_thunk = {
+        let attrs = eval
+            .heap()
+            .get_attrs(first_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let first_forced = eval
+        .force_admitted_value(ir.root, Span::new(0, 0), first_thunk)
+        .expect("hashFile string payload force succeeds");
+    let first_hash = eval
+        .heap()
+        .get_string(first_forced)
+        .expect("hashFile result is a string")
+        .bytes()
+        .to_vec();
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let second_root = second.eval_root().expect("attrset evaluates again");
+    let second_thunk = {
+        let attrs = second
+            .heap()
+            .get_attrs(second_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let second_forced = second
+        .force_admitted_value(ir.root, Span::new(0, 0), second_thunk)
+        .expect("hashFile string payload revalidates and hits");
+    let second_hash = second
+        .heap()
+        .get_string(second_forced)
+        .expect("cached hashFile result rehydrates into second heap");
+
+    assert_eq!(second_hash.bytes(), first_hash.as_slice());
+    assert!(!second_hash.has_context());
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "stable hashFile string payloads should hit after binary input revalidation"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().force_cache_hits(), 1);
+    assert_eq!(second.stats().force_cache_misses(), 0);
+    let expected_trace = vec![
+        ImpureInputFingerprint::hash_file(&target_path, first_payload).expect("fingerprint builds"),
+    ];
+    assert_eq!(
+        second.impure_input_trace(),
+        expected_trace.as_slice(),
+        "cache-hit revalidation must replay hashFile edges for binary payloads"
+    );
+
+    fs::write(root.join("target"), changed_payload).expect("target changes");
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let changed_root = changed.eval_root().expect("attrset evaluates after change");
+    let changed_thunk = {
+        let attrs = changed
+            .heap()
+            .get_attrs(changed_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let changed_forced = changed
+        .force_admitted_value(ir.root, Span::new(0, 0), changed_thunk)
+        .expect("changed hashFile payload recomputes");
+    let changed_hash = changed
+        .heap()
+        .get_string(changed_forced)
+        .expect("changed hashFile result is a string");
+
+    assert_ne!(changed_hash.bytes(), first_hash.as_slice());
+    assert_eq!(
+        changed.stats().thunks_forced(),
+        1,
+        "changed binary hashFile input should miss and recompute"
+    );
+    assert_eq!(changed.stats().cache_misses(), 1);
+    assert_eq!(changed.stats().cache_hits(), 0);
+    assert_eq!(changed.stats().force_cache_misses(), 1);
+    assert_eq!(changed.stats().force_cache_hits(), 0);
+    let changed_trace = vec![
+        ImpureInputFingerprint::hash_file(&target_path, changed_payload)
+            .expect("changed fingerprint builds"),
+    ];
+    assert_eq!(changed.impure_input_trace(), changed_trace.as_slice());
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn large_read_file_payload_uses_payload_scaled_materialization_work_floor() {
     let persist_root = unique_temp_dir("force-cache-persistent-large-read-file");
     let root = unique_temp_dir("force-cache-large-read-file-source");

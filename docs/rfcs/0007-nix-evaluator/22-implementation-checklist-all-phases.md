@@ -650,14 +650,14 @@ alone (`M-1`/`Q-A`).
       tree-walk rehydration. Changed, unavailable, uncacheable, or
       identity-mismatched fresh inputs invalidate the payload and miss. Tree-walk
       supplies a conservative options-backed revalidator for `import`, `getEnv`,
-      `pathExists`, `readFile`, `readDir`, and `readFileType`, so stable
-      source-backed `getEnv`, `pathExists`, `readFile`-, `readDir`-, and
-      `readFileType`-backed thunks, plus canonical plain-file
+      `hashFile`, `pathExists`, `readFile`, `readDir`, and `readFileType`, so
+      stable source-backed `getEnv`, `hashFile`, `pathExists`, `readFile`-,
+      `readDir`-, and `readFileType`-backed thunks, plus canonical plain-file
       filesystem-import-backed thunks reached without symlinked path components,
       can hit after replaying their input probes, including import-cache hits
       that replay the originally observed nested input trace and generated
       `readDir` attrsets canonicalized to a deterministic source order. Changed
-      environment values, directory listings, file types, read bytes, import
+      environment values, directory listings, file types, read/hash bytes, import
       source bytes, deleted paths, unavailable paths, or symlinked import routes
       force recomputation through the normal evaluator path. Revalidated cache
       hits append their fresh fingerprints back into the
