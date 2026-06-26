@@ -395,7 +395,5 @@ fn node(name: &str) -> NodeId {
 }
 
 fn stream(name: &str) -> RngStreamId {
-    RngStreamId {
-        name: String::from(name),
-    }
+    RngStreamId::from_name(name)
 }

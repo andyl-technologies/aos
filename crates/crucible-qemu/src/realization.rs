@@ -2160,9 +2160,7 @@ mod tests {
         let mut schedule = Schedule::empty();
         for value in values {
             schedule = schedule.appended(Decision::RngDraw(RngDecision {
-                stream: RngStreamId {
-                    name: format!("stream-{value}"),
-                },
+                stream: RngStreamId::from_name(format!("stream-{value}")),
                 value: *value,
             }));
         }

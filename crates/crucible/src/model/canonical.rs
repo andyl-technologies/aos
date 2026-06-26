@@ -3,8 +3,8 @@
 use super::{
     Configuration, ContentHash, Decision, DecisionRngState, DeviceOverlayDelta, DeviceRngState,
     EventLogOffset, FaultState, Icount, NodeBlobRef, NodeId, PendingFrame, PreemptionKind,
-    RngStreamPosition, ScenarioDef, Schedule, SchedulerState, TimerRegistry, TimerState,
-    VirtualTime, VmSnapshotRef,
+    RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerState, TimerRegistry,
+    TimerState, VirtualTime, VmSnapshotRef,
 };
 use std::collections::BTreeMap;
 
@@ -91,7 +91,7 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
         }
         Decision::RngDraw(draw) => {
             hasher.write_u64(2);
-            hasher.write_bytes(draw.stream.name.as_bytes());
+            write_rng_stream_id(hasher, &draw.stream);
             hasher.write_u64(draw.value);
         }
         Decision::Override(override_decision) => {
@@ -108,7 +108,7 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
         Decision::AppRandom(random) => {
             hasher.write_u64(5);
             hasher.write_bytes(random.node.name.as_bytes());
-            hasher.write_bytes(random.stream.name.as_bytes());
+            write_rng_stream_id(hasher, &random.stream);
             hasher.write_u64(random.request_id);
             hasher.write_u64(u64::from(random.width));
             hasher.write_u64(random.value);
@@ -157,7 +157,7 @@ fn write_device_overlays(
 fn write_device_rng_state(hasher: &mut MaterialHasher, state: &DeviceRngState) {
     hasher.write_u64(state.streams.len() as u64);
     for (stream, position) in &state.streams {
-        hasher.write_bytes(stream.name.as_bytes());
+        write_rng_stream_id(hasher, stream);
         write_rng_stream_position(hasher, *position);
     }
 }
@@ -220,9 +220,14 @@ fn write_fault_state(hasher: &mut MaterialHasher, state: &FaultState) {
 fn write_decision_rng_state(hasher: &mut MaterialHasher, state: &DecisionRngState) {
     hasher.write_u64(state.positions.len() as u64);
     for (stream, position) in &state.positions {
-        hasher.write_bytes(stream.name.as_bytes());
+        write_rng_stream_id(hasher, stream);
         write_rng_stream_position(hasher, *position);
     }
+}
+
+fn write_rng_stream_id(hasher: &mut MaterialHasher, stream: &RngStreamId) {
+    hasher.write_bytes(stream.domain.as_bytes());
+    hasher.write_bytes(stream.name.as_bytes());
 }
 
 fn write_rng_stream_position(hasher: &mut MaterialHasher, position: RngStreamPosition) {

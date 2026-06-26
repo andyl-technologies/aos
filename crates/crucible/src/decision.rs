@@ -239,7 +239,7 @@ impl DecisionRecorder {
         let decision_stream = self
             .streams
             .entry(stream.clone())
-            .or_insert_with(|| self.rng.fork(&stream.name));
+            .or_insert_with(|| self.rng.fork_in_domain(&stream.domain, &stream.name));
         let request_id = decision_stream.draws();
         let value = decision_stream.next_u64();
         (request_id, value)
@@ -335,7 +335,7 @@ fn hydrate_streams(
         if let Decision::RngDraw(RngDecision { stream, .. }) = decision {
             let decision_stream = streams
                 .entry(stream.clone())
-                .or_insert_with(|| rng.fork(&stream.name));
+                .or_insert_with(|| rng.fork_in_domain(&stream.domain, &stream.name));
             let _ = decision_stream.next_u64();
         }
     }
@@ -393,6 +393,34 @@ mod tests {
             edited.schedule().decisions().get(1),
             Some(Decision::RngDraw(RngDecision { stream, value }))
                 if stream == &stable_stream && *value == edited_draw
+        ));
+    }
+
+    #[test]
+    fn decision_recorder_domain_separates_same_name_node_and_link_streams() {
+        let config = Configuration::genesis(scenario_from_world_material(
+            "world.nodes=shared\nworld.links=shared\nseed=domain",
+        ));
+        let seed = 0x0010_c001;
+        let node_stream = RngStreamId::for_node("shared");
+        let link_stream = RngStreamId::for_link("shared");
+        let mut recorder = DecisionRecorder::new(config, seed);
+
+        let node_draw = recorder.draw_u64(node_stream.clone());
+        let link_draw = recorder.draw_u64(link_stream.clone());
+
+        assert_ne!(node_stream.domain, link_stream.domain);
+        assert_ne!(node_draw, link_draw);
+        assert_eq!(recorder.schedule().len(), 2);
+        assert!(matches!(
+            &recorder.schedule().decisions()[0],
+            Decision::RngDraw(RngDecision { stream, value })
+                if stream == &node_stream && *value == node_draw
+        ));
+        assert!(matches!(
+            &recorder.schedule().decisions()[1],
+            Decision::RngDraw(RngDecision { stream, value })
+                if stream == &link_stream && *value == link_draw
         ));
     }
 
@@ -498,7 +526,8 @@ mod tests {
         let mut resumed = DecisionRecorder::new(recorder.into_configuration(), seed);
         let resumed_draw = resumed.draw_u64(stream.clone());
 
-        let mut expected_stream = crucible_sim::DecisionRng::new(seed).fork(&stream.name);
+        let mut expected_stream =
+            crucible_sim::DecisionRng::new(seed).fork_in_domain(&stream.domain, &stream.name);
         let expected_first = expected_stream.next_u64();
         let expected_served_raw = expected_stream.next_u64();
         let expected_resumed = expected_stream.next_u64();
@@ -786,9 +815,7 @@ mod tests {
     }
 
     fn rng_stream(name: &str) -> RngStreamId {
-        RngStreamId {
-            name: name.to_owned(),
-        }
+        RngStreamId::for_node(name)
     }
 
     fn scenario_from_world_material(material: &str) -> ScenarioDef {

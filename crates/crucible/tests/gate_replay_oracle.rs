@@ -218,9 +218,7 @@ fn gate_replay_oracle_saved_descendant_fat_checkpoint_carries_vm_snapshot_refs()
     let target = step(
         &genesis,
         Decision::RngDraw(RngDecision {
-            stream: RngStreamId {
-                name: String::from("save/descendant"),
-            },
+            stream: RngStreamId::from_name("save/descendant"),
             value: 42,
         }),
     );
@@ -671,9 +669,7 @@ fn gate_replay_oracle_reproduction_artifact_rejects_build_identity_drift()
 fn gate_replay_oracle_reproduction_artifact_detects_schedule_drift() -> Result<(), Box<dyn Error>> {
     let mut artifact = representative_replay_oracle_reproduction_artifact()?;
     artifact.schedule = artifact.schedule.appended(Decision::RngDraw(RngDecision {
-        stream: RngStreamId {
-            name: String::from("artifact/drift"),
-        },
+        stream: RngStreamId::from_name("artifact/drift"),
         value: 0xdead_beef,
     }));
 
@@ -794,9 +790,7 @@ fn assert_replay_oracle_fixed_checkpoint_corpus()
             node: NodeId {
                 name: String::from("node-a"),
             },
-            stream: RngStreamId {
-                name: String::from("whitebox/request"),
-            },
+            stream: RngStreamId::for_node("whitebox/request"),
             request_id: 9,
             width: 32,
             value: 0xabcd,
@@ -848,9 +842,7 @@ fn representative_replay_oracle_reproduction_artifact()
             node: NodeId {
                 name: String::from("artifact-a"),
             },
-            stream: RngStreamId {
-                name: String::from("artifact/request"),
-            },
+            stream: RngStreamId::for_node("artifact/request"),
             request_id: 27,
             width: 64,
             value: 0xfeed_0010_0027,
@@ -979,9 +971,7 @@ fn assert_replay_oracle_excludes_observational_entries(
     let checkpoint = Configuration {
         def: scenario,
         schedule: Schedule::empty().appended(Decision::RngDraw(RngDecision {
-            stream: RngStreamId {
-                name: String::from("observation/control"),
-            },
+            stream: RngStreamId::from_name("observation/control"),
             value: 11,
         })),
     };
@@ -1085,9 +1075,7 @@ fn replay_schedule(ancestor: &Schedule, delta: &Schedule) -> Schedule {
 
 fn rng_decision(stream: &str, value: u64) -> Decision {
     Decision::RngDraw(RngDecision {
-        stream: RngStreamId {
-            name: String::from(stream),
-        },
+        stream: RngStreamId::from_name(stream),
         value,
     })
 }
@@ -1160,9 +1148,7 @@ fn gate_replay_oracle_is_sensitive_to_schedule_order() -> Result<(), Box<dyn Err
     let scenario =
         ScenarioDef::from_canonical_material("crucible.test.replay-oracle", "nodes=a,b\nseed=99");
     let draw = Decision::RngDraw(RngDecision {
-        stream: RngStreamId {
-            name: String::from("scheduler/order"),
-        },
+        stream: RngStreamId::from_name("scheduler/order"),
         value: 1,
     });
     let delivery = Decision::DeliveryOrder(DeliveryOrderDecision {

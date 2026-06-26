@@ -1112,9 +1112,19 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
     admission path keep materialization a cache policy rather than identity.
     `checks.crucible.phase1.gates.contentAddress` and
     `checks.crucible.phase1.gates.replayOracle` gate the pattern.
-- [ ] **T-PAT-5** Ensure the decision RNG follows the §29.5 name-hash forking
+- [x] **T-PAT-5** Ensure the decision RNG follows the §29.5 name-hash forking
   shape with recorded `RngStreamId`. — satisfies [PAT-7]; realized by
   **T-EXEC-2** and the 04 determinism-contract tasks (spec 04 §4.7).
+  - Completed by `crucible_sim::DecisionRng`,
+    `DECISION_RNG_NODE_STREAM_DOMAIN`, `DECISION_RNG_LINK_STREAM_DOMAIN`,
+    `stable_domain_name_hash`, and `crucible::decision::DecisionRecorder`:
+    streams fork from the root seed through stable name hashes instead of a
+    shared root cursor, same-name node/link streams use separate fixed domains,
+    construction order and unrelated world edits do not perturb existing
+    streams, and every recorded `Decision::RngDraw` / `Decision::AppRandom`
+    carries its domain-qualified `RngStreamId` in the schedule.
+    `checks.crucible.phase1.decisionRng` and
+    `checks.crucible.phase1.decisionRecording` gate the pattern.
 - [ ] **T-PAT-6** Ensure the session drives nodes through the §29.6
   `SimulationBackend` trait with an in-process drop-in double. — satisfies
   [PAT-8]; realized by **T-SESS-11**, **T-SESS-12** (spec 20 §10, 24 §3).

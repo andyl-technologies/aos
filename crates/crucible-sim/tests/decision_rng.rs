@@ -3,7 +3,8 @@
 #![forbid(unsafe_code)]
 
 use crucible_sim::{
-    DECISION_RNG_ALGORITHM, DECISION_RNG_NAME_HASH_DOMAIN, DecisionRng, stable_name_hash,
+    DECISION_RNG_ALGORITHM, DECISION_RNG_LINK_STREAM_DOMAIN, DECISION_RNG_NAME_HASH_DOMAIN,
+    DECISION_RNG_NODE_STREAM_DOMAIN, DecisionRng, stable_domain_name_hash, stable_name_hash,
 };
 
 #[test]
@@ -52,4 +53,28 @@ fn decision_rng_streams_change_with_name_and_seed() {
         DecisionRng::new(7).fork("node-a").next_u64(),
         other_seed.next_u64()
     );
+}
+
+#[test]
+fn decision_rng_domain_separates_node_and_link_streams() {
+    let rng = DecisionRng::new(0x0123_4567_89ab_cdef);
+    let name = "shared-name";
+
+    assert_eq!(
+        rng.stream_seed_in_domain(DECISION_RNG_NODE_STREAM_DOMAIN, name),
+        rng.root_seed() ^ stable_domain_name_hash(DECISION_RNG_NODE_STREAM_DOMAIN, name)
+    );
+    assert_ne!(
+        rng.stream_seed_in_domain(DECISION_RNG_NODE_STREAM_DOMAIN, name),
+        rng.stream_seed_in_domain(DECISION_RNG_LINK_STREAM_DOMAIN, name)
+    );
+
+    let mut node_stream = rng.fork_for_node(name);
+    let mut link_stream = rng.fork_for_link(name);
+
+    assert_eq!(node_stream.seed(), 0x797b_e784_6aec_decf);
+    assert_eq!(link_stream.seed(), 0x785b_7e35_d8fa_c62c);
+    assert_ne!(node_stream.seed(), link_stream.seed());
+    assert_eq!(node_stream.next_u64(), 0xa86f_fa4e_91e2_4781);
+    assert_eq!(link_stream.next_u64(), 0xc7dd_aa47_1d78_feaf);
 }
