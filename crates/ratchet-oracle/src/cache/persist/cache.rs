@@ -130,43 +130,51 @@ impl PersistBlobPackTrim {
 }
 
 /// Results from an explicit persistent storage maintenance sweep.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PersistStorageMaintenance {
     sidecars: PersistCompaction,
+    blob_indexes: PersistBlobIndexRebuild,
     value_blob_pack: PersistBlobPackTrim,
     file_blob_pack: PersistBlobPackTrim,
 }
 
 impl PersistStorageMaintenance {
-    const fn new(
+    fn new(
         sidecars: PersistCompaction,
+        blob_indexes: PersistBlobIndexRebuild,
         value_blob_pack: PersistBlobPackTrim,
         file_blob_pack: PersistBlobPackTrim,
     ) -> Self {
         Self {
             sidecars,
+            blob_indexes,
             value_blob_pack,
             file_blob_pack,
         }
     }
 
     /// Returns sidecar compaction counts from the maintenance sweep.
-    pub const fn sidecars(self) -> PersistCompaction {
+    pub const fn sidecars(&self) -> PersistCompaction {
         self.sidecars
     }
 
+    /// Returns blob-index rebuild plans from the maintenance sweep.
+    pub fn blob_indexes(&self) -> &PersistBlobIndexRebuild {
+        &self.blob_indexes
+    }
+
     /// Returns tail-trim counts for the `values/` blob pack.
-    pub const fn value_blob_pack(self) -> PersistBlobPackTrim {
+    pub const fn value_blob_pack(&self) -> PersistBlobPackTrim {
         self.value_blob_pack
     }
 
     /// Returns tail-trim counts for the `files/` blob pack.
-    pub const fn file_blob_pack(self) -> PersistBlobPackTrim {
+    pub const fn file_blob_pack(&self) -> PersistBlobPackTrim {
         self.file_blob_pack
     }
 
     /// Returns total bytes reclaimed from both blob packs.
-    pub const fn reclaimed_blob_bytes(self) -> u64 {
+    pub const fn reclaimed_blob_bytes(&self) -> u64 {
         self.value_blob_pack
             .reclaimed_bytes()
             .saturating_add(self.file_blob_pack.reclaimed_bytes())
@@ -466,13 +474,16 @@ impl PersistCache {
     /// Runs explicit persistent storage maintenance.
     ///
     /// This caller-driven sweep first compacts append-only sidecars to their
-    /// latest entries, then trims unindexed tails from the `values/` and
-    /// `files/` blob packs. It is sequential and non-transactional: work
-    /// completed before a later phase fails remains committed. It does not
-    /// implement an automatic GC policy, relocate live pack records, coordinate
-    /// with concurrent writers, or replace the future LMDB/redb metadata
-    /// engine. Callers must serialize writes to the persistent cache while this
-    /// method runs.
+    /// latest entries, rebuilds both blob-index sidecars from verified physical
+    /// pack scans, then trims tails from the `values/` and `files/` blob packs
+    /// when their records still have no live index roots after rebuild. The
+    /// rebuild phase indexes every verified newest physical record, so
+    /// previously unindexed tails can become roots instead of reclaimed bytes.
+    /// It is sequential and non-transactional: work completed before a later
+    /// phase fails remains committed. It does not implement an automatic GC
+    /// policy, relocate live pack records, coordinate with concurrent writers,
+    /// or replace the future LMDB/redb metadata engine. Callers must serialize
+    /// writes to the persistent cache while this method runs.
     ///
     /// # Errors
     ///
@@ -485,6 +496,9 @@ impl PersistCache {
         let sidecars = self
             .compact_sidecars()
             .map_err(|source| PersistStorageMaintenanceError::Sidecars { source })?;
+        let blob_indexes = self
+            .rebuild_blob_indexes_from_packs()
+            .map_err(|source| PersistStorageMaintenanceError::BlobIndexes { source })?;
         let value_blob_pack = self
             .trim_blob_pack_tail(PersistBlobStore::Values)
             .map_err(|source| PersistStorageMaintenanceError::ValueBlobPack { source })?;
@@ -493,6 +507,7 @@ impl PersistCache {
             .map_err(|source| PersistStorageMaintenanceError::FileBlobPack { source })?;
         Ok(PersistStorageMaintenance::new(
             sidecars,
+            blob_indexes,
             value_blob_pack,
             file_blob_pack,
         ))

@@ -780,6 +780,12 @@ pub enum PersistStorageMaintenanceError {
         /// The underlying sidecar compaction error.
         source: PersistCompactionError,
     },
+    /// Blob-index rebuild failed.
+    #[error("failed to rebuild persistent blob indexes during storage maintenance")]
+    BlobIndexes {
+        /// The underlying blob-index rebuild error.
+        source: PersistBlobIndexesRebuildError,
+    },
     /// The `values/` blob pack tail trim failed.
     #[error("failed to trim persistent value blob pack during storage maintenance")]
     ValueBlobPack {

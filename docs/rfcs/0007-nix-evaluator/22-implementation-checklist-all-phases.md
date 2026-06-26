@@ -1553,19 +1553,23 @@ alone (`M-1`/`Q-A`).
       harness proof open (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the
       all-sidecar compaction cache test.
 - [x] Current explicit storage maintenance sweep:
-      `PersistCache::compact_storage` runs all current sidecar compaction and
+      `PersistCache::compact_storage` runs all current sidecar compaction,
+      rebuilds value/file blob-index sidecars from verified pack scans, and
       then trims value/file blob-pack tails, returning
-      `PersistStorageMaintenance` with sidecar counts and per-pack trim stats
-      while `PersistStorageMaintenanceError` preserves the failing phase.
-      Verification-read failure coverage pins the non-transactional
-      boundaries: sidecar compaction remains committed when value-pack root
-      verification fails, and value-pack trimming remains committed when
-      file-pack root verification fails. This is sequential caller-driven
-      maintenance only; automatic compaction/GC policy, transactionality across
-      sidecar and pack phases, cross-process writer coordination, full pack
-      repack/relocation, LMDB/redb indexes, mmap reads, Attic transport, and
-      cached/uncached harness proof remain open (`C-13`/`R-10`/`R-14`/`S-14`).
-      The gate is the storage maintenance cache tests.
+      `PersistStorageMaintenance` with sidecar counts, applied blob-index
+      rebuild plans, and per-pack trim stats while
+      `PersistStorageMaintenanceError` preserves the failing phase. Failure
+      coverage pins the non-transactional boundaries: sidecar compaction
+      remains committed when value-pack scan/rebuild fails, rebuilt blob
+      indexes remain committed when a later file-artifact root verification
+      fails during file-pack trimming, and previously unindexed physical tail
+      records become indexed roots before trimming. This is sequential
+      caller-driven maintenance only; automatic compaction/GC policy,
+      transactionality across sidecar/rebuild/pack phases, cross-process writer
+      coordination, full pack repack/relocation, LMDB/redb indexes, mmap reads,
+      Attic transport, and cached/uncached harness proof remain open
+      (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the storage maintenance cache
+      tests.
 - [x] Current force-cache persistent trace writeback:
       after tree-walk `force_value` gets an accepted forced-expression
       observation and successfully materializes its value payload, it appends a
