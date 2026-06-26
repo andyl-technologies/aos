@@ -312,13 +312,10 @@ in {
         taskIds = ["T-PLAN-3" "T-HARN-12"];
         reason = "full replay oracle gate is intentionally pending";
       };
-      e2eDeterminism = redGate {
+      e2eDeterminism = import ./phase4-e2e-determinism.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
-        gateName = "gate:e2e-determinism";
-        owner = "crucible-harness";
-        phase = "phase4";
-        taskIds = ["T-PLAN-3" "T-HARN-23"];
-        reason = "mock-backend end-to-end determinism gate is intentionally pending";
+        taskIds = ["T-PLAN-3" "T-DET-26"];
       };
     };
   };
