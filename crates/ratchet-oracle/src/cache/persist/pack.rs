@@ -33,6 +33,22 @@ impl PersistBlobPack {
         &self.path
     }
 
+    /// Returns the current packfile length after validating its header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
+    /// inspected, or if its header is malformed.
+    pub fn len(&self) -> Result<u64, PersistBlobPackError> {
+        let file = open_validated_blob_pack_for_read(&self.path)?;
+        file.metadata()
+            .map(|metadata| metadata.len())
+            .map_err(|source| PersistBlobPackError::Metadata {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
     /// Appends `payload` as a content-addressed immutable blob.
     ///
     /// The payload is checked against `hash` before any bytes are appended.
@@ -188,5 +204,55 @@ impl PersistBlobPack {
             });
         }
         Ok(payload)
+    }
+
+    /// Truncates unneeded bytes after `end_offset`.
+    ///
+    /// `end_offset` must be at least the fixed pack header length and no larger
+    /// than the current file length. The returned value is the number of bytes
+    /// removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
+    /// inspected, truncated, or if `end_offset` is outside the packfile.
+    pub(super) fn trim_tail(&self, end_offset: u64) -> Result<u64, PersistBlobPackError> {
+        if end_offset < PERSIST_BLOB_PACK_HEADER_LEN as u64 {
+            return Err(PersistBlobPackError::InvalidRecordOffset {
+                record_offset: end_offset,
+            });
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.path)
+            .map_err(|source| PersistBlobPackError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        validate_blob_pack_header(&self.path, &mut file)?;
+        let len = file
+            .metadata()
+            .map_err(|source| PersistBlobPackError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        if end_offset > len {
+            return Err(PersistBlobPackError::RecordExtendsPastEnd {
+                payload_end: end_offset,
+                pack_len: len,
+            });
+        }
+        if end_offset == len {
+            return Ok(0);
+        }
+        file.set_len(end_offset)
+            .and_then(|()| file.flush())
+            .map_err(|source| PersistBlobPackError::Write {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(len - end_offset)
     }
 }

@@ -1175,6 +1175,16 @@ alone (`M-1`/`Q-A`).
       append/read indexing, node metadata linkage, mmap reads, writer
       batching/locking, GC/repack, Attic transport, and harness proof remain
       open (`C-13`/`R-14`).
+- [x] Current explicit blob-pack tail-GC helper:
+      `PersistCache::trim_blob_pack_tail` snapshots the selected store's latest
+      live roots (`values/` blob index entries, or `files/`
+      blob/file-artifact/parse-artifact index entries), verifies each referenced
+      pack record, and truncates only unindexed bytes after the highest live
+      record, returning `PersistBlobPackTrim` byte/count stats. This is
+      tail-only maintenance for unindexed trailing records; full pack
+      repack/relocation, concurrent writer coordination, automatic GC policy,
+      mmap reads, Attic transport, and harness proof remain open
+      (`C-13`/`R-14`).
 - [x] Current idempotent indexed blob materialization substrate:
       `PersistCache::ensure_blob_indexed` reuses an existing sidecar location
       only after the pointed pack record verifies for the requested

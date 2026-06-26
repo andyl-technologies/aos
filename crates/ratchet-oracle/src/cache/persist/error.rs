@@ -677,6 +677,49 @@ pub enum PersistCompactionError {
     },
 }
 
+/// Persistent blob-pack tail trimming failed.
+#[derive(Debug, Error)]
+pub enum PersistBlobPackTrimError {
+    /// The selected blob index could not be snapshotted.
+    #[error("failed to snapshot persistent blob index before tail trim")]
+    BlobIndex {
+        /// The underlying blob-index error.
+        source: PersistBlobIndexError,
+    },
+    /// The file-artifact index could not be snapshotted.
+    #[error("failed to snapshot persistent file-artifact index before tail trim")]
+    FileArtifactIndex {
+        /// The underlying file-artifact index error.
+        source: PersistFileArtifactIndexError,
+    },
+    /// The parse-artifact index could not be snapshotted.
+    #[error("failed to snapshot persistent parse-artifact index before tail trim")]
+    ParseArtifactIndex {
+        /// The underlying parse-artifact index error.
+        source: PersistParseArtifactIndexError,
+    },
+    /// The selected blob index contained a key for the wrong blob namespace.
+    #[error("persistent blob index entry targets {actual:?}, expected {expected:?}")]
+    WrongStoreEntry {
+        /// The blob namespace selected by the caller.
+        expected: PersistBlobStore,
+        /// The blob namespace encoded in the index entry.
+        actual: PersistBlobStore,
+    },
+    /// A latest live blob could not be read and verified before trimming.
+    #[error("failed to verify persistent blob before tail trim")]
+    Read {
+        /// The underlying packfile read error.
+        source: PersistBlobPackError,
+    },
+    /// The selected blob pack could not be inspected or truncated.
+    #[error("failed to trim persistent blob pack tail")]
+    Trim {
+        /// The underlying packfile trim error.
+        source: PersistBlobPackError,
+    },
+}
+
 /// Indexed blob append failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexedWriteError {

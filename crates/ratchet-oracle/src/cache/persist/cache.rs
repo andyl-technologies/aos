@@ -91,6 +91,79 @@ impl PersistCompaction {
     }
 }
 
+/// Byte counts from persistent blob-pack tail trimming.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PersistBlobPackTrim {
+    live_entries: usize,
+    bytes_before: u64,
+    bytes_after: u64,
+}
+
+impl PersistBlobPackTrim {
+    const fn new(live_entries: usize, bytes_before: u64, bytes_after: u64) -> Self {
+        Self {
+            live_entries,
+            bytes_before,
+            bytes_after,
+        }
+    }
+
+    /// Returns the number of latest live root entries that bounded the trim.
+    pub const fn live_entries(self) -> usize {
+        self.live_entries
+    }
+
+    /// Returns the packfile length before trimming.
+    pub const fn bytes_before(self) -> u64 {
+        self.bytes_before
+    }
+
+    /// Returns the packfile length after trimming.
+    pub const fn bytes_after(self) -> u64 {
+        self.bytes_after
+    }
+
+    /// Returns the number of unindexed tail bytes reclaimed.
+    pub const fn reclaimed_bytes(self) -> u64 {
+        self.bytes_before.saturating_sub(self.bytes_after)
+    }
+}
+
+fn blob_record_end(location: PersistBlobLocation) -> Result<u64, PersistBlobPackError> {
+    let payload_start = location
+        .record_offset()
+        .checked_add(PERSIST_BLOB_RECORD_HEADER_LEN as u64)
+        .ok_or(PersistBlobPackError::RecordBoundsOverflow {
+            record_offset: location.record_offset(),
+            payload_len: location.payload_len(),
+        })?;
+    payload_start.checked_add(location.payload_len()).ok_or(
+        PersistBlobPackError::RecordBoundsOverflow {
+            record_offset: location.record_offset(),
+            payload_len: location.payload_len(),
+        },
+    )
+}
+
+fn push_blob_index_roots(
+    roots: &mut Vec<(PersistBlobKey, PersistBlobLocation)>,
+    entries: Vec<PersistBlobIndexEntry>,
+    expected_store: PersistBlobStore,
+) -> Result<(), PersistBlobPackTrimError> {
+    for entry in entries {
+        let key = entry.key();
+        let actual_store = key.store();
+        if actual_store != expected_store {
+            return Err(PersistBlobPackTrimError::WrongStoreEntry {
+                expected: expected_store,
+                actual: actual_store,
+            });
+        }
+        roots.push((key, entry.location()));
+    }
+    Ok(())
+}
+
 impl PersistCache {
     /// Opens or initializes a persistent eval-cache root.
     ///
@@ -777,6 +850,78 @@ impl PersistCache {
         store: PersistBlobStore,
     ) -> Result<usize, PersistBlobIndexError> {
         self.blob_index(store).compact_latest_entries()
+    }
+
+    /// Trims unindexed tail bytes from the selected blob pack.
+    ///
+    /// This explicit maintenance operation snapshots the selected store's
+    /// latest live roots, verifies each referenced blob against the selected
+    /// pack, and truncates only bytes after the highest live record. For
+    /// `values/`, the roots are the value blob-index entries. For `files/`, the
+    /// roots also include file-artifact and parse-artifact index entries because
+    /// legacy non-indexed artifact materializers can publish those values
+    /// without adding a blob-index entry. This can reclaim unindexed trailing
+    /// records, including blobs left behind by non-transactional append paths,
+    /// but it does not relocate live records or reclaim unindexed records that
+    /// precede a live record. Callers must serialize writes to the selected pack
+    /// and root sidecars while this method runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackTrimError`] if a root sidecar cannot be
+    /// snapshotted, if a blob-index entry contains a key for a different store,
+    /// if any latest live blob fails verification, or if the pack cannot be
+    /// inspected or truncated.
+    pub fn trim_blob_pack_tail(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<PersistBlobPackTrim, PersistBlobPackTrimError> {
+        let blob_entries = self
+            .blob_index(store)
+            .latest_entries()
+            .map_err(|source| PersistBlobPackTrimError::BlobIndex { source })?;
+        let mut roots = Vec::new();
+        push_blob_index_roots(&mut roots, blob_entries, store)?;
+        if store == PersistBlobStore::Files {
+            for entry in self
+                .file_artifact_index
+                .latest_entries()
+                .map_err(|source| PersistBlobPackTrimError::FileArtifactIndex { source })?
+            {
+                let value = entry.value();
+                roots.push((value.blob_key(), value.location()));
+            }
+            for entry in self
+                .parse_artifact_index
+                .latest_entries()
+                .map_err(|source| PersistBlobPackTrimError::ParseArtifactIndex { source })?
+            {
+                let value = entry.value();
+                roots.push((value.blob_key(), value.location()));
+            }
+        }
+        let pack = self.blob_pack(store);
+        let mut live_end = PERSIST_BLOB_PACK_HEADER_LEN as u64;
+        for (key, location) in &roots {
+            pack.read_blob(*location, key.hash())
+                .map_err(|source| PersistBlobPackTrimError::Read { source })?;
+            let record_end = blob_record_end(*location)
+                .map_err(|source| PersistBlobPackTrimError::Read { source })?;
+            live_end = live_end.max(record_end);
+        }
+        let bytes_before = pack
+            .len()
+            .map_err(|source| PersistBlobPackTrimError::Trim { source })?;
+        pack.trim_tail(live_end)
+            .map_err(|source| PersistBlobPackTrimError::Trim { source })?;
+        let bytes_after = pack
+            .len()
+            .map_err(|source| PersistBlobPackTrimError::Trim { source })?;
+        Ok(PersistBlobPackTrim::new(
+            roots.len(),
+            bytes_before,
+            bytes_after,
+        ))
     }
 
     /// Appends a blob and records its location in the sidecar index.
