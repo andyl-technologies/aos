@@ -234,6 +234,7 @@ in {
     qemuShutdownEscalation = import ./phase2-qemu-shutdown-escalation.nix {inherit pkgs lib;};
     qemuSingleVmFingerprint = import ./phase2-qemu-single-vm-fingerprint.nix {inherit pkgs lib;};
     qemuSpawnFdPassing = import ./phase2-qemu-spawn-fd-passing.nix {inherit pkgs lib;};
+    anyGuest = import ./phase2-any-guest.nix {inherit pkgs lib;};
     shmemRegionLayout = import ./phase2-shmem-region-layout.nix {inherit pkgs lib;};
     shmemGeneratedHeader = import ./phase2-shmem-generated-header.nix {inherit pkgs lib;};
     shmemAbiConformance = import ./phase2-shmem-abi-conformance.nix {inherit pkgs lib;};
@@ -271,13 +272,10 @@ in {
         attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
         taskIds = ["T-PLAN-3" "T-HARN-7"];
       };
-      anyGuest = redGate {
+      anyGuest = import ./phase2-any-guest.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.anyGuest";
-        gateName = "gate:any-guest";
-        owner = "crucible-qemu";
-        phase = "phase2";
-        taskIds = ["T-PLAN-3" "T-HARN-16"];
-        reason = "any-guest gate is intentionally pending";
+        taskIds = ["T-PLAN-3" "T-DET-22" "T-HARN-16"];
       };
     };
   };

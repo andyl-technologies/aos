@@ -164,21 +164,21 @@
       package = "crucible-qemu";
       testTarget = "gate_any_guest";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:qemu-inert";
       package = "crucible-qemu";
       testTarget = "gate_qemu_inert";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:qemu-inert";
       package = "crucible-qemu-plugin";
       testTarget = "gate_qemu_inert";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:patch-microtests";
@@ -381,7 +381,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=14
+            placeholder_targets=11
             RESULT
           '';
         }

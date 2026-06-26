@@ -345,7 +345,7 @@ in
             guest_on_disk_mutation_policy=forbidden-by-launch-profile
             guest_core_content=host-side-only
             core_operation=host-side-only
-            real_qemu_any_guest_gate=phase2-pending
+            real_qemu_any_guest_gate=checks.crucible.phase2.gates.anyGuest
             RESULT
           '';
         }

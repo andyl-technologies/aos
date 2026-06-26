@@ -180,7 +180,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:any-guest",
         phase: GatePhase::Phase2,
         owner: "crucible-qemu",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:qemu-inert",
