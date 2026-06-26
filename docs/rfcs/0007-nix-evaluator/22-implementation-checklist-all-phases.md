@@ -2080,9 +2080,11 @@ alone (`M-1`/`Q-A`).
       durable hit selection, value payload writeback, and verifying-trace
       writeback are gated by `eval_cache_enabled`, so disabled eval-cache
       observation writes no persistent force metadata even if a test caller
-      configures a persistent root directly. This covers the current
-      parse-cache persistence layer, in-memory impure-trace leaf ingestion, and
-      replayable forced-expression value/trace cache, not full
+      configures a persistent root directly; the native expression
+      disabled-persistent-root canary also proves parse persistence remains
+      active while force metadata and trace sidecars stay empty. This covers
+      the current parse-cache persistence layer, in-memory impure-trace leaf
+      ingestion, and replayable forced-expression value/trace cache, not full
       demand/evaluating-node lifecycle, persistent demand graph, generic value
       memoization, or in-process import result memo
       ([12](12-incremental-evaluation-cache.md) §8.3).

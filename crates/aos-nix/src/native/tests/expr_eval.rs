@@ -330,6 +330,60 @@ fn native_expression_eval_leaves_eval_cache_absent_when_disabled() -> Result<()>
 }
 
 #[test]
+fn native_expression_disabled_persistent_root_leaves_force_sidecars_empty() -> Result<()> {
+    use crate::cache::{PersistCache, PersistParseArtifactKey};
+
+    let root = unique_temp_dir("native-expression-persist-force-disabled");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let input = root.join("input.txt");
+    let parse_root = root.join("parse");
+    let persist_root = root.join("persist");
+    fs::write(&input, "uncached")?;
+    let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Impure);
+    options.set_parse_cache_root(&parse_root);
+    options.set_persist_cache_root(&persist_root);
+    let native = NixNative::with_options(0, options)?;
+
+    let source = format!(
+        "let payload = builtins.readFile {}; in payload",
+        nix_string_literal(&path_bytes(&input)?)?
+    );
+    let ir = native.lower_native_source(&source, None, None)?;
+    let outcome = native.eval_ir(&ir)?;
+    assert_eq!(
+        outcome.heap().get_string(outcome.value())?.bytes(),
+        b"uncached"
+    );
+    assert!(native.eval_cache_snapshot().is_none());
+
+    let parse_cache = ParseCache::new(&parse_root);
+    let parse_key = parse_cache.key_for_source(source.as_bytes());
+    assert!(
+        parse_cache.entry_for_key(parse_key).is_complete(),
+        "disabled eval-cache should still allow configured parse-cache writes"
+    );
+    let persist = PersistCache::open(&persist_root)?;
+    assert!(
+        persist
+            .lookup_parse_artifact(PersistParseArtifactKey::from_parse_cache_key(parse_key))?
+            .is_some(),
+        "disabled eval-cache should not disable configured parse persistence"
+    );
+    assert!(
+        persist.node_metadata_index().latest_entries()?.is_empty(),
+        "disabled eval-cache must not write persistent force metadata"
+    );
+    assert!(
+        persist.node_trace_log().latest_entries()?.is_empty(),
+        "disabled eval-cache must not write persistent force traces"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_expression_parse_cache_preserves_frontend_error_spans() -> Result<()> {
     let root = unique_temp_dir("native-expression-parse-cache-error");
     fs::create_dir_all(&root)?;
