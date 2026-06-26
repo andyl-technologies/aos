@@ -584,6 +584,7 @@ pub enum CachedExpressionValuePayloadError {
 pub struct EvalCache {
     graph: DemandGraph,
     inline_values: BTreeMap<DemandNodeId, InlineValueRecord>,
+    derivation_aterm_paths: BTreeMap<DemandNodeId, DerivationAtermPathRecord>,
 }
 
 impl EvalCache {
@@ -597,6 +598,7 @@ impl EvalCache {
         Self {
             graph,
             inline_values: BTreeMap::new(),
+            derivation_aterm_paths: BTreeMap::new(),
         }
     }
 
@@ -714,6 +716,47 @@ impl EvalCache {
         Ok(self
             .lookup_inline_expression_payload(identity, free_var_value_hashes)?
             .and_then(|value| value.immediate_value()))
+    }
+
+    /// Looks up a clean cached derivation `.drv` path for matching ATerm bytes.
+    ///
+    /// This is a path-lookup precursor for future derivationStrict SHA-256
+    /// short-circuiting. It returns stored `.drv` path bytes only when the
+    /// caller-supplied expression key exists, the demand node is clean, a
+    /// derivation path side record exists, and both the graph node and side
+    /// record still match `aterm` through
+    /// [`ValueHash::from_derivation_aterm_bytes`]. Unknown, dirty, missing, and
+    /// stale records are misses.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails.
+    pub fn lookup_derivation_aterm_path<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        aterm: &[u8],
+    ) -> Result<Option<Vec<u8>>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
+            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        let Some(node) = self.graph.node_id_for_key(key) else {
+            return Ok(None);
+        };
+        let graph_node = self.graph.node(node)?;
+        if graph_node.freshness() != NodeFreshness::Clean {
+            return Ok(None);
+        }
+        let Some(record) = self.derivation_aterm_paths.get(&node) else {
+            return Ok(None);
+        };
+        let value_hash = ValueHash::from_derivation_aterm_bytes(aterm);
+        if graph_node.value_hash() != Some(value_hash) || record.value_hash != value_hash {
+            return Ok(None);
+        }
+        Ok(Some(record.path_bytes()))
     }
 
     /// Looks up a clean expression payload after impure-input revalidation.
@@ -984,6 +1027,35 @@ impl EvalCache {
         self.graph.reconsider_derivation_aterm_node(node, aterm)
     }
 
+    /// Observes one recomputed derivation ATerm expression and `.drv` path.
+    ///
+    /// This extends [`Self::observe_derivation_aterm_expression`] with a side
+    /// record containing caller-supplied `.drv` path bytes. The path record is
+    /// usable only through [`Self::lookup_derivation_aterm_path`] when the graph
+    /// node remains clean and the same ATerm hash still matches. This API does
+    /// not compute Nix-observed SHA-256 `.drv` hashes or store paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if cache-key construction fails, node
+    /// insertion fails, or the node cannot be reconsidered.
+    pub fn observe_derivation_aterm_expression_path<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        aterm: &[u8],
+        drv_path: &[u8],
+    ) -> Result<Reconsideration, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
+        let reconsideration = self.graph.reconsider_derivation_aterm_node(node, aterm)?;
+        let record = DerivationAtermPathRecord::new(aterm, drv_path);
+        self.derivation_aterm_paths.insert(node, record);
+        Ok(reconsideration)
+    }
+
     /// Invalidates an existing inline expression payload.
     ///
     /// If the expression key already exists, the node is marked dirty and any
@@ -1244,6 +1316,25 @@ struct InlineValueRecord {
     value_hash: ValueHash,
     reusable_without_revalidation: bool,
     revalidation_inputs: Option<Vec<CacheableInputFingerprint>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DerivationAtermPathRecord {
+    value_hash: ValueHash,
+    path: Vec<u8>,
+}
+
+impl DerivationAtermPathRecord {
+    fn new(aterm: &[u8], path: &[u8]) -> Self {
+        Self {
+            value_hash: ValueHash::from_derivation_aterm_bytes(aterm),
+            path: path.to_vec(),
+        }
+    }
+
+    fn path_bytes(&self) -> Vec<u8> {
+        self.path.clone()
+    }
 }
 
 impl InlineValueRecord {
@@ -2293,6 +2384,31 @@ impl EvalCacheRuntime {
         )
     }
 
+    /// Looks up a cached derivation `.drv` path for matching ATerm bytes when enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity or ATerm bytes. Enabled runtimes delegate to
+    /// [`EvalCache::lookup_derivation_aterm_path`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to build the expression cache key.
+    pub fn lookup_derivation_aterm_path<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        aterm: &[u8],
+    ) -> Result<Option<Vec<u8>>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache() else {
+            return Ok(None);
+        };
+        cache.lookup_derivation_aterm_path(identity, free_var_value_hashes, aterm)
+    }
+
     /// Looks up a clean expression payload with impure-input revalidation when enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without validating the expression
@@ -2402,6 +2518,39 @@ impl EvalCacheRuntime {
         };
         cache
             .observe_derivation_aterm_expression(identity, free_var_value_hashes, aterm)
+            .map(Some)
+    }
+
+    /// Observes one derivation ATerm expression and `.drv` path when enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating the expression
+    /// identity, ATerm bytes, or path bytes. Enabled runtimes delegate to
+    /// [`EvalCache::observe_derivation_aterm_expression_path`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to insert/reconsider the expression node.
+    pub fn observe_derivation_aterm_expression_path<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        aterm: &[u8],
+        drv_path: &[u8],
+    ) -> Result<Option<Reconsideration>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .observe_derivation_aterm_expression_path(
+                identity,
+                free_var_value_hashes,
+                aterm,
+                drv_path,
+            )
             .map(Some)
     }
 
@@ -4749,6 +4898,150 @@ mod tests {
             cache.graph().node(node).expect("node exists").value_hash(),
             Some(derivation_aterm_hash(changed))
         );
+    }
+
+    #[test]
+    fn eval_cache_looks_up_clean_derivation_aterm_path() {
+        let mut cache = EvalCache::new();
+        let aterm = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"same\")])";
+        let drv_path = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv";
+
+        let reconsideration = cache
+            .observe_derivation_aterm_expression_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+                drv_path,
+            )
+            .expect("derivation ATerm path observes");
+        let lookup = cache
+            .lookup_derivation_aterm_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+            )
+            .expect("derivation ATerm path lookup succeeds");
+
+        assert_eq!(reconsideration.decision(), CutoffDecision::Propagate);
+        assert_eq!(lookup.as_deref(), Some(drv_path.as_slice()));
+    }
+
+    #[test]
+    fn derivation_aterm_path_lookup_misses_without_path_record() {
+        let mut cache = EvalCache::new();
+        let aterm = b"Derive([],[],[],\":\",\":\",[],[])";
+        cache
+            .observe_derivation_aterm_expression(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+            )
+            .expect("derivation ATerm observes");
+
+        let lookup = cache
+            .lookup_derivation_aterm_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+            )
+            .expect("derivation ATerm path lookup succeeds");
+
+        assert!(lookup.is_none());
+    }
+
+    #[test]
+    fn derivation_aterm_path_lookup_misses_for_changed_or_dirty_nodes() {
+        let mut cache = EvalCache::new();
+        let prior = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"old\")])";
+        let changed = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"new\")])";
+        cache
+            .observe_derivation_aterm_expression_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                prior,
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
+            )
+            .expect("derivation ATerm path observes");
+
+        let changed_lookup = cache
+            .lookup_derivation_aterm_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                changed,
+            )
+            .expect("changed derivation ATerm lookup succeeds");
+        assert!(changed_lookup.is_none());
+
+        let node = cache
+            .get_or_insert_expression_node(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                None,
+            )
+            .expect("existing derivation node returns");
+        cache.graph.mark_dirty(node).expect("node dirties");
+        let dirty_lookup = cache
+            .lookup_derivation_aterm_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                prior,
+            )
+            .expect("dirty derivation ATerm lookup succeeds");
+
+        assert!(dirty_lookup.is_none());
+    }
+
+    #[test]
+    fn disabled_eval_cache_runtime_skips_derivation_aterm_path_lookup_and_observation() {
+        let mut runtime = EvalCacheRuntime::disabled();
+        let aterm = b"Derive([],[],[],\":\",\":\",[],[])";
+
+        let observation = runtime
+            .observe_derivation_aterm_expression_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
+            )
+            .expect("disabled observation succeeds");
+        let lookup = runtime
+            .lookup_derivation_aterm_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+            )
+            .expect("disabled lookup succeeds");
+
+        assert!(observation.is_none());
+        assert!(lookup.is_none());
+        assert!(runtime.cache().is_none());
+    }
+
+    #[test]
+    fn enabled_eval_cache_runtime_delegates_derivation_aterm_path_roundtrip() {
+        let mut runtime = EvalCacheRuntime::enabled();
+        let aterm = b"Derive([],[],[],\":\",\":\",[],[])";
+        let drv_path = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv";
+
+        let observation = runtime
+            .observe_derivation_aterm_expression_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+                drv_path,
+            )
+            .expect("enabled observation succeeds")
+            .expect("enabled runtime observes derivation ATerm path");
+        let lookup = runtime
+            .lookup_derivation_aterm_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+            )
+            .expect("enabled lookup succeeds");
+
+        assert_eq!(observation.decision(), CutoffDecision::Propagate);
+        assert_eq!(lookup.as_deref(), Some(drv_path.as_slice()));
     }
 
     #[test]

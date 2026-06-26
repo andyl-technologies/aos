@@ -818,6 +818,17 @@ alone (`M-1`/`Q-A`).
       demand-node lifecycle, expression identity/free-variable production,
       dependency capture, SHA-256 short-circuiting, persistence, and
       cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
+- [x] Current derivation ATerm path lookup substrate:
+      `EvalCache::observe_derivation_aterm_expression_path`,
+      `EvalCacheRuntime::observe_derivation_aterm_expression_path`, and
+      `lookup_derivation_aterm_path` store caller-supplied `.drv` path bytes
+      beside a derivation ATerm value hash and return them only for clean nodes
+      whose current graph hash and side record still match the caller's ATerm
+      bytes. Dirty, changed, missing-key, missing-record, and disabled-runtime
+      cases are misses. This is cache-side storage/lookup only; tree-walk still
+      computes Nix-observed SHA-256 paths normally, and evaluator lookup wiring,
+      persistence, dependency capture, SHA-256 short-circuiting, and full
+      cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
 - [x] Current derivationStrict ATerm evaluator observation substrate:
       tree-walk `derivationStrict` observes recorded `.drv` ATerm bytes into
       the enabled `EvalCacheRuntime` after normal output path and `.drv` path
