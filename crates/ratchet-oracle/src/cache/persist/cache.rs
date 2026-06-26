@@ -1440,7 +1440,7 @@ impl PersistCache {
         for entry in self.blob_pack_index_entries(store)? {
             latest.insert(entry.key().index_bytes(), entry);
         }
-        Ok(latest.into_iter().map(|(_, entry)| entry).collect())
+        Ok(latest.into_values().collect())
     }
 
     /// Plans a blob-index rebuild from the selected store's verified pack.

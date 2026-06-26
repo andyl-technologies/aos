@@ -476,7 +476,7 @@ impl PersistBlobIndex {
             })?;
             latest.insert(entry.key().index_bytes(), entry);
         }
-        Ok(latest.into_iter().map(|(_, entry)| entry).collect())
+        Ok(latest.into_values().collect())
     }
 
     /// Rewrites the sidecar to the newest entry for every blob key.
@@ -913,7 +913,7 @@ impl PersistFileArtifactIndex {
                 })?;
             latest.insert(entry.key().index_bytes(), entry);
         }
-        Ok(latest.into_iter().map(|(_, entry)| entry).collect())
+        Ok(latest.into_values().collect())
     }
 
     /// Rewrites the sidecar to the newest entry for every file-artifact key.
@@ -1311,7 +1311,7 @@ impl PersistParseArtifactIndex {
                 })?;
             latest.insert(entry.key().index_bytes(), entry);
         }
-        Ok(latest.into_iter().map(|(_, entry)| entry).collect())
+        Ok(latest.into_values().collect())
     }
 
     /// Rewrites the sidecar to the newest entry for every parse-artifact key.
