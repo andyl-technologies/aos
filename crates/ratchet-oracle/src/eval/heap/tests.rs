@@ -180,6 +180,75 @@ fn allocates_list_values_and_recovers_spine() {
 }
 
 #[test]
+fn identical_list_values_reuse_heap_record() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let first = heap
+        .alloc_list(NixList::new(vec![Value::int(1), Value::bool(true)]))
+        .expect("first list allocates");
+    let second = heap
+        .alloc_list(NixList::new(vec![Value::int(1), Value::bool(true)]))
+        .expect("second list allocates");
+
+    assert!(first.raw_eq(second));
+    assert_eq!(heap.len(), 1);
+    let list = heap.get_list(second).expect("second list exists");
+    assert_eq!(list.len(), 2);
+    assert_eq!(list.get(0).expect("first element").as_int(), Ok(1));
+    assert_eq!(list.get(1).expect("second element").as_bool(), Ok(true));
+}
+
+#[test]
+fn list_values_with_different_elements_do_not_collapse() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let first = heap
+        .alloc_list(NixList::new(vec![Value::int(1)]))
+        .expect("first list allocates");
+    let second = heap
+        .alloc_list(NixList::new(vec![Value::int(2)]))
+        .expect("second list allocates");
+
+    assert_ne!(first.payload_bits(), second.payload_bits());
+    assert_eq!(heap.len(), 2);
+}
+
+#[test]
+fn list_values_with_same_thunk_identity_reuse_heap_record() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+    let thunk = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+    let first = heap
+        .alloc_list(NixList::new(vec![thunk]))
+        .expect("first list allocates");
+    let second = heap
+        .alloc_list(NixList::new(vec![thunk]))
+        .expect("second list allocates");
+
+    assert!(first.raw_eq(second));
+    assert_eq!(heap.len(), 2);
+}
+
+#[test]
+fn list_values_with_distinct_thunk_identities_do_not_collapse() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+    let first_thunk = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("first thunk allocates");
+    let second_thunk = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("second thunk allocates");
+    let first = heap
+        .alloc_list(NixList::new(vec![first_thunk]))
+        .expect("first list allocates");
+    let second = heap
+        .alloc_list(NixList::new(vec![second_thunk]))
+        .expect("second list allocates");
+
+    assert_ne!(first.payload_bits(), second.payload_bits());
+    assert_eq!(heap.len(), 4);
+}
+
+#[test]
 fn allocates_thunk_values_and_recovers_body() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
     let body = IrId::new(7);

@@ -155,6 +155,7 @@ pub struct EvalHeap {
     records: Vec<HeapRecord>,
     string_cons: HashConsTable<HotXxh3Hash, Value>,
     path_cons: HashConsTable<HotXxh3Hash, Value>,
+    list_cons: HashConsTable<HotXxh3Hash, Value>,
 }
 
 impl Default for EvalHeap {

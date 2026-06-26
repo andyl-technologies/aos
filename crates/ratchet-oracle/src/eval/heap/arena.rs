@@ -1,5 +1,9 @@
 //! Allocation, lookup, and cons-table machinery for the [`EvalHeap`] arena.
 
+use std::hash::{Hash, Hasher};
+
+use xxhash_rust::xxh3::Xxh3;
+
 use super::*;
 
 impl EvalHeap {
@@ -10,6 +14,7 @@ impl EvalHeap {
             records: Vec::new(),
             string_cons: HashConsTable::new(),
             path_cons: HashConsTable::new(),
+            list_cons: HashConsTable::new(),
         }
     }
 
@@ -26,6 +31,7 @@ impl EvalHeap {
             records: Vec::new(),
             string_cons: HashConsTable::new(),
             path_cons: HashConsTable::new(),
+            list_cons: HashConsTable::new(),
         })
     }
 
@@ -117,7 +123,12 @@ impl EvalHeap {
     /// bump arena cannot reserve a list handle, or if the resulting handle
     /// violates the runtime value alignment contract.
     pub fn alloc_list(&mut self, list: NixList) -> Result<Value, EvalHeapError> {
+        let hash = list_structural_hash(&list);
+        if let Some(value) = self.lookup_list_cons(hash, &list)? {
+            return Ok(value);
+        }
         self.reserve_record_slot()?;
+        let cons_slot = self.reserve_list_cons_slot(hash)?;
         let allocation = self
             .arena
             .aos_alloc_list(list.len())
@@ -125,9 +136,10 @@ impl EvalHeap {
         let value = Value::list(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
-            structural_hash: None,
+            structural_hash: Some(hash),
             object: HeapObjectValue::List(list),
         });
+        self.push_list_cons_value(cons_slot, value);
         Ok(value)
     }
 
@@ -551,11 +563,40 @@ impl EvalHeap {
             .map(|value| value.copied())
     }
 
+    fn lookup_list_cons(
+        &self,
+        hash: HotXxh3Hash,
+        list: &NixList,
+    ) -> Result<Option<Value>, EvalHeapError> {
+        self.list_cons
+            .try_find(&hash, |value| {
+                let value = *value;
+                let ptr = value.as_list_ptr().map_err(EvalHeapError::Value)?;
+                let record = self.record_or_unknown(ValueTag::List, ptr)?;
+                let same_hash = record.structural_hash == Some(hash);
+                let same_list = matches!(
+                    &record.object,
+                    HeapObjectValue::List(candidate) if lists_raw_eq(candidate, list)
+                );
+                Ok(same_hash && same_list)
+            })
+            .map(|value| value.copied())
+    }
+
     fn reserve_string_cons_slot(
         &mut self,
         hash: HotXxh3Hash,
     ) -> Result<HashConsSlot<HotXxh3Hash>, EvalHeapError> {
         self.string_cons
+            .reserve_slot(hash)
+            .map_err(EvalHeapError::from)
+    }
+
+    fn reserve_list_cons_slot(
+        &mut self,
+        hash: HotXxh3Hash,
+    ) -> Result<HashConsSlot<HotXxh3Hash>, EvalHeapError> {
+        self.list_cons
             .reserve_slot(hash)
             .map_err(EvalHeapError::from)
     }
@@ -585,6 +626,14 @@ impl EvalHeap {
         );
     }
 
+    fn push_list_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
+        let pushed = self.list_cons.push_reserved(slot, value);
+        debug_assert!(
+            pushed,
+            "cons-table slot should be reserved before allocation"
+        );
+    }
+
     fn record(&self, ptr: NonNull<HeapObject>) -> Option<&HeapRecord> {
         let address = ptr.as_ptr() as usize;
         self.records
@@ -600,4 +649,23 @@ impl EvalHeap {
         self.record(ptr)
             .ok_or_else(|| EvalHeapError::unknown(tag, ptr))
     }
+}
+
+fn list_structural_hash(list: &NixList) -> HotXxh3Hash {
+    let mut hasher = Xxh3::new();
+    ValueTag::List.hash(&mut hasher);
+    list.len().hash(&mut hasher);
+    for value in list {
+        value.tag().hash(&mut hasher);
+        value.payload_bits().hash(&mut hasher);
+    }
+    HotXxh3Hash::from_xxh3(hasher.finish())
+}
+
+fn lists_raw_eq(left: &NixList, right: &NixList) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(left, right)| left.raw_eq(*right))
 }
