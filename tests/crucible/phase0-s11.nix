@@ -1,10 +1,13 @@
 {
   pkgs,
   lib,
+  accelerator ? "tcg,thread=single",
+  cadence ? 100000000,
+  requireGuestPass ? true,
+  stopAt ? null,
+  vcpuCount ? 4,
 }: let
-  cadence = 100000000;
   rrSwitchQuantum = 4096;
-  vcpuCount = 4;
 
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s11-workload";
@@ -238,6 +241,7 @@ in
       pkgs.jq
       pkgs.qemu-crucible
       pkgs.crucible-qemu-trace-plugin
+      pkgs.socat
     ];
 
     INITRAMFS = "${initramfs}/initrd.img";
@@ -246,6 +250,15 @@ in
     CADENCE = builtins.toString cadence;
     RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
     VCPU_COUNT = builtins.toString vcpuCount;
+    ACCELERATOR = accelerator;
+    REQUIRE_GUEST_PASS =
+      if requireGuestPass
+      then "1"
+      else "0";
+    STOP_AT =
+      if stopAt == null
+      then ""
+      else builtins.toString stopAt;
 
     phases = [
       {
@@ -255,7 +268,17 @@ in
 
           unset LD_LIBRARY_PATH || true
 
+          active_qemu_pid=""
+          cleanup_active_qemu() {
+            if [ -n "$active_qemu_pid" ]; then
+              kill "$active_qemu_pid" 2>/dev/null || true
+              wait "$active_qemu_pid" 2>/dev/null || true
+              active_qemu_pid=""
+            fi
+          }
+
           fail() {
+            cleanup_active_qemu
             echo "FAIL: $*" >&2
             exit 1
           }
@@ -288,8 +311,86 @@ in
             jitter_pids=""
           }
 
+          qmp_cmd() {
+            socket="$1"
+            request="$2"
+            response="$3"
+            response_err="$response.err"
+
+            {
+              printf '{"execute":"qmp_capabilities"}\r\n'
+              printf '%s\r\n' "$request"
+            } | socat -T 1 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+
+            if [ ! -s "$response" ]; then
+              cat "$response_err" >&2
+              return 1
+            fi
+
+            if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
+              cat "$response" >&2
+              return 1
+            fi
+            jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null
+          }
+
+          wait_for_socket() {
+            socket="$1"
+            waited=0
+            while [ "$waited" -lt 600 ]; do
+              if [ -S "$socket" ]; then
+                return 0
+              fi
+              sleep 0.1
+              waited=$((waited + 1))
+            done
+            return 1
+          }
+
+          wait_for_stop_at_pause() {
+            socket="$1"
+            label="$2"
+            waited=0
+            qmp_failures=0
+            while [ "$waited" -lt 600 ]; do
+              if qmp_cmd "$socket" '{"execute":"query-status"}' "$TMPDIR/qmp-status-$label.json"; then
+                qmp_failures=0
+                status=$(jq -r -s '[.[] | select(has("return"))][-1].return.status // empty' "$TMPDIR/qmp-status-$label.json")
+                case "$status" in
+                  paused)
+                    return 0
+                    ;;
+                  running | prelaunch)
+                    ;;
+                  *)
+                    cat "$TMPDIR/qmp-status-$label.json" >&2
+                    return 1
+                    ;;
+                esac
+              else
+                qmp_failures=$((qmp_failures + 1))
+                if [ "$qmp_failures" -ge 10 ]; then
+                  if [ -f "$TMPDIR/qmp-status-$label.json" ]; then
+                    cat "$TMPDIR/qmp-status-$label.json" >&2
+                  fi
+                  return 1
+                fi
+              fi
+              sleep 0.1
+              waited=$((waited + 1))
+            done
+            return 1
+          }
+
           run_one() {
             label="$1"
+            plugin_arg="$PLUGIN,out=$TMPDIR/trace-$label.jsonl,cadence=$CADENCE,extended=on,mem_events=off,vcpus=$VCPU_COUNT"
+            qmp_socket="$TMPDIR/qmp-$label.sock"
+
+            if [ -n "$STOP_AT" ]; then
+              plugin_arg="$plugin_arg,stop_at=$STOP_AT"
+              rm -f "$qmp_socket"
+            fi
 
             set -- qemu-system-x86_64 \
               -nodefaults \
@@ -297,7 +398,7 @@ in
               -display none \
               -monitor none \
               -machine q35 \
-              -accel tcg,thread=single \
+              -accel "$ACCELERATOR" \
               -icount shift=0,sleep=off,align=off,rr_switch_quantum="$RR_SWITCH_QUANTUM" \
               -cpu qemu64 \
               -m 256 \
@@ -310,15 +411,33 @@ in
               -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0" \
               -chardev file,id=serial0,path="$TMPDIR/serial-$label.log" \
               -serial chardev:serial0 \
-              -plugin "$PLUGIN",out="$TMPDIR/trace-$label.jsonl",cadence="$CADENCE",extended=on,mem_events=off,vcpus="$VCPU_COUNT" \
-              -no-reboot
+              -plugin "$plugin_arg"
+
+            if [ -n "$STOP_AT" ]; then
+              set -- "$@" \
+                -qmp "unix:$qmp_socket,server=on,wait=off" \
+                -no-shutdown
+            else
+              set -- "$@" \
+                -no-reboot
+            fi
 
             printf '%s\n' "$@" > "$TMPDIR/qemu-args-$label.txt"
             if grep -E -q '^-drive$|^-blockdev$|^-cdrom$|^-hda$|^-hdb$|^-hdc$|^-hdd$|virtio-blk|scsi|nvme|ahci|ide-' "$TMPDIR/qemu-args-$label.txt"; then
               fail "guest $label launch is not diskless"
             fi
 
-            timeout 600 "$@"
+            if [ -n "$STOP_AT" ]; then
+              timeout 600 "$@" &
+              active_qemu_pid="$!"
+              wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for guest $label"
+              wait_for_stop_at_pause "$qmp_socket" "$label" || fail "QEMU did not pause at stop_at for guest $label"
+              qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
+              wait "$active_qemu_pid" || fail "QEMU guest $label exited unsuccessfully"
+              active_qemu_pid=""
+            else
+              timeout 600 "$@"
+            fi
           }
 
           run_one a
@@ -327,16 +446,20 @@ in
           stop_jitter
 
           for label in a b; do
-            grep -q "TEST_RESULT:PASS" "$TMPDIR/serial-$label.log" \
-              || fail "guest $label did not report TEST_RESULT:PASS"
-            grep -q "CRUCIBLE_S11_DONE" "$TMPDIR/serial-$label.log" \
-              || fail "guest $label did not run the SMP workload"
+            if [ "$REQUIRE_GUEST_PASS" -eq 1 ]; then
+              grep -q "TEST_RESULT:PASS" "$TMPDIR/serial-$label.log" \
+                || fail "guest $label did not report TEST_RESULT:PASS"
+              grep -q "CRUCIBLE_S11_DONE" "$TMPDIR/serial-$label.log" \
+                || fail "guest $label did not run the SMP workload"
+            fi
             jq -e -s \
               --argjson vcpus "$VCPU_COUNT" \
               --argjson quantum "$RR_SWITCH_QUANTUM" \
               '
-                length >= 4
-                and all(.[]; (
+                [ .[] | select((.kind // "sample") == "sample") ] as $samples
+                | [ .[] | select(.kind == "rr_switch") ] as $switches
+                | ($samples | length) >= 4
+                and all($samples[]; (
                   .tracked_vcpus == $vcpus
                   and .rr_switch_quantum == $quantum
                   and .sample_register_failures == 0
@@ -351,17 +474,70 @@ in
                   and (.register_counts | length) == $vcpus
                   and all(.register_counts[]; . > 0)
                 ))
-                and any(.[]; .final == true)
+                and any($samples[]; .final == true)
+                and ($switches | length) > 0
+                and all($switches[]; (
+                  .rr_switch_event > 0
+                  and .rr_switch_quantum == $quantum
+                  and .from_vcpu >= 0
+                  and .from_vcpu < $vcpus
+                  and .to_vcpu >= 0
+                  and .to_vcpu < $vcpus
+                  and .rr_cursor_position <= $quantum
+                  and (.per_vcpu_retired | type == "array")
+                  and (.per_vcpu_retired | length) == $vcpus
+                  and (.per_vcpu_delta | type == "array")
+                  and (.per_vcpu_delta | length) == $vcpus
+                  and all(.per_vcpu_retired[]; . >= 0)
+                  and all(.per_vcpu_delta[]; . >= 0)
+                  and any(.per_vcpu_delta[]; . > 0)
+                ))
               ' "$TMPDIR/trace-$label.jsonl" >/dev/null \
               || fail "trace $label failed structural S11 assertions"
           done
 
-          samples_a=$(wc -l < "$TMPDIR/trace-a.jsonl")
-          samples_b=$(wc -l < "$TMPDIR/trace-b.jsonl")
+          samples_a=$(jq -s '[.[] | select((.kind // "sample") == "sample")] | length' "$TMPDIR/trace-a.jsonl")
+          samples_b=$(jq -s '[.[] | select((.kind // "sample") == "sample")] | length' "$TMPDIR/trace-b.jsonl")
+          rr_switch_events_a=$(jq -s '[.[] | select(.kind == "rr_switch")] | length' "$TMPDIR/trace-a.jsonl")
+          rr_switch_events_b=$(jq -s '[.[] | select(.kind == "rr_switch")] | length' "$TMPDIR/trace-b.jsonl")
           [ "$samples_a" -ge 4 ] || fail "expected at least 4 samples in run a"
           [ "$samples_a" -eq "$samples_b" ] || fail "sample count mismatch: $samples_a/$samples_b"
+          [ "$rr_switch_events_a" -gt 0 ] || fail "expected RR switch events in run a"
+          [ "$rr_switch_events_a" -eq "$rr_switch_events_b" ] \
+            || fail "RR switch event count mismatch: $rr_switch_events_a/$rr_switch_events_b"
 
           mkdir -p "$out"
+          for label in a b; do
+            jq -r '
+              select(.kind == "rr_switch")
+              | [
+                  .rr_switch_event,
+                  .retired,
+                  .from_vcpu,
+                  .to_vcpu,
+                  .rr_cursor_position,
+                  .rr_switch_quantum
+                ]
+              | @tsv
+            ' "$TMPDIR/trace-$label.jsonl" > "$TMPDIR/rr-switch-trace-$label.tsv"
+            jq -r '
+              select(.kind == "rr_switch")
+              | [
+                  .rr_switch_event,
+                  (.per_vcpu_delta | join(",")),
+                  (.per_vcpu_retired | join(","))
+                ]
+              | @tsv
+            ' "$TMPDIR/trace-$label.jsonl" > "$TMPDIR/per-vcpu-delta-trace-$label.tsv"
+          done
+          if ! diff -u "$TMPDIR/rr-switch-trace-a.tsv" "$TMPDIR/rr-switch-trace-b.tsv" > "$out/rr-switch-trace.diff"; then
+            cat "$out/rr-switch-trace.diff" >&2
+            fail "RR switch trace mismatch"
+          fi
+          if ! diff -u "$TMPDIR/per-vcpu-delta-trace-a.tsv" "$TMPDIR/per-vcpu-delta-trace-b.tsv" > "$out/per-vcpu-delta-trace.diff"; then
+            cat "$out/per-vcpu-delta-trace.diff" >&2
+            fail "per-vCPU icount-delta trace mismatch"
+          fi
           if ! diff -u "$TMPDIR/trace-a.jsonl" "$TMPDIR/trace-b.jsonl" > "$out/trace.diff"; then
             gawk '
               NR == FNR { left[FNR] = $0; next }
@@ -381,7 +557,25 @@ in
                 --slurpfile right "$TMPDIR/first-right.json" \
                 '
                   def component:
-                    if $left[0].retired != $right[0].retired then "retired"
+                    if ($left[0].kind // "sample") != ($right[0].kind // "sample") then "kind"
+                    elif ($left[0].kind // "sample") == "rr_switch" then
+                      if $left[0].rr_switch_event != $right[0].rr_switch_event then "rr_switch_event"
+                      elif $left[0].retired != $right[0].retired then "retired"
+                      elif $left[0].from_vcpu != $right[0].from_vcpu then "from_vcpu"
+                      elif $left[0].to_vcpu != $right[0].to_vcpu then "to_vcpu"
+                      elif $left[0].rr_cursor_position != $right[0].rr_cursor_position then "rr_cursor_position"
+                      elif $left[0].rr_switch_quantum != $right[0].rr_switch_quantum then "rr_switch_quantum"
+                      elif $left[0].per_vcpu_delta != $right[0].per_vcpu_delta then
+                        ([range(0; ($left[0].per_vcpu_delta | length)) | select($left[0].per_vcpu_delta[.] != $right[0].per_vcpu_delta[.])]) as $diffs
+                        | ($diffs[0] // null) as $idx
+                        | if $idx == null then "per_vcpu_delta" else "per_vcpu_delta[" + ($idx | tostring) + "]" end
+                      elif $left[0].per_vcpu_retired != $right[0].per_vcpu_retired then
+                        ([range(0; ($left[0].per_vcpu_retired | length)) | select($left[0].per_vcpu_retired[.] != $right[0].per_vcpu_retired[.])]) as $diffs
+                        | ($diffs[0] // null) as $idx
+                        | if $idx == null then "per_vcpu_retired" else "per_vcpu_retired[" + ($idx | tostring) + "]" end
+                      else "unknown"
+                      end
+                    elif $left[0].retired != $right[0].retired then "retired"
                     elif $left[0].vcpu != $right[0].vcpu then "vcpu"
                     elif $left[0].rr_current_vcpu != $right[0].rr_current_vcpu then "rr_current_vcpu"
                     elif $left[0].rr_cursor_position != $right[0].rr_cursor_position then "rr_cursor_position"
@@ -420,9 +614,18 @@ in
           final_memory_events=$(printf '%s\n' "$final_line" | jq -r '.memory_events')
           final_io_events=$(printf '%s\n' "$final_line" | jq -r '.io_events')
           final_register_read_failures=$(printf '%s\n' "$final_line" | jq -r '.register_read_failures')
+          if [ -n "$STOP_AT" ]; then
+            run_horizon="plugin-stop_at-$STOP_AT"
+          else
+            run_horizon="guest-complete"
+          fi
 
           cp "$TMPDIR/trace-a.jsonl" "$out/trace-a.jsonl"
           cp "$TMPDIR/trace-b.jsonl" "$out/trace-b.jsonl"
+          cp "$TMPDIR/rr-switch-trace-a.tsv" "$out/rr-switch-trace-a.tsv"
+          cp "$TMPDIR/rr-switch-trace-b.tsv" "$out/rr-switch-trace-b.tsv"
+          cp "$TMPDIR/per-vcpu-delta-trace-a.tsv" "$out/per-vcpu-delta-trace-a.tsv"
+          cp "$TMPDIR/per-vcpu-delta-trace-b.tsv" "$out/per-vcpu-delta-trace-b.tsv"
           cp "$TMPDIR/serial-a.log" "$out/serial-a.log"
           cp "$TMPDIR/serial-b.log" "$out/serial-b.log"
           cp "$TMPDIR/qemu-args-a.txt" "$out/qemu-args-a.txt"
@@ -433,12 +636,18 @@ in
             echo scenario=smp-contended-pthread-spinlock
             echo boot_medium=initramfs
             echo block_devices=0
+            echo accelerator="$ACCELERATOR"
             echo vcpus="$VCPU_COUNT"
             echo rr_switch_quantum="$RR_SWITCH_QUANTUM"
             echo cadence="$CADENCE"
+            echo run_horizon="$run_horizon"
+            echo require_guest_pass="$REQUIRE_GUEST_PASS"
             echo host_adversary=jitter-load
             echo extended_fingerprint_match=true
             echo aggregate_icount_stream_match=true
+            echo rr_switch_trace_match=true
+            echo per_vcpu_delta_trace_match=true
+            echo rr_switch_events="$rr_switch_events_a"
             echo horizon_fingerprint_match=true
             echo samples="$samples_a"
             echo final_extended_hash="$final_extended_hash"

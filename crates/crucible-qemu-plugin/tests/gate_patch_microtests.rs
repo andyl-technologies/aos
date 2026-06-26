@@ -65,6 +65,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     );
     assert_contains(
         &aggregate,
+        "qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix",
+    );
+    assert_contains(
+        &aggregate,
         "qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix",
     );
     assert_contains(
@@ -85,6 +89,37 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "grep -q '^wall_clock_fallback=forbidden$'");
     assert_contains(&aggregate, "qemu_plugin_fail_loud_gate_passed=true");
     assert_contains(&aggregate, "missing_required_capability_fails_loud=true");
+    assert_contains(&aggregate, "cp \"${qemuRrQuantumIcount}/result\"");
+    assert_contains(&aggregate, "grep -q '^vcpus=2$'");
+    assert_contains(
+        &aggregate,
+        "grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,stop_at=16384)$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^cross_run_switch_icount_trace_match=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^cross_run_per_vcpu_delta_trace_match=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^adaptive_realtime_quantum_negative_control=red$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^adaptive_rr_switch_trace_negative_control=red$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^patched_non_sim_rr_switch_trace_negative_control=red$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^non_sim_rr_switch_quantum_uses_stock_budget=true$'",
+    );
+    assert_contains(&aggregate, "qemu_rr_quantum_icount_gate_passed=true");
     assert_contains(
         &aggregate,
         "grep -q '^regenerated_patch_bytes_match_committed=true$'",
@@ -201,6 +236,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     );
     assert_contains(
         &default_checks,
+        "qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix",
+    );
+    assert_contains(
+        &default_checks,
         "qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix",
     );
     assert_contains(
@@ -291,6 +330,79 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         "checks.crucible.phase1.qemuDoorbellNoPatch",
     );
     assert_contains(&qemu_patch_series, "no_patch_decisions=");
+
+    let qemu_rr_quantum_icount =
+        fs::read_to_string(root.join("tests/crucible/phase2-qemu-rr-quantum-icount.nix"))?;
+    assert_contains(&qemu_rr_quantum_icount, "T-PATCH-21");
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "qemu_opt_get_number(opts, \"rr_switch_quantum\", 0)",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "return MIN(limit, (int64_t)rr_switch_quantum);",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "strcmp(current_accel_name(), \"sim\") != 0",
+    );
+    assert_contains(&qemu_rr_quantum_icount, "accelerator = \"sim\";");
+    assert_contains(&qemu_rr_quantum_icount, "cadence = 4096;");
+    assert_contains(&qemu_rr_quantum_icount, "requireGuestPass = false;");
+    assert_contains(&qemu_rr_quantum_icount, "stopAt = 16384;");
+    assert_contains(&qemu_rr_quantum_icount, "vcpus=2");
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "require_line \"$s11_result\" \"accelerator=sim\"",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "require_line \"$s11_result\" \"run_horizon=plugin-stop_at-16384\"",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "require_line \"$s11_result\" \"aggregate_icount_stream_match=true\"",
+    );
+    assert_contains(&qemu_rr_quantum_icount, "select(.kind == \"rr_switch\")");
+    assert_contains(&qemu_rr_quantum_icount, "rr_switch_events=");
+    assert_contains(&qemu_rr_quantum_icount, "per_vcpu_delta");
+    assert_contains(&qemu_rr_quantum_icount, "RR switch trace mismatch");
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "per-vCPU icount-delta trace mismatch",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "require_line \"$s11_result\" \"rr_switch_trace_match=true\"",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "require_line \"$s11_result\" \"per_vcpu_delta_trace_match=true\"",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "require_line \"$rr_result\" \"adaptive_rr_switch_trace_negative_control=red\"",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "require_line \"$rr_result\" \"patched_non_sim_rr_switch_trace_negative_control=red\"",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "require_line \"$rr_result\" \"non_sim_rr_switch_quantum_uses_stock_budget=true\"",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "adaptive_realtime_quantum_negative_control=red",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "adaptive_rr_switch_trace_negative_control=red",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "patched_non_sim_rr_switch_trace_negative_control=red",
+    );
 
     let qemu_patch_regeneration =
         fs::read_to_string(root.join("tests/crucible/phase2-qemu-patch-regeneration.nix"))?;

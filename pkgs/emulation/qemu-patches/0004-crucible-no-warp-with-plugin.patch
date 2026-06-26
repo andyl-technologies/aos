@@ -1,7 +1,7 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
-@@ -29,6 +29,8 @@
+@@ -30,6 +30,8 @@
  #include "qemu/error-report.h"
  #include "system/cpus.h"
  #include "system/qtest.h"
@@ -10,7 +10,7 @@ diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
  #include "qemu/main-loop.h"
  #include "qemu/option.h"
  #include "qemu/seqlock.h"
-@@ -353,6 +355,17 @@ void icount_start_warp_timer(void)
+@@ -358,6 +360,17 @@ void icount_start_warp_timer(void)
          }
      }
  

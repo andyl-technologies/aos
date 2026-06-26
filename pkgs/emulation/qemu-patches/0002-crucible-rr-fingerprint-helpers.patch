@@ -1,7 +1,15 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
-@@ -47,6 +47,7 @@
+@@ -24,6 +24,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/cutils.h"
++#include "qemu/accel.h"
+ #include "migration/vmstate.h"
+ #include "qapi/error.h"
+ #include "qemu/error-report.h"
+@@ -47,6 +48,7 @@
  static bool icount_sleep = true;
  /* Arbitrarily pick 1MIPS as the minimum allowable speed.  */
  #define MAX_ICOUNT_SHIFT 10
@@ -9,20 +17,24 @@ diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
  
  bool icount_align_option;
  
-@@ -76,6 +77,26 @@ static int64_t icount_get_executed(CPUState *cpu)
+@@ -76,6 +78,30 @@ static int64_t icount_get_executed(CPUState *cpu)
              (cpu->neg.icount_decr.u16.low + cpu->icount_extra));
  }
  
 +uint64_t icount_crucible_rr_switch_quantum(void)
 +{
++    if (strcmp(current_accel_name(), "sim") != 0) {
++        return 0;
++    }
 +    return crucible_rr_switch_quantum;
 +}
 +
 +uint64_t icount_crucible_rr_cursor_position(CPUState *cpu)
 +{
++    uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
 +    int64_t executed;
 +
-+    if (!cpu || crucible_rr_switch_quantum == 0) {
++    if (!cpu || rr_switch_quantum == 0) {
 +        return 0;
 +    }
 +
@@ -30,13 +42,13 @@ diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
 +    if (executed < 0) {
 +        return 0;
 +    }
-+    return MIN((uint64_t)executed, crucible_rr_switch_quantum);
++    return MIN((uint64_t)executed, rr_switch_quantum);
 +}
 +
  /*
   * Update the global shared timer_state.qemu_icount to take into
   * account executed instructions. This is done by the TCG vCPU
-@@ -422,15 +443,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -422,15 +448,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      bool sleep = qemu_opt_get_bool(opts, "sleep", true);
      bool align = qemu_opt_get_bool(opts, "align", false);
      long time_shift = -1;
@@ -64,7 +76,7 @@ diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
      if (align && !sleep) {
          error_setg(errp, "align=on and sleep=off are incompatible");
          return false;
-@@ -451,6 +484,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -451,6 +489,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      }
  
      icount_sleep = sleep;
@@ -378,10 +390,10 @@ diff --git a/qemu-options.hx b/qemu-options.hx
 -    ``shift`` is ``auto``. Note: The sync algorithm will work for those
 +    ``shift`` is ``auto``.
 +
-+    ``rr_switch_quantum=N`` pins the single-threaded TCG round-robin
-+    vCPU budget to exactly ``N`` retired instructions when instruction counting
-+    is enabled and the timer deadline permits it. This AOS Crucible extension
-+    is ignored when omitted.
++    ``rr_switch_quantum=N`` pins the ``-accel sim`` round-robin vCPU budget to
++    exactly ``N`` retired instructions when instruction counting is enabled and
++    the timer deadline permits it. Outside ``-accel sim`` this AOS Crucible
++    extension reports zero and preserves upstream adaptive budgeting.
 +
 +    Note: The sync algorithm will work for those
      shift values for which the guest clock runs ahead of the host clock.
