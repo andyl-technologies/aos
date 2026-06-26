@@ -26,6 +26,8 @@ struct PersistRootLocks {
     open: Mutex<()>,
     values: Mutex<()>,
     files: Mutex<()>,
+    file_artifacts: Mutex<()>,
+    parse_artifacts: Mutex<()>,
     node_metadata: Mutex<()>,
     node_traces: Mutex<()>,
 }
@@ -36,6 +38,8 @@ impl PersistRootLocks {
             open: Mutex::new(()),
             values: Mutex::new(()),
             files: Mutex::new(()),
+            file_artifacts: Mutex::new(()),
+            parse_artifacts: Mutex::new(()),
             node_metadata: Mutex::new(()),
             node_traces: Mutex::new(()),
         }
@@ -57,6 +61,18 @@ impl PersistRootLocks {
         };
         lock.lock()
             .map_err(|_| PersistBlobIndexedWriteError::WriteLockPoisoned { store })
+    }
+
+    fn lock_file_artifacts(&self) -> Result<MutexGuard<'_, ()>, PersistFileArtifactIndexError> {
+        self.file_artifacts
+            .lock()
+            .map_err(|_| PersistFileArtifactIndexError::WriteLockPoisoned)
+    }
+
+    fn lock_parse_artifacts(&self) -> Result<MutexGuard<'_, ()>, PersistParseArtifactIndexError> {
+        self.parse_artifacts
+            .lock()
+            .map_err(|_| PersistParseArtifactIndexError::WriteLockPoisoned)
     }
 
     fn lock_node_metadata(&self) -> Result<MutexGuard<'_, ()>, PersistNodeMetadataIndexError> {
@@ -534,6 +550,20 @@ impl PersistCache {
     }
 
     #[cfg(test)]
+    pub(super) fn lock_file_artifacts_for_tests(
+        &self,
+    ) -> Result<MutexGuard<'_, ()>, PersistFileArtifactIndexError> {
+        self.root_locks.lock_file_artifacts()
+    }
+
+    #[cfg(test)]
+    pub(super) fn lock_parse_artifacts_for_tests(
+        &self,
+    ) -> Result<MutexGuard<'_, ()>, PersistParseArtifactIndexError> {
+        self.root_locks.lock_parse_artifacts()
+    }
+
+    #[cfg(test)]
     pub(super) fn lock_node_metadata_for_tests(
         &self,
     ) -> Result<MutexGuard<'_, ()>, PersistNodeMetadataIndexError> {
@@ -727,12 +757,14 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistFileArtifactIndexError`] if the sidecar index cannot be
-    /// opened, validated, written, or flushed.
+    /// Returns [`PersistFileArtifactIndexError`] if the same-root file-artifact
+    /// write lock is poisoned or if the sidecar index cannot be opened,
+    /// validated, written, or flushed.
     pub fn record_file_artifact(
         &self,
         entry: PersistFileArtifactIndexEntry,
     ) -> Result<(), PersistFileArtifactIndexError> {
+        let _write_guard = self.root_locks.lock_file_artifacts()?;
         self.file_artifact_index.append_entry(entry)
     }
 
@@ -755,12 +787,14 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistParseArtifactIndexError`] if the sidecar index cannot
-    /// be opened, validated, written, or flushed.
+    /// Returns [`PersistParseArtifactIndexError`] if the same-root
+    /// parse-artifact write lock is poisoned or if the sidecar index cannot be
+    /// opened, validated, written, or flushed.
     pub fn record_parse_artifact(
         &self,
         entry: PersistParseArtifactIndexEntry,
     ) -> Result<(), PersistParseArtifactIndexError> {
+        let _write_guard = self.root_locks.lock_parse_artifacts()?;
         self.parse_artifact_index.append_entry(entry)
     }
 
@@ -781,31 +815,35 @@ impl PersistCache {
 
     /// Compacts file-artifact mappings to the newest entry for every known key.
     ///
-    /// This delegates to [`PersistFileArtifactIndex::compact_latest_entries`].
-    /// Callers must serialize writes to the file-artifact sidecar while this
-    /// method runs.
+    /// Same-process writers opened on the same cache root share a file-artifact
+    /// write lock while this method rewrites the sidecar. Cross-process writers
+    /// must still be excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistFileArtifactIndexError`] if the sidecar index cannot be
-    /// created, opened, inspected, read, decoded, written, flushed, or renamed
-    /// into place.
+    /// Returns [`PersistFileArtifactIndexError`] if the same-root file-artifact
+    /// write lock is poisoned or if the sidecar index cannot be created,
+    /// opened, inspected, read, decoded, written, flushed, or renamed into
+    /// place.
     pub fn compact_file_artifact_index(&self) -> Result<usize, PersistFileArtifactIndexError> {
+        let _write_guard = self.root_locks.lock_file_artifacts()?;
         self.file_artifact_index.compact_latest_entries()
     }
 
     /// Compacts parse-artifact mappings to the newest entry for every known key.
     ///
-    /// This delegates to [`PersistParseArtifactIndex::compact_latest_entries`].
-    /// Callers must serialize writes to the parse-artifact sidecar while this
-    /// method runs.
+    /// Same-process writers opened on the same cache root share a parse-artifact
+    /// write lock while this method rewrites the sidecar. Cross-process writers
+    /// must still be excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistParseArtifactIndexError`] if the sidecar index cannot
-    /// be created, opened, inspected, read, decoded, written, flushed, or
-    /// renamed into place.
+    /// Returns [`PersistParseArtifactIndexError`] if the same-root
+    /// parse-artifact write lock is poisoned or if the sidecar index cannot be
+    /// created, opened, inspected, read, decoded, written, flushed, or renamed
+    /// into place.
     pub fn compact_parse_artifact_index(&self) -> Result<usize, PersistParseArtifactIndexError> {
+        let _write_guard = self.root_locks.lock_parse_artifacts()?;
         self.parse_artifact_index.compact_latest_entries()
     }
 

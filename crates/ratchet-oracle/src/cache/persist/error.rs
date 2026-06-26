@@ -483,6 +483,9 @@ pub enum PersistBlobIndexError {
 /// Fixed-record file-artifact index file IO failed.
 #[derive(Debug, Error)]
 pub enum PersistFileArtifactIndexError {
+    /// The in-process file-artifact write lock was poisoned by a prior panic.
+    #[error("persistent file artifact write lock was poisoned")]
+    WriteLockPoisoned,
     /// The index parent directory could not be created.
     #[error("failed to create persistent file artifact index parent {path:?}")]
     CreateParent {
@@ -536,6 +539,9 @@ pub enum PersistFileArtifactIndexError {
 /// Fixed-record parse-artifact index file IO failed.
 #[derive(Debug, Error)]
 pub enum PersistParseArtifactIndexError {
+    /// The in-process parse-artifact write lock was poisoned by a prior panic.
+    #[error("persistent parse artifact write lock was poisoned")]
+    WriteLockPoisoned,
     /// The index parent directory could not be created.
     #[error("failed to create persistent parse artifact index parent {path:?}")]
     CreateParent {

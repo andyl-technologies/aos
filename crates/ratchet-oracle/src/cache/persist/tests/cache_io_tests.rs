@@ -1089,6 +1089,109 @@ fn cache_file_artifact_index_records_and_looks_up_entries() {
 }
 
 #[test]
+fn cache_file_artifact_index_serializes_independently_opened_same_root_handles() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let workers = 16usize;
+    let barrier = Arc::new(Barrier::new(workers));
+    let mut handles = Vec::new();
+
+    for worker in 0..workers {
+        let worker_cache = PersistCache::open(&root).expect("worker cache opens");
+        let worker_barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            let source = format!("let x = {worker}; in x");
+            let parse_key = test_parse_key(source.as_bytes());
+            let realpath = format!("/src/{worker}.nix");
+            let file_key = ParseFileKey::for_source(realpath.as_str(), source.as_bytes());
+            let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+            let value = PersistFileArtifactIndexValue::new(
+                DurableBlake3Hash::for_bytes(format!("artifact-{worker}").as_bytes()),
+                PersistBlobLocation::new(
+                    PERSIST_BLOB_PACK_HEADER_LEN as u64 + worker as u64,
+                    worker as u64,
+                ),
+            );
+
+            worker_barrier.wait();
+            worker_cache
+                .record_file_artifact(PersistFileArtifactIndexEntry::new(key, value))
+                .expect("file artifact records");
+            (key, value)
+        }));
+    }
+
+    let mut recorded = Vec::new();
+    for handle in handles {
+        recorded.push(handle.join().expect("worker should not panic"));
+    }
+
+    for (key, value) in &recorded {
+        assert_eq!(
+            cache
+                .lookup_file_artifact(*key)
+                .expect("file artifact lookup succeeds"),
+            Some(*value)
+        );
+    }
+    assert_eq!(
+        cache
+            .file_artifact_index()
+            .latest_entries()
+            .expect("latest file artifact entries")
+            .len(),
+        workers
+    );
+    assert_eq!(
+        fs::metadata(cache.file_artifact_index().path())
+            .expect("file artifact index metadata")
+            .len(),
+        (PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN * workers) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_artifact_index_reports_poisoned_same_root_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = PersistCache::open(&root).expect("second cache opens");
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_file_artifacts_for_tests()
+            .expect("file artifact lock acquires");
+        panic!("poison persistent file artifact write lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let value = PersistFileArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"serialized IR artifact"),
+        PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 22),
+    );
+    let error = cache
+        .record_file_artifact(PersistFileArtifactIndexEntry::new(key, value))
+        .expect_err("poisoned same-root file artifact lock should reject writes");
+
+    assert!(matches!(
+        error,
+        PersistFileArtifactIndexError::WriteLockPoisoned
+    ));
+    assert_eq!(
+        fs::metadata(cache.file_artifact_index().path())
+            .expect("file artifact index metadata")
+            .len(),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_fixed_record_indexes_compact_to_latest_entries() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -1260,6 +1363,106 @@ fn cache_fixed_record_indexes_compact_to_latest_entries() {
             .lookup_parse_artifact(parse_artifact_key)
             .expect("parse artifact lookup succeeds"),
         Some(parse_artifact_latest)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_parse_artifact_index_serializes_independently_opened_same_root_handles() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let workers = 16usize;
+    let barrier = Arc::new(Barrier::new(workers));
+    let mut handles = Vec::new();
+
+    for worker in 0..workers {
+        let worker_cache = PersistCache::open(&root).expect("worker cache opens");
+        let worker_barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            let source = format!("let x = {worker}; in x");
+            let parse_key = test_parse_key(source.as_bytes());
+            let key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+            let value = PersistParseArtifactIndexValue::new(
+                DurableBlake3Hash::for_bytes(format!("parse-artifact-{worker}").as_bytes()),
+                PersistBlobLocation::new(
+                    PERSIST_BLOB_PACK_HEADER_LEN as u64 + worker as u64,
+                    worker as u64,
+                ),
+            );
+
+            worker_barrier.wait();
+            worker_cache
+                .record_parse_artifact(PersistParseArtifactIndexEntry::new(key, value))
+                .expect("parse artifact records");
+            (key, value)
+        }));
+    }
+
+    let mut recorded = Vec::new();
+    for handle in handles {
+        recorded.push(handle.join().expect("worker should not panic"));
+    }
+
+    for (key, value) in &recorded {
+        assert_eq!(
+            cache
+                .lookup_parse_artifact(*key)
+                .expect("parse artifact lookup succeeds"),
+            Some(*value)
+        );
+    }
+    assert_eq!(
+        cache
+            .parse_artifact_index()
+            .latest_entries()
+            .expect("latest parse artifact entries")
+            .len(),
+        workers
+    );
+    assert_eq!(
+        fs::metadata(cache.parse_artifact_index().path())
+            .expect("parse artifact index metadata")
+            .len(),
+        (PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN * workers) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_parse_artifact_index_reports_poisoned_same_root_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = PersistCache::open(&root).expect("second cache opens");
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_parse_artifacts_for_tests()
+            .expect("parse artifact lock acquires");
+        panic!("poison persistent parse artifact write lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+    let value = PersistParseArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"serialized parse artifact"),
+        PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 22),
+    );
+    let error = cache
+        .record_parse_artifact(PersistParseArtifactIndexEntry::new(key, value))
+        .expect_err("poisoned same-root parse artifact lock should reject writes");
+
+    assert!(matches!(
+        error,
+        PersistParseArtifactIndexError::WriteLockPoisoned
+    ));
+    assert_eq!(
+        fs::metadata(cache.parse_artifact_index().path())
+            .expect("parse artifact index metadata")
+            .len(),
+        0
     );
 
     let _ = fs::remove_dir_all(root);

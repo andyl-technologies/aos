@@ -1210,8 +1210,8 @@ alone (`M-1`/`Q-A`).
       `record_file_artifact`/`lookup_file_artifact` wrap explicit writes and
       lookups. This is a simple durable sidecar only; LMDB/redb MVCC tables,
       transactions, automatic materialization writes, parse-cache hit
-      integration, mmap reads, writer batching/locking, GC/repack, Attic
-      transport, and harness proof remain open (`C-13`/`R-10`).
+      integration, mmap reads, cross-process writer coordination, GC/repack,
+      Attic transport, and harness proof remain open (`C-13`/`R-10`).
 - [x] Current parse-artifact bundle payload codec: `ParseArtifactBundle` frames
       the current `resolved.bin`/`ir.bin`/`symbols.bin`/`meta.toml` artifact
       bytes as one versioned little-endian payload, and
@@ -1416,6 +1416,17 @@ alone (`M-1`/`Q-A`).
       filesystem locks/CAS, LMDB/redb node tables, transactionality with
       metadata/value blobs, automatic GC/repack, and loom/harness proof remain
       open (`C-13`/`R-4`/`S-14`).
+- [x] Current same-process same-root artifact-mapping writer lock precursor:
+      independently opened `PersistCache` handles in one process acquire
+      file-artifact and parse-artifact mapping write mutexes from the same
+      process-local weak root-lock registry, so cache-level mapping appends and
+      mapping compaction serialize for a live canonical cache root. Concurrent
+      same-root appends keep every complete mapping record readable, and
+      poisoned live mapping locks are reported before any sidecar write. Raw
+      lower-level `PersistFileArtifactIndex`/`PersistParseArtifactIndex` users,
+      different roots, multi-process writers, two-machine races, durable
+      filesystem locks/CAS, LMDB/redb indexes, automatic GC/repack, and
+      loom/harness proof remain open (`C-13`/`R-4`/`R-10`).
 - [x] Current explicit fixed-record sidecar compaction substrate:
       `PersistBlobIndex`, `PersistFileArtifactIndex`, and
       `PersistParseArtifactIndex` now expose `latest_entries` and
@@ -1425,7 +1436,8 @@ alone (`M-1`/`Q-A`).
       `compact_file_artifact_index`, and `compact_parse_artifact_index` expose
       those operations through the opened cache root. Blob-index compaction
       keeps the repaired newest same-key pointer after stale indexed
-      materialization repair while leaving old pack bytes untouched. This is
+      materialization repair while leaving old pack bytes untouched; file/parse
+      artifact compaction shares same-process same-root mapping locks. This is
       caller-driven maintenance only; automatic compaction/GC policy,
       cross-process writer coordination, LMDB/redb indexes, pack GC/repack,
       mmap reads, Attic transport, and harness proof remain open
@@ -1747,7 +1759,7 @@ alone (`M-1`/`Q-A`).
       `PersistCompactionError` preserving the failing sidecar type. This is a
       caller-driven maintenance helper only; it is sequential rather than
       transactional, requires callers to serialize sidecar writes outside the
-      current node same-root locks, does not rewrite blob packs or drop
+      current artifact/node same-root locks, does not rewrite blob packs or drop
       unreferenced blobs, and still leaves automatic compaction/GC policy,
       cross-process writer coordination, LMDB/redb indexes, pack GC/repack,
       mmap reads, Attic transport, and cached/uncached harness proof open
