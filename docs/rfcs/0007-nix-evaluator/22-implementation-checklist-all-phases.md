@@ -813,17 +813,21 @@ alone (`M-1`/`Q-A`).
       only, not the full P2 cache hashing layer (`S-15`).
 - [x] Current Nix-observed hash leak canary:
       `internal_cache_hash_canaries_do_not_reach_drv_surfaces` evaluates a
-      static derivation through configured parse/persist cache roots while
-      importing a real temporary file. It computes the actual current
-      parse-cache BLAKE3 keys for the root and imported sources, the
-      `ParseFileKey` content hash for the imported file, and the
+      static derivation through configured parse/persist cache roots with
+      eval-cache observation enabled while importing a real temporary file and
+      materializing an effectful forced `builtins.pathExists ./marker` payload.
+      It computes the actual current parse-cache BLAKE3 keys for the root and
+      imported sources, the `ParseFileKey` content hash for the imported file,
+      the persisted force-cache node metadata keys, materialized value hashes,
+      node-trace value hashes and input observation hashes, and the
       evaluator-local xxh3 structural hash for the derivation name string, then
-      checks both recorded `.drv` ATerm bytes and the `.drv` store path for
-      absence of those internal digest renderings, Nix-base32 encodings, and
-      raw digest bytes. It also asserts the configured import parse-cache
-      miss/write and persistent file-artifact mapping occurred. This is a
-      selected current-substrate regression canary, not the full type-enforced
-      P2 leak-invariant harness (`S-15`).
+      checks both recorded
+      `.drv` ATerm bytes and the `.drv` store path for absence of those
+      internal digest renderings, Nix-base32 encodings, and raw digest bytes.
+      It also asserts the configured import parse-cache entry, persistent
+      file-artifact mapping, persistent force value, and effectful force trace
+      occurred. This is a selected current-substrate regression canary, not the
+      full type-enforced P2 leak-invariant harness (`S-15`).
 - [x] Current imported-derivation cache-surface parity canary:
       `configured_import_cache_preserves_drv_surfaces` evaluates the same
       imported-file derivation with import caching disabled, with configured
