@@ -7084,9 +7084,56 @@ fn captured_string_and_path_values_do_not_share_free_variable_hashes() {
     );
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LazyElementListCaptureState {
+    DirectList,
+    ForcedThunk,
+    SuspendedThunk,
+}
+
+fn lazy_element_list_capture_state(
+    evaluator: &TreeWalk,
+    ir: &Ir,
+    value: Value,
+) -> Option<LazyElementListCaptureState> {
+    fn list_has_suspended_element(evaluator: &TreeWalk, value: Value) -> bool {
+        let Ok(list) = evaluator.heap().get_list(value) else {
+            return false;
+        };
+        let Some(element) = list.get(0) else {
+            return false;
+        };
+        evaluator
+            .heap()
+            .get_thunk(element)
+            .map(|element| element.cell().state() == Ok(ThunkState::Suspended))
+            .unwrap_or(false)
+    }
+
+    if list_has_suspended_element(evaluator, value) {
+        return Some(LazyElementListCaptureState::DirectList);
+    }
+    let Ok(thunk) = evaluator.heap().get_thunk(value) else {
+        return None;
+    };
+    match thunk.cell().cached_value() {
+        Ok(Some(cached)) if list_has_suspended_element(evaluator, cached) => {
+            Some(LazyElementListCaptureState::ForcedThunk)
+        }
+        Ok(None) => (thunk.cell().state() == Ok(ThunkState::Suspended)
+            && thunk
+                .body()
+                .and_then(|body| ir.arena.node(body))
+                .map(|node| node.kind == IrKind::List)
+                .unwrap_or(false))
+        .then_some(LazyElementListCaptureState::SuspendedThunk),
+        Ok(Some(_)) | Err(_) => None,
+    }
+}
+
 #[test]
 fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
-    let source = "let f = x: { a = builtins.length x == 1; }; in { a = (f [ (1 / 0) ]).a; }";
+    let source = "let f = x: { a = builtins.length x == 1; }; in f [ (1 / 0) ]";
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
@@ -7105,6 +7152,46 @@ fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
             .expect("attrset is heap-owned");
         attrs.get(a).expect("a exists")
     };
+    let captured_x = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a node thunk");
+        let env = thunk.env().expect("a captures x");
+        let mut captured = None;
+        for frame in env.frames() {
+            for slot in 0..8 {
+                let Ok(value) = frame.get(slot) else {
+                    continue;
+                };
+                if lazy_element_list_capture_state(&evaluator, &ir, value).is_some() {
+                    captured = Some(value);
+                    break;
+                }
+            }
+        }
+        captured.expect("x lazy-element list capture exists")
+    };
+    let captured_state = lazy_element_list_capture_state(&evaluator, &ir, captured_x)
+        .expect("x lazy-element list capture has a state");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "captured lazy-element lists must not be hashed into demand keys"
+    );
+    assert_eq!(
+        lazy_element_list_capture_state(&evaluator, &ir, captured_x),
+        Some(captured_state),
+        "probing the force-cache subject must not change captured lazy-element lists"
+    );
+
     let forced = evaluator
         .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("captured unsupported heap value force succeeds");
