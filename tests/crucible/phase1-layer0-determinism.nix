@@ -13,7 +13,12 @@
   qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase1.qemuMultiVcpuLaunch";
-    taskIds = ["T-DET-29"];
+    taskIds = ["T-DET-29" "T-DET-30"];
+  };
+  qemuPluginPreemption = import ./phase2-plugin-preemption.nix {
+    inherit pkgs lib;
+    attrPath = "checks.crucible.phase1.qemuPluginPreemption";
+    taskIds = ["T-DET-30"];
   };
   timeContractADeterminism = import ./phase1-time-contract-a-determinism.nix {inherit pkgs lib;};
   timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix {inherit pkgs lib;};
@@ -204,11 +209,19 @@
         label = "phase1 exposes multi-vCPU launch evidence";
         needle = "qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix";
       }
+      {
+        label = "phase1 exposes deterministic IPI evidence";
+        needle = "qemuPluginPreemption = import ./phase2-plugin-preemption.nix";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
       {
         label = "T-DET-10 checklist complete";
         needle = "- [x] **T-DET-10**";
+      }
+      {
+        label = "T-DET-30 checklist complete";
+        needle = "- [x] **T-DET-30**";
       }
     ];
 in
@@ -307,16 +320,32 @@ in
               "recorded_inputs_enforced=monotonic-within-run"
             require_leaf ${qemuMultiVcpuLaunch} \
               "gate=gate:layer0-determinism" \
-              "tasks=T-DET-29" \
+              "tasks=T-DET-29,T-DET-30" \
               "accelerator=tcg,thread=single" \
               "smp_vcpus=N>=1" \
               "rr_switch_quantum=content-addressed-node-icount" \
               "rr_vcpu_rotation=ascending-vcpu-id" \
+              "cpu_model_scope=uniform-all-vcpus" \
+              "per_vcpu_tsc_source=node-icount" \
+              "per_vcpu_rng_source=scenario-seed-and-run-seed" \
+              "per_vcpu_rng_timing_axis=node-icount" \
+              "vcpu_topology=fixed-at-genesis" \
+              "runtime_cpu_hotplug=false" \
+              "secondary_vcpu_bringup=rr-tcg-icount-deterministic" \
               "rejects_mttcg=true" \
               "rejects_unpinned_rr_switch_quantum=true" \
               "rejects_adaptive_rr_quantum=true" \
               "rejects_realtime_switching=true" \
-              "scenario_hash_folds=smp_vcpus,rr_switch_quantum,rr_vcpu_rotation"
+              "scenario_hash_folds=smp_vcpus,rr_switch_quantum,rr_vcpu_rotation,cpu_model,per_vcpu_entropy,vcpu_topology"
+            require_leaf ${qemuPluginPreemption} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-30" \
+              "preemption_capability=qemu_plugin_inject_preemption" \
+              "dispatch=vCPU-switch-or-interrupt-at-commanded-icount" \
+              "deterministic_ipi_delivery=sender-icount-plus-fixed-latency-next-rr-switch" \
+              "ipi_latency_model=fixed-node-icount" \
+              "ipi_delivery_path=preemption-injector-commanded-icount" \
+              "ipi_realtime_delivery=false"
             require_leaf ${timeContractADeterminism} \
               "gate=gate:layer0-determinism" \
               "tasks=T-TIME-8" \
@@ -398,7 +427,7 @@ in
             reduce_twice_digest_compare=true
             scheduler_ordering_properties=true
             decision_stream_entity_addition_stability=true
-            elimination_sources=E1,E2,E3,E4,E5,E6,E7,E8,E9,E10,E13,E14,E15,E16,E17
+            elimination_sources=E1,E2,E3,E4,E5,E6,E7,E8,E9,E10,E13,E14,E15,E16,E17,E22,E23,E24
             evidence.E1=deterministicLaunch.cpu+guestEntropyLaunch.cpu_entropy_features
             evidence.E2=noWarpWithPlugin.wall_clock_warp_under_time_control
             evidence.E3=icountNoRealtime.realtime_deadline_in_precise_budget
@@ -414,7 +443,10 @@ in
             evidence.E15=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E16=deterministicLaunch.machine_reset+ram_reset
             evidence.E17=deterministicLaunch.input_policy+contractAIsolation.recorded_inputs_enforced
-            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,qemuDeterministicGetrandom,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,qemuMultiVcpuLaunch,timeContractADeterminism,timeMultiVcpuAggregateClock,clockDeadline,noWarpWithPlugin,pluginTimeAdvance,icountNoRealtime,blockRtcRead,singleVmFingerprint
+            evidence.E22=qemuPluginPreemption.deterministic_ipi_delivery+ipi_delivery_path+ipi_realtime_delivery
+            evidence.E23=qemuMultiVcpuLaunch.cpu_model_scope+per_vcpu_tsc_source+per_vcpu_rng_source+per_vcpu_rng_timing_axis+qemuDeterministicEntropy.qemu_seed_option_controls_guest_random+qemuDeterministicGetrandom.qemu_guest_getrandom_sim_unseeded_policy
+            evidence.E24=qemuMultiVcpuLaunch.vcpu_topology+runtime_cpu_hotplug+secondary_vcpu_bringup
+            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,qemuDeterministicGetrandom,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,qemuMultiVcpuLaunch,qemuPluginPreemption,timeContractADeterminism,timeMultiVcpuAggregateClock,clockDeadline,noWarpWithPlugin,pluginTimeAdvance,icountNoRealtime,blockRtcRead,singleVmFingerprint
             RESULT
           '';
         }

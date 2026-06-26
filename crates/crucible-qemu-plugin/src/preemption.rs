@@ -11,7 +11,9 @@ use std::os::raw::{c_int, c_uint};
 
 use thiserror::Error;
 
-use crate::{RoundRobinError, RoundRobinRunState, RoundRobinTurn, SchedulerCeiling};
+use crate::{
+    RoundRobinConfig, RoundRobinError, RoundRobinRunState, RoundRobinTurn, SchedulerCeiling,
+};
 
 /// Required QEMU plugin extension symbol for commanded preemption injection.
 pub const QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL: &str = "qemu_plugin_inject_preemption";
@@ -21,6 +23,63 @@ pub const QEMU_PREEMPTION_KIND_VCPU_SWITCH: c_uint = 1;
 pub const QEMU_PREEMPTION_KIND_INTERRUPT_AT: c_uint = 2;
 /// Unused raw argument value for command forms with fewer than three operands.
 pub const QEMU_PREEMPTION_UNUSED_ARG: u32 = 0;
+
+/// Plans an inter-vCPU interrupt on the fixed node-icount round-robin axis.
+///
+/// The sender observes the interrupt request at `send_icount`; the target sees it
+/// no earlier than `send_icount + fixed_latency_icount`, rounded up to the next
+/// `rr_switch_quantum` boundary. The resulting [`PluginPreemptionDecision`] uses
+/// the same commanded-icount injection path as other scheduler preemptions.
+///
+/// # Errors
+///
+/// Returns [`PreemptionError`] when either vCPU id is outside `round_robin`,
+/// when the sender and target are the same vCPU, or when the delivery icount
+/// cannot be represented.
+pub fn plan_deterministic_ipi_delivery(
+    round_robin: RoundRobinConfig,
+    send_icount: u64,
+    sender_vcpu: u32,
+    target_vcpu: u32,
+    fixed_latency_icount: u64,
+    irq: u32,
+) -> Result<DeterministicIpiDelivery, PreemptionError> {
+    validate_vcpu(sender_vcpu, round_robin.vcpu_count())?;
+    validate_vcpu(target_vcpu, round_robin.vcpu_count())?;
+    if sender_vcpu == target_vcpu {
+        return Err(PreemptionError::SameVcpuIpi {
+            vcpu_id: sender_vcpu,
+        });
+    }
+
+    let earliest_delivery_icount = send_icount.checked_add(fixed_latency_icount).ok_or(
+        PreemptionError::IpiDeliveryIcountOverflow {
+            send_icount,
+            fixed_latency_icount,
+            rr_switch_quantum: round_robin.rr_switch_quantum(),
+        },
+    )?;
+    let delivery_icount =
+        next_round_robin_switch_boundary(earliest_delivery_icount, round_robin.rr_switch_quantum())
+            .ok_or(PreemptionError::IpiDeliveryIcountOverflow {
+                send_icount,
+                fixed_latency_icount,
+                rr_switch_quantum: round_robin.rr_switch_quantum(),
+            })?;
+    let decision = PluginPreemptionDecision::interrupt_at(delivery_icount, target_vcpu, irq);
+
+    Ok(DeterministicIpiDelivery {
+        send_icount,
+        sender_vcpu,
+        target_vcpu,
+        fixed_latency_icount,
+        earliest_delivery_icount,
+        delivery_icount,
+        rr_switch_quantum: round_robin.rr_switch_quantum(),
+        irq,
+        decision,
+    })
+}
 
 /// QEMU's commanded preemption injection function.
 ///
@@ -35,6 +94,76 @@ pub type QemuInjectPreemptionFn = extern "C" fn(u64, c_uint, u32, u32, u32) -> c
 pub struct PreemptionWindow {
     deadline_icount: u64,
     ceiling_icount: u64,
+}
+
+/// Deterministic inter-vCPU interrupt delivery plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeterministicIpiDelivery {
+    send_icount: u64,
+    sender_vcpu: u32,
+    target_vcpu: u32,
+    fixed_latency_icount: u64,
+    earliest_delivery_icount: u64,
+    delivery_icount: u64,
+    rr_switch_quantum: u64,
+    irq: u32,
+    decision: PluginPreemptionDecision,
+}
+
+impl DeterministicIpiDelivery {
+    /// Returns the node icount at which the sender emitted the IPI.
+    #[must_use]
+    pub const fn send_icount(self) -> u64 {
+        self.send_icount
+    }
+
+    /// Returns the vCPU that emitted the IPI.
+    #[must_use]
+    pub const fn sender_vcpu(self) -> u32 {
+        self.sender_vcpu
+    }
+
+    /// Returns the vCPU that receives the IPI.
+    #[must_use]
+    pub const fn target_vcpu(self) -> u32 {
+        self.target_vcpu
+    }
+
+    /// Returns the fixed modeled latency added to the sender icount.
+    #[must_use]
+    pub const fn fixed_latency_icount(self) -> u64 {
+        self.fixed_latency_icount
+    }
+
+    /// Returns the earliest possible delivery icount before RR-boundary rounding.
+    #[must_use]
+    pub const fn earliest_delivery_icount(self) -> u64 {
+        self.earliest_delivery_icount
+    }
+
+    /// Returns the RR-boundary icount at which the IPI is delivered.
+    #[must_use]
+    pub const fn delivery_icount(self) -> u64 {
+        self.delivery_icount
+    }
+
+    /// Returns the fixed RR switch quantum used for delivery rounding.
+    #[must_use]
+    pub const fn rr_switch_quantum(self) -> u64 {
+        self.rr_switch_quantum
+    }
+
+    /// Returns the interrupt vector delivered to QEMU.
+    #[must_use]
+    pub const fn irq(self) -> u32 {
+        self.irq
+    }
+
+    /// Returns the scheduler-commanded preemption decision for this delivery.
+    #[must_use]
+    pub const fn decision(self) -> PluginPreemptionDecision {
+        self.decision
+    }
 }
 
 impl PreemptionWindow {
@@ -400,6 +529,24 @@ pub enum PreemptionError {
         /// Rejected source and destination vCPU.
         vcpu_id: u32,
     },
+    /// An inter-vCPU IPI targeted the sender.
+    #[error("inter-vCPU IPI must target a different vCPU, got vCPU {vcpu_id}")]
+    SameVcpuIpi {
+        /// Rejected sender and target vCPU.
+        vcpu_id: u32,
+    },
+    /// The modeled deterministic IPI delivery icount overflowed.
+    #[error(
+        "IPI delivery icount overflowed for send {send_icount}, latency {fixed_latency_icount}, quantum {rr_switch_quantum}"
+    )]
+    IpiDeliveryIcountOverflow {
+        /// Sender-observed node icount.
+        send_icount: u64,
+        /// Fixed modeled IPI latency.
+        fixed_latency_icount: u64,
+        /// Fixed RR switch quantum used for boundary rounding.
+        rr_switch_quantum: u64,
+    },
     /// QEMU rejected the preemption command.
     #[error("QEMU rejected preemption at {at_icount} with kind {raw_kind} and status {status}")]
     CapabilityRejected {
@@ -425,13 +572,20 @@ fn validate_vcpu(vcpu_id: u32, vcpu_count: u32) -> Result<(), PreemptionError> {
     Ok(())
 }
 
+fn next_round_robin_switch_boundary(earliest_icount: u64, rr_switch_quantum: u64) -> Option<u64> {
+    let remainder = earliest_icount % rr_switch_quantum;
+    if remainder == 0 {
+        Some(earliest_icount)
+    } else {
+        earliest_icount.checked_add(rr_switch_quantum - remainder)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use std::sync::{Mutex, MutexGuard};
-
-    use crate::RoundRobinConfig;
 
     static TEST_PREEMPTION_CALLS: Mutex<Vec<QemuPreemptionCommand>> = Mutex::new(Vec::new());
     static TEST_PREEMPTION_SERIAL: Mutex<()> = Mutex::new(());
@@ -514,6 +668,78 @@ mod tests {
             .unwrap_or_else(|error| panic!("round-robin config should validate: {error}"));
         RoundRobinRunState::new(config, 0)
             .unwrap_or_else(|error| panic!("initial vCPU should validate: {error}"))
+    }
+
+    fn four_vcpu_round_robin() -> RoundRobinConfig {
+        RoundRobinConfig::new(4, 16)
+            .unwrap_or_else(|error| panic!("round-robin config should validate: {error}"))
+    }
+
+    #[test]
+    fn deterministic_ipi_delivery_uses_fixed_latency_and_next_rr_switch() {
+        let delivery = plan_deterministic_ipi_delivery(four_vcpu_round_robin(), 18, 0, 2, 5, 0xf0)
+            .unwrap_or_else(|error| panic!("IPI delivery should plan: {error}"));
+
+        assert_eq!(delivery.send_icount(), 18);
+        assert_eq!(delivery.sender_vcpu(), 0);
+        assert_eq!(delivery.target_vcpu(), 2);
+        assert_eq!(delivery.fixed_latency_icount(), 5);
+        assert_eq!(delivery.earliest_delivery_icount(), 23);
+        assert_eq!(delivery.delivery_icount(), 32);
+        assert_eq!(delivery.rr_switch_quantum(), 16);
+        assert_eq!(delivery.irq(), 0xf0);
+        assert_eq!(
+            delivery.decision(),
+            PluginPreemptionDecision::interrupt_at(32, 2, 0xf0)
+        );
+
+        let boundary_delivery =
+            plan_deterministic_ipi_delivery(four_vcpu_round_robin(), 24, 1, 3, 8, 0xf1)
+                .unwrap_or_else(|error| panic!("IPI boundary delivery should plan: {error}"));
+        assert_eq!(boundary_delivery.earliest_delivery_icount(), 32);
+        assert_eq!(boundary_delivery.delivery_icount(), 32);
+        assert_eq!(
+            boundary_delivery.decision(),
+            PluginPreemptionDecision::interrupt_at(32, 3, 0xf1)
+        );
+    }
+
+    #[test]
+    fn deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow() {
+        assert_eq!(
+            plan_deterministic_ipi_delivery(four_vcpu_round_robin(), 18, 4, 2, 5, 0xf0),
+            Err(PreemptionError::VcpuOutOfRange {
+                vcpu_id: 4,
+                vcpu_count: 4,
+            })
+        );
+        assert_eq!(
+            plan_deterministic_ipi_delivery(four_vcpu_round_robin(), 18, 0, 4, 5, 0xf0),
+            Err(PreemptionError::VcpuOutOfRange {
+                vcpu_id: 4,
+                vcpu_count: 4,
+            })
+        );
+        assert_eq!(
+            plan_deterministic_ipi_delivery(four_vcpu_round_robin(), 18, 1, 1, 5, 0xf0),
+            Err(PreemptionError::SameVcpuIpi { vcpu_id: 1 })
+        );
+        assert_eq!(
+            plan_deterministic_ipi_delivery(four_vcpu_round_robin(), u64::MAX, 0, 1, 1, 0xf0),
+            Err(PreemptionError::IpiDeliveryIcountOverflow {
+                send_icount: u64::MAX,
+                fixed_latency_icount: 1,
+                rr_switch_quantum: 16,
+            })
+        );
+        assert_eq!(
+            plan_deterministic_ipi_delivery(four_vcpu_round_robin(), u64::MAX - 1, 0, 1, 0, 0xf0),
+            Err(PreemptionError::IpiDeliveryIcountOverflow {
+                send_icount: u64::MAX - 1,
+                fixed_latency_icount: 0,
+                rr_switch_quantum: 16,
+            })
+        );
     }
 
     #[test]

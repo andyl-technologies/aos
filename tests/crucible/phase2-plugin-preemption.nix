@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginPreemption",
-  taskIds ? ["T-PLUG-25"],
+  taskIds ? ["T-PLUG-25" "T-DET-30"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -16,6 +16,7 @@
   pluginRoundRobin = builtins.readFile ../../crates/crucible-qemu-plugin/src/round_robin.rs;
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
   pluginInertness = builtins.readFile ../../crates/crucible-qemu-plugin/src/inertness.rs;
+  determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   patchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -47,7 +48,21 @@
     requirements;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismSpec [
+      {
+        label = "T-DET-30 checklist complete";
+        needle = "- [x] **T-DET-30**";
+      }
+      {
+        label = "T-DET-30 completion note names preemption check";
+        needle = "`checks.crucible.phase2.qemuPluginPreemption`";
+      }
+      {
+        label = "T-DET-30 completion note names fixed IPI latency";
+        needle = "fixed modeled IPI latency";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
         label = "T-PLUG-25 checklist complete";
         needle = "- [x] **T-PLUG-25**";
@@ -87,6 +102,14 @@
       {
         label = "preemption API re-exported";
         needle = "PluginPreemptionInjector";
+      }
+      {
+        label = "deterministic IPI planner re-exported";
+        needle = "plan_deterministic_ipi_delivery";
+      }
+      {
+        label = "deterministic IPI plan type re-exported";
+        needle = "DeterministicIpiDelivery";
       }
       {
         label = "module map documents preemption";
@@ -131,6 +154,26 @@
         needle = "pub struct PreemptionWindow";
       }
       {
+        label = "deterministic IPI planner";
+        needle = "pub fn plan_deterministic_ipi_delivery";
+      }
+      {
+        label = "deterministic IPI delivery plan";
+        needle = "pub struct DeterministicIpiDelivery";
+      }
+      {
+        label = "IPI boundary rounding helper";
+        needle = "fn next_round_robin_switch_boundary";
+      }
+      {
+        label = "same-vCPU IPI rejection";
+        needle = "SameVcpuIpi";
+      }
+      {
+        label = "IPI delivery overflow rejection";
+        needle = "IpiDeliveryIcountOverflow";
+      }
+      {
         label = "before-deadline failure";
         needle = "CommandBeforeDeadline";
       }
@@ -165,6 +208,14 @@
       {
         label = "rejection localization test";
         needle = "preemption_injector_localizes_malformed_or_rejected_commands";
+      }
+      {
+        label = "deterministic IPI delivery test";
+        needle = "deterministic_ipi_delivery_uses_fixed_latency_and_next_rr_switch";
+      }
+      {
+        label = "deterministic IPI error test";
+        needle = "deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/round_robin.rs" pluginRoundRobin [
@@ -319,6 +370,12 @@ in
               preemption::tests::preemption_injector_localizes_malformed_or_rejected_commands \
               preemption::tests::preemption_injector_localizes_malformed_or_rejected_commands
             run_exact_test \
+              preemption::tests::deterministic_ipi_delivery_uses_fixed_latency_and_next_rr_switch \
+              preemption::tests::deterministic_ipi_delivery_uses_fixed_latency_and_next_rr_switch
+            run_exact_test \
+              preemption::tests::deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow \
+              preemption::tests::deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow
+            run_exact_test \
               abi::tests::abi_install_requires_preemption_injection_symbol \
               abi::tests::abi_install_requires_preemption_injection_symbol
           '';
@@ -332,10 +389,15 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            gate=gate:layer0-determinism
             preemption_capability=qemu_plugin_inject_preemption
             command_window=[deadline,ceiling]
             out_of_window_policy=fail-loud-no-clamp-no-defer
             dispatch=vCPU-switch-or-interrupt-at-commanded-icount
+            deterministic_ipi_delivery=sender-icount-plus-fixed-latency-next-rr-switch
+            ipi_latency_model=fixed-node-icount
+            ipi_delivery_path=preemption-injector-commanded-icount
+            ipi_realtime_delivery=false
             RESULT
           '';
         }
