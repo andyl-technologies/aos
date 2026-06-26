@@ -177,6 +177,7 @@ in {
           "T-DET-21"
           "T-DET-27"
           "T-HARN-12"
+          "T-HARN-13"
           "T-EXEC-4"
           "T-EXEC-11"
           "T-TEMP-3"
@@ -200,6 +201,7 @@ in {
           "T-DET-20"
           "T-HARN-9"
           "T-HARN-10"
+          "T-HARN-13"
           "T-EXEC-12"
         ];
       };
@@ -364,8 +366,8 @@ in {
         gateName = "gate:replay-oracle";
         owner = "crucible";
         phase = "phase6";
-        taskIds = ["T-PLAN-3" "T-HARN-12" "T-HARN-13"];
-        reason = "search-time replay oracle gate is intentionally pending";
+        taskIds = ["T-PLAN-3" "T-HARN-12"];
+        reason = "advanced replay oracle workload gate is intentionally pending";
       };
     };
   };

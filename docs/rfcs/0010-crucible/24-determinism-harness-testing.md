@@ -906,9 +906,23 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [x] **T-HARN-12** Implement the replay oracle and `gate:replay-oracle`
   (fat-hash == thin-from-ancestor-hash over a fixed corpus, canonical-state hash
   excluding observational entries). — satisfies [HARN-12]; spec §6.
-- [ ] **T-HARN-13** Wire random in-search oracle sampling: each materialized fat
+- [x] **T-HARN-13** Wire random in-search oracle sampling: each materialized fat
   checkpoint is also reconstructed thin and compared at a configurable rate during
   search/fuzzing; mismatch triggers bisection. — satisfies [HARN-13]; spec §6.
+  Completed by `crucible_harness::replay_oracle`'s `ReplayOracleSamplingConfig`,
+  `ReplayOracleSearchMaterialization`, `ReplayOracleSearchSamplingReport`,
+  `check_sampled_search_replay_oracle`, `SearchReplayOracleSamplingConfig`,
+  `TemporalGraph::search_with_replay_oracle_sampling`,
+  `EngineError::SearchReplayOracleMismatch`,
+  `check_sampled_search_replay_oracle_with_bisection`,
+  `checks.crucible.phase1.gates.replayOracle`, and
+  `checks.crucible.phase1.gates.divergenceBisect`: active graph search samples
+  actual fat materializations inline, reconstructs each selected checkpoint
+  through thin replay, compares the canonical fat/thin case at the configured
+  deterministic sampling rate, rejects invalid rates, and surfaces sampled
+  mismatches as hard failures with bisection requests; the divergence gate
+  localizes the sampled fat/thin mismatch to an exact icount/decision when
+  diagnostic streams are available.
 - [x] **T-HARN-14** Implement `gate:scheduler-liveness` (every generated scenario
   reaches Quiescent/TimeLimitReached within a quantum budget; no held lock spans a
   node advance). — satisfies [HARN-18]; spec §1.2.
