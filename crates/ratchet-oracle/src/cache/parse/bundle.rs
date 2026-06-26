@@ -64,17 +64,19 @@ impl ParseArtifactBundle {
         ParseCacheMeta::from_toml(text)
     }
 
-    /// Validates bundled metadata against the bundled symbol and IR artifacts.
+    /// Validates bundled metadata against the bundled parser artifacts.
     ///
     /// The metadata must decode, carry `expected_schema_version`, and report
     /// symbol and lowered-IR node counts that match the decoded `symbols.bin`
-    /// and `ir.bin` payloads.
+    /// and `ir.bin` payloads. The bundled `resolved.bin` artifact must also
+    /// decode against the bundled symbols before any hydrated parse-cache entry
+    /// is written.
     ///
     /// # Errors
     ///
     /// Returns [`ParseCacheError`] if the metadata is malformed, carries a
-    /// different schema version, the symbols or IR artifact cannot be decoded,
-    /// or the decoded artifact counts do not match metadata.
+    /// different schema version, a bundled artifact cannot be decoded, or the
+    /// decoded artifact counts do not match metadata.
     pub fn validate_meta(
         &self,
         expected_schema_version: u32,
@@ -107,7 +109,13 @@ impl ParseArtifactBundle {
             });
         }
 
-        let ir = decode_lowered_ir(&self.ir, symbols).map_err(|message| {
+        let resolved = decode_resolved_ir(&self.resolved, symbols).map_err(|message| {
+            ParseCacheError::DecodeArtifactBundle {
+                message: format!("failed to decode bundled resolved.bin: {message}"),
+            }
+        })?;
+
+        let ir = decode_lowered_ir(&self.ir, resolved.symbols).map_err(|message| {
             ParseCacheError::DecodeArtifactBundle {
                 message: format!("failed to decode bundled ir.bin: {message}"),
             }

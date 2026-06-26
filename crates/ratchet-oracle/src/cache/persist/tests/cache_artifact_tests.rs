@@ -572,6 +572,92 @@ fn cache_file_artifact_hydration_validates_bundle_before_write() {
 }
 
 #[test]
+fn cache_file_artifact_hydration_rejects_malformed_resolved_before_write() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let malformed_bundle = bundle_with_resolved(&bundle, b"not a resolved artifact".to_vec());
+    let payload = malformed_bundle.encode().expect("bundle encodes");
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let materialized = persist
+        .materialize_file_artifact(
+            &file_key,
+            parsed.key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("bundle materializes");
+    let Some(index_value) = materialized.index_value() else {
+        panic!("bundle should materialize");
+    };
+    let hydrated = ParseCacheEntry::new(root.join("hydrated-entry"));
+
+    let error = persist
+        .hydrate_file_artifact_bundle(index_value, &hydrated)
+        .expect_err("malformed resolved artifact fails hydration");
+
+    assert!(matches!(
+        error,
+        PersistFileArtifactHydrationError::Validate {
+            source: ParseCacheError::DecodeArtifactBundle { message },
+        } if message.contains("resolved.bin")
+    ));
+    assert!(!hydrated.dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_parse_artifact_hydration_rejects_malformed_resolved_before_write() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let malformed_bundle = bundle_with_resolved(&bundle, b"not a resolved artifact".to_vec());
+    let payload = malformed_bundle.encode().expect("bundle encodes");
+    let materialized = persist
+        .materialize_parse_artifact(parsed.key, &payload, MaterializationDecision::Materialize)
+        .expect("bundle materializes");
+    let Some(index_value) = materialized.index_value() else {
+        panic!("bundle should materialize");
+    };
+    let hydrated = ParseCacheEntry::new(root.join("hydrated-parse-entry"));
+
+    let error = persist
+        .hydrate_parse_artifact_bundle(index_value, &hydrated)
+        .expect_err("malformed resolved artifact fails hydration");
+
+    assert!(matches!(
+        error,
+        PersistParseArtifactHydrationError::Validate {
+            source: ParseCacheError::DecodeArtifactBundle { message },
+        } if message.contains("resolved.bin")
+    ));
+    assert!(!hydrated.dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_file_artifact_hydration_rejects_key_mismatch_before_read() {
     let root = temp_root();
     let persist = PersistCache::open(&root).expect("cache opens");

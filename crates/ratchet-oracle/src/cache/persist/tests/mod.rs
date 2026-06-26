@@ -47,6 +47,18 @@ fn bundle_with_meta(
     )
 }
 
+fn bundle_with_resolved(
+    bundle: &ParseArtifactBundle,
+    resolved: impl Into<Vec<u8>>,
+) -> ParseArtifactBundle {
+    ParseArtifactBundle::new(
+        resolved,
+        bundle.ir_bytes(),
+        bundle.symbols_bytes(),
+        bundle.meta_toml_bytes(),
+    )
+}
+
 fn profitable_materialization_signals(
     likely_redemanded_across_runs: bool,
 ) -> MaterializationSignals {

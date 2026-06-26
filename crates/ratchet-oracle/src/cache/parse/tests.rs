@@ -61,6 +61,18 @@ fn bundle_with_meta(bundle: &ParseArtifactBundle, meta: ParseCacheMeta) -> Parse
     )
 }
 
+fn bundle_with_resolved(
+    bundle: &ParseArtifactBundle,
+    resolved: impl Into<Vec<u8>>,
+) -> ParseArtifactBundle {
+    ParseArtifactBundle::new(
+        resolved,
+        bundle.ir_bytes(),
+        bundle.symbols_bytes(),
+        bundle.meta_toml_bytes(),
+    )
+}
+
 fn lowered_ir_for_source(source: &str) -> Ir {
     let resolved = resolve(parse_str(source).expect("source parses")).expect("scope resolves");
     nix_lower(file_local_resolved(&resolved).expect("symbols remap")).expect("resolved AST lowers")
@@ -558,6 +570,73 @@ fn artifact_bundle_validated_write_rejects_node_count_mismatch_before_writing() 
         ParseCacheError::DecodeMeta { message } if message.contains("node_count")
     ));
     assert!(!hydrated.dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn artifact_bundle_validated_write_rejects_malformed_resolved_before_writing() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let malformed_bundle = bundle_with_resolved(&bundle, b"not a resolved artifact".to_vec());
+    let hydrated = ParseCacheEntry::new(root.join("validated-entry"));
+
+    let error = hydrated
+        .write_artifact_bundle_validated(&malformed_bundle, cache.schema_version())
+        .expect_err("malformed resolved artifact errors");
+
+    assert!(matches!(
+        error,
+        ParseCacheError::DecodeArtifactBundle { message }
+            if message.contains("resolved.bin")
+    ));
+    assert!(!hydrated.dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn artifact_bundle_validated_write_preserves_existing_entry_after_malformed_resolved() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let malformed_bundle = bundle_with_resolved(&bundle, b"not a resolved artifact".to_vec());
+    let hydrated = ParseCacheEntry::new(root.join("validated-entry"));
+    hydrated
+        .write_artifact_bundle_validated(&bundle, cache.schema_version())
+        .expect("valid bundle hydrates");
+
+    let error = hydrated
+        .write_artifact_bundle_validated(&malformed_bundle, cache.schema_version())
+        .expect_err("malformed resolved artifact errors");
+
+    assert!(matches!(
+        error,
+        ParseCacheError::DecodeArtifactBundle { message }
+            if message.contains("resolved.bin")
+    ));
+    assert!(hydrated.is_complete());
+    assert_eq!(
+        hydrated
+            .read_artifact_bundle()
+            .expect("existing bundle remains readable"),
+        bundle
+    );
 
     let _ = fs::remove_dir_all(root);
 }

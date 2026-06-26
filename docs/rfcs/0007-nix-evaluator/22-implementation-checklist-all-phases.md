@@ -1134,15 +1134,16 @@ alone (`M-1`/`Q-A`).
       types, and out-of-range integers. This is metadata validation only;
       artifact semantic validation, keyed hydration enforcement, durable index
       lookup, cache-hit integration, and harness proof remain open (`C-13`).
-- [x] Current metadata/count-validated bundle hydration writer:
+- [x] Current metadata/count/resolved-artifact validated bundle hydration writer:
       `ParseCacheEntry::write_artifact_bundle_validated` uses
       `ParseArtifactBundle::validate_meta` to decode bundled metadata, check
-      `schema_version`, decode the bundled symbols/IR artifacts, and cross-check
-      `symbol_count`/`node_count` before creating or overwriting entry files,
-      then delegates successful writes to the existing metadata-last bundle
-      writer. This is metadata and artifact-count validation only; full artifact
-      semantic validation beyond existing decoders, keyed hydration enforcement,
-      durable index lookup, cache-hit integration, and harness proof remain open
+      `schema_version`, decode the bundled `resolved.bin`/`symbols.bin`/
+      `ir.bin` artifacts, and cross-check `symbol_count`/`node_count` before
+      creating or overwriting entry files, then delegates successful writes to
+      the existing metadata-last bundle writer. This is decoder-backed
+      artifact-shape and count validation only; full artifact semantic
+      validation beyond existing decoders, keyed hydration enforcement, durable
+      index lookup, cache-hit integration, and harness proof remain open
       (`C-13`).
 - [x] Current parse-artifact bundle hydration adapter:
       `ParseCacheEntry::write_artifact_bundle` writes a raw bundle back into an
@@ -1652,12 +1653,13 @@ alone (`M-1`/`Q-A`).
 - [x] Current explicit file-artifact bundle hydration adapter:
       `PersistCache::hydrate_file_artifact_bundle` reads a typed `files/`
       artifact value, decodes the `ParseArtifactBundle` payload, validates
-      bundled metadata/schema/counts through `ParseArtifactBundle::validate_meta`,
-      and writes it into a caller-supplied `ParseCacheEntry` only after
-      validation succeeds. This is explicit validated hydration only; automatic
-      cache-hit selection, source/key equality proof, mmap reads, full artifact
-      semantic validation beyond existing decoders, GC/repack, and harness
-      proof remain open (`C-13`).
+      bundled metadata/schema/counts and `resolved.bin`/`symbols.bin`/`ir.bin`
+      decoder shape through `ParseArtifactBundle::validate_meta`, and writes it
+      into a caller-supplied `ParseCacheEntry` only after validation succeeds.
+      This is explicit validated hydration only; automatic cache-hit selection,
+      source/key equality proof, mmap reads, full artifact semantic validation
+      beyond existing decoders, GC/repack, and harness proof remain open
+      (`C-13`).
 - [x] Current keyed file-artifact bundle hydration adapter:
       `PersistCache::hydrate_file_artifact_bundle_for_key` derives the expected
       `PersistFileArtifactKey` from the requested `ParseFileKey`/`ParseCacheKey`,
@@ -1730,11 +1732,13 @@ alone (`M-1`/`Q-A`).
       `PersistCache::load_parse_cache_bytes_from_index` materialize and hydrate
       caller-supplied source bytes through this parse-artifact index.
       Materialization rejects entries whose normal parse-cache directory key
-      does not match the supplied `ParseCacheKey`. This is cache API substrate
-      only; evaluator integration is covered by the raw native expression row
-      below. Source equality proof beyond the parse-cache entry directory key,
-      mmap reads, full artifact semantic validation beyond existing decoders,
-      GC/repack, and harness proof remain open
+      does not match the supplied `ParseCacheKey`, and hydration validates
+      bundled metadata/schema/counts plus `resolved.bin`/`symbols.bin`/`ir.bin`
+      decoder shape before writing the target entry. This is cache API
+      substrate only; evaluator integration is covered by the raw native
+      expression row below. Source equality proof beyond the parse-cache entry
+      directory key, mmap reads, full artifact semantic validation beyond
+      existing decoders, GC/repack, and harness proof remain open
       (`C-13`/`C-14`/`R-10`).
 - [x] Current ordinary filesystem import durable parse-cache hit selection:
       `TreeWalkOptions::set_persist_cache_root` configures an optional
