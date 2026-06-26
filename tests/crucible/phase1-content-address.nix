@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.contentAddress",
-  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"],
+  taskIds ? ["T-HARN-11" "T-PAT-4" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -22,6 +22,7 @@
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   temporalGraph = builtins.readFile ../../docs/rfcs/0010-crucible/07-temporal-graph.md;
+  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -985,6 +986,10 @@
         needle = "\"T-HARN-11\"";
       }
       {
+        label = "phase1 content-address lists T-PAT-4";
+        needle = "\"T-PAT-4\"";
+      }
+      {
         label = "phase1 content-address lists T-TEMP-1";
         needle = "\"T-TEMP-1\"";
       }
@@ -1132,6 +1137,44 @@
         label = "T-TEMP-11 completion names content-address gate";
         needle = "`checks.crucible.phase1.gates.contentAddress`";
       }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+      {
+        label = "T-PAT-4 checklist complete";
+        needle = "- [x] **T-PAT-4**";
+      }
+      {
+        label = "T-PAT-4 completion names checkpoint";
+        needle = "`crucible::Checkpoint`";
+      }
+      {
+        label = "T-PAT-4 completion names node blob refs";
+        needle = "`crucible::NodeBlobRef`";
+      }
+      {
+        label = "T-PAT-4 completion names CoW refs";
+        needle = "`crucible::CowDeltaRef`";
+      }
+      {
+        label = "T-PAT-4 completion names DagStore";
+        needle = "`crucible::DagStore`";
+      }
+      {
+        label = "T-PAT-4 completion names local DagStore backend";
+        needle = "`crucible::LocalDagStore`";
+      }
+      {
+        label = "T-PAT-4 completion names checkpoint closure persistence";
+        needle = "`TemporalGraph::persist_checkpoint_closure`";
+      }
+      {
+        label = "T-PAT-4 completion names cached snapshot store collection";
+        needle = "`TemporalGraph::collect_cached_snapshot_store`";
+      }
+      {
+        label = "T-PAT-4 completion names content-address gate";
+        needle = "`checks.crucible.phase1.gates.contentAddress`";
+      }
     ];
 in
   if failures != []
@@ -1243,6 +1286,7 @@ in
             dag_gc_pins=pinned-stays-realizable
             search_reduction=symmetry,partial-order
             search_reduction_scope=graph-level-content-addressed-dag
+            pattern_PAT_6=content-addressed-store-thin-fat-cow-delta
             symmetry_reduction=explicit-classes-coverage-full-state-canonical-relabeling
             partial_order_reduction=explicit-proof-disjoint-node-recorded-representative
             graph_user_operations=save,resume,fork,replay,search

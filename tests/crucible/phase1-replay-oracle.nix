@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-HARN-13" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-7" "T-TEMP-9" "T-TEMP-11"],
+  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-HARN-13" "T-EXEC-4" "T-EXEC-11" "T-PAT-4" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-7" "T-TEMP-9" "T-TEMP-11"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -27,6 +27,7 @@
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   executionModel = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -832,6 +833,10 @@
         needle = "\"T-EXEC-11\"";
       }
       {
+        label = "phase1 replay-oracle lists T-PAT-4";
+        needle = "\"T-PAT-4\"";
+      }
+      {
         label = "phase1 replay-oracle lists T-TEMP-3";
         needle = "\"T-TEMP-3\"";
       }
@@ -907,6 +912,28 @@
       }
       {
         label = "T-HARN-13 completion names replay-oracle gate";
+        needle = "`checks.crucible.phase1.gates.replayOracle`";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+      {
+        label = "T-PAT-4 checklist complete";
+        needle = "- [x] **T-PAT-4**";
+      }
+      {
+        label = "T-PAT-4 completion names materialization policy";
+        needle = "`crucible::MaterializationPolicy`";
+      }
+      {
+        label = "T-PAT-4 completion names fat eviction";
+        needle = "`TemporalGraph::evict_fat_checkpoint_to_thin`";
+      }
+      {
+        label = "T-PAT-4 completion says materialization is cache policy";
+        needle = "materialization a cache policy rather than identity";
+      }
+      {
+        label = "T-PAT-4 completion names replay-oracle gate";
         needle = "`checks.crucible.phase1.gates.replayOracle`";
       }
     ]
@@ -1140,6 +1167,7 @@ in
             gc_cache_collection=thin-replay-oracle-preserved
             graph_user_operations=save,resume,fork,replay,search
             graph_operation_realization=instantiate
+            pattern_PAT_6_replay_oracle=fat-cache-thin-source-of-truth
             search_oracle_sampling=temporal-graph-fat-materializations
             search_oracle_sampling_rate=configurable
             search_oracle_mismatch=bisection-request
