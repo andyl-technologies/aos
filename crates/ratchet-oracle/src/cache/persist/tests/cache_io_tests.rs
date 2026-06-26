@@ -2193,6 +2193,86 @@ fn cache_node_current_demand_updates_latest_reuse_counters() {
 }
 
 #[test]
+fn cache_node_current_demand_serializes_independently_opened_same_root_handles() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let workers = 16usize;
+    let barrier = Arc::new(Barrier::new(workers));
+    let mut handles = Vec::new();
+
+    for _ in 0..workers {
+        let worker_cache = PersistCache::open(&root).expect("worker cache opens");
+        let worker_barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            worker_barrier.wait();
+            worker_cache
+                .record_node_current_demand(key)
+                .expect("current demand records")
+        }));
+    }
+
+    let mut recorded = Vec::new();
+    for handle in handles {
+        recorded.push(handle.join().expect("worker should not panic"));
+    }
+    recorded.sort_by_key(|reuse| reuse.current_run_demands());
+
+    assert_eq!(
+        recorded,
+        (1..=workers as u64)
+            .map(|current_run_demands| MaterializationReuse::new(0, current_run_demands))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(key)
+            .expect("node reuse lookup succeeds"),
+        Some(MaterializationReuse::new(0, workers as u64))
+    );
+    assert_eq!(
+        fs::metadata(cache.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * workers) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_node_metadata_reports_poisoned_same_root_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = PersistCache::open(&root).expect("second cache opens");
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_node_metadata_for_tests()
+            .expect("node metadata lock acquires");
+        panic!("poison persistent node metadata write lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let error = cache
+        .record_node_current_demand(key)
+        .expect_err("poisoned same-root metadata lock should reject writes");
+
+    assert!(matches!(
+        error,
+        PersistNodeMetadataIndexError::WriteLockPoisoned
+    ));
+    assert_eq!(
+        fs::metadata(cache.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_materialization_decision_uses_prior_reuse_counters() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

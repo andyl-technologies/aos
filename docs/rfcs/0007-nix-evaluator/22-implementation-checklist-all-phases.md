@@ -1393,6 +1393,18 @@ alone (`M-1`/`Q-A`).
       helpers, different roots, multi-process writers, two-machine misses,
       durable filesystem locks/CAS, automatic repair/GC policy, LMDB/redb
       transactions, and loom/harness proof remain open (`C-13`/`R-4`/`R-14`).
+- [x] Current same-process same-root node-metadata writer lock precursor:
+      independently opened `PersistCache` handles in one process acquire their
+      node-metadata write mutex from the same process-local weak root-lock
+      registry, so raw metadata appends, typed reuse/value-hash
+      read-modify-appends, current-demand increments, run-boundary advancement,
+      and metadata compaction serialize for a live canonical cache root.
+      Concurrent same-root demand records keep every current-run increment, and
+      a poisoned live metadata lock is reported before any sidecar write. Raw
+      lower-level `PersistNodeMetadataIndex` users, different roots,
+      multi-process writers, two-machine races, durable filesystem locks/CAS,
+      LMDB/redb node tables, automatic GC/repack, and loom/harness proof remain
+      open (`C-13`/`R-4`/`S-14`).
 - [x] Current explicit fixed-record sidecar compaction substrate:
       `PersistBlobIndex`, `PersistFileArtifactIndex`, and
       `PersistParseArtifactIndex` now expose `latest_entries` and
@@ -1473,32 +1485,33 @@ alone (`M-1`/`Q-A`).
       counters on a miss, appends a saturated current-demand increment, and
       returns the recorded value. Reuse updates preserve any existing
       materialized cached-expression value-hash link in the same metadata
-      record. This is caller-driven, append-only, and
-      requires callers to serialize writes for the same node key; evaluator
-      call-site integration is covered by the force-cache accounting and
-      public run-boundary rows below, while atomic writer coordination,
-      LMDB/redb node tables, compaction/GC, and AOS tuning remain open
-      (`C-13`/`C-14`/`S-14`).
+      record, and same-process same-root writers share the metadata write lock
+      for the read-modify-append critical section. This is caller-driven and
+      append-only; evaluator call-site integration is covered by the
+      force-cache accounting and public run-boundary rows below, while
+      cross-process writer coordination, LMDB/redb node tables, compaction/GC,
+      and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node reuse run-boundary adapter:
       `PersistCache::advance_node_materialization_reuse_run` looks up the
       newest counters for one node key, returns `None` without writing on a
       miss, and otherwise appends `MaterializationReuse::advance_run` so
       current-run observations become prior-run reuse signal for later runs
-      while preserving any materialized value-hash link. This is caller-driven,
-      append-only, and requires callers to serialize writes for the same node
-      key; Drop/panic/error-path process-boundary orchestration,
-      atomic writer coordination, LMDB/redb node tables, compaction/GC, and AOS
-      tuning remain open (`C-13`/`C-14`/`S-14`).
+      while preserving any materialized value-hash link. This is caller-driven
+      and append-only, with same-process same-root writers serialized by the
+      metadata write lock; Drop/panic/error-path process-boundary orchestration,
+      cross-process writer coordination, LMDB/redb node tables, compaction/GC,
+      and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node reuse sidecar advancement:
       `PersistNodeMetadataIndex::latest_entries` scans the fixed-record
       metadata sidecar into deterministic newest-entry-per-key order, and
       `PersistCache::advance_all_node_materialization_reuse_runs` appends
       changed `MaterializationReuse::advance_run` records for all known node
       keys while preserving materialized value-hash links and skipping no-op
-      counters. This is caller-driven, append-only, and requires callers to
-      serialize sidecar writes; Drop/panic/error-path process-boundary
-      orchestration, atomic writer coordination, LMDB/redb node tables,
-      automatic compaction/GC policy, and AOS tuning remain open
+      counters. This is caller-driven and append-only, with same-process
+      same-root writers serialized by the metadata write lock;
+      Drop/panic/error-path process-boundary orchestration, cross-process
+      writer coordination, LMDB/redb node tables, automatic compaction/GC
+      policy, and AOS tuning remain open
       (`C-13`/`C-14`/`S-14`).
 - [x] Current public evaluator reuse run-boundary advancement:
       successful public tree-walk free-function evaluation exits (`eval_whnf*`,
@@ -1519,10 +1532,11 @@ alone (`M-1`/`Q-A`).
       newest record for each node metadata key remains in stable key order,
       including any materialized value-hash link, and
       `PersistCache::compact_node_metadata` exposes that operation through the
-      opened cache root. This is caller-driven and requires callers to
-      serialize sidecar writes; automatic process-boundary orchestration,
-      atomic writer coordination, LMDB/redb node tables, automatic
-      compaction/GC policy, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
+      opened cache root. This is caller-driven, with same-process same-root
+      writers serialized by the metadata write lock; automatic
+      process-boundary orchestration, cross-process writer coordination,
+      LMDB/redb node tables, automatic compaction/GC policy, and AOS tuning
+      remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current force-cache persistent demand accounting:
       tree-walk `force_value` derives `PersistNodeMetadataKey` from the same
       lookup-safe `ForceCacheSubject` identity and ordered free-variable hashes
@@ -1533,7 +1547,7 @@ alone (`M-1`/`Q-A`).
       `currentTime` have no metadata identity and are not counted. This is
       current-run demand accounting only; public successful run-boundary
       advancement is covered above, while Drop/panic/error-path advancement,
-      atomic writer coordination, durable cached-payload hit selection,
+      cross-process writer coordination, durable cached-payload hit selection,
       LMDB/redb node tables, automatic compaction/GC policy, and AOS tuning
       remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current node-reuse materialization decision adapter:
@@ -1719,11 +1733,12 @@ alone (`M-1`/`Q-A`).
       counts for the newest entries retained by each sidecar, with
       `PersistCompactionError` preserving the failing sidecar type. This is a
       caller-driven maintenance helper only; it is sequential rather than
-      transactional, requires callers to serialize writes, does not rewrite blob
-      packs or drop unreferenced blobs, and still leaves automatic
-      compaction/GC policy, cross-process writer coordination, LMDB/redb
-      indexes, pack GC/repack, mmap reads, Attic transport, and cached/uncached
-      harness proof open (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the
+      transactional, requires callers to serialize sidecar writes outside the
+      current node-metadata same-root lock, does not rewrite blob packs or drop
+      unreferenced blobs, and still leaves automatic compaction/GC policy,
+      cross-process writer coordination, LMDB/redb indexes, pack GC/repack,
+      mmap reads, Attic transport, and cached/uncached harness proof open
+      (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the
       all-sidecar compaction cache test.
 - [x] Current explicit storage maintenance sweep:
       `PersistCache::compact_storage` runs all current sidecar compaction,

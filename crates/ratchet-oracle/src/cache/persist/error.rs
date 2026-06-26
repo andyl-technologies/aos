@@ -586,6 +586,9 @@ pub enum PersistParseArtifactIndexError {
 /// Fixed-record demand-node metadata index file IO failed.
 #[derive(Debug, Error)]
 pub enum PersistNodeMetadataIndexError {
+    /// The in-process node metadata write lock was poisoned by a prior panic.
+    #[error("persistent node metadata write lock was poisoned")]
+    WriteLockPoisoned,
     /// The index parent directory could not be created.
     #[error("failed to create persistent node metadata index parent {path:?}")]
     CreateParent {

@@ -26,6 +26,7 @@ struct PersistRootLocks {
     open: Mutex<()>,
     values: Mutex<()>,
     files: Mutex<()>,
+    node_metadata: Mutex<()>,
 }
 
 impl PersistRootLocks {
@@ -34,6 +35,7 @@ impl PersistRootLocks {
             open: Mutex::new(()),
             values: Mutex::new(()),
             files: Mutex::new(()),
+            node_metadata: Mutex::new(()),
         }
     }
 
@@ -53,6 +55,12 @@ impl PersistRootLocks {
         };
         lock.lock()
             .map_err(|_| PersistBlobIndexedWriteError::WriteLockPoisoned { store })
+    }
+
+    fn lock_node_metadata(&self) -> Result<MutexGuard<'_, ()>, PersistNodeMetadataIndexError> {
+        self.node_metadata
+            .lock()
+            .map_err(|_| PersistNodeMetadataIndexError::WriteLockPoisoned)
     }
 }
 
@@ -517,6 +525,13 @@ impl PersistCache {
         self.root_locks.lock(store)
     }
 
+    #[cfg(test)]
+    pub(super) fn lock_node_metadata_for_tests(
+        &self,
+    ) -> Result<MutexGuard<'_, ()>, PersistNodeMetadataIndexError> {
+        self.root_locks.lock_node_metadata()
+    }
+
     /// Compacts every current append-only sidecar to its newest entries.
     ///
     /// This explicit maintenance operation rewrites the value and file blob
@@ -783,9 +798,18 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
-    /// be opened, validated, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
+    /// write lock is poisoned or if the sidecar index cannot be opened,
+    /// validated, written, or flushed.
     pub fn record_node_metadata(
+        &self,
+        entry: PersistNodeMetadataIndexEntry,
+    ) -> Result<(), PersistNodeMetadataIndexError> {
+        let _write_guard = self.root_locks.lock_node_metadata()?;
+        self.record_node_metadata_unlocked(entry)
+    }
+
+    fn record_node_metadata_unlocked(
         &self,
         entry: PersistNodeMetadataIndexEntry,
     ) -> Result<(), PersistNodeMetadataIndexError> {
@@ -801,6 +825,13 @@ impl PersistCache {
     /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
     /// be opened, read, or decoded.
     pub fn lookup_node_metadata(
+        &self,
+        key: PersistNodeMetadataKey,
+    ) -> Result<Option<PersistNodeMetadataIndexValue>, PersistNodeMetadataIndexError> {
+        self.lookup_node_metadata_unlocked(key)
+    }
+
+    fn lookup_node_metadata_unlocked(
         &self,
         key: PersistNodeMetadataKey,
     ) -> Result<Option<PersistNodeMetadataIndexValue>, PersistNodeMetadataIndexError> {
@@ -885,18 +916,20 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
-    /// be opened, validated, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
+    /// write lock is poisoned or if the sidecar index cannot be opened, read,
+    /// decoded, written, or flushed.
     pub fn record_node_materialization_reuse(
         &self,
         key: PersistNodeMetadataKey,
         reuse: MaterializationReuse,
     ) -> Result<(), PersistNodeMetadataIndexError> {
+        let _write_guard = self.root_locks.lock_node_metadata()?;
         let value = self
-            .lookup_node_metadata(key)?
+            .lookup_node_metadata_unlocked(key)?
             .unwrap_or_else(|| PersistNodeMetadataIndexValue::new(MaterializationReuse::default()))
             .with_materialization_reuse(reuse);
-        self.record_node_metadata(PersistNodeMetadataIndexEntry::new(key, value))
+        self.record_node_metadata_unlocked(PersistNodeMetadataIndexEntry::new(key, value))
     }
 
     /// Looks up materialization reuse counters for one demand node.
@@ -924,18 +957,20 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
-    /// be opened, read, decoded, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
+    /// write lock is poisoned or if the sidecar index cannot be opened, read,
+    /// decoded, written, or flushed.
     pub fn record_node_materialized_value_hash(
         &self,
         key: PersistNodeMetadataKey,
         value_hash: ValueHash,
     ) -> Result<(), PersistNodeMetadataIndexError> {
+        let _write_guard = self.root_locks.lock_node_metadata()?;
         let value = self
-            .lookup_node_metadata(key)?
+            .lookup_node_metadata_unlocked(key)?
             .unwrap_or_else(|| PersistNodeMetadataIndexValue::new(MaterializationReuse::default()))
             .with_value_hash(value_hash);
-        self.record_node_metadata(PersistNodeMetadataIndexEntry::new(key, value))
+        self.record_node_metadata_unlocked(PersistNodeMetadataIndexEntry::new(key, value))
     }
 
     /// Clears the newest materialized value hash for one demand node.
@@ -947,20 +982,22 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
-    /// be opened, read, decoded, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
+    /// write lock is poisoned or if the sidecar index cannot be opened, read,
+    /// decoded, written, or flushed.
     pub fn clear_node_materialized_value_hash(
         &self,
         key: PersistNodeMetadataKey,
     ) -> Result<bool, PersistNodeMetadataIndexError> {
-        let Some(value) = self.lookup_node_metadata(key)? else {
+        let _write_guard = self.root_locks.lock_node_metadata()?;
+        let Some(value) = self.lookup_node_metadata_unlocked(key)? else {
             return Ok(false);
         };
         if value.materialized_value_hash().is_none() {
             return Ok(false);
         }
         let value = PersistNodeMetadataIndexValue::new(value.materialization_reuse());
-        self.record_node_metadata(PersistNodeMetadataIndexEntry::new(key, value))?;
+        self.record_node_metadata_unlocked(PersistNodeMetadataIndexEntry::new(key, value))?;
         Ok(true)
     }
 
@@ -986,24 +1023,29 @@ impl PersistCache {
     ///
     /// The helper reads the latest persisted counters, starts from empty
     /// counters on a miss, appends the updated counters while preserving any
-    /// materialized value-hash link, and returns the value that was recorded.
-    /// Callers must serialize writes for the same node key: this fixed-record
-    /// sidecar stores absolute counters, so concurrent read-modify-append calls
-    /// can overwrite one another under newest-record lookup semantics.
+    /// materialized value-hash link, and returns the value that was recorded
+    /// while holding the same-root metadata write lock. Cross-process writers
+    /// must still be excluded by the caller because this fixed-record sidecar
+    /// stores absolute counters under newest-record lookup semantics.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
-    /// be opened, read, decoded, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
+    /// write lock is poisoned or if the sidecar index cannot be opened, read,
+    /// decoded, written, or flushed.
     pub fn record_node_current_demand(
         &self,
         key: PersistNodeMetadataKey,
     ) -> Result<MaterializationReuse, PersistNodeMetadataIndexError> {
-        let reuse = self
-            .lookup_node_materialization_reuse(key)?
-            .unwrap_or_default()
-            .record_current_demand();
-        self.record_node_materialization_reuse(key, reuse)?;
+        let _write_guard = self.root_locks.lock_node_metadata()?;
+        let value = self
+            .lookup_node_metadata_unlocked(key)?
+            .unwrap_or_else(|| PersistNodeMetadataIndexValue::new(MaterializationReuse::default()));
+        let reuse = value.materialization_reuse().record_current_demand();
+        self.record_node_metadata_unlocked(PersistNodeMetadataIndexEntry::new(
+            key,
+            value.with_materialization_reuse(reuse),
+        ))?;
         Ok(reuse)
     }
 
@@ -1052,23 +1094,29 @@ impl PersistCache {
     /// Missing index entries return `Ok(None)` without appending an empty
     /// record. Existing entries append the counters returned by
     /// [`MaterializationReuse::advance_run`], preserve any materialized
-    /// value-hash link, and return the recorded reuse counters. Callers must
-    /// serialize writes for the same node key for the same reason as
-    /// [`Self::record_node_current_demand`].
+    /// value-hash link, and return the recorded reuse counters while holding
+    /// the same-root metadata write lock. Cross-process writers must still be
+    /// excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
-    /// be opened, read, decoded, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
+    /// write lock is poisoned or if the sidecar index cannot be opened, read,
+    /// decoded, written, or flushed.
     pub fn advance_node_materialization_reuse_run(
         &self,
         key: PersistNodeMetadataKey,
     ) -> Result<Option<MaterializationReuse>, PersistNodeMetadataIndexError> {
-        let Some(reuse) = self.lookup_node_materialization_reuse(key)? else {
+        let _write_guard = self.root_locks.lock_node_metadata()?;
+        let Some(value) = self.lookup_node_metadata_unlocked(key)? else {
             return Ok(None);
         };
+        let reuse = value.materialization_reuse();
         let advanced = reuse.advance_run();
-        self.record_node_materialization_reuse(key, advanced)?;
+        self.record_node_metadata_unlocked(PersistNodeMetadataIndexEntry::new(
+            key,
+            value.with_materialization_reuse(advanced),
+        ))?;
         Ok(Some(advanced))
     }
 
@@ -1077,16 +1125,19 @@ impl PersistCache {
     /// This reads the newest metadata value for every node key, appends
     /// [`MaterializationReuse::advance_run`] for entries whose counters change
     /// while preserving any materialized value-hash link, and returns the
-    /// entries that were appended in stable key order. Callers must serialize
-    /// writes to the node metadata sidecar while this method runs.
+    /// entries that were appended in stable key order while holding the
+    /// same-root metadata write lock. Cross-process writers must still be
+    /// excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
-    /// be opened, read, decoded, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
+    /// write lock is poisoned or if the sidecar index cannot be opened, read,
+    /// decoded, written, or flushed.
     pub fn advance_all_node_materialization_reuse_runs(
         &self,
     ) -> Result<Vec<PersistNodeMetadataIndexEntry>, PersistNodeMetadataIndexError> {
+        let _write_guard = self.root_locks.lock_node_metadata()?;
         let mut recorded = Vec::new();
         for entry in self.node_metadata_index.latest_entries()? {
             let reuse = entry.value().materialization_reuse();
@@ -1098,7 +1149,7 @@ impl PersistCache {
                 entry.key(),
                 entry.value().with_materialization_reuse(advanced),
             );
-            self.record_node_metadata(advanced_entry)?;
+            self.record_node_metadata_unlocked(advanced_entry)?;
             recorded.push(advanced_entry);
         }
         Ok(recorded)
@@ -1106,15 +1157,17 @@ impl PersistCache {
 
     /// Compacts node metadata to the newest record for every known demand node.
     ///
-    /// This delegates to [`PersistNodeMetadataIndex::compact_latest_entries`].
-    /// Callers must serialize writes to the node metadata sidecar while this
-    /// method runs.
+    /// Same-process writers opened on the same cache root share a metadata
+    /// write lock while this method rewrites the sidecar. Cross-process writers
+    /// must still be excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the sidecar index cannot
-    /// be opened, read, decoded, written, flushed, or renamed into place.
+    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
+    /// write lock is poisoned or if the sidecar index cannot be opened, read,
+    /// decoded, written, flushed, or renamed into place.
     pub fn compact_node_metadata(&self) -> Result<usize, PersistNodeMetadataIndexError> {
+        let _write_guard = self.root_locks.lock_node_metadata()?;
         self.node_metadata_index.compact_latest_entries()
     }
 
