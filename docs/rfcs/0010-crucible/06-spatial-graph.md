@@ -1008,9 +1008,18 @@ authority for its shape. The contract those files may rely on:
     world material includes the sorted link endpoint pairs. The
     `world_topology_rejects_invalid_links` regression and
     `checks.crucible.phase1.spatialWorldTopology` gate cover the validation.
-- [ ] **T-SPAT-8** Implement the `MIN_LINK_LATENCY` floor and reject zero/negative
+- [x] **T-SPAT-8** Implement the `MIN_LINK_LATENCY` floor and reject zero/negative
   latency, sub-floor `latency - jitter`, and out-of-range loss at build time. —
   satisfies [SPAT-11], [SPAT-12], [SPAT-13]; spec §3.2, §9.
+  - Completed by `crates/crucible/src/model.rs`: `MIN_LINK_LATENCY` is exported as
+    the one-nanosecond floor, `LinkDef::with_transport` rejects sub-floor base
+    latency and `latency - jitter` combinations, and unsigned `SimDuration`
+    keeps negative latency unrepresentable at the model boundary.
+    `LinkLossProbability` stores loss as fixed-point millionths and rejects
+    values above `1_000_000`; canonical world material includes link latency,
+    jitter, loss, and bandwidth. `crates/crucible/src/lib.rs` covers identity
+    sensitivity and rejection cases, and
+    `checks.crucible.phase1.spatialLinkTransport` gates the task.
 - [ ] **T-SPAT-9** Guarantee the `World` encodes only logical topology with no
   physical-transport-layout leak, and that `ScenarioDef::id` is invariant under
   transport-layout/host-geometry changes. — satisfies [SPAT-14], [SPAT-15]; spec
