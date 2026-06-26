@@ -227,6 +227,109 @@ fn persistent_read_file_force_cache_hit_preserves_drv_surfaces() {
 }
 
 #[test]
+fn persistent_get_env_force_cache_no_replay_preserves_drv_surfaces() {
+    let name = b"AOS_FORCE_CACHE_DRV_TEST";
+    let source = r#"let
+             b = builtins;
+           in {
+             pkg = derivationStrict {
+               name = "force-cache-get-env-drv-surface";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ (b.getEnv "AOS_FORCE_CACHE_DRV_TEST") ];
+             };
+           }"#;
+    let ir = lower(source);
+    let expected_trace = vec![
+        ImpureInputFingerprint::get_env(name, Some(b"env payload")).expect("fingerprint builds"),
+    ];
+    let changed_trace = vec![
+        ImpureInputFingerprint::get_env(name, Some(b"changed payload"))
+            .expect("changed fingerprint builds"),
+    ];
+
+    let persist_root = unique_temp_dir("force-cache-get-env-drv-surface-parity");
+
+    let mut uncached_options = TreeWalkOptions::new();
+    uncached_options.set_env_var(name.to_vec(), b"env payload".to_vec());
+    let uncached = evaluate_cached_derivation_surface(
+        &ir,
+        source,
+        uncached_options,
+        EvalCacheRuntime::disabled(),
+    );
+    assert_eq!(uncached.trace, expected_trace);
+    assert_eq!(uncached.cache_hits, 0);
+    assert_eq!(uncached.force_cache_hits, 0);
+    assert_eq!(uncached.force_cache_misses, 0);
+
+    let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    first_options.set_env_var(name.to_vec(), b"env payload".to_vec());
+    first_options.set_persist_cache_root(&persist_root);
+    let first =
+        evaluate_cached_derivation_surface(&ir, source, first_options, EvalCacheRuntime::enabled());
+    assert_eq!(first.path, uncached.path);
+    assert_eq!(first.aterm, uncached.aterm);
+    assert_eq!(first.trace, expected_trace);
+    assert_eq!(first.cache_hits, 0);
+    assert_eq!(first.force_cache_hits, 0);
+    assert_eq!(first.force_cache_misses, 0);
+
+    let mut replay_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    replay_options.set_env_var(name.to_vec(), b"env payload".to_vec());
+    replay_options.set_persist_cache_root(&persist_root);
+    let replay = evaluate_cached_derivation_surface(
+        &ir,
+        source,
+        replay_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(replay.path, uncached.path);
+    assert_eq!(replay.aterm, uncached.aterm);
+    assert_eq!(replay.trace, expected_trace);
+    assert_eq!(replay.cache_hits, 0);
+    assert_eq!(replay.force_cache_hits, 0);
+    assert_eq!(replay.force_cache_misses, 0);
+    assert!(
+        replay.thunks_forced > 0,
+        "current getEnv derivation surfaces should recompute rather than replay a force-cache hit"
+    );
+
+    let mut uncached_changed_options = TreeWalkOptions::new();
+    uncached_changed_options.set_env_var(name.to_vec(), b"changed payload".to_vec());
+    let uncached_changed = evaluate_cached_derivation_surface(
+        &ir,
+        source,
+        uncached_changed_options,
+        EvalCacheRuntime::disabled(),
+    );
+    assert_eq!(uncached_changed.trace, changed_trace);
+    assert_eq!(uncached_changed.cache_hits, 0);
+    assert_eq!(uncached_changed.force_cache_hits, 0);
+    assert_eq!(uncached_changed.force_cache_misses, 0);
+    assert_ne!(uncached_changed.path, uncached.path);
+    assert_ne!(uncached_changed.aterm, uncached.aterm);
+
+    let mut changed_replay_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    changed_replay_options.set_env_var(name.to_vec(), b"changed payload".to_vec());
+    changed_replay_options.set_persist_cache_root(&persist_root);
+    let changed_replay = evaluate_cached_derivation_surface(
+        &ir,
+        source,
+        changed_replay_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(changed_replay.path, uncached_changed.path);
+    assert_eq!(changed_replay.aterm, uncached_changed.aterm);
+    assert_eq!(changed_replay.trace, changed_trace);
+    assert_eq!(changed_replay.cache_hits, 0);
+    assert_eq!(changed_replay.force_cache_hits, 0);
+    assert_eq!(changed_replay.force_cache_misses, 0);
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
+#[test]
 fn persistent_read_file_force_cache_stale_miss_preserves_drv_surfaces() {
     let root = unique_temp_dir("force-cache-read-file-drv-stale-source");
     fs::write(root.join("input.txt"), b"first payload").expect("input file writes");
