@@ -1516,6 +1516,10 @@ fn persistent_current_time_force_cache_no_replay_preserves_drv_surfaces() {
     );
     assert_eq!(changed.cache_hits, 0);
     assert_eq!(changed.force_cache_hits, 0);
+    assert_persistent_force_cache_sidecars_empty(
+        &persist_root,
+        "uncacheable currentTime derivation canary",
+    );
 
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
 }

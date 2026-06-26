@@ -81,6 +81,30 @@ pub(crate) fn persistent_force_cache_surface_canaries(
     canaries
 }
 
+pub(crate) fn assert_persistent_force_cache_sidecars_empty(persist_root: &Path, context: &str) {
+    if !persist_root.exists() {
+        return;
+    }
+
+    let persist = PersistCache::open(persist_root).expect("persistent cache opens");
+    assert!(
+        persist
+            .node_metadata_index()
+            .latest_entries()
+            .expect("persistent node metadata entries load")
+            .is_empty(),
+        "{context} should not write persistent force metadata"
+    );
+    assert!(
+        persist
+            .node_trace_log()
+            .latest_entries()
+            .expect("persistent node trace entries load")
+            .is_empty(),
+        "{context} should not write persistent force traces"
+    );
+}
+
 pub(crate) fn assert_drv_surface_canaries_absent(
     surface_name: &str,
     path: &str,
