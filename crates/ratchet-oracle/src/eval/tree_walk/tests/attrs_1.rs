@@ -7544,6 +7544,142 @@ fn captured_source_order_attrset_values_do_not_build_force_cache_subjects() {
 }
 
 #[test]
+fn captured_lazy_binding_attrset_values_do_not_build_force_cache_subjects() {
+    let mut symbols = SymbolTable::new();
+    let a = symbols.intern(b"a").expect("a interns");
+    let path = IrAttrPathId::new(0);
+    let ir = manual_ir_with_attr_paths(
+        IrId::new(1),
+        vec![
+            pure_node(IrKind::LocalVar, Span::new(0, 1), IrData::Local { slot: 0 }),
+            pure_node(
+                IrKind::HasAttr,
+                Span::new(0, 5),
+                IrData::HasAttr {
+                    site: IrInlineCacheSiteId::new(0),
+                    receiver: IrId::new(0),
+                    path,
+                },
+            ),
+            pure_node(IrKind::Int, Span::new(10, 11), IrData::Int(1)),
+            pure_node(IrKind::Int, Span::new(14, 15), IrData::Int(0)),
+            pure_node(
+                IrKind::BinOp,
+                Span::new(10, 15),
+                IrData::Binary {
+                    op: BinOpKind::Div,
+                    lhs: IrId::new(2),
+                    rhs: IrId::new(3),
+                },
+            ),
+        ],
+        symbols,
+        vec![Box::new([IrAttrPathSegment::Static(a)])],
+    );
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-lazy-binding-attrset-value.nix",
+        "x ? a",
+        cache.clone(),
+    );
+    let lazy_binding = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(4)))
+        .expect("lazy binding thunk allocates");
+    let attrs = FlatAttrs::new(vec![AttrEntry::new(a, lazy_binding)], &evaluator.symbols)
+        .expect("lazy-binding attrset builds");
+    assert_eq!(
+        attrs.source_order(),
+        attrs.iteration_order(),
+        "fixture attrset must be source-order-canonical"
+    );
+    assert!(
+        !attrset_has_binding_position(&attrs),
+        "fixture attrset must not carry binding positions"
+    );
+    let captured_x = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("lazy-binding attrset allocates");
+    let binding = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(captured_x)
+            .expect("captured payload is an attrset");
+        attrs.get(a).expect("lazy binding exists")
+    };
+    let binding_thunk = evaluator
+        .heap()
+        .get_thunk(binding)
+        .expect("lazy binding is a thunk");
+    assert_eq!(binding_thunk.cell().state(), Ok(ThunkState::Suspended));
+
+    let frame = EvalFrame::new(1).expect("capture frame allocates");
+    frame.set(0, captured_x).expect("capture frame slot sets");
+    let env = EvalEnv::capture(&[frame]).expect("capture env allocates");
+    let thunk_value = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::with_env(EvalModuleId::ROOT, ir.root, env))
+        .expect("lazy-binding attrset capture thunk allocates");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "captured lazy-binding attrsets must not be hashed into demand keys"
+    );
+    assert!(
+        evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("capture thunk remains heap-owned")
+            .env()
+            .expect("capture thunk keeps an environment")
+            .frames()[0]
+            .get(0)
+            .expect("captured lazy-binding attrset slot remains readable")
+            .raw_eq(captured_x),
+        "probing the force-cache subject must not rewrite captured attrset slots"
+    );
+    let binding_thunk = evaluator
+        .heap()
+        .get_thunk(binding)
+        .expect("lazy binding remains a thunk");
+    assert_eq!(
+        binding_thunk.cell().state(),
+        Ok(ThunkState::Suspended),
+        "probing the force-cache subject must not force captured lazy bindings"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured lazy-binding attrset value force succeeds");
+
+    assert_eq!(forced.as_bool(), Ok(true));
+    let binding_thunk = evaluator
+        .heap()
+        .get_thunk(binding)
+        .expect("lazy binding remains a thunk after hasAttr");
+    assert_eq!(
+        binding_thunk.cell().state(),
+        Ok(ThunkState::Suspended),
+        "hasAttr should not force captured lazy bindings"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "captured lazy-binding attrsets need binding payloads before observation"
+    );
+}
+
+#[test]
 fn captured_lambda_values_do_not_build_force_cache_subjects() {
     let source = "let x = y: y; in builtins.seq x { a = x == x; }";
     let ir = lower(source);

@@ -750,8 +750,8 @@ alone (`M-1`/`Q-A`).
       lexical-frame subject-skip canaries, captured lambda/primop value
       subject-skip canaries, synthetic apply/apply2/select thunk subject-skip
       canaries, captured position/source-order attrset value subject-skip
-      canaries, and representative captured unsupported free-variable skips
-      (`C-1`/`C-2`).
+      canaries, captured lazy-binding attrset subject-skip canary, and
+      representative captured unsupported free-variable skips (`C-1`/`C-2`).
 - [x] Current node-span force-cache identity precursor: source-backed and
       source-less node-thunk expression identities now fold the lowered node's
       source span into the durable expression-identity hash before pairing that
