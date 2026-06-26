@@ -35,4 +35,8 @@ pub mod bindings {
     pub const RL_BURST5: &str = "RL_BURST5";
     pub const RL_BURST10: &str = "RL_BURST10";
     pub const RL_BROWSE120: &str = "RL_BROWSE120";
+    /// The colocated-SQLite system-of-record Durable Object
+    /// (`[[durable_objects.bindings]]`, `new_sqlite_classes` class `HubDb`).
+    /// RFC-0004 ch.14 Phase E.
+    pub const HUB_DB: &str = "HUB_DB";
 }

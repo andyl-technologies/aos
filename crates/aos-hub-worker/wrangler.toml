@@ -87,13 +87,20 @@ class_name = "CoordinatorObject"
 name = "TENANT_DB"
 class_name = "TenantDb"
 
+# The colocated-SQLite **system of record** (RFC-0004 ch.14 Phase E). When the
+# `HUB_SQLITE_DO` var is "1", the Worker forwards every request to this DO, whose
+# local SQLite has no D1 session cost. Class `HubDb` (SQLite storage).
+[[durable_objects.bindings]]
+name = "HUB_DB"
+class_name = "HubDb"
+
 # Declare the DO classes on first deploy. `CoordinatorObject` uses the
-# transactional key-value storage (`new_classes`); `TenantDb` uses SQLite storage
-# (`new_sqlite_classes`).
+# transactional key-value storage (`new_classes`); `TenantDb`/`HubDb` use SQLite
+# storage (`new_sqlite_classes`).
 [[migrations]]
 tag = "v1"
 new_classes = ["CoordinatorObject"]
-new_sqlite_classes = ["TenantDb"]
+new_sqlite_classes = ["TenantDb", "HubDb"]
 
 # Edge Rate Limiting bindings (RFC-0004 ch.14, corrected): edge-local counters,
 # no network hop. One binding per budget tier (period 60); the worker routes a
