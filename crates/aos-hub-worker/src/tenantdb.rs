@@ -111,10 +111,25 @@ pub struct SqlReply {
 /// A new DO's SQLite starts at `user_version = 0`; this applies every migration
 /// in order and stamps the count, so a recycled DO re-opening the same storage
 /// skips already-applied migrations. Idempotent across DO restarts.
+///
+/// Durable Object SQLite **forbids `PRAGMA`** (`SQLITE_AUTH`), so the applied
+/// count is tracked in a one-row `_do_migrations` table rather than
+/// `PRAGMA user_version`.
 pub(crate) async fn ensure_migrated(backend: &SqlDoBackend) -> anyhow::Result<()> {
     use aos_hub_core::backend::Backend as _;
-    let rows = backend.query("PRAGMA user_version", &[]).await?;
-    let applied = rows
+    use aos_hub_core::value::Value;
+    // The version-tracking table (one row, id = 0). Plain DDL — authorized in DO
+    // SQLite (only PRAGMA/ATTACH/etc. are not).
+    backend
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS _do_migrations (\
+               id INTEGER PRIMARY KEY CHECK (id = 0), \
+               applied INTEGER NOT NULL)",
+        )
+        .await?;
+    let applied = backend
+        .query("SELECT applied FROM _do_migrations WHERE id = 0", &[])
+        .await?
         .first()
         .and_then(|row| row.get::<i64>(0).ok())
         .unwrap_or(0)
@@ -125,10 +140,12 @@ pub(crate) async fn ensure_migrated(backend: &SqlDoBackend) -> anyhow::Result<()
     for migration in &MIGRATIONS[applied..] {
         backend.execute_batch(migration).await?;
     }
-    // `PRAGMA user_version = N` takes no bound parameter; the count is a trusted
-    // integer (the migration list length), so inlining it is safe.
     backend
-        .execute_batch(&format!("PRAGMA user_version = {}", MIGRATIONS.len()))
+        .execute(
+            "INSERT INTO _do_migrations (id, applied) VALUES (0, ?1) \
+             ON CONFLICT(id) DO UPDATE SET applied = ?1",
+            &[Value::Int(MIGRATIONS.len() as i64)],
+        )
         .await?;
     Ok(())
 }
