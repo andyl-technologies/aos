@@ -7277,6 +7277,24 @@ fn push_attr_path_dynamic_segments(ir: &Ir, path: IrAttrPathId, stack: &mut Vec<
     true
 }
 
+fn captured_fulfilled_slot_with_cached_tag(
+    evaluator: &TreeWalk,
+    thunk_value: Value,
+    frame_index: usize,
+    slot: u32,
+    tag: ValueTag,
+) -> Option<(Value, Value)> {
+    let thunk = evaluator.heap().get_thunk(thunk_value).ok()?;
+    let env = thunk.env()?;
+    let value = env.frames().get(frame_index)?.get(slot).ok()?;
+    let thunk = evaluator.heap().get_thunk(value).ok()?;
+    let cached = thunk.cell().cached_value().ok()??;
+    if cached.tag() == tag {
+        return Some((value, cached));
+    }
+    None
+}
+
 #[test]
 fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
     let source = "let f = x: { a = builtins.length x == 1; }; in f [ (1 / 0) ]";
@@ -7347,6 +7365,116 @@ fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
     assert!(
         runtime.cache().expect("cache is enabled").is_empty(),
         "captured lazy-element lists need element payloads before observation"
+    );
+}
+
+#[test]
+fn captured_lambda_values_do_not_build_force_cache_subjects() {
+    let source = "let x = y: y; in builtins.seq x { a = x == x; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-lambda-value.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let (captured_x, cached_x) =
+        captured_fulfilled_slot_with_cached_tag(&evaluator, thunk_value, 0, 0, ValueTag::Lambda)
+            .expect("x is a fulfilled lambda capture in the first let slot");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "captured lambda values must not be hashed into demand keys"
+    );
+    assert!(
+        captured_fulfilled_slot_with_cached_tag(&evaluator, thunk_value, 0, 0, ValueTag::Lambda)
+            .map(|(captured, cached)| captured.raw_eq(captured_x) && cached.raw_eq(cached_x))
+            .unwrap_or(false),
+        "probing the force-cache subject must not rewrite captured lambda thunks or payloads"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured lambda value force succeeds");
+
+    assert_eq!(forced.as_bool(), Ok(false));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "captured lambda values need function payload policy before observation"
+    );
+}
+
+#[test]
+fn captured_primop_values_do_not_build_force_cache_subjects() {
+    let source = "let x = builtins.length; in builtins.seq x { a = x == x; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-primop-value.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let (captured_x, cached_x) =
+        captured_fulfilled_slot_with_cached_tag(&evaluator, thunk_value, 0, 0, ValueTag::Primop)
+            .expect("x is a fulfilled primop capture in the first let slot");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "captured primop values must not be hashed into demand keys"
+    );
+    assert!(
+        captured_fulfilled_slot_with_cached_tag(&evaluator, thunk_value, 0, 0, ValueTag::Primop)
+            .map(|(captured, cached)| captured.raw_eq(captured_x) && cached.raw_eq(cached_x))
+            .unwrap_or(false),
+        "probing the force-cache subject must not rewrite captured primop thunks or payloads"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured primop value force succeeds");
+
+    assert_eq!(forced.as_bool(), Ok(false));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "captured primop values need function payload policy before observation"
     );
 }
 
