@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3"],
+  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3" "T-TEMP-4"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -95,6 +95,46 @@
         label = "extra VM snapshot rejection";
         needle = "extra-vm-snapshot";
       }
+      {
+        label = "thin checkpoint source API";
+        needle = "pub fn record_thin_checkpoint(";
+      }
+      {
+        label = "materialize checkpoint API";
+        needle = "pub fn materialize_checkpoint(";
+      }
+      {
+        label = "hot checkpoint policy API";
+        needle = "pub fn materialize_hot_checkpoint(";
+      }
+      {
+        label = "fat eviction API";
+        needle = "pub fn evict_fat_checkpoint_to_thin(";
+      }
+      {
+        label = "materialization policy type";
+        needle = "pub struct MaterializationPolicy";
+      }
+      {
+        label = "materialization trigger type";
+        needle = "pub enum MaterializationTrigger";
+      }
+      {
+        label = "hot-node budget rule";
+        needle = "trigger.is_hot() && current_fat_checkpoints < self.max_fat_checkpoints";
+      }
+      {
+        label = "thin replay checkpoint validation";
+        needle = "validate_loadable_checkpoint(&thin_checkpoint, configuration)?;";
+      }
+      {
+        label = "fat thin node blob comparison";
+        needle = "checkpoint.node_blobs != thin_checkpoint.node_blobs";
+      }
+      {
+        label = "fat thin materialized state comparison";
+        needle = "fat_state.id != thin_state.id";
+      }
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
       {
@@ -128,6 +168,30 @@
       {
         label = "prefix closure test";
         needle = "reduce_is_prefix_closed_by_schedule_hash";
+      }
+      {
+        label = "materialization policy export";
+        needle = "MaterializationPolicy";
+      }
+      {
+        label = "materialization trigger export";
+        needle = "MaterializationTrigger";
+      }
+      {
+        label = "thin source-of-truth test";
+        needle = "temporal_graph_materialized_cache_keeps_thin_checkpoint_source_of_truth";
+      }
+      {
+        label = "materialized payload drift test";
+        needle = "temporal_graph_replay_checkpoint_rejects_materialized_payload_drift";
+      }
+      {
+        label = "fat eviction test";
+        needle = "temporal_graph_evicts_fat_checkpoint_back_to_thin_without_state_change";
+      }
+      {
+        label = "hot-node materialization policy test";
+        needle = "temporal_graph_materialization_policy_keeps_cold_or_over_budget_nodes_thin";
       }
     ]
     ++ failuresFor "crates/crucible/Cargo.toml" cargoManifest [
@@ -515,6 +579,10 @@
         label = "phase1 replay-oracle lists T-TEMP-3";
         needle = "\"T-TEMP-3\"";
       }
+      {
+        label = "phase1 replay-oracle lists T-TEMP-4";
+        needle = "\"T-TEMP-4\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
       {
@@ -554,6 +622,18 @@
       {
         label = "T-TEMP-3 completion names replay-oracle gate";
         needle = "`checks.crucible.phase1.gates.replayOracle`";
+      }
+      {
+        label = "T-TEMP-4 checklist complete";
+        needle = "- [x] **T-TEMP-4**";
+      }
+      {
+        label = "T-TEMP-4 completion names materialization policy";
+        needle = "`crucible::MaterializationPolicy`";
+      }
+      {
+        label = "T-TEMP-4 completion names eviction API";
+        needle = "`evict_fat_checkpoint_to_thin`";
       }
     ];
 in
@@ -606,6 +686,14 @@ in
               cd source
             fi
             cd crates
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-replay-oracle-target" \
+              -p crucible \
+              --lib \
+              temporal_graph_ \
+              -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
@@ -688,6 +776,9 @@ in
             loadvm_materialized_state=vm-snapshot-icount,scheduler,decision-rng,event-log
             loadvm_incomplete_state=rejected
             loadvm_saved_descendant_state=target-cow-vm-snapshot-ref-and-icount
+            thin_source_of_truth=checkpoint-node-state-none
+            fat_cache_policy=hot-nodes-budgeted
+            fat_eviction=ancestor-replay-preserves-state
             artifact_round_trip=re-run-from-seed-scenario-schedule-build-identity
             artifact_replay_assertions=fingerprint-equality,oracle-case-equality
             artifact_replay_negative_controls=build-identity-drift,seed-drift,scenario-drift,schedule-drift,oracle-case-drift,replay-failure,expected-oracle-mismatch,reproduced-oracle-mismatch

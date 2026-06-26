@@ -1442,6 +1442,63 @@ pub enum CheckpointKind {
     Thin,
 }
 
+/// Why a checkpoint is being considered for materialization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MaterializationTrigger {
+    /// The checkpoint is repeatedly used as a fork source.
+    RepeatedForkSource,
+    /// The checkpoint is on a replay path shared by many descendants.
+    SharedReplayPath,
+    /// The checkpoint is the target of an interactive session.
+    InteractiveTarget,
+    /// The checkpoint is cold and should remain thin unless explicitly saved.
+    Cold,
+}
+
+impl MaterializationTrigger {
+    /// Returns whether this trigger identifies a hot node.
+    #[must_use]
+    pub const fn is_hot(self) -> bool {
+        matches!(
+            self,
+            Self::RepeatedForkSource | Self::SharedReplayPath | Self::InteractiveTarget
+        )
+    }
+}
+
+/// Advisory budget for turning thin checkpoints into fat cache entries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MaterializationPolicy {
+    /// Maximum number of non-genesis fat checkpoint cache entries to keep.
+    pub max_fat_checkpoints: usize,
+}
+
+impl MaterializationPolicy {
+    /// Builds a policy that permits at most `max_fat_checkpoints` fat caches.
+    #[must_use]
+    pub const fn with_budget(max_fat_checkpoints: usize) -> Self {
+        Self {
+            max_fat_checkpoints,
+        }
+    }
+
+    /// Builds a policy that keeps every ordinary checkpoint thin.
+    #[must_use]
+    pub const fn thin_only() -> Self {
+        Self::with_budget(0)
+    }
+
+    /// Returns whether a new fat cache entry should be created.
+    #[must_use]
+    pub const fn should_materialize(
+        self,
+        current_fat_checkpoints: usize,
+        trigger: MaterializationTrigger,
+    ) -> bool {
+        trigger.is_hot() && current_fat_checkpoints < self.max_fat_checkpoints
+    }
+}
+
 /// A baked genesis checkpoint handle.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GenesisCheckpoint {
@@ -1515,6 +1572,11 @@ impl TemporalGraph {
 
     /// Registers a loadable snapshot for `configuration`.
     ///
+    /// When the graph has the scenario's baked genesis, this also records the
+    /// thin checkpoint closure for `configuration` and keeps that thin node as
+    /// the source of truth. The supplied fat checkpoint is stored only as the
+    /// loadable cache entry.
+    ///
     /// # Errors
     ///
     /// Returns [`EngineError::CheckpointConfigurationMismatch`] when the
@@ -1535,8 +1597,6 @@ impl TemporalGraph {
         validate_loadable_checkpoint(&checkpoint, configuration)?;
         if self.genesis_snapshot(&configuration.def).is_some() {
             self.record_checkpoint_closure(configuration)?;
-            self.checkpoint_nodes
-                .insert(configuration.id(), checkpoint.clone());
         }
         self.record_configuration(configuration.clone());
         self.cached_snapshots.insert(configuration.id(), checkpoint);
@@ -1582,6 +1642,130 @@ impl TemporalGraph {
         Ok(())
     }
 
+    /// Records `configuration` as a thin checkpoint source-of-truth node.
+    ///
+    /// Descendants are recorded with `state = None`; the baked genesis remains
+    /// the materialized root because there is no cold-boot checkpoint in the
+    /// temporal graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when the graph has no baked
+    /// root for the scenario. Returns other [`EngineError`] variants if the
+    /// parent/delta edge cannot be represented as a valid checkpoint.
+    pub fn record_thin_checkpoint(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Checkpoint, EngineError> {
+        self.record_checkpoint_closure(configuration)?;
+        self.checkpoint_node(configuration.id()).cloned().ok_or(
+            EngineError::CheckpointNotRecorded {
+                checkpoint: configuration.id(),
+            },
+        )
+    }
+
+    /// Materializes `configuration` as a fat checkpoint cache entry.
+    ///
+    /// The thin checkpoint remains the canonical DAG node whenever the graph
+    /// has a baked genesis root. The returned fat checkpoint is validated by
+    /// replaying the same configuration through the thin ancestor path before
+    /// it is inserted into the exact-snapshot cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when no exact or ancestor
+    /// cache can realize the configuration. Returns other [`EngineError`]
+    /// variants when replay validation or checkpoint metadata validation fails.
+    pub fn materialize_checkpoint(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Checkpoint, EngineError> {
+        self.record_configuration(configuration.clone());
+        if configuration.is_genesis() {
+            let genesis = self.genesis_snapshot(&configuration.def).ok_or(
+                EngineError::MissingBakedGenesis {
+                    scenario: configuration.def.id,
+                },
+            )?;
+            return Ok(genesis.checkpoint.clone());
+        }
+        if self.genesis_snapshot(&configuration.def).is_some() {
+            self.record_thin_checkpoint(configuration)?;
+        }
+        if let Some(checkpoint) = self.cached_snapshot(configuration) {
+            return Ok(checkpoint.clone());
+        }
+
+        let runtime = instantiate(self, configuration)?;
+        let checkpoint = materialized_checkpoint_for_runtime(configuration, runtime)?;
+        self.replay_checkpoint(configuration, &checkpoint)?;
+        self.cache_snapshot(configuration, checkpoint.clone())?;
+        Ok(checkpoint)
+    }
+
+    /// Applies the hot-node materialization policy to `configuration`.
+    ///
+    /// Hot nodes within budget are materialized through
+    /// [`Self::materialize_checkpoint`]. Cold or over-budget nodes are kept as
+    /// thin DAG checkpoints and returned in that form.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when a thin checkpoint
+    /// cannot be recorded or a requested materialization cannot be realized.
+    /// Returns other [`EngineError`] variants from checkpoint validation.
+    pub fn materialize_hot_checkpoint(
+        &mut self,
+        configuration: &Configuration,
+        policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+    ) -> Result<Checkpoint, EngineError> {
+        if let Some(checkpoint) = self.cached_snapshot(configuration) {
+            return Ok(checkpoint.clone());
+        }
+        if policy.should_materialize(self.cached_snapshot_count(), trigger) {
+            self.materialize_checkpoint(configuration)
+        } else {
+            self.record_thin_checkpoint(configuration)
+        }
+    }
+
+    /// Evicts an ordinary fat checkpoint cache entry back to its thin node.
+    ///
+    /// The checkpoint identity and denoted configuration are unchanged. The
+    /// exact-snapshot cache entry is dropped, and future realization must use
+    /// ancestor replay until the node is materialized again. Baked genesis is
+    /// not an ordinary cache entry and remains the graph root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when the thin source node
+    /// cannot be recorded. Returns [`EngineError::CheckpointNotRecorded`] if
+    /// the thin node is still absent after closure recording.
+    pub fn evict_fat_checkpoint_to_thin(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Checkpoint, EngineError> {
+        if configuration.is_genesis() {
+            return self
+                .genesis_snapshot(&configuration.def)
+                .map(|genesis| genesis.checkpoint.clone())
+                .ok_or(EngineError::MissingBakedGenesis {
+                    scenario: configuration.def.id,
+                });
+        }
+        if self.checkpoint_node(configuration.id()).is_none() {
+            self.record_checkpoint_closure(configuration)?;
+        }
+        self.cached_snapshots.remove(&configuration.id());
+        self.checkpoint_node(configuration.id()).cloned().ok_or(
+            EngineError::CheckpointNotRecorded {
+                checkpoint: configuration.id(),
+            },
+        )
+    }
+
     /// Saves `configuration` as a fat checkpoint in the temporal graph.
     ///
     /// The checkpoint cache key is the configuration's content address. Saving
@@ -1597,23 +1781,7 @@ impl TemporalGraph {
         &mut self,
         configuration: &Configuration,
     ) -> Result<Checkpoint, EngineError> {
-        self.record_configuration(configuration.clone());
-        if configuration.is_genesis() {
-            let genesis = self.genesis_snapshot(&configuration.def).ok_or(
-                EngineError::MissingBakedGenesis {
-                    scenario: configuration.def.id,
-                },
-            )?;
-            return Ok(genesis.checkpoint.clone());
-        }
-        if let Some(checkpoint) = self.cached_snapshot(configuration) {
-            return Ok(checkpoint.clone());
-        }
-
-        let runtime = instantiate(self, configuration)?;
-        let checkpoint = materialized_checkpoint_for_runtime(configuration, runtime)?;
-        self.cache_snapshot(configuration, checkpoint.clone())?;
-        Ok(checkpoint)
+        self.materialize_checkpoint(configuration)
     }
 
     /// Checks a stored fat checkpoint against its thin replay derivation.
@@ -1646,11 +1814,28 @@ impl TemporalGraph {
         } else {
             materialized_checkpoint_for_runtime(configuration, thin_runtime)?
         };
-        if checkpoint.id != thin_checkpoint.id {
+        validate_loadable_checkpoint(&thin_checkpoint, configuration)?;
+        let fat_state = checkpoint.state.as_ref().ok_or(
+            EngineError::CheckpointMaterializedStateIncomplete {
+                checkpoint: checkpoint.id,
+                reason: "missing-state",
+            },
+        )?;
+        let thin_state = thin_checkpoint.state.as_ref().ok_or(
+            EngineError::CheckpointMaterializedStateIncomplete {
+                checkpoint: thin_checkpoint.id,
+                reason: "missing-state",
+            },
+        )?;
+        if checkpoint.id != thin_checkpoint.id
+            || checkpoint.node_blobs != thin_checkpoint.node_blobs
+            || checkpoint.node_icounts != thin_checkpoint.node_icounts
+            || fat_state.id != thin_state.id
+        {
             return Err(EngineError::ReplayOracleMismatch {
                 checkpoint: checkpoint.id,
-                expected: thin_checkpoint.id,
-                actual: checkpoint.id,
+                expected: thin_state.id,
+                actual: fat_state.id,
             });
         }
 
@@ -2101,9 +2286,9 @@ pub enum EngineError {
     ReplayOracleMismatch {
         /// The fat checkpoint under test.
         checkpoint: ContentHash,
-        /// The checkpoint identity reconstructed by thin replay.
+        /// The materialized-state identity reconstructed by thin replay.
         expected: ContentHash,
-        /// The supplied fat checkpoint identity.
+        /// The supplied fat checkpoint's materialized-state identity.
         actual: ContentHash,
     },
     /// A schedule prefix or suffix could not be constructed.
