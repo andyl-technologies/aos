@@ -202,6 +202,55 @@ fn blob_pack_appends_and_reads_verified_payloads() {
 }
 
 #[test]
+fn blob_pack_payload_window_validates_lookup_bounds_without_hashing_payload() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    let payload = b"payload";
+    let hash = DurableBlake3Hash::for_bytes(payload);
+    let location = pack.append_blob(hash, payload).expect("blob appends");
+    let payload_start = location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
+    let payload_end = payload_start + payload.len() as u64;
+
+    let window = pack
+        .payload_window(location, hash)
+        .expect("payload window validates");
+
+    assert_eq!(window.record().hash(), hash);
+    assert_eq!(window.record().location(), location);
+    assert_eq!(window.hash(), hash);
+    assert_eq!(window.location(), location);
+    assert_eq!(
+        window.key(PersistBlobStore::Values),
+        PersistBlobKey::for_value(hash)
+    );
+    assert_eq!(window.payload_start(), payload_start);
+    assert_eq!(window.payload_end(), payload_end);
+    assert_eq!(window.payload_len(), payload.len() as u64);
+    assert_eq!(window.payload_range(), payload_start..payload_end);
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(pack.path())
+        .expect("pack opens for mutation");
+    file.seek(SeekFrom::Start(payload_start))
+        .expect("payload offset seeks");
+    file.write_all(b"X").expect("payload corrupts");
+    file.flush().expect("payload corruption flushes");
+
+    pack.payload_window(location, hash)
+        .expect("payload window ignores payload bytes");
+    let error = pack
+        .read_blob(location, hash)
+        .expect_err("corrupt payload errors");
+    assert!(matches!(
+        error,
+        PersistBlobPackError::PayloadHashMismatch { .. }
+    ));
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
 fn blob_pack_records_scans_verified_records_in_pack_order() {
     let path = temp_root().join("values").join("pack.blob");
     let pack = PersistBlobPack::open(&path).expect("pack opens");
@@ -298,6 +347,13 @@ fn blob_pack_read_rejects_mismatched_lookup_metadata() {
         error,
         PersistBlobPackError::RecordHashMismatch { .. }
     ));
+    let error = pack
+        .payload_window(location, DurableBlake3Hash::for_bytes(b"other payload"))
+        .expect_err("wrong window hash errors");
+    assert!(matches!(
+        error,
+        PersistBlobPackError::RecordHashMismatch { .. }
+    ));
 
     let error = pack
         .read_blob(
@@ -309,10 +365,27 @@ fn blob_pack_read_rejects_mismatched_lookup_metadata() {
         error,
         PersistBlobPackError::RecordLengthMismatch { .. }
     ));
+    let error = pack
+        .payload_window(
+            PersistBlobLocation::new(location.record_offset(), location.payload_len() + 1),
+            hash,
+        )
+        .expect_err("wrong window length errors");
+    assert!(matches!(
+        error,
+        PersistBlobPackError::RecordLengthMismatch { .. }
+    ));
 
     let error = pack
         .read_blob(PersistBlobLocation::new(0, location.payload_len()), hash)
         .expect_err("header offset errors");
+    assert!(matches!(
+        error,
+        PersistBlobPackError::InvalidRecordOffset { record_offset: 0 }
+    ));
+    let error = pack
+        .payload_window(PersistBlobLocation::new(0, location.payload_len()), hash)
+        .expect_err("header window offset errors");
     assert!(matches!(
         error,
         PersistBlobPackError::InvalidRecordOffset { record_offset: 0 }
@@ -340,6 +413,13 @@ fn blob_pack_read_rejects_truncated_payload_before_allocation() {
         .read_blob(location, hash)
         .expect_err("truncated payload errors");
 
+    assert!(matches!(
+        error,
+        PersistBlobPackError::RecordExtendsPastEnd { .. }
+    ));
+    let error = pack
+        .payload_window(location, hash)
+        .expect_err("truncated payload window errors");
     assert!(matches!(
         error,
         PersistBlobPackError::RecordExtendsPastEnd { .. }

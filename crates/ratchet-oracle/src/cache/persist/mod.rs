@@ -145,7 +145,7 @@ pub use layout::PersistLayout;
 pub use materialization::{
     PersistFileArtifactMaterialization, PersistMaterialization, PersistParseArtifactMaterialization,
 };
-pub use pack::{PersistBlobPack, PersistBlobPackRecord};
+pub use pack::{PersistBlobPack, PersistBlobPackRecord, PersistBlobPayloadWindow};
 
 // The `io` helpers are `persist`-internal; re-import them here so this module
 // and sibling modules can name them through `use super::*`.

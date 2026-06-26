@@ -35,6 +35,69 @@ impl PersistBlobPackRecord {
     }
 }
 
+/// Validated byte window for one immutable blob-pack payload.
+///
+/// This is a point-in-time description of a record's byte range. It does not
+/// pin the packfile contents; callers that read from the range after obtaining
+/// it must hold their own file or mapping validity guarantees and still verify
+/// payload bytes before trusting them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PersistBlobPayloadWindow {
+    record: PersistBlobPackRecord,
+    payload_start: u64,
+    payload_end: u64,
+}
+
+impl PersistBlobPayloadWindow {
+    const fn new(record: PersistBlobPackRecord, payload_start: u64, payload_end: u64) -> Self {
+        Self {
+            record,
+            payload_start,
+            payload_end,
+        }
+    }
+
+    /// Returns the record metadata that owns this payload window.
+    pub const fn record(self) -> PersistBlobPackRecord {
+        self.record
+    }
+
+    /// Returns the durable BLAKE3 content address declared by this record.
+    pub const fn hash(self) -> DurableBlake3Hash {
+        self.record.hash()
+    }
+
+    /// Returns this record's byte location in the packfile.
+    pub const fn location(self) -> PersistBlobLocation {
+        self.record.location()
+    }
+
+    /// Returns this record as a typed blob lookup key for `store`.
+    pub const fn key(self, store: PersistBlobStore) -> PersistBlobKey {
+        self.record.key(store)
+    }
+
+    /// Returns the byte offset where the payload starts.
+    pub const fn payload_start(self) -> u64 {
+        self.payload_start
+    }
+
+    /// Returns the byte offset one past the end of the payload.
+    pub const fn payload_end(self) -> u64 {
+        self.payload_end
+    }
+
+    /// Returns the payload length declared by this record.
+    pub const fn payload_len(self) -> u64 {
+        self.record.location().payload_len()
+    }
+
+    /// Returns the half-open byte range occupied by this payload.
+    pub fn payload_range(self) -> std::ops::Range<u64> {
+        self.payload_start..self.payload_end
+    }
+}
+
 /// An initialized immutable blob packfile.
 #[derive(Clone, Debug)]
 pub struct PersistBlobPack {
@@ -236,6 +299,31 @@ impl PersistBlobPack {
         Ok(PersistBlobLocation::new(record_offset, payload_len))
     }
 
+    /// Validates record metadata for `location` and returns its payload window.
+    ///
+    /// The record header's hash and length must match `expected_hash` and
+    /// `location`, and the resulting payload byte range must fit inside the
+    /// current packfile. This helper does not read or hash the payload bytes;
+    /// callers that materialize the payload must still verify its content, as
+    /// [`Self::read_blob`] does. The returned window is not a lease on the
+    /// file's contents; long-lived readers must revalidate or otherwise hold a
+    /// stable file/mapping view before using the range.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
+    /// inspected, seeked, or read, if `location` is invalid, if record metadata
+    /// does not match the expected lookup, or if the declared payload window
+    /// falls outside the current packfile.
+    pub fn payload_window(
+        &self,
+        location: PersistBlobLocation,
+        expected_hash: DurableBlake3Hash,
+    ) -> Result<PersistBlobPayloadWindow, PersistBlobPackError> {
+        let mut file = open_validated_blob_pack_for_read(&self.path)?;
+        self.payload_window_from_open_file(&mut file, location, expected_hash)
+    }
+
     /// Reads and verifies a blob at `location`.
     ///
     /// The record header's hash and length must match `expected_hash` and
@@ -251,12 +339,51 @@ impl PersistBlobPack {
         location: PersistBlobLocation,
         expected_hash: DurableBlake3Hash,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
+        let mut file = open_validated_blob_pack_for_read(&self.path)?;
+        let window = self.payload_window_from_open_file(&mut file, location, expected_hash)?;
+        let payload_len = usize::try_from(window.payload_len()).map_err(|_| {
+            PersistBlobPackError::PayloadTooLarge {
+                payload_len: window.payload_len() as u128,
+            }
+        })?;
+        let mut payload = Vec::new();
+        payload.try_reserve_exact(payload_len).map_err(|_| {
+            PersistBlobPackError::PayloadTooLarge {
+                payload_len: window.payload_len() as u128,
+            }
+        })?;
+        payload.resize(payload_len, 0);
+        file.seek(SeekFrom::Start(window.payload_start()))
+            .map_err(|source| PersistBlobPackError::Seek {
+                path: self.path.clone(),
+                source,
+            })?;
+        file.read_exact(&mut payload)
+            .map_err(|source| PersistBlobPackError::Read {
+                path: self.path.clone(),
+                source,
+            })?;
+        let actual = DurableBlake3Hash::for_bytes(&payload);
+        if actual != expected_hash {
+            return Err(PersistBlobPackError::PayloadHashMismatch {
+                expected: expected_hash,
+                actual,
+            });
+        }
+        Ok(payload)
+    }
+
+    fn payload_window_from_open_file(
+        &self,
+        file: &mut fs::File,
+        location: PersistBlobLocation,
+        expected_hash: DurableBlake3Hash,
+    ) -> Result<PersistBlobPayloadWindow, PersistBlobPackError> {
         if location.record_offset() < PERSIST_BLOB_PACK_HEADER_LEN as u64 {
             return Err(PersistBlobPackError::InvalidRecordOffset {
                 record_offset: location.record_offset(),
             });
         }
-        let mut file = open_validated_blob_pack_for_read(&self.path)?;
         file.seek(SeekFrom::Start(location.record_offset()))
             .map_err(|source| PersistBlobPackError::Seek {
                 path: self.path.clone(),
@@ -312,31 +439,11 @@ impl PersistBlobPack {
                 pack_len,
             });
         }
-        let payload_len = usize::try_from(record.payload_len()).map_err(|_| {
-            PersistBlobPackError::PayloadTooLarge {
-                payload_len: record.payload_len() as u128,
-            }
-        })?;
-        let mut payload = Vec::new();
-        payload.try_reserve_exact(payload_len).map_err(|_| {
-            PersistBlobPackError::PayloadTooLarge {
-                payload_len: record.payload_len() as u128,
-            }
-        })?;
-        payload.resize(payload_len, 0);
-        file.read_exact(&mut payload)
-            .map_err(|source| PersistBlobPackError::Read {
-                path: self.path.clone(),
-                source,
-            })?;
-        let actual = DurableBlake3Hash::for_bytes(&payload);
-        if actual != expected_hash {
-            return Err(PersistBlobPackError::PayloadHashMismatch {
-                expected: expected_hash,
-                actual,
-            });
-        }
-        Ok(payload)
+        Ok(PersistBlobPayloadWindow::new(
+            PersistBlobPackRecord::new(record.hash(), location),
+            payload_start,
+            payload_end,
+        ))
     }
 
     /// Truncates unneeded bytes after `end_offset`.
