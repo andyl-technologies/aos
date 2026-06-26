@@ -2271,6 +2271,8 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "native-eval")]
+    use std::fs;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt;
     #[cfg(feature = "native-eval")]
@@ -3046,6 +3048,61 @@ mod tests {
 
         let after = native_success_stats();
         assert!(after.expression_evaluations() > before.expression_evaluations());
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn aos_nix_cache_zero_bypasses_native_closure_cache_root() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = root.path().join("store");
+        let state = root.path().join("state");
+        let log = root.path().join("log");
+        let disabled_cache_root = root.path().join("cache-disabled-file");
+        fs::write(&disabled_cache_root, b"not a cache directory")?;
+        let source = r#"derivationStrict {
+             name = "cache-zero";
+             system = builtins.currentSystem;
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             args = [ builtins.currentSystem ];
+           }"#;
+
+        let mut baseline_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        baseline_config.set_eval_mode(NixEvalMode::Impure);
+        baseline_config.set_current_system("x86_64-linux")?;
+        baseline_config.clear_native_cache_root();
+        let baseline_evaluator = NativeOnlyEval::new(0, baseline_config)?;
+        let baseline = baseline_evaluator.native.instantiate_expr_closure(source)?;
+
+        let mut disabled_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        disabled_config.set_eval_mode(NixEvalMode::Impure);
+        disabled_config.set_current_system("x86_64-linux")?;
+        disabled_config.set_native_cache_root(&disabled_cache_root)?;
+        disabled_config.set_aos_nix_cache_env_var("0".to_owned());
+        assert_eq!(disabled_config.native_cache_root(), None);
+        let disabled_options = tree_walk_options_from_config(&disabled_config)?;
+        assert_eq!(disabled_options.parse_cache_root(), None);
+        assert_eq!(disabled_options.persist_cache_root(), None);
+        assert!(!disabled_options.eval_cache_enabled());
+        let disabled_evaluator = NativeOnlyEval::new(0, disabled_config)?;
+        let disabled = disabled_evaluator.native.instantiate_expr_closure(source)?;
+
+        let (baseline_root, baseline_drvs) = baseline.into_parts();
+        let (disabled_root, disabled_drvs) = disabled.into_parts();
+        assert_eq!(disabled_root, baseline_root);
+        assert_eq!(disabled_drvs, baseline_drvs);
+        assert!(
+            disabled_cache_root.is_file(),
+            "AOS_NIX_CACHE=0 should not touch the stale cache-root path"
+        );
         Ok(())
     }
 
