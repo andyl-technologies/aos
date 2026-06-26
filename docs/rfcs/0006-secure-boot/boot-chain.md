@@ -144,7 +144,12 @@ won't load the unsigned modules an attacker would need.
   fully locked appliance would enable verity on the read-only root with the
   root hash baked into the (signed) UKI cmdline, so the signature chain
   extends to every rootfs block. Called out as a natural phase-2+ addition,
-  not required for SB enforcement.
+  not required for SB enforcement. This same verity-on-root + signed-roothash is
+  the precondition for RFC-0012's password-less emergency/recovery shell
+  ([RFC-0012 §Emergency and recovery access](../0012-golden-image-installer/README.md)):
+  once a tampered root fails closed at boot, console root can no longer persist a
+  change, so the off-machine LUKS recovery key — not a baked root password —
+  becomes the authorization factor for the recovery path.
 
 ## Enrollment hook on hardware
 
