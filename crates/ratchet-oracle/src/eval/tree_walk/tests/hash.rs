@@ -252,7 +252,7 @@ fn configured_cache_preserves_guarded_hash_file_surface() {
     let payload_path = path_bytes(&root.join("payload.txt"));
     let expected_trace = vec![
         ImpureInputFingerprint::path_exists(&marker_path, true).expect("fingerprint builds"),
-        ImpureInputFingerprint::read_file(&payload_path, payload).expect("fingerprint builds"),
+        ImpureInputFingerprint::hash_file(&payload_path, payload).expect("fingerprint builds"),
     ];
     let source = r#"let
              b = builtins;

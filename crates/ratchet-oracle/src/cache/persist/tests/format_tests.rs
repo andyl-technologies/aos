@@ -1114,6 +1114,13 @@ fn node_trace_payload_uses_stable_wire_bytes() {
         DurableBlake3Hash::from_bytes([0x11; 32]),
     )
     .expect("readFile persisted input builds");
+    let hash_file = CacheableInputFingerprint::from_observation_hash(
+        ImpureInputKind::HashFile,
+        ImpureInputMode::Default,
+        b"/bin",
+        DurableBlake3Hash::from_bytes([0x33; 32]),
+    )
+    .expect("hashFile persisted input builds");
     let path_exists = CacheableInputFingerprint::from_observation_hash(
         ImpureInputKind::PathExists,
         ImpureInputMode::RequireDirectory,
@@ -1121,19 +1128,25 @@ fn node_trace_payload_uses_stable_wire_bytes() {
         DurableBlake3Hash::from_bytes([0x22; 32]),
     )
     .expect("pathExists persisted input builds");
-    let payload = PersistNodeTracePayload::from_cacheable_inputs([read_file, path_exists])
-        .expect("payload builds");
+    let payload =
+        PersistNodeTracePayload::from_cacheable_inputs([read_file, hash_file, path_exists])
+            .expect("payload builds");
 
     let encoded = payload.encode().expect("payload encodes");
     let mut expected = Vec::new();
     expected.extend_from_slice(b"AOS-NIX-NTRACE01");
     expected.extend_from_slice(&2u32.to_le_bytes());
-    expected.extend_from_slice(&2u64.to_le_bytes());
+    expected.extend_from_slice(&3u64.to_le_bytes());
     expected.push(2);
     expected.push(1);
     expected.extend_from_slice(&2u64.to_le_bytes());
     expected.extend_from_slice(&[0x11; 32]);
     expected.extend_from_slice(b"/a");
+    expected.push(7);
+    expected.push(1);
+    expected.extend_from_slice(&4u64.to_le_bytes());
+    expected.extend_from_slice(&[0x33; 32]);
+    expected.extend_from_slice(b"/bin");
     expected.push(5);
     expected.push(2);
     expected.extend_from_slice(&4u64.to_le_bytes());
@@ -1144,8 +1157,10 @@ fn node_trace_payload_uses_stable_wire_bytes() {
     assert_eq!(encoded[0..16], *b"AOS-NIX-NTRACE01");
     assert_eq!(encoded[28], 2);
     assert_eq!(encoded[29], 1);
-    assert_eq!(encoded[72], 5);
-    assert_eq!(encoded[73], 2);
+    assert_eq!(encoded[72], 7);
+    assert_eq!(encoded[73], 1);
+    assert_eq!(encoded[118], 5);
+    assert_eq!(encoded[119], 2);
 }
 
 #[test]
@@ -1192,6 +1207,8 @@ fn node_trace_payload_round_trips_cacheable_input_records() {
             .expect("import input builds"),
         ImpureInputFingerprint::read_file(b"/src/README", b"readme bytes")
             .expect("readFile input builds"),
+        ImpureInputFingerprint::hash_file(b"/src/archive.bin", b"binary\0bytes")
+            .expect("hashFile input builds"),
         ImpureInputFingerprint::read_dir(
             b"/src",
             [

@@ -14,6 +14,7 @@ use super::DurableBlake3Hash;
 const IDENTITY_DOMAIN: &[u8] = b"aos-nix-input-identity-v1";
 const IMPORT_OBSERVATION_DOMAIN: &[u8] = b"aos-nix-input-import-observation-v1";
 const READ_FILE_OBSERVATION_DOMAIN: &[u8] = b"aos-nix-input-read-file-observation-v1";
+const HASH_FILE_OBSERVATION_DOMAIN: &[u8] = b"aos-nix-input-hash-file-observation-v1";
 const READ_DIR_OBSERVATION_DOMAIN: &[u8] = b"aos-nix-input-read-dir-observation-v1";
 const READ_FILE_TYPE_OBSERVATION_DOMAIN: &[u8] = b"aos-nix-input-read-file-type-observation-v1";
 const GET_ENV_OBSERVATION_DOMAIN: &[u8] = b"aos-nix-input-get-env-observation-v1";
@@ -57,6 +58,23 @@ impl ImpureInputFingerprint {
         hasher.update_chunk(contents)?;
         Self::cacheable(
             ImpureInputKind::ReadFile,
+            ImpureInputMode::Default,
+            path,
+            hasher.finalize(),
+        )
+    }
+
+    /// Creates a fingerprint for `builtins.hashFile`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InputFingerprintError`] if the path identity cannot be copied
+    /// or any encoded chunk length does not fit in `u64`.
+    pub fn hash_file(path: &[u8], contents: &[u8]) -> Result<Self, InputFingerprintError> {
+        let mut hasher = InputHasher::new(HASH_FILE_OBSERVATION_DOMAIN);
+        hasher.update_chunk(contents)?;
+        Self::cacheable(
+            ImpureInputKind::HashFile,
             ImpureInputMode::Default,
             path,
             hasher.finalize(),
@@ -317,6 +335,8 @@ pub enum ImpureInputKind {
     Import,
     /// A `builtins.readFile` read.
     ReadFile,
+    /// A `builtins.hashFile` read.
+    HashFile,
     /// A `builtins.readDir` read.
     ReadDir,
     /// A `builtins.readFileType` metadata read.
@@ -333,6 +353,7 @@ impl ImpureInputKind {
         match self {
             Self::Import => b"import",
             Self::ReadFile => b"read-file",
+            Self::HashFile => b"hash-file",
             Self::ReadDir => b"read-dir",
             Self::ReadFileType => b"read-file-type",
             Self::PathExists => b"path-exists",
@@ -537,11 +558,16 @@ mod tests {
             cacheable(ImpureInputFingerprint::import(b"/tmp/data", b"same").expect("hashes"));
         let read_file =
             cacheable(ImpureInputFingerprint::read_file(b"/tmp/data", b"same").expect("hashes"));
+        let hash_file =
+            cacheable(ImpureInputFingerprint::hash_file(b"/tmp/data", b"same").expect("hashes"));
 
         assert_eq!(imported.kind(), ImpureInputKind::Import);
         assert_eq!(read_file.kind(), ImpureInputKind::ReadFile);
+        assert_eq!(hash_file.kind(), ImpureInputKind::HashFile);
         assert_ne!(imported.identity().hash(), read_file.identity().hash());
         assert_ne!(imported.observation_hash(), read_file.observation_hash());
+        assert_ne!(read_file.identity().hash(), hash_file.identity().hash());
+        assert_ne!(read_file.observation_hash(), hash_file.observation_hash());
     }
 
     #[test]
@@ -566,6 +592,20 @@ mod tests {
             first.identity().hash(),
             same_contents_elsewhere.identity().hash()
         );
+    }
+
+    #[test]
+    fn hash_file_hash_accepts_binary_contents() {
+        let first =
+            cacheable(ImpureInputFingerprint::hash_file(b"/tmp/data", b"a\0b").expect("hashes"));
+        let second =
+            cacheable(ImpureInputFingerprint::hash_file(b"/tmp/data", b"a\0c").expect("hashes"));
+
+        assert_eq!(first.kind(), ImpureInputKind::HashFile);
+        assert_eq!(first.identity().subject(), b"/tmp/data");
+        assert_eq!(first.identity().mode(), ImpureInputMode::Default);
+        assert_eq!(first.identity().hash(), second.identity().hash());
+        assert_ne!(first.observation_hash(), second.observation_hash());
     }
 
     #[test]

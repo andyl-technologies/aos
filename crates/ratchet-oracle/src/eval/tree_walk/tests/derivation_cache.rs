@@ -740,7 +740,7 @@ fn persistent_read_file_force_cache_stale_miss_preserves_drv_surfaces() {
 #[test]
 fn persistent_hash_file_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
     let root = unique_temp_dir("force-cache-hash-file-drv-source");
-    fs::write(root.join("input.txt"), b"first hash payload").expect("input file writes");
+    fs::write(root.join("input.txt"), b"first hash\0payload").expect("input file writes");
     let root = fs::canonicalize(root).expect("source root canonicalizes");
     let input_path = path_bytes(&root.join("input.txt"));
     let source = r#"let
@@ -755,11 +755,11 @@ fn persistent_hash_file_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
            }"#;
     let ir = lower(source);
     let first_trace = vec![
-        ImpureInputFingerprint::read_file(&input_path, b"first hash payload")
+        ImpureInputFingerprint::hash_file(&input_path, b"first hash\0payload")
             .expect("first fingerprint builds"),
     ];
     let changed_trace = vec![
-        ImpureInputFingerprint::read_file(&input_path, b"changed hash payload")
+        ImpureInputFingerprint::hash_file(&input_path, b"changed hash\0payload")
             .expect("changed fingerprint builds"),
     ];
 
@@ -840,7 +840,7 @@ fn persistent_hash_file_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
         "fresh-runtime hashFile hit should load the expected force-cache metadata key"
     );
 
-    fs::write(root.join("input.txt"), b"changed hash payload").expect("input file changes");
+    fs::write(root.join("input.txt"), b"changed hash\0payload").expect("input file changes");
 
     let mut uncached_changed_options = TreeWalkOptions::new();
     configure_options(&mut uncached_changed_options);

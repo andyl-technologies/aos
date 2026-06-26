@@ -145,6 +145,18 @@ impl<'a> TreeWalkImpureInputRevalidator<'a> {
         ImpureInputFingerprint::read_file(path, &contents).ok()
     }
 
+    fn revalidate_hash_file(
+        &self,
+        identity: &ImpureInputIdentity,
+    ) -> Option<ImpureInputFingerprint> {
+        let path = identity.subject();
+        if !self.filesystem_path_is_allowed(path) {
+            return None;
+        }
+        let contents = fs::read(Path::new(OsStr::from_bytes(path))).ok()?;
+        ImpureInputFingerprint::hash_file(path, &contents).ok()
+    }
+
     fn revalidate_read_dir(
         &self,
         identity: &ImpureInputIdentity,
@@ -242,6 +254,7 @@ impl ImpureInputRevalidator for TreeWalkImpureInputRevalidator<'_> {
         let fingerprint = match identity.kind() {
             ImpureInputKind::Import => self.revalidate_import(identity),
             ImpureInputKind::ReadFile => self.revalidate_read_file(identity),
+            ImpureInputKind::HashFile => self.revalidate_hash_file(identity),
             ImpureInputKind::ReadDir => self.revalidate_read_dir(identity),
             ImpureInputKind::ReadFileType => self.revalidate_read_file_type(identity),
             ImpureInputKind::PathExists => self.revalidate_path_exists(identity),

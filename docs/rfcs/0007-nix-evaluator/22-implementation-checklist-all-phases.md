@@ -1745,16 +1745,17 @@ alone (`M-1`/`Q-A`).
 - [x] Current node verifying-trace payload codec:
       `PersistNodeTracePayload` frames complete cacheable impure-input traces
       as versioned little-endian bytes with a magic header, typed input
-      kind/mode tags, raw identity subjects, and observed-result hashes, plus a
-      schema-version-4 tombstone marker for explicitly invalidating older trace
-      records. `CacheableInputFingerprint::from_observation_hash` reconstructs
-      the persisted fingerprints without re-reading the host. The standalone
+      kind/mode tags including binary-safe `hashFile`, raw identity subjects,
+      and observed-result hashes, plus a schema-version-5 tombstone marker for
+      explicitly invalidating older trace records.
+      `CacheableInputFingerprint::from_observation_hash` reconstructs the
+      persisted fingerprints without re-reading the host. The standalone
       payload decoder preserves trace order, accepts version-1 trace
       payload bytes for direct decoding, rejects version-1 tombstone sentinels,
       rejects uncacheable `currentTime`, impossible kind/mode pairs, malformed
       tags, truncated payloads, and trailing bytes, and exposes stable payload
       constants for node-trace sidecars. This is payload-format compatibility
-      only, not a non-destructive schema-3 cache-root migration. This is
+      only, not a non-destructive schema-4 cache-root migration. This is
       payload-format substrate only; cache-level sidecar storage is covered
       below, while evaluator durable hit selection, revalidation, currentTime
       taint propagation through persisted dependents, mmap reads, GC/repack,
@@ -1769,7 +1770,7 @@ alone (`M-1`/`Q-A`).
       `PersistCache::record_node_trace`, `record_node_trace_tombstone`, and
       `lookup_node_trace` expose the sidecar through the opened cache root.
       Same-process same-root cache-level appends share the trace write lock.
-      This schema-version-4 log is a simple append-only substrate only;
+      This schema-version-5 log is a simple append-only substrate only;
       LMDB/redb node tables, transactionality with node metadata or value
       blobs, automatic evaluator writeback beyond the force-cache bridge below,
       durable hit selection, revalidation, currentTime taint propagation through
@@ -2283,36 +2284,41 @@ alone (`M-1`/`Q-A`).
       (`C-13`/`C-14`/`R-10`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
-      `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus
-      an explicit uncacheable `currentTime` marker. This is a fingerprinting
-      primitive only; tree-walk builtins, demand-graph leaves,
-      allowed-path/IFD/fetch interactions, and edge-exactness harness coverage
-      remain open (`R-10`).
+      `import`/`readFile`/`hashFile`/`readDir`/`readFileType`/`pathExists`/
+      `getEnv`, plus an explicit uncacheable `currentTime` marker. `hashFile`
+      has its own binary-safe read identity and observation domain rather than
+      sharing `readFile`'s string-read domain. This is a fingerprinting
+      primitive only; tree-walk builtins, demand-graph leaves, allowed-path/IFD/
+      fetch interactions, and edge-exactness harness coverage remain open
+      (`R-10`).
 - [x] Current tree-walk impure-input observation trace: successful ordinary
       filesystem `import`, `readFile`, `hashFile`, `readDir`, `readFileType`,
       `pathExists`, and impure-mode `getEnv` calls append `cache/input.rs`
       fingerprints to `TreeWalk`/`EvalOutcome`; ordinary filesystem `hashFile`
-      reuses the `ReadFile` fingerprint for the bytes it hashes; selected
-      `currentTime` appends an uncacheable marker. Trace construction failures
-      mark the trace incomplete/cache-unusable without changing Nix evaluation
-      semantics. This is an evaluator observation surface only; demand-graph
-      leaves, dependency wiring, persistence, allowed-path/IFD/fetch
-      interactions, and edge-exactness harness coverage remain open (`R-10`).
+      records a binary-safe `hashFile` input fingerprint for the bytes it
+      hashes; selected `currentTime` appends an uncacheable marker. Trace
+      construction failures mark the trace incomplete/cache-unusable without
+      changing Nix evaluation semantics. This is an evaluator observation
+      surface only; demand-graph leaves, dependency wiring, persistence,
+      allowed-path/IFD/fetch interactions, and edge-exactness harness coverage
+      remain open (`R-10`).
 - [x] Current `hashFile` impure-leaf force-cache canary:
       `persistent_hash_file_force_cache_hit_and_stale_miss_preserve_drv_surfaces`
       evaluates a derivation attr path whose `args` include
       first-class `b.hashFile "sha256" ./input.txt`, materializes the first
-      file payload through configured persistent force-cache writeback, verifies
-      a fresh-runtime persistent hit for that `ReadFile`-fingerprinted payload
-      with no force-cache misses, mutates the hashed file, requires the stale
-      run to miss and recompute, then verifies same-runtime and fresh-runtime
-      hits for the changed payload with no force-cache misses while preserving
-      cache-on/cache-off `.drv` path and ATerm parity for both file versions.
+      binary file payload through configured persistent force-cache writeback,
+      verifies a fresh-runtime persistent hit for that `hashFile`-fingerprinted
+      payload with no force-cache misses, mutates the hashed file, requires the
+      stale run to miss and recompute, then verifies same-runtime and
+      fresh-runtime hits for the changed binary payload with no force-cache
+      misses while preserving cache-on/cache-off `.drv` path and ATerm parity
+      for both file versions.
       This proves selected ordinary filesystem full-arity first-class
-      `hashFile` payload trace admission and stale-payload fallback inside a
-      derivation input surface only; partially applied hashFile payload caching,
-      allowed-path/IFD/fetch interactions, text-store-only paths, full automatic
-      demand-edge wiring, and edge-exactness harness coverage remain open
+      `hashFile` payload trace admission, binary-safe revalidation, and
+      stale-payload fallback inside a derivation input surface only; partially
+      applied hashFile payload caching, allowed-path/IFD/fetch interactions,
+      text-store-only paths, full automatic demand-edge wiring, and
+      edge-exactness harness coverage remain open
       (`R-10`/`S-14`).
 - [x] Current cache-side impure leaf substrate: domain-separated
       `DemandCacheKey` construction from typed input identities,

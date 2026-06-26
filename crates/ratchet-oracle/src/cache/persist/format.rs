@@ -1926,6 +1926,7 @@ fn node_trace_input_kind_tag(kind: ImpureInputKind) -> u8 {
         ImpureInputKind::ReadFileType => 4,
         ImpureInputKind::PathExists => 5,
         ImpureInputKind::GetEnv => 6,
+        ImpureInputKind::HashFile => 7,
     }
 }
 
@@ -1939,6 +1940,7 @@ fn node_trace_input_kind_from_tag(
         4 => Ok(ImpureInputKind::ReadFileType),
         5 => Ok(ImpureInputKind::PathExists),
         6 => Ok(ImpureInputKind::GetEnv),
+        7 => Ok(ImpureInputKind::HashFile),
         _ => Err(PersistNodeTracePayloadError::InvalidInputKindTag { tag }),
     }
 }

@@ -281,7 +281,7 @@ fn hash_file_primop_records_impure_input_trace() {
         .get_string(outcome.value())
         .expect("hashFile result is a string");
     let expected = vec![
-        ImpureInputFingerprint::read_file(path.as_bytes(), b"trace-data")
+        ImpureInputFingerprint::hash_file(path.as_bytes(), b"trace-data")
             .expect("fingerprint builds"),
     ];
 

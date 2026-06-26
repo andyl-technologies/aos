@@ -523,7 +523,7 @@ impl TreeWalk {
                     path_span,
                 )
             })?;
-            self.record_impure_input_result(ImpureInputFingerprint::read_file(&path, &contents));
+            self.record_impure_input_result(ImpureInputFingerprint::hash_file(&path, &contents));
             contents
         };
         let digest = Self::hash_bytes(&contents, algorithm);

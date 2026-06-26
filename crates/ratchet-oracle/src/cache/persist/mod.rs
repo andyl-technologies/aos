@@ -29,7 +29,7 @@ use super::{
 /// The persistent eval-cache schema format marker.
 pub const PERSIST_CACHE_FORMAT: &str = "aos-nix-eval-cache";
 /// The persistent eval-cache schema version.
-pub const PERSIST_CACHE_SCHEMA_VERSION: u32 = 4;
+pub const PERSIST_CACHE_SCHEMA_VERSION: u32 = 5;
 /// The fixed magic bytes at the start of every immutable blob packfile.
 pub const PERSIST_BLOB_PACK_MAGIC: [u8; 16] = *b"AOS-NIX-BLOBPACK";
 /// The immutable blob packfile format version.
