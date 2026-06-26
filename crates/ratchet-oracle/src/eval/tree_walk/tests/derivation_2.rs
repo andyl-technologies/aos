@@ -248,6 +248,24 @@ fn enabled_eval_cache_options_with_store_dir(store_dir: Vec<u8>) -> TreeWalkOpti
     options
 }
 
+fn derivation_surfaces(outcome: &EvalOutcome) -> Vec<(String, Vec<u8>)> {
+    let mut surfaces = outcome
+        .derivations()
+        .iter()
+        .map(|derivation| {
+            (
+                derivation.absolute_path().to_owned(),
+                derivation
+                    .aterm_bytes()
+                    .expect("derivation has ATerm bytes")
+                    .to_vec(),
+            )
+        })
+        .collect::<Vec<_>>();
+    surfaces.sort_by(|left, right| left.0.cmp(&right.0));
+    surfaces
+}
+
 #[test]
 fn derivation_strict_observes_aterm_early_cutoff_in_eval_cache() {
     let source = r#"derivationStrict {
@@ -607,25 +625,98 @@ fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
 }
 
 #[test]
-fn derivation_strict_cached_aterm_path_reuse_preserves_deferred_surfaces() {
-    fn derivation_surfaces(outcome: &EvalOutcome) -> Vec<(String, Vec<u8>)> {
-        let mut surfaces = outcome
-            .derivations()
-            .iter()
-            .map(|derivation| {
-                (
-                    derivation.absolute_path().to_owned(),
-                    derivation
-                        .aterm_bytes()
-                        .expect("derivation has ATerm bytes")
-                        .to_vec(),
-                )
-            })
-            .collect::<Vec<_>>();
-        surfaces.sort_by(|left, right| left.0.cmp(&right.0));
-        surfaces
-    }
+fn derivation_strict_cached_static_closure_reuse_preserves_drv_surfaces() {
+    let source = r#"let
+        base = derivationStrict {
+            name = "base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            env = "same";
+        };
+        sibling = derivationStrict {
+            name = "sibling";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            env = "same";
+        };
+    in derivationStrict {
+        name = "downstream";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        input = base.out;
+        other = sibling.drvPath;
+    }"#;
+    let ir = lower(source);
+    let uncached = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        None,
+        Arc::new(Mutex::new(EvalCacheRuntime::disabled())),
+    )
+    .expect("uncached static derivation graph evaluates");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let first = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        enabled_eval_cache_options(),
+        None,
+        cache.clone(),
+    )
+    .expect("first cached static derivation graph evaluates");
+    let reuse = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        enabled_eval_cache_options(),
+        None,
+        cache.clone(),
+    )
+    .expect("reuse static derivation graph evaluates");
+    let uncached_surfaces = derivation_surfaces(&uncached);
 
+    assert_eq!(uncached_surfaces.len(), 3);
+    assert!(
+        uncached_surfaces
+            .iter()
+            .any(|(path, _)| path.ends_with("-base.drv"))
+    );
+    assert!(
+        uncached_surfaces
+            .iter()
+            .any(|(path, _)| path.ends_with("-sibling.drv"))
+    );
+    assert!(
+        uncached_surfaces
+            .iter()
+            .any(|(path, _)| path.ends_with("-downstream.drv"))
+    );
+    assert_eq!(derivation_surfaces(&first), uncached_surfaces);
+    assert_eq!(derivation_surfaces(&reuse), uncached_surfaces);
+    assert_eq!(uncached.stats().derivation_aterm_path_reuses(), 0);
+    assert_eq!(uncached.stats().static_derivation_output_path_reuses(), 0);
+    assert_eq!(first.stats().derivation_aterm_path_reuses(), 0);
+    assert_eq!(first.stats().static_derivation_output_path_reuses(), 0);
+    assert_eq!(reuse.stats().derivation_aterm_path_reuses(), 2);
+    assert_eq!(reuse.stats().static_derivation_output_path_reuses(), 2);
+    assert_eq!(
+        cache
+            .lock()
+            .expect("cache lock is valid")
+            .cache()
+            .expect("runtime is enabled")
+            .derivation_aterm_path_record_count(),
+        2
+    );
+    assert_eq!(
+        cache
+            .lock()
+            .expect("cache lock is valid")
+            .cache()
+            .expect("runtime is enabled")
+            .static_derivation_output_path_record_count(),
+        2
+    );
+}
+
+#[test]
+fn derivation_strict_cached_aterm_path_reuse_preserves_deferred_surfaces() {
     let source = r#"let
         base = derivationStrict {
             name = "base";

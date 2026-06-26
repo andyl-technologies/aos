@@ -948,10 +948,13 @@ alone (`M-1`/`Q-A`).
 - [x] Current cached derivationStrict `.drv` surface parity canary:
       tree-walk tests compare cache-off, cache-on first-observation, and
       cache-on path-reuse runs for root static, floating-CA, and impure
-      derivations, plus a deferred-placeholder downstream graph, requiring
-      identical recorded `.drv` paths and ATerm bytes across those runs. The
-      static root case also proves one static-output-path reuse before final
-      `.drv` path reuse. This is selected in-memory reuse parity only;
+      derivations, a static input-closure graph, plus a deferred-placeholder
+      downstream graph, requiring identical recorded `.drv` paths and ATerm
+      bytes across those runs. The static root case proves one
+      static-output-path reuse before final `.drv` path reuse, and the static
+      input-closure case proves two eligible input derivations reuse static
+      output paths and final `.drv` paths without changing the downstream
+      closure surface. This is selected in-memory reuse parity only;
       full-closure cached/uncached parity, persistent reuse, dynamic dependency
       capture beyond hashable lexical captures, initial modulo-hash shortcuts,
       and full SHA-256 store-path short-circuiting remain open
