@@ -1082,9 +1082,21 @@ authority for its shape. The contract those files may rely on:
     time ordering, scenario identity sensitivity to the plan, and continued
     build-time node/link validation. `checks.crucible.phase1.spatialPlanComponent`
     gates the task.
-- [ ] **T-SPAT-13** Carry `Properties` as an orthogonal content-addressed component
+- [x] **T-SPAT-13** Carry `Properties` as an orthogonal content-addressed component
   (defined in 18) with build-time predicate node-reference validation. — satisfies
   [SPAT-21]; spec §5.2.
+  - Completed in `crates/crucible/src/model.rs`: `Properties` now carries an
+    independent content hash over canonical `AssertionDef` material, covers the
+    five property quantifier shapes from file 18, and validates every declared
+    predicate node reference against `World` before scenario composition.
+    `World::scenario_def_with_plan_and_properties` composes `World`, `Plan`, and
+    `Properties` component hashes without folding assertions into topology or
+    faults. The focused
+    `properties_content_address_is_orthogonal_and_validated` test covers
+    authoring-order independence, property reuse across compatible worlds,
+    scenario identity sensitivity to properties, and rejection of undeclared
+    predicate nodes. `checks.crucible.phase1.spatialPropertiesComponent` gates
+    the task.
 - [ ] **T-SPAT-14** Carry `Seed` as the root entropy (04), part of identity, with
   name-hashed per-entity stream forking so unrelated `World` edits don't perturb
   other streams. — satisfies [SPAT-22]; spec §5.3.

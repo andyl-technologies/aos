@@ -762,17 +762,19 @@ impl World {
         }
     }
 
-    /// Builds the canonical genesis scenario definition for this world and an empty plan.
+    /// Builds the canonical genesis scenario definition for this world, empty plan,
+    /// and empty properties.
     ///
-    /// Later spatial-graph tasks add `Properties` and `Seed`; until then this
-    /// helper composes the independently hashed `World` and empty `Plan`
+    /// Later spatial-graph tasks add `Seed`; until then this helper composes the
+    /// independently hashed `World`, empty [`Plan`], and empty [`Properties`]
     /// components.
     #[must_use]
     pub fn scenario_def(&self) -> ScenarioDef {
-        self.scenario_def_from_plan_identity(&Plan::empty())
+        self.scenario_def_from_components(&Plan::empty(), &Properties::empty())
     }
 
-    /// Builds the canonical scenario definition for this world and plan.
+    /// Builds the canonical scenario definition for this world, plan, and empty
+    /// properties.
     ///
     /// # Errors
     ///
@@ -784,13 +786,49 @@ impl World {
     /// layered over this world's static topology.
     pub fn scenario_def_with_plan(&self, plan: &Plan) -> Result<ScenarioDef, EngineError> {
         plan.validate_for_world(self)?;
-        Ok(self.scenario_def_from_plan_identity(plan))
+        Ok(self.scenario_def_from_components(plan, &Properties::empty()))
     }
 
-    fn scenario_def_from_plan_identity(&self, plan: &Plan) -> ScenarioDef {
+    /// Builds the canonical scenario definition for this world, empty plan, and
+    /// properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::PropertyDuplicateAssertionId`],
+    /// [`EngineError::PropertyPredicateUnknownNode`], or
+    /// [`EngineError::PropertyPredicateEmptyCompound`] when `properties` cannot
+    /// be layered over this world's static topology.
+    pub fn scenario_def_with_properties(
+        &self,
+        properties: &Properties,
+    ) -> Result<ScenarioDef, EngineError> {
+        properties.validate_for_world(self)?;
+        Ok(self.scenario_def_from_components(&Plan::empty(), properties))
+    }
+
+    /// Builds the canonical scenario definition for this world, plan, and
+    /// properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plan validation error when `plan` cannot be layered over this
+    /// world's static topology, or a property validation error when `properties`
+    /// names undeclared predicate nodes or otherwise violates the declarative
+    /// property model.
+    pub fn scenario_def_with_plan_and_properties(
+        &self,
+        plan: &Plan,
+        properties: &Properties,
+    ) -> Result<ScenarioDef, EngineError> {
+        plan.validate_for_world(self)?;
+        properties.validate_for_world(self)?;
+        Ok(self.scenario_def_from_components(plan, properties))
+    }
+
+    fn scenario_def_from_components(&self, plan: &Plan, properties: &Properties) -> ScenarioDef {
         ScenarioDef::from_canonical_material(
-            "crucible.model.world-plan-scenario.v1",
-            &scenario_world_plan_material(self, plan),
+            "crucible.model.world-plan-properties-scenario.v1",
+            &scenario_world_plan_properties_material(self, plan, properties),
         )
     }
 }
@@ -1919,6 +1957,218 @@ impl Plan {
                 &plan_material(&entries),
             ),
             entries,
+        }
+    }
+}
+
+/// A stable assertion identifier inside a [`Properties`] bundle.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AssertionId {
+    /// The canonical assertion name.
+    pub name: String,
+}
+
+impl AssertionId {
+    /// Builds an assertion id from a canonical name.
+    #[must_use]
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+/// A stable white-box marker identifier.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MarkerId {
+    /// The canonical marker name.
+    pub name: String,
+}
+
+impl MarkerId {
+    /// Builds a marker id from a canonical name.
+    #[must_use]
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+/// Disposition for an ordinary reachable marker that is never reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReachableDisposition {
+    /// Report a coverage warning when the marker is never reached.
+    Warn,
+    /// Treat the never-reached marker as a property failure.
+    Fail,
+}
+
+/// Reachability expectation and never-reached policy for a coverage property.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReachabilityExpectation {
+    /// The predicate is expected to become true at least once.
+    Reachable {
+        /// Disposition when the predicate is never reached.
+        on_unreached: ReachableDisposition,
+    },
+    /// The predicate is expected to remain false throughout the run.
+    Unreachable,
+}
+
+/// The declarative predicate vocabulary used by properties.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Predicate {
+    /// A named host-side predicate resolved by the harness and event log.
+    Named {
+        /// Stable predicate name.
+        name: String,
+        /// Declared nodes the predicate references.
+        nodes: Vec<NodeId>,
+    },
+    /// A named white-box marker emitted by the optional guest-host channel.
+    GuestMarker {
+        /// Stable marker identity.
+        marker: MarkerId,
+    },
+    /// Logical conjunction over sub-predicates.
+    AllOf {
+        /// Predicates that must all hold.
+        predicates: Vec<Predicate>,
+    },
+    /// Logical disjunction over sub-predicates.
+    AnyOf {
+        /// Predicates where at least one must hold.
+        predicates: Vec<Predicate>,
+    },
+    /// Latching predicate that remains true once its inner predicate holds.
+    Once {
+        /// Predicate being latched.
+        predicate: Box<Predicate>,
+    },
+    /// Logical negation of an inner predicate.
+    Not {
+        /// Predicate being negated.
+        predicate: Box<Predicate>,
+    },
+}
+
+/// A temporal property declaration.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Property {
+    /// Invariant checked at every relevant evaluation point.
+    Always {
+        /// Predicate that must always hold.
+        predicate: Predicate,
+    },
+    /// Liveness witness that must hold at least once.
+    Sometimes {
+        /// Predicate that must eventually be seen.
+        predicate: Predicate,
+    },
+    /// Bounded liveness property armed by a trigger predicate.
+    Eventually {
+        /// Predicate that opens the bounded obligation.
+        trigger: Predicate,
+        /// Predicate that must hold within the deadline.
+        property: Predicate,
+        /// Virtual-time deadline measured from the trigger instant.
+        deadline: VirtualTime,
+    },
+    /// End-state property checked once at quiescence or run limit.
+    AfterQuiescence {
+        /// Predicate that must hold at the terminal evaluation point.
+        predicate: Predicate,
+    },
+    /// Coverage-style property over a predicate that may or may not be reached.
+    Reachable {
+        /// Predicate whose reachability is recorded.
+        predicate: Predicate,
+        /// Whether the predicate is expected to be reached, with never-reached
+        /// disposition, or expected to remain unreachable.
+        expectation: ReachabilityExpectation,
+    },
+}
+
+/// One named property assertion in a [`Properties`] bundle.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AssertionDef {
+    /// Stable assertion id used for canonical ordering and reports.
+    pub id: AssertionId,
+    /// Human-readable failure or coverage message.
+    pub message: String,
+    /// Temporal property definition.
+    pub property: Property,
+}
+
+/// A declarative assertion bundle layered over a static [`World`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Properties {
+    /// The independently content-addressed properties identity.
+    id: ContentHash,
+    assertions: Vec<AssertionDef>,
+}
+
+impl Default for Properties {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl Properties {
+    /// Builds an empty properties bundle.
+    #[must_use]
+    pub fn empty() -> Self {
+        let assertions = Vec::new();
+        Self::from_canonical_assertions(assertions)
+    }
+
+    /// Builds a properties bundle after validating every predicate against `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::PropertyDuplicateAssertionId`] when two
+    /// assertions share an id, [`EngineError::PropertyPredicateUnknownNode`]
+    /// when a predicate names a node that is not declared by `world`, or
+    /// [`EngineError::PropertyPredicateEmptyCompound`] when an `AllOf` or
+    /// `AnyOf` predicate has no children.
+    pub fn from_assertions_for_world(
+        world: &World,
+        assertions: Vec<AssertionDef>,
+    ) -> Result<Self, EngineError> {
+        validate_properties_for_world(world, &assertions)?;
+        Ok(Self::from_canonical_assertions(canonical_assertions(
+            &assertions,
+        )))
+    }
+
+    /// Returns property assertions in their canonical order.
+    #[must_use]
+    pub fn assertions(&self) -> &[AssertionDef] {
+        &self.assertions
+    }
+
+    /// Computes the canonical identity of this properties bundle.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        self.id
+    }
+
+    /// Validates this properties bundle against `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::PropertyDuplicateAssertionId`],
+    /// [`EngineError::PropertyPredicateUnknownNode`], or
+    /// [`EngineError::PropertyPredicateEmptyCompound`] when an assertion cannot
+    /// be layered over the static world topology.
+    pub fn validate_for_world(&self, world: &World) -> Result<(), EngineError> {
+        validate_properties_for_world(world, &self.assertions)
+    }
+
+    fn from_canonical_assertions(assertions: Vec<AssertionDef>) -> Self {
+        Self {
+            id: ContentHash::from_canonical_material(
+                "crucible.model.properties.v1",
+                &properties_material(&assertions),
+            ),
+            assertions,
         }
     }
 }
@@ -5084,6 +5334,21 @@ pub enum EngineError {
         /// Virtual time when the hold was scheduled.
         at: VirtualTime,
     },
+    /// A properties bundle contains duplicate assertion identifiers.
+    PropertyDuplicateAssertionId {
+        /// The duplicated assertion id.
+        id: AssertionId,
+    },
+    /// A property predicate references an undeclared node.
+    PropertyPredicateUnknownNode {
+        /// The undeclared node.
+        node: NodeId,
+    },
+    /// A compound property predicate has no child predicates.
+    PropertyPredicateEmptyCompound {
+        /// Stable name of the empty compound predicate kind.
+        kind: &'static str,
+    },
     /// A runtime was replayed from a configuration it does not materialize.
     RuntimeConfigurationMismatch {
         /// The runtime-state id whose metadata was invalid.
@@ -5200,6 +5465,15 @@ impl fmt::Display for EngineError {
             }
             Self::PlanNotYetJoinedAfterStart { .. } => {
                 f.write_str("not-yet-joined fault must be active at run start")
+            }
+            Self::PropertyDuplicateAssertionId { .. } => {
+                f.write_str("properties bundle contains a duplicate assertion id")
+            }
+            Self::PropertyPredicateUnknownNode { .. } => {
+                f.write_str("property predicate references an undeclared node")
+            }
+            Self::PropertyPredicateEmptyCompound { kind } => {
+                write!(f, "property predicate compound {kind} has no children")
             }
             Self::RuntimeConfigurationMismatch { .. } => {
                 f.write_str("runtime configuration does not match replay start configuration")
@@ -6252,6 +6526,93 @@ fn validate_plan_node(node: &NodeId, node_ids: &BTreeSet<&NodeId>) -> Result<(),
     }
 }
 
+fn validate_properties_for_world(
+    world: &World,
+    assertions: &[AssertionDef],
+) -> Result<(), EngineError> {
+    let node_ids = world.nodes.iter().map(|node| &node.id).collect();
+    let mut assertion_ids = BTreeSet::new();
+
+    for assertion in assertions {
+        if !assertion_ids.insert(&assertion.id) {
+            return Err(EngineError::PropertyDuplicateAssertionId {
+                id: assertion.id.clone(),
+            });
+        }
+        validate_property_for_world(&assertion.property, &node_ids)?;
+    }
+
+    Ok(())
+}
+
+fn validate_property_for_world(
+    property: &Property,
+    node_ids: &BTreeSet<&NodeId>,
+) -> Result<(), EngineError> {
+    match property {
+        Property::Always { predicate }
+        | Property::Sometimes { predicate }
+        | Property::AfterQuiescence { predicate }
+        | Property::Reachable { predicate, .. } => {
+            validate_predicate_for_world(predicate, node_ids)
+        }
+        Property::Eventually {
+            trigger, property, ..
+        } => {
+            validate_predicate_for_world(trigger, node_ids)?;
+            validate_predicate_for_world(property, node_ids)
+        }
+    }
+}
+
+fn validate_predicate_for_world(
+    predicate: &Predicate,
+    node_ids: &BTreeSet<&NodeId>,
+) -> Result<(), EngineError> {
+    match predicate {
+        Predicate::Named { nodes, .. } => {
+            for node in nodes {
+                validate_property_node(node, node_ids)?;
+            }
+            Ok(())
+        }
+        Predicate::GuestMarker { .. } => Ok(()),
+        Predicate::AllOf { predicates } => {
+            validate_compound_predicate("all-of", predicates, node_ids)
+        }
+        Predicate::AnyOf { predicates } => {
+            validate_compound_predicate("any-of", predicates, node_ids)
+        }
+        Predicate::Once { predicate } | Predicate::Not { predicate } => {
+            validate_predicate_for_world(predicate, node_ids)
+        }
+    }
+}
+
+fn validate_compound_predicate(
+    kind: &'static str,
+    predicates: &[Predicate],
+    node_ids: &BTreeSet<&NodeId>,
+) -> Result<(), EngineError> {
+    if predicates.is_empty() {
+        return Err(EngineError::PropertyPredicateEmptyCompound { kind });
+    }
+
+    for predicate in predicates {
+        validate_predicate_for_world(predicate, node_ids)?;
+    }
+
+    Ok(())
+}
+
+fn validate_property_node(node: &NodeId, node_ids: &BTreeSet<&NodeId>) -> Result<(), EngineError> {
+    if node_ids.contains(node) {
+        Ok(())
+    } else {
+        Err(EngineError::PropertyPredicateUnknownNode { node: node.clone() })
+    }
+}
+
 fn canonical_link_endpoint_pair(left: &NodeId, right: &NodeId) -> (NodeId, NodeId) {
     if left <= right {
         (left.clone(), right.clone())
@@ -6338,6 +6699,90 @@ fn plan_entry_kind_order(entry: &PlanEntry) -> u8 {
         PlanEntry::Activate { .. } => 0,
         PlanEntry::Heal { .. } => 1,
     }
+}
+
+fn canonical_assertions(assertions: &[AssertionDef]) -> Vec<AssertionDef> {
+    let mut assertions = assertions
+        .iter()
+        .map(canonical_assertion)
+        .collect::<Vec<_>>();
+    assertions.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| assertion_material(left).cmp(&assertion_material(right)))
+    });
+    assertions
+}
+
+fn canonical_assertion(assertion: &AssertionDef) -> AssertionDef {
+    AssertionDef {
+        id: assertion.id.clone(),
+        message: assertion.message.clone(),
+        property: canonical_property(&assertion.property),
+    }
+}
+
+fn canonical_property(property: &Property) -> Property {
+    match property {
+        Property::Always { predicate } => Property::Always {
+            predicate: canonical_predicate(predicate),
+        },
+        Property::Sometimes { predicate } => Property::Sometimes {
+            predicate: canonical_predicate(predicate),
+        },
+        Property::Eventually {
+            trigger,
+            property,
+            deadline,
+        } => Property::Eventually {
+            trigger: canonical_predicate(trigger),
+            property: canonical_predicate(property),
+            deadline: *deadline,
+        },
+        Property::AfterQuiescence { predicate } => Property::AfterQuiescence {
+            predicate: canonical_predicate(predicate),
+        },
+        Property::Reachable {
+            predicate,
+            expectation,
+        } => Property::Reachable {
+            predicate: canonical_predicate(predicate),
+            expectation: *expectation,
+        },
+    }
+}
+
+fn canonical_predicate(predicate: &Predicate) -> Predicate {
+    match predicate {
+        Predicate::Named { name, nodes } => Predicate::Named {
+            name: name.clone(),
+            nodes: nodes.clone(),
+        },
+        Predicate::GuestMarker { marker } => Predicate::GuestMarker {
+            marker: marker.clone(),
+        },
+        Predicate::AllOf { predicates } => Predicate::AllOf {
+            predicates: canonical_predicate_set(predicates),
+        },
+        Predicate::AnyOf { predicates } => Predicate::AnyOf {
+            predicates: canonical_predicate_set(predicates),
+        },
+        Predicate::Once { predicate } => Predicate::Once {
+            predicate: Box::new(canonical_predicate(predicate)),
+        },
+        Predicate::Not { predicate } => Predicate::Not {
+            predicate: Box::new(canonical_predicate(predicate)),
+        },
+    }
+}
+
+fn canonical_predicate_set(predicates: &[Predicate]) -> Vec<Predicate> {
+    let mut predicates = predicates
+        .iter()
+        .map(canonical_predicate)
+        .collect::<Vec<_>>();
+    predicates.sort_by_key(predicate_material);
+    predicates
 }
 
 fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError> {
@@ -6491,11 +6936,16 @@ fn canonical_world_identity(world: &World) -> ContentHash {
     ContentHash::from_canonical_material("crucible.model.world.v1", &world_material(&nodes, &links))
 }
 
-fn scenario_world_plan_material(world: &World, plan: &Plan) -> String {
+fn scenario_world_plan_properties_material(
+    world: &World,
+    plan: &Plan,
+    properties: &Properties,
+) -> String {
     format!(
-        "world_ref={}\nplan_ref={}",
+        "world_ref={}\nplan_ref={}\nproperties_ref={}",
         content_hash_hex(canonical_world_identity(world)),
-        content_hash_hex(plan.content_hash())
+        content_hash_hex(plan.content_hash()),
+        content_hash_hex(properties.content_hash())
     )
 }
 
@@ -6614,6 +7064,131 @@ fn fault_tag_material(tag: &FaultTag) -> String {
     format!("tag_len={}\ntag={}", tag.name.len(), tag.name)
 }
 
+fn properties_material(assertions: &[AssertionDef]) -> String {
+    let mut lines = Vec::with_capacity(assertions.len().saturating_mul(16) + 1);
+    lines.push(format!("assertions={}", assertions.len()));
+    for assertion in assertions {
+        lines.push(assertion_material(assertion));
+    }
+    lines.join("\n")
+}
+
+fn assertion_material(assertion: &AssertionDef) -> String {
+    format!(
+        "{}\nmessage_len={}\nmessage={}\n{}",
+        assertion_id_material(&assertion.id),
+        assertion.message.len(),
+        assertion.message,
+        property_material(&assertion.property)
+    )
+}
+
+fn property_material(property: &Property) -> String {
+    match property {
+        Property::Always { predicate } => {
+            format!("property=always\n{}", predicate_material(predicate))
+        }
+        Property::Sometimes { predicate } => {
+            format!("property=sometimes\n{}", predicate_material(predicate))
+        }
+        Property::Eventually {
+            trigger,
+            property,
+            deadline,
+        } => {
+            format!(
+                "property=eventually\ndeadline_ticks={}\ntrigger:\n{}\nproperty_predicate:\n{}",
+                deadline.ticks,
+                predicate_material(trigger),
+                predicate_material(property)
+            )
+        }
+        Property::AfterQuiescence { predicate } => {
+            format!(
+                "property=after-quiescence\n{}",
+                predicate_material(predicate)
+            )
+        }
+        Property::Reachable {
+            predicate,
+            expectation,
+        } => {
+            let expectation_material = match expectation {
+                ReachabilityExpectation::Reachable { on_unreached } => {
+                    format!(
+                        "expectation=reachable\non_unreached={}",
+                        reachable_disposition_label(*on_unreached)
+                    )
+                }
+                ReachabilityExpectation::Unreachable => String::from("expectation=unreachable"),
+            };
+            format!(
+                "property=reachable\n{}\n{}",
+                expectation_material,
+                predicate_material(predicate)
+            )
+        }
+    }
+}
+
+fn predicate_material(predicate: &Predicate) -> String {
+    match predicate {
+        Predicate::Named { name, nodes } => {
+            format!(
+                "predicate=named\npredicate_name_len={}\npredicate_name={}\n{}",
+                name.len(),
+                name,
+                predicate_nodes_material(nodes)
+            )
+        }
+        Predicate::GuestMarker { marker } => {
+            format!("predicate=guest-marker\n{}", marker_id_material(marker))
+        }
+        Predicate::AllOf { predicates } => {
+            format!("predicate=all-of\n{}", predicate_list_material(predicates))
+        }
+        Predicate::AnyOf { predicates } => {
+            format!("predicate=any-of\n{}", predicate_list_material(predicates))
+        }
+        Predicate::Once { predicate } => {
+            format!("predicate=once\n{}", predicate_material(predicate))
+        }
+        Predicate::Not { predicate } => {
+            format!("predicate=not\n{}", predicate_material(predicate))
+        }
+    }
+}
+
+fn predicate_nodes_material(nodes: &[NodeId]) -> String {
+    let mut lines = Vec::with_capacity(nodes.len().saturating_mul(2) + 1);
+    lines.push(format!("predicate_nodes={}", nodes.len()));
+    for node in nodes {
+        lines.push(node_ref_material("predicate_node", node));
+    }
+    lines.join("\n")
+}
+
+fn predicate_list_material(predicates: &[Predicate]) -> String {
+    let mut lines = Vec::with_capacity(predicates.len().saturating_mul(8) + 1);
+    lines.push(format!("predicates={}", predicates.len()));
+    for predicate in predicates {
+        lines.push(predicate_material(predicate));
+    }
+    lines.join("\n")
+}
+
+fn assertion_id_material(id: &AssertionId) -> String {
+    format!(
+        "assertion_id_len={}\nassertion_id={}",
+        id.name.len(),
+        id.name
+    )
+}
+
+fn marker_id_material(id: &MarkerId) -> String {
+    format!("marker_id_len={}\nmarker_id={}", id.name.len(), id.name)
+}
+
 fn node_ref_material(prefix: &str, node: &NodeId) -> String {
     format!("{prefix}_len={}\n{prefix}={}", node.name.len(), node.name)
 }
@@ -6631,6 +7206,13 @@ fn partition_direction_label(direction: PartitionDirection) -> &'static str {
         PartitionDirection::Bidirectional => "bidirectional",
         PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
         PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
+    }
+}
+
+fn reachable_disposition_label(disposition: ReachableDisposition) -> &'static str {
+    match disposition {
+        ReachableDisposition::Warn => "warn",
+        ReachableDisposition::Fail => "fail",
     }
 }
 

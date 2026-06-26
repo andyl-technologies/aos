@@ -102,11 +102,11 @@
       }
       {
         label = "scenario world-plan domain";
-        needle = "\"crucible.model.world-plan-scenario.v1\"";
+        needle = "\"crucible.model.world-plan-properties-scenario.v1\"";
       }
       {
         label = "scenario component material";
-        needle = "fn scenario_world_plan_material(world: &World, plan: &Plan) -> String";
+        needle = "fn scenario_world_plan_properties_material";
       }
       {
         label = "scenario includes world component hash";
@@ -115,6 +115,10 @@
       {
         label = "scenario includes plan component hash";
         needle = "content_hash_hex(plan.content_hash())";
+      }
+      {
+        label = "scenario includes empty properties compatibility";
+        needle = "Ok(self.scenario_def_from_components(plan, &Properties::empty()))";
       }
       {
         label = "world validates plan before scenario composition";
