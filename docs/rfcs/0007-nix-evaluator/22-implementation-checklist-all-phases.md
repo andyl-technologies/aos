@@ -818,6 +818,19 @@ alone (`M-1`/`Q-A`).
       demand-node lifecycle, expression identity/free-variable production,
       dependency capture, SHA-256 short-circuiting, persistence, and
       cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
+- [x] Current derivationStrict ATerm evaluator observation substrate:
+      tree-walk `derivationStrict` observes recorded `.drv` ATerm bytes into
+      the enabled `EvalCacheRuntime` after normal output path and `.drv` path
+      computation, using a derivation-specific expression identity salted by
+      module identity, source span, and hashable captured lexical free
+      variables. Disabled runtimes, `with`/scoped-global environments, and
+      unsupported captured values skip observation; repeated unchanged
+      derivation ATerms increment early-cutoff stats without counting cache
+      hits or misses. This is observation-only: no memo lookup, no
+      evaluator-owned recomputation scheduling, no dynamic dependency capture
+      beyond hashable lexical captures, no SHA-256 short-circuiting, no
+      persistence, and no full cached/uncached `.drv` parity proof
+      (`S-14`/`S-15`).
 - [x] Current forced-payload early-cutoff stats substrate:
       trace-backed force-cache payload observation now reports its value-hash
       `Reconsideration`, first trace-backed insertion uses no synthetic prior

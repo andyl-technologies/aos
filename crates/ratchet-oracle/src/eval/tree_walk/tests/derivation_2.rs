@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::cache::{
-    CutoffDecision, EarlyCutoff, PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags,
-    ParseCacheKey, ParseFileKey, PersistCache, PersistFileArtifactKey, ValueHash,
+    CutoffDecision, DemandNodeId, EarlyCutoff, PARSE_CACHE_SCHEMA_VERSION, ParseCache,
+    ParseCacheFlags, ParseCacheKey, ParseFileKey, PersistCache, PersistFileArtifactKey, ValueHash,
 };
 use crate::string::NixString;
 
@@ -148,6 +148,186 @@ fn derivation_strict_aterm_value_hash_precursor_tracks_recorded_drv_bytes() {
     assert_eq!(
         EarlyCutoff::decide(Some(first_hash), changed_hash),
         CutoffDecision::Propagate
+    );
+}
+
+#[test]
+fn derivation_strict_observes_aterm_early_cutoff_in_eval_cache() {
+    fn evaluate(ir: &Ir, cache: Arc<Mutex<EvalCacheRuntime>>) -> (String, Vec<u8>, u64, u64, u64) {
+        let options = TreeWalkOptions::with_eval_cache_enabled(true);
+        let outcome =
+            eval_whnf_owned_with_options_realizer_and_eval_cache(ir, options, None, cache)
+                .expect("derivation evaluates");
+        let [derivation] = outcome.derivations() else {
+            panic!(
+                "expected one recorded derivation, got {:?}",
+                outcome.derivations()
+            );
+        };
+        (
+            derivation.absolute_path().to_owned(),
+            derivation
+                .aterm_bytes()
+                .expect("static derivation has ATerm bytes")
+                .to_vec(),
+            outcome.stats().early_cutoffs(),
+            outcome.stats().force_cache_hits(),
+            outcome.stats().force_cache_misses(),
+        )
+    }
+
+    let source = r#"let d = derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        env = "same";
+    }; in d.drvPath"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let (first_path, first_aterm, first_cutoffs, first_hits, first_misses) =
+        evaluate(&ir, cache.clone());
+    let (second_path, second_aterm, second_cutoffs, second_hits, second_misses) =
+        evaluate(&ir, cache.clone());
+
+    assert_eq!(second_path, first_path);
+    assert_eq!(second_aterm, first_aterm);
+    assert_eq!(first_cutoffs, 0);
+    assert_eq!(second_cutoffs, 1);
+    assert_eq!((first_hits, first_misses), (0, 0));
+    assert_eq!((second_hits, second_misses), (0, 0));
+    assert_eq!(
+        cache
+            .lock()
+            .expect("cache lock is valid")
+            .cache()
+            .expect("runtime is enabled")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn derivation_strict_aterm_observation_separates_captured_free_vars() {
+    let source = r#"let
+        mk = env: (derivationStrict {
+            name = "x";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            env = env;
+        }).drvPath;
+    in (mk "one") + (mk "two")"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let outcome = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        TreeWalkOptions::with_eval_cache_enabled(true),
+        None,
+        cache.clone(),
+    )
+    .expect("derivation evaluates");
+    let derivation_hashes = outcome
+        .derivations()
+        .iter()
+        .map(|derivation| {
+            ValueHash::from_derivation_aterm_bytes(
+                derivation
+                    .aterm_bytes()
+                    .expect("static derivation has ATerm bytes"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(derivation_hashes.len(), 2);
+    assert_ne!(derivation_hashes[0], derivation_hashes[1]);
+
+    assert_eq!(outcome.stats().early_cutoffs(), 0);
+    let runtime = cache.lock().expect("cache lock is valid");
+    let graph = runtime.cache().expect("runtime is enabled").graph();
+    let node_hashes = (0..graph.len())
+        .filter_map(|index| {
+            graph
+                .node(DemandNodeId::new(
+                    u32::try_from(index).expect("test graph indices fit in u32"),
+                ))
+                .expect("node index exists")
+                .value_hash()
+        })
+        .collect::<Vec<_>>();
+    for hash in derivation_hashes {
+        assert!(
+            node_hashes.contains(&hash),
+            "different captured arguments must allocate separate derivation ATerm nodes"
+        );
+    }
+}
+
+#[test]
+fn derivation_strict_aterm_observation_skips_disabled_runtime() {
+    let source = r#"let d = derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        env = "same";
+    }; in d.drvPath"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::disabled()));
+    let outcome = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        TreeWalkOptions::with_eval_cache_enabled(true),
+        None,
+        cache.clone(),
+    )
+    .expect("derivation evaluates");
+
+    assert_eq!(outcome.stats().early_cutoffs(), 0);
+    assert!(cache.lock().expect("cache lock is valid").cache().is_none());
+}
+
+#[test]
+fn derivation_strict_aterm_observation_skips_with_scope() {
+    let source = r#"with { envValue = "from-with"; }; let d = derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        env = envValue;
+    }; in d.drvPath"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let outcome = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        TreeWalkOptions::with_eval_cache_enabled(true),
+        None,
+        cache.clone(),
+    )
+    .expect("derivation evaluates");
+    let [derivation] = outcome.derivations() else {
+        panic!(
+            "expected one recorded derivation, got {:?}",
+            outcome.derivations()
+        );
+    };
+    let derivation_hash = ValueHash::from_derivation_aterm_bytes(
+        derivation
+            .aterm_bytes()
+            .expect("static derivation has ATerm bytes"),
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    let graph = runtime.cache().expect("runtime is enabled").graph();
+    let node_hashes = (0..graph.len())
+        .filter_map(|index| {
+            graph
+                .node(DemandNodeId::new(
+                    u32::try_from(index).expect("test graph indices fit in u32"),
+                ))
+                .expect("node index exists")
+                .value_hash()
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(outcome.stats().early_cutoffs(), 0);
+    assert!(
+        !node_hashes.contains(&derivation_hash),
+        "with-scoped derivationStrict observations must be skipped"
     );
 }
 

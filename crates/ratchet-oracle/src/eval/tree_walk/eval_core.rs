@@ -6,6 +6,8 @@ const FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION: &[u8] = b"aos-nix-force-expressi
 const FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-force-captured-value-hash-v1";
 const FORCE_SYNTHETIC_BUILTIN_ATTR_IDENTITY_DOMAIN_VERSION: &[u8] =
     b"aos-nix-force-synthetic-builtin-attr-identity-v1";
+const DERIVATION_ATERM_EXPRESSION_IDENTITY_DOMAIN_VERSION: &[u8] =
+    b"aos-nix-derivation-aterm-expression-identity-v1";
 const FORCE_CACHE_PAYLOAD_MAX_DEPTH: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,10 +93,12 @@ impl TreeWalk {
     /// The cache runtime stays advisory. Disabled runtimes are no-ops; enabled
     /// runtimes record source-backed or lowered-IR-backed forced inline thunk
     /// results and may reuse clean pure inline-scalar force results for a
-    /// conservative IR subset. They do not perform general demand-graph memo
-    /// lookup. When options configure a persistent-cache root, forced-expression
-    /// observations may read verifying durable force-cache payloads, record
-    /// demand, and write threshold-selected durable value/trace payloads.
+    /// conservative IR subset. They also observe `derivationStrict` `.drv`
+    /// ATerm comparison hashes after normal path computation. They do not
+    /// perform general demand-graph memo lookup. When options configure a
+    /// persistent-cache root, forced-expression observations may read verifying
+    /// durable force-cache payloads, record demand, and write threshold-selected
+    /// durable value/trace payloads.
     ///
     /// Direct [`TreeWalk::eval_root`] and [`TreeWalk::eval_node`] callers do not
     /// perform automatic persistent run-boundary advancement; the public
@@ -1186,7 +1190,24 @@ impl TreeWalk {
         body: EvalNodeRef,
         env: &EvalEnv,
     ) -> Option<Vec<DurableBlake3Hash>> {
-        let frames = env.frames();
+        self.inline_free_var_value_hashes_for_frames(body, env.frames())
+    }
+
+    fn inline_free_var_value_hashes_for_current_node(
+        &self,
+        id: IrId,
+    ) -> Option<Vec<DurableBlake3Hash>> {
+        self.inline_free_var_value_hashes_for_frames(
+            EvalNodeRef::new(self.current_module, id),
+            &self.env,
+        )
+    }
+
+    fn inline_free_var_value_hashes_for_frames(
+        &self,
+        body: EvalNodeRef,
+        frames: &[Rc<EvalFrame>],
+    ) -> Option<Vec<DurableBlake3Hash>> {
         if frames.is_empty() {
             return Some(Vec::new());
         }
@@ -1201,6 +1222,31 @@ impl TreeWalk {
             hashes.push(hash);
         }
         Some(hashes)
+    }
+
+    pub(super) fn derivation_aterm_cache_subject_for_current_node(
+        &self,
+        id: IrId,
+    ) -> Option<(CacheExprIdentity, Vec<DurableBlake3Hash>)> {
+        if !self.with_scopes.is_empty() || !self.scoped_globals.is_empty() {
+            return None;
+        }
+        let identity = self.derivation_aterm_cache_identity_for_current_node(id)?;
+        let free_var_value_hashes = self.inline_free_var_value_hashes_for_current_node(id)?;
+        Some((identity, free_var_value_hashes))
+    }
+
+    pub(super) fn eval_cache_runtime_enabled(&self) -> bool {
+        match self.eval_cache.lock() {
+            Ok(cache) => cache.is_enabled(),
+            Err(_) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    "tree-walk evaluator cache lock was poisoned; skipping cache observation"
+                );
+                false
+            }
+        }
     }
 
     pub(super) fn force_cache_free_var_value_hash(
@@ -1379,6 +1425,25 @@ impl TreeWalk {
         let node = module.ir.arena.node(id)?;
         let mut hasher = blake3::Hasher::new();
         hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
+        hasher.update(b"node-v1");
+        hasher.update(&module_hash.as_bytes());
+        hasher.update(&node.span.start.to_le_bytes());
+        hasher.update(&node.span.end.to_le_bytes());
+        Some(CacheExprIdentity::new(
+            DurableBlake3Hash::from_hasher(hasher),
+            id,
+        ))
+    }
+
+    fn derivation_aterm_cache_identity_for_current_node(
+        &self,
+        id: IrId,
+    ) -> Option<CacheExprIdentity> {
+        let module = self.modules.get(self.current_module.index())?;
+        let module_hash = Self::cache_module_identity_hash(module)?;
+        let node = module.ir.arena.node(id)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(DERIVATION_ATERM_EXPRESSION_IDENTITY_DOMAIN_VERSION);
         hasher.update(b"node-v1");
         hasher.update(&module_hash.as_bytes());
         hasher.update(&node.span.start.to_le_bytes());

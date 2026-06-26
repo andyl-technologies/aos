@@ -89,10 +89,11 @@ pub fn eval_whnf_owned_with_options_and_realizer(
 ///
 /// The supplied cache runtime remains advisory: enabled runtimes may observe
 /// source-backed or lowered-IR-backed forced inline thunk results and reuse
-/// clean pure inline-scalar force results for a conservative IR subset. They do
-/// not perform general demand-graph memo lookup. When options configure a
-/// persistent-cache root, forced-expression observations may record demand and
-/// threshold-selected durable value/trace payloads.
+/// clean pure inline-scalar force results for a conservative IR subset. They
+/// also observe `derivationStrict` `.drv` ATerm comparison hashes after normal
+/// path computation. They do not perform general demand-graph memo lookup. When
+/// options configure a persistent-cache root, forced-expression observations may
+/// record demand and threshold-selected durable value/trace payloads.
 ///
 /// # Errors
 ///

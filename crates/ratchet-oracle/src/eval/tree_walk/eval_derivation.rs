@@ -560,7 +560,99 @@ impl TreeWalk {
             known_hash,
             output_resolution,
         );
+        self.observe_derivation_aterm_expression(
+            id,
+            span,
+            &drv_path,
+            &derivation,
+            output_resolution,
+        );
         self.alloc_derivation_strict_result(id, span, &derivation, &drv_path, output_resolution)
+    }
+
+    fn observe_derivation_aterm_expression(
+        &mut self,
+        id: IrId,
+        span: Span,
+        drv_path: &nix_compat::store_path::StorePath<String>,
+        derivation: &nix_compat::derivation::Derivation,
+        output_resolution: DerivationOutputResolution,
+    ) {
+        if !self.eval_cache_runtime_enabled() {
+            return;
+        }
+        let Some((identity, free_var_value_hashes)) =
+            self.derivation_aterm_cache_subject_for_current_node(id)
+        else {
+            return;
+        };
+        let aterm = match self.derivation_aterm_bytes_for_observation(
+            id,
+            span,
+            drv_path,
+            derivation,
+            output_resolution,
+        ) {
+            Ok(aterm) => aterm,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator derivation ATerm cache observation failed to serialize"
+                );
+                return;
+            }
+        };
+        let early_cutoff = {
+            let Ok(mut cache) = self.eval_cache.lock() else {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    "tree-walk evaluator cache lock was poisoned; skipping derivation ATerm observation"
+                );
+                return;
+            };
+            match cache.observe_derivation_aterm_expression(
+                identity,
+                free_var_value_hashes.iter().copied(),
+                &aterm,
+            ) {
+                Ok(Some(reconsideration)) => reconsideration.decision() == CutoffDecision::CutOff,
+                Ok(None) => false,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "tree-walk evaluator derivation ATerm cache observation failed"
+                    );
+                    false
+                }
+            }
+        };
+        if early_cutoff {
+            self.increment_early_cutoffs();
+        }
+    }
+
+    fn derivation_aterm_bytes_for_observation(
+        &self,
+        id: IrId,
+        span: Span,
+        drv_path: &nix_compat::store_path::StorePath<String>,
+        derivation: &nix_compat::derivation::Derivation,
+        output_resolution: DerivationOutputResolution,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        match output_resolution {
+            DerivationOutputResolution::StaticPaths => Ok(self.derivation_aterm_bytes(derivation)),
+            DerivationOutputResolution::FloatingCa(floating_ca_output) => {
+                Ok(self.floating_ca_derivation_aterm_bytes(derivation, floating_ca_output, None))
+            }
+            DerivationOutputResolution::Impure(impure_output) => {
+                Ok(self.impure_derivation_aterm_bytes(derivation, impure_output, None))
+            }
+            DerivationOutputResolution::DeferredPlaceholders => {
+                self.deferred_placeholder_derivation_aterm_bytes(id, span, drv_path, derivation)
+            }
+        }
     }
 
     pub(super) fn derivation_name_value(
