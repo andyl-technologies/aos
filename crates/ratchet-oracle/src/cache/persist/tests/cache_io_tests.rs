@@ -815,6 +815,162 @@ fn cache_node_trace_log_records_and_looks_up_payloads() {
 }
 
 #[test]
+fn cache_storage_maintenance_compacts_sidecars_and_trims_blob_tails() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+
+    let value_payload = b"value live payload";
+    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(value_payload));
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(
+            value_key,
+            PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
+        ))
+        .expect("stale value blob index entry appends");
+    let value_materialized = cache
+        .materialize_blob_indexed(
+            value_key,
+            value_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("value blob materializes");
+    let PersistMaterialization::Materialized(value_location) = value_materialized else {
+        panic!("value blob should materialize");
+    };
+    let value_tail_payload = b"value tail";
+    let value_tail_key =
+        PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(value_tail_payload));
+    let value_tail_location = cache
+        .append_blob(value_tail_key, value_tail_payload)
+        .expect("value tail appends");
+
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let file_payload = b"file live payload";
+    let file_blob_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_payload));
+    cache
+        .file_index()
+        .append_entry(PersistBlobIndexEntry::new(
+            file_blob_key,
+            PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
+        ))
+        .expect("stale file blob index entry appends");
+    let file_artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    cache
+        .record_file_artifact(PersistFileArtifactIndexEntry::new(
+            file_artifact_key,
+            PersistFileArtifactIndexValue::new(
+                DurableBlake3Hash::for_bytes(b"stale file artifact"),
+                PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
+            ),
+        ))
+        .expect("stale file artifact entry records");
+    let file_materialized = cache
+        .materialize_file_artifact_indexed(
+            &file_key,
+            parse_key,
+            file_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("file artifact materializes");
+    let file_index_entry = file_materialized
+        .index_entry()
+        .expect("file artifact should materialize");
+    let file_index_value = file_index_entry.value();
+    let file_tail_payload = b"file tail";
+    let file_tail_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_tail_payload));
+    let file_tail_location = cache
+        .append_blob(file_tail_key, file_tail_payload)
+        .expect("file tail appends");
+    let value_pack_before = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata before maintenance")
+        .len();
+    let file_pack_before = fs::metadata(cache.file_pack().path())
+        .expect("file pack metadata before maintenance")
+        .len();
+
+    let maintenance = cache.compact_storage().expect("storage maintenance runs");
+
+    assert_eq!(maintenance.sidecars().value_blob_index_entries(), 1);
+    assert_eq!(maintenance.sidecars().file_blob_index_entries(), 1);
+    assert_eq!(maintenance.sidecars().file_artifact_entries(), 1);
+    assert_eq!(maintenance.sidecars().parse_artifact_entries(), 0);
+    assert_eq!(maintenance.sidecars().node_metadata_entries(), 0);
+    assert_eq!(maintenance.sidecars().node_trace_entries(), 0);
+    assert_eq!(maintenance.sidecars().total_entries(), 3);
+    assert_eq!(
+        maintenance.value_blob_pack().bytes_before(),
+        value_pack_before
+    );
+    assert_eq!(
+        maintenance.value_blob_pack().reclaimed_bytes(),
+        PERSIST_BLOB_RECORD_HEADER_LEN as u64 + value_tail_payload.len() as u64
+    );
+    assert_eq!(
+        maintenance.file_blob_pack().bytes_before(),
+        file_pack_before
+    );
+    assert_eq!(
+        maintenance.file_blob_pack().reclaimed_bytes(),
+        PERSIST_BLOB_RECORD_HEADER_LEN as u64 + file_tail_payload.len() as u64
+    );
+    assert_eq!(
+        maintenance.reclaimed_blob_bytes(),
+        maintenance.value_blob_pack().reclaimed_bytes()
+            + maintenance.file_blob_pack().reclaimed_bytes()
+    );
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata after maintenance")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.file_index().path())
+            .expect("file index metadata after maintenance")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.file_artifact_index().path())
+            .expect("file artifact index metadata after maintenance")
+            .len(),
+        PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(value_key)
+            .expect("value blob lookup succeeds"),
+        Some(value_location)
+    );
+    assert_eq!(
+        cache
+            .read_blob_indexed(value_key)
+            .expect("indexed value read succeeds")
+            .expect("indexed value exists")
+            .as_slice(),
+        value_payload
+    );
+    assert_eq!(
+        cache
+            .read_file_artifact(file_index_value)
+            .expect("file artifact remains readable")
+            .as_slice(),
+        file_payload
+    );
+    assert!(
+        cache
+            .read_blob(value_tail_key, value_tail_location)
+            .is_err()
+    );
+    assert!(cache.read_blob(file_tail_key, file_tail_location).is_err());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_traces_compacts_to_latest_entries() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

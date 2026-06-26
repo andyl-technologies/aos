@@ -129,6 +129,50 @@ impl PersistBlobPackTrim {
     }
 }
 
+/// Results from an explicit persistent storage maintenance sweep.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PersistStorageMaintenance {
+    sidecars: PersistCompaction,
+    value_blob_pack: PersistBlobPackTrim,
+    file_blob_pack: PersistBlobPackTrim,
+}
+
+impl PersistStorageMaintenance {
+    const fn new(
+        sidecars: PersistCompaction,
+        value_blob_pack: PersistBlobPackTrim,
+        file_blob_pack: PersistBlobPackTrim,
+    ) -> Self {
+        Self {
+            sidecars,
+            value_blob_pack,
+            file_blob_pack,
+        }
+    }
+
+    /// Returns sidecar compaction counts from the maintenance sweep.
+    pub const fn sidecars(self) -> PersistCompaction {
+        self.sidecars
+    }
+
+    /// Returns tail-trim counts for the `values/` blob pack.
+    pub const fn value_blob_pack(self) -> PersistBlobPackTrim {
+        self.value_blob_pack
+    }
+
+    /// Returns tail-trim counts for the `files/` blob pack.
+    pub const fn file_blob_pack(self) -> PersistBlobPackTrim {
+        self.file_blob_pack
+    }
+
+    /// Returns total bytes reclaimed from both blob packs.
+    pub const fn reclaimed_blob_bytes(self) -> u64 {
+        self.value_blob_pack
+            .reclaimed_bytes()
+            .saturating_add(self.file_blob_pack.reclaimed_bytes())
+    }
+}
+
 fn blob_record_end(location: PersistBlobLocation) -> Result<u64, PersistBlobPackError> {
     let payload_start = location
         .record_offset()
@@ -302,6 +346,41 @@ impl PersistCache {
             parse_artifact_entries,
             node_metadata_entries,
             node_trace_entries,
+        ))
+    }
+
+    /// Runs explicit persistent storage maintenance.
+    ///
+    /// This caller-driven sweep first compacts append-only sidecars to their
+    /// latest entries, then trims unindexed tails from the `values/` and
+    /// `files/` blob packs. It is sequential and non-transactional: work
+    /// completed before a later phase fails remains committed. It does not
+    /// implement an automatic GC policy, relocate live pack records, coordinate
+    /// with concurrent writers, or replace the future LMDB/redb metadata
+    /// engine. Callers must serialize writes to the persistent cache while this
+    /// method runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistStorageMaintenanceError`] identifying the phase that
+    /// failed. Earlier phases may already have rewritten sidecars or trimmed a
+    /// blob pack.
+    pub fn compact_storage(
+        &self,
+    ) -> Result<PersistStorageMaintenance, PersistStorageMaintenanceError> {
+        let sidecars = self
+            .compact_sidecars()
+            .map_err(|source| PersistStorageMaintenanceError::Sidecars { source })?;
+        let value_blob_pack = self
+            .trim_blob_pack_tail(PersistBlobStore::Values)
+            .map_err(|source| PersistStorageMaintenanceError::ValueBlobPack { source })?;
+        let file_blob_pack = self
+            .trim_blob_pack_tail(PersistBlobStore::Files)
+            .map_err(|source| PersistStorageMaintenanceError::FileBlobPack { source })?;
+        Ok(PersistStorageMaintenance::new(
+            sidecars,
+            value_blob_pack,
+            file_blob_pack,
         ))
     }
 

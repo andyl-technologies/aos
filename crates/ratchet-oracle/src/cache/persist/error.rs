@@ -720,6 +720,29 @@ pub enum PersistBlobPackTrimError {
     },
 }
 
+/// Persistent storage maintenance failed.
+#[derive(Debug, Error)]
+pub enum PersistStorageMaintenanceError {
+    /// Sidecar compaction failed.
+    #[error("failed to compact persistent sidecars during storage maintenance")]
+    Sidecars {
+        /// The underlying sidecar compaction error.
+        source: PersistCompactionError,
+    },
+    /// The `values/` blob pack tail trim failed.
+    #[error("failed to trim persistent value blob pack during storage maintenance")]
+    ValueBlobPack {
+        /// The underlying blob-pack trim error.
+        source: PersistBlobPackTrimError,
+    },
+    /// The `files/` blob pack tail trim failed.
+    #[error("failed to trim persistent file blob pack during storage maintenance")]
+    FileBlobPack {
+        /// The underlying blob-pack trim error.
+        source: PersistBlobPackTrimError,
+    },
+}
+
 /// Indexed blob append failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexedWriteError {
