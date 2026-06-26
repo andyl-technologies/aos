@@ -5,8 +5,8 @@
 use crucible_sim::contract_a::{
     ContractAConfig, ContractAConfigError, ContractADriver, ContractAError,
     ContractAExecutionError, ContractARun, ContractAVm, HashingContractAVm,
-    MAX_CONTRACT_A_ICOUNT_SHIFT, MAX_CONTRACT_A_RETIRED_INSTRUCTIONS, RecordedInput, RetireRequest,
-    TimeTrajectorySample,
+    MAX_CONTRACT_A_ICOUNT_SHIFT, MAX_CONTRACT_A_RETIRED_INSTRUCTIONS, MAX_CONTRACT_A_VCPU_COUNT,
+    RecordedInput, RetireRequest, TimeTrajectorySample, VcpuRegisterFileRequest,
 };
 use crucible_sim::{StableDigest, StableHasher};
 
@@ -78,6 +78,20 @@ struct RecordingVm {
     events: Vec<String>,
 }
 
+struct PerturbingRegisterVm {
+    inner: HashingContractAVm,
+    perturbed_vcpu: u64,
+}
+
+impl PerturbingRegisterVm {
+    fn new(perturbed_vcpu: u64) -> Self {
+        Self {
+            inner: HashingContractAVm::default(),
+            perturbed_vcpu,
+        }
+    }
+}
+
 impl ContractAVm for RecordingVm {
     fn reset(&mut self, config: &ContractAConfig) -> Result<(), ContractAExecutionError> {
         self.events.push(format!("reset:{}", config.seed()));
@@ -114,6 +128,64 @@ impl ContractAVm for RecordingVm {
         self.events.push(format!("sample:{aggregate_icount}"));
         Ok(digest_from_events("recording-vm-state", &self.events))
     }
+
+    fn sample_vcpu_register_file(
+        &mut self,
+        request: VcpuRegisterFileRequest,
+    ) -> Result<StableDigest, ContractAExecutionError> {
+        self.events.push(format!(
+            "register:{}:{}:{}:{}",
+            request.aggregate_icount,
+            request.vcpu_id,
+            request.current_vcpu,
+            request.vcpu_retired_instruction_count
+        ));
+        Ok(digest_from_events("recording-vm-registers", &self.events))
+    }
+}
+
+impl ContractAVm for PerturbingRegisterVm {
+    fn reset(&mut self, config: &ContractAConfig) -> Result<(), ContractAExecutionError> {
+        self.inner.reset(config)
+    }
+
+    fn inject_recorded_input(
+        &mut self,
+        input: &RecordedInput,
+    ) -> Result<(), ContractAExecutionError> {
+        self.inner.inject_recorded_input(input)
+    }
+
+    fn retire_instruction(
+        &mut self,
+        request: RetireRequest,
+    ) -> Result<StableDigest, ContractAExecutionError> {
+        self.inner.retire_instruction(request)
+    }
+
+    fn sample_architectural_state(
+        &mut self,
+        aggregate_icount: u64,
+    ) -> Result<StableDigest, ContractAExecutionError> {
+        self.inner.sample_architectural_state(aggregate_icount)
+    }
+
+    fn sample_vcpu_register_file(
+        &mut self,
+        request: VcpuRegisterFileRequest,
+    ) -> Result<StableDigest, ContractAExecutionError> {
+        let base = self.inner.sample_vcpu_register_file(request)?;
+        if request.vcpu_id != self.perturbed_vcpu {
+            return Ok(base);
+        }
+
+        let mut hasher = StableHasher::new();
+        hasher.write_tag("perturbed-vcpu-register-file");
+        hasher.write_bytes(&base.bytes);
+        hasher.write_u64(request.aggregate_icount);
+        hasher.write_u64(request.vcpu_id);
+        Ok(hasher.finish())
+    }
 }
 
 #[test]
@@ -136,11 +208,14 @@ fn contract_a_driver_feeds_recorded_inputs_into_vm_boundary() {
             "input:0:4",
             "retire:1:0:1",
             "sample:1",
+            "register:1:0:0:1",
             "retire:2:0:0",
             "sample:2",
+            "register:2:0:0:2",
             "input:2:3",
             "retire:3:0:1",
             "sample:3",
+            "register:3:0:0:3",
         ]
     );
     assert_eq!(run.instruction_stream[0].visible_input_count, 1);
@@ -410,6 +485,122 @@ fn contract_a_multi_vcpu_uses_single_aggregate_time_axis() {
 }
 
 #[test]
+fn contract_a_multi_vcpu_fingerprint_includes_every_vcpu_and_rr_cursor() {
+    let config = match ContractAConfig::new(image_digest(), "console=ttyS0", 11, 3, 2) {
+        Ok(config) => config,
+        Err(error) => panic!("test Contract A config should be valid: {error}"),
+    };
+
+    let run = run_hashing(&config, &[], 4);
+    let samples = &run.multi_vcpu_fingerprint_trajectory;
+
+    assert_eq!(samples.len(), 4);
+    assert_eq!(
+        samples
+            .iter()
+            .map(|sample| sample.aggregate_icount)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    for sample in samples {
+        assert_eq!(
+            sample
+                .vcpu_registers
+                .iter()
+                .map(|register| register.vcpu_id)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
+    assert_eq!(samples[0].rr_cursor.current_vcpu, 0);
+    assert_eq!(samples[0].rr_cursor.position_in_quantum, 1);
+    assert_eq!(samples[0].rr_cursor.quantum_remaining, 1);
+    assert_eq!(samples[1].rr_cursor.current_vcpu, 1);
+    assert_eq!(samples[1].rr_cursor.position_in_quantum, 0);
+    assert_eq!(samples[1].rr_cursor.quantum_remaining, 2);
+    assert_eq!(
+        samples[2]
+            .vcpu_registers
+            .iter()
+            .map(|register| register.retired_instruction_count)
+            .collect::<Vec<_>>(),
+        vec![2, 1, 0]
+    );
+    let configured_vcpu_count = match usize::try_from(config.vcpu_count()) {
+        Ok(count) => count,
+        Err(error) => panic!("test vCPU count should fit usize: {error}"),
+    };
+    assert!(samples.iter().all(|sample| {
+        sample.rr_cursor.rr_switch_quantum == 2
+            && sample.vcpu_registers.len() == configured_vcpu_count
+    }));
+}
+
+#[test]
+fn contract_a_multi_vcpu_fingerprint_trajectory_is_bit_identical_across_runs() {
+    let config = match ContractAConfig::new(image_digest(), "console=ttyS0", 42, 4, 3) {
+        Ok(config) => config,
+        Err(error) => panic!("test Contract A config should be valid: {error}"),
+    };
+    let inputs = vec![
+        RecordedInput::new(0, b"boot".to_vec()),
+        RecordedInput::new(5, b"timer".to_vec()),
+        RecordedInput::new(8, b"net".to_vec()),
+    ];
+
+    let first = run_hashing(&config, &inputs, 10);
+    let second = run_hashing(&config, &inputs, 10);
+
+    assert_eq!(
+        first
+            .instruction_stream
+            .iter()
+            .map(|sample| sample.aggregate_icount)
+            .collect::<Vec<_>>(),
+        second
+            .instruction_stream
+            .iter()
+            .map(|sample| sample.aggregate_icount)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        first.multi_vcpu_fingerprint_trajectory,
+        second.multi_vcpu_fingerprint_trajectory
+    );
+    assert_eq!(first.fingerprint, second.fingerprint);
+}
+
+#[test]
+fn contract_a_multi_vcpu_fingerprint_changes_when_register_file_changes() {
+    let config = match ContractAConfig::new(image_digest(), "console=ttyS0", 11, 3, 2) {
+        Ok(config) => config,
+        Err(error) => panic!("test Contract A config should be valid: {error}"),
+    };
+    let mut baseline_vm = HashingContractAVm::default();
+    let mut perturbed_vm = PerturbingRegisterVm::new(1);
+
+    let baseline = match ContractADriver::run(&mut baseline_vm, &config, &[], 5) {
+        Ok(run) => run,
+        Err(error) => panic!("test Contract A run should be valid: {error}"),
+    };
+    let perturbed = match ContractADriver::run(&mut perturbed_vm, &config, &[], 5) {
+        Ok(run) => run,
+        Err(error) => panic!("test Contract A run should be valid: {error}"),
+    };
+
+    assert_eq!(baseline.instruction_stream, perturbed.instruction_stream);
+    assert_eq!(
+        baseline.architectural_state_trajectory,
+        perturbed.architectural_state_trajectory
+    );
+    assert_ne!(
+        baseline.multi_vcpu_fingerprint_trajectory,
+        perturbed.multi_vcpu_fingerprint_trajectory
+    );
+    assert_ne!(baseline.fingerprint, perturbed.fingerprint);
+}
+
+#[test]
 fn contract_a_rr_switch_quantum_is_content_addressed_node_icount_units() {
     let quantum_two = match ContractAConfig::new_with_icount_shift(
         image_digest(),
@@ -510,6 +701,13 @@ fn contract_a_config_and_driver_reject_zero_or_unbounded_parameters() {
     assert_eq!(
         ContractAConfig::new(image_digest(), "", 0, 0, 1),
         Err(ContractAConfigError::ZeroVcpuCount)
+    );
+    assert_eq!(
+        ContractAConfig::new(image_digest(), "", 0, MAX_CONTRACT_A_VCPU_COUNT + 1, 1),
+        Err(ContractAConfigError::VcpuCountTooLarge {
+            count: MAX_CONTRACT_A_VCPU_COUNT + 1,
+            max: MAX_CONTRACT_A_VCPU_COUNT,
+        })
     );
     assert_eq!(
         ContractAConfig::new(image_digest(), "", 0, 1, 0),

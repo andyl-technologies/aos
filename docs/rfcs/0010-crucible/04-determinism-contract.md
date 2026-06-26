@@ -796,12 +796,19 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     deterministic fingerprint and materialized oracle case to match exactly.
     Negative controls reject build-identity drift, schedule drift, and
     internally valid but non-identical oracle-case drift.
-- [ ] **T-DET-28** Implement the multi-vCPU Contract A driver: run a single
+- [x] **T-DET-28** Implement the multi-vCPU Contract A driver: run a single
   `N > 1` vCPU node under single-threaded RR-TCG + icount with a recorded
   icount-stamped input list and a per-vCPU execution fingerprint (every vCPU's
   register file + the RR cursor, keyed by node aggregate icount); assert
   bit-identical aggregate-icount trajectory across runs. — satisfies [DET-5],
   [DET-29]; spec §4.2.1, §4.8.
+  - Completed by `checks.crucible.phase1.contractAIsolation`: the isolated
+    `crucible-sim::contract_a::ContractADriver` now models `N > 1` vCPU runs on
+    a single aggregate icount axis, samples every vCPU register file plus the RR
+    cursor at each aggregate-icount boundary, folds that material into the run
+    fingerprint, and proves replayed aggregate-icount trajectories are
+    bit-identical. The later launch rejection, content-hash quantum pinning, and
+    IPI/entropy details remain covered by the following tasks.
 - [ ] **T-DET-29** Pin the RR switch quantum: fix `rr_switch_quantum` (node-icount
   units) and the ascending vCPU rotation, fold `rr_switch_quantum`/`N`/rotation
   into the scenario content hash, and reject MTTCG (`thread=multi`), the adaptive

@@ -21,10 +21,17 @@ use crate::{StableDigest, StableHasher};
 
 /// The maximum retired-instruction count accepted by the in-process driver.
 ///
-/// The Contract A driver stores per-instruction samples so it is intentionally
-/// bounded. Real backend runs use the same conceptual contract but stream or
-/// sample their fingerprints instead of retaining an unbounded vector.
+/// The Contract A driver stores per-instruction samples in memory, so each run
+/// dimension is intentionally bounded. Real backend runs use the same conceptual
+/// contract but stream or sample their fingerprints instead of retaining an
+/// unbounded vector.
 pub const MAX_CONTRACT_A_RETIRED_INSTRUCTIONS: u64 = 1_000_000;
+
+/// The maximum vCPU count accepted by the in-process Contract A driver.
+///
+/// Real backend launches may support larger topology limits, but this model
+/// stores per-vCPU samples in memory and therefore bounds the fixture topology.
+pub const MAX_CONTRACT_A_VCPU_COUNT: u64 = 4096;
 
 /// The default fixed `-icount shift=N` used by the isolated model.
 pub const DEFAULT_CONTRACT_A_ICOUNT_SHIFT: u8 = 0;
@@ -48,7 +55,8 @@ impl ContractAConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ContractAConfigError`] when `vcpu_count` is zero or
+    /// Returns [`ContractAConfigError`] when `vcpu_count` is zero,
+    /// `vcpu_count` exceeds [`MAX_CONTRACT_A_VCPU_COUNT`], or
     /// `rr_switch_quantum` is zero.
     pub fn new(
         image: StableDigest,
@@ -73,6 +81,7 @@ impl ContractAConfig {
     /// # Errors
     ///
     /// Returns [`ContractAConfigError`] when `vcpu_count` is zero,
+    /// `vcpu_count` exceeds [`MAX_CONTRACT_A_VCPU_COUNT`],
     /// `rr_switch_quantum` is zero, or `icount_shift` cannot name a `u64`
     /// power-of-two virtual-time scale.
     pub fn new_with_icount_shift(
@@ -85,6 +94,12 @@ impl ContractAConfig {
     ) -> Result<Self, ContractAConfigError> {
         if vcpu_count == 0 {
             return Err(ContractAConfigError::ZeroVcpuCount);
+        }
+        if vcpu_count > MAX_CONTRACT_A_VCPU_COUNT {
+            return Err(ContractAConfigError::VcpuCountTooLarge {
+                count: vcpu_count,
+                max: MAX_CONTRACT_A_VCPU_COUNT,
+            });
         }
         if rr_switch_quantum == 0 {
             return Err(ContractAConfigError::ZeroRrSwitchQuantum);
@@ -159,6 +174,15 @@ pub enum ContractAConfigError {
     /// The VM must contain at least one vCPU.
     #[error("Contract A requires at least one vCPU")]
     ZeroVcpuCount,
+
+    /// The in-process driver cannot retain per-vCPU state for this topology.
+    #[error("Contract A vCPU count {count} exceeds the in-process bound {max}")]
+    VcpuCountTooLarge {
+        /// The requested vCPU count.
+        count: u64,
+        /// The maximum accepted vCPU count.
+        max: u64,
+    },
 
     /// The round-robin switch quantum must be a non-zero node-icount value.
     #[error("Contract A requires a non-zero RR switch quantum")]
@@ -252,6 +276,17 @@ pub trait ContractAVm {
         &mut self,
         aggregate_icount: u64,
     ) -> Result<StableDigest, ContractAExecutionError>;
+
+    /// Samples one vCPU register file for the multi-vCPU execution fingerprint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContractAExecutionError`] if the VM cannot provide a stable
+    /// register-file digest for the requested vCPU at the aggregate icount.
+    fn sample_vcpu_register_file(
+        &mut self,
+        request: VcpuRegisterFileRequest,
+    ) -> Result<StableDigest, ContractAExecutionError>;
 }
 
 /// The aggregate instruction that [`ContractADriver`] asks a VM to retire.
@@ -265,6 +300,23 @@ pub struct RetireRequest {
     pub vcpu_id: u64,
     /// The number of recorded inputs made visible before this instruction.
     pub visible_input_count: u64,
+}
+
+/// A request to sample one modeled vCPU register file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VcpuRegisterFileRequest {
+    /// The aggregate node icount at which the fingerprint is sampled.
+    pub aggregate_icount: u64,
+    /// The vCPU whose register file is being sampled.
+    pub vcpu_id: u64,
+    /// The RR cursor's current vCPU at this aggregate icount boundary.
+    pub current_vcpu: u64,
+    /// Position within the fixed RR switch quantum.
+    pub position_in_quantum: u64,
+    /// Remaining aggregate instructions before the next RR switch boundary.
+    pub quantum_remaining: u64,
+    /// Instructions retired by this vCPU at the sample point.
+    pub vcpu_retired_instruction_count: u64,
 }
 
 /// A deterministic in-process VM double for isolated Contract A tests.
@@ -336,6 +388,24 @@ impl ContractAVm for HashingContractAVm {
         hasher.write_u64(aggregate_icount);
         Ok(hasher.finish())
     }
+
+    fn sample_vcpu_register_file(
+        &mut self,
+        request: VcpuRegisterFileRequest,
+    ) -> Result<StableDigest, ContractAExecutionError> {
+        let config = self.config()?;
+        let mut hasher = StableHasher::new();
+        hasher.write_tag("contract-a-vcpu-register-file-v1");
+        config.write_hash_material(&mut hasher);
+        hasher.write_bytes(&self.state_digest.bytes);
+        hasher.write_u64(request.aggregate_icount);
+        hasher.write_u64(request.vcpu_id);
+        hasher.write_u64(request.current_vcpu);
+        hasher.write_u64(request.position_in_quantum);
+        hasher.write_u64(request.quantum_remaining);
+        hasher.write_u64(request.vcpu_retired_instruction_count);
+        Ok(hasher.finish())
+    }
 }
 
 impl HashingContractAVm {
@@ -384,8 +454,8 @@ impl ContractADriver {
     /// # Errors
     ///
     /// Returns [`ContractAError`] if the recorded input list is invalid, the run
-    /// length exceeds the in-process bound, or the VM reports an execution
-    /// error.
+    /// shape exceeds an in-process bound, or the VM reports a reset, injection,
+    /// execution, or sampling error.
     pub fn run<Vm: ContractAVm>(
         vm: &mut Vm,
         config: &ContractAConfig,
@@ -399,6 +469,9 @@ impl ContractADriver {
         let mut instruction_stream = Vec::new();
         let mut architectural_state_trajectory = Vec::new();
         let mut time_trajectory = Vec::new();
+        let mut multi_vcpu_fingerprint_trajectory = Vec::new();
+        let vcpu_count = runtime_vcpu_count(config)?;
+        let mut per_vcpu_retired_counts = vec![0_u64; vcpu_count];
         let input_digest = recorded_input_digest(inputs);
         let mut input_index = 0;
 
@@ -419,6 +492,11 @@ impl ContractADriver {
             let visible_input_count = (input_index - visible_inputs_start) as u64;
             let aggregate_icount = aggregate_before + 1;
             let vcpu_id = vcpu_for_icount(config, aggregate_before);
+            let vcpu_index =
+                usize::try_from(vcpu_id).map_err(|_error| ContractAError::VcpuCountTooLarge {
+                    count: config.vcpu_count,
+                    max: MAX_CONTRACT_A_VCPU_COUNT,
+                })?;
             let request = RetireRequest {
                 aggregate_before,
                 aggregate_icount,
@@ -431,6 +509,7 @@ impl ContractADriver {
                         aggregate_icount,
                         source,
                     })?;
+            per_vcpu_retired_counts[vcpu_index] += 1;
             let state_digest =
                 vm.sample_architectural_state(aggregate_icount)
                     .map_err(|source| ContractAError::VmStateSample {
@@ -438,6 +517,13 @@ impl ContractADriver {
                         source,
                     })?;
             let virtual_time_ns = virtual_time_for_icount(aggregate_icount, config.icount_shift)?;
+            let rr_cursor = rr_cursor_for_aggregate_icount(config, aggregate_icount);
+            let multi_vcpu_fingerprint = multi_vcpu_fingerprint_sample(
+                vm,
+                aggregate_icount,
+                rr_cursor,
+                &per_vcpu_retired_counts,
+            )?;
 
             instruction_stream.push(InstructionSample {
                 aggregate_icount,
@@ -453,6 +539,7 @@ impl ContractADriver {
                 aggregate_icount,
                 virtual_time_ns,
             });
+            multi_vcpu_fingerprint_trajectory.push(multi_vcpu_fingerprint);
         }
 
         let time_fingerprint = time_fingerprint(config.icount_shift, &time_trajectory);
@@ -462,6 +549,7 @@ impl ContractADriver {
             &instruction_stream,
             &architectural_state_trajectory,
             &time_trajectory,
+            &multi_vcpu_fingerprint_trajectory,
             time_fingerprint,
         );
 
@@ -469,6 +557,7 @@ impl ContractADriver {
             instruction_stream,
             architectural_state_trajectory,
             time_trajectory,
+            multi_vcpu_fingerprint_trajectory,
             input_digest,
             time_fingerprint,
             fingerprint,
@@ -485,6 +574,8 @@ pub struct ContractARun {
     pub architectural_state_trajectory: Vec<ArchitecturalStateSample>,
     /// The modeled `(icount, virtual_time)` trajectory.
     pub time_trajectory: Vec<TimeTrajectorySample>,
+    /// Per-vCPU register-file and RR-cursor samples keyed by aggregate icount.
+    pub multi_vcpu_fingerprint_trajectory: Vec<ContractAMultiVcpuFingerprintSample>,
     /// The stable digest of the recorded input list used for this run.
     pub input_digest: StableDigest,
     /// A stable digest over only time-derived fingerprint fields.
@@ -522,6 +613,43 @@ pub struct TimeTrajectorySample {
     pub aggregate_icount: u64,
     /// Virtual nanoseconds derived as `aggregate_icount << icount_shift`.
     pub virtual_time_ns: u64,
+}
+
+/// One multi-vCPU execution fingerprint sample.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContractAMultiVcpuFingerprintSample {
+    /// The aggregate node icount at which all fields were sampled.
+    pub aggregate_icount: u64,
+    /// Register-file digests for every vCPU in ascending vCPU order.
+    pub vcpu_registers: Vec<ContractAVcpuRegisterFileSample>,
+    /// Round-robin cursor state at the same aggregate icount boundary.
+    pub rr_cursor: ContractARoundRobinCursorSample,
+    /// Stable digest over the sample's per-vCPU and cursor material.
+    pub sample_digest: StableDigest,
+}
+
+/// One modeled vCPU register-file fingerprint entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContractAVcpuRegisterFileSample {
+    /// The vCPU whose register file was sampled.
+    pub vcpu_id: u64,
+    /// Digest of the vCPU's architectural register file.
+    pub register_digest: StableDigest,
+    /// Instructions retired by this vCPU at the aggregate sample point.
+    pub retired_instruction_count: u64,
+}
+
+/// Round-robin cursor state included in each multi-vCPU fingerprint sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContractARoundRobinCursorSample {
+    /// The next vCPU selected by the fixed RR rotation.
+    pub current_vcpu: u64,
+    /// Position inside the current fixed RR switch quantum.
+    pub position_in_quantum: u64,
+    /// Remaining aggregate instructions before the next RR switch boundary.
+    pub quantum_remaining: u64,
+    /// The fixed RR switch quantum in aggregate node-icount units.
+    pub rr_switch_quantum: u64,
 }
 
 /// Stable fingerprint material derived only from the Contract A time trajectory.
@@ -602,6 +730,15 @@ pub enum ContractAError {
         icount_shift: u8,
     },
 
+    /// The in-process driver cannot retain per-vCPU state for this topology.
+    #[error("Contract A vCPU count {count} exceeds the in-process bound {max}")]
+    VcpuCountTooLarge {
+        /// The requested vCPU count.
+        count: u64,
+        /// The maximum accepted vCPU count.
+        max: u64,
+    },
+
     /// The VM failed while resetting to the requested configuration.
     #[error("Contract A VM reset failed: {source}")]
     VmReset {
@@ -637,6 +774,20 @@ pub enum ContractAError {
     VmStateSample {
         /// The aggregate icount being sampled.
         aggregate_icount: u64,
+        /// The backend execution error.
+        source: ContractAExecutionError,
+    },
+
+    /// The VM failed while sampling one vCPU register file.
+    #[error(
+        "Contract A VM vCPU register sample failed at aggregate icount \
+         {aggregate_icount}, vCPU {vcpu_id}: {source}"
+    )]
+    VmVcpuRegisterSample {
+        /// The aggregate icount being sampled.
+        aggregate_icount: u64,
+        /// The vCPU whose register file was requested.
+        vcpu_id: u64,
         /// The backend execution error.
         source: ContractAExecutionError,
     },
@@ -678,6 +829,13 @@ fn validate_recorded_inputs(
 
 fn vcpu_for_icount(config: &ContractAConfig, aggregate_icount: u64) -> u64 {
     (aggregate_icount / config.rr_switch_quantum) % config.vcpu_count
+}
+
+fn runtime_vcpu_count(config: &ContractAConfig) -> Result<usize, ContractAError> {
+    usize::try_from(config.vcpu_count).map_err(|_error| ContractAError::VcpuCountTooLarge {
+        count: config.vcpu_count,
+        max: MAX_CONTRACT_A_VCPU_COUNT,
+    })
 }
 
 fn recorded_input_digest(inputs: &[RecordedInput]) -> StableDigest {
@@ -746,12 +904,107 @@ fn time_fingerprint(
     }
 }
 
+fn rr_cursor_for_aggregate_icount(
+    config: &ContractAConfig,
+    aggregate_icount: u64,
+) -> ContractARoundRobinCursorSample {
+    let position_in_quantum = aggregate_icount % config.rr_switch_quantum;
+    let quantum_remaining = if position_in_quantum == 0 {
+        config.rr_switch_quantum
+    } else {
+        config.rr_switch_quantum - position_in_quantum
+    };
+
+    ContractARoundRobinCursorSample {
+        current_vcpu: vcpu_for_icount(config, aggregate_icount),
+        position_in_quantum,
+        quantum_remaining,
+        rr_switch_quantum: config.rr_switch_quantum,
+    }
+}
+
+fn multi_vcpu_fingerprint_sample<Vm: ContractAVm>(
+    vm: &mut Vm,
+    aggregate_icount: u64,
+    rr_cursor: ContractARoundRobinCursorSample,
+    per_vcpu_retired_counts: &[u64],
+) -> Result<ContractAMultiVcpuFingerprintSample, ContractAError> {
+    let mut vcpu_registers = Vec::with_capacity(per_vcpu_retired_counts.len());
+
+    for (vcpu_index, retired_instruction_count) in per_vcpu_retired_counts.iter().enumerate() {
+        let vcpu_id =
+            u64::try_from(vcpu_index).map_err(|_error| ContractAError::VcpuCountTooLarge {
+                count: MAX_CONTRACT_A_VCPU_COUNT + 1,
+                max: MAX_CONTRACT_A_VCPU_COUNT,
+            })?;
+        let request = VcpuRegisterFileRequest {
+            aggregate_icount,
+            vcpu_id,
+            current_vcpu: rr_cursor.current_vcpu,
+            position_in_quantum: rr_cursor.position_in_quantum,
+            quantum_remaining: rr_cursor.quantum_remaining,
+            vcpu_retired_instruction_count: *retired_instruction_count,
+        };
+        let register_digest = vm.sample_vcpu_register_file(request).map_err(|source| {
+            ContractAError::VmVcpuRegisterSample {
+                aggregate_icount,
+                vcpu_id,
+                source,
+            }
+        })?;
+        vcpu_registers.push(ContractAVcpuRegisterFileSample {
+            vcpu_id,
+            register_digest,
+            retired_instruction_count: *retired_instruction_count,
+        });
+    }
+
+    let sample_digest =
+        multi_vcpu_fingerprint_sample_digest(aggregate_icount, &vcpu_registers, rr_cursor);
+
+    Ok(ContractAMultiVcpuFingerprintSample {
+        aggregate_icount,
+        vcpu_registers,
+        rr_cursor,
+        sample_digest,
+    })
+}
+
+fn multi_vcpu_fingerprint_sample_digest(
+    aggregate_icount: u64,
+    vcpu_registers: &[ContractAVcpuRegisterFileSample],
+    rr_cursor: ContractARoundRobinCursorSample,
+) -> StableDigest {
+    let mut hasher = StableHasher::new();
+    hasher.write_tag("contract-a-multi-vcpu-fingerprint-sample-v1");
+    hasher.write_u64(aggregate_icount);
+    hasher.write_u64(len_for_hash(vcpu_registers.len()));
+    for register in vcpu_registers {
+        hasher.write_u64(register.vcpu_id);
+        hasher.write_bytes(&register.register_digest.bytes);
+        hasher.write_u64(register.retired_instruction_count);
+    }
+    hasher.write_u64(rr_cursor.current_vcpu);
+    hasher.write_u64(rr_cursor.position_in_quantum);
+    hasher.write_u64(rr_cursor.quantum_remaining);
+    hasher.write_u64(rr_cursor.rr_switch_quantum);
+    hasher.finish()
+}
+
+fn len_for_hash(len: usize) -> u64 {
+    match u64::try_from(len) {
+        Ok(count) => count,
+        Err(_error) => u64::MAX,
+    }
+}
+
 fn run_fingerprint(
     config: &ContractAConfig,
     input_digest: StableDigest,
     instruction_stream: &[InstructionSample],
     architectural_state_trajectory: &[ArchitecturalStateSample],
     time_trajectory: &[TimeTrajectorySample],
+    multi_vcpu_fingerprint_trajectory: &[ContractAMultiVcpuFingerprintSample],
     time_fingerprint: ContractATimeFingerprint,
 ) -> StableDigest {
     let mut hasher = StableHasher::new();
@@ -774,6 +1027,21 @@ fn run_fingerprint(
     for sample in time_trajectory {
         hasher.write_u64(sample.aggregate_icount);
         hasher.write_u64(sample.virtual_time_ns);
+    }
+    hasher.write_u64(len_for_hash(multi_vcpu_fingerprint_trajectory.len()));
+    for sample in multi_vcpu_fingerprint_trajectory {
+        hasher.write_u64(sample.aggregate_icount);
+        hasher.write_u64(len_for_hash(sample.vcpu_registers.len()));
+        for register in &sample.vcpu_registers {
+            hasher.write_u64(register.vcpu_id);
+            hasher.write_bytes(&register.register_digest.bytes);
+            hasher.write_u64(register.retired_instruction_count);
+        }
+        hasher.write_u64(sample.rr_cursor.current_vcpu);
+        hasher.write_u64(sample.rr_cursor.position_in_quantum);
+        hasher.write_u64(sample.rr_cursor.quantum_remaining);
+        hasher.write_u64(sample.rr_cursor.rr_switch_quantum);
+        hasher.write_bytes(&sample.sample_digest.bytes);
     }
     time_fingerprint.write_hash_material(&mut hasher);
     hasher.finish()
