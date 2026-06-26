@@ -301,6 +301,16 @@ in {
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
+    # RFC-0011 T0 characterization golden. Buildable via
+    # `nix-build -A checks.rfc-0011-characterization`, but NOT yet wired into the
+    # hard CI gate (flake.nix / build.all): it is RED until its baselines are
+    # generated on a Linux/KVM builder (`-A checks.rfc-0011-characterization.regenerate`)
+    # and committed under tests/fixtures/rfc-0011-goldens/server/. Wire it into the
+    # gate in the same diff that lands the baselines. See that dir's README.
+    rfc-0011-characterization = import ./lib/testing/rfc-0011-characterization.nix {
+      inherit pkgs lib mkSystem;
+      system = serverSystem;
+    };
     systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;
     package-expose = import ./lib/testing/package-expose.nix {
