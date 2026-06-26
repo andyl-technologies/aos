@@ -1343,6 +1343,20 @@ alone (`M-1`/`Q-A`).
       parity, derivationStrict-node SHA-256 early cutoff, lazy replay payloads,
       mmap reads, GC/repack, and future value-memoization safety net remain
       open (`S-14`).
+- [x] Current effectful persistent force-value `.drv` surface parity canary:
+      `persistent_effectful_force_cache_hit_preserves_drv_surfaces` evaluates
+      the same derivation attr path with eval cache disabled, with configured
+      persistent force-cache demand/writeback on cold and materializing paths,
+      and with a fresh-runtime trace-verified persistent forced-value hit for a
+      replayed `builtins.pathExists ./marker` branch inside `args`. It requires
+      identical `.drv` paths and ATerm bytes across all runs, requires the
+      final run to report a force-cache hit, and requires persistent-hit
+      revalidation to replay the path-exists fingerprint into the enclosing
+      impure-input trace. This samples the current effectful replayable
+      forced-value hit path inside a derivation input surface; full
+      cached-vs-uncached closure parity, derivationStrict-node SHA-256 early
+      cutoff, lazy replay payloads, stale-input miss surfaces, mmap reads,
+      GC/repack, and future value-memoization safety net remain open (`S-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips
