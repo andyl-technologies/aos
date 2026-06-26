@@ -130,6 +130,7 @@ pub struct EvalStats {
     pub(crate) derivation_aterm_path_reuses: u64,
     pub(crate) static_derivation_output_path_reuses: u64,
     pub(crate) derivation_hash_calculations: u64,
+    pub(crate) derivation_text_path_calculations: u64,
     pub(crate) heap_chunks: u64,
     pub(crate) heap_reserved_bytes: u64,
     pub(crate) heap_used_bytes: u64,
@@ -251,6 +252,11 @@ impl EvalStats {
     /// Returns the number of derivation hash-boundary calculations performed.
     pub const fn derivation_hash_calculations(&self) -> u64 {
         self.derivation_hash_calculations
+    }
+
+    /// Returns the number of derivation `.drv` text-path calculations performed.
+    pub const fn derivation_text_path_calculations(&self) -> u64 {
+        self.derivation_text_path_calculations
     }
 
     /// Returns the number of bump-arena chunks allocated by the evaluator heap.

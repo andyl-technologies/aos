@@ -268,7 +268,7 @@ impl TreeWalk {
     }
 
     pub(super) fn calculate_derivation_path(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         name: &str,
@@ -279,13 +279,14 @@ impl TreeWalk {
     }
 
     pub(super) fn calculate_derivation_path_from_aterm(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         name: &str,
         derivation: &nix_compat::derivation::Derivation,
         aterm: &[u8],
     ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
+        self.increment_derivation_text_path_calculations();
         let drv_name = format!("{name}.drv");
         let references = self.derivation_path_references(derivation);
         self.build_text_path(id, span, &drv_name, aterm, references)

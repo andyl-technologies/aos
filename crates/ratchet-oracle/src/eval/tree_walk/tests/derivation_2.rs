@@ -164,6 +164,7 @@ struct DerivationCacheRun {
     path_reuses: u64,
     output_path_reuses: u64,
     hash_calculations: u64,
+    text_path_calculations: u64,
 }
 
 fn eval_single_derivation_with_cache(
@@ -193,6 +194,7 @@ fn eval_single_derivation_with_cache(
         path_reuses: outcome.stats().derivation_aterm_path_reuses(),
         output_path_reuses: outcome.stats().static_derivation_output_path_reuses(),
         hash_calculations: outcome.stats().derivation_hash_calculations(),
+        text_path_calculations: outcome.stats().derivation_text_path_calculations(),
     }
 }
 
@@ -311,6 +313,8 @@ fn derivation_strict_observes_aterm_early_cutoff_in_eval_cache() {
     assert_eq!(second.path_reuses, 1);
     assert_eq!(first.output_path_reuses, 0);
     assert_eq!(second.output_path_reuses, 1);
+    assert!(first.text_path_calculations > 0);
+    assert_eq!(second.text_path_calculations, 0);
     assert_eq!(
         cache
             .lock()
@@ -623,6 +627,9 @@ fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
         assert_eq!(uncached.output_path_reuses, 0);
         assert_eq!(first.output_path_reuses, 0);
         assert_eq!(reuse.output_path_reuses, expected_output_path_reuses);
+        assert!(uncached.text_path_calculations > 0);
+        assert!(first.text_path_calculations > 0);
+        assert_eq!(reuse.text_path_calculations, 0);
         if expected_output_path_reuses > 0 {
             assert!(first.hash_calculations > 0);
             assert_eq!(reuse.hash_calculations, 0);
@@ -700,10 +707,15 @@ fn derivation_strict_cached_static_closure_reuse_preserves_drv_surfaces() {
     assert_eq!(first.stats().derivation_aterm_path_reuses(), 0);
     assert_eq!(first.stats().static_derivation_output_path_reuses(), 0);
     assert!(first.stats().derivation_hash_calculations() > 0);
+    assert!(first.stats().derivation_text_path_calculations() > 0);
     assert_eq!(reuse.stats().derivation_aterm_path_reuses(), 2);
     assert_eq!(reuse.stats().static_derivation_output_path_reuses(), 2);
     assert!(
         reuse.stats().derivation_hash_calculations() < first.stats().derivation_hash_calculations()
+    );
+    assert!(
+        reuse.stats().derivation_text_path_calculations()
+            < first.stats().derivation_text_path_calculations()
     );
     assert_eq!(
         cache
@@ -2402,7 +2414,7 @@ fn derivation_strict_content_addressed_derivations_defer_downstream_outputs() {
 #[test]
 fn derivation_strict_deferred_derivation_paths_sort_and_dedupe_references() {
     let ir = lower("null");
-    let eval = TreeWalk::new(&ir);
+    let mut eval = TreeWalk::new(&ir);
     let id = IrId::new(0);
     let span = Span::new(0, 0);
     let output = FloatingCaOutput {

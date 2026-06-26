@@ -918,14 +918,17 @@ alone (`M-1`/`Q-A`).
       path side record, validates that cached absolute path against the
       current configured store directory and expected `${name}.drv` basename,
       and reuses it instead of rebuilding the final `.drv` text path when the
-      record matches. The reuse increments `derivation_aterm_path_reuses` but
+      record matches. The reuse increments `derivation_aterm_path_reuses`,
+      drives `derivation_text_path_calculations` to zero for matching clean
+      root reuse tests, and
       leaves aggregate `cache_hits`/`cache_misses` and force-cache hit/miss
       accounting unchanged; misses, stale records, disabled runtimes,
       unsupported captured values, invalid cached paths, configured-store
       mismatches, and wrong derivation names fall back to normal path
       construction. Initial derivation modulo hashing, static-output misses,
       deferred-placeholder derivations, persistence, dependency capture beyond
-      hashable lexical captures, full SHA-256 store-path short-circuiting, and
+      hashable lexical captures, full derivationStrict-node SHA-256/store-path
+      early cutoff, and
       full cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
 - [x] Current static derivation output-path reuse precursor:
       tree-walk `derivationStrict` records a clean crate-private side payload
@@ -944,25 +947,26 @@ alone (`M-1`/`Q-A`).
       as a generic force-cache hit; disabled runtimes, unsupported captured
       values, stale/dirty/changed records, invalid payloads, and output-set
       mismatches fall back to normal construction. Final ATerm serialization,
-      final `.drv` path lookup/construction, deferred-placeholder derivations,
-      persistence, dynamic dependency capture beyond hashable lexical captures,
-      and full cached/uncached `.drv` parity proof remain open
-      (`S-14`/`S-15`).
+      deferred-placeholder derivations, persistence, dynamic dependency capture
+      beyond hashable lexical captures, and full cached/uncached `.drv` parity
+      proof remain open (`S-14`/`S-15`).
 - [x] Current cached derivationStrict `.drv` surface parity canary:
       tree-walk tests compare cache-off, cache-on first-observation, and
       cache-on path-reuse runs for root static, floating-CA, and impure
       derivations, a static input-closure graph, plus a deferred-placeholder
       downstream graph, requiring identical recorded `.drv` paths and ATerm
       bytes across those runs. The static root case proves one
-      static-output-path reuse before final `.drv` path reuse, and the static
+      static-output-path reuse before final `.drv` path reuse, zero derivation
+      hash-boundary calculations, and zero final `.drv` text-path calculations
+      on the clean reuse run. The static/floating-CA/impure root cases prove
+      final `.drv` path reuse skips final text-path calculation, and the static
       input-closure case proves two eligible input derivations reuse static
-      output paths and final `.drv` paths without changing the downstream
-      closure surface. The static root case also proves zero derivation
-      hash-boundary calculations on the clean reuse run. This is selected
-      in-memory reuse parity only; full-closure cached/uncached parity,
+      output paths and final `.drv` paths while reducing derivation hash and
+      text-path work without changing the downstream closure surface. This is
+      selected in-memory reuse parity only; full-closure cached/uncached parity,
       persistent reuse, dynamic dependency capture beyond hashable lexical
-      captures, broader modulo-hash shortcuts, and full SHA-256 store-path
-      short-circuiting remain open
+      captures, broader modulo-hash shortcuts, and full derivationStrict-node
+      SHA-256/store-path early cutoff remain open
       (`S-14`/`S-15`).
 - [x] Current forced-payload early-cutoff stats substrate:
       trace-backed force-cache payload observation now reports its value-hash
