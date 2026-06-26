@@ -825,9 +825,10 @@ mod entry {
                 }
             }
             // Cutover admin (`POST /_admin/sql`, seal-gated) — the one-time
-            // D1→`HubDb` data-replay tool. TEMPORARILY ungated to delete a test
-            // user; re-gate behind `cutover-admin` immediately after.
-            #[cfg(not(feature = "no-cutover-admin"))]
+            // D1→`HubDb` data-replay tool, gated behind the `cutover-admin`
+            // feature so the production build has no raw-SQL surface. Build with
+            // `--features cutover-admin` only to run a migration.
+            #[cfg(feature = "cutover-admin")]
             {
                 let path = req.url().ok().map(|u| u.path().to_string()).unwrap_or_default();
                 if req.method() == Method::Post && path == "/_admin/sql" {
