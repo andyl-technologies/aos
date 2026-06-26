@@ -955,9 +955,7 @@ impl TreeWalk {
             }
             entries
         };
-        if entries.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
-            return None;
-        }
+        let source_order_is_lexicographic = entries.windows(2).all(|pair| pair[0].0 < pair[1].0);
         let mut payload_entries = Vec::new();
         payload_entries.try_reserve_exact(entries.len()).ok()?;
         for (name, value) in entries {
@@ -969,7 +967,11 @@ impl TreeWalk {
                 )?,
             ));
         }
-        CachedExpressionValue::strict_attrs(payload_entries).ok()
+        if source_order_is_lexicographic {
+            CachedExpressionValue::strict_attrs(payload_entries).ok()
+        } else {
+            CachedExpressionValue::source_ordered_attrs(payload_entries).ok()
+        }
     }
 
     fn force_cache_payload_for_value_with_depth(
@@ -1025,25 +1027,41 @@ impl TreeWalk {
                 if attrs.is_empty() {
                     Some(CachedExpressionValue::empty_attrs())
                 } else {
-                    if attrs.source_order() != attrs.iteration_order() {
-                        return None;
-                    }
                     let mut entries = Vec::new();
                     entries.try_reserve_exact(attrs.len()).ok()?;
-                    for entry in attrs.iter_lexicographic() {
-                        if entry.position.is_some() {
-                            return None;
+                    let source_order_is_lexicographic =
+                        attrs.source_order() == attrs.iteration_order();
+                    if source_order_is_lexicographic {
+                        for entry in attrs.iter_lexicographic() {
+                            if entry.position.is_some() {
+                                return None;
+                            }
+                            let name = self.symbols.resolve(entry.key)?;
+                            entries.push((
+                                try_clone_bytes(name).ok()?,
+                                self.force_cache_payload_for_value_with_depth(
+                                    entry.value,
+                                    depth.saturating_add(1),
+                                )?,
+                            ));
                         }
-                        let name = self.symbols.resolve(entry.key)?;
-                        entries.push((
-                            try_clone_bytes(name).ok()?,
-                            self.force_cache_payload_for_value_with_depth(
-                                entry.value,
-                                depth.saturating_add(1),
-                            )?,
-                        ));
+                        CachedExpressionValue::strict_attrs(entries).ok()
+                    } else {
+                        for entry in attrs.iter_source_order() {
+                            if entry.position.is_some() {
+                                return None;
+                            }
+                            let name = self.symbols.resolve(entry.key)?;
+                            entries.push((
+                                try_clone_bytes(name).ok()?,
+                                self.force_cache_payload_for_value_with_depth(
+                                    entry.value,
+                                    depth.saturating_add(1),
+                                )?,
+                            ));
+                        }
+                        CachedExpressionValue::source_ordered_attrs(entries).ok()
                     }
-                    CachedExpressionValue::strict_attrs(entries).ok()
                 }
             }
             ValueTag::Thunk => {

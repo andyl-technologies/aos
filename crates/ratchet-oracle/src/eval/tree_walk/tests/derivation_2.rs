@@ -1207,8 +1207,8 @@ fn derivation_strict_cached_static_closure_reuse_preserves_drv_surfaces() {
     assert_eq!(first.stats().static_derivation_output_path_reuses(), 0);
     assert!(first.stats().derivation_hash_calculations() > 0);
     assert!(first.stats().derivation_text_path_calculations() > 0);
-    assert_eq!(reuse.stats().derivation_aterm_path_reuses(), 2);
-    assert_eq!(reuse.stats().static_derivation_output_path_reuses(), 2);
+    assert_eq!(reuse.stats().derivation_aterm_path_reuses(), 3);
+    assert_eq!(reuse.stats().static_derivation_output_path_reuses(), 3);
     assert!(
         reuse.stats().derivation_hash_calculations() < first.stats().derivation_hash_calculations()
     );
@@ -1223,7 +1223,7 @@ fn derivation_strict_cached_static_closure_reuse_preserves_drv_surfaces() {
             .cache()
             .expect("runtime is enabled")
             .derivation_aterm_path_record_count(),
-        2
+        3
     );
     assert_eq!(
         cache
@@ -1232,7 +1232,7 @@ fn derivation_strict_cached_static_closure_reuse_preserves_drv_surfaces() {
             .cache()
             .expect("runtime is enabled")
             .static_derivation_output_path_record_count(),
-        2
+        3
     );
 }
 

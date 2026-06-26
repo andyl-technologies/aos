@@ -6682,7 +6682,7 @@ fn strict_attrset_payloads_skip_position_bearing_attrsets() {
 }
 
 #[test]
-fn strict_attrset_payloads_skip_noncanonical_source_order_attrsets() {
+fn source_ordered_attrset_payloads_rehydrate_after_heap_lookup() {
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
         DurableBlake3Hash::for_bytes(b"force-source-order-attrs-result"),
@@ -6717,19 +6717,44 @@ fn strict_attrset_payloads_skip_noncanonical_source_order_attrsets() {
         .expect("attrs allocate");
 
     evaluator.observe_forced_inline_expression_result(
-        Some(subject),
+        Some(subject.clone()),
         value,
         ImpureInputTraceSegment {
             trace: Vec::new(),
             complete: true,
         },
     );
+    drop(evaluator);
 
-    let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "source-order-observable attrsets need source-order-aware payloads before observation"
+    let mut second = TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache);
+    let hit = second
+        .lookup_forced_inline_expression_result(Some(subject))
+        .expect("source-order attrset payload hits");
+    let attrs = second
+        .heap()
+        .get_attrs(hit)
+        .expect("source-order attrset rehydrates into this evaluator heap");
+    assert_ne!(
+        attrs.source_order(),
+        attrs.iteration_order(),
+        "rehydrated attrset must preserve source-order metadata"
     );
+    let source_order: Vec<_> = attrs
+        .iter_source_order()
+        .map(|entry| {
+            (
+                second
+                    .symbols
+                    .resolve(entry.key)
+                    .expect("entry symbol resolves")
+                    .to_vec(),
+                entry.value.as_int().expect("entry value is an int"),
+            )
+        })
+        .collect();
+    assert_eq!(source_order, vec![(b"c".to_vec(), 2), (b"b".to_vec(), 1)]);
+    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().cache_misses(), 0);
 }
 
 #[test]
@@ -7559,7 +7584,7 @@ fn captured_position_bearing_attrset_values_do_not_build_force_cache_subjects() 
 }
 
 #[test]
-fn captured_source_order_attrset_values_do_not_build_force_cache_subjects() {
+fn captured_source_order_attrset_values_build_force_cache_subjects() {
     let mut symbols = SymbolTable::new();
     let c = symbols.intern(b"c").expect("c interns");
     let b = symbols.intern(b"b").expect("b interns");
@@ -7637,8 +7662,8 @@ fn captured_source_order_attrset_values_do_not_build_force_cache_subjects() {
             .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
     };
     assert!(
-        subject.is_none(),
-        "captured source-order-observable attrsets must not be hashed into demand keys"
+        subject.is_some(),
+        "captured source-order-observable attrsets should hash into demand keys"
     );
     assert!(
         evaluator
@@ -7660,9 +7685,10 @@ fn captured_source_order_attrset_values_do_not_build_force_cache_subjects() {
 
     assert_eq!(forced.as_bool(), Ok(true));
     let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "captured source-order attrsets need source-order-aware payloads before observation"
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "captured source-order attrsets should create one demand node"
     );
 }
 
@@ -8557,6 +8583,138 @@ fn closed_composite_literal_thunks_admit_on_first_raw_force() {
 }
 
 #[test]
+fn closed_source_order_attrset_literal_thunks_admit_and_rehydrate_source_order() {
+    let mut symbols = SymbolTable::new();
+    let a = symbols.intern(b"a").expect("a interns");
+    let c = symbols.intern(b"c").expect("c interns");
+    let b = symbols.intern(b"b").expect("b interns");
+    let ir = manual_ir_with_attr_tables(
+        IrId::new(4),
+        vec![
+            pure_node(IrKind::Int, Span::new(10, 11), IrData::Int(2)),
+            pure_node(IrKind::Int, Span::new(17, 18), IrData::Int(1)),
+            pure_node(
+                IrKind::AttrSet,
+                Span::new(6, 20),
+                IrData::AttrSet {
+                    shape: IrShapeId::new(0),
+                    bindings: IrBindingSlice::new(1, 2),
+                    recursive: false,
+                    has_dynamic: false,
+                    frame: None,
+                },
+            ),
+            pure_node(
+                IrKind::ThunkAlloc,
+                Span::new(6, 20),
+                IrData::Node(IrId::new(2)),
+            ),
+            pure_node(
+                IrKind::AttrSet,
+                Span::new(0, 22),
+                IrData::AttrSet {
+                    shape: IrShapeId::new(1),
+                    bindings: IrBindingSlice::new(0, 1),
+                    recursive: false,
+                    has_dynamic: false,
+                    frame: None,
+                },
+            ),
+        ],
+        symbols,
+        vec![
+            IrBinding {
+                key: IrAttrPathSegment::Static(a),
+                position: None,
+                value: IrId::new(3),
+            },
+            IrBinding {
+                key: IrAttrPathSegment::Static(c),
+                position: None,
+                value: IrId::new(0),
+            },
+            IrBinding {
+                key: IrAttrPathSegment::Static(b),
+                position: None,
+                value: IrId::new(1),
+            },
+        ],
+        vec![IrShape::new(Box::new([c, b])), IrShape::new(Box::new([a]))],
+    );
+    let source = "{ a = { c = 2; b = 1; }; }";
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "source-order-composite-first-demand.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("a is a node thunk");
+            let body = thunk.body().expect("a has a lowered attrset body");
+            let node = ir.arena.node(body).expect("attrset body exists");
+            assert_eq!(node.kind, IrKind::AttrSet);
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("closed source-order attrset subject builds")
+        };
+        assert_eq!(
+            subject.memoization_admission,
+            ForceCacheMemoizationAdmission::SelectedSubstrate,
+            "closed source-order attrset literals should admit on first demand"
+        );
+
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("source-order attrset literal force succeeds");
+        let attrs = evaluator
+            .heap()
+            .get_attrs(forced)
+            .expect("forced value is an attrset");
+        assert_ne!(
+            attrs.source_order(),
+            attrs.iteration_order(),
+            "forced attrset must preserve source-order metadata"
+        );
+        let source_order: Vec<_> = attrs
+            .iter_source_order()
+            .map(|entry| {
+                (
+                    evaluator
+                        .symbols
+                        .resolve(entry.key)
+                        .expect("entry symbol resolves")
+                        .to_vec(),
+                    entry.value.as_int().expect("entry value is an int"),
+                )
+            })
+            .collect();
+        assert_eq!(source_order, vec![(b"c".to_vec(), 2), (b"b".to_vec(), 1)]);
+        assert_eq!(evaluator.stats().force_cache_memoization_bypasses(), 0);
+        assert_eq!(evaluator.stats().force_cache_memoization_admits(), 1);
+        assert_eq!(
+            evaluator.stats().force_cache_hits() > 0,
+            expected_hit,
+            "second raw force should hit the closed source-order attrset payload"
+        );
+    }
+}
+
+#[test]
 fn captured_replayable_lists_miss_when_hashes_differ() {
     let source = r#"
 let f = x: { a = builtins.elemAt x 0 == 1; };
@@ -8761,12 +8919,12 @@ fn materialized_position_bearing_attrsets_are_not_free_variable_hashable_yet() {
 }
 
 #[test]
-fn materialized_source_order_attrsets_are_not_free_variable_hashable_yet() {
+fn materialized_source_order_attrsets_are_free_variable_hashable_and_order_sensitive() {
     let ir = lower("1");
     let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
     let b = evaluator.symbols.intern(b"b").expect("b interns");
     let c = evaluator.symbols.intern(b"c").expect("c interns");
-    let attrs = FlatAttrs::new(
+    let source_ordered = FlatAttrs::new(
         vec![
             AttrEntry::new(c, Value::int(2)),
             AttrEntry::new(b, Value::int(1)),
@@ -8774,13 +8932,61 @@ fn materialized_source_order_attrsets_are_not_free_variable_hashable_yet() {
         &evaluator.symbols,
     )
     .expect("attrs build");
-    assert_ne!(attrs.source_order(), attrs.iteration_order());
-    let attrs = evaluator
+    assert_ne!(
+        source_ordered.source_order(),
+        source_ordered.iteration_order()
+    );
+    let source_ordered = evaluator
         .heap
-        .alloc_attrs(0, attrs)
+        .alloc_attrs(0, source_ordered)
         .expect("attrset allocates");
+    let first_hash = evaluator
+        .force_cache_free_var_value_hash(source_ordered)
+        .expect("source-order attrset hashes");
 
-    assert_eq!(evaluator.force_cache_free_var_value_hash(attrs), None);
+    let same = FlatAttrs::new(
+        vec![
+            AttrEntry::new(c, Value::int(2)),
+            AttrEntry::new(b, Value::int(1)),
+        ],
+        &evaluator.symbols,
+    )
+    .expect("matching attrs build");
+    assert_ne!(same.source_order(), same.iteration_order());
+    let same = evaluator
+        .heap
+        .alloc_attrs(0, same)
+        .expect("matching attrset allocates");
+    assert_eq!(
+        evaluator
+            .force_cache_free_var_value_hash(same)
+            .expect("matching source-order attrset hashes"),
+        first_hash
+    );
+
+    let lexicographic = FlatAttrs::new(
+        vec![
+            AttrEntry::new(b, Value::int(1)),
+            AttrEntry::new(c, Value::int(2)),
+        ],
+        &evaluator.symbols,
+    )
+    .expect("lexicographic attrs build");
+    assert_eq!(
+        lexicographic.source_order(),
+        lexicographic.iteration_order()
+    );
+    let lexicographic = evaluator
+        .heap
+        .alloc_attrs(0, lexicographic)
+        .expect("lexicographic attrset allocates");
+    assert_ne!(
+        evaluator
+            .force_cache_free_var_value_hash(lexicographic)
+            .expect("lexicographic attrset hashes"),
+        first_hash,
+        "source-order metadata must participate in the capture hash"
+    );
 }
 
 #[test]

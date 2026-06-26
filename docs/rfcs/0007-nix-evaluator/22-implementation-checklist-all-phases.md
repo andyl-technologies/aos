@@ -542,9 +542,9 @@ alone (`M-1`/`Q-A`).
       context, a Nix path payload with or without context, a replayable Nix list
       whose existing spine elements are non-thunk replayable payloads or
       suspended closed literal thunks with replayable static payloads, or a
-      position-free, source-order-canonical replayable Nix attrset whose existing
-      bindings are non-thunk replayable payloads or suspended closed literal
-      thunks with replayable static payloads. The
+      position-free replayable Nix attrset that preserves source-order metadata
+      when present and whose existing bindings are non-thunk replayable payloads
+      or suspended closed literal thunks with replayable static payloads. The
       precursor expression identity uses a domain-separated hash of source name,
       source bytes, module path-literal base, evaluator-option salt, and the
       lowered node source span, then pairs that expression-positioned artifact
@@ -562,7 +562,7 @@ alone (`M-1`/`Q-A`).
       thunks, canonical free-variable hashes, general memo lookup,
       remaining suspended non-literal/non-replayable captured thunk-cell free
       variables, arbitrary lazy-element list and lazy-binding attrset payloads,
-      position/source-order-bearing attrset payloads, and
+      position-bearing attrset payloads, and
       other composite value hashing, persistence, and cached/uncached harness proof remain open
       (`S-14`/`S-15`).
 - [x] Current pure closed force-cache hit substrate: `EvalCache` keeps per-node
@@ -721,7 +721,8 @@ alone (`M-1`/`Q-A`).
       slot value is either an inline scalar supported by
       `ValueHash::from_inline_value`, a Nix string with or without context, a
       Nix path with or without context, a replayable Nix list, a
-      position-free, source-order-canonical replayable Nix attrset, a
+      position-free replayable Nix attrset with source-order metadata preserved
+      when present, a
       fulfilled thunk cell whose cached value is one of those replayable values,
       or a suspended closed literal thunk whose static payload is one of those
       replayable values.
@@ -735,7 +736,7 @@ alone (`M-1`/`Q-A`).
       thunks hit only when their free-variable value hashes match and miss when
       those captured values differ. This deliberately skips dynamic `with`
       scopes, scoped-import globals, arbitrary lazy-element lists, lazy-binding attrsets,
-      position/source-order-bearing attrsets, lambdas, primops,
+      position-bearing attrsets, lambdas, primops,
       suspended non-literal/non-replayable thunk-cell captures including computed
       values not already forced in the captured slot, captured bodies with nested lexical-frame introducers, apply/select
       thunks, full strictness/escape free-variable analysis, remaining
@@ -749,8 +750,8 @@ alone (`M-1`/`Q-A`).
       global subject-skip canaries, lambda/recursive-attrset nested
       lexical-frame subject-skip canaries, captured lambda/primop value
       subject-skip canaries, synthetic apply/apply2/select thunk subject-skip
-      canaries, captured position/source-order attrset value subject-skip
-      canaries, captured lazy-element list and lazy-binding attrset subject-skip
+      canaries, captured position-bearing attrset subject-skip and source-order
+      attrset admission canaries, captured lazy-element list and lazy-binding attrset subject-skip
       canaries, and representative captured unsupported free-variable skips
       (`C-1`/`C-2`).
 - [x] Current node-span force-cache identity precursor: source-backed and
@@ -849,9 +850,8 @@ alone (`M-1`/`Q-A`).
       but cannot cut off distinct bit patterns. `ValueHash` also hashes
       context-free string bytes, context-bearing string bytes plus canonical
       context elements, path bytes with or without canonical context elements,
-      empty lists, replayable list payloads whose element payloads are length-framed, and replayable attrset payloads whose raw-byte-sorted binding names and value payloads are length-framed in separate durable BLAKE3 domains for the force-cache
-      payload precursor.
-      Lazy-element list and lazy-binding attrset cacheability, position/source-order-bearing attrset payloads, functions/thunks cacheability
+      empty lists, replayable list payloads whose element payloads are length-framed, and replayable attrset payloads whose binding names and value payloads are length-framed in separate durable BLAKE3 domains, using raw-byte-sorted binding order for canonical attrsets and a distinct source-order tag when construction order is observable.
+      Lazy-element list and lazy-binding attrset cacheability, position-bearing attrset payloads, functions/thunks cacheability
       policy, generic hash-cons value fields, `force_memoized` integration,
       persistence, and harness proof remain open (`S-14`/`S-15`).
 - [x] Current inline-value early-cutoff adapter:

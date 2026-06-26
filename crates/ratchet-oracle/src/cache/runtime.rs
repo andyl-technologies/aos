@@ -26,6 +26,7 @@ use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};
 use crate::value::Value;
 
 const MAX_CACHED_EXPRESSION_PAYLOAD_NESTING: usize = 64;
+const SOURCE_ORDERED_ATTRS_PAYLOAD_TAG: &[u8] = b"attrs-source-order";
 const DERIVATION_ATERM_PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] =
     b"aos-nix-derivation-aterm-path-value-hash-v1";
 const STATIC_DERIVATION_OUTPUT_PATHS_VALUE_HASH_DOMAIN_VERSION: &[u8] =
@@ -520,6 +521,36 @@ impl CachedExpressionValue {
         })
     }
 
+    /// Creates a cached strict Nix attrset payload that preserves source order.
+    ///
+    /// This represents an attrset whose binding values are already replayable
+    /// values and whose source-order permutation is observable. It does not
+    /// represent binding positions or lazy binding thunks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CachedExpressionValuePayloadError::NonCanonicalAttrsPayloadName`]
+    /// if two bindings have the same attribute name.
+    pub fn source_ordered_attrs(
+        entries: Vec<(Vec<u8>, Self)>,
+    ) -> Result<Self, CachedExpressionValuePayloadError> {
+        if entries.is_empty() {
+            return Ok(Self::empty_attrs());
+        }
+        ensure_unique_attr_payload_names(entries.iter().map(|(name, _)| name.as_slice()))?;
+        Ok(Self {
+            payload: InlineValuePayload::SourceOrderedAttrs(
+                entries
+                    .into_iter()
+                    .map(|(name, value)| AttrPayloadEntry {
+                        name,
+                        value: value.payload,
+                    })
+                    .collect(),
+            ),
+        })
+    }
+
     /// Creates a cached empty Nix attrset payload.
     pub const fn empty_attrs() -> Self {
         Self {
@@ -582,6 +613,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::EmptyList
             | InlineValuePayload::List(_)
             | InlineValuePayload::EmptyAttrs
+            | InlineValuePayload::SourceOrderedAttrs(_)
             | InlineValuePayload::Attrs(_)
             | InlineValuePayload::Int(_)
             | InlineValuePayload::Float(_)
@@ -603,6 +635,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::EmptyList
             | InlineValuePayload::List(_)
             | InlineValuePayload::EmptyAttrs
+            | InlineValuePayload::SourceOrderedAttrs(_)
             | InlineValuePayload::Attrs(_)
             | InlineValuePayload::Null => None,
         }
@@ -621,6 +654,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::EmptyList
             | InlineValuePayload::List(_)
             | InlineValuePayload::EmptyAttrs
+            | InlineValuePayload::SourceOrderedAttrs(_)
             | InlineValuePayload::Attrs(_)
             | InlineValuePayload::Null => None,
         }
@@ -639,6 +673,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::EmptyList
             | InlineValuePayload::List(_)
             | InlineValuePayload::EmptyAttrs
+            | InlineValuePayload::SourceOrderedAttrs(_)
             | InlineValuePayload::Attrs(_)
             | InlineValuePayload::Null => None,
         }
@@ -663,6 +698,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::Path(_)
             | InlineValuePayload::ContextPath { .. }
             | InlineValuePayload::EmptyAttrs
+            | InlineValuePayload::SourceOrderedAttrs(_)
             | InlineValuePayload::Attrs(_) => None,
         }
     }
@@ -689,8 +725,9 @@ impl CachedExpressionValue {
             | InlineValuePayload::ContextString { .. }
             | InlineValuePayload::Path(_)
             | InlineValuePayload::ContextPath { .. }
-            | InlineValuePayload::EmptyAttrs => None,
-            InlineValuePayload::Attrs(_) => None,
+            | InlineValuePayload::EmptyAttrs
+            | InlineValuePayload::SourceOrderedAttrs(_)
+            | InlineValuePayload::Attrs(_) => None,
         }
     }
 
@@ -703,7 +740,8 @@ impl CachedExpressionValue {
     pub fn attrs_len(&self) -> Option<usize> {
         match &self.payload {
             InlineValuePayload::EmptyAttrs => Some(0),
-            InlineValuePayload::Attrs(entries) => Some(entries.len()),
+            InlineValuePayload::Attrs(entries)
+            | InlineValuePayload::SourceOrderedAttrs(entries) => Some(entries.len()),
             InlineValuePayload::Int(_)
             | InlineValuePayload::Float(_)
             | InlineValuePayload::Bool(_)
@@ -720,7 +758,8 @@ impl CachedExpressionValue {
     pub(crate) fn attrs_entries(&self) -> Option<Vec<(Vec<u8>, Self)>> {
         match &self.payload {
             InlineValuePayload::EmptyAttrs => Some(Vec::new()),
-            InlineValuePayload::Attrs(entries) => {
+            InlineValuePayload::Attrs(entries)
+            | InlineValuePayload::SourceOrderedAttrs(entries) => {
                 let mut out = Vec::new();
                 out.try_reserve_exact(entries.len()).ok()?;
                 out.extend(entries.iter().map(|entry| {
@@ -2042,6 +2081,7 @@ enum InlineValuePayload {
     List(Vec<InlineValuePayload>),
     EmptyAttrs,
     Attrs(Vec<AttrPayloadEntry>),
+    SourceOrderedAttrs(Vec<AttrPayloadEntry>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2092,7 +2132,8 @@ impl InlineValuePayload {
             | Self::EmptyList
             | Self::List(_)
             | Self::EmptyAttrs
-            | Self::Attrs(_) => None,
+            | Self::Attrs(_)
+            | Self::SourceOrderedAttrs(_) => None,
         }
     }
 
@@ -2113,7 +2154,9 @@ impl InlineValuePayload {
             Self::EmptyList => Ok(ValueHash::from_empty_list()),
             Self::List(_) => Ok(self.value_hash_from_persistent_payload()),
             Self::EmptyAttrs => Ok(ValueHash::from_empty_attrs()),
-            Self::Attrs(_) => Ok(self.value_hash_from_persistent_payload()),
+            Self::Attrs(_) | Self::SourceOrderedAttrs(_) => {
+                Ok(self.value_hash_from_persistent_payload())
+            }
         }
     }
 
@@ -2200,6 +2243,17 @@ impl InlineValuePayload {
                     entry.value.update_persistent_payload_preimage(hasher);
                 }
             }
+            Self::SourceOrderedAttrs(entries) => {
+                hasher.update(ATTRS_VALUE_HASH_DOMAIN_VERSION);
+                hasher.update(SOURCE_ORDERED_ATTRS_PAYLOAD_TAG);
+                hasher.update(&(entries.len() as u128).to_le_bytes());
+                for entry in entries {
+                    hasher.update(&(entry.name.len() as u128).to_le_bytes());
+                    hasher.update(&entry.name);
+                    hasher.update(&entry.value.persistent_payload_len().to_le_bytes());
+                    entry.value.update_persistent_payload_preimage(hasher);
+                }
+            }
         }
     }
 
@@ -2246,6 +2300,19 @@ impl InlineValuePayload {
             Self::Attrs(entries) => {
                 ATTRS_VALUE_HASH_DOMAIN_VERSION.len() as u128
                     + 5
+                    + 16
+                    + entries
+                        .iter()
+                        .map(|entry| {
+                            16 + entry.name.len() as u128
+                                + 16
+                                + entry.value.persistent_payload_len()
+                        })
+                        .sum::<u128>()
+            }
+            Self::SourceOrderedAttrs(entries) => {
+                ATTRS_VALUE_HASH_DOMAIN_VERSION.len() as u128
+                    + SOURCE_ORDERED_ATTRS_PAYLOAD_TAG.len() as u128
                     + 16
                     + entries
                         .iter()
@@ -2329,6 +2396,17 @@ impl InlineValuePayload {
             Self::Attrs(entries) => {
                 append_payload_bytes(&mut out, ATTRS_VALUE_HASH_DOMAIN_VERSION)?;
                 append_payload_bytes(&mut out, b"attrs")?;
+                append_payload_u128(&mut out, entries.len() as u128)?;
+                for entry in entries {
+                    append_payload_u128(&mut out, entry.name.len() as u128)?;
+                    append_payload_bytes(&mut out, &entry.name)?;
+                    append_payload_u128(&mut out, entry.value.persistent_payload_len())?;
+                    append_payload_bytes(&mut out, &entry.value.encode_persistent_payload()?)?;
+                }
+            }
+            Self::SourceOrderedAttrs(entries) => {
+                append_payload_bytes(&mut out, ATTRS_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, SOURCE_ORDERED_ATTRS_PAYLOAD_TAG)?;
                 append_payload_u128(&mut out, entries.len() as u128)?;
                 for entry in entries {
                     append_payload_u128(&mut out, entry.name.len() as u128)?;
@@ -2448,7 +2526,19 @@ impl InlineValuePayload {
         if bytes.starts_with(ATTRS_VALUE_HASH_DOMAIN_VERSION) {
             let mut cursor = PayloadCursor::new(bytes);
             cursor.take_marker(ATTRS_VALUE_HASH_DOMAIN_VERSION, "attrs value domain")?;
-            cursor.take_marker(b"attrs", "attrs payload tag")?;
+            let source_ordered = if cursor
+                .remaining()
+                .starts_with(SOURCE_ORDERED_ATTRS_PAYLOAD_TAG)
+            {
+                cursor.take_marker(
+                    SOURCE_ORDERED_ATTRS_PAYLOAD_TAG,
+                    "source-order attrs payload tag",
+                )?;
+                true
+            } else {
+                cursor.take_marker(b"attrs", "attrs payload tag")?;
+                false
+            };
             let len = cursor.take_len()?;
             if len == 0 {
                 cursor.finish()?;
@@ -2460,7 +2550,8 @@ impl InlineValuePayload {
                 .map_err(|_| CachedExpressionValuePayloadError::AttrsAllocationFailed { len })?;
             for index in 0..len {
                 let name = cursor.take_length_prefixed_bytes()?;
-                if let Some(previous) = entries.last()
+                if !source_ordered
+                    && let Some(previous) = entries.last()
                     && previous.name.as_slice() >= name.as_slice()
                 {
                     return Err(
@@ -2477,10 +2568,32 @@ impl InlineValuePayload {
                 });
             }
             cursor.finish()?;
+            if source_ordered {
+                ensure_unique_attr_payload_names(
+                    entries.iter().map(|entry| entry.name.as_slice()),
+                )?;
+                return Ok(Self::SourceOrderedAttrs(entries));
+            }
             return Ok(Self::Attrs(entries));
         }
         Err(CachedExpressionValuePayloadError::UnknownDomain)
     }
+}
+
+fn ensure_unique_attr_payload_names<'a, I>(
+    names: I,
+) -> Result<(), CachedExpressionValuePayloadError>
+where
+    I: IntoIterator<Item = &'a [u8]>,
+{
+    let mut seen = BTreeMap::<Vec<u8>, usize>::new();
+    for (index, name) in names.into_iter().enumerate() {
+        if seen.contains_key(name) {
+            return Err(CachedExpressionValuePayloadError::NonCanonicalAttrsPayloadName { index });
+        }
+        seen.insert(name.to_vec(), index);
+    }
+    Ok(())
 }
 
 fn append_payload_byte(
@@ -3699,6 +3812,20 @@ mod tests {
                 ),
             ])
             .expect("strict attrs payload builds"),
+            CachedExpressionValue::source_ordered_attrs(vec![
+                (
+                    b"c".to_vec(),
+                    CachedExpressionValue::immediate(Value::int(2)).expect("int payload builds"),
+                ),
+                (
+                    b"b".to_vec(),
+                    CachedExpressionValue::strict_list(vec![
+                        CachedExpressionValue::immediate(Value::bool(false))
+                            .expect("bool payload builds"),
+                    ]),
+                ),
+            ])
+            .expect("source-order attrs payload builds"),
         ];
 
         for payload in payloads {
@@ -3923,6 +4050,33 @@ mod tests {
 
         let error = CachedExpressionValue::decode_persistent_payload(&encoded)
             .expect_err("out-of-order attrset names error");
+
+        assert_eq!(
+            error,
+            CachedExpressionValuePayloadError::NonCanonicalAttrsPayloadName { index: 1 }
+        );
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_duplicate_source_ordered_attrset_names() {
+        let mut encoded = Vec::new();
+        append_payload_bytes(&mut encoded, ATTRS_VALUE_HASH_DOMAIN_VERSION)
+            .expect("domain appends");
+        append_payload_bytes(&mut encoded, SOURCE_ORDERED_ATTRS_PAYLOAD_TAG).expect("tag appends");
+        append_payload_u128(&mut encoded, 2).expect("attrs length appends");
+        let value = CachedExpressionValue::immediate(Value::int(1))
+            .expect("int payload builds")
+            .encode_persistent_payload()
+            .expect("value encodes");
+        for name in [b"a".as_slice(), b"a".as_slice()] {
+            append_payload_u128(&mut encoded, name.len() as u128).expect("name length appends");
+            append_payload_bytes(&mut encoded, name).expect("name appends");
+            append_payload_u128(&mut encoded, value.len() as u128).expect("value length appends");
+            append_payload_bytes(&mut encoded, &value).expect("value appends");
+        }
+
+        let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+            .expect_err("duplicate source-order attrset names error");
 
         assert_eq!(
             error,
@@ -5512,6 +5666,48 @@ mod tests {
             immediate.is_none(),
             "generic Value lookup must not return heap-backed payload pointers"
         );
+    }
+
+    #[test]
+    fn eval_cache_looks_up_source_ordered_attrs_payloads() {
+        let mut cache = EvalCache::new();
+        let identity = identity(b"source", 8);
+
+        cache
+            .observe_inline_expression_payload(
+                identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::source_ordered_attrs(vec![
+                    (
+                        b"c".to_vec(),
+                        CachedExpressionValue::immediate(Value::int(2))
+                            .expect("int payload builds"),
+                    ),
+                    (
+                        b"b".to_vec(),
+                        CachedExpressionValue::immediate(Value::int(1))
+                            .expect("int payload builds"),
+                    ),
+                ])
+                .expect("source-order attrs payload builds"),
+            )
+            .expect("source-order attrset payload observes");
+        let payload = cache
+            .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+            .expect("payload lookup succeeds")
+            .expect("memoized source-order attrset payload is present");
+        let entries = payload
+            .attrs_entries()
+            .expect("payload carries attrset entries");
+        let entry_names: Vec<_> = entries.iter().map(|(name, _)| name.as_slice()).collect();
+
+        assert_eq!(payload.attrs_len(), Some(2));
+        assert_eq!(entry_names, vec![b"c".as_slice(), b"b".as_slice()]);
+        assert!(payload.context_free_string_bytes().is_none());
+        assert!(payload.context_string_parts().is_none());
+        assert!(payload.path_bytes().is_none());
+        assert!(payload.context_path_parts().is_none());
+        assert!(payload.immediate_value().is_none());
     }
 
     #[test]
