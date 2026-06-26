@@ -39,11 +39,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
 
 use crate::types::{
-    AttestationMeta, BpfLsmPolicyMeta, ExposeArtifactMeta, ExposeMeta, PackageMeta,
-    PermissionsMeta, SbatEntry, SysrootImageEntry, package_name_bucket, validate_package_name,
+    PackageMeta, SysrootImageEntry, package_name_bucket, validate_package_name,
     validate_supported_package_meta,
 };
 
@@ -51,220 +49,21 @@ use crate::types::{
 // Package TOML schema (registry format)
 // ---------------------------------------------------------------------------
 
-/// Top-level package TOML file from a registry.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PackageToml {
-    /// The `[package]` header with name and descriptive metadata.
-    package: PackageHeader,
-    /// All published `[[versions]]` entries, oldest layout order preserved.
-    #[serde(default)]
-    versions: Vec<VersionEntry>,
-}
-
-/// The `[package]` header section of a package TOML file.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PackageHeader {
-    /// Package name; must match the TOML file's basename.
-    name: String,
-    /// One-line human-readable description, searched by `apm search`.
-    description: String,
-    /// Optional upstream homepage URL.
-    #[serde(default)]
-    homepage: Option<String>,
-    /// SPDX-style license identifier.
-    license: String,
-    /// Maintainer name or team handle.
-    maintainer: String,
-    /// Whether this package is a system toplevel (sysroot).
-    #[serde(default)]
-    sysroot: bool,
-}
-
-/// One `[[versions]]` entry of a package TOML file.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct VersionEntry {
-    /// Version string; semver when possible, calver otherwise.
-    version: String,
-    /// Previous version in the version chain (for sysroot packages).
-    #[serde(default)]
-    previous: Option<String>,
-    /// Per-platform artifacts, keyed by platform triple
-    /// (e.g. `x86_64-linux`).
-    #[serde(default)]
-    platforms: HashMap<String, PlatformEntry>,
-}
-
-/// A `[versions.platforms.<platform>]` artifact entry.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PlatformEntry {
-    /// Absolute store path of the built output.
-    store_path: String,
-    /// NAR hash of the output (`sha256:...`).
-    ///
-    /// Legacy (pre-RFC-0005) field: newer registries publish the hash in
-    /// the `store/` graph instead, and consumers backfill it from there.
-    #[serde(default)]
-    nar_hash: String,
-    /// Uncompressed NAR size in bytes.
-    ///
-    /// Legacy (pre-RFC-0005) field, superseded by the `store/` graph like
-    /// `nar_hash`.
-    #[serde(default)]
-    nar_size: u64,
-    /// Total uncompressed size of the runtime closure in bytes.
-    closure_size: u64,
-    /// Store path of the derivation that produced the output.
-    source_drv: String,
-    /// NAR hash of the source derivation closure.
-    source_nar_hash: String,
-    /// Store path hashes of direct runtime references, or a structural
-    /// RFC-0001 gate table for permission-bearing packages.
-    #[serde(default)]
-    references: ReferenceField,
-    /// Pre-compiled images (only for sysroot packages).
-    #[serde(default)]
-    images: Vec<ImageEntry>,
-    /// Minimum package metadata format required to safely consume this entry.
-    #[serde(default, rename = "min-format")]
-    min_format: Option<u32>,
-    /// Feature flags a consumer must understand before installing this entry.
-    #[serde(default, rename = "requires-features")]
-    requires_features: Vec<String>,
-    /// Optional RFC-0001 service exposure metadata.
-    #[serde(default)]
-    expose: Option<ExposeMeta>,
-    /// Store artifact carrying rendered RFC-0001 unit files and manifest.
-    #[serde(default)]
-    expose_artifact: Option<ExposeArtifactMeta>,
-    /// Signed RFC-0001 permission manifest.
-    #[serde(default)]
-    permissions: PermissionsMeta,
-    /// Signed fleet BPF-LSM policy metadata.
-    #[serde(default)]
-    bpf_lsm: Option<BpfLsmPolicyMeta>,
-    /// Digest used as the package-root input to TPM measurements.
-    #[serde(default)]
-    root_digest: Option<String>,
-    /// dm-verity Merkle root hash for this package root.
-    #[serde(default)]
-    root_hash: Option<String>,
-    /// Registry-served PKCS#7 signature over `root_hash`.
-    #[serde(default)]
-    root_hash_sig: Option<String>,
-    /// Registry-served in-toto/SLSA provenance attestation reference.
-    #[serde(default)]
-    provenance: Option<String>,
-    /// Golden package measurement tuple.
-    #[serde(default)]
-    measurement: Option<String>,
-}
-
-impl PlatformEntry {
-    fn attestation(&self) -> AttestationMeta {
-        AttestationMeta {
-            root_digest: self.root_digest.clone(),
-            root_hash: self.root_hash.clone(),
-            root_hash_sig: self.root_hash_sig.clone(),
-            provenance: self.provenance.clone(),
-            measurement: self.measurement.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum ReferenceField {
-    /// Legacy list of direct store-path hashes.
-    Hashes(Vec<String>),
-    /// Structural gate table that old clients reject because they expected a list.
-    Gate(ReferenceGate),
-}
-
-impl Default for ReferenceField {
-    fn default() -> Self {
-        Self::Hashes(Vec::new())
-    }
-}
-
-impl ReferenceField {
-    fn hashes(&self) -> &[String] {
-        match self {
-            Self::Hashes(hashes) => hashes,
-            Self::Gate(gate) => &gate.hashes,
-        }
-    }
-
-    fn min_format(&self) -> Option<u32> {
-        match self {
-            Self::Hashes(_) => None,
-            Self::Gate(gate) => gate.min_format,
-        }
-    }
-
-    fn requires_features(&self) -> &[String] {
-        match self {
-            Self::Hashes(_) => &[],
-            Self::Gate(gate) => &gate.requires_features,
-        }
-    }
-
-    fn is_gate(&self) -> bool {
-        matches!(self, Self::Gate(_))
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReferenceGate {
-    /// Store path hashes of direct runtime references.
-    #[serde(default)]
-    hashes: Vec<String>,
-    /// Minimum package metadata format required to safely consume this entry.
-    #[serde(default, rename = "min-format")]
-    min_format: Option<u32>,
-    /// Feature flags a consumer must understand before installing this entry.
-    #[serde(default, rename = "requires-features")]
-    requires_features: Vec<String>,
-}
-
-/// A pre-compiled image entry within a platform entry.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ImageEntry {
-    /// Image format identifier (e.g. `qcow2`).
-    format: String,
-    /// Absolute store path of the image artifact.
-    store_path: String,
-    /// NAR hash of the image (`sha256:...`).
-    nar_hash: String,
-    /// Uncompressed NAR size of the image in bytes.
-    nar_size: u64,
-    /// Lowercase hex SHA-256 of the signer leaf cert, when signed.
-    #[serde(default)]
-    sb_signer_cert_sha256: Option<String>,
-    /// SBAT component/generation pairs from the image's `.sbat` section.
-    #[serde(default)]
-    sbat: Vec<SbatEntry>,
-    /// Predicted PCR-11 for the image's UKI, when measured.
-    #[serde(default)]
-    expected_pcr11: Option<String>,
-    /// Relative path inside `store_path` to the root filesystem image.
-    #[serde(default)]
-    root_image: Option<String>,
-    /// Relative path inside `store_path` to the separate dm-verity hash tree.
-    #[serde(default)]
-    root_verity: Option<String>,
-    /// dm-verity root hash for `root_image`.
-    #[serde(default)]
-    root_hash: Option<String>,
-    /// Relative path inside `store_path` to the PKCS#7 root-hash signature.
-    #[serde(default)]
-    root_hash_sig: Option<String>,
-}
+// The pure manifest schema structs moved to the wasm-clean `aos-registry-surface`
+// crate (RFC-0004 Phase 5) so the registry hub's `Database`/indexer and the
+// Cloudflare Worker can share them without pulling `aos-package` (which is
+// native-only). Re-exported here so `aos_package::registry::parse::{PackageToml,
+// …}` paths are unchanged. The canonical structs carry the RFC-0005 `store/`
+// graph fields (`source_drv`/`source_nar_hash`, legacy `nar_hash`/`nar_size`),
+// the RFC-0006 Secure Boot image facts (`sb_signer_cert_sha256`/`sbat`/
+// `expected_pcr11`), and the RFC-0001 package-sandboxing metadata (the
+// structural `references` gate plus the `expose`/`permissions`/`bpf_lsm`/
+// attestation fields and their helper impls such as `PlatformEntry::attestation`
+// and the `ReferenceField` accessors).
+pub use aos_registry_surface::manifest::{
+    ImageEntry, PackageHeader, PackageToml, PlatformEntry, ReferenceField, ReferenceGate,
+    VersionEntry,
+};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -367,6 +166,22 @@ pub(crate) fn parse_registry_matching(
 pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<PackageMeta>> {
     let metas = parse_package_toml_versions(content, platform)?;
     Ok(newest_version(&metas))
+}
+
+/// Parse a single package TOML file into its full multi-platform document.
+///
+/// Unlike [`parse_package_toml`], which flattens to the newest version for
+/// one platform, this returns the complete file: every version and every
+/// platform entry, exactly as committed. Consumers that index or display a
+/// whole registry (rather than resolve one install) need the unflattened
+/// view — the registry hub's indexer is the canonical caller.
+///
+/// # Errors
+///
+/// Returns an error if `content` is not valid package TOML or the declared
+/// package name is not path-safe.
+pub fn parse_package_file(content: &str) -> Result<PackageToml> {
+    parse_package_toml_document(content)
 }
 
 /// Validate one package TOML file's declared name and shard path.

@@ -155,6 +155,7 @@
         fetchCargoDeps
         fetchCargoVendor
         fetchGoModules
+        fetchNpmDeps
         fetchBazelDeps
         fakeHash
         ;

@@ -60,7 +60,7 @@ use aos_systemd::{FailedUnitsReport, JobResult, SettleOutcome, SystemdClient};
 use crate::config::ApmConfig;
 use crate::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
-    fetch_narinfos, resolve_mirror,
+    fetch_narinfos, resolve_mirror_chain, split_mirror_chain,
 };
 use crate::policy::admit_package_roots;
 use crate::registry::sb_certs::{self, SbCertsToml};
@@ -811,10 +811,12 @@ async fn download_image(
 
     // Use the existing download pipeline — the image store path is just another
     // store path in the cache.
-    let mirror_url = resolve_image_mirror(config, meta);
+    let chain = resolve_image_mirror(config, meta);
+    let (mirror_url, fallback_mirrors) = split_mirror_chain(&chain);
     let request = DownloadRequest {
         store_path: img.store_path.clone(),
         mirror_url,
+        fallback_mirrors,
     };
 
     let engine = std::sync::Arc::new(default_engine());
@@ -2049,14 +2051,15 @@ fn reverify_uki(uki: &Path, db_cert: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Pick the mirror URL used for image downloads: the first configured
-/// registry's mirror, falling back to the default public cache.
-fn resolve_image_mirror(config: &ApmConfig, _meta: &PackageMeta) -> String {
-    // Use the first configured registry's mirror URL.
+/// Pick the mirror chain used for image downloads: the first configured
+/// registry's mirror chain (primary + fallbacks for miss-fallthrough),
+/// falling back to the default public cache.
+fn resolve_image_mirror(config: &ApmConfig, _meta: &PackageMeta) -> Vec<String> {
+    // Use the first configured registry's mirror chain.
     if let Some((cfg, _)) = config.registries.first() {
-        return resolve_mirror(&config.scope.registries_path(), cfg);
+        return resolve_mirror_chain(&config.scope.registries_path(), cfg);
     }
-    "https://cache.aos.dev".to_string()
+    vec!["https://cache.aos.dev".to_string()]
 }
 
 /// Build a [`DownloadRequest`] per missing store path, mapping each path back
@@ -2067,7 +2070,7 @@ fn build_download_requests(
     config: &ApmConfig,
 ) -> Result<Vec<DownloadRequest>> {
     let registries_base = config.scope.registries_path();
-    let mirror_map: std::collections::HashMap<String, String> = closures
+    let mirror_map: std::collections::HashMap<String, Vec<String>> = closures
         .iter()
         .map(|c| {
             let reg_config = config
@@ -2075,12 +2078,12 @@ fn build_download_requests(
                 .iter()
                 .find(|(cfg, _)| cfg.name == c.registry_name)
                 .map(|(cfg, _)| cfg);
-            let mirror_url = if let Some(cfg) = reg_config {
-                resolve_mirror(&registries_base, cfg)
+            let chain = if let Some(cfg) = reg_config {
+                resolve_mirror_chain(&registries_base, cfg)
             } else {
-                format!("https://registry.aos.dev/{}", c.registry_name)
+                vec![format!("https://registry.aos.dev/{}", c.registry_name)]
             };
-            (c.registry_name.clone(), mirror_url)
+            (c.registry_name.clone(), chain)
         })
         .collect();
 
@@ -2101,13 +2104,15 @@ fn build_download_requests(
         let registry_name = hash_to_registry
             .get(&hash)
             .context("internal error: missing registry for package")?;
-        let mirror_url = mirror_map
+        let chain = mirror_map
             .get(registry_name)
             .context("internal error: missing mirror for registry")?;
+        let (mirror_url, fallback_mirrors) = split_mirror_chain(chain);
 
         requests.push(DownloadRequest {
             store_path: meta.store_path.clone(),
-            mirror_url: mirror_url.clone(),
+            mirror_url,
+            fallback_mirrors,
         });
     }
 

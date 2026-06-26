@@ -137,6 +137,11 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::cache::run(&printer, command).await;
     }
 
+    // Hub commands talk to an aos-hub over its public API — no NixRunner.
+    if let Commands::Hub { command } = &cli.command {
+        return commands::hub::run(&printer, command).await;
+    }
+
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
 
     match &cli.command {
@@ -235,6 +240,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Token { .. } => unreachable!(),
         Commands::Package { .. } => unreachable!(),
         Commands::Cache { .. } => unreachable!(),
+        Commands::Hub { .. } => unreachable!(),
     }
 }
 

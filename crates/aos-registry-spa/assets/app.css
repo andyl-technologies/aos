@@ -1,0 +1,142 @@
+/* aos-registry-spa — "release-engineering paper" (RFC-0004).
+ *
+ * The same ink-on-paper aesthetic as the hub's server-rendered pages:
+ * one monospace face, hairline rules, plain tables, semantic color. Every
+ * asset is first-party by construction — the system monospace stack, no
+ * font CDN, no external stylesheet, no analytics. This is the CSR tier (2)
+ * theme; it visually matches the no-JS floor (tier 3) it enhances.
+ */
+
+:root {
+  --paper: #fcfcf9;
+  --ink: #1a1a17;
+  --rule: #c9c9c2;
+  --dim: #6b6b64;
+  --ok: #00794c;
+  --warn: #b56a00;
+  --bad: #b3261e;
+  --link: #00449e;
+  --accent: #7c4dbe;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #121310;
+    --ink: #d8d8d0;
+    --rule: #3a3b36;
+    --dim: #8b8c84;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --link: #58a6ff;
+    --accent: #b392f0;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.45;
+  background: var(--paper);
+  color: var(--ink);
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+  max-width: 72rem;
+}
+
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+header.masthead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 2px solid var(--ink);
+  padding-bottom: 0.4rem;
+  margin-bottom: 1.2rem;
+}
+header.masthead .brand { font-weight: 700; letter-spacing: 0.05em; }
+header.masthead .crumbs { color: var(--dim); }
+header.masthead .crumbs a { color: var(--ink); }
+
+h1, h2 {
+  font-size: 1rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 0.25rem;
+  margin: 1.6rem 0 0.6rem;
+}
+h1 { font-size: 1.15rem; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.4rem 0 1rem;
+}
+th, td {
+  text-align: left;
+  padding: 0.25rem 0.9rem 0.25rem 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+th {
+  color: var(--dim);
+  font-weight: 400;
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+}
+td.num { text-align: right; }
+
+code {
+  font-family: inherit;
+  background: color-mix(in srgb, var(--ink) 6%, var(--paper));
+  border: 1px solid var(--rule);
+  padding: 0 0.25rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+.dim { color: var(--dim); }
+
+.statline {
+  margin-top: 2.5rem;
+  border-top: 1px solid var(--rule);
+  padding-top: 0.4rem;
+  color: var(--dim);
+  font-size: 0.8rem;
+}
+
+p.notice {
+  border-left: 3px solid var(--ok);
+  padding: 0.4rem 0.8rem;
+  margin: 0.6rem 0;
+  background: color-mix(in srgb, var(--ok) 6%, var(--paper));
+}
+
+form.console { margin: 0.6rem 0 1.2rem; }
+form.console input[type="text"] {
+  font: inherit;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+  min-width: 18rem;
+}
+button {
+  font: inherit;
+  padding: 0.25rem 0.9rem;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+}
+button:hover { background: color-mix(in srgb, var(--ink) 8%, var(--paper)); }
+button.verify { border-color: var(--ok); color: var(--ok); }
