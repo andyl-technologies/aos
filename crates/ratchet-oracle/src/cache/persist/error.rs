@@ -720,6 +720,23 @@ pub enum PersistBlobPackTrimError {
     },
 }
 
+/// Persistent blob-index rebuild planning failed.
+#[derive(Debug, Error)]
+pub enum PersistBlobIndexRebuildPlanError {
+    /// The selected blob pack could not be scanned and verified.
+    #[error("failed to scan persistent blob pack before index rebuild planning")]
+    Pack {
+        /// The underlying packfile scan error.
+        source: PersistBlobPackError,
+    },
+    /// The selected blob index could not be snapshotted.
+    #[error("failed to snapshot persistent blob index before rebuild planning")]
+    Index {
+        /// The underlying blob-index error.
+        source: PersistBlobIndexError,
+    },
+}
+
 /// Persistent storage maintenance failed.
 #[derive(Debug, Error)]
 pub enum PersistStorageMaintenanceError {

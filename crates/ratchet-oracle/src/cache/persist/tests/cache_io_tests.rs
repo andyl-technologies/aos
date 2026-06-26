@@ -317,6 +317,254 @@ fn cache_latest_blob_pack_index_entries_keep_store_namespaces_separate() {
 }
 
 #[test]
+fn cache_blob_index_rebuild_plan_reports_missing_stale_and_dangling_entries() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+
+    let exact_payload = b"exact indexed payload";
+    let exact_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(exact_payload));
+    let exact_entry = cache
+        .append_blob_indexed(exact_key, exact_payload)
+        .expect("exact indexed payload appends");
+
+    let stale_payload = b"stale duplicate payload";
+    let stale_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(stale_payload));
+    let stale_current = cache
+        .append_blob(stale_key, stale_payload)
+        .expect("first stale blob appends");
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(stale_key, stale_current))
+        .expect("stale sidecar entry records");
+    let stale_planned = cache
+        .append_blob(stale_key, stale_payload)
+        .expect("latest stale blob appends");
+
+    let missing_payload = b"missing sidecar payload";
+    let missing_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(missing_payload));
+    let missing_location = cache
+        .append_blob(missing_key, missing_payload)
+        .expect("missing-index blob appends");
+
+    let dangling_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"dangling"));
+    let dangling_entry = PersistBlobIndexEntry::new(dangling_key, PersistBlobLocation::new(999, 8));
+    cache
+        .value_index()
+        .append_entry(dangling_entry)
+        .expect("dangling sidecar entry records");
+
+    let plan = cache
+        .plan_blob_index_rebuild(PersistBlobStore::Values)
+        .expect("rebuild plan builds");
+    let mut planned = vec![
+        exact_entry,
+        PersistBlobIndexEntry::new(stale_key, stale_planned),
+        PersistBlobIndexEntry::new(missing_key, missing_location),
+    ];
+    planned.sort_by_key(|entry| entry.key().index_bytes());
+
+    assert!(plan.lookup_repair_needed());
+    assert_eq!(plan.planned_entries(), planned.as_slice());
+    assert_eq!(
+        plan.missing_entries(),
+        &[PersistBlobIndexEntry::new(missing_key, missing_location)]
+    );
+    assert_eq!(
+        plan.stale_entries(),
+        &[PersistBlobIndexStaleEntry::new(
+            PersistBlobIndexEntry::new(stale_key, stale_current),
+            PersistBlobIndexEntry::new(stale_key, stale_planned),
+        )]
+    );
+    assert_eq!(plan.dangling_entries(), &[dangling_entry]);
+    assert_eq!(
+        cache
+            .lookup_blob_location(stale_key)
+            .expect("stale lookup still succeeds"),
+        Some(stale_current),
+        "planning should not rewrite the sidecar"
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(missing_key)
+            .expect("missing lookup still succeeds"),
+        None,
+        "planning should not index unindexed physical records"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_index_rebuild_plan_keeps_store_namespaces_separate() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"shared namespace payload";
+    let hash = DurableBlake3Hash::for_bytes(payload);
+    let value_key = PersistBlobKey::for_value(hash);
+    let file_key = PersistBlobKey::for_file(hash);
+    let value_entry = cache
+        .append_blob_indexed(value_key, payload)
+        .expect("value indexed payload appends");
+    let file_entry = cache
+        .append_blob_indexed(file_key, payload)
+        .expect("file indexed payload appends");
+
+    let value_plan = cache
+        .plan_blob_index_rebuild(PersistBlobStore::Values)
+        .expect("value rebuild plan builds");
+    let file_plan = cache
+        .plan_blob_index_rebuild(PersistBlobStore::Files)
+        .expect("file rebuild plan builds");
+
+    assert!(!value_plan.lookup_repair_needed());
+    assert_eq!(value_plan.planned_entries(), &[value_entry]);
+    assert!(value_plan.missing_entries().is_empty());
+    assert!(value_plan.stale_entries().is_empty());
+    assert!(value_plan.dangling_entries().is_empty());
+
+    assert!(!file_plan.lookup_repair_needed());
+    assert_eq!(file_plan.planned_entries(), &[file_entry]);
+    assert!(file_plan.missing_entries().is_empty());
+    assert!(file_plan.stale_entries().is_empty());
+    assert!(file_plan.dangling_entries().is_empty());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_index_rebuild_plan_ignores_duplicate_sidecar_history_for_lookup_repair() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"sidecar duplicate payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let planned_location = cache
+        .append_blob(key, payload)
+        .expect("planned blob appends");
+    let older_location = PersistBlobLocation::new(999, 7);
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(key, older_location))
+        .expect("older sidecar entry records");
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(key, planned_location))
+        .expect("newest sidecar entry records");
+
+    let plan = cache
+        .plan_blob_index_rebuild(PersistBlobStore::Values)
+        .expect("rebuild plan builds");
+
+    assert!(!plan.lookup_repair_needed());
+    assert_eq!(
+        plan.planned_entries(),
+        &[PersistBlobIndexEntry::new(key, planned_location)]
+    );
+    assert!(plan.missing_entries().is_empty());
+    assert!(plan.stale_entries().is_empty());
+    assert!(plan.dangling_entries().is_empty());
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        (PERSIST_BLOB_INDEX_ENTRY_LEN * 2) as u64,
+        "planning should not canonicalize duplicate sidecar history"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_index_rebuild_plan_classifies_wrong_store_sidecar_entry_as_dangling() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"value payload";
+    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let value_location = cache
+        .append_blob(value_key, payload)
+        .expect("value blob appends");
+    let wrong_store_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"wrong store"));
+    let wrong_store_entry =
+        PersistBlobIndexEntry::new(wrong_store_key, PersistBlobLocation::new(777, 5));
+    cache
+        .value_index()
+        .append_entry(wrong_store_entry)
+        .expect("wrong-store sidecar entry records");
+
+    let plan = cache
+        .plan_blob_index_rebuild(PersistBlobStore::Values)
+        .expect("rebuild plan builds");
+
+    assert!(plan.lookup_repair_needed());
+    assert_eq!(
+        plan.planned_entries(),
+        &[PersistBlobIndexEntry::new(value_key, value_location)]
+    );
+    assert_eq!(
+        plan.missing_entries(),
+        &[PersistBlobIndexEntry::new(value_key, value_location)]
+    );
+    assert!(plan.stale_entries().is_empty());
+    assert_eq!(plan.dangling_entries(), &[wrong_store_entry]);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_index_rebuild_plan_rejects_corrupt_pack() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"planned corrupt payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let location = cache.append_blob(key, payload).expect("value blob appends");
+    let payload_offset = location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(cache.value_pack().path())
+        .expect("value pack opens for mutation");
+    file.seek(SeekFrom::Start(payload_offset))
+        .expect("payload offset seeks");
+    file.write_all(b"X").expect("payload corrupts");
+    file.flush().expect("payload corruption flushes");
+
+    let error = cache
+        .plan_blob_index_rebuild(PersistBlobStore::Values)
+        .expect_err("corrupt value pack plan errors");
+
+    assert!(matches!(
+        error,
+        PersistBlobIndexRebuildPlanError::Pack {
+            source: PersistBlobPackError::PayloadHashMismatch { .. },
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_index_rebuild_plan_rejects_malformed_sidecar() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    fs::write(cache.value_index().path(), [0]).expect("malformed index writes");
+
+    let error = cache
+        .plan_blob_index_rebuild(PersistBlobStore::Values)
+        .expect_err("malformed value index plan errors");
+
+    assert!(matches!(
+        error,
+        PersistBlobIndexRebuildPlanError::Index {
+            source: PersistBlobIndexError::Format {
+                source: PersistPackFormatError::ShortBlobIndexEntry { .. },
+                ..
+            },
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

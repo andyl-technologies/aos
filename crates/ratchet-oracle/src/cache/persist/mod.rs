@@ -108,10 +108,13 @@ mod layout;
 mod materialization;
 mod pack;
 
-pub use cache::{PersistBlobPackTrim, PersistCache, PersistCompaction, PersistStorageMaintenance};
+pub use cache::{
+    PersistBlobIndexRebuildPlan, PersistBlobIndexStaleEntry, PersistBlobPackTrim, PersistCache,
+    PersistCompaction, PersistStorageMaintenance,
+};
 pub use error::{
-    PersistBlobIndexError, PersistBlobIndexedReadError, PersistBlobIndexedWriteError,
-    PersistBlobPackError, PersistBlobPackTrimError,
+    PersistBlobIndexError, PersistBlobIndexRebuildPlanError, PersistBlobIndexedReadError,
+    PersistBlobIndexedWriteError, PersistBlobPackError, PersistBlobPackTrimError,
     PersistCachedExpressionNodeValueIndexedLoadError,
     PersistCachedExpressionNodeValueIndexedWriteError,
     PersistCachedExpressionNodeValueTraceLoadError, PersistCachedExpressionValueIndexedLoadError,

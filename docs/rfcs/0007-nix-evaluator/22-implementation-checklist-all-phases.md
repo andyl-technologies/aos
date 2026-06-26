@@ -1211,6 +1211,18 @@ alone (`M-1`/`Q-A`).
       live-root selection, repack/relocation writing, concurrent writer
       coordination, automatic GC policy, mmap reads, Attic transport, and
       harness proof remain open (`C-13`/`R-14`).
+- [x] Current read-only blob-index rebuild plan:
+      `PersistCache::plan_blob_index_rebuild` compares the selected sidecar's
+      newest lookup entries with the verified newest physical records in the
+      matching blob pack, returning the exact entries a future rebuild would
+      write plus missing, stale, and dangling lookup differences. Older
+      append-only sidecar history is ignored once newest lookups match, and
+      corrupt packs fail the plan rather than producing partial repair
+      metadata. This is diagnostic rebuild input only; index rewrite, physical
+      sidecar canonicalization, live-root selection, pack trimming,
+      repack/relocation writing, concurrent writer coordination, automatic GC
+      policy, mmap reads, Attic transport, and harness proof remain open
+      (`C-13`/`R-14`).
 - [x] Current idempotent indexed blob materialization substrate:
       `PersistCache::ensure_blob_indexed` reuses an existing sidecar location
       only after the pointed pack record verifies for the requested

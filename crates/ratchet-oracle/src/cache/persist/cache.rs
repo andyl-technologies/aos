@@ -173,6 +173,86 @@ impl PersistStorageMaintenance {
     }
 }
 
+/// A sidecar entry that would be replaced by a blob-index rebuild.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PersistBlobIndexStaleEntry {
+    current: PersistBlobIndexEntry,
+    planned: PersistBlobIndexEntry,
+}
+
+impl PersistBlobIndexStaleEntry {
+    /// Creates a stale-entry diagnostic from current and planned index entries.
+    pub const fn new(current: PersistBlobIndexEntry, planned: PersistBlobIndexEntry) -> Self {
+        Self { current, planned }
+    }
+
+    /// Returns the newest sidecar entry currently present for this blob key.
+    pub const fn current(self) -> PersistBlobIndexEntry {
+        self.current
+    }
+
+    /// Returns the verified physical pack entry a rebuild would install.
+    pub const fn planned(self) -> PersistBlobIndexEntry {
+        self.planned
+    }
+}
+
+/// Read-only diagnostics for rebuilding one blob-index sidecar from its pack.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PersistBlobIndexRebuildPlan {
+    planned_entries: Vec<PersistBlobIndexEntry>,
+    missing_entries: Vec<PersistBlobIndexEntry>,
+    stale_entries: Vec<PersistBlobIndexStaleEntry>,
+    dangling_entries: Vec<PersistBlobIndexEntry>,
+}
+
+impl PersistBlobIndexRebuildPlan {
+    fn new(
+        planned_entries: Vec<PersistBlobIndexEntry>,
+        missing_entries: Vec<PersistBlobIndexEntry>,
+        stale_entries: Vec<PersistBlobIndexStaleEntry>,
+        dangling_entries: Vec<PersistBlobIndexEntry>,
+    ) -> Self {
+        Self {
+            planned_entries,
+            missing_entries,
+            stale_entries,
+            dangling_entries,
+        }
+    }
+
+    /// Returns the complete newest physical pack entries a rebuild would write.
+    pub fn planned_entries(&self) -> &[PersistBlobIndexEntry] {
+        &self.planned_entries
+    }
+
+    /// Returns verified physical pack entries absent from the sidecar.
+    pub fn missing_entries(&self) -> &[PersistBlobIndexEntry] {
+        &self.missing_entries
+    }
+
+    /// Returns sidecar entries whose blob key points at an older or invalid location.
+    pub fn stale_entries(&self) -> &[PersistBlobIndexStaleEntry] {
+        &self.stale_entries
+    }
+
+    /// Returns sidecar entries with no verified physical record in the selected pack.
+    pub fn dangling_entries(&self) -> &[PersistBlobIndexEntry] {
+        &self.dangling_entries
+    }
+
+    /// Returns whether newest sidecar lookups differ from the verified pack scan.
+    ///
+    /// This reports semantic lookup repair only. It does not report older
+    /// append-only sidecar records that a future rewrite would canonicalize
+    /// away when the newest entry for each key already matches the pack.
+    pub fn lookup_repair_needed(&self) -> bool {
+        !self.missing_entries.is_empty()
+            || !self.stale_entries.is_empty()
+            || !self.dangling_entries.is_empty()
+    }
+}
+
 fn blob_record_end(location: PersistBlobLocation) -> Result<u64, PersistBlobPackError> {
     let payload_start = location
         .record_offset()
@@ -1054,6 +1134,68 @@ impl PersistCache {
             latest.insert(entry.key().index_bytes(), entry);
         }
         Ok(latest.into_iter().map(|(_, entry)| entry).collect())
+    }
+
+    /// Plans a blob-index rebuild from the selected store's verified pack.
+    ///
+    /// This read-only diagnostic compares the sidecar's newest lookup entries
+    /// with [`Self::latest_blob_pack_index_entries`]. `planned_entries` is the
+    /// exact newest physical pack entry set a future canonical rewrite would
+    /// write; missing, stale, and dangling lists describe semantic lookup
+    /// differences between the current sidecar and that set. Older append-only
+    /// sidecar records are ignored once the newest entry for a key matches. The
+    /// method does not write the sidecar, choose live roots, trim pack bytes,
+    /// or coordinate with other writers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexRebuildPlanError`] if the selected pack cannot
+    /// be fully verified or the selected sidecar cannot be snapshotted.
+    pub fn plan_blob_index_rebuild(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<PersistBlobIndexRebuildPlan, PersistBlobIndexRebuildPlanError> {
+        let planned_entries = self
+            .latest_blob_pack_index_entries(store)
+            .map_err(|source| PersistBlobIndexRebuildPlanError::Pack { source })?;
+        let current_entries = self
+            .blob_index(store)
+            .latest_entries()
+            .map_err(|source| PersistBlobIndexRebuildPlanError::Index { source })?;
+
+        let mut planned_by_key = std::collections::BTreeMap::new();
+        for entry in &planned_entries {
+            planned_by_key.insert(entry.key().index_bytes(), *entry);
+        }
+
+        let mut current_by_key = std::collections::BTreeMap::new();
+        let mut stale_entries = Vec::new();
+        let mut dangling_entries = Vec::new();
+        for entry in current_entries {
+            let key = entry.key().index_bytes();
+            current_by_key.insert(key, entry);
+            match planned_by_key.get(&key) {
+                Some(planned) if *planned == entry => {}
+                Some(planned) => {
+                    stale_entries.push(PersistBlobIndexStaleEntry::new(entry, *planned));
+                }
+                None => dangling_entries.push(entry),
+            }
+        }
+
+        let mut missing_entries = Vec::new();
+        for entry in &planned_entries {
+            if !current_by_key.contains_key(&entry.key().index_bytes()) {
+                missing_entries.push(*entry);
+            }
+        }
+
+        Ok(PersistBlobIndexRebuildPlan::new(
+            planned_entries,
+            missing_entries,
+            stale_entries,
+            dangling_entries,
+        ))
     }
 
     /// Appends a blob and records its location in the sidecar index.
