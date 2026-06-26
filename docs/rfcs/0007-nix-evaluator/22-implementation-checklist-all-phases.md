@@ -1741,15 +1741,16 @@ alone (`M-1`/`Q-A`).
       evaluates a derivation attr path whose `args` depend on
       `builtins.currentTime` through a forced string conversion, requires
       same-time configured cached runs to match cache-disabled `.drv` path and
-      ATerm bytes without reporting force-cache hits, then changes the
-      configured current time and requires the cached run to match the changed
-      cache-disabled surface instead of replaying the older one. Each run
-      records the uncacheable currentTime trace, and the canary asserts that
-      persistent force metadata and trace sidecars remain empty. This samples
-      currentTime inside one derivation input surface; general currentTime
-      taint propagation through persisted dependents, full cached-vs-uncached
-      closure parity, derivationStrict-node SHA-256 early cutoff, mmap reads,
-      GC/repack, and future value-memoization safety net remain open
+      ATerm bytes without reporting force-cache hits or misses, then changes
+      the configured current time and requires the cached run to match the
+      changed cache-disabled surface instead of replaying the older one, again
+      without force-cache hits or misses. Each run records the uncacheable
+      currentTime trace, and the canary asserts that persistent force metadata
+      and trace sidecars remain empty. This samples currentTime inside one
+      derivation input surface; general currentTime taint propagation through
+      persisted dependents, full cached-vs-uncached closure parity,
+      derivationStrict-node SHA-256 early cutoff, mmap reads, GC/repack, and
+      future value-memoization safety net remain open
       (`S-14`/`R-10`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact

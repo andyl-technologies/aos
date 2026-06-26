@@ -1483,6 +1483,7 @@ fn persistent_current_time_force_cache_no_replay_preserves_drv_surfaces() {
     assert_eq!(first.trace, expected_trace);
     assert_eq!(first.cache_hits, 0);
     assert_eq!(first.force_cache_hits, 0);
+    assert_eq!(first.force_cache_misses, 0);
 
     let mut replay_options =
         TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
@@ -1503,6 +1504,7 @@ fn persistent_current_time_force_cache_no_replay_preserves_drv_surfaces() {
     );
     assert_eq!(replay.cache_hits, 0);
     assert_eq!(replay.force_cache_hits, 0);
+    assert_eq!(replay.force_cache_misses, 0);
 
     let uncached_changed_options =
         TreeWalkOptions::with_current_time(1_700_000_123).expect("currentTime is valid");
@@ -1513,6 +1515,9 @@ fn persistent_current_time_force_cache_no_replay_preserves_drv_surfaces() {
         EvalCacheRuntime::disabled(),
     );
     assert_eq!(uncached_changed.trace, expected_trace);
+    assert_eq!(uncached_changed.cache_hits, 0);
+    assert_eq!(uncached_changed.force_cache_hits, 0);
+    assert_eq!(uncached_changed.force_cache_misses, 0);
     assert_ne!(uncached_changed.path, uncached_first.path);
     assert_ne!(uncached_changed.aterm, uncached_first.aterm);
 
@@ -1535,6 +1540,7 @@ fn persistent_current_time_force_cache_no_replay_preserves_drv_surfaces() {
     );
     assert_eq!(changed.cache_hits, 0);
     assert_eq!(changed.force_cache_hits, 0);
+    assert_eq!(changed.force_cache_misses, 0);
     assert_persistent_force_cache_sidecars_empty(
         &persist_root,
         "uncacheable currentTime derivation canary",
