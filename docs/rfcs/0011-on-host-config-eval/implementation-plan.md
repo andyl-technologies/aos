@@ -13,12 +13,20 @@ The enabling refactor; ships independently and de-risks everything after it.
 
 - [ ] Make `lib/modules/systemd/lib.nix` `generateUnits` a **pure function**
       returning `{ unitName → { text; mode; … } }` instead of a derivation.
+- [ ] **Shell-snippet options → manifest text (F2-A, review C2).** Reroute
+      `script`/`preStart`/`postStart`/`reload`/`preStop`/`postStop`
+      (`unit-options.nix:644` `makeJobScript`) to emit job-script **text** into
+      `manifest.jobScripts`; the materializer writes gen-local paths and rewrites
+      `Exec*=`. Add a publish lint that rejects derivation refs in `config` outputs.
 - [ ] Make the `modules/base/build.nix` `/etc` assembly emit the **manifest**
       data structure (`aos.config-manifest/v1`) as a pure value.
 - [ ] Have the builder-side `system.build.toplevel` consume the manifest via a
       thin materialize step → byte-identical toplevel output (gate: existing
-      `checks.vm.boot` + image hashes unchanged).
-- [ ] Define the manifest JSON schema as a shared Rust + Nix data contract.
+      `checks.vm.boot` + image hashes unchanged, **job scripts compared
+      semantically (text), not by embedded store path**).
+- [ ] Define the manifest JSON schema as a shared Rust + Nix data contract
+      (incl. `jobScripts`; `inputs` = base_lib + evaluator + config_modules +
+      host_nix + instance_facts).
 
 ## P1 — on-host eval with stock Nix
 
@@ -162,6 +170,41 @@ keep an Ignition-compat fallback (see [`provisioning.md`](provisioning.md) §Pha
 - [ ] Incremental early-cutoff cache (cheap re-eval on small `host.nix` changes).
 - [ ] Expose the option read/write graph as a first-class intrinsic to the
       resolver (replace AST-scan + error-parse reconstruction).
+
+### Review-driven hardening
+
+Findings folded in from the adversarial review (full log:
+[`known-issues.md`](known-issues.md)). The three **forks (F1/F2/F3)** need a call
+before the items marked ⟂ are implementable.
+
+- [ ] ⟂ **F1 — anchor the evaluator/base-lib root to measured boot**: dm-verity
+      on the erofs root with the roothash on the measured kernel cmdline
+      (`verity.nix` exists but is unused in production), or embed evaluator+base-lib
+      in the UKI initrd. Without it the producer is unmeasured.
+- [ ] ⟂ **F3 — capability-scoped contribution surface**: shared-root owners
+      declare contributable sub-paths; resolver enforces writes against them +
+      authenticated provenance (not module `_file`).
+- [ ] **Provenance from authenticated fetch source**, not module-supplied
+      `_file`, for both priority-75 lift and conscription detection.
+- [ ] **Instance facts as a recorded input**: `facts_hash` (+ retained
+      `facts.json`) in the manifest `inputs` + `gen-attestation`; remove any
+      pre-verification `authorized_keys` seeding from the facts channel.
+- [ ] **Static-networking seed** from platform metadata in the initrd agent for
+      DHCP-less clouds (DO/OpenStack) so stage-2 can reach the registry.
+- [ ] **First-boot substrate from image-baked `/usr/lib/repart.d` only**;
+      operator custom topologies via a two-boot (verify-then-apply) flow.
+- [ ] **Degraded commit = re-projected manifest** (full minus un-fetched),
+      re-hashed, drop-set recorded — keeps the generation content-addressed.
+- [ ] **`gen-N/cfgsrc/<hash>` GC root** pinning the config-module source closure
+      + host.nix per config-gen (cross-ABI re-eval survives `apm gc`).
+- [ ] **Durable image rollback** via `bootctl set-default` + sd-boot
+      boot-counting (`+tries`), not the lexically-highest `default aos-*.efi`.
+- [ ] **Read-of-absent-root discovery** via the option-path→package index
+      (distinct from the strict write-throw); flag throw-string parsing as the
+      P1 stopgap retired by aos-nix structured errors.
+- [ ] **Retarget `activate.sh.in` `prepare`** off the hard-coded Ignition binary
+      to the `aos metadata` agent; enable `-Dfirstboot` only if firstboot is
+      adopted (else keep manifest-rendered hostname).
 
 ## Gates
 

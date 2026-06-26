@@ -32,6 +32,13 @@ Stage-1 modules and stage-2 modules are therefore *different kinds of module*:
 stage 1 is derivation-producing (`mkDerivation`), stage 2 is config-only
 (references paths as strings, declares systemd/`/etc`/networking options).
 
+This discipline is **mechanically enforced, not left to convention** (review): a
+**publish-time lint** rejects a `config` output whose module graph holds a
+derivation or forces an `outPath` — the same probe-eval pass that checks the
+provides/requires interface ([`module-system.md`](module-system.md)). An
+accidental derivation reference is a publish failure, not a silent on-host build
+attempt. (P2 aos-nix can additionally refuse instantiation in the engine.)
+
 ### Stage 2 — activation (on-host, eval-only, config-producing)
 
 APM resolves the desired package set (see
@@ -71,16 +78,33 @@ activation):
 1. **Render becomes pure Nix.** `generateUnits` and the `/etc` assembly stop
    being derivations and become pure functions returning data:
    `{ "systemd/system/redis.service" = { text = "…"; mode = "0644"; }; … }`.
-   Unit rendering is already string templating; this is a refactor, not new
-   capability. The builder-side toplevel consumes the same manifest via a thin
-   materialize step, so build-time behavior is unchanged — but render is now
-   host-portable.
+   The builder-side toplevel consumes the same manifest via a thin materialize
+   step, so build-time behavior is unchanged — but render is now host-portable.
+
+   **Shell-snippet service options must carry text, not derivations (review
+   C2).** Unit rendering is *not* pure string templating today: `script=`,
+   `preStart=`, `postStart=`, `reload=`, `preStop=`, `postStop=` route through
+   `makeJobScript` → `pkgs.writeShellScriptBin` (`lib/modules/systemd/unit-options.nix:644`,
+   `lib.nix:691`), a **derivation** whose built `/nix/store/…-unit-script/bin`
+   path is embedded in `ExecStart=`. Job-script content is a function of the
+   *evaluated* config, so it cannot be pre-built in stage 1, and an eval-only host
+   cannot build it. **Fix (F2-A):** render emits each job-script's **text** into
+   the manifest (`manifest.jobScripts["redis.service:ExecStartPre.0"] = { text }`);
+   the materializer writes it to a generation-local path and rewrites the
+   `ExecStart=`/`ExecStartPre=` to point there. Consequence: the rendered command
+   bytes differ from the build-time `writeShellScriptBin` path, so the **P0
+   "byte-identical toplevel" gate compares job scripts semantically (text
+   equality), not by embedded path** ([`implementation-plan.md`](implementation-plan.md)).
+   (Alternative F2-B — ban these options in stage-2 modules via a publish lint —
+   is a real language restriction; see [`known-issues.md`](known-issues.md) F2.)
 
 2. **Assemble becomes an APM activation step.** Turning the manifest into the
    composefs `/etc` lower (`mkfs.erofs` of the metadata image + the basedir +
-   symlink trees) is **materialization, not building** — the same category as
-   `systemd-tmpfiles`, and the same kind of work APM already does for `expose`
-   artifacts (`crates/aos-package/src/exposed_units.rs`,
+   symlink trees, plus writing the job-script texts above) is **materialization,
+   not building**: it runs **no compiler, no `configure`/`make`, and realizes no
+   derivation** — it only assembles already-present bytes into an image with a
+   fixed tool, the same category as `systemd-tmpfiles` and the work APM already
+   does for `expose` artifacts (`crates/aos-package/src/exposed_units.rs`,
    `config_artifact.rs`). The composefs/erofs assembler ships as a base on-host
    tool.
 
@@ -108,11 +132,13 @@ piecewise. Schematically:
     "systemd/network/10-eth0.network": { "text": "…", "mode": "0644" }
   },
   "units": { "redis.service": { "action": "restart", "credentials": ["join-token"] } },
+  "jobScripts": { "redis.service:ExecStartPre.0": { "text": "#!/bin/sh\n…" } },
   "users": [ … ],
   "presets": [ … ],
   "storePaths": ["/nix/store/<hash>-redis-8.2", "/nix/store/<hash>-curl-8.12"],
   "module_abi": 1,
-  "inputs": { "base_lib": "<hash>", "config_modules": "<closure-hash>", "host_nix": "<hash>" }
+  "inputs": { "base_lib": "<hash>", "evaluator": "<hash>", "config_modules": "<closure-hash>",
+              "host_nix": "<hash>", "instance_facts": "<facts-hash>" }
 }
 ```
 

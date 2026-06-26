@@ -37,14 +37,19 @@ config modules (signed-tag-blessed NARs)    ─┼─► pure evalModules ──
 host.nix       (operator-signed user-data)  ─┘   (no I/O, no builds)     (content-addressed gen)
 ```
 
-1. **Input authenticity.** base lib ∈ the UKI (measured, PCR-11) and the
-   read-only erofs root; config modules ∈ NARs that re-root to the signed
-   realization graph; the evaluator ∈ the same measured image; `host.nix` is the
-   one input not pre-trusted (next section).
+1. **Input authenticity.** config modules ∈ NARs that re-root to the signed
+   realization graph; the **base lib and the evaluator live on the erofs root**
+   (not in the UKI — see the boundary section below for how that root's
+   integrity must be anchored, decision F1 in [`known-issues.md`](known-issues.md));
+   `host.nix` is the one operator-authored input not pre-trusted (host.nix
+   section); **instance facts are a second host-varying input** that must be
+   recorded (facts section).
 2. **Determinism.** `evalModules` under `--pure-eval` cannot read the clock,
    network, env, or `/` outside its inputs. Identical inputs ⇒ bit-identical
    manifest — the same property the repo already leans on for the byte-
-   reproducible base.
+   reproducible base. **"Inputs" here is the full tuple** `(base-lib, evaluator,
+   config-module closure, host.nix, instance-facts)`; all five must be pinned for
+   the re-derivation argument to hold.
 
 ⇒ **Reproducibility-from-signed-inputs is sufficient and strictly stronger than
 a signature.** Signing the manifest would attest only that "some box ran the
@@ -56,19 +61,31 @@ hash(manifest) is the integrity primitive.
 
 ## Measured vs derived boundary
 
-- **Measured (trust root):** the UKI = kernel + initrd + **base lib + the
-  evaluator** + cmdline + baked trust anchors (PCR-11 signed policy); SB state
-  pinned in PCR-7. This is the image-generation.
+> **Correction (review C1).** An earlier draft claimed the evaluator + base lib
+> are "in the measured UKI." They are **not** — they are large store paths on the
+> **erofs root**, consumed by the stage-2 `aos-eval.service`. Today that root has
+> **no dm-verity/roothash**, and the `/var` seal binds only PCR-11 (UKI) + PCR-7
+> (SB state), neither of which covers the root partition. So an offline attacker
+> who rewrites the erofs root (swapping the evaluator or base lib) leaves the PCRs
+> unchanged and `/var` still unseals — defeating "measure the producer." This is a
+> **required hardening, decision F1** in [`known-issues.md`](known-issues.md).
+
+- **Measured today (trust root):** the UKI = kernel + initrd + cmdline + baked
+  trust anchors (PCR-11 signed policy); SB state pinned in PCR-7.
+- **The producer the eval depends on (base lib + evaluator)** lives on the erofs
+  root and **must be anchored to that measured boot to be trustworthy** — F1:
+  dm-verity on the root with the roothash on the measured kernel cmdline (so root
+  tampering moves PCR-11), or embed the evaluator+base-lib closure in the UKI
+  initrd. Until F1 lands, the on-host-eval integrity guarantee is **only as
+  strong as the `/var` seal + signed eval inputs**, not the producer's integrity.
 - **Derived, not measured:** the manifest, the `/etc` composefs overlay, the
   downloaded config NARs, and the materialized generation in `/nix` (upper on
   `/var`). This is the config-generation.
 
-The boundary is sound for confidentiality and offline-tamper: everything derived
-lands on `/var`, which is **LUKS2-sealed to the measured UKI**, so it is
-reachable only through the attested producer. **Measure the producer
-(UKI: kernel+initrd+base-lib+evaluator+anchors); seal-protect the product
-(`/var`).** Keeping the evaluator + base lib inside the measured UKI means the
-ABI is itself measured — a tampered base lib changes PCR-11 and won't unseal.
+The `/var` seal gives confidentiality + offline-tamper protection for everything
+derived (LUKS2-sealed to the measured UKI). The *producer's* integrity, however,
+requires F1 — it is not free today. **Measure the producer (UKI **and**, via F1,
+the root carrying base-lib+evaluator); seal-protect the product (`/var`).**
 
 ### The one real gap
 
@@ -113,7 +130,30 @@ The evaluator runs in stage-2 from the **measured** image (UKI), so the
 attestation (no single golden manifest hash fleet-wide), but not
 *input-set* attestation. A verifier expects not "host X's manifest == golden"
 but "host X's manifest == eval(base-lib@v, config-modules@signed-tag,
-host.nix@operator-sig-H)." The variable part is exactly one signed input.
+host.nix@operator-sig-H, facts@facts-hash-F)."
+
+## Instance facts are a recorded input (review M-facts)
+
+`host.facts.*` (hostname, MAC→interface map, disk IDs, SSH authorized keys, any
+metadata-delivered network config) is a **second host-varying eval input**,
+gathered from **unauthenticated** IMDS (plain HTTP to the link-local). It
+materially affects the manifest (networkd files, users), so the re-derivation
+argument **fails unless it is recorded**. Therefore:
+
+- The in-VM agent records a canonical **`facts_hash`** of the resolved
+  `host.facts.*` tree (and retains the verbatim `facts.json`) in the manifest
+  `inputs` and the `gen-attestation` record, so a verifier can reproduce the
+  manifest from `(base-lib, evaluator, config-modules, host.nix, facts)`.
+- Facts are **not** operator-authenticated (the platform supplies them), so the
+  attestation states them as *"facts as supplied by platform P, hash F"* — a
+  verifier trusts them only as far as it trusts the instance's platform binding,
+  exactly as it would any IMDS-sourced fact. Facts must never carry security
+  decisions that the operator did not authorize (see the gen-0 SSH-key fix in
+  [`provisioning.md`](provisioning.md): no `authorized_keys` is seeded from this
+  channel before the stage-2 host.nix signature check).
+
+So "exactly one signed input" means one **operator-authored** input (`host.nix`);
+the instance-facts input is recorded-and-attested, not signed.
 
 ## Generation-attestation record
 
@@ -142,6 +182,9 @@ generation-attestation (extended into / quoted alongside PCR 7 + 11, e.g. app PC
       content_hash   = <sha256 of the operator config>
       operator_key   = <trusted-config-keys.d fingerprint>
       signature_ok   = true
+    instance_facts:
+      facts_hash     = <sha256 of the canonical host.facts.* tree>   # M-facts: the 2nd host-varying input
+      platform       = <aws|gcp|...>                                 # facts are platform-supplied, not signed
   eval_mode         = "pure-eval"                # asserts the determinism precondition
   quote             = <TPM2 quote over PCR 7,11(,15) + this record's hash>
 ```

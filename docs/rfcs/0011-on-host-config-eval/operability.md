@@ -92,10 +92,16 @@ resolve↔eval fixpoint carries a causal chain so its terminal states are legibl
 
 A generation today roots `gen-N/usr/<hash>` (package outputs) and `gen-N/src/<hash>`
 (source drvs) via symlink dirs `nix-store --gc` honors (`store.rs:create_gc_roots`,
-`profile/mod.rs:10`). RFC-0011 adds a third: **`gen-N/cfg/<hash>` →
-`<config-output store path>`** (the manifest's realized outputs — rendered `/etc`
-trees, unit files, the `toplevel` the activate script reads), written by the same
-`create_gc_roots` extended to take the manifest's realized outputs.
+`profile/mod.rs:10`). RFC-0011 adds **two** roots, not one:
+
+- **`gen-N/cfg/<hash>` → `<config-output store path>`** — the manifest's realized
+  *outputs* (rendered `/etc` trees, unit files, job-script texts, the `toplevel`).
+- **`gen-N/cfgsrc/<hash>` → config-module *source* closure + `host.nix` store
+  path** — the eval **inputs** (review M-gc-inputs). The `cfg/` outputs reference
+  package *runtime* closures, **not** the config-module source NARs the evaluator
+  read; without `cfgsrc/`, a plain `apm gc` would collect the inputs and break the
+  cross-ABI re-eval that [`generations.md`](generations.md) depends on. Both are
+  written by the extended `create_gc_roots`.
 
 The config closure references the package outputs it wires up, so rooting it
 transitively keeps `usr/` alive — but the explicit `usr/` roots stay, so a
@@ -150,8 +156,18 @@ is ~1–5 s wall, few-hundred-MB RSS; an AOS config eval is *smaller* (no
 kernel/initrd module tree — just base lib + per-package config modules +
 host.nix). Targets for ≤ ~50 config-module packages:
 
-- **Wall:** p50 ≤ 3 s, p99 ≤ 15 s.
+- **Wall:** p50 ≤ 3 s, p99 ≤ 15 s — **per eval**.
 - **RSS:** ≤ 1.5 GiB typical, hard ceiling 2 GiB.
+
+> **The reference figures are warm; P1 is cold + K× (review).** The ~1–5 s
+> reference is a *warm* nixpkgs eval; P1 runs **cold subprocess** stock-Nix evals,
+> and the error-driven fixpoint discovers **one missing option per eval**, so a
+> first boot needing K providers is ≈ K cold evals. The publish-time AST scan
+> pre-closes the set to keep K small (usually 0–1 extra), and the wall budget
+> above is **per eval** — `RuntimeMaxSec` bounds each, while the resolver bounds
+> the total iteration count. P2 aos-nix collapses K to 1 (structured errors,
+> one-shot read-tracing) and adds an incremental cache; the cold-subprocess tax is
+> a P1-only cost, not inherent.
 
 The budget *defines* the systemd limits on the transient eval scope (the cgroup
 is the enforcement, and a kill maps to the OOM/timeout diagnostic above):

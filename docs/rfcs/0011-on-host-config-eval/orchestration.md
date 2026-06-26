@@ -139,10 +139,23 @@ to a dependent only through `Requires=`/`BindsTo=`/`Requisite=`; a failed
 So `aos-fetch.target`/`aos-config.target` pull each `aos-pkg-*@<p>` via
 **`Wants=`**. If `aos-pkg-fetch@nginx` exhausts its `Restart=on-failure` budget,
 nginx's install (`After=` an unmet fetch) stays inactive, the targets still
-reach `active`, `aos-activate` commits the **successfully-fetched subset**, and
-`multi-user.target` is reached. `systemctl is-system-running` → **`degraded`**,
-not a failed boot — SSH, DHCP, and the healthy packages all run. This is the
-same intent already encoded as `EX_DEGRADED=6` in `activate.sh.in:46`.
+reach `active`, `aos-activate` commits a **re-projected manifest** (next
+paragraph), and `multi-user.target` is reached. `systemctl is-system-running` →
+**`degraded`**, not a failed boot — SSH, DHCP, and the healthy packages all run.
+This is the same intent already encoded as `EX_DEGRADED=6` in `activate.sh.in:46`.
+
+**Committing a subset must stay content-addressed (review M-partial-commit).** A
+`/etc` committed from "whatever fetched" is not `hash(full-manifest)`, so naively
+it would be a non-reproducible generation that depends on transient fetch
+outcomes — breaking the content-addressing model in
+[`generations.md`](generations.md). Instead, `aos-activate` commits a
+**re-projected manifest**: the full manifest **restricted to the packages that
+actually materialized**, re-hashed, with the **dropped set recorded** in the
+generation. The degraded config-gen is therefore itself content-addressed and
+reproducible from `(signed inputs + the recorded drop-set)` — a verifier can
+reproduce exactly what was committed. (Re-running fetch for the dropped packages
+later produces a *new* config-gen via the normal reconcile path, not a mutation
+of the degraded one.)
 
 **Reserve `Requires=`/`BindsTo=` exclusively for true substrate edges**, so only
 genuine substrate loss — never a single package — can pull the system out of

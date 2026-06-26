@@ -1,7 +1,11 @@
 # RFC-0011: On-host, eval-only configuration — generations from downloaded Nix modules
 
-- **Status:** Accepted. Full design specified and resolved; all open decisions
-  closed (see [Resolved decisions](#resolved-decisions)). Implementation is
+- **Status:** Accepted, **revised after an adversarial review** (2 critical + 13
+  major findings folded in; see [`known-issues.md`](known-issues.md) for the
+  revision log). **Three open decisions remain** and need a call before
+  implementation — F1 (how the evaluator/base-lib on the erofs root are anchored
+  to measured boot), F2 (how shell-snippet service options render on-host), F3
+  (what authorizes cross-package composition vs. conscription). Implementation is
   phased: **P1** runs the existing from-source stock C++ Nix
   (`pkgs/tools/nix.nix`, 2.24.12) as the on-host evaluator; **P2** swaps in
   `aos-nix` ([RFC-0007](../0007-nix-evaluator/)) behind the same
@@ -47,6 +51,10 @@ the invariants, and the resolved decisions; the topic files hold the detail:
   preflight, eval-failure observability, GC of config closures, the
   flat-merge ↔ module-eval parity gate, and the perf budget + test plan.
 - [`implementation-plan.md`](implementation-plan.md) — the phased checklist.
+- [`known-issues.md`](known-issues.md) — the adversarial-review accounting: the
+  **three open decisions** (F1 root-measurement, F2 job-script rendering, F3
+  conscription-vs-composition) that need a human call, plus the revision log of
+  fixes applied to the other docs.
 
 ## Problem
 
@@ -71,14 +79,15 @@ against each other:
 The goal is a download-only package manager (binaries pre-compiled in APM
 registries, like a Debian host fed by APT) that nonetheless supports
 generation-based, atomically-switchable, rollback-able host configuration for
-systemd and `/etc` — driven by Ignition/cloud-init as the primary source of
-host configuration. Neither plane delivers that: plane 1 requires rebuilds;
-plane 2 has no module system, no composition, no generations of its own.
+systemd and `/etc` — driven by the **cloud user-data** (a signed `host.nix`) as
+the primary source of host configuration. Neither plane delivers that: plane 1
+requires rebuilds; plane 2 has no module system, no composition, no generations
+of its own.
 
-RFC-0011 unifies the two planes into **one on-host `evalModules`**, fed by
-Ignition, evaluating downloaded config-only modules over pre-built binary
-closures — eval-only, no builds — and producing content-addressed,
-atomically-switchable generations.
+RFC-0011 unifies the two planes into **one on-host `evalModules`**, fed by the
+operator's signed `host.nix` from the cloud user-data, evaluating downloaded
+config-only modules over pre-built binary closures — eval-only, no builds — and
+producing content-addressed, atomically-switchable generations.
 
 ## Core model
 
@@ -147,11 +156,15 @@ pkgs/*.nix (mkDerivation)                 base lib (in measured image) ─┐
    manifest_hash)`; the manifest hash is the content-address of the eval output
    and is reproducible from its signed inputs.
 
-5. **Eval is pure and deterministic given declared inputs.** `--pure-eval`
-   blocks ambient impurity; all host-varying facts enter through `host.nix` as
-   typed, declared data. Identical inputs ⇒ byte-identical manifest. This is
-   simultaneously the determinism property fleet dedup relies on and the
-   reproducibility property the trust model rests on.
+5. **Eval is pure and deterministic given its recorded inputs.** `--pure-eval`
+   blocks ambient impurity; host-varying data enters only through **two recorded
+   inputs** — the operator's `host.nix` *and* the platform-supplied
+   `host.facts.*` (hashed as `facts_hash` in the manifest `inputs` + attestation).
+   Identical inputs ⇒ byte-identical manifest. This is simultaneously the
+   determinism property fleet dedup relies on and the reproducibility property the
+   trust model rests on. (`host.nix` is operator-*authored*; facts are
+   *recorded-and-attested*, not signed — see
+   [`trust-and-secrets.md`](trust-and-secrets.md).)
 
 6. **No secret material in the value graph.** The manifest is content-addressed,
    world-readable, and may be logged or cached; secrets are referenced by
