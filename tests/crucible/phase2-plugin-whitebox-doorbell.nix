@@ -365,6 +365,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             off_mode=disabled-plan-installs-no-trap
+            black_box_remains_functional=true
             guest_memory=read-through-qemu-plugin-api-trait
             marker_stamp=exact-current-icount
             host_to_guest_input=explicit-delivery-icount-gate

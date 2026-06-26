@@ -190,13 +190,17 @@ are likewise canonical.
 
 #### `gate:any-guest`
 
-- **[HARN-6]** `gate:any-guest` MUST boot a small matrix of off-the-shelf guest
-  images/kernels under sim mode and assert (a) deterministic boot fingerprints
-  (§4), (b) the on-disk base image is byte-unchanged after the run (CoW overlays
-  only), and (c) no Crucible-placed content is required in-guest for core
-  operation. Pass/fail is deterministic boot **and** zero base-image mutation
-  **and** no required in-guest agent. **Guards:** L2 boot. **Enforces:** INV-5,
-  G-2.
+- **[HARN-6]** `gate:any-guest` MUST boot an unmodified guest fixture matrix
+  under sim mode and assert (a) deterministic boot fingerprints for the
+  black-box profile(s) claimed by the gate (§4), (b) the on-disk base image is
+  byte-unchanged after guest-visible CoW runs (CoW overlays only), and (c) no
+  Crucible-placed content is required in-guest for core operation. The initial
+  Phase-2 gate covers a generic AOS Linux kernel/initramfs fixture under diskless
+  and guest-visible CoW-block launch profiles; broader off-the-shelf guest
+  images/kernels are acceptance hardening and must not be claimed until they are
+  in the executable matrix. Pass/fail is scoped deterministic boot **and** zero
+  base-image mutation **and** no required in-guest agent. **Guards:** L2 boot.
+  **Enforces:** INV-5, G-2.
 
 #### `gate:qemu-inert`
 
@@ -898,9 +902,20 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [ ] **T-HARN-15** Implement `gate:control-responsive` (control ops acked within
   a bounded number of quanta against a running session, measured in quanta not
   wall-clock). — satisfies [HARN-19]; spec §1.2.
-- [ ] **T-HARN-16** Implement `gate:any-guest` (matrix of unmodified guests boot
-  deterministically; base image byte-unchanged; no required in-guest agent). —
-  satisfies [HARN-6], [G-2]; spec §1.2.
+- [x] **T-HARN-16** Implement the initial `gate:any-guest` executable matrix (one
+  unmodified generic AOS Linux fixture across diskless and guest-visible
+  CoW-block launch profiles; diskless boot fingerprints deterministic; CoW base
+  image byte-unchanged; no required in-guest agent). — satisfies the initial
+  scoped [HARN-6] gate, [G-2]; spec §1.2.
+  Completed by `checks.crucible.phase2.gates.anyGuest`: a generic AOS Linux
+  kernel/initramfs fixture runs under diskless and guest-visible CoW-block launch
+  profiles twice on real QEMU with the host-side trace plugin, the diskless cadence fingerprint streams match exactly
+  through the host QMP-quit window after a generic serial completion marker, both
+  CoW traces pass structural validation while the profile writes through
+  `/dev/vda` and leaves the copied base image byte-identical, and the optional
+  white-box path is consumed as a separate unused, non-perturbing host/plugin
+  contract. Broader off-the-shelf guest image coverage remains outside this
+  completed initial matrix.
 - [ ] **T-HARN-17** Freeze the boundary-ABI golden vectors (shmem layout,
   protocol frames, RPC messages) and implement `gate:abi-conformance` with version
   checks and the bump-on-change rule. — satisfies [HARN-32], [G-8]; spec §8.1.

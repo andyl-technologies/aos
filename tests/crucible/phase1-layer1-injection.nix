@@ -197,7 +197,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "updated placeholder count";
-        needle = "placeholder_targets=14";
+        needle = "placeholder_targets=11";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [

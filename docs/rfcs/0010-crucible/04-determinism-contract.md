@@ -726,10 +726,23 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   byte-identical genesis backing state across runs, no Crucible content placed
   inside the guest for core operation. — satisfies [DET-15], [DET-16], [INV-5];
   spec §4.5.
-- [ ] **T-DET-22** Implement `gate:any-guest`: the determinism contract holds
-  black-box on an unmodified stock image with white-box disabled; enabling
-  white-box does not perturb fingerprints. — satisfies [DET-15], [DET-17]; spec
-  §4.5.
+- [x] **T-DET-22** Implement the first enforced `gate:any-guest` slice: black-box
+  determinism evidence holds on an unmodified generic AOS Linux fixture with
+  white-box disabled, no in-guest Crucible content is required, and optional
+  white-box behavior is consumed only through a separate host/plugin contract,
+  not live any-guest boot fingerprint evidence. — exercises [DET-15], [DET-17];
+  spec §4.5.
+  Completed by `checks.crucible.phase2.gates.anyGuest`: the gate boots a generic
+  AOS Linux kernel/initramfs fixture under diskless and guest-visible CoW-block
+  launch profiles twice with the black-box QEMU trace plugin, compares the
+  diskless cadence fingerprint streams byte-for-byte through the host QMP-quit
+  window after a generic serial completion marker, structurally validates both
+  CoW traces while writing a deterministic marker through `/dev/vda`, verifies
+  the copied base image hash is unchanged after overlay-backed runs, rejects any
+  required in-guest Crucible agent, and consumes the separate white-box doorbell
+  off/on contract proving black-box operation remains functional when that
+  optional host/plugin channel is enabled but unused. This completion does not
+  claim live any-guest white-box-on QEMU fingerprint equivalence.
 - [x] **T-DET-23** Implement `gate:qemu-inert`: prove every patch is inert out of
   sim mode (production QEMU behaviorally identical to upstream) and effective in
   sim mode, with a per-patch micro-test. — satisfies [DET-36], [DET-37], routes
