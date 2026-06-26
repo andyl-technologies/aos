@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5"],
+  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-7"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -167,6 +167,30 @@
         label = "hot checkpoint hedge API";
         needle = "pub fn materialize_hot_checkpoint_with_savevm_hedge(";
       }
+      {
+        label = "replay-oracle cached snapshot admission";
+        needle = "pub fn replay_oracle_admit_cached_snapshot(";
+      }
+      {
+        label = "all cached snapshots replay-oracle invariant";
+        needle = "pub fn validate_cached_snapshots_with_replay_oracle(";
+      }
+      {
+        label = "cached snapshot admission evicts rejected fat cache";
+        needle = "self.evict_fat_checkpoint_to_thin(configuration)?;";
+      }
+      {
+        label = "cached snapshot admission checks cached ancestors";
+        needle = "self.replay_oracle_admit_cached_ancestors(configuration)?;";
+      }
+      {
+        label = "materialize validates replay-oracle path before cached return";
+        needle = "self.replay_oracle_admit_cached_snapshot(configuration)?;";
+      }
+      {
+        label = "instantiate validates exact cache before load";
+        needle = "graph.replay_checkpoint(config, snapshot)?;";
+      }
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
       {
@@ -236,6 +260,30 @@
       {
         label = "full S3 fallback eviction test";
         needle = "temporal_graph_savevm_full_s3_fallback_evicts_hot_checkpoint_to_thin";
+      }
+      {
+        label = "cached snapshot replay-oracle rejection test";
+        needle = "temporal_graph_replay_oracle_rejects_cached_snapshot_to_thin";
+      }
+      {
+        label = "cached snapshot rejection leaves thin path realizable";
+        needle = "thin derivation should remain realizable after rejection";
+      }
+      {
+        label = "public exact-cache load rejects corrupt snapshot";
+        needle = "public exact-cache instantiate should reject corrupt fat snapshot";
+      }
+      {
+        label = "whole-cache replay-oracle rejection test";
+        needle = "whole-cache replay-oracle validation should reject corrupt cache";
+      }
+      {
+        label = "cached ancestor replay-oracle admission test";
+        needle = "temporal_graph_replay_oracle_admits_cached_ancestors_before_target";
+      }
+      {
+        label = "cached ancestor replay-oracle admission failure message";
+        needle = "cached target should not validate against an unadmitted corrupt ancestor";
       }
     ]
     ++ failuresFor "crates/crucible/Cargo.toml" cargoManifest [
@@ -695,6 +743,18 @@
         label = "T-TEMP-5 completion names thin replay fallback";
         needle = "`thin_replay_until_full_s3`";
       }
+      {
+        label = "T-TEMP-7 checklist complete";
+        needle = "- [x] **T-TEMP-7**";
+      }
+      {
+        label = "T-TEMP-7 names cached snapshot admission";
+        needle = "`TemporalGraph::replay_oracle_admit_cached_snapshot`";
+      }
+      {
+        label = "T-TEMP-7 names whole-cache invariant";
+        needle = "`TemporalGraph::validate_cached_snapshots_with_replay_oracle`";
+      }
     ];
 in
   if failures != []
@@ -841,6 +901,8 @@ in
             fat_eviction=ancestor-replay-preserves-state
             savevm_completeness_hedge=unreliable-device-snapshots-stay-thin
             savevm_full_s3_fallback=thin-replay-until-full-s3
+            replay_oracle_cached_admission=corrupt-fat-cache-evicted-to-thin
+            replay_oracle_structural_invariant=all-cached-fat-snapshots
             artifact_round_trip=re-run-from-seed-scenario-schedule-build-identity
             artifact_replay_assertions=fingerprint-equality,oracle-case-equality
             artifact_replay_negative_controls=build-identity-drift,seed-drift,scenario-drift,schedule-drift,oracle-case-drift,replay-failure,expected-oracle-mismatch,reproduced-oracle-mismatch

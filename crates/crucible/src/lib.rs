@@ -1087,6 +1087,238 @@ mod tests {
     }
 
     #[test]
+    fn temporal_graph_replay_oracle_rejects_cached_snapshot_to_thin() {
+        let node = node_id("node");
+        let world = world_from_nodes(vec![WorldNode {
+            id: node.clone(),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: Icount { retired: 12 },
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+        }]);
+        let scenario = world.scenario_def();
+        let genesis = Configuration::genesis(scenario.clone());
+        let config = step(&genesis, generated_decision(87, 0));
+        let baked = match bake(&world) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),
+        };
+        let mut source = match TemporalGraph::empty().with_baked_genesis(&scenario, baked.clone()) {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+        let checkpoint = match source.materialize_checkpoint(&config) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("checkpoint should materialize through thin replay: {error}"),
+        };
+        let checks = match source.validate_cached_snapshots_with_replay_oracle() {
+            Ok(checks) => checks,
+            Err(error) => panic!("valid cache should pass replay-oracle admission: {error}"),
+        };
+        let mut corrupted = checkpoint.clone();
+        corrupted.node_blobs.insert(
+            node,
+            NodeBlobRef::baked(ContentHash::from_canonical_material(
+                "crucible.test.cached-replay-oracle",
+                "wrong-cached-vm-blob",
+            )),
+        );
+        corrupted.state = Some(MaterializedState::from_checkpoint_parts(
+            &corrupted.node_icounts,
+            &corrupted.node_blobs,
+        ));
+        let expected_state = checkpoint
+            .state
+            .as_ref()
+            .map(|state| state.id)
+            .unwrap_or_else(|| panic!("valid materialized checkpoint should carry state"));
+        let actual_state = corrupted
+            .state
+            .as_ref()
+            .map(|state| state.id)
+            .unwrap_or_else(|| panic!("corrupted checkpoint should carry recomputed state"));
+        let corrupted_for_validation = corrupted.clone();
+        let mut graph = match TemporalGraph::empty().with_baked_genesis(&scenario, baked.clone()) {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+        if let Err(error) = graph.cache_snapshot(&config, corrupted) {
+            panic!("corrupt-but-loadable cache should insert before oracle admission: {error}");
+        }
+
+        let load_error = match instantiate(&graph, &config) {
+            Ok(_) => panic!("public exact-cache instantiate should reject corrupt fat snapshot"),
+            Err(error) => error,
+        };
+        let error = match graph.materialize_checkpoint(&config) {
+            Ok(_) => panic!("corrupt cached snapshot should fail replay-oracle admission"),
+            Err(error) => error,
+        };
+        let thin = match graph.checkpoint_node(config.id()) {
+            Some(checkpoint) => checkpoint,
+            None => panic!("replay-oracle rejection should keep the thin checkpoint node"),
+        };
+        let runtime = match instantiate(&graph, &config) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                panic!("thin derivation should remain realizable after rejection: {error}")
+            }
+        };
+        let mut validation_graph = match TemporalGraph::empty().with_baked_genesis(&scenario, baked)
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+        if let Err(error) = validation_graph.cache_snapshot(&config, corrupted_for_validation) {
+            panic!(
+                "corrupt-but-loadable cache should insert before whole-cache validation: {error}"
+            );
+        }
+        let validation_error = match validation_graph.validate_cached_snapshots_with_replay_oracle()
+        {
+            Ok(_) => panic!("whole-cache replay-oracle validation should reject corrupt cache"),
+            Err(error) => error,
+        };
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].configuration, config.id());
+        assert!(matches!(
+            load_error,
+            EngineError::ReplayOracleMismatch {
+                checkpoint: corrupt_id,
+                expected,
+                actual,
+            } if corrupt_id == checkpoint.id
+                && expected == expected_state
+                && actual == actual_state
+        ));
+        assert!(matches!(
+            error,
+            EngineError::ReplayOracleMismatch {
+                checkpoint: corrupt_id,
+                expected,
+                actual,
+            } if corrupt_id == checkpoint.id
+                && expected == expected_state
+                && actual == actual_state
+        ));
+        assert!(matches!(
+            validation_error,
+            EngineError::ReplayOracleMismatch {
+                checkpoint: corrupt_id,
+                expected,
+                actual,
+            } if corrupt_id == checkpoint.id
+                && expected == expected_state
+                && actual == actual_state
+        ));
+        assert!(graph.cached_snapshot(&config).is_none());
+        assert!(validation_graph.cached_snapshot(&config).is_none());
+        assert_eq!(thin.kind, CheckpointKind::Thin);
+        assert!(thin.state.is_none());
+        assert_eq!(runtime.configuration, config.id());
+        assert_eq!(runtime.id, reduced_state_id(&config));
+    }
+
+    #[test]
+    fn temporal_graph_replay_oracle_admits_cached_ancestors_before_target() {
+        let node = node_id("node");
+        let world = world_from_nodes(vec![WorldNode {
+            id: node.clone(),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: Icount { retired: 13 },
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+        }]);
+        let scenario = world.scenario_def();
+        let genesis = Configuration::genesis(scenario.clone());
+        let ancestor = step(&genesis, generated_decision(88, 0));
+        let target = step(&ancestor, generated_decision(88, 1));
+        let baked = match bake(&world) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),
+        };
+        let mut source = match TemporalGraph::empty().with_baked_genesis(&scenario, baked.clone()) {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+        let ancestor_checkpoint = match source.materialize_checkpoint(&ancestor) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("ancestor checkpoint should materialize: {error}"),
+        };
+        let corrupt_ancestor =
+            corrupt_checkpoint_node_blob(&ancestor_checkpoint, &node, "wrong-ancestor-vm-blob");
+        let mut unsafe_replay_graph = TemporalGraph::empty();
+        if let Err(error) = unsafe_replay_graph.cache_snapshot(&ancestor, corrupt_ancestor.clone())
+        {
+            panic!("corrupt-but-loadable ancestor cache should insert: {error}");
+        }
+        let corrupt_runtime = match instantiate(&unsafe_replay_graph, &target) {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("target setup should replay from corrupt ancestor: {error}"),
+        };
+        let corrupt_target = match Checkpoint::from_recorded_configuration(
+            &target,
+            Some(&ancestor),
+            VirtualTime::default(),
+            corrupt_runtime.node_icounts,
+            CheckpointKind::Fat,
+            corrupt_runtime.node_blobs,
+        ) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("corrupt target checkpoint should remain loadable: {error}"),
+        };
+        let expected_state = ancestor_checkpoint
+            .state
+            .as_ref()
+            .map(|state| state.id)
+            .unwrap_or_else(|| panic!("valid ancestor checkpoint should carry state"));
+        let actual_state = corrupt_ancestor
+            .state
+            .as_ref()
+            .map(|state| state.id)
+            .unwrap_or_else(|| panic!("corrupted ancestor checkpoint should carry state"));
+        let mut graph = match TemporalGraph::empty().with_baked_genesis(&scenario, baked) {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+        if let Err(error) = graph.cache_snapshot(&ancestor, corrupt_ancestor) {
+            panic!("corrupt-but-loadable ancestor cache should insert before admission: {error}");
+        }
+        if let Err(error) = graph.cache_snapshot(&target, corrupt_target) {
+            panic!("corrupt-but-loadable target cache should insert before admission: {error}");
+        }
+
+        let error = match graph.materialize_checkpoint(&target) {
+            Ok(_) => {
+                panic!("cached target should not validate against an unadmitted corrupt ancestor")
+            }
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            EngineError::ReplayOracleMismatch {
+                checkpoint: corrupt_id,
+                expected,
+                actual,
+            } if corrupt_id == ancestor_checkpoint.id
+                && expected == expected_state
+                && actual == actual_state
+        ));
+        assert!(graph.cached_snapshot(&ancestor).is_none());
+        assert!(graph.cached_snapshot(&target).is_none());
+        assert!(matches!(
+            graph.checkpoint_node(ancestor.id()),
+            Some(checkpoint) if checkpoint.kind == CheckpointKind::Thin && checkpoint.state.is_none()
+        ));
+        assert!(matches!(
+            graph.checkpoint_node(target.id()),
+            Some(checkpoint) if checkpoint.kind == CheckpointKind::Thin && checkpoint.state.is_none()
+        ));
+    }
+
+    #[test]
     fn temporal_graph_replay_checkpoint_ignores_exact_target_snapshot() {
         let scenario = generated_scenario(78);
         let genesis = Configuration::genesis(scenario.clone());
@@ -1967,6 +2199,26 @@ mod tests {
             Ok(state) => state.id,
             Err(error) => panic!("pure reduced state should construct: {error}"),
         }
+    }
+
+    fn corrupt_checkpoint_node_blob(
+        checkpoint: &Checkpoint,
+        node: &NodeId,
+        label: &str,
+    ) -> Checkpoint {
+        let mut corrupted = checkpoint.clone();
+        corrupted.node_blobs.insert(
+            node.clone(),
+            NodeBlobRef::baked(ContentHash::from_canonical_material(
+                "crucible.test.corrupt-checkpoint-node-blob",
+                label,
+            )),
+        );
+        corrupted.state = Some(MaterializedState::from_checkpoint_parts(
+            &corrupted.node_icounts,
+            &corrupted.node_blobs,
+        ));
+        corrupted
     }
 
     fn fat_checkpoint_for(configuration: &Configuration) -> Checkpoint {
