@@ -758,6 +758,15 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
 ### L1 — coarse top-level parallelism (§4)
 
 - [ ] Chase-Lev work-stealing deque pool over independent top-level derivations, each worker with its own bump nursery; round-robin seed, LIFO local push/pop, FIFO steal, termination barrier (§4.1–§4.2) — **P3.5**, `C-12`; task grain is a derivation subtree, never per-thunk (§7).
+- [x] Current demand-graph node-table single-flight precursor:
+      `SharedDemandGraph` serializes the existing in-memory node table with a
+      same-process mutex, exposes insert-or-get admission status for shared
+      callers, and tests that concurrent same-key misses collapse to one node
+      while preserving the inserting winner's value hash. This establishes the
+      convergence contract for later parallel shared tables, not the final
+      lock-free append-only/CAS implementation, work-stealing integration, or
+      loom/Miri audit (§4.3, [12](12-incremental-evaluation-cache.md) §8.3) —
+      **P3.5** precursor, `R-4`.
 - [ ] Read-mostly concurrent shared tables with idempotent insert-or-get: lock-free append-only symbol interner, hash-cons table, and the incremental cache as a concurrent content-addressed map — races converge, never diverge (§4.3) — **P3.5**, `C-12`; the hash-cons table is the `S-7`/`P2` substrate.
 - [ ] Output-determinism guarantees under nondeterministic scheduling: order-independent string-context union, sorted `.drv` output collection, content-only SHA-256 hashing, deterministic-iteration attrsets (§4.4) — **P3.5**, `C-12`/`S-13`; differential `.drv` harness asserts identical output across thread counts `{1, 2, 8, N}`.
 

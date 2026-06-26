@@ -17,9 +17,9 @@ pub mod runtime;
 
 pub use cutoff::{CutoffDecision, EarlyCutoff, ValueHash, ValueHashError};
 pub use dcg::{
-    BlockedDirtyNode, DemandGraph, DemandGraphError, DemandNode, DemandNodeId, DirtyFrontier,
-    ImpureInputObservation, ImpureTraceObservation, ImpureTraceStatus, NodeFreshness,
-    RecomputeReadyDirty, Reconsideration,
+    BlockedDirtyNode, DemandGraph, DemandGraphError, DemandNode, DemandNodeAdmission, DemandNodeId,
+    DirtyFrontier, ImpureInputObservation, ImpureTraceObservation, ImpureTraceStatus,
+    NodeFreshness, RecomputeReadyDirty, Reconsideration, SharedDemandGraph, SharedDemandGraphError,
 };
 pub use hashing::{DurableBlake3Hash, HotXxh3Hash};
 pub use input::{

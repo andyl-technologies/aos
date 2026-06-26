@@ -2509,6 +2509,15 @@ nurseries build on the bump arena.
       work-stealing or parking on a claimed thunk ([13](13-parallel-evaluation.md) §3).
       The thunk word is already atomic from P1, so this adds a scheduler, not a
       representation change.
+- [x] Current shared node-table admission precursor: `SharedDemandGraph`
+      wraps the existing in-memory `DemandGraph` behind a same-process mutex,
+      exposes `DemandNodeAdmission` from insert-or-get calls, and proves cloned
+      concurrent same-key misses converge on one inserted node while preserving
+      the winner's value hash. This is the convergence contract only; the final
+      lock-free append-only/CAS table, scheduler integration, persistent
+      two-machine single-flight, and loom/Miri audit remain open
+      ([12](12-incremental-evaluation-cache.md) §8.3,
+      [13](13-parallel-evaluation.md) §4.3).
 - [ ] Per-worker bump nurseries + a concurrent (or per-worker-then-merged)
       hash-cons table; never-free in CLI mode sidesteps any moving-collector race
       ([13](13-parallel-evaluation.md) §5).

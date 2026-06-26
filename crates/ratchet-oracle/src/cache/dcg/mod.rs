@@ -21,6 +21,9 @@ mod frontier;
 mod graph;
 mod nodes;
 mod observation;
+mod shared;
+
+pub use shared::{DemandNodeAdmission, SharedDemandGraph, SharedDemandGraphError};
 
 /// A stable id for one node in a [`DemandGraph`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
