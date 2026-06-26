@@ -954,8 +954,29 @@ mod entry {
                     if want.is_empty() || got != want {
                         return Response::error("forbidden", 403);
                     }
+                    // `x-hub-query: 1` → run the body as a SELECT and return rows
+                    // as JSON (for verifying the migration); otherwise run it as a
+                    // batch of statements.
+                    let is_query = req.headers().get("x-hub-query").ok().flatten().is_some();
                     let sql = req.text().await?;
                     use aos_hub_core::backend::Backend as _;
+                    if is_query {
+                        return match backend.query(&sql, &[]).await {
+                            Ok(rows) => {
+                                let out: Vec<Vec<String>> = rows
+                                    .iter()
+                                    .map(|r| {
+                                        (0..r.len())
+                                            .filter_map(|i| r.value(i))
+                                            .map(|v| format!("{v:?}"))
+                                            .collect()
+                                    })
+                                    .collect();
+                                Response::from_json(&out)
+                            }
+                            Err(err) => Response::error(format!("admin query: {err:#}"), 500),
+                        };
+                    }
                     return match backend.execute_batch(&sql).await {
                         Ok(()) => Response::ok("ok"),
                         Err(err) => Response::error(format!("admin sql: {err:#}"), 500),
