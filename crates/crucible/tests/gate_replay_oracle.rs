@@ -7,10 +7,11 @@ use std::io::{Error as IoError, ErrorKind};
 
 use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
-    DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, GenesisCheckpoint,
-    Icount, MaterializedState, NodeBlobRef, NodeId, ReadyPoint, RngDecision, RngStreamId,
-    ScenarioDef, Schedule, SchedulerState, State, TemporalGraph, VirtualTime, WhiteBoxPolicy,
-    World, WorldNode, bake, instantiate, reduce, step,
+    DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, FrontierReductionPolicy,
+    GenesisCheckpoint, Icount, MaterializationPolicy, MaterializationTrigger, MaterializedState,
+    MemoryDagStore, NodeBlobRef, NodeId, ReadyPoint, RngDecision, RngStreamId, ScenarioDef,
+    Schedule, SchedulerState, State, TemporalGraph, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    bake, instantiate, reduce, step,
 };
 use crucible_harness::replay_oracle::{
     ReplayOracleArtifactRun, ReplayOracleBuildIdentity, ReplayOracleCheckpointKind,
@@ -248,6 +249,70 @@ fn gate_replay_oracle_saved_descendant_fat_checkpoint_carries_vm_snapshot_refs()
     assert_eq!(checkpoint.node_blobs.len(), 1);
     assert_eq!(checkpoint.node_icounts[&node], Icount { retired: 988 });
     assert_eq!(loaded.configuration, target.id());
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path()
+-> Result<(), Box<dyn Error>> {
+    let node = oracle_node_id();
+    let world = World::from_nodes(vec![WorldNode {
+        id: node,
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 111 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+    }])?;
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world)?;
+    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
+    let store = MemoryDagStore::new();
+    let saved = step(&genesis, rng_decision("operation/save", 7));
+    let save = graph.save(&store, &saved)?;
+
+    assert_eq!(save.configuration, saved.id());
+    assert_eq!(save.checkpoint, saved.id());
+    assert_eq!(save.checkpoint_kind, CheckpointKind::Fat);
+
+    let resumed = graph.resume(&saved)?;
+    let direct = instantiate(&graph, &saved)?;
+    assert_eq!(resumed.runtime, direct);
+
+    let replay = graph.replay(&saved)?;
+    assert_eq!(replay.configuration, saved.id());
+    assert_eq!(replay.fat_checkpoint, saved.id());
+    assert_eq!(replay.thin_checkpoint, saved.id());
+
+    let fork = graph.fork(&genesis, vec![rng_decision("operation/fork", 8)])?;
+    let thin_replay_error = graph
+        .replay(&fork.branch)
+        .expect_err("thin-only fork should not replay as a stored fat checkpoint");
+    assert!(matches!(
+        thin_replay_error,
+        EngineError::CheckpointNotRecorded { checkpoint } if checkpoint == fork.branch.id()
+    ));
+    let fork_runtime = graph.resume(&fork.branch)?;
+    let fork_direct = instantiate(&graph, &fork.branch)?;
+    assert_eq!(fork.branch_checkpoint.kind, CheckpointKind::Thin);
+    assert_eq!(fork.base.runtime, instantiate(&graph, &genesis)?);
+    assert_eq!(fork_runtime.runtime, fork_direct);
+
+    let search = graph.search(
+        &genesis,
+        vec![rng_decision("operation/search", 9)],
+        FrontierReductionPolicy::none(),
+        MaterializationPolicy::thin_only(),
+        MaterializationTrigger::Cold,
+    )?;
+    assert_eq!(search.frontier_report.explored.len(), 1);
+    assert_eq!(search.materialized.len(), 1);
+    assert_eq!(search.materialized[0].kind, CheckpointKind::Thin);
+    let searched = search.frontier_report.explored[0].configuration.clone();
+    let search_runtime = graph.resume(&searched)?;
+    let search_direct = instantiate(&graph, &searched)?;
+    assert_eq!(search_runtime.runtime, search_direct);
 
     Ok(())
 }
@@ -842,6 +907,15 @@ fn replay_schedule(ancestor: &Schedule, delta: &Schedule) -> Schedule {
         schedule = schedule.appended(decision.clone());
     }
     schedule
+}
+
+fn rng_decision(stream: &str, value: u64) -> Decision {
+    Decision::RngDraw(RngDecision {
+        stream: RngStreamId {
+            name: String::from(stream),
+        },
+        value,
+    })
 }
 
 fn materialized_node_blobs(

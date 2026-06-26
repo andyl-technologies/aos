@@ -42,10 +42,11 @@ pub use model::{
     ReplayOracleCheck, RngDecision, RngStreamId, RngStreamPosition, RuntimeState,
     SavevmCompletenessHedge, ScenarioDef, Schedule, ScheduleError, SchedulerState, SchedulingPoint,
     Shift, SimDuration, SimInstant, SimOffset, State, SymmetryClassId, SymmetryReductionClasses,
-    SymmetryReductionKey, TemporalGraph, TemporalGraphGcReport, TemporalGraphGcRoots,
-    TemporalGraphReferenceCounts, TemporalGraphStoreError, TemporalGraphStoreKeys,
-    TimeConversionError, TimerId, TimerRegistry, TimerState, VcpuId, VirtualInstant, VirtualTime,
-    VmSnapshotRef, WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
+    SymmetryReductionKey, TemporalGraph, TemporalGraphFork, TemporalGraphGcReport,
+    TemporalGraphGcRoots, TemporalGraphReferenceCounts, TemporalGraphRuntime, TemporalGraphSave,
+    TemporalGraphSearch, TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError,
+    TimerId, TimerRegistry, TimerState, VcpuId, VirtualInstant, VirtualTime, VmSnapshotRef,
+    WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,

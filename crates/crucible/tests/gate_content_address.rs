@@ -14,11 +14,12 @@ use crucible::{
     DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
     EngineError, EventKey, EventLogOffset, FaultDecision, FaultId, FaultState,
     FrontierReductionPolicy, FrontierReductionReason, Icount, IrqVector, LocalDagStore,
-    MaterializedState, MemoryDagStore, NodeBlobRef, NodeId, PartialOrderReductionPolicy,
-    PendingFrame, PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, RngStreamPosition,
-    ScenarioDef, Schedule, SchedulerState, State, SymmetryClassId, SymmetryReductionClasses,
-    TemporalGraph, TemporalGraphGcRoots, TemporalGraphStoreError, TimerId, TimerRegistry,
-    TimerState, VcpuId, VirtualTime, VmSnapshotRef, World, bake, instantiate, reduce, step,
+    MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore, NodeBlobRef,
+    NodeId, PartialOrderReductionPolicy, PendingFrame, PreemptionDecision, PreemptionKind,
+    RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerState, State,
+    SymmetryClassId, SymmetryReductionClasses, TemporalGraph, TemporalGraphGcRoots,
+    TemporalGraphStoreError, TimerId, TimerRegistry, TimerState, VcpuId, VirtualTime,
+    VmSnapshotRef, World, bake, instantiate, reduce, step,
 };
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1631,6 +1632,105 @@ fn gate_content_address_temporal_graph_partial_order_reduction_explores_when_dep
     assert!(report.covered.is_empty());
     assert!(graph.contains_configuration(&step(&frontier, same_node)));
     assert!(graph.contains_configuration(&step(&frontier, unknown)));
+}
+
+#[test]
+fn gate_content_address_temporal_graph_user_operations_share_single_dag() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "temporal-graph-user-operations",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(&scenario, baked)
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    let store = MemoryDagStore::new();
+    let saved = step(&genesis, generated_decision(810, 0));
+    let fork_decision = generated_decision(811, 0);
+    let forked = step(&genesis, fork_decision.clone());
+    let search_only = generated_decision(812, 0);
+
+    let save = graph
+        .save(&store, &saved)
+        .unwrap_or_else(|error| panic!("save operation should persist graph closure: {error}"));
+    assert_eq!(save.configuration, saved.id());
+    assert_eq!(save.checkpoint, saved.id());
+    assert_eq!(save.checkpoint_kind, CheckpointKind::Fat);
+    assert!(save.store_keys.checkpoint_nodes.contains_key(&saved.id()));
+    assert!(save.store_keys.cached_snapshots.contains_key(&saved.id()));
+    for key in save.store_keys.store_keys() {
+        assert!(
+            store
+                .exists(&key)
+                .unwrap_or_else(|error| panic!("store key should be queryable: {error}")),
+            "saved store key should exist: {}",
+            key.to_hex()
+        );
+    }
+
+    let resumed = graph
+        .resume(&saved)
+        .unwrap_or_else(|error| panic!("resume operation should instantiate saved tip: {error}"));
+    assert_eq!(resumed.configuration, saved.id());
+    assert_eq!(resumed.checkpoint, saved.id());
+    assert_eq!(resumed.runtime.configuration, saved.id());
+
+    let fork = graph
+        .fork(&genesis, vec![fork_decision])
+        .unwrap_or_else(|error| panic!("fork operation should record branch: {error}"));
+    assert_eq!(fork.base.configuration, genesis.id());
+    assert_eq!(fork.base.runtime.configuration, genesis.id());
+    assert_eq!(fork.branch.id(), forked.id());
+    assert_eq!(fork.branch_checkpoint.id, forked.id());
+    assert_eq!(fork.branch_checkpoint.kind, CheckpointKind::Thin);
+
+    let replay = graph.replay(&saved).unwrap_or_else(|error| {
+        panic!("replay operation should validate saved checkpoint: {error}")
+    });
+    assert_eq!(replay.configuration, saved.id());
+    assert_eq!(replay.fat_checkpoint, saved.id());
+    assert_eq!(replay.thin_checkpoint, saved.id());
+
+    let search = graph
+        .search(
+            &genesis,
+            vec![generated_decision(810, 0), search_only],
+            FrontierReductionPolicy::none(),
+            MaterializationPolicy::thin_only(),
+            MaterializationTrigger::Cold,
+        )
+        .unwrap_or_else(|error| panic!("search operation should expand frontier: {error}"));
+    assert_eq!(search.frontier, genesis.id());
+    assert_eq!(search.frontier_report.explored.len(), 2);
+    assert!(search.frontier_report.covered.is_empty());
+    assert_eq!(search.materialized.len(), 2);
+    let explored_ids = search
+        .frontier_report
+        .explored
+        .iter()
+        .map(|child| child.configuration.id())
+        .collect::<BTreeSet<_>>();
+    let materialized_ids = search
+        .materialized
+        .iter()
+        .map(|checkpoint| checkpoint.id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(materialized_ids, explored_ids);
+    for checkpoint_id in explored_ids {
+        assert!(graph.checkpoint_node(checkpoint_id).is_some());
+    }
+    assert!(graph.contains_configuration(&saved));
+    assert!(graph.contains_configuration(&forked));
+    assert_eq!(
+        graph.checkpoint_node(saved.id()).map(|node| node.id),
+        Some(saved.id())
+    );
+    assert_eq!(
+        graph.checkpoint_node(forked.id()).map(|node| node.id),
+        Some(forked.id())
+    );
 }
 
 #[test]
