@@ -754,11 +754,21 @@ command.
     identity remains byte-identical; it also rejects malformed parent edges
     (missing descendant parent, genesis-with-parent, wrong-scenario parent, and
     non-prefix parent) before such checkpoints can enter the temporal graph.
-- [ ] **T-TEMP-2** Implement the temporal graph as the content-addressed closure
+- [x] **T-TEMP-2** Implement the temporal graph as the content-addressed closure
   of genesis under `step`, with the baked genesis snapshot as root and DAG
   dedup of configurations reached by different paths; test the `parent`-chain ⇒
   schedule-prefix identity. — satisfies [TEMP-1], [TEMP-3], [TEMP-6]; spec §1,
   §2.
+  - Completed by `crucible::TemporalGraph` and
+    `checks.crucible.phase1.gates.contentAddress`: the graph stores
+    content-addressed checkpoint nodes rooted at the baked genesis snapshot,
+    records `step` children as thin checkpoint nodes via `record_step`, dedups
+    duplicate child configurations by `Configuration::id()`, routes frontier
+    enumeration through the same checkpoint DAG, and exposes
+    `checkpoint_parent_chain` for root-to-target chain validation. The gate
+    reconstructs a two-step schedule from parent-chain `schedule_delta` values,
+    asserts the root is the exact baked fat checkpoint, and asserts each
+    checkpoint id is the corresponding schedule-prefix configuration id.
 - [ ] **T-TEMP-3** Define `MaterializedState` capturing per-VM snapshot ref +
   icount (13, 15), per-device CoW overlay delta + device RNG (15), scheduler
   state (horizons, pending frame queues + delivery icounts, timer registry,

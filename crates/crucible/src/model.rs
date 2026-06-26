@@ -1185,6 +1185,7 @@ pub struct TemporalGraph {
     /// The temporal graph content address.
     pub id: ContentHash,
     recorded_configurations: BTreeMap<ContentHash, Configuration>,
+    checkpoint_nodes: BTreeMap<ContentHash, Checkpoint>,
     cached_snapshots: BTreeMap<ContentHash, Checkpoint>,
     baked_genesis: BTreeMap<ContentHash, GenesisCheckpoint>,
 }
@@ -1196,6 +1197,7 @@ impl TemporalGraph {
         Self {
             id,
             recorded_configurations: BTreeMap::new(),
+            checkpoint_nodes: BTreeMap::new(),
             cached_snapshots: BTreeMap::new(),
             baked_genesis: BTreeMap::new(),
         }
@@ -1245,6 +1247,11 @@ impl TemporalGraph {
             });
         }
         validate_loadable_checkpoint(&checkpoint, configuration)?;
+        if self.genesis_snapshot(&configuration.def).is_some() {
+            self.record_checkpoint_closure(configuration)?;
+            self.checkpoint_nodes
+                .insert(configuration.id(), checkpoint.clone());
+        }
         self.record_configuration(configuration.clone());
         self.cached_snapshots.insert(configuration.id(), checkpoint);
         Ok(())
@@ -1283,6 +1290,8 @@ impl TemporalGraph {
         let genesis_config = Configuration::genesis(def.clone());
         validate_loadable_checkpoint(&genesis.checkpoint, &genesis_config)?;
         self.record_configuration(genesis_config);
+        self.checkpoint_nodes
+            .insert(genesis.checkpoint.id, genesis.checkpoint.clone());
         self.baked_genesis.insert(def.id, genesis);
         Ok(())
     }
@@ -1366,22 +1375,27 @@ impl TemporalGraph {
         })
     }
 
-    /// Enumerates frontier children by applying candidate decisions with `step`.
+    /// Enumerates frontier checkpoint children by applying decisions with `step`.
     ///
-    /// The temporal graph records the frontier and each unique child by content
-    /// address. Duplicate child configurations are returned once, in stable
-    /// content-address order, and previously recorded children are marked so a
-    /// search driver can avoid re-materializing them.
-    #[must_use]
+    /// The temporal graph records the frontier and each unique child in the
+    /// baked-genesis-rooted checkpoint DAG. Duplicate child configurations are
+    /// returned once, in stable content-address order, and previously recorded
+    /// children are marked so a search driver can avoid re-materializing them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when the scenario has no
+    /// baked root. Returns other [`EngineError`] variants if the frontier or a
+    /// child cannot be represented as a valid checkpoint edge.
     pub fn enumerate_frontier<I>(
         &mut self,
         frontier: &Configuration,
         decisions: I,
-    ) -> Vec<FrontierChild>
+    ) -> Result<Vec<FrontierChild>, EngineError>
     where
         I: IntoIterator<Item = Decision>,
     {
-        self.record_configuration(frontier.clone());
+        self.record_checkpoint_closure(frontier)?;
         let mut children = BTreeMap::new();
         for decision in decisions {
             let configuration = step(frontier, decision.clone());
@@ -1392,13 +1406,86 @@ impl TemporalGraph {
             });
         }
 
-        children
-            .into_values()
-            .map(|mut child| {
-                child.already_recorded = !self.record_configuration(child.configuration.clone());
-                child
+        let mut result = Vec::new();
+        for mut child in children.into_values() {
+            child.already_recorded = !self.record_checkpoint_closure(&child.configuration)?;
+            result.push(child);
+        }
+        Ok(result)
+    }
+
+    /// Records one `step` edge in the checkpoint DAG.
+    ///
+    /// The graph must already contain the baked genesis checkpoint for the
+    /// scenario. The returned checkpoint is a thin recorded child unless an
+    /// identical configuration was already present, in which case the existing
+    /// checkpoint node is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when the scenario has no
+    /// baked root. Returns other [`EngineError`] variants if the parent/delta
+    /// edge cannot be represented as a valid checkpoint.
+    pub fn record_step(
+        &mut self,
+        parent: &Configuration,
+        decision: Decision,
+    ) -> Result<Checkpoint, EngineError> {
+        self.record_checkpoint_closure(parent)?;
+        let child = step(parent, decision);
+        self.record_checkpoint_closure(&child)?;
+        self.checkpoint_node(child.id())
+            .cloned()
+            .ok_or(EngineError::CheckpointNotRecorded {
+                checkpoint: child.id(),
             })
-            .collect()
+    }
+
+    /// Returns a recorded checkpoint DAG node by id.
+    #[must_use]
+    pub fn checkpoint_node(&self, checkpoint: ContentHash) -> Option<&Checkpoint> {
+        self.checkpoint_nodes.get(&checkpoint)
+    }
+
+    /// Returns the number of deduplicated checkpoint DAG nodes.
+    #[must_use]
+    pub fn checkpoint_node_count(&self) -> usize {
+        self.checkpoint_nodes.len()
+    }
+
+    /// Returns the root-to-target parent chain for `checkpoint`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointNotRecorded`] when the target or one of
+    /// its parents is absent from the graph.
+    pub fn checkpoint_parent_chain(
+        &self,
+        checkpoint: ContentHash,
+    ) -> Result<Vec<Checkpoint>, EngineError> {
+        let mut current = checkpoint;
+        let mut reversed = Vec::new();
+        let mut seen = BTreeSet::new();
+        loop {
+            if !seen.insert(current) {
+                return Err(EngineError::CheckpointTopologyMismatch {
+                    checkpoint: current,
+                    reason: "parent-cycle",
+                });
+            }
+            let node = self
+                .checkpoint_node(current)
+                .ok_or(EngineError::CheckpointNotRecorded {
+                    checkpoint: current,
+                })?;
+            reversed.push(node.clone());
+            let Some(parent) = node.parent else {
+                break;
+            };
+            current = parent;
+        }
+        reversed.reverse();
+        Ok(reversed)
     }
 
     /// Returns whether `configuration` is recorded in the temporal graph.
@@ -1429,6 +1516,47 @@ impl TemporalGraph {
             }
             Entry::Occupied(_) => false,
         }
+    }
+
+    fn record_checkpoint_closure(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<bool, EngineError> {
+        if self.checkpoint_nodes.contains_key(&configuration.id()) {
+            self.record_configuration(configuration.clone());
+            return Ok(false);
+        }
+        if configuration.is_genesis() {
+            let checkpoint = self
+                .genesis_snapshot(&configuration.def)
+                .ok_or(EngineError::MissingBakedGenesis {
+                    scenario: configuration.def.id,
+                })?
+                .checkpoint
+                .clone();
+            self.record_configuration(configuration.clone());
+            self.checkpoint_nodes.insert(configuration.id(), checkpoint);
+            return Ok(true);
+        }
+
+        let parent = immediate_parent_configuration(configuration)?.ok_or(
+            EngineError::CheckpointTopologyMismatch {
+                checkpoint: configuration.id(),
+                reason: "descendant-missing-parent",
+            },
+        )?;
+        self.record_checkpoint_closure(&parent)?;
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            configuration,
+            Some(&parent),
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Thin,
+            BTreeMap::new(),
+        )?;
+        self.record_configuration(configuration.clone());
+        self.checkpoint_nodes.insert(configuration.id(), checkpoint);
+        Ok(true)
     }
 
     /// Returns the exact loadable snapshot for `configuration`, if one exists.
@@ -1642,6 +1770,11 @@ pub enum EngineError {
         /// Stable reason for the topology rejection.
         reason: &'static str,
     },
+    /// A checkpoint DAG node was requested before it was recorded.
+    CheckpointNotRecorded {
+        /// The absent checkpoint id.
+        checkpoint: ContentHash,
+    },
     /// No baked genesis checkpoint exists for the scenario.
     MissingBakedGenesis {
         /// The scenario id missing a baked genesis checkpoint.
@@ -1715,6 +1848,9 @@ impl fmt::Display for EngineError {
             }
             Self::CheckpointTopologyMismatch { reason, .. } => {
                 write!(f, "checkpoint topology is invalid: {reason}")
+            }
+            Self::CheckpointNotRecorded { .. } => {
+                f.write_str("checkpoint is not recorded in the temporal graph")
             }
             Self::MissingBakedGenesis { .. } => {
                 f.write_str("missing baked genesis checkpoint for scenario")

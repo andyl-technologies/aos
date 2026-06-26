@@ -793,22 +793,36 @@ mod tests {
     #[test]
     fn temporal_graph_frontier_enumeration_deduplicates_by_configuration_id() {
         let scenario = generated_scenario(79);
-        let frontier = Configuration::genesis(scenario);
+        let frontier = Configuration::genesis(scenario.clone());
         let duplicate = generated_decision(79, 0);
         let distinct = generated_decision(79, 1);
-        let mut graph = TemporalGraph::empty();
+        let mut graph = match TemporalGraph::empty()
+            .with_baked_genesis(&scenario, genesis_checkpoint_for(&frontier))
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
 
         let first = graph.enumerate_frontier(
             &frontier,
             vec![duplicate.clone(), duplicate, distinct.clone()],
         );
-        let second = graph.enumerate_frontier(&frontier, vec![generated_decision(79, 0), distinct]);
+        let first = match first {
+            Ok(children) => children,
+            Err(error) => panic!("first frontier enumeration should record children: {error}"),
+        };
+        let second =
+            match graph.enumerate_frontier(&frontier, vec![generated_decision(79, 0), distinct]) {
+                Ok(children) => children,
+                Err(error) => panic!("second frontier enumeration should reuse children: {error}"),
+            };
 
         assert_eq!(first.len(), 2);
         assert!(first.iter().all(|child| !child.already_recorded));
         assert_eq!(second.len(), 2);
         assert!(second.iter().all(|child| child.already_recorded));
         assert_eq!(graph.recorded_configuration_count(), 3);
+        assert_eq!(graph.checkpoint_node_count(), 3);
         assert!(graph.contains_configuration(&frontier));
         for child in first {
             assert!(graph.contains_configuration(&child.configuration));

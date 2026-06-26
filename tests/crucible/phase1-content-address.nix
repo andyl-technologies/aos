@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.contentAddress",
-  taskIds ? ["T-HARN-11" "T-TEMP-1"],
+  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -126,6 +126,26 @@
         label = "checkpoint edge validator";
         needle = "fn checkpoint_edge(";
       }
+      {
+        label = "checkpoint DAG nodes";
+        needle = "checkpoint_nodes: BTreeMap<ContentHash, Checkpoint>";
+      }
+      {
+        label = "record step closure";
+        needle = "pub fn record_step(";
+      }
+      {
+        label = "parent-chain traversal";
+        needle = "pub fn checkpoint_parent_chain(";
+      }
+      {
+        label = "frontier uses checkpoint closure";
+        needle = "self.record_checkpoint_closure(frontier)?;";
+      }
+      {
+        label = "checkpoint node dedup count";
+        needle = "pub fn checkpoint_node_count(&self) -> usize";
+      }
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
       {
@@ -207,6 +227,26 @@
       {
         label = "corrupt checkpoint cache topology rejection";
         needle = "gate_content_address_rejects_corrupt_checkpoint_cache_topology";
+      }
+      {
+        label = "temporal graph closure test";
+        needle = "gate_content_address_temporal_graph_records_step_closure_and_parent_chain";
+      }
+      {
+        label = "temporal graph frontier checkpoint DAG test";
+        needle = "gate_content_address_temporal_graph_frontier_records_checkpoint_dag_children";
+      }
+      {
+        label = "parent chain exact baked root assertion";
+        needle = "assert_eq!(chain[0], root_checkpoint);";
+      }
+      {
+        label = "duplicate step dedup assertion";
+        needle = "assert_eq!(duplicate_first.id, first_checkpoint.id);";
+      }
+      {
+        label = "parent-chain schedule reconstruction";
+        needle = "assert_eq!(reconstructed, second_config.schedule);";
       }
       {
         label = "missing parent reason";
@@ -328,6 +368,10 @@
         label = "phase1 content-address lists T-TEMP-1";
         needle = "\"T-TEMP-1\"";
       }
+      {
+        label = "phase1 content-address lists T-TEMP-2";
+        needle = "\"T-TEMP-2\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
@@ -342,6 +386,14 @@
       }
       {
         label = "T-TEMP-1 completion names content-address gate";
+        needle = "`checks.crucible.phase1.gates.contentAddress`";
+      }
+      {
+        label = "T-TEMP-2 checklist complete";
+        needle = "- [x] **T-TEMP-2**";
+      }
+      {
+        label = "T-TEMP-2 completion names content-address gate";
         needle = "`checks.crucible.phase1.gates.contentAddress`";
       }
     ];
@@ -430,6 +482,11 @@ in
             checkpoint_coverage_identity=false
             checkpoint_metadata_identity=false
             checkpoint_malformed_edges=rejected
+            temporal_graph=content-addressed-step-closure
+            temporal_graph_root=baked-genesis
+            temporal_graph_dedup=configuration-id
+            temporal_graph_parent_chain=schedule-prefix
+            temporal_graph_frontier=checkpoint-dag
             RESULT
           '';
         }

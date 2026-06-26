@@ -9,7 +9,7 @@ use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash,
     Decision, DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, Icount,
     MaterializedState, NodeBlobRef, NodeId, RngDecision, RngStreamId, ScenarioDef, Schedule, State,
-    TemporalGraph, VirtualTime, reduce, step,
+    TemporalGraph, VirtualTime, World, bake, reduce, step,
 };
 
 #[test]
@@ -365,6 +365,131 @@ fn gate_content_address_rejects_corrupt_checkpoint_cache_topology() {
 }
 
 #[test]
+fn gate_content_address_temporal_graph_records_step_closure_and_parent_chain() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "temporal-graph-root",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
+    let root_checkpoint = baked.checkpoint.clone();
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(&scenario, baked)
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    let first_decision = generated_decision(233, 0);
+    let first_config = step(&genesis, first_decision.clone());
+    let first_checkpoint = graph
+        .record_step(&genesis, first_decision.clone())
+        .unwrap_or_else(|error| panic!("first step should record: {error}"));
+    let duplicate_first = graph
+        .record_step(&genesis, first_decision)
+        .unwrap_or_else(|error| panic!("duplicate first step should dedup: {error}"));
+    let second_decision = generated_decision(233, 1);
+    let second_config = step(&first_config, second_decision.clone());
+    let second_checkpoint = graph
+        .record_step(&first_config, second_decision)
+        .unwrap_or_else(|error| panic!("second step should record: {error}"));
+    let chain = graph
+        .checkpoint_parent_chain(second_checkpoint.id)
+        .unwrap_or_else(|error| panic!("parent chain should resolve: {error}"));
+    let mut reconstructed = Schedule::empty();
+
+    assert_eq!(first_checkpoint.id, first_config.id());
+    assert_eq!(duplicate_first.id, first_checkpoint.id);
+    assert_eq!(second_checkpoint.id, second_config.id());
+    assert_eq!(graph.checkpoint_node_count(), 3);
+    assert_eq!(chain.len(), 3);
+    assert_eq!(chain[0], root_checkpoint);
+    assert_eq!(chain[0].kind, CheckpointKind::Fat);
+    assert!(chain[0].parent.is_none());
+    assert_eq!(chain[1].parent, Some(chain[0].id));
+    assert_eq!(chain[2].parent, Some(chain[1].id));
+
+    for checkpoint in &chain {
+        reconstructed = append_schedule(&reconstructed, &checkpoint.schedule_delta);
+        let prefix_configuration = Configuration {
+            def: scenario.clone(),
+            schedule: reconstructed.clone(),
+        };
+        assert_eq!(checkpoint.id, prefix_configuration.id());
+        assert_eq!(checkpoint.configuration, prefix_configuration.id());
+    }
+    assert_eq!(reconstructed, second_config.schedule);
+}
+
+#[test]
+fn gate_content_address_temporal_graph_frontier_records_checkpoint_dag_children() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "temporal-graph-frontier",
+    ));
+    let scenario = world.scenario_def();
+    let frontier = Configuration::genesis(scenario.clone());
+    let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
+    let root_checkpoint = baked.checkpoint.clone();
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(&scenario, baked)
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    let duplicate = generated_decision(244, 0);
+    let distinct = generated_decision(244, 1);
+    let first = graph
+        .enumerate_frontier(
+            &frontier,
+            vec![duplicate.clone(), duplicate, distinct.clone()],
+        )
+        .unwrap_or_else(|error| panic!("frontier should record children: {error}"));
+    let second = graph
+        .enumerate_frontier(&frontier, vec![generated_decision(244, 0), distinct])
+        .unwrap_or_else(|error| panic!("frontier should reuse recorded children: {error}"));
+
+    assert_eq!(first.len(), 2);
+    assert!(first.iter().all(|child| !child.already_recorded));
+    assert_eq!(second.len(), 2);
+    assert!(second.iter().all(|child| child.already_recorded));
+    assert_eq!(graph.checkpoint_node_count(), 3);
+
+    for child in &first {
+        let chain = graph
+            .checkpoint_parent_chain(child.configuration.id())
+            .unwrap_or_else(|error| panic!("frontier child chain should resolve: {error}"));
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0], root_checkpoint);
+        assert_eq!(chain[1].id, child.configuration.id());
+        assert_eq!(chain[1].parent, Some(root_checkpoint.id));
+    }
+}
+
+#[test]
+fn gate_content_address_temporal_graph_requires_baked_genesis_root() {
+    let scenario = scenario("temporal-graph-missing-root");
+    let genesis = Configuration::genesis(scenario.clone());
+    let mut graph = TemporalGraph::empty();
+
+    let error = graph
+        .record_step(&genesis, generated_decision(250, 0))
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        EngineError::MissingBakedGenesis { scenario: missing } if missing == scenario.id
+    ));
+    assert_eq!(graph.checkpoint_node_count(), 0);
+    assert_eq!(graph.recorded_configuration_count(), 0);
+
+    let error = graph
+        .enumerate_frontier(&genesis, vec![generated_decision(250, 1)])
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        EngineError::MissingBakedGenesis { scenario: missing } if missing == scenario.id
+    ));
+    assert_eq!(graph.checkpoint_node_count(), 0);
+    assert_eq!(graph.recorded_configuration_count(), 0);
+}
+
+#[test]
 fn gate_content_address_collision_corpus_has_unique_ids() {
     let mut seen = BTreeSet::new();
 
@@ -514,6 +639,14 @@ fn recorded_fat_checkpoint(configuration: &Configuration) -> Checkpoint {
         BTreeMap::new(),
     )
     .unwrap_or_else(|error| panic!("test checkpoint should be recorded-shaped: {error}"))
+}
+
+fn append_schedule(prefix: &Schedule, delta: &Schedule) -> Schedule {
+    let mut schedule = prefix.clone();
+    for decision in delta.decisions() {
+        schedule = schedule.appended(decision.clone());
+    }
+    schedule
 }
 
 fn fixed_vectors(
