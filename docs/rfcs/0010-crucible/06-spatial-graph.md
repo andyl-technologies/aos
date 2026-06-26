@@ -144,10 +144,22 @@ two collections: `nodes` and `links`.
 pub struct World {
     /// Nodes, canonically sorted by `NodeId` (§8). The *logical* topology;
     /// no physical/shmem layout or participant count is encoded here (§5).
-    pub nodes: Vec<NodeDef>,
+    nodes: Vec<NodeDef>,
     /// Links, canonically sorted by `(endpoint_a, endpoint_b)` (§8). The
     /// logical graph edges; decoupled from any physical transport (§5).
-    pub links: Vec<LinkDef>,
+    links: Vec<LinkDef>,
+}
+
+impl World {
+    /// Returns this world's immutable node topology.
+    pub fn nodes(&self) -> &[NodeDef] {
+        &self.nodes
+    }
+
+    /// Returns this world's immutable logical links.
+    pub fn links(&self) -> &[LinkDef] {
+        &self.links
+    }
 }
 ```
 
@@ -1032,10 +1044,17 @@ authority for its shape. The contract those files may rely on:
     leave `ScenarioDef::id` and baked checkpoint identity unchanged, while the
     physical layout types remain isolated in `crates/crucible-shmem/src/lib.rs`.
     `checks.crucible.phase1.spatialLogicalTopology` gates the task.
-- [ ] **T-SPAT-10** Make the topology static (no add/remove node, no link-set
+- [x] **T-SPAT-10** Make the topology static (no add/remove node, no link-set
   mutation) and verify the participant set, RNG-stream set, lookahead graph, and
   bake set are functions of `World` alone. — satisfies [SPAT-16], [SPAT-18]; spec
   §4.
+  - Completed in `crates/crucible/src/model.rs`: `World` now stores nodes and
+    links behind immutable accessors, exposes `World::static_topology()`, and
+    derives the participant set, per-entity RNG-stream set, directed lookahead
+    graph, and bake-node set from logical world topology alone. The focused
+    `world_static_topology_is_derived_from_world_only` test covers schedule
+    independence and canonical derivation, while
+    `checks.crucible.phase1.spatialStaticTopology` gates the task.
 - [ ] **T-SPAT-11** Model membership dynamics (crash/restart/partition/heal/
   isolate/rejoin) as `Plan` faults over the static topology; verify a not-yet-joined
   participant is a declared node held inactive. — satisfies [SPAT-17]; spec §4.

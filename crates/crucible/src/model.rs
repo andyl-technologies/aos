@@ -622,6 +622,48 @@ impl World {
         }
     }
 
+    /// Builds a world from an already-recorded identity and validated topology.
+    ///
+    /// This compatibility path lets adapters preserve an external world handle
+    /// while still enforcing the same static topology invariants as
+    /// [`World::from_nodes_and_links`]. Non-empty logical worlds derive
+    /// [`ScenarioDef`] and bake identity from their node/link material rather
+    /// than this recorded handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same topology and ready-point validation errors as
+    /// [`World::from_nodes_and_links`].
+    pub fn from_recorded_parts(
+        id: ContentHash,
+        nodes: Vec<WorldNode>,
+        links: Vec<LinkDef>,
+    ) -> Result<Self, EngineError> {
+        let nodes = canonical_world_nodes(&nodes);
+        let links = canonical_world_links(&links);
+        validate_world_nodes(&nodes)?;
+        validate_world_links(&nodes, &links)?;
+        Ok(Self { id, nodes, links })
+    }
+
+    /// Returns the world content address carried by this handle.
+    #[must_use]
+    pub fn id(&self) -> ContentHash {
+        self.id
+    }
+
+    /// Returns this world's immutable node topology.
+    #[must_use]
+    pub fn nodes(&self) -> &[WorldNode] {
+        &self.nodes
+    }
+
+    /// Returns this world's immutable logical links.
+    #[must_use]
+    pub fn links(&self) -> &[LinkDef] {
+        &self.links
+    }
+
     /// Builds a canonical world from node ready-point configuration.
     ///
     /// Nodes are sorted by [`NodeId`] before hashing so authoring order does not
@@ -702,6 +744,22 @@ impl World {
     pub fn validate_topology(&self) -> Result<(), EngineError> {
         validate_world_nodes(&self.nodes)?;
         validate_world_links(&self.nodes, &self.links)
+    }
+
+    /// Derives the static topology products that are fixed by this world.
+    ///
+    /// The returned participant set, per-entity decision-RNG streams,
+    /// scheduler-lookahead graph, and bake-node set are functions only of the
+    /// world's node/link topology. They do not take a [`Schedule`] and therefore
+    /// cannot vary with a schedule prefix.
+    #[must_use]
+    pub fn static_topology(&self) -> WorldStaticTopology {
+        WorldStaticTopology {
+            participants: world_participants(self),
+            rng_streams: world_rng_streams(self),
+            lookahead_graph: world_lookahead_edges(self),
+            bake_nodes: world_bake_nodes(self),
+        }
     }
 
     /// Builds the canonical genesis scenario definition for this world.
@@ -2636,10 +2694,32 @@ pub struct GenesisCheckpoint {
 pub struct World {
     /// The world content address.
     pub id: ContentHash,
-    /// Canonicalized node ready-point configuration for this world.
-    pub nodes: Vec<WorldNode>,
-    /// Canonicalized logical links for this world.
-    pub links: Vec<LinkDef>,
+    nodes: Vec<WorldNode>,
+    links: Vec<LinkDef>,
+}
+
+/// Static topology products derived from a [`World`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct WorldStaticTopology {
+    /// The node participants declared by the world.
+    pub participants: Vec<NodeId>,
+    /// The per-entity decision-RNG streams declared by the world.
+    pub rng_streams: Vec<RngStreamId>,
+    /// The directed scheduler-lookahead edges declared by the world.
+    pub lookahead_graph: Vec<WorldLookaheadEdge>,
+    /// The node set that `bake` must prepare for this world.
+    pub bake_nodes: Vec<NodeId>,
+}
+
+/// One directed edge in the scheduler lookahead graph derived from a [`World`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WorldLookaheadEdge {
+    /// The peer that can send a future network event.
+    pub from: NodeId,
+    /// The peer that can receive that future network event.
+    pub to: NodeId,
+    /// The minimum one-way latency that bounds conservative lookahead.
+    pub minimum_latency: SimDuration,
 }
 
 /// An abstract reduced state handle.
@@ -5868,6 +5948,66 @@ fn canonical_world_links(links: &[LinkDef]) -> Vec<LinkDef> {
             .then_with(|| left.bandwidth_bps().cmp(&right.bandwidth_bps()))
     });
     links
+}
+
+fn world_participants(world: &World) -> Vec<NodeId> {
+    canonical_world_nodes(&world.nodes)
+        .into_iter()
+        .map(|node| node.id)
+        .collect()
+}
+
+fn world_rng_streams(world: &World) -> Vec<RngStreamId> {
+    let mut streams = Vec::with_capacity(world.nodes.len().saturating_add(world.links.len()));
+    for node in canonical_world_nodes(&world.nodes) {
+        streams.push(RngStreamId::for_node(node.id.name));
+    }
+    for link in canonical_world_links(&world.links) {
+        streams.push(RngStreamId::for_link(world_link_stream_name(&link)));
+    }
+    streams.sort();
+    streams.dedup();
+    streams
+}
+
+fn world_lookahead_edges(world: &World) -> Vec<WorldLookaheadEdge> {
+    let mut edges = Vec::with_capacity(world.links.len().saturating_mul(2));
+    for link in canonical_world_links(&world.links) {
+        let (left, right) = link.endpoints();
+        edges.push(WorldLookaheadEdge {
+            from: left.clone(),
+            to: right.clone(),
+            minimum_latency: link_minimum_latency(&link),
+        });
+        edges.push(WorldLookaheadEdge {
+            from: right.clone(),
+            to: left.clone(),
+            minimum_latency: link_minimum_latency(&link),
+        });
+    }
+    edges.sort();
+    edges
+}
+
+fn world_bake_nodes(world: &World) -> Vec<NodeId> {
+    world_participants(world)
+}
+
+fn world_link_stream_name(link: &LinkDef) -> String {
+    let (left, right) = link.endpoints();
+    format!(
+        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+        left.name.len(),
+        left.name,
+        right.name.len(),
+        right.name
+    )
+}
+
+fn link_minimum_latency(link: &LinkDef) -> SimDuration {
+    SimDuration {
+        nanos: link.latency().nanos.saturating_sub(link.jitter().nanos),
+    }
 }
 
 fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {

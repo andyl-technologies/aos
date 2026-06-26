@@ -47,8 +47,8 @@ pub use model::{
     TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots, TemporalGraphReferenceCounts,
     TemporalGraphRuntime, TemporalGraphSave, TemporalGraphSearch, TemporalGraphStoreError,
     TemporalGraphStoreKeys, TimeConversionError, TimerId, TimerRegistry, TimerState, VcpuId,
-    VirtualInstant, VirtualTime, VmSnapshotRef, WhiteBoxPolicy, World, WorldNode, bake,
-    instantiate, reduce, step,
+    VirtualInstant, VirtualTime, VmSnapshotRef, WhiteBoxPolicy, World, WorldLookaheadEdge,
+    WorldNode, WorldStaticTopology, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
@@ -1543,19 +1543,22 @@ mod tests {
             Ok(genesis) => genesis,
             Err(error) => panic!("reordered ready-point world should bake: {error}"),
         };
-        let manually_reordered = World {
-            id: canonical.id,
-            nodes: canonical.nodes.iter().rev().cloned().collect(),
-            links: canonical.links.iter().rev().cloned().collect(),
+        let manually_reordered = match World::from_recorded_parts(
+            canonical.id,
+            canonical.nodes().iter().rev().cloned().collect(),
+            canonical.links().iter().rev().cloned().collect(),
+        ) {
+            Ok(world) => world,
+            Err(error) => panic!("manually reordered ready-point world should be valid: {error}"),
         };
         let manually_baked = match bake(&manually_reordered) {
             Ok(genesis) => genesis,
             Err(error) => panic!("manually reordered ready-point world should bake: {error}"),
         };
 
-        assert_eq!(canonical.nodes.len(), 4);
+        assert_eq!(canonical.nodes().len(), 4);
         assert_eq!(canonical.id, reordered.id);
-        assert_eq!(canonical.nodes, reordered.nodes);
+        assert_eq!(canonical.nodes(), reordered.nodes());
         assert_eq!(canonical.scenario_def(), manually_reordered.scenario_def());
         assert_eq!(baked, baked_again);
         assert_eq!(baked, manually_baked);
@@ -1603,9 +1606,9 @@ mod tests {
         };
 
         assert_eq!(canonical.id, reordered.id);
-        assert_eq!(canonical.nodes, reordered.nodes);
-        assert_eq!(canonical.links, reordered.links);
-        assert_eq!(canonical.links, vec![link("a", "b")]);
+        assert_eq!(canonical.nodes(), reordered.nodes());
+        assert_eq!(canonical.links(), reordered.links());
+        assert_eq!(canonical.links(), [link("a", "b")].as_slice());
         assert_eq!(canonical.scenario_def(), reordered.scenario_def());
         assert_eq!(baked, baked_again);
         assert_ne!(canonical.id, without_link.id);
@@ -1706,11 +1709,11 @@ mod tests {
         };
 
         assert_eq!(base.id, reordered.id);
-        assert_eq!(base.links, reordered.links);
-        assert_eq!(base.links[0].latency(), SimDuration { nanos: 5 });
-        assert_eq!(base.links[0].jitter(), SimDuration { nanos: 1 });
-        assert_eq!(base.links[0].loss().millionths(), 250_000);
-        assert_eq!(base.links[0].bandwidth_bps(), Some(1_000_000));
+        assert_eq!(base.links(), reordered.links());
+        assert_eq!(base.links()[0].latency(), SimDuration { nanos: 5 });
+        assert_eq!(base.links()[0].jitter(), SimDuration { nanos: 1 });
+        assert_eq!(base.links()[0].loss().millionths(), 250_000);
+        assert_eq!(base.links()[0].bandwidth_bps(), Some(1_000_000));
         assert_ne!(base.id, changed_latency.id);
         assert_ne!(base.id, changed_jitter.id);
         assert_ne!(base.id, changed_loss.id);
@@ -1786,6 +1789,116 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn world_static_topology_is_derived_from_world_only() {
+        let world = world_from_nodes_and_links(
+            two_ready_nodes(),
+            vec![transport_link("b", "a", 10, 2, 0, None)],
+        );
+        let reordered = world_from_nodes_and_links(
+            two_ready_nodes().into_iter().rev().collect(),
+            vec![transport_link("a", "b", 10, 2, 0, None)],
+        );
+        let changed_latency = world_from_nodes_and_links(
+            two_ready_nodes(),
+            vec![transport_link("a", "b", 11, 2, 0, None)],
+        );
+        let genesis = Configuration::genesis(world.scenario_def());
+        let scheduled = Configuration {
+            def: genesis.def.clone(),
+            schedule: genesis.schedule.appended(generated_decision(93, 0)),
+        };
+
+        let topology = world.static_topology();
+
+        assert_eq!(genesis.def, scheduled.def);
+        assert_ne!(genesis.schedule, scheduled.schedule);
+        assert_eq!(topology, reordered.static_topology());
+        assert_eq!(topology.participants, vec![node_id("a"), node_id("b")]);
+        assert_eq!(
+            topology.rng_streams,
+            vec![
+                RngStreamId::for_link(
+                    "link_endpoint_a_len=1\nlink_endpoint_a=a\nlink_endpoint_b_len=1\nlink_endpoint_b=b",
+                ),
+                RngStreamId::for_node("a"),
+                RngStreamId::for_node("b"),
+            ]
+        );
+        assert_eq!(
+            topology.lookahead_graph,
+            vec![
+                WorldLookaheadEdge {
+                    from: node_id("a"),
+                    to: node_id("b"),
+                    minimum_latency: SimDuration { nanos: 8 },
+                },
+                WorldLookaheadEdge {
+                    from: node_id("b"),
+                    to: node_id("a"),
+                    minimum_latency: SimDuration { nanos: 8 },
+                },
+            ]
+        );
+        assert_eq!(topology.bake_nodes, vec![node_id("a"), node_id("b")]);
+        assert_ne!(
+            topology.lookahead_graph,
+            changed_latency.static_topology().lookahead_graph
+        );
+    }
+
+    #[test]
+    fn world_static_topology_link_rng_streams_are_collision_free() {
+        let world = world_from_nodes_and_links(
+            vec![
+                ready_node(
+                    "a",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 1 },
+                    },
+                ),
+                ready_node(
+                    "b--c",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 2 },
+                    },
+                ),
+                ready_node(
+                    "a--b",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 3 },
+                    },
+                ),
+                ready_node(
+                    "c",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 4 },
+                    },
+                ),
+            ],
+            vec![link("a", "b--c"), link("a--b", "c")],
+        );
+
+        let link_streams = world
+            .static_topology()
+            .rng_streams
+            .into_iter()
+            .filter(|stream| stream.domain == crucible_sim::DECISION_RNG_LINK_STREAM_DOMAIN)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            link_streams,
+            vec![
+                RngStreamId::for_link(
+                    "link_endpoint_a_len=1\nlink_endpoint_a=a\nlink_endpoint_b_len=4\nlink_endpoint_b=b--c",
+                ),
+                RngStreamId::for_link(
+                    "link_endpoint_a_len=4\nlink_endpoint_a=a--b\nlink_endpoint_b_len=1\nlink_endpoint_b=c",
+                ),
+            ]
+        );
+    }
+
     #[cfg(feature = "test-double")]
     #[test]
     fn world_logical_topology_ignores_physical_transport_layout() {
@@ -1813,8 +1926,12 @@ mod tests {
         );
         assert_ne!(compact_layout.region_size, expanded_layout.region_size);
         assert_ne!(compact_world.id, expanded_world.id);
-        assert_eq!(compact_world.nodes, expanded_world.nodes);
-        assert_eq!(compact_world.links, expanded_world.links);
+        assert_eq!(compact_world.nodes(), expanded_world.nodes());
+        assert_eq!(compact_world.links(), expanded_world.links());
+        assert_eq!(
+            compact_world.static_topology(),
+            expanded_world.static_topology()
+        );
         assert_eq!(compact_world.scenario_def(), expanded_world.scenario_def());
         assert_eq!(compact_baked.checkpoint.id, expanded_baked.checkpoint.id);
     }
@@ -2436,8 +2553,8 @@ mod tests {
         layout: crucible_shmem::RegionLayout,
         host_page_size: u64,
     ) -> World {
-        World {
-            id: ContentHash::from_canonical_material(
+        match World::from_recorded_parts(
+            ContentHash::from_canonical_material(
                 "crucible.test.physical-transport-layout",
                 &format!(
                     "vm_node_count={}\nnode_count={}\nqueue_capacity={}\nring_count={}\nnode_slots_off={}\nring_hdr_off={}\nring_data_off={}\nentry_stride={}\nregion_size={}\nicount_shift={}\nhost_page_size={}",
@@ -2454,8 +2571,11 @@ mod tests {
                     host_page_size
                 ),
             ),
-            nodes: world.nodes.clone(),
-            links: world.links.clone(),
+            world.nodes().to_vec(),
+            world.links().to_vec(),
+        ) {
+            Ok(world) => world,
+            Err(error) => panic!("physical-layout-id world should remain valid: {error}"),
         }
     }
 

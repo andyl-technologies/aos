@@ -71,12 +71,12 @@
         needle = "pub struct World";
       }
       {
-        label = "world nodes";
-        needle = "pub nodes: Vec<WorldNode>";
+        label = "world node accessor";
+        needle = "pub fn nodes(&self) -> &[WorldNode]";
       }
       {
-        label = "world links";
-        needle = "pub links: Vec<LinkDef>";
+        label = "world link accessor";
+        needle = "pub fn links(&self) -> &[LinkDef]";
       }
       {
         label = "logical link transport fields";
