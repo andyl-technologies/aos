@@ -150,11 +150,23 @@ every boot idempotently (no-op once at target size). The image still ships only
 ESP + root-a (`modules/image/_builder.nix:260-262`); repart carves the rest on
 first boot with no operator config and no user-data.
 
-**Escape hatch for custom topologies** (RAID, extra data disks): the operator's
-signed `host.nix` emits `repart.d` fragments that the eval/agent drops into
-`/run/repart.d/*.conf`, which override `/usr/lib/repart.d/` by precedence,
-*before* `systemd-repart.service` runs. Genuinely exotic layouts (ZFS) fall back
-to a dedicated guarded-one-shot unit (the §"principle" pattern).
+**First-boot substrate is image-only; host.nix cannot drive it (review
+M-repart-order / M-repart-locus).** `systemd-repart` runs in the **initrd**
+(everything downstream — mount-var → nix-overlay → seed → switch_root — needs
+`/var` carved first), but `host.nix` is fetched transport-only in initrd and only
+**evaluated in stage-2**, *after* substrate. So operator `repart.d` fragments
+derived from `host.nix` can neither be verified nor even be present in time for
+the first-boot repart run. Two consequences, both required:
+
+- **First boot carves only the image-baked `/usr/lib/repart.d` convention**
+  (idempotent, no operator input, no unverified destructive partitioning).
+- **Custom topologies are a two-boot flow:** the stage-2 eval persists
+  operator-declared `repart.d` fragments to a known location on `/var`; on the
+  *next* boot the initrd repart run reads them (now operator-signed-and-verified,
+  since they came from a verified `host.nix`). Genuinely exotic layouts (ZFS) use
+  a dedicated guarded-one-shot unit. **A custom partition layout never takes
+  effect on first boot, and destructive substrate never runs from unverified
+  input.**
 
 ## The `aos metadata` agent
 
@@ -219,14 +231,32 @@ Instance facts (SSH authorized keys, hostname, MAC→interface map, disk IDs) fl
 in **only** as typed `host.facts.*` declared inputs (D9), rendered from
 `facts.json` into `/run/aos-eval/host-facts.nix` — they land in the manifest,
 are typed/assertable, and keep eval a pure function of `(modules + host.nix +
-facts)`. Platform network config (DO static IP, OpenStack `network_data.json`)
-enters as `host.facts.interfaces.*`, is rendered to `systemd-networkd` files in
-the manifest, and takes effect at the first `activate.sh.in` swap — the gen-0
-DHCP seed keeps the box reachable until then. The agent does **not** write
+facts)`. Facts are a **recorded but unauthenticated** input (`facts_hash` in the
+manifest `inputs` + the attestation record — see
+[`trust-and-secrets.md`](trust-and-secrets.md)); they must never carry a security
+decision the operator did not authorize. The agent does **not** write
 `/etc/hostname` or `authorized_keys` imperatively; those are manifest outputs so
-they participate in generations/rollback. (One deliberate carve-out: a single
-`host.facts.ssh_authorized_keys`-derived key may be seeded into `/var/etc` in
-initrd for pre-eval SSH reachability on the gen-0 seed.)
+they participate in generations/rollback.
+
+> **No pre-verification SSH keys from the facts channel (review M-gen0key).** An
+> earlier draft seeded `host.facts.ssh_authorized_keys` into `/var/etc` in initrd
+> for gen-0 reachability. That is **removed**: those keys come from
+> *unauthenticated* IMDS and would be applied *before* the stage-2 `host.nix`
+> signature check — letting an attacker who can answer IMDS plant a login key.
+> Gen-0 reachability, if required before the first config-gen activates, comes
+> **only** from an image-baked key or one carried in the operator-signed
+> `host.nix` (verified before use), never from the platform facts channel.
+
+**Networking on DHCP-less clouds (review M-static-ip).** On clouds with no DHCP
+server, where networking is delivered as metadata (DigitalOcean static/anchor
+IPs, OpenStack `network_data.json`), the gen-0 DHCP seed gets no lease, so stage-2
+would have **no route to the registry** and eval could never fetch the config
+modules — a permanent deadlock. So the **initrd `aos metadata` agent parses the
+platform network config and seeds a minimal static `networkd` config into the
+gen-0 `/var/etc` lower** (a substrate fact, like the IP itself — not operator
+config), giving stage-2 a route without DHCP. The operator's *declared* network
+config in `host.nix` still takes effect at the first `activate.sh.in` swap and
+supersedes the seed.
 
 ### Implementation: reuse surface
 

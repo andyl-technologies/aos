@@ -79,15 +79,30 @@ expressions behind `mkIf`). Two mechanical discovery paths, both edge-free:
    patterns → an over-approximate requires set. Conservative (misses computed
    `config.${name}` paths), needs no evaluator, pre-closes the set.
 2. **Error-driven resolve↔eval fixpoint** (the backstop, and what makes stock
-   Nix sufficient — see [`architecture.md`](architecture.md)). The strict module
-   system already throws naming the missing option
-   (`lib/modules.nix:744` "The option 'X' is used but has no definition…";
-   `:917` "option(s) are not declared"). The resolver parses the path, looks it
-   up in the inverted index, fetches the provider, and re-evals — to a fixpoint:
+   Nix sufficient — see [`architecture.md`](architecture.md)). **Two distinct
+   missing-option cases need two detectors (review M-read-absent)** — the strict
+   throws name only some of them:
+   - **Write to an undeclared option** (`{pkg}` sets `firewall.*`, no firewall
+     module present) → the strict-mode throw `:917` ("option(s) are not
+     declared") names the path. Caught directly.
+   - **Read of an absent root** (`{pkg}` reads `config.firewall.forwardPolicy`,
+     firewall absent) → this surfaces as a raw `attribute 'firewall' missing`,
+     *not* `:744` (which fires only for a *declared* option lacking a value — the
+     provider is already present). The resolver detects it by matching the read
+     path against the registry **option-path → package index** (so it knows
+     `firewall.*` is provided by a package not yet in the set) rather than relying
+     on a single throw string.
+
+   In both cases the resolver looks the path up in the inverted index, fetches the
+   provider, and re-evals — to a fixpoint:
 
    ```text
-   eval → throw names missing option X → index[X] → fetch provider → re-eval → …
+   eval → (strict throw | missing-attr | index miss) names path X → index[X] → fetch provider → re-eval → …
    ```
+
+   Parsing human-readable throw strings is an acknowledged **P1 fragility** (not a
+   stable API); P2 aos-nix exposes structured missing-option errors and the
+   read/write graph directly, removing the regex dependency.
 
 This is sound *because* the system always eval-then-activates: conditional reads
 that only fire under some config are discovered on the next resolve↔eval cycle,
@@ -132,10 +147,17 @@ merges only the survivors; lower number wins (`lib/modules.nix:695, 700-711,
 
 `host.nix` bare definitions are lifted to priority **75** (between `mkForce` and
 normal), so the operator deterministically beats any package contribution
-regardless of module order. **Implementation: file-provenance priority tagging.**
-The engine already threads each def's source `file` (`lib/modules.nix:669`); at
-the priority-assignment step (`:695`), bare defs whose `file` is the registered
-`host.nix` get priority 75 instead of 100. ~3 lines, declarative.
+regardless of module order. **Implementation: provenance from the *authenticated
+fetch source*, not module-supplied `_file` (review M-forgeable-file).** A
+module's own `_file` is forgeable — a package can inject
+`imports = [ { _file = "<registered host.nix path>"; … } ]` and `collectModules`
+will eval it (`lib/modules.nix:637`), so keying priority on the engine's threaded
+`file` (`:669`) would let any package **forge operator priority** *and* defeat
+conscription detection. Instead the **resolver** stamps each def's provenance
+from where it was loaded — the verified `host.nix` store path vs. a signed
+package identity — and the engine reads *that* (a resolver-supplied, non-module
+attribute) at the priority-assignment step (`:695`), ignoring any module-supplied
+`_file`. Same rule governs conscription (next sections).
 
 > **Trap (do not):** lifting by wrapping the host.nix *subtree*
 > (`redis = mkOverride 75 { … }`) silently drops the nested def —
@@ -188,10 +210,23 @@ attack surface the operator never authorized (`redis-exporter` starting `redis`
 and opening 6379). The rule forbids that without banning legitimate provider
 configuration:
 
-- **A package may write/enable only within roots it owns or is a registered
-  provider/contributor of.** Writing into a *foreign* root it neither owns nor
-  is registered against is rejected at publish, detected from the per-def `file`
-  provenance (`lib/modules.nix:669`) + the owner/provider registry.
+> **Open decision F3 (review conscription-vs-composition).** "Forbid foreign-root
+> writes" rejects *legitimate composition* — `nextcloud` writing
+> `nginx.virtualHosts.*` / `postgresql.ensureDatabases` / `redis.*` is a
+> foreign-root write — while an unscoped "registered contributor" escape is the
+> same act an attacker uses, making the rule too strict or vacuous. The resolution
+> (F3-B, recommended in [`known-issues.md`](known-issues.md)) is a
+> **capability-scoped contribution surface**: the shared-root *owner* declares
+> which sub-paths non-owners may contribute (`nginx` opens `virtualHosts.*` /
+> `upstreams.*`, keeps `enable`/global owner-only). Composition works; enabling or
+> conscripting the service stays blocked. The bullets below assume that model.
+
+- **A package may write/enable only within roots it owns, or within the
+  owner-declared *contributable sub-paths* of a shared root.** A write outside
+  those (a foreign root, or an owner-only sub-path like `enable`) is rejected at
+  publish, detected from the **resolver-assigned provenance** (authenticated
+  package identity, *not* module `_file` — see precedence above) + the
+  owner/provider registry's contributable-surface declaration.
 - **Foreign top-level service enable is forbidden.** `redis-exporter` cannot set
   `redis.enable`. It declares its dependency as a **resolve-time assertion**
   ("`redis-exporter` requires `redis.enable = true`; set it in `host.nix`"),

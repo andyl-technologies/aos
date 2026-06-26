@@ -100,7 +100,13 @@ Two independent verbs, because the axes are independent:
   (`activate.sh.in:325-348`).
 - **Image rollback (reboot-class):** boot the other A/B UKI slot (old
   kernel/initrd/base-lib). A bootloader-level action, independent of APM's
-  config pointer.
+  config pointer. **It is not "just boot the other slot" given the
+  `default aos-*.efi` lexically-highest glob (review M-rollback-glob)** — that
+  glob always re-selects the *newer/suspect* UKI on the next reboot. Durable
+  image rollback must **`bootctl set-default` to the older UKI**, and new-image
+  rollout should use **sd-boot boot-counting** (`aos-<ver>+3.efi` tries
+  assessment) so a UKI that fails to boot is auto-demoted without operator
+  action. The `default …glob` default is only the first-install fallback.
 
 ### The pinning rule
 
@@ -126,8 +132,15 @@ schema; replaying it against a different schema is undefined.
   `modules/image/_builder.nix:192-197` → 2 image-gens). The base lib must be
   retained *with* its image-gen, because it *is* the ABI.
 - **Per config-gen:** the materialized manifest/`/etc` gen dir **and** the eval
-  inputs (`config_module_closure` + `host_nix_ref` + `module_abi_pinned`).
-  Retaining inputs enables cross-ABI re-eval; retaining outputs makes same-ABI
+  inputs (`config_module_closure` + `host_nix_ref` + `module_abi_pinned` +
+  `facts_hash`/`facts.json`). **These inputs must be GC-rooted, not just
+  recorded (review M-gc-inputs):** the `cfg/` GC root pins manifest *outputs*
+  (package runtime closures), which does **not** keep the config-module *source*
+  NARs or `host.nix` alive — so a plain `apm gc` would break cross-ABI re-eval.
+  A dedicated **`gen-N/cfgsrc/<hash>` root** pins the config-module source closure
+  + the `host.nix` store path per config-gen (see
+  [`operability.md`](operability.md)). Retaining inputs enables cross-ABI
+  re-eval; retaining outputs makes same-ABI
   rollback a pointer switch.
 - **`host.nix` lineage:** track which `host.nix` revision each config-gen was
   evaluated from, so re-eval after an image rollback reproduces the intended
