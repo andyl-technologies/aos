@@ -574,8 +574,11 @@ alone (`M-1`/`Q-A`).
       entire body subtree is both speculable and in the conservative
       self-contained IR-kind whitelist. Hits publish immediate scalars directly and rehydrate
       context-free string bytes, context-bearing string bytes plus context, path bytes with or without context, replayable Nix lists, or replayable Nix attrsets into the evaluator-local heap before finishing
-      the thunk cell; disabled runtimes, unknown nodes, dirty nodes, missing
-      payloads, and stale payloads are misses. This is a scalar/string/path/replayable-list/replayable-attrset
+      the thunk cell; closed literal lazy list elements and attrset bindings
+      rehydrate as strict static replayable payload values, so thunk identity
+      and laziness from the cold run are not preserved across the cached
+      payload. Disabled runtimes, unknown nodes, dirty nodes, missing payloads,
+      and stale payloads are misses. This is a scalar/string/path/replayable-list/replayable-attrset
       pure/local hit path only: source-less raw eval outside the
       lowered-IR-backed node-thunk subset, captured dynamic/scoped-global
       thunks, ambient/synthetic builtin values outside the admitted constant subset,
@@ -583,10 +586,12 @@ alone (`M-1`/`Q-A`).
       explicit option and impure-input keys, synthetic apply/select
       thunks, canonical free-variable hashes, remaining suspended
       non-literal/non-replayable captured thunk-cell free variables, arbitrary
-      lazy-element lists, lazy-binding attrsets, and other composite payloads,
+      non-literal lazy-element lists and lazy-binding attrsets, and other composite payloads,
       transitive dirty scheduling, persistence, `derivationStrict` SHA-256
       short-circuiting, and cached/uncached harness proof remain open
-      (`S-14`/`S-15`).
+      (`S-14`/`S-15`). The gate includes `cache::runtime` lookup tests,
+      source-backed force-cache hit/skip tests, and closed-literal lazy
+      composite hit canaries.
 - [x] Current force-time inline impure-edge substrate: tree-walk force slices the
       impure-input trace observed while a closed source-backed thunk body
       evaluates, and
@@ -853,7 +858,7 @@ alone (`M-1`/`Q-A`).
       context-free string bytes, context-bearing string bytes plus canonical
       context elements, path bytes with or without canonical context elements,
       empty lists, replayable list payloads whose element payloads are length-framed, and replayable attrset payloads whose binding names and value payloads are length-framed in separate durable BLAKE3 domains, using raw-byte-sorted binding order for canonical attrsets and a distinct source-order tag when construction order is observable.
-      Lazy-element list and lazy-binding attrset cacheability, position-bearing attrset payloads, functions/thunks cacheability
+      Arbitrary non-literal lazy-element list and lazy-binding attrset cacheability, position-bearing attrset payloads, functions/thunks cacheability
       policy, generic hash-cons value fields, `force_memoized` integration,
       persistence, and harness proof remain open (`S-14`/`S-15`).
 - [x] Current inline-value early-cutoff adapter:
