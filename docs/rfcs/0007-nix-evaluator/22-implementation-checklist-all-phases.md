@@ -680,14 +680,17 @@ alone (`M-1`/`Q-A`).
       `currentTime`, and runtime selections such as
       `let b = builtins; in b.currentSystem` use synthetic identities keyed by
       module identity, force-site `IrId` and lowered source span, builtin
-      symbol, and execution tag. This
+      symbol, and execution tag. The observation-only synthetic `currentTime`
+      canary also asserts that persistent force metadata and trace sidecars
+      remain empty. This
       deliberately skips the recursive `builtins` attrset, `nixPath`,
       derivation, first-class primops, synthetic apply/select thunks,
-      persistence, and cached/uncached harness proof. The gate covers
+      broader persistence, and cached/uncached harness proof. The gate covers
       source-backed and source-less ambient and synthetic currentSystem
       hit/miss, synthetic storeDir hit/miss/symbol-separation, synthetic
       force-site span separation, synthetic immediate constants, reified currentTime laziness, stale synthetic
-      currentTime payload invalidation, and source-backed/source-less
+      currentTime payload invalidation, observation-only synthetic currentTime
+      sidecar-empty canary, and source-backed/source-less
       currentTime uncacheable-trace force-cache tests (`C-1`/`C-2`/`R-10`).
 - [x] Current source-less lowered-IR force-cache identity substrate:
       `cache::parse::lowered_ir_fingerprint` hashes the stable `ir.bin` and

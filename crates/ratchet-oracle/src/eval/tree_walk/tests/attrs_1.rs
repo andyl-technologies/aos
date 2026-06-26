@@ -5325,6 +5325,10 @@ fn observation_only_current_time_skips_persistent_current_demand() {
         None,
         "observation-only currentTime subjects must not write persistent demand counters"
     );
+    assert_persistent_force_cache_sidecars_empty(
+        &persist_root,
+        "observation-only synthetic currentTime canary",
+    );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");
 }
