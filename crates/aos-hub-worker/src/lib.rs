@@ -612,7 +612,7 @@ mod entry {
             .durable_object(crate::handlers::bindings::HUB_DB)?
             .id_from_name("hub")
             .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
-        let mut headers = worker::Headers::new();
+        let headers = worker::Headers::new();
         headers.set("x-hub-seal", &seal)?;
         let mut init = RequestInit::new();
         init.with_method(Method::Post).with_headers(headers);
@@ -763,15 +763,20 @@ mod entry {
             if let Err(err) = crate::tenantdb::ensure_migrated(&backend).await {
                 return Response::error(format!("hubdb migrate: {err:#}"), 500);
             }
-            // Internal control-plane (RFC-0004 ch.14 Phase E): the worker's
-            // `scheduled`/`queue` handlers forward the Cron tick and each job here
-            // so the maintenance work runs over the colocated SQLite. Seal-gated
-            // (the worker adds `x-hub-seal`); an external caller forwarded through
-            // the worker cannot reach it without the secret.
+            // Seal-gated control-plane (RFC-0004 ch.14 Phase E): the worker's
+            // `scheduled`/`queue` handlers forward the Cron tick and each job to
+            // `/_internal/{cron,job}` so maintenance runs over the colocated
+            // SQLite, and the operator's `worker install` creates the instance
+            // root admin via `/_admin/bootstrap-root` (the D1-free replacement for
+            // the old `init --target d1:` root step). All require the `x-hub-seal`
+            // secret, so an external caller forwarded through the worker cannot
+            // reach them.
             {
                 let path = req.url().ok().map(|u| u.path().to_string()).unwrap_or_default();
                 if req.method() == Method::Post
-                    && (path == "/_internal/cron" || path == "/_internal/job")
+                    && (path == "/_internal/cron"
+                        || path == "/_internal/job"
+                        || path == "/_admin/bootstrap-root")
                 {
                     let want = self.env.secret(HUB_SEAL_KEY).map(|s| s.to_string()).unwrap_or_default();
                     let got = req
@@ -786,6 +791,28 @@ mod entry {
                     if path == "/_internal/cron" {
                         run_cron(&self.state, &self.env).await;
                         return Response::ok("ok");
+                    }
+                    if path == "/_admin/bootstrap-root" {
+                        #[derive(serde::Deserialize)]
+                        struct BootstrapRoot {
+                            email: String,
+                            password: String,
+                        }
+                        let body: BootstrapRoot = match req.json().await {
+                            Ok(body) => body,
+                            Err(err) => {
+                                return Response::error(format!("bootstrap-root decode: {err}"), 400)
+                            }
+                        };
+                        let db = Database::attach(Box::new(
+                            crate::sqldobackend::SqlDoBackend::new(self.state.storage().sql()),
+                        ));
+                        return match db.bootstrap_root(&body.email, &body.password).await {
+                            Ok((email, user_id)) => {
+                                Response::from_json(&serde_json::json!({ "email": email, "user_id": user_id }))
+                            }
+                            Err(err) => Response::error(format!("bootstrap-root: {err:#}"), 500),
+                        };
                     }
                     let job: aos_hub_core::jobs::Job = match req.json().await {
                         Ok(job) => job,
