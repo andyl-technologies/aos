@@ -863,10 +863,23 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   wall-clock/thread-RNG in the engine, and unordered `select`; enforce on all
   `crucible-*` crates on every PR. — satisfies [HARN-24], [HARN-25], [HARN-26];
   spec §9.
-- [ ] **T-HARN-3** Build the in-process QEMU test double (`SimDouble`): plugin-side
+- [x] **T-HARN-3** Build the in-process QEMU test double (`SimDouble`): plugin-side
   shmem ABI + IPC protocol, instruction-budget behavior generator, synthetic
   fingerprint; share the real shmem/queue/codec crates. — satisfies [HARN-14],
   [HARN-15], [HARN-17]; spec §3.
+  - Completed by `crucible::SimDouble` and
+    `checks.crucible.phase1.simDouble`: the double is compiled behind the
+    `test-double` feature, enables the shared `crucible-shmem` and
+    `crucible-protocol` crates only for that feature, builds its plugin-side
+    region from the canonical `RegionAllocation` model, drains and emits frames
+    through the real directed SPSC accessors, accepts host control frames through
+    the real protocol decoder and lifecycle validator, replies with real
+    plugin-frame encodings, validates setup against the shared shmem header
+    checks, respects the same lookahead delivery ceiling rule as the QEMU
+    quantum path, drains inbound frames by the canonical `(delivery_icount,
+    src_node, seq)` key, advances by a deterministic instruction-budget script,
+    and hashes a synthetic register/memory fingerprint with no wall-clock,
+    thread RNG, or unordered map dependency.
 - [ ] **T-HARN-4** Implement the double↔real-plugin host-observable-schedule
   cross-check suite. — satisfies [HARN-16]; spec §3.2.
 - [x] **T-HARN-5** Implement the L0 determinism suite and `gate:layer0-determinism`
