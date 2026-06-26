@@ -1125,10 +1125,23 @@ authority for its shape. The contract those files may rely on:
     `checks.crucible.phase1.spatialScenarioBuilder` gate cover builder/manual
     identity equality, world reuse, node-template rejection, and plan/properties
     validation against the static world layer.
-- [ ] **T-SPAT-16** Implement the serializable content-addressed form (canonical
+- [x] **T-SPAT-16** Implement the serializable content-addressed form (canonical
   TOML + compact binary, same canonical bytes) with round-trip equality and
   content-addressed-reference-only images. — satisfies [SPAT-24], [SPAT-25]; spec
   §6.1, §8.
+  - Completed in `crates/crucible/src/model.rs`: `ScenarioDefForm` now carries the
+    materialized `World`, `Plan`, `Properties`, and `Seed` components for
+    storage/exchange, reconstructs the canonical `ScenarioDef`, and exposes
+    deterministic TOML plus compact binary round-trip APIs. The component types
+    (`World`, `Plan`, `Properties`, and `Seed`) expose matching independent
+    TOML/binary round-trip APIs, and parsing validates serialized ids against
+    recomputed content addresses before returning a form. `ContentAddressedBlobRef`
+    parses only `blake3:<hash>` image/kernel/initrd references and the TOML parser
+    rejects host-path image references before deserialization. The focused
+    `serializable_scenario_form_round_trips_and_rejects_host_paths` test and
+    `checks.crucible.phase1.spatialSerializableForm` gate cover scenario/component
+    round-trip equality, id mismatch rejection, and content-addressed-reference-only
+    image validation.
 - [ ] **T-SPAT-17** Implement `ScenarioFamily` parametric over seed/fault-density/
   topology-size(+shape) producing concrete validated `ScenarioDef`s, with a run
   pinning exactly one instance. — satisfies [SPAT-26], [SPAT-27]; spec §7.

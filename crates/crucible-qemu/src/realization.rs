@@ -1782,6 +1782,9 @@ mod tests {
                 marker: String::from("ready"),
             },
             white_box: WhiteBoxPolicy::Disabled,
+            kernel: None,
+            root_image: None,
+            initrd: None,
         }]) {
             Ok(world) => world,
             Err(error) => panic!("test world should be valid: {error}"),
@@ -1810,6 +1813,9 @@ mod tests {
                 },
                 ready_point: ReadyPoint::AgentSignal,
                 white_box: WhiteBoxPolicy::Disabled,
+                kernel: None,
+                root_image: None,
+                initrd: None,
             }],
             Vec::new(),
         ) {
@@ -1954,6 +1960,9 @@ mod tests {
                 icount: crucible::Icount { retired: 1 },
             },
             white_box: WhiteBoxPolicy::Disabled,
+            kernel: None,
+            root_image: None,
+            initrd: None,
         }]) {
             Ok(world) => world,
             Err(error) => panic!("test world should be valid: {error}"),

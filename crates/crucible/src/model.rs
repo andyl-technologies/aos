@@ -19,6 +19,7 @@ use crucible_sim::{
     DECISION_RNG_LINK_STREAM_DOMAIN, DECISION_RNG_NAME_HASH_DOMAIN,
     DECISION_RNG_NODE_STREAM_DOMAIN, DecisionRng, DecisionStream,
 };
+use serde::{Deserialize, Serialize};
 
 mod canonical;
 
@@ -70,6 +71,42 @@ impl ContentHash {
             encoded.push(HEX[(byte & 0x0f) as usize] as char);
         }
         encoded
+    }
+}
+
+/// A portable blob reference allowed in serialized scenario forms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ContentAddressedBlobRef {
+    hash: ContentHash,
+}
+
+impl ContentAddressedBlobRef {
+    /// Parses a `blake3:<64-lower-hex>` content-addressed blob reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioImageReferenceNotContentAddressed`] when
+    /// `value` is not a BLAKE3 content-addressed reference.
+    pub fn parse(field: &'static str, value: &str) -> Result<Self, EngineError> {
+        parse_content_addressed_blob_ref(field, value)
+    }
+
+    /// Builds a blob reference from an already-computed content hash.
+    #[must_use]
+    pub const fn from_hash(hash: ContentHash) -> Self {
+        Self { hash }
+    }
+
+    /// Returns the referenced blob hash.
+    #[must_use]
+    pub const fn hash(self) -> ContentHash {
+        self.hash
+    }
+
+    /// Renders the reference as `blake3:<64-lower-hex>`.
+    #[must_use]
+    pub fn to_uri(self) -> String {
+        format_content_hash_ref(self.hash)
     }
 }
 
@@ -893,6 +930,63 @@ impl World {
             .collect()
     }
 
+    /// Serializes this world component as deterministic TOML.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] if the TOML renderer rejects
+    /// the internal DTO shape.
+    pub fn to_canonical_toml(&self) -> Result<String, EngineError> {
+        toml::to_string(&world_to_toml(self)).map_err(|source| {
+            scenario_serialization_error(format!("serialize world TOML: {source}"))
+        })
+    }
+
+    /// Parses and validates a deterministic TOML world component.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or an id
+    /// mismatch, or a world validation error for invalid topology.
+    pub fn from_canonical_toml(input: &str) -> Result<Self, EngineError> {
+        validate_no_host_path_image_refs_in_toml(input)?;
+        let toml = toml::from_str::<WorldToml>(input).map_err(|source| {
+            scenario_serialization_error(format!("parse world TOML: {source}"))
+        })?;
+        world_from_toml(toml)
+    }
+
+    /// Serializes this world component as compact binary.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(WORLD_BINARY_MAGIC);
+        write_world_binary(self, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses and validates a compact binary world component.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed binary input
+    /// or an id mismatch, or a world validation error for invalid topology.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, WORLD_BINARY_MAGIC)?;
+        let world = read_world_binary(&mut reader)?;
+        reader.finish()?;
+        Ok(world)
+    }
+
+    /// Returns the canonical bytes used to compute this world's content address.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        world_material(
+            &canonical_world_nodes(&self.nodes),
+            &canonical_world_links(&self.links),
+        )
+        .into_bytes()
+    }
+
     fn scenario_def_from_components(
         &self,
         plan: &Plan,
@@ -915,6 +1009,9 @@ impl World {
 pub struct NodeTemplate {
     ready_point: ReadyPoint,
     white_box: WhiteBoxPolicy,
+    kernel: Option<ContentAddressedBlobRef>,
+    root_image: Option<ContentAddressedBlobRef>,
+    initrd: Option<ContentAddressedBlobRef>,
 }
 
 impl NodeTemplate {
@@ -924,6 +1021,9 @@ impl NodeTemplate {
         Self {
             ready_point,
             white_box: WhiteBoxPolicy::Disabled,
+            kernel: None,
+            root_image: None,
+            initrd: None,
         }
     }
 
@@ -953,6 +1053,9 @@ impl NodeTemplate {
         Self {
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Enabled,
+            kernel: None,
+            root_image: None,
+            initrd: None,
         }
     }
 
@@ -962,6 +1065,9 @@ impl NodeTemplate {
         Self {
             ready_point: node.ready_point.clone(),
             white_box: node.white_box,
+            kernel: node.kernel,
+            root_image: node.root_image,
+            initrd: node.initrd,
         }
     }
 
@@ -979,11 +1085,35 @@ impl NodeTemplate {
         self
     }
 
+    /// Replaces the template kernel blob reference.
+    #[must_use]
+    pub fn kernel(mut self, kernel: ContentAddressedBlobRef) -> Self {
+        self.kernel = Some(kernel);
+        self
+    }
+
+    /// Replaces the template root-image blob reference.
+    #[must_use]
+    pub fn root_image(mut self, root_image: ContentAddressedBlobRef) -> Self {
+        self.root_image = Some(root_image);
+        self
+    }
+
+    /// Replaces the template initrd blob reference.
+    #[must_use]
+    pub fn initrd(mut self, initrd: ContentAddressedBlobRef) -> Self {
+        self.initrd = Some(initrd);
+        self
+    }
+
     fn instantiate(&self, id: NodeId) -> WorldNode {
         WorldNode {
             id,
             ready_point: self.ready_point.clone(),
             white_box: self.white_box,
+            kernel: self.kernel,
+            root_image: self.root_image,
+            initrd: self.initrd,
         }
     }
 }
@@ -1249,6 +1379,142 @@ impl ScenarioBuilder {
         } else {
             Properties::from_assertions_for_world(world, self.assertions.clone())
         }
+    }
+}
+
+/// A fully materialized scenario definition form for storage and exchange.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ScenarioDefForm {
+    world: World,
+    plan: Plan,
+    properties: Properties,
+    seed: Seed,
+}
+
+impl ScenarioDefForm {
+    /// Builds a serialized-form scenario from independently addressed components.
+    ///
+    /// The constructor validates that the plan and properties layer over `world`
+    /// before the form can be serialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns a world identity error when `world` carries non-canonical identity,
+    /// a plan validation error when `plan` cannot layer over the static world, or a
+    /// properties validation error when `properties` references undeclared nodes.
+    pub fn from_components(
+        world: &World,
+        plan: &Plan,
+        properties: &Properties,
+        seed: Seed,
+    ) -> Result<Self, EngineError> {
+        validate_world_serialized_identity(world)?;
+        plan.validate_for_world(world)?;
+        properties.validate_for_world(world)?;
+        Ok(Self {
+            world: world.clone(),
+            plan: plan.clone(),
+            properties: properties.clone(),
+            seed,
+        })
+    }
+
+    /// Returns the serialized world component.
+    #[must_use]
+    pub fn world(&self) -> &World {
+        &self.world
+    }
+
+    /// Returns the serialized plan component.
+    #[must_use]
+    pub fn plan(&self) -> &Plan {
+        &self.plan
+    }
+
+    /// Returns the serialized properties component.
+    #[must_use]
+    pub fn properties(&self) -> &Properties {
+        &self.properties
+    }
+
+    /// Returns the serialized scenario seed component.
+    #[must_use]
+    pub fn seed(&self) -> Seed {
+        self.seed
+    }
+
+    /// Reconstructs the immutable scenario definition handle.
+    #[must_use]
+    pub fn scenario_def(&self) -> ScenarioDef {
+        self.world
+            .scenario_def_from_components(&self.plan, &self.properties, self.seed)
+    }
+
+    /// Returns the content address of the reconstructed scenario definition.
+    #[must_use]
+    pub fn id(&self) -> ContentHash {
+        self.scenario_def().id()
+    }
+
+    /// Serializes this form as deterministic TOML.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] if the TOML renderer rejects
+    /// the internal DTO shape.
+    pub fn to_canonical_toml(&self) -> Result<String, EngineError> {
+        toml::to_string(&scenario_form_to_toml(self)).map_err(|source| {
+            scenario_serialization_error(format!("serialize scenario TOML: {source}"))
+        })
+    }
+
+    /// Parses and validates a deterministic TOML scenario form.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or id
+    /// mismatches, or the same validation errors as the component constructors
+    /// when the parsed world, plan, or properties are invalid.
+    pub fn from_canonical_toml(input: &str) -> Result<Self, EngineError> {
+        validate_no_host_path_image_refs_in_toml(input)?;
+        let toml = toml::from_str::<ScenarioDefToml>(input).map_err(|source| {
+            scenario_serialization_error(format!("parse scenario TOML: {source}"))
+        })?;
+        scenario_form_from_toml(toml)
+    }
+
+    /// Serializes this form as the compact canonical binary representation.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC);
+        write_scenario_form_binary(self, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses and validates a compact binary scenario form.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed binary input or
+    /// id mismatches, or the same validation errors as the component constructors
+    /// when the parsed world, plan, or properties are invalid.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC)?;
+        let form = read_scenario_form_binary(&mut reader)?;
+        reader.finish()?;
+        Ok(form)
+    }
+
+    /// Returns the canonical bytes used to compute this scenario definition's id.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        scenario_world_plan_properties_seed_material(
+            &self.world,
+            &self.plan,
+            &self.properties,
+            self.seed,
+        )
+        .into_bytes()
     }
 }
 
@@ -1930,6 +2196,12 @@ pub struct WorldNode {
     pub ready_point: ReadyPoint,
     /// Whether this node opts into the white-box guest-host channel.
     pub white_box: WhiteBoxPolicy,
+    /// Optional content-addressed guest kernel blob.
+    pub kernel: Option<ContentAddressedBlobRef>,
+    /// Optional content-addressed read-only root-image blob.
+    pub root_image: Option<ContentAddressedBlobRef>,
+    /// Optional content-addressed initrd blob.
+    pub initrd: Option<ContentAddressedBlobRef>,
 }
 
 /// One logical symmetric link between two nodes in a [`World`].
@@ -2355,6 +2627,59 @@ impl Plan {
         self.id
     }
 
+    /// Serializes this plan component as deterministic TOML.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] if the TOML renderer rejects
+    /// the internal DTO shape.
+    pub fn to_canonical_toml(&self) -> Result<String, EngineError> {
+        toml::to_string(&plan_to_toml(self)).map_err(|source| {
+            scenario_serialization_error(format!("serialize plan TOML: {source}"))
+        })
+    }
+
+    /// Parses and validates a deterministic TOML plan component for `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or an id
+    /// mismatch, or a plan validation error when the parsed entries do not layer
+    /// over `world`.
+    pub fn from_canonical_toml_for_world(world: &World, input: &str) -> Result<Self, EngineError> {
+        let toml = toml::from_str::<PlanToml>(input)
+            .map_err(|source| scenario_serialization_error(format!("parse plan TOML: {source}")))?;
+        plan_from_toml(world, toml)
+    }
+
+    /// Serializes this plan component as compact binary.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(PLAN_BINARY_MAGIC);
+        write_plan_binary(self, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses and validates a compact binary plan component for `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed binary input
+    /// or an id mismatch, or a plan validation error when the parsed entries do
+    /// not layer over `world`.
+    pub fn from_compact_binary_for_world(world: &World, bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, PLAN_BINARY_MAGIC)?;
+        let plan = read_plan_binary(world, &mut reader)?;
+        reader.finish()?;
+        Ok(plan)
+    }
+
+    /// Returns the canonical bytes used to compute this plan's content address.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        plan_material(&self.entries).into_bytes()
+    }
+
     /// Validates this plan against `world`.
     ///
     /// # Errors
@@ -2569,6 +2894,60 @@ impl Properties {
         self.id
     }
 
+    /// Serializes this properties component as deterministic TOML.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] if the TOML renderer rejects
+    /// the internal DTO shape.
+    pub fn to_canonical_toml(&self) -> Result<String, EngineError> {
+        toml::to_string(&properties_to_toml(self)).map_err(|source| {
+            scenario_serialization_error(format!("serialize properties TOML: {source}"))
+        })
+    }
+
+    /// Parses and validates a deterministic TOML properties component for `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or an id
+    /// mismatch, or a property validation error when the parsed assertions do not
+    /// layer over `world`.
+    pub fn from_canonical_toml_for_world(world: &World, input: &str) -> Result<Self, EngineError> {
+        let toml = toml::from_str::<PropertiesToml>(input).map_err(|source| {
+            scenario_serialization_error(format!("parse properties TOML: {source}"))
+        })?;
+        properties_from_toml(world, toml)
+    }
+
+    /// Serializes this properties component as compact binary.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(PROPERTIES_BINARY_MAGIC);
+        write_properties_binary(self, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses and validates a compact binary properties component for `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed binary input
+    /// or an id mismatch, or a property validation error when the parsed assertions
+    /// do not layer over `world`.
+    pub fn from_compact_binary_for_world(world: &World, bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, PROPERTIES_BINARY_MAGIC)?;
+        let properties = read_properties_binary(world, &mut reader)?;
+        reader.finish()?;
+        Ok(properties)
+    }
+
+    /// Returns the canonical bytes used to compute this properties bundle's content address.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        properties_material(&self.assertions).into_bytes()
+    }
+
     /// Validates this properties bundle against `world`.
     ///
     /// # Errors
@@ -2647,6 +3026,57 @@ impl Seed {
     pub fn fork_stream(self, stream: &RngStreamId) -> DecisionStream {
         self.decision_rng()
             .fork_in_domain(&stream.domain, &stream.name)
+    }
+
+    /// Serializes this seed component as deterministic TOML.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] if the TOML renderer rejects
+    /// the internal DTO shape.
+    pub fn to_canonical_toml(self) -> Result<String, EngineError> {
+        toml::to_string(&seed_to_toml(self)).map_err(|source| {
+            scenario_serialization_error(format!("serialize seed TOML: {source}"))
+        })
+    }
+
+    /// Parses a deterministic TOML seed component.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] when the TOML is malformed or
+    /// the seed is not `0x` plus 64 lowercase hexadecimal characters.
+    pub fn from_canonical_toml(input: &str) -> Result<Self, EngineError> {
+        let toml = toml::from_str::<SeedToml>(input)
+            .map_err(|source| scenario_serialization_error(format!("parse seed TOML: {source}")))?;
+        seed_from_toml(&toml)
+    }
+
+    /// Serializes this seed component as compact binary.
+    #[must_use]
+    pub fn to_compact_binary(self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(SEED_BINARY_MAGIC);
+        writer.write_seed(self);
+        writer.finish()
+    }
+
+    /// Parses a compact binary seed component.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] when the binary input is not
+    /// the fixed seed component encoding.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, SEED_BINARY_MAGIC)?;
+        let seed = reader.read_seed()?;
+        reader.finish()?;
+        Ok(seed)
+    }
+
+    /// Returns the canonical bytes used when this seed participates in identities.
+    #[must_use]
+    pub fn canonical_bytes(self) -> Vec<u8> {
+        seed_material(self).into_bytes()
     }
 
     fn decision_rng_root_seed(self) -> u64 {
@@ -5852,6 +6282,27 @@ pub enum EngineError {
         /// The missing template node name.
         template: NodeId,
     },
+    /// A serialized scenario form is malformed.
+    ScenarioSerialization {
+        /// Stable reason for the serialization failure.
+        reason: String,
+    },
+    /// A serialized image/kernel/initrd reference is not content-addressed.
+    ScenarioImageReferenceNotContentAddressed {
+        /// The serialized field being validated.
+        field: &'static str,
+        /// The non-portable reference value.
+        value: String,
+    },
+    /// A serialized content address did not match the parsed component content.
+    ScenarioSerializedIdMismatch {
+        /// The component whose serialized id was invalid.
+        component: &'static str,
+        /// The content address carried in the serialized form.
+        expected: ContentHash,
+        /// The content address recomputed from parsed content.
+        actual: ContentHash,
+    },
     /// A runtime was replayed from a configuration it does not materialize.
     RuntimeConfigurationMismatch {
         /// The runtime-state id whose metadata was invalid.
@@ -5980,6 +6431,21 @@ impl fmt::Display for EngineError {
             }
             Self::ScenarioBuilderUnknownNodeTemplate { .. } => {
                 f.write_str("scenario builder node template is unknown")
+            }
+            Self::ScenarioSerialization { reason } => {
+                write!(f, "scenario serialized form is invalid: {reason}")
+            }
+            Self::ScenarioImageReferenceNotContentAddressed { field, .. } => {
+                write!(
+                    f,
+                    "scenario serialized {field} reference is not content-addressed"
+                )
+            }
+            Self::ScenarioSerializedIdMismatch { component, .. } => {
+                write!(
+                    f,
+                    "scenario serialized {component} id does not match parsed content"
+                )
             }
             Self::RuntimeConfigurationMismatch { .. } => {
                 f.write_str("runtime configuration does not match replay start configuration")
@@ -7317,6 +7783,1577 @@ fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError> {
     Ok(())
 }
 
+const SCENARIO_FORM_BINARY_MAGIC: &[u8] = b"crucible.scenario-def-form.v1\0";
+const WORLD_BINARY_MAGIC: &[u8] = b"crucible.world.v1\0";
+const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v1\0";
+const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v1\0";
+const SEED_BINARY_MAGIC: &[u8] = b"crucible.seed.v1\0";
+const MAX_SCENARIO_BINARY_COLLECTION_ITEMS: usize = 1_000_000;
+const MAX_SCENARIO_BINARY_STRING_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScenarioDefToml {
+    scenario: ScenarioHeaderToml,
+    world: WorldToml,
+    plan: PlanToml,
+    properties: PropertiesToml,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScenarioHeaderToml {
+    id: String,
+    seed: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorldToml {
+    id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    node: Vec<WorldNodeToml>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    link: Vec<LinkToml>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorldNodeToml {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kernel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initrd: Option<String>,
+    ready_point: ReadyPointToml,
+    white_box: WhiteBoxToml,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ReadyPointToml {
+    FixedIcount { retired: u64 },
+    NetworkIdle { window_nanos: u64 },
+    ConsoleMarker { marker: String },
+    AgentSignal,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum WhiteBoxToml {
+    Disabled,
+    Enabled,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinkToml {
+    endpoint_a: String,
+    endpoint_b: String,
+    latency_nanos: u64,
+    jitter_nanos: u64,
+    loss_millionths: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bandwidth_bps: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanToml {
+    id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    entry: Vec<PlanEntryToml>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PlanEntryToml {
+    Activate {
+        at_ticks: u64,
+        tag: String,
+        fault: MembershipFaultToml,
+    },
+    Heal {
+        at_ticks: u64,
+        tag: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum MembershipFaultToml {
+    Crash {
+        node: String,
+        restart: RestartToml,
+    },
+    Partition {
+        endpoint_a: String,
+        endpoint_b: String,
+        direction: PartitionDirectionToml,
+    },
+    Isolate {
+        node: String,
+    },
+    NotYetJoined {
+        node: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum RestartToml {
+    FromReadyPoint,
+    FromLastCheckpoint,
+    StayDown,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum PartitionDirectionToml {
+    Bidirectional,
+    EndpointAToEndpointB,
+    EndpointBToEndpointA,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PropertiesToml {
+    id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    assertion: Vec<AssertionToml>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssertionToml {
+    id: String,
+    message: String,
+    property: PropertyToml,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PropertyToml {
+    Always {
+        predicate: PredicateToml,
+    },
+    Sometimes {
+        predicate: PredicateToml,
+    },
+    Eventually {
+        trigger: PredicateToml,
+        property: PredicateToml,
+        deadline_ticks: u64,
+    },
+    AfterQuiescence {
+        predicate: PredicateToml,
+    },
+    Reachable {
+        predicate: PredicateToml,
+        expectation: ReachabilityExpectationToml,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PredicateToml {
+    Named {
+        name: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        nodes: Vec<String>,
+    },
+    GuestMarker {
+        marker: String,
+    },
+    AllOf {
+        predicates: Vec<PredicateToml>,
+    },
+    AnyOf {
+        predicates: Vec<PredicateToml>,
+    },
+    Once {
+        predicate: Box<PredicateToml>,
+    },
+    Not {
+        predicate: Box<PredicateToml>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ReachabilityExpectationToml {
+    Reachable {
+        on_unreached: ReachableDispositionToml,
+    },
+    Unreachable,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum ReachableDispositionToml {
+    Warn,
+    Fail,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeedToml {
+    bytes: String,
+}
+
+fn scenario_form_to_toml(form: &ScenarioDefForm) -> ScenarioDefToml {
+    ScenarioDefToml {
+        scenario: ScenarioHeaderToml {
+            id: format_content_hash_ref(form.id()),
+            seed: format_seed_ref(form.seed),
+        },
+        world: world_to_toml(&form.world),
+        plan: plan_to_toml(&form.plan),
+        properties: properties_to_toml(&form.properties),
+    }
+}
+
+fn scenario_form_from_toml(toml: ScenarioDefToml) -> Result<ScenarioDefForm, EngineError> {
+    let world = world_from_toml(toml.world)?;
+    let plan = plan_from_toml(&world, toml.plan)?;
+    let properties = properties_from_toml(&world, toml.properties)?;
+    let seed = parse_seed_ref(&toml.scenario.seed)?;
+    let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)?;
+    let expected = parse_content_hash_ref(&toml.scenario.id)?;
+    validate_serialized_id("scenario", expected, form.id())?;
+    Ok(form)
+}
+
+fn world_to_toml(world: &World) -> WorldToml {
+    WorldToml {
+        id: format_content_hash_ref(world.id()),
+        node: world.nodes().iter().map(world_node_to_toml).collect(),
+        link: world.links().iter().map(link_to_toml).collect(),
+    }
+}
+
+fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
+    let id = parse_content_hash_ref(&toml.id)?;
+    let nodes = toml
+        .node
+        .into_iter()
+        .map(world_node_from_toml)
+        .collect::<Result<Vec<_>, _>>()?;
+    let links = toml
+        .link
+        .into_iter()
+        .map(link_from_toml)
+        .collect::<Result<Vec<_>, _>>()?;
+    let world = World::from_recorded_parts(id, nodes, links)?;
+    validate_world_serialized_identity(&world)?;
+    Ok(world)
+}
+
+fn world_node_to_toml(node: &WorldNode) -> WorldNodeToml {
+    WorldNodeToml {
+        id: node.id.name.clone(),
+        kernel: node.kernel.map(ContentAddressedBlobRef::to_uri),
+        root_image: node.root_image.map(ContentAddressedBlobRef::to_uri),
+        initrd: node.initrd.map(ContentAddressedBlobRef::to_uri),
+        ready_point: ready_point_to_toml(&node.ready_point),
+        white_box: white_box_to_toml(node.white_box),
+    }
+}
+
+fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, EngineError> {
+    let kernel = parse_optional_blob_ref("kernel", toml.kernel)?;
+    let root_image = parse_optional_blob_ref("root_image", toml.root_image)?;
+    let initrd = parse_optional_blob_ref("initrd", toml.initrd)?;
+    Ok(WorldNode {
+        id: NodeId { name: toml.id },
+        ready_point: ready_point_from_toml(toml.ready_point),
+        white_box: white_box_from_toml(toml.white_box),
+        kernel,
+        root_image,
+        initrd,
+    })
+}
+
+fn ready_point_to_toml(ready_point: &ReadyPoint) -> ReadyPointToml {
+    match ready_point {
+        ReadyPoint::FixedIcount { icount } => ReadyPointToml::FixedIcount {
+            retired: icount.retired,
+        },
+        ReadyPoint::NetworkIdle { window } => ReadyPointToml::NetworkIdle {
+            window_nanos: window.nanos,
+        },
+        ReadyPoint::ConsoleMarker { marker } => ReadyPointToml::ConsoleMarker {
+            marker: marker.clone(),
+        },
+        ReadyPoint::AgentSignal => ReadyPointToml::AgentSignal,
+    }
+}
+
+fn ready_point_from_toml(toml: ReadyPointToml) -> ReadyPoint {
+    match toml {
+        ReadyPointToml::FixedIcount { retired } => ReadyPoint::FixedIcount {
+            icount: Icount { retired },
+        },
+        ReadyPointToml::NetworkIdle { window_nanos } => ReadyPoint::NetworkIdle {
+            window: SimDuration {
+                nanos: window_nanos,
+            },
+        },
+        ReadyPointToml::ConsoleMarker { marker } => ReadyPoint::ConsoleMarker { marker },
+        ReadyPointToml::AgentSignal => ReadyPoint::AgentSignal,
+    }
+}
+
+fn white_box_to_toml(policy: WhiteBoxPolicy) -> WhiteBoxToml {
+    match policy {
+        WhiteBoxPolicy::Disabled => WhiteBoxToml::Disabled,
+        WhiteBoxPolicy::Enabled => WhiteBoxToml::Enabled,
+    }
+}
+
+fn white_box_from_toml(toml: WhiteBoxToml) -> WhiteBoxPolicy {
+    match toml {
+        WhiteBoxToml::Disabled => WhiteBoxPolicy::Disabled,
+        WhiteBoxToml::Enabled => WhiteBoxPolicy::Enabled,
+    }
+}
+
+fn link_to_toml(link: &LinkDef) -> LinkToml {
+    let (endpoint_a, endpoint_b) = link.endpoints();
+    LinkToml {
+        endpoint_a: endpoint_a.name.clone(),
+        endpoint_b: endpoint_b.name.clone(),
+        latency_nanos: link.latency().nanos,
+        jitter_nanos: link.jitter().nanos,
+        loss_millionths: link.loss().millionths(),
+        bandwidth_bps: link.bandwidth_bps(),
+    }
+}
+
+fn link_from_toml(toml: LinkToml) -> Result<LinkDef, EngineError> {
+    LinkDef::with_transport(
+        NodeId {
+            name: toml.endpoint_a,
+        },
+        NodeId {
+            name: toml.endpoint_b,
+        },
+        SimDuration {
+            nanos: toml.latency_nanos,
+        },
+        SimDuration {
+            nanos: toml.jitter_nanos,
+        },
+        LinkLossProbability::from_millionths(toml.loss_millionths)?,
+        toml.bandwidth_bps,
+    )
+}
+
+fn plan_to_toml(plan: &Plan) -> PlanToml {
+    PlanToml {
+        id: format_content_hash_ref(plan.content_hash()),
+        entry: plan.entries().iter().map(plan_entry_to_toml).collect(),
+    }
+}
+
+fn plan_from_toml(world: &World, toml: PlanToml) -> Result<Plan, EngineError> {
+    let id = parse_content_hash_ref(&toml.id)?;
+    let entries = toml
+        .entry
+        .into_iter()
+        .map(plan_entry_from_toml)
+        .collect::<Vec<_>>();
+    let plan = Plan::from_entries_for_world(world, entries)?;
+    validate_serialized_id("plan", id, plan.content_hash())?;
+    Ok(plan)
+}
+
+fn plan_entry_to_toml(entry: &PlanEntry) -> PlanEntryToml {
+    match entry {
+        PlanEntry::Activate { at, tag, fault } => PlanEntryToml::Activate {
+            at_ticks: at.ticks,
+            tag: tag.name.clone(),
+            fault: membership_fault_to_toml(fault),
+        },
+        PlanEntry::Heal { at, tag } => PlanEntryToml::Heal {
+            at_ticks: at.ticks,
+            tag: tag.name.clone(),
+        },
+    }
+}
+
+fn plan_entry_from_toml(toml: PlanEntryToml) -> PlanEntry {
+    match toml {
+        PlanEntryToml::Activate {
+            at_ticks,
+            tag,
+            fault,
+        } => PlanEntry::Activate {
+            at: VirtualTime { ticks: at_ticks },
+            tag: FaultTag { name: tag },
+            fault: membership_fault_from_toml(fault),
+        },
+        PlanEntryToml::Heal { at_ticks, tag } => PlanEntry::Heal {
+            at: VirtualTime { ticks: at_ticks },
+            tag: FaultTag { name: tag },
+        },
+    }
+}
+
+fn membership_fault_to_toml(fault: &MembershipFault) -> MembershipFaultToml {
+    match fault {
+        MembershipFault::Crash { node, restart } => MembershipFaultToml::Crash {
+            node: node.name.clone(),
+            restart: restart_to_toml(*restart),
+        },
+        MembershipFault::Partition {
+            endpoint_a,
+            endpoint_b,
+            direction,
+        } => MembershipFaultToml::Partition {
+            endpoint_a: endpoint_a.name.clone(),
+            endpoint_b: endpoint_b.name.clone(),
+            direction: partition_direction_to_toml(*direction),
+        },
+        MembershipFault::Isolate { node } => MembershipFaultToml::Isolate {
+            node: node.name.clone(),
+        },
+        MembershipFault::NotYetJoined { node } => MembershipFaultToml::NotYetJoined {
+            node: node.name.clone(),
+        },
+    }
+}
+
+fn membership_fault_from_toml(toml: MembershipFaultToml) -> MembershipFault {
+    match toml {
+        MembershipFaultToml::Crash { node, restart } => MembershipFault::Crash {
+            node: NodeId { name: node },
+            restart: restart_from_toml(restart),
+        },
+        MembershipFaultToml::Partition {
+            endpoint_a,
+            endpoint_b,
+            direction,
+        } => MembershipFault::Partition {
+            endpoint_a: NodeId { name: endpoint_a },
+            endpoint_b: NodeId { name: endpoint_b },
+            direction: partition_direction_from_toml(direction),
+        },
+        MembershipFaultToml::Isolate { node } => MembershipFault::Isolate {
+            node: NodeId { name: node },
+        },
+        MembershipFaultToml::NotYetJoined { node } => MembershipFault::NotYetJoined {
+            node: NodeId { name: node },
+        },
+    }
+}
+
+fn restart_to_toml(policy: RestartPolicy) -> RestartToml {
+    match policy {
+        RestartPolicy::FromReadyPoint => RestartToml::FromReadyPoint,
+        RestartPolicy::FromLastCheckpoint => RestartToml::FromLastCheckpoint,
+        RestartPolicy::StayDown => RestartToml::StayDown,
+    }
+}
+
+fn restart_from_toml(toml: RestartToml) -> RestartPolicy {
+    match toml {
+        RestartToml::FromReadyPoint => RestartPolicy::FromReadyPoint,
+        RestartToml::FromLastCheckpoint => RestartPolicy::FromLastCheckpoint,
+        RestartToml::StayDown => RestartPolicy::StayDown,
+    }
+}
+
+fn partition_direction_to_toml(direction: PartitionDirection) -> PartitionDirectionToml {
+    match direction {
+        PartitionDirection::Bidirectional => PartitionDirectionToml::Bidirectional,
+        PartitionDirection::EndpointAToEndpointB => PartitionDirectionToml::EndpointAToEndpointB,
+        PartitionDirection::EndpointBToEndpointA => PartitionDirectionToml::EndpointBToEndpointA,
+    }
+}
+
+fn partition_direction_from_toml(toml: PartitionDirectionToml) -> PartitionDirection {
+    match toml {
+        PartitionDirectionToml::Bidirectional => PartitionDirection::Bidirectional,
+        PartitionDirectionToml::EndpointAToEndpointB => PartitionDirection::EndpointAToEndpointB,
+        PartitionDirectionToml::EndpointBToEndpointA => PartitionDirection::EndpointBToEndpointA,
+    }
+}
+
+fn properties_to_toml(properties: &Properties) -> PropertiesToml {
+    PropertiesToml {
+        id: format_content_hash_ref(properties.content_hash()),
+        assertion: properties
+            .assertions()
+            .iter()
+            .map(assertion_to_toml)
+            .collect(),
+    }
+}
+
+fn properties_from_toml(world: &World, toml: PropertiesToml) -> Result<Properties, EngineError> {
+    let id = parse_content_hash_ref(&toml.id)?;
+    let assertions = toml
+        .assertion
+        .into_iter()
+        .map(assertion_from_toml)
+        .collect::<Vec<_>>();
+    let properties = Properties::from_assertions_for_world(world, assertions)?;
+    validate_serialized_id("properties", id, properties.content_hash())?;
+    Ok(properties)
+}
+
+fn assertion_to_toml(assertion: &AssertionDef) -> AssertionToml {
+    AssertionToml {
+        id: assertion.id.name.clone(),
+        message: assertion.message.clone(),
+        property: property_to_toml(&assertion.property),
+    }
+}
+
+fn assertion_from_toml(toml: AssertionToml) -> AssertionDef {
+    AssertionDef {
+        id: AssertionId { name: toml.id },
+        message: toml.message,
+        property: property_from_toml(toml.property),
+    }
+}
+
+fn property_to_toml(property: &Property) -> PropertyToml {
+    match property {
+        Property::Always { predicate } => PropertyToml::Always {
+            predicate: predicate_to_toml(predicate),
+        },
+        Property::Sometimes { predicate } => PropertyToml::Sometimes {
+            predicate: predicate_to_toml(predicate),
+        },
+        Property::Eventually {
+            trigger,
+            property,
+            deadline,
+        } => PropertyToml::Eventually {
+            trigger: predicate_to_toml(trigger),
+            property: predicate_to_toml(property),
+            deadline_ticks: deadline.ticks,
+        },
+        Property::AfterQuiescence { predicate } => PropertyToml::AfterQuiescence {
+            predicate: predicate_to_toml(predicate),
+        },
+        Property::Reachable {
+            predicate,
+            expectation,
+        } => PropertyToml::Reachable {
+            predicate: predicate_to_toml(predicate),
+            expectation: reachability_expectation_to_toml(*expectation),
+        },
+    }
+}
+
+fn property_from_toml(toml: PropertyToml) -> Property {
+    match toml {
+        PropertyToml::Always { predicate } => Property::Always {
+            predicate: predicate_from_toml(predicate),
+        },
+        PropertyToml::Sometimes { predicate } => Property::Sometimes {
+            predicate: predicate_from_toml(predicate),
+        },
+        PropertyToml::Eventually {
+            trigger,
+            property,
+            deadline_ticks,
+        } => Property::Eventually {
+            trigger: predicate_from_toml(trigger),
+            property: predicate_from_toml(property),
+            deadline: VirtualTime {
+                ticks: deadline_ticks,
+            },
+        },
+        PropertyToml::AfterQuiescence { predicate } => Property::AfterQuiescence {
+            predicate: predicate_from_toml(predicate),
+        },
+        PropertyToml::Reachable {
+            predicate,
+            expectation,
+        } => Property::Reachable {
+            predicate: predicate_from_toml(predicate),
+            expectation: reachability_expectation_from_toml(expectation),
+        },
+    }
+}
+
+fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
+    match predicate {
+        Predicate::Named { name, nodes } => PredicateToml::Named {
+            name: name.clone(),
+            nodes: nodes.iter().map(|node| node.name.clone()).collect(),
+        },
+        Predicate::GuestMarker { marker } => PredicateToml::GuestMarker {
+            marker: marker.name.clone(),
+        },
+        Predicate::AllOf { predicates } => PredicateToml::AllOf {
+            predicates: predicates.iter().map(predicate_to_toml).collect(),
+        },
+        Predicate::AnyOf { predicates } => PredicateToml::AnyOf {
+            predicates: predicates.iter().map(predicate_to_toml).collect(),
+        },
+        Predicate::Once { predicate } => PredicateToml::Once {
+            predicate: Box::new(predicate_to_toml(predicate)),
+        },
+        Predicate::Not { predicate } => PredicateToml::Not {
+            predicate: Box::new(predicate_to_toml(predicate)),
+        },
+    }
+}
+
+fn predicate_from_toml(toml: PredicateToml) -> Predicate {
+    match toml {
+        PredicateToml::Named { name, nodes } => Predicate::Named {
+            name,
+            nodes: nodes.into_iter().map(|name| NodeId { name }).collect(),
+        },
+        PredicateToml::GuestMarker { marker } => Predicate::GuestMarker {
+            marker: MarkerId { name: marker },
+        },
+        PredicateToml::AllOf { predicates } => Predicate::AllOf {
+            predicates: predicates.into_iter().map(predicate_from_toml).collect(),
+        },
+        PredicateToml::AnyOf { predicates } => Predicate::AnyOf {
+            predicates: predicates.into_iter().map(predicate_from_toml).collect(),
+        },
+        PredicateToml::Once { predicate } => Predicate::Once {
+            predicate: Box::new(predicate_from_toml(*predicate)),
+        },
+        PredicateToml::Not { predicate } => Predicate::Not {
+            predicate: Box::new(predicate_from_toml(*predicate)),
+        },
+    }
+}
+
+fn reachability_expectation_to_toml(
+    expectation: ReachabilityExpectation,
+) -> ReachabilityExpectationToml {
+    match expectation {
+        ReachabilityExpectation::Reachable { on_unreached } => {
+            ReachabilityExpectationToml::Reachable {
+                on_unreached: reachable_disposition_to_toml(on_unreached),
+            }
+        }
+        ReachabilityExpectation::Unreachable => ReachabilityExpectationToml::Unreachable,
+    }
+}
+
+fn reachability_expectation_from_toml(
+    toml: ReachabilityExpectationToml,
+) -> ReachabilityExpectation {
+    match toml {
+        ReachabilityExpectationToml::Reachable { on_unreached } => {
+            ReachabilityExpectation::Reachable {
+                on_unreached: reachable_disposition_from_toml(on_unreached),
+            }
+        }
+        ReachabilityExpectationToml::Unreachable => ReachabilityExpectation::Unreachable,
+    }
+}
+
+fn reachable_disposition_to_toml(disposition: ReachableDisposition) -> ReachableDispositionToml {
+    match disposition {
+        ReachableDisposition::Warn => ReachableDispositionToml::Warn,
+        ReachableDisposition::Fail => ReachableDispositionToml::Fail,
+    }
+}
+
+fn reachable_disposition_from_toml(toml: ReachableDispositionToml) -> ReachableDisposition {
+    match toml {
+        ReachableDispositionToml::Warn => ReachableDisposition::Warn,
+        ReachableDispositionToml::Fail => ReachableDisposition::Fail,
+    }
+}
+
+fn seed_to_toml(seed: Seed) -> SeedToml {
+    SeedToml {
+        bytes: format_seed_ref(seed),
+    }
+}
+
+fn seed_from_toml(toml: &SeedToml) -> Result<Seed, EngineError> {
+    parse_seed_ref(&toml.bytes)
+}
+
+struct ScenarioBinaryWriter {
+    bytes: Vec<u8>,
+}
+
+impl ScenarioBinaryWriter {
+    fn new(magic: &[u8]) -> Self {
+        let mut bytes = Vec::with_capacity(magic.len().saturating_add(256));
+        bytes.extend_from_slice(magic);
+        Self { bytes }
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.bytes.push(value);
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_count(&mut self, count: usize) {
+        self.write_u64(count as u64);
+    }
+
+    fn write_string(&mut self, value: &str) {
+        self.write_count(value.len());
+        self.bytes.extend_from_slice(value.as_bytes());
+    }
+
+    fn write_hash(&mut self, hash: ContentHash) {
+        self.bytes.extend_from_slice(&hash.bytes);
+    }
+
+    fn write_optional_blob_ref(&mut self, reference: Option<ContentAddressedBlobRef>) {
+        match reference {
+            Some(reference) => {
+                self.write_u8(1);
+                self.write_hash(reference.hash());
+            }
+            None => self.write_u8(0),
+        }
+    }
+
+    fn write_seed(&mut self, seed: Seed) {
+        self.bytes.extend_from_slice(&seed.bytes());
+    }
+
+    fn finish(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+struct ScenarioBinaryReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> ScenarioBinaryReader<'a> {
+    fn new(bytes: &'a [u8], magic: &[u8]) -> Result<Self, EngineError> {
+        if !bytes.starts_with(magic) {
+            return Err(scenario_serialization_error("binary magic mismatch"));
+        }
+        Ok(Self {
+            bytes,
+            offset: magic.len(),
+        })
+    }
+
+    fn finish(&self) -> Result<(), EngineError> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(scenario_serialization_error("trailing binary bytes"))
+        }
+    }
+
+    fn read_exact(&mut self, len: usize) -> Result<&'a [u8], EngineError> {
+        let end = self
+            .offset
+            .checked_add(len)
+            .ok_or_else(|| scenario_serialization_error("binary offset overflow"))?;
+        let bytes = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or_else(|| scenario_serialization_error("truncated binary input"))?;
+        self.offset = end;
+        Ok(bytes)
+    }
+
+    fn read_u8(&mut self) -> Result<u8, EngineError> {
+        let bytes = self.read_exact(1)?;
+        Ok(bytes[0])
+    }
+
+    fn read_u32(&mut self) -> Result<u32, EngineError> {
+        let bytes = self.read_exact(4)?;
+        let mut fixed = [0; 4];
+        fixed.copy_from_slice(bytes);
+        Ok(u32::from_le_bytes(fixed))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, EngineError> {
+        let bytes = self.read_exact(8)?;
+        let mut fixed = [0; 8];
+        fixed.copy_from_slice(bytes);
+        Ok(u64::from_le_bytes(fixed))
+    }
+
+    fn read_count(&mut self) -> Result<usize, EngineError> {
+        usize::try_from(self.read_u64()?)
+            .map_err(|_| scenario_serialization_error("binary count does not fit usize"))
+    }
+
+    fn read_collection_count(&mut self, label: &'static str) -> Result<usize, EngineError> {
+        let count = self.read_count()?;
+        if count > MAX_SCENARIO_BINARY_COLLECTION_ITEMS {
+            Err(scenario_serialization_error(format!(
+                "{label} count exceeds serialized collection limit"
+            )))
+        } else {
+            Ok(count)
+        }
+    }
+
+    fn read_string(&mut self) -> Result<String, EngineError> {
+        let len = self.read_count()?;
+        if len > MAX_SCENARIO_BINARY_STRING_BYTES {
+            return Err(scenario_serialization_error(
+                "binary string exceeds serialized string limit",
+            ));
+        }
+        let bytes = self.read_exact(len)?.to_vec();
+        String::from_utf8(bytes)
+            .map_err(|source| scenario_serialization_error(format!("invalid UTF-8: {source}")))
+    }
+
+    fn read_hash(&mut self) -> Result<ContentHash, EngineError> {
+        let bytes = self.read_exact(32)?;
+        let mut fixed = [0; 32];
+        fixed.copy_from_slice(bytes);
+        Ok(ContentHash { bytes: fixed })
+    }
+
+    fn read_optional_blob_ref(&mut self) -> Result<Option<ContentAddressedBlobRef>, EngineError> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(ContentAddressedBlobRef::from_hash(self.read_hash()?))),
+            _ => Err(scenario_serialization_error(
+                "invalid optional blob-ref tag",
+            )),
+        }
+    }
+
+    fn read_seed(&mut self) -> Result<Seed, EngineError> {
+        let bytes = self.read_exact(32)?;
+        let mut fixed = [0; 32];
+        fixed.copy_from_slice(bytes);
+        Ok(Seed::from_bytes(fixed))
+    }
+}
+
+fn write_scenario_form_binary(form: &ScenarioDefForm, writer: &mut ScenarioBinaryWriter) {
+    writer.write_hash(form.id());
+    write_world_binary(&form.world, writer);
+    write_plan_binary(&form.plan, writer);
+    write_properties_binary(&form.properties, writer);
+    writer.write_seed(form.seed);
+}
+
+fn read_scenario_form_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<ScenarioDefForm, EngineError> {
+    let expected = reader.read_hash()?;
+    let world = read_world_binary(reader)?;
+    let plan = read_plan_binary(&world, reader)?;
+    let properties = read_properties_binary(&world, reader)?;
+    let seed = reader.read_seed()?;
+    let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)?;
+    validate_serialized_id("scenario", expected, form.id())?;
+    Ok(form)
+}
+
+fn write_world_binary(world: &World, writer: &mut ScenarioBinaryWriter) {
+    writer.write_hash(world.id());
+    writer.write_count(world.nodes().len());
+    for node in world.nodes() {
+        write_world_node_binary(node, writer);
+    }
+    writer.write_count(world.links().len());
+    for link in world.links() {
+        write_link_binary(link, writer);
+    }
+}
+
+fn read_world_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<World, EngineError> {
+    let id = reader.read_hash()?;
+    let node_count = reader.read_collection_count("world.node")?;
+    let mut nodes = Vec::with_capacity(node_count);
+    for _ in 0..node_count {
+        nodes.push(read_world_node_binary(reader)?);
+    }
+    let link_count = reader.read_collection_count("world.link")?;
+    let mut links = Vec::with_capacity(link_count);
+    for _ in 0..link_count {
+        links.push(read_link_binary(reader)?);
+    }
+    let world = World::from_recorded_parts(id, nodes, links)?;
+    validate_world_serialized_identity(&world)?;
+    Ok(world)
+}
+
+fn write_world_node_binary(node: &WorldNode, writer: &mut ScenarioBinaryWriter) {
+    writer.write_string(&node.id.name);
+    writer.write_optional_blob_ref(node.kernel);
+    writer.write_optional_blob_ref(node.root_image);
+    writer.write_optional_blob_ref(node.initrd);
+    write_ready_point_binary(&node.ready_point, writer);
+    writer.write_u8(match node.white_box {
+        WhiteBoxPolicy::Disabled => 0,
+        WhiteBoxPolicy::Enabled => 1,
+    });
+}
+
+fn read_world_node_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<WorldNode, EngineError> {
+    let id = NodeId {
+        name: reader.read_string()?,
+    };
+    let kernel = reader.read_optional_blob_ref()?;
+    let root_image = reader.read_optional_blob_ref()?;
+    let initrd = reader.read_optional_blob_ref()?;
+    let ready_point = read_ready_point_binary(reader)?;
+    let white_box = match reader.read_u8()? {
+        0 => WhiteBoxPolicy::Disabled,
+        1 => WhiteBoxPolicy::Enabled,
+        _ => return Err(scenario_serialization_error("invalid white-box policy tag")),
+    };
+    Ok(WorldNode {
+        id,
+        ready_point,
+        white_box,
+        kernel,
+        root_image,
+        initrd,
+    })
+}
+
+fn write_ready_point_binary(ready_point: &ReadyPoint, writer: &mut ScenarioBinaryWriter) {
+    match ready_point {
+        ReadyPoint::FixedIcount { icount } => {
+            writer.write_u8(0);
+            writer.write_u64(icount.retired);
+        }
+        ReadyPoint::NetworkIdle { window } => {
+            writer.write_u8(1);
+            writer.write_u64(window.nanos);
+        }
+        ReadyPoint::ConsoleMarker { marker } => {
+            writer.write_u8(2);
+            writer.write_string(marker);
+        }
+        ReadyPoint::AgentSignal => {
+            writer.write_u8(3);
+        }
+    }
+}
+
+fn read_ready_point_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<ReadyPoint, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(ReadyPoint::FixedIcount {
+            icount: Icount {
+                retired: reader.read_u64()?,
+            },
+        }),
+        1 => Ok(ReadyPoint::NetworkIdle {
+            window: SimDuration {
+                nanos: reader.read_u64()?,
+            },
+        }),
+        2 => Ok(ReadyPoint::ConsoleMarker {
+            marker: reader.read_string()?,
+        }),
+        3 => Ok(ReadyPoint::AgentSignal),
+        _ => Err(scenario_serialization_error("invalid ready-point tag")),
+    }
+}
+
+fn write_link_binary(link: &LinkDef, writer: &mut ScenarioBinaryWriter) {
+    let (endpoint_a, endpoint_b) = link.endpoints();
+    writer.write_string(&endpoint_a.name);
+    writer.write_string(&endpoint_b.name);
+    writer.write_u64(link.latency().nanos);
+    writer.write_u64(link.jitter().nanos);
+    writer.write_u32(link.loss().millionths());
+    match link.bandwidth_bps() {
+        Some(bandwidth) => {
+            writer.write_u8(1);
+            writer.write_u64(bandwidth);
+        }
+        None => writer.write_u8(0),
+    }
+}
+
+fn read_link_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<LinkDef, EngineError> {
+    let endpoint_a = NodeId {
+        name: reader.read_string()?,
+    };
+    let endpoint_b = NodeId {
+        name: reader.read_string()?,
+    };
+    let latency = SimDuration {
+        nanos: reader.read_u64()?,
+    };
+    let jitter = SimDuration {
+        nanos: reader.read_u64()?,
+    };
+    let loss = LinkLossProbability::from_millionths(reader.read_u32()?)?;
+    let bandwidth_bps = match reader.read_u8()? {
+        0 => None,
+        1 => Some(reader.read_u64()?),
+        _ => return Err(scenario_serialization_error("invalid bandwidth tag")),
+    };
+    LinkDef::with_transport(endpoint_a, endpoint_b, latency, jitter, loss, bandwidth_bps)
+}
+
+fn write_plan_binary(plan: &Plan, writer: &mut ScenarioBinaryWriter) {
+    writer.write_hash(plan.content_hash());
+    writer.write_count(plan.entries().len());
+    for entry in plan.entries() {
+        write_plan_entry_binary(entry, writer);
+    }
+}
+
+fn read_plan_binary(
+    world: &World,
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Plan, EngineError> {
+    let id = reader.read_hash()?;
+    let count = reader.read_collection_count("plan.entry")?;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        entries.push(read_plan_entry_binary(reader)?);
+    }
+    let plan = Plan::from_entries_for_world(world, entries)?;
+    validate_serialized_id("plan", id, plan.content_hash())?;
+    Ok(plan)
+}
+
+fn write_plan_entry_binary(entry: &PlanEntry, writer: &mut ScenarioBinaryWriter) {
+    match entry {
+        PlanEntry::Activate { at, tag, fault } => {
+            writer.write_u8(0);
+            writer.write_u64(at.ticks);
+            writer.write_string(&tag.name);
+            write_membership_fault_binary(fault, writer);
+        }
+        PlanEntry::Heal { at, tag } => {
+            writer.write_u8(1);
+            writer.write_u64(at.ticks);
+            writer.write_string(&tag.name);
+        }
+    }
+}
+
+fn read_plan_entry_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<PlanEntry, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(PlanEntry::Activate {
+            at: VirtualTime {
+                ticks: reader.read_u64()?,
+            },
+            tag: FaultTag {
+                name: reader.read_string()?,
+            },
+            fault: read_membership_fault_binary(reader)?,
+        }),
+        1 => Ok(PlanEntry::Heal {
+            at: VirtualTime {
+                ticks: reader.read_u64()?,
+            },
+            tag: FaultTag {
+                name: reader.read_string()?,
+            },
+        }),
+        _ => Err(scenario_serialization_error("invalid plan-entry tag")),
+    }
+}
+
+fn write_membership_fault_binary(fault: &MembershipFault, writer: &mut ScenarioBinaryWriter) {
+    match fault {
+        MembershipFault::Crash { node, restart } => {
+            writer.write_u8(0);
+            writer.write_string(&node.name);
+            writer.write_u8(match restart {
+                RestartPolicy::FromReadyPoint => 0,
+                RestartPolicy::FromLastCheckpoint => 1,
+                RestartPolicy::StayDown => 2,
+            });
+        }
+        MembershipFault::Partition {
+            endpoint_a,
+            endpoint_b,
+            direction,
+        } => {
+            writer.write_u8(1);
+            writer.write_string(&endpoint_a.name);
+            writer.write_string(&endpoint_b.name);
+            writer.write_u8(match direction {
+                PartitionDirection::Bidirectional => 0,
+                PartitionDirection::EndpointAToEndpointB => 1,
+                PartitionDirection::EndpointBToEndpointA => 2,
+            });
+        }
+        MembershipFault::Isolate { node } => {
+            writer.write_u8(2);
+            writer.write_string(&node.name);
+        }
+        MembershipFault::NotYetJoined { node } => {
+            writer.write_u8(3);
+            writer.write_string(&node.name);
+        }
+    }
+}
+
+fn read_membership_fault_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<MembershipFault, EngineError> {
+    match reader.read_u8()? {
+        0 => {
+            let node = NodeId {
+                name: reader.read_string()?,
+            };
+            let restart = match reader.read_u8()? {
+                0 => RestartPolicy::FromReadyPoint,
+                1 => RestartPolicy::FromLastCheckpoint,
+                2 => RestartPolicy::StayDown,
+                _ => return Err(scenario_serialization_error("invalid restart-policy tag")),
+            };
+            Ok(MembershipFault::Crash { node, restart })
+        }
+        1 => {
+            let endpoint_a = NodeId {
+                name: reader.read_string()?,
+            };
+            let endpoint_b = NodeId {
+                name: reader.read_string()?,
+            };
+            let direction = match reader.read_u8()? {
+                0 => PartitionDirection::Bidirectional,
+                1 => PartitionDirection::EndpointAToEndpointB,
+                2 => PartitionDirection::EndpointBToEndpointA,
+                _ => {
+                    return Err(scenario_serialization_error(
+                        "invalid partition-direction tag",
+                    ));
+                }
+            };
+            Ok(MembershipFault::Partition {
+                endpoint_a,
+                endpoint_b,
+                direction,
+            })
+        }
+        2 => Ok(MembershipFault::Isolate {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+        }),
+        3 => Ok(MembershipFault::NotYetJoined {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+        }),
+        _ => Err(scenario_serialization_error("invalid membership-fault tag")),
+    }
+}
+
+fn write_properties_binary(properties: &Properties, writer: &mut ScenarioBinaryWriter) {
+    writer.write_hash(properties.content_hash());
+    writer.write_count(properties.assertions().len());
+    for assertion in properties.assertions() {
+        write_assertion_binary(assertion, writer);
+    }
+}
+
+fn read_properties_binary(
+    world: &World,
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Properties, EngineError> {
+    let id = reader.read_hash()?;
+    let count = reader.read_collection_count("properties.assertion")?;
+    let mut assertions = Vec::with_capacity(count);
+    for _ in 0..count {
+        assertions.push(read_assertion_binary(reader)?);
+    }
+    let properties = Properties::from_assertions_for_world(world, assertions)?;
+    validate_serialized_id("properties", id, properties.content_hash())?;
+    Ok(properties)
+}
+
+fn write_assertion_binary(assertion: &AssertionDef, writer: &mut ScenarioBinaryWriter) {
+    writer.write_string(&assertion.id.name);
+    writer.write_string(&assertion.message);
+    write_property_binary(&assertion.property, writer);
+}
+
+fn read_assertion_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<AssertionDef, EngineError> {
+    Ok(AssertionDef {
+        id: AssertionId {
+            name: reader.read_string()?,
+        },
+        message: reader.read_string()?,
+        property: read_property_binary(reader)?,
+    })
+}
+
+fn write_property_binary(property: &Property, writer: &mut ScenarioBinaryWriter) {
+    match property {
+        Property::Always { predicate } => {
+            writer.write_u8(0);
+            write_predicate_binary(predicate, writer);
+        }
+        Property::Sometimes { predicate } => {
+            writer.write_u8(1);
+            write_predicate_binary(predicate, writer);
+        }
+        Property::Eventually {
+            trigger,
+            property,
+            deadline,
+        } => {
+            writer.write_u8(2);
+            write_predicate_binary(trigger, writer);
+            write_predicate_binary(property, writer);
+            writer.write_u64(deadline.ticks);
+        }
+        Property::AfterQuiescence { predicate } => {
+            writer.write_u8(3);
+            write_predicate_binary(predicate, writer);
+        }
+        Property::Reachable {
+            predicate,
+            expectation,
+        } => {
+            writer.write_u8(4);
+            write_predicate_binary(predicate, writer);
+            write_reachability_expectation_binary(*expectation, writer);
+        }
+    }
+}
+
+fn read_property_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Property, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(Property::Always {
+            predicate: read_predicate_binary(reader)?,
+        }),
+        1 => Ok(Property::Sometimes {
+            predicate: read_predicate_binary(reader)?,
+        }),
+        2 => Ok(Property::Eventually {
+            trigger: read_predicate_binary(reader)?,
+            property: read_predicate_binary(reader)?,
+            deadline: VirtualTime {
+                ticks: reader.read_u64()?,
+            },
+        }),
+        3 => Ok(Property::AfterQuiescence {
+            predicate: read_predicate_binary(reader)?,
+        }),
+        4 => Ok(Property::Reachable {
+            predicate: read_predicate_binary(reader)?,
+            expectation: read_reachability_expectation_binary(reader)?,
+        }),
+        _ => Err(scenario_serialization_error("invalid property tag")),
+    }
+}
+
+fn write_predicate_binary(predicate: &Predicate, writer: &mut ScenarioBinaryWriter) {
+    match predicate {
+        Predicate::Named { name, nodes } => {
+            writer.write_u8(0);
+            writer.write_string(name);
+            writer.write_count(nodes.len());
+            for node in nodes {
+                writer.write_string(&node.name);
+            }
+        }
+        Predicate::GuestMarker { marker } => {
+            writer.write_u8(1);
+            writer.write_string(&marker.name);
+        }
+        Predicate::AllOf { predicates } => {
+            writer.write_u8(2);
+            writer.write_count(predicates.len());
+            for predicate in predicates {
+                write_predicate_binary(predicate, writer);
+            }
+        }
+        Predicate::AnyOf { predicates } => {
+            writer.write_u8(3);
+            writer.write_count(predicates.len());
+            for predicate in predicates {
+                write_predicate_binary(predicate, writer);
+            }
+        }
+        Predicate::Once { predicate } => {
+            writer.write_u8(4);
+            write_predicate_binary(predicate, writer);
+        }
+        Predicate::Not { predicate } => {
+            writer.write_u8(5);
+            write_predicate_binary(predicate, writer);
+        }
+    }
+}
+
+fn read_predicate_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Predicate, EngineError> {
+    match reader.read_u8()? {
+        0 => {
+            let name = reader.read_string()?;
+            let count = reader.read_collection_count("predicate.node")?;
+            let mut nodes = Vec::with_capacity(count);
+            for _ in 0..count {
+                nodes.push(NodeId {
+                    name: reader.read_string()?,
+                });
+            }
+            Ok(Predicate::Named { name, nodes })
+        }
+        1 => Ok(Predicate::GuestMarker {
+            marker: MarkerId {
+                name: reader.read_string()?,
+            },
+        }),
+        2 => {
+            let count = reader.read_collection_count("predicate.all_of")?;
+            let mut predicates = Vec::with_capacity(count);
+            for _ in 0..count {
+                predicates.push(read_predicate_binary(reader)?);
+            }
+            Ok(Predicate::AllOf { predicates })
+        }
+        3 => {
+            let count = reader.read_collection_count("predicate.any_of")?;
+            let mut predicates = Vec::with_capacity(count);
+            for _ in 0..count {
+                predicates.push(read_predicate_binary(reader)?);
+            }
+            Ok(Predicate::AnyOf { predicates })
+        }
+        4 => Ok(Predicate::Once {
+            predicate: Box::new(read_predicate_binary(reader)?),
+        }),
+        5 => Ok(Predicate::Not {
+            predicate: Box::new(read_predicate_binary(reader)?),
+        }),
+        _ => Err(scenario_serialization_error("invalid predicate tag")),
+    }
+}
+
+fn write_reachability_expectation_binary(
+    expectation: ReachabilityExpectation,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    match expectation {
+        ReachabilityExpectation::Reachable { on_unreached } => {
+            writer.write_u8(0);
+            writer.write_u8(match on_unreached {
+                ReachableDisposition::Warn => 0,
+                ReachableDisposition::Fail => 1,
+            });
+        }
+        ReachabilityExpectation::Unreachable => writer.write_u8(1),
+    }
+}
+
+fn read_reachability_expectation_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<ReachabilityExpectation, EngineError> {
+    match reader.read_u8()? {
+        0 => {
+            let on_unreached = match reader.read_u8()? {
+                0 => ReachableDisposition::Warn,
+                1 => ReachableDisposition::Fail,
+                _ => {
+                    return Err(scenario_serialization_error(
+                        "invalid reachable-disposition tag",
+                    ));
+                }
+            };
+            Ok(ReachabilityExpectation::Reachable { on_unreached })
+        }
+        1 => Ok(ReachabilityExpectation::Unreachable),
+        _ => Err(scenario_serialization_error(
+            "invalid reachability-expectation tag",
+        )),
+    }
+}
+
+fn validate_world_serialized_identity(world: &World) -> Result<(), EngineError> {
+    validate_serialized_id("world", world.id(), serialized_world_identity(world))
+}
+
+fn validate_serialized_id(
+    component: &'static str,
+    expected: ContentHash,
+    actual: ContentHash,
+) -> Result<(), EngineError> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(EngineError::ScenarioSerializedIdMismatch {
+            component,
+            expected,
+            actual,
+        })
+    }
+}
+
+fn validate_no_host_path_image_refs_in_toml(value: &str) -> Result<(), EngineError> {
+    let value = toml::from_str::<toml::Value>(value).map_err(|source| {
+        scenario_serialization_error(format!("parse TOML before image-ref validation: {source}"))
+    })?;
+    validate_toml_image_refs_value(&value)
+}
+
+fn validate_toml_image_refs_value(value: &toml::Value) -> Result<(), EngineError> {
+    match value {
+        toml::Value::Table(table) => {
+            for (key, value) in table {
+                if let Some(field) = image_ref_field(key) {
+                    let Some(reference) = value.as_str() else {
+                        return Err(scenario_serialization_error(format!(
+                            "{field} image reference must be a string"
+                        )));
+                    };
+                    let _ = ContentAddressedBlobRef::parse(field, reference)?;
+                }
+                validate_toml_image_refs_value(value)?;
+            }
+        }
+        toml::Value::Array(values) => {
+            for value in values {
+                validate_toml_image_refs_value(value)?;
+            }
+        }
+        toml::Value::String(_)
+        | toml::Value::Integer(_)
+        | toml::Value::Float(_)
+        | toml::Value::Boolean(_)
+        | toml::Value::Datetime(_) => {}
+    }
+    Ok(())
+}
+
+fn image_ref_field(key: &str) -> Option<&'static str> {
+    for field in ["kernel", "root_image", "initrd"] {
+        if key == field {
+            return Some(field);
+        }
+    }
+    None
+}
+
+fn parse_content_addressed_blob_ref(
+    field: &'static str,
+    value: &str,
+) -> Result<ContentAddressedBlobRef, EngineError> {
+    let Some(hex) = value.strip_prefix("blake3:") else {
+        return Err(EngineError::ScenarioImageReferenceNotContentAddressed {
+            field,
+            value: value.to_owned(),
+        });
+    };
+    let hash = parse_content_hash_hex(hex).map_err(|_| {
+        EngineError::ScenarioImageReferenceNotContentAddressed {
+            field,
+            value: value.to_owned(),
+        }
+    })?;
+    Ok(ContentAddressedBlobRef::from_hash(hash))
+}
+
+fn parse_optional_blob_ref(
+    field: &'static str,
+    value: Option<String>,
+) -> Result<Option<ContentAddressedBlobRef>, EngineError> {
+    value
+        .as_deref()
+        .map(|reference| ContentAddressedBlobRef::parse(field, reference))
+        .transpose()
+}
+
+fn parse_content_hash_ref(value: &str) -> Result<ContentHash, EngineError> {
+    let Some(hex) = value.strip_prefix("blake3:") else {
+        return Err(scenario_serialization_error(
+            "content hash reference must start with blake3:",
+        ));
+    };
+    parse_content_hash_hex(hex)
+}
+
+fn parse_content_hash_hex(hex: &str) -> Result<ContentHash, EngineError> {
+    let bytes = parse_fixed_hex_32(hex, "content hash")?;
+    Ok(ContentHash { bytes })
+}
+
+fn parse_seed_ref(value: &str) -> Result<Seed, EngineError> {
+    let Some(hex) = value.strip_prefix("0x") else {
+        return Err(scenario_serialization_error(
+            "seed must start with 0x and contain 64 lowercase hex characters",
+        ));
+    };
+    Ok(Seed::from_bytes(parse_fixed_hex_32(hex, "seed")?))
+}
+
+fn parse_fixed_hex_32(hex: &str, label: &'static str) -> Result<[u8; 32], EngineError> {
+    if hex.len() != 64 {
+        return Err(scenario_serialization_error(format!(
+            "{label} must contain 64 lowercase hex characters"
+        )));
+    }
+    let mut bytes = [0; 32];
+    let raw = hex.as_bytes();
+    for index in 0..32 {
+        let high = hex_value(raw[index * 2]).ok_or_else(|| {
+            scenario_serialization_error(format!("{label} contains non-lowercase-hex character"))
+        })?;
+        let low = hex_value(raw[index * 2 + 1]).ok_or_else(|| {
+            scenario_serialization_error(format!("{label} contains non-lowercase-hex character"))
+        })?;
+        bytes[index] = (high << 4) | low;
+    }
+    Ok(bytes)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn format_content_hash_ref(hash: ContentHash) -> String {
+    format!("blake3:{}", content_hash_hex(hash))
+}
+
+fn format_seed_ref(seed: Seed) -> String {
+    format!("0x{}", seed.to_hex())
+}
+
+fn scenario_serialization_error(reason: impl Into<String>) -> EngineError {
+    EngineError::ScenarioSerialization {
+        reason: reason.into(),
+    }
+}
+
 fn canonical_world_nodes(nodes: &[WorldNode]) -> Vec<WorldNode> {
     let mut nodes = nodes.to_vec();
     nodes.sort_by(|left, right| left.id.cmp(&right.id));
@@ -7442,6 +9479,16 @@ fn canonical_world_identity(world: &World) -> ContentHash {
     ContentHash::from_canonical_material("crucible.model.world.v1", &world_material(&nodes, &links))
 }
 
+fn serialized_world_identity(world: &World) -> ContentHash {
+    ContentHash::from_canonical_material(
+        "crucible.model.world.v1",
+        &world_material(
+            &canonical_world_nodes(&world.nodes),
+            &canonical_world_links(&world.links),
+        ),
+    )
+}
+
 fn scenario_world_plan_properties_seed_material(
     world: &World,
     plan: &Plan,
@@ -7485,9 +9532,12 @@ fn world_links_material(links: &[LinkDef]) -> String {
 
 fn world_node_material(node: &WorldNode) -> String {
     format!(
-        "node_id_len={}\nnode_id={}\n{}\nwhite_box={}",
+        "node_id_len={}\nnode_id={}\nkernel_ref={}\nroot_image_ref={}\ninitrd_ref={}\n{}\nwhite_box={}",
         node.id.name.len(),
         node.id.name,
+        optional_blob_ref_material(node.kernel),
+        optional_blob_ref_material(node.root_image),
+        optional_blob_ref_material(node.initrd),
         ready_point_material(&node.ready_point),
         white_box_material(node.white_box)
     )
@@ -7699,6 +9749,10 @@ fn marker_id_material(id: &MarkerId) -> String {
 
 fn seed_material(seed: Seed) -> String {
     format!("seed_bytes={}", seed.to_hex())
+}
+
+fn optional_blob_ref_material(reference: Option<ContentAddressedBlobRef>) -> String {
+    reference.map_or_else(|| String::from("none"), ContentAddressedBlobRef::to_uri)
 }
 
 fn node_ref_material(prefix: &str, node: &NodeId) -> String {
