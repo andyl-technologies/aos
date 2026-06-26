@@ -922,10 +922,34 @@ mod entry {
             HubDb { state, env }
         }
 
-        async fn fetch(&self, req: Request) -> Result<Response> {
+        async fn fetch(&self, mut req: Request) -> Result<Response> {
             let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage().sql());
             if let Err(err) = crate::tenantdb::ensure_migrated(&backend).await {
                 return Response::error(format!("hubdb migrate: {err:#}"), 500);
+            }
+            // Cutover admin (RFC-0004 ch.14 Phase E): `POST /_admin/sql` with the
+            // `x-hub-seal` header equal to `HUB_SEAL_KEY` runs the body as a SQL
+            // batch against the DO's local SQLite, for replaying a D1 data dump
+            // into `HubDb`. Gated by the at-rest sealing secret; for the operator
+            // cutover only.
+            let path = req.url().ok().map(|u| u.path().to_string()).unwrap_or_default();
+            if req.method() == Method::Post && path == "/_admin/sql" {
+                let want = self.env.secret(HUB_SEAL_KEY).map(|s| s.to_string()).unwrap_or_default();
+                let got = req
+                    .headers()
+                    .get("x-hub-seal")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                if want.is_empty() || got != want {
+                    return Response::error("forbidden", 403);
+                }
+                let sql = req.text().await?;
+                use aos_hub_core::backend::Backend as _;
+                return match backend.execute_batch(&sql).await {
+                    Ok(()) => Response::ok("ok"),
+                    Err(err) => Response::error(format!("admin sql: {err:#}"), 500),
+                };
             }
             let db = Arc::new(Database::attach(Box::new(backend)));
             let request_origin = req
