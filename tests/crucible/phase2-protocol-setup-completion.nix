@@ -216,7 +216,7 @@
       }
       {
         label = "validates mapped header";
-        needle = "mapped_region.validate_header()";
+        needle = "PluginShmemOrdering::validate_setup_header(&mapped_region)";
       }
       {
         label = "wake fd arming token";
@@ -232,7 +232,7 @@
       }
       {
         label = "completion token returned before ready ack";
-        needle = "Ok(PluginSetupCompletion {\n        mapped_region,\n        validated_region,\n        wake_fd,\n    })";
+        needle = "Ok(PluginSetupCompletion {\n        mapped_region,\n        validated_region,\n        wake_fd,\n        registered_wake_fd,\n    })";
       }
       {
         label = "ready setup ack";
