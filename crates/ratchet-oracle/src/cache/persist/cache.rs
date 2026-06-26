@@ -1557,14 +1557,26 @@ impl PersistCache {
     ///
     /// This helper is explicit and non-transactional: if the pack append
     /// succeeds but the sidecar index write fails, the blob bytes remain in the
-    /// pack without a corresponding durable index record.
+    /// pack without a corresponding durable index record. Same-process writers
+    /// opened on the same cache root share the selected store's blob-index
+    /// write lock while this method writes the pack and sidecar.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobIndexedWriteError`] if the selected packfile cannot
-    /// append/verify the payload, or if the selected sidecar index cannot write
-    /// the resulting hash-to-offset record.
+    /// Returns [`PersistBlobIndexedWriteError`] if the same-root blob-index
+    /// write lock is poisoned, if the selected packfile cannot append/verify
+    /// the payload, or if the selected sidecar index cannot write the resulting
+    /// hash-to-offset record.
     pub fn append_blob_indexed(
+        &self,
+        key: PersistBlobKey,
+        payload: &[u8],
+    ) -> Result<PersistBlobIndexEntry, PersistBlobIndexedWriteError> {
+        let _write_guard = self.root_locks.lock(key.store())?;
+        self.append_blob_indexed_unlocked(key, payload)
+    }
+
+    fn append_blob_indexed_unlocked(
         &self,
         key: PersistBlobKey,
         payload: &[u8],
@@ -1608,8 +1620,8 @@ impl PersistCache {
     /// that verifies for `key` and exactly matches `payload`, the existing
     /// location is reused without appending duplicate bytes or index records.
     /// Missing, stale, mismatching, or unreadable indexed records append a fresh
-    /// blob and record a newer sidecar entry through
-    /// [`Self::append_blob_indexed`].
+    /// blob and record a newer sidecar entry while holding the selected store's
+    /// same-root write lock.
     ///
     /// This helper is explicit and non-transactional: if a fresh pack append
     /// succeeds but the sidecar index write fails, the blob bytes remain in the
@@ -1633,7 +1645,7 @@ impl PersistCache {
                 return Ok(PersistBlobIndexEntry::new(key, location));
             }
         }
-        self.append_blob_indexed(key, payload)
+        self.append_blob_indexed_unlocked(key, payload)
     }
 
     /// Materializes a cached expression payload into the indexed `values/` pack.

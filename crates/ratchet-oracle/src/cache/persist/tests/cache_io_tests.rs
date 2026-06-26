@@ -3234,6 +3234,49 @@ fn cache_indexed_materialization_reports_poisoned_same_root_lock() {
 }
 
 #[test]
+fn cache_append_blob_indexed_reports_poisoned_same_root_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = PersistCache::open(&root).expect("second cache opens");
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+            .expect("value blob-index write lock acquires");
+        panic!("poison persistent value blob-index write lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let payload = b"payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let error = cache
+        .append_blob_indexed(key, payload)
+        .expect_err("poisoned shared value lock should reject indexed append");
+
+    assert!(matches!(
+        error,
+        PersistBlobIndexedWriteError::WriteLockPoisoned {
+            store: PersistBlobStore::Values
+        }
+    ));
+    assert_eq!(
+        cache
+            .value_pack()
+            .records()
+            .expect("value pack records scan")
+            .len(),
+        0
+    );
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_index_compaction_reports_poisoned_same_root_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

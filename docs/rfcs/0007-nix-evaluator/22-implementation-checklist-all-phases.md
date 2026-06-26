@@ -1268,14 +1268,15 @@ alone (`M-1`/`Q-A`).
       these raw helpers, node metadata, mmap reads, writer batching, GC/repack,
       Attic transport, and harness proof remain open (`C-13`/`R-14`).
 - [x] Current explicit indexed blob IO helpers:
-      `PersistCache::append_blob_indexed` appends through the key-routed pack and
-      records the returned location in the selected `PersistBlobIndex`, while
-      `lookup_blob_location`/`read_blob_indexed` scan the sidecar index and
-      read/verify the indexed pack record, returning `None` for misses. This is
-      explicit non-transactional sidecar integration only; automatic low-level
-      append/read indexing, node metadata linkage, mmap reads, writer
-      batching/locking, GC/repack, Attic transport, and harness proof remain
-      open (`C-13`/`R-14`).
+      `PersistCache::append_blob_indexed` appends through the key-routed pack
+      while holding the selected store's same-process same-root blob write lock
+      and records the returned location in the selected `PersistBlobIndex`,
+      while `lookup_blob_location`/`read_blob_indexed` scan the sidecar index
+      and read/verify the indexed pack record, returning `None` for misses.
+      This is explicit non-transactional sidecar integration only; automatic
+      low-level append/read indexing, node metadata linkage, mmap reads, writer
+      batching, cross-process locking, GC/repack, Attic transport, and harness
+      proof remain open (`C-13`/`R-14`).
 - [x] Current explicit blob-pack tail-GC helper:
       `PersistCache::trim_blob_pack_tail` snapshots the selected store's latest
       live roots (`values/` blob index entries, or `files/`
@@ -1366,10 +1367,10 @@ alone (`M-1`/`Q-A`).
       opened cache collapses the initially-missing case to one fresh verified
       pack record and newest sidecar entry for the selected `values/` or
       `files/` store. This does not compact older append-only sidecar history
-      for stale or previously duplicated entries. Raw `append_blob_indexed`
-      calls, multi-process writers, durable filesystem locks/CAS, automatic
-      compaction, GC/repack, mmap reads, LMDB/redb indexes, and loom/harness
-      proof remain open (`C-13`/`R-4`/`R-14`).
+      for stale or previously duplicated entries. Multi-process writers,
+      durable filesystem locks/CAS, automatic compaction, GC/repack, mmap
+      reads, LMDB/redb indexes, and loom/harness proof remain open
+      (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process same-root indexed materialization single-flight
       precursor: independently opened `PersistCache` handles in one process now
       store canonicalized layout paths and acquire their per-store blob
@@ -1378,26 +1379,27 @@ alone (`M-1`/`Q-A`).
       through separate opens of the same root shares the same
       `ensure_blob_indexed` critical section. The initially-missing case
       collapses to one fresh verified pack record and newest sidecar entry for
-      the selected store, a poisoned same-root lock is reported before any
-      append/index write, and an opened symlink-root handle keeps writing the
-      canonical target it opened even if the symlink is retargeted. Raw
-      `append_blob_indexed` calls, different roots, multi-process writers,
-      two-machine misses, durable filesystem locks/CAS, automatic compaction,
-      GC/repack, mmap reads, LMDB/redb indexes, and loom/harness proof remain
-      open (`C-13`/`R-4`/`R-14`).
+      the selected store, public `append_blob_indexed` uses the same lock for
+      non-idempotent indexed appends, a poisoned same-root lock is reported
+      before any append/index write, and an opened symlink-root handle keeps
+      writing the canonical target it opened even if the symlink is retargeted.
+      Different roots, multi-process writers, two-machine misses, durable
+      filesystem locks/CAS, automatic compaction, GC/repack, mmap reads,
+      LMDB/redb indexes, and loom/harness proof remain open
+      (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process same-root blob-store maintenance lock precursor:
       cache-level blob-index compaction, blob-index rebuild, and blob-pack tail
       trim share the same per-store root-lock registry entries as indexed
       materialization, so maintenance rewrites for one live canonical cache root
-      serialize with cache-level `ensure_blob_indexed` writes for the selected
-      `values/` or `files/` store. File-pack tail trim also shares the
-      file-artifact and parse-artifact mapping locks while it snapshots those
-      live roots. Poisoned live same-root locks are reported before compaction,
-      rebuild, or trim writes sidecars or truncates a pack. Raw lower-level
-      `PersistBlobIndex`/`append_blob_indexed`/`append_blob` users, different
-      roots, multi-process writers, two-machine races, durable filesystem
-      locks/CAS, LMDB/redb indexes, automatic GC/repack, and loom/harness proof
-      remain open (`C-13`/`R-4`/`R-14`).
+      serialize with cache-level indexed blob writes for the selected `values/`
+      or `files/` store. File-pack tail trim also shares the file-artifact and
+      parse-artifact mapping locks while it snapshots those live roots.
+      Poisoned live same-root locks are reported before compaction, rebuild, or
+      trim writes sidecars or truncates a pack. Raw lower-level
+      `PersistBlobIndex`/`PersistBlobPack`/`append_blob` users, different roots,
+      multi-process writers, two-machine races, durable filesystem locks/CAS,
+      LMDB/redb indexes, automatic GC/repack, and loom/harness proof remain
+      open (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process same-root open-initialization lock precursor:
       `PersistCache::open` now creates the caller-supplied root, canonicalizes
       it, acquires a process-local same-root open mutex from the shared weak
