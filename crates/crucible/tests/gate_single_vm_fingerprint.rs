@@ -7,23 +7,23 @@ use crucible::{
     FaultId, GenesisCheckpoint, NodeId, RngStreamId, RuntimeState, ScenarioDef, TemporalGraph,
     VirtualTime, instantiate,
 };
+use crucible_harness::adversarial::{
+    HostAdversaryProfile, canonical_host_adversary_matrix, run_profiled_tasks,
+};
 
 #[test]
 fn gate_single_vm_fingerprint_model_determinism_survives_adversarial_host_profiles() {
     let scenario = generated_scenario(0x1800);
     let fixtures = same_configuration_fixtures(&scenario);
-    let baseline = run_model_determinism_under_host_profile(
-        &scenario,
-        &fixtures,
-        HostAdversaryProfile::quiet_single_core(),
-    );
+    let profiles = canonical_host_adversary_matrix();
+    let Some((baseline_profile, candidate_profiles)) = profiles.split_first() else {
+        panic!("adversarial host matrix must contain a baseline profile");
+    };
+    let baseline =
+        run_model_determinism_under_host_profile(&scenario, &fixtures, *baseline_profile);
 
-    for profile in [
-        HostAdversaryProfile::loaded_single_core(),
-        HostAdversaryProfile::reordered_two_core(),
-        HostAdversaryProfile::loaded_many_core(),
-    ] {
-        let candidate = run_model_determinism_under_host_profile(&scenario, &fixtures, profile);
+    for profile in candidate_profiles {
+        let candidate = run_model_determinism_under_host_profile(&scenario, &fixtures, *profile);
         assert_eq!(candidate, baseline, "profile {:?} diverged", profile.name);
     }
 }
@@ -112,148 +112,23 @@ enum InstantiatePath {
     SavedCheckpoint { ancestor: Configuration },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct HostAdversaryProfile {
-    name: &'static str,
-    worker_count: usize,
-    task_order: HostTaskOrder,
-    load_iterations: u64,
-    yield_every: u64,
-}
-
-impl HostAdversaryProfile {
-    fn quiet_single_core() -> Self {
-        Self {
-            name: "quiet-single-core",
-            worker_count: 1,
-            task_order: HostTaskOrder::Forward,
-            load_iterations: 0,
-            yield_every: 0,
-        }
-    }
-
-    fn loaded_single_core() -> Self {
-        Self {
-            name: "loaded-single-core",
-            worker_count: 1,
-            task_order: HostTaskOrder::Reverse,
-            load_iterations: 4096,
-            yield_every: 2,
-        }
-    }
-
-    fn reordered_two_core() -> Self {
-        Self {
-            name: "reordered-two-core",
-            worker_count: 2,
-            task_order: HostTaskOrder::Rotated,
-            load_iterations: 2048,
-            yield_every: 1,
-        }
-    }
-
-    fn loaded_many_core() -> Self {
-        Self {
-            name: "loaded-many-core",
-            worker_count: 4,
-            task_order: HostTaskOrder::Reverse,
-            load_iterations: 4096,
-            yield_every: 1,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HostTaskOrder {
-    Forward,
-    Reverse,
-    Rotated,
-}
-
 fn run_model_determinism_under_host_profile(
     scenario: &ScenarioDef,
     fixtures: &[SameConfigurationFixture],
     profile: HostAdversaryProfile,
 ) -> Vec<SameConfigurationFingerprintWitness> {
-    let ordered_tasks = ordered_task_indexes(fixtures.len(), profile.task_order);
-
-    std::thread::scope(|scope| {
-        let mut handles = Vec::new();
-        for worker in 0..profile.worker_count {
-            let assigned_tasks = ordered_tasks
-                .iter()
-                .copied()
-                .skip(worker)
-                .step_by(profile.worker_count)
-                .collect::<Vec<_>>();
-            handles.push(scope.spawn(move || {
-                let mut results = Vec::new();
-                for task_index in assigned_tasks {
-                    let fixture = &fixtures[task_index];
-                    let witness = with_concurrent_host_load(profile, task_index as u64, || {
-                        validate_same_configuration_fixture(scenario, fixture)
-                    });
-                    results.push(witness);
-                }
-                results
-            }));
-        }
-
-        let mut results = Vec::new();
-        for handle in handles {
-            match handle.join() {
-                Ok(mut worker_results) => results.append(&mut worker_results),
-                Err(_) => panic!("model adversarial host worker should not panic"),
-            }
-        }
-        results.sort_by_key(|witness| (witness.probe, witness.configuration.bytes));
-        results
-    })
-}
-
-fn ordered_task_indexes(len: usize, order: HostTaskOrder) -> Vec<usize> {
-    let mut indexes = (0..len).collect::<Vec<_>>();
-    match order {
-        HostTaskOrder::Forward => {}
-        HostTaskOrder::Reverse => indexes.reverse(),
-        HostTaskOrder::Rotated => {
-            if !indexes.is_empty() {
-                indexes.rotate_left(1);
-            }
-        }
-    }
-    indexes
-}
-
-fn inject_host_load(profile: HostAdversaryProfile, task_index: u64) {
-    let mut accumulator = task_index ^ profile.load_iterations;
-    for iteration in 0..profile.load_iterations {
-        accumulator = accumulator.rotate_left(3) ^ iteration.wrapping_mul(0x9e37_79b9);
-        std::hint::spin_loop();
-        if profile.yield_every != 0 && iteration.is_multiple_of(profile.yield_every) {
-            std::thread::yield_now();
-        }
-    }
-    std::hint::black_box(accumulator);
-}
-
-fn with_concurrent_host_load<F, T>(profile: HostAdversaryProfile, task_index: u64, f: F) -> T
-where
-    F: FnOnce() -> T,
-{
-    if profile.load_iterations == 0 {
-        return f();
-    }
-
-    std::thread::scope(|scope| {
-        let load_handle = scope.spawn(move || inject_host_load(profile, task_index));
-        std::thread::yield_now();
-        let result = f();
-        match load_handle.join() {
-            Ok(()) => result,
-            Err(_) => panic!("model adversarial host load worker should not panic"),
-        }
-    })
+    let mut results = match run_profiled_tasks(profile, fixtures.len(), |task| {
+        let fixture = &fixtures[task.index];
+        validate_same_configuration_fixture(scenario, fixture)
+    }) {
+        Ok(results) => results,
+        Err(error) => panic!(
+            "model adversarial host profile {} should execute: {error}",
+            profile.name
+        ),
+    };
+    results.sort_by_key(|witness| (witness.probe, witness.configuration.bytes));
+    results
 }
 
 fn same_configuration_fixtures(scenario: &ScenarioDef) -> Vec<SameConfigurationFixture> {

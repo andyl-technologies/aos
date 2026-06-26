@@ -17,6 +17,7 @@
   phase0S1 = builtins.readFile ./phase0-s1.nix;
   crucibleManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   crucibleModelGate = builtins.readFile ../../crates/crucible/tests/gate_single_vm_fingerprint.rs;
+  harnessAdversarial = builtins.readFile ../../crates/crucible-harness/src/adversarial.rs;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qemuGateRoot = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint.rs;
   qemuGateCompare = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/compare.rs;
@@ -87,32 +88,12 @@
         needle = "gate_single_vm_fingerprint_model_determinism_survives_adversarial_host_profiles";
       }
       {
-        label = "host adversary profile type";
-        needle = "struct HostAdversaryProfile";
+        label = "shared adversarial host matrix";
+        needle = "canonical_host_adversary_matrix()";
       }
       {
-        label = "host load profile";
-        needle = "loaded-single-core";
-      }
-      {
-        label = "task reordering profile";
-        needle = "reordered-two-core";
-      }
-      {
-        label = "varied core count profile";
-        needle = "loaded-many-core";
-      }
-      {
-        label = "host task ordering variation";
-        needle = "enum HostTaskOrder";
-      }
-      {
-        label = "worker-count variation";
-        needle = "worker_count: 4";
-      }
-      {
-        label = "yield perturbation";
-        needle = "std::thread::yield_now();";
+        label = "shared profiled runner";
+        needle = "run_profiled_tasks(profile, fixtures.len()";
       }
       {
         label = "determinism matrix equality";
@@ -125,14 +106,6 @@
       {
         label = "adversarial matrix validates same-configuration fixture";
         needle = "validate_same_configuration_fixture(scenario, fixture)";
-      }
-      {
-        label = "concurrent host load wrapper";
-        needle = "fn with_concurrent_host_load";
-      }
-      {
-        label = "background load worker";
-        needle = "scope.spawn(move || inject_host_load(profile, task_index))";
       }
       {
         label = "same-configuration validator test";
@@ -189,6 +162,76 @@
       {
         label = "different-configuration rejection";
         needle = "gate_single_vm_fingerprint_rejects_different_configuration_fingerprints";
+      }
+    ]
+    ++ failuresFor "crates/crucible-harness/src/adversarial.rs" harnessAdversarial [
+      {
+        label = "host adversary profile type";
+        needle = "pub struct HostAdversaryProfile";
+      }
+      {
+        label = "canonical host matrix";
+        needle = "pub fn canonical_host_adversary_matrix";
+      }
+      {
+        label = "host load profile";
+        needle = "loaded-single-core";
+      }
+      {
+        label = "task reordering profile";
+        needle = "reordered-two-core";
+      }
+      {
+        label = "varied core count profile";
+        needle = "loaded-many-core";
+      }
+      {
+        label = "host task ordering variation";
+        needle = "pub enum HostTaskOrder";
+      }
+      {
+        label = "seeded randomized scheduling";
+        needle = "SeededPermutation";
+      }
+      {
+        label = "logical affinity variation";
+        needle = "pub enum HostAffinity";
+      }
+      {
+        label = "seeded randomized affinity";
+        needle = "HostAffinity::Seeded";
+      }
+      {
+        label = "producer consumer skew";
+        needle = "pub enum ProducerConsumerSkew";
+      }
+      {
+        label = "affinity drives worker assignment";
+        needle = "let worker_index = logical_core % profile.worker_count;";
+      }
+      {
+        label = "worker-count variation";
+        needle = "worker_count: 4";
+      }
+      {
+        label = "host load configuration";
+        needle = "HostLoad::spinning";
+      }
+      {
+        label = "yield perturbation";
+        needle = "std::thread::yield_now();";
+      }
+      {
+        label = "shared profiled task runner";
+        needle = "pub fn run_profiled_tasks";
+      }
+      {
+        label = "concurrent host load wrapper";
+        needle = "pub fn with_profiled_host_load";
+      }
+      {
+        label = "background load worker";
+        needle = "scope.spawn(move || inject_host_load(profile, task))";
       }
     ]
     ++ forbiddenFor "crates/crucible/tests/gate_single_vm_fingerprint.rs" crucibleModelGate [
