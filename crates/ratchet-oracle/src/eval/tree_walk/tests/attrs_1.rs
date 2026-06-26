@@ -7373,6 +7373,129 @@ fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
 }
 
 #[test]
+fn captured_lazy_element_list_values_do_not_build_force_cache_subjects() {
+    let ir = manual_ir(
+        IrId::new(2),
+        vec![
+            pure_node(IrKind::LocalVar, Span::new(0, 1), IrData::Local { slot: 0 }),
+            pure_node(
+                IrKind::List,
+                Span::new(5, 7),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            pure_node(
+                IrKind::BinOp,
+                Span::new(0, 7),
+                IrData::Binary {
+                    op: BinOpKind::Concat,
+                    lhs: IrId::new(0),
+                    rhs: IrId::new(1),
+                },
+            ),
+            pure_node(IrKind::Int, Span::new(12, 13), IrData::Int(1)),
+            pure_node(IrKind::Int, Span::new(16, 17), IrData::Int(0)),
+            pure_node(
+                IrKind::BinOp,
+                Span::new(12, 17),
+                IrData::Binary {
+                    op: BinOpKind::Div,
+                    lhs: IrId::new(3),
+                    rhs: IrId::new(4),
+                },
+            ),
+        ],
+    );
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-lazy-element-list-value.nix",
+        "x ++ []",
+        cache.clone(),
+    );
+    let lazy_element = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(5)))
+        .expect("lazy element thunk allocates");
+    let captured_x = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![lazy_element]))
+        .expect("lazy-element list allocates");
+    assert_eq!(
+        lazy_element_list_capture_state(&evaluator, &ir, captured_x),
+        Some(LazyElementListCaptureState::DirectList)
+    );
+    let element_thunk = evaluator
+        .heap()
+        .get_thunk(lazy_element)
+        .expect("lazy element is a thunk");
+    assert_eq!(element_thunk.cell().state(), Ok(ThunkState::Suspended));
+
+    let frame = EvalFrame::new(1).expect("capture frame allocates");
+    frame.set(0, captured_x).expect("capture frame slot sets");
+    let env = EvalEnv::capture(&[frame]).expect("capture env allocates");
+    let thunk_value = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::with_env(EvalModuleId::ROOT, ir.root, env))
+        .expect("lazy-element list capture thunk allocates");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("concat is a node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "captured lazy-element lists must not be hashed into demand keys"
+    );
+    assert!(
+        evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("capture thunk remains heap-owned")
+            .env()
+            .expect("capture thunk keeps an environment")
+            .frames()[0]
+            .get(0)
+            .expect("captured lazy-element list slot remains readable")
+            .raw_eq(captured_x),
+        "probing the force-cache subject must not rewrite captured list slots"
+    );
+    assert_eq!(
+        lazy_element_list_capture_state(&evaluator, &ir, captured_x),
+        Some(LazyElementListCaptureState::DirectList),
+        "probing the force-cache subject must not force captured lazy elements"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured lazy-element list value force succeeds");
+    let list = evaluator
+        .heap()
+        .get_list(forced)
+        .expect("concat result is heap-owned");
+    assert_eq!(list.len(), 1);
+    let element = list.get(0).expect("lazy result element exists");
+    assert!(element.raw_eq(lazy_element));
+    let element_thunk = evaluator
+        .heap()
+        .get_thunk(element)
+        .expect("lazy result element remains a thunk");
+    assert_eq!(
+        element_thunk.cell().state(),
+        Ok(ThunkState::Suspended),
+        "list concat should not force captured lazy elements"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "captured lazy-element lists need element payloads before observation"
+    );
+}
+
+#[test]
 fn captured_position_bearing_attrset_values_do_not_build_force_cache_subjects() {
     let source = "let x = { a = 1; }; in builtins.seq x { a = x.a == 1; }";
     let ir = lower(source);
