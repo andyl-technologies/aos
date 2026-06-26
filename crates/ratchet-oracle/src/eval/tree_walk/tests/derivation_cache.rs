@@ -13,6 +13,122 @@ struct CachedDerivationSurface {
     force_cache_misses: u64,
 }
 
+fn durable_hash_surface_canaries(
+    label: &str,
+    hash: crate::cache::DurableBlake3Hash,
+) -> Vec<(String, Vec<u8>)> {
+    vec![
+        (format!("{label} hex"), hash.to_hex().into_bytes()),
+        (format!("{label} raw bytes"), hash.as_bytes().to_vec()),
+        (
+            format!("{label} Nix base32"),
+            nix_compat::nixbase32::encode(&hash.as_bytes()).into_bytes(),
+        ),
+    ]
+}
+
+fn add_impure_trace_surface_canaries(
+    canaries: &mut Vec<(String, Vec<u8>)>,
+    trace: &[ImpureInputFingerprint],
+) {
+    for input in trace {
+        let Some(input) = input.as_cacheable() else {
+            continue;
+        };
+        canaries.extend(durable_hash_surface_canaries(
+            "force trace identity BLAKE3",
+            input.identity().hash(),
+        ));
+        canaries.extend(durable_hash_surface_canaries(
+            "force trace observation BLAKE3",
+            input.observation_hash(),
+        ));
+    }
+}
+
+fn persistent_force_cache_surface_canaries(
+    persist_root: &Path,
+    traces: &[&[ImpureInputFingerprint]],
+) -> Vec<(String, Vec<u8>)> {
+    let mut canaries = Vec::new();
+    for trace in traces {
+        add_impure_trace_surface_canaries(&mut canaries, trace);
+    }
+
+    if !persist_root.exists() {
+        return canaries;
+    }
+
+    let persist = PersistCache::open(persist_root).expect("persistent cache opens");
+    for entry in persist
+        .node_metadata_index()
+        .latest_entries()
+        .expect("persistent node metadata entries load")
+    {
+        canaries.extend(durable_hash_surface_canaries(
+            "force node metadata BLAKE3",
+            entry.key().hash(),
+        ));
+        if let Some(value_hash) = entry.value().materialized_value_hash() {
+            canaries.extend(durable_hash_surface_canaries(
+                "force materialized value BLAKE3",
+                value_hash.as_durable_hash(),
+            ));
+        }
+    }
+    for entry in persist
+        .node_trace_log()
+        .latest_entries()
+        .expect("persistent node trace entries load")
+    {
+        canaries.extend(durable_hash_surface_canaries(
+            "force trace value BLAKE3",
+            entry.value_hash().as_durable_hash(),
+        ));
+        for input in entry.payload().inputs() {
+            canaries.extend(durable_hash_surface_canaries(
+                "force trace identity BLAKE3",
+                input.identity().hash(),
+            ));
+            canaries.extend(durable_hash_surface_canaries(
+                "force trace observation BLAKE3",
+                input.observation_hash(),
+            ));
+        }
+    }
+    canaries
+}
+
+fn assert_derivation_surface_canaries_absent(
+    surface_name: &str,
+    surface: &CachedDerivationSurface,
+    canaries: &[(String, Vec<u8>)],
+) {
+    assert_surface_canaries_absent(surface_name, ".drv path", surface.path.as_bytes(), canaries);
+    assert_surface_canaries_absent(surface_name, "ATerm bytes", &surface.aterm, canaries);
+}
+
+fn assert_surface_canaries_absent(
+    surface_name: &str,
+    field_name: &str,
+    surface: &[u8],
+    canaries: &[(String, Vec<u8>)],
+) {
+    for (canary_name, canary) in canaries {
+        assert!(
+            !contains_bytes(surface, canary),
+            "{canary_name} leaked into {surface_name} {field_name}: {surface:?}"
+        );
+    }
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
 fn evaluate_cached_derivation_surface(
     ir: &Ir,
     source: &str,
@@ -116,6 +232,20 @@ fn assert_cacheable_impure_leaf_force_hit_preserves_drv_surface(
     assert_eq!(hit.force_cache_hits, 1);
     assert_eq!(hit.force_cache_misses, 0);
 
+    let canaries = persistent_force_cache_surface_canaries(&persist_root, &[&expected_trace]);
+    assert_derivation_surface_canaries_absent("uncached force-cache surface", &uncached, &canaries);
+    assert_derivation_surface_canaries_absent("cold force-cache surface", &first, &canaries);
+    assert_derivation_surface_canaries_absent(
+        "materializing force-cache surface",
+        &materialize,
+        &canaries,
+    );
+    assert_derivation_surface_canaries_absent(
+        "persistent-hit force-cache surface",
+        &hit,
+        &canaries,
+    );
+
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
 }
 
@@ -185,6 +315,21 @@ fn assert_cacheable_impure_leaf_force_stale_miss_preserves_drv_surface(
         stale.thunks_forced > 0,
         "stale persistent observations should fall back to ordinary forcing"
     );
+
+    let canaries =
+        persistent_force_cache_surface_canaries(&persist_root, &[&first_trace, &changed_trace]);
+    assert_derivation_surface_canaries_absent("original force-cache surface", &first, &canaries);
+    assert_derivation_surface_canaries_absent(
+        "materializing force-cache surface",
+        &materialize,
+        &canaries,
+    );
+    assert_derivation_surface_canaries_absent(
+        "changed uncached force-cache surface",
+        &uncached_changed,
+        &canaries,
+    );
+    assert_derivation_surface_canaries_absent("stale-miss force-cache surface", &stale, &canaries);
 
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
 }
@@ -325,6 +470,22 @@ fn persistent_get_env_force_cache_no_replay_preserves_drv_surfaces() {
     assert_eq!(changed_replay.cache_hits, 0);
     assert_eq!(changed_replay.force_cache_hits, 0);
     assert_eq!(changed_replay.force_cache_misses, 0);
+
+    let canaries =
+        persistent_force_cache_surface_canaries(&persist_root, &[&expected_trace, &changed_trace]);
+    assert_derivation_surface_canaries_absent("uncached getEnv surface", &uncached, &canaries);
+    assert_derivation_surface_canaries_absent("cold getEnv surface", &first, &canaries);
+    assert_derivation_surface_canaries_absent("same-env getEnv replay surface", &replay, &canaries);
+    assert_derivation_surface_canaries_absent(
+        "changed uncached getEnv surface",
+        &uncached_changed,
+        &canaries,
+    );
+    assert_derivation_surface_canaries_absent(
+        "changed getEnv replay surface",
+        &changed_replay,
+        &canaries,
+    );
 
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
 }
