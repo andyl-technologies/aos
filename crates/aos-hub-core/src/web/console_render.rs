@@ -5250,6 +5250,16 @@ mod cache_render_tests {
         assert!(html.contains("hello-2.12"));
         assert!(html.contains("3.0 MiB · 4 objects"));
         assert!(html.contains("unlimited"));
+        // The cache detail page renders inside the org settings left-tabs chrome
+        // (the same IA as the other org/registry settings pages), with "Binary
+        // caches" as a sidebar tab — not a standalone full-width page.
+        assert!(html.contains("class=\"settings-nav\""));
+        assert!(html.contains("Binary caches"));
+        // The Pins table is a plain, horizontally-scrollable <table> — it must
+        // NOT carry the 4-column `.linktable` grid class (that mangled the
+        // 6-column table into unreadable slivers).
+        assert!(html.contains("<div class=\"table-scroll\">"));
+        assert!(!html.contains("<table class=\"linktable\">"));
         // The CSRF token is wired into the forms.
         assert!(html.contains("csrf-tok"));
     }
