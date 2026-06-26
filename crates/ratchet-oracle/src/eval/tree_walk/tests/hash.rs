@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::cache::{
-    PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags, ParseCacheKey, ParseFileKey,
-    PersistCache, PersistFileArtifactKey,
+    DurableBlake3Hash, PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags, ParseCacheKey,
+    ParseFileKey, PersistCache, PersistFileArtifactKey,
 };
 use crate::string::NixString;
 
@@ -198,6 +198,182 @@ fn configured_import_cache_preserves_hash_builtin_surface() {
     }
 
     fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[derive(Debug)]
+struct HashFileSurface {
+    output: Vec<u8>,
+    trace: Vec<ImpureInputFingerprint>,
+    thunks_forced: u64,
+    cache_hits: u64,
+    force_cache_hits: u64,
+    force_cache_misses: u64,
+}
+
+fn evaluate_hash_file_surface(
+    ir: &Ir,
+    options: TreeWalkOptions,
+    eval_cache: EvalCacheRuntime,
+) -> HashFileSurface {
+    let outcome = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        ir,
+        options,
+        None,
+        Arc::new(Mutex::new(eval_cache)),
+    )
+    .expect("hashFile expression evaluates");
+    let output = outcome
+        .heap()
+        .get_string(outcome.value())
+        .expect("hashFile result is a string")
+        .bytes()
+        .to_vec();
+    HashFileSurface {
+        output,
+        trace: outcome.impure_input_trace().to_vec(),
+        thunks_forced: outcome.stats().thunks_forced(),
+        cache_hits: outcome.stats().cache_hits(),
+        force_cache_hits: outcome.stats().force_cache_hits(),
+        force_cache_misses: outcome.stats().force_cache_misses(),
+    }
+}
+
+#[test]
+fn configured_cache_preserves_guarded_hash_file_surface() {
+    let persist_root = unique_temp_dir("hash-file-force-cache-surface-parity");
+    let root = unique_temp_dir("hash-file-force-cache-source");
+    let payload_path = root.join("payload.txt");
+    let marker_path = root.join("marker");
+    let payload = b"abc";
+    fs::write(&payload_path, payload).expect("payload writes");
+    fs::write(&marker_path, b"present").expect("marker writes");
+    let root = fs::canonicalize(&root).expect("source root canonicalizes");
+    let marker_path = path_bytes(&root.join("marker"));
+    let expected_trace =
+        vec![ImpureInputFingerprint::path_exists(&marker_path, true).expect("fingerprint builds")];
+    let source = r#"let
+             b = builtins;
+             forced = b.pathExists ./marker;
+           in if forced then b.hashFile "sha256" ./payload.txt else "missing""#;
+    let ir = lower(source);
+    let expected_output = b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    let mut uncached_options = TreeWalkOptions::new();
+    uncached_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    let uncached = evaluate_hash_file_surface(&ir, uncached_options, EvalCacheRuntime::disabled());
+    assert_eq!(uncached.output, expected_output);
+    assert_eq!(uncached.trace, expected_trace);
+    assert_eq!(uncached.cache_hits, 0);
+    assert_eq!(uncached.force_cache_hits, 0);
+    assert_eq!(uncached.force_cache_misses, 0);
+
+    let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    first_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    first_options.set_persist_cache_root(&persist_root);
+    let first = evaluate_hash_file_surface(&ir, first_options, EvalCacheRuntime::enabled());
+    assert_eq!(first.output, uncached.output);
+    assert_eq!(first.trace, expected_trace);
+    assert_eq!(first.cache_hits, 0);
+    assert_eq!(first.force_cache_hits, 0);
+    assert_eq!(first.force_cache_misses, 0);
+
+    let mut materialize_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    materialize_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    materialize_options.set_persist_cache_root(&persist_root);
+    let materialize =
+        evaluate_hash_file_surface(&ir, materialize_options, EvalCacheRuntime::enabled());
+    assert_eq!(materialize.output, uncached.output);
+    assert_eq!(materialize.trace, expected_trace);
+    assert_eq!(materialize.cache_hits, 0);
+    assert_eq!(materialize.force_cache_hits, 0);
+    assert!(
+        materialize.force_cache_misses > 0,
+        "materializing hashFile guard should miss before writing persistent force-cache payloads"
+    );
+
+    let mut hit_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    hit_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    hit_options.set_persist_cache_root(&persist_root);
+    let hit = evaluate_hash_file_surface(&ir, hit_options, EvalCacheRuntime::enabled());
+    assert_eq!(hit.output, uncached.output);
+    assert_eq!(hit.trace, expected_trace);
+    assert!(
+        hit.thunks_forced < materialize.thunks_forced,
+        "fresh-runtime persistent hits should force fewer thunks than materializing recomputation"
+    );
+    assert!(hit.cache_hits > 0);
+    assert!(hit.force_cache_hits > 0);
+    assert_eq!(hit.force_cache_misses, 0);
+
+    let synthetic_root_parse_key = ParseCacheKey::for_source(
+        source.as_bytes(),
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let hot_canary = NixString::from_bytes(uncached.output.clone())
+        .structural_hash_xxh3()
+        .raw_for_tests();
+    let hot_decimal_canary = hot_canary.to_string();
+    let hot_hex_canary = format!("{hot_canary:016x}");
+    let hot_little_endian_canary = hot_canary.to_le_bytes();
+    let hot_big_endian_canary = hot_canary.to_be_bytes();
+    let mut canaries = durable_hash_surface_canaries(
+        "synthetic root parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(synthetic_root_parse_key.as_bytes()),
+    );
+    canaries.extend(durable_hash_surface_canaries(
+        "synthetic hashFile payload-content BLAKE3",
+        DurableBlake3Hash::for_bytes(payload),
+    ));
+    let force_cache_canaries =
+        persistent_force_cache_surface_canaries(&persist_root, &[&expected_trace]);
+    assert!(
+        force_cache_canaries
+            .iter()
+            .any(|(name, _)| name.starts_with("force materialized value BLAKE3")),
+        "materializing hashFile guard should persist a forced value"
+    );
+    assert!(
+        force_cache_canaries
+            .iter()
+            .any(|(name, _)| name.starts_with("force trace value BLAKE3")),
+        "materializing hashFile guard should persist a verifying trace"
+    );
+    canaries.extend(force_cache_canaries);
+    canaries.extend([
+        (
+            "hot xxh3 decimal".to_owned(),
+            hot_decimal_canary.into_bytes(),
+        ),
+        ("hot xxh3 hex".to_owned(), hot_hex_canary.into_bytes()),
+        (
+            "hot xxh3 little-endian bytes".to_owned(),
+            hot_little_endian_canary.to_vec(),
+        ),
+        (
+            "hot xxh3 big-endian bytes".to_owned(),
+            hot_big_endian_canary.to_vec(),
+        ),
+    ]);
+    for (surface_name, surface) in [
+        ("uncached hashFile surface", &uncached),
+        ("cold hashFile surface", &first),
+        ("materializing hashFile surface", &materialize),
+        ("persistent-hit hashFile surface", &hit),
+    ] {
+        assert_surface_canaries_absent(surface_name, "hashFile output", &surface.output, &canaries);
+    }
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+    fs::remove_dir_all(root).expect("source temp directory removes");
 }
 
 #[test]
