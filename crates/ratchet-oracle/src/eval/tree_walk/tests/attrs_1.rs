@@ -7118,6 +7118,75 @@ fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
 }
 
 #[test]
+fn captured_suspended_computed_thunks_do_not_build_force_cache_subjects() {
+    let source = "let x = 1 + 2; in { a = x == 3; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-suspended-computed.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let captured_x = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a node thunk");
+        let env = thunk.env().expect("a captures x");
+        env.frames()[0].get(0).expect("x capture exists")
+    };
+    let x_thunk = evaluator
+        .heap()
+        .get_thunk(captured_x)
+        .expect("x capture is a thunk");
+    assert_eq!(x_thunk.cell().state(), Ok(ThunkState::Suspended));
+
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "captured suspended computed thunks must not be hashed into demand keys"
+    );
+    let x_thunk = evaluator
+        .heap()
+        .get_thunk(captured_x)
+        .expect("x capture remains a thunk");
+    assert_eq!(
+        x_thunk.cell().state(),
+        Ok(ThunkState::Suspended),
+        "probing the captured force-cache subject must not force captured thunks"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured suspended computed force succeeds");
+
+    assert_eq!(forced.as_bool(), Ok(true));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "subjects with captured suspended computed thunks wait for canonical value hashes"
+    );
+}
+
+#[test]
 fn captured_empty_lists_use_free_variable_hashes() {
     let source = "let f = x: { a = x == x; }; in { a = (f []).a; }";
     let ir = lower(source);
