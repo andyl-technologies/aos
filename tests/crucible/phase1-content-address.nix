@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.contentAddress",
-  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9"],
+  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -358,6 +358,114 @@
         label = "CoW refs are deduped by typed content hash";
         needle = "unique_refs.insert(cow_ref);";
       }
+      {
+        label = "frontier reduction policy";
+        needle = "pub struct FrontierReductionPolicy";
+      }
+      {
+        label = "frontier reduction report";
+        needle = "pub struct FrontierReductionReport";
+      }
+      {
+        label = "frontier covered child";
+        needle = "pub struct FrontierCoveredChild";
+      }
+      {
+        label = "symmetry reduction key";
+        needle = "pub struct SymmetryReductionKey";
+      }
+      {
+        label = "symmetry class id";
+        needle = "pub struct SymmetryClassId";
+      }
+      {
+        label = "symmetry class map";
+        needle = "pub struct SymmetryReductionClasses";
+      }
+      {
+        label = "partial-order reduction key";
+        needle = "pub struct PartialOrderReductionKey";
+      }
+      {
+        label = "partial-order independence proof";
+        needle = "pub struct PartialOrderIndependenceProof";
+      }
+      {
+        label = "partial-order proof policy";
+        needle = "pub struct PartialOrderReductionPolicy";
+      }
+      {
+        label = "decision touched-node classifier";
+        needle = "pub fn touched_nodes(&self) -> Option<BTreeSet<NodeId>>";
+      }
+      {
+        label = "proof-carrying decision independence";
+        needle = "pub fn is_independent_from(&self, other: &Self, policy: &PartialOrderReductionPolicy) -> bool";
+      }
+      {
+        label = "deterministic POR order key";
+        needle = "pub fn reduction_order_key(&self) -> ContentHash";
+      }
+      {
+        label = "reduced frontier enumeration API";
+        needle = "pub fn enumerate_frontier_reduced<I>";
+      }
+      {
+        label = "checkpoint symmetry key API";
+        needle = "classes: &SymmetryReductionClasses,\n    ) -> Option<SymmetryReductionKey>";
+      }
+      {
+        label = "graph symmetry key API";
+        needle = "configuration: &Configuration,\n        classes: &SymmetryReductionClasses,";
+      }
+      {
+        label = "POR cover helper";
+        needle = "fn partial_order_cover(";
+      }
+      {
+        label = "symmetry key helper";
+        needle = "fn checkpoint_symmetry_reduction_key(\n    checkpoint: &Checkpoint,\n    classes: &SymmetryReductionClasses,";
+      }
+      {
+        label = "symmetry refuses default coverage";
+        needle = "checkpoint.coverage_fingerprint == ContentHash::default()";
+      }
+      {
+        label = "symmetry requires explicit classes";
+        needle = "classes.is_empty()";
+      }
+      {
+        label = "symmetry requires loadable state";
+        needle = "let state = checkpoint.state.as_ref()?;";
+      }
+      {
+        label = "symmetry canonicalizes materialized state";
+        needle = "fn push_symmetry_materialized_state_lines(";
+      }
+      {
+        label = "symmetry rejects ambiguous relabeling";
+        needle = "if pair[0].0 == pair[1].0";
+      }
+      {
+        label = "POR requires explicit proof";
+        needle = "policy.proves_independent(left, right)";
+      }
+      {
+        label = "POR representative must exist";
+        needle = "if !graph.contains_configuration(&representative)";
+      }
+      {
+        label = "POR proof insertion API";
+        needle = "pub fn with_independent_pair(mut self, left: &Decision, right: &Decision) -> Self";
+      }
+      {
+        label = "POR domain separator";
+        needle = "crucible.model.partial-order-reduction.v1";
+      }
+      {
+        label = "symmetry domain separator";
+        needle = "crucible.model.symmetry-reduction.v1";
+      }
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
       {
@@ -657,6 +765,54 @@
         needle = "assert_eq!(thin.kind, CheckpointKind::Thin);";
       }
       {
+        label = "symmetry reduction covers relabelled frontier";
+        needle = "gate_content_address_temporal_graph_symmetry_reduction_covers_relabelled_frontier";
+      }
+      {
+        label = "symmetry reduction explores without proof";
+        needle = "gate_content_address_temporal_graph_symmetry_reduction_explores_without_proof";
+      }
+      {
+        label = "symmetry reduction explores when state differs";
+        needle = "gate_content_address_temporal_graph_symmetry_reduction_explores_when_state_differs";
+      }
+      {
+        label = "POR skips noncanonical interleaving";
+        needle = "gate_content_address_temporal_graph_partial_order_reduction_skips_noncanonical_interleaving";
+      }
+      {
+        label = "POR explores when representative absent";
+        needle = "gate_content_address_temporal_graph_partial_order_reduction_explores_without_representative";
+      }
+      {
+        label = "POR explores dependent decisions";
+        needle = "gate_content_address_temporal_graph_partial_order_reduction_explores_when_dependent";
+      }
+      {
+        label = "symmetry covered by representative";
+        needle = "FrontierReductionReason::Symmetry";
+      }
+      {
+        label = "POR covered by representative";
+        needle = "FrontierReductionReason::PartialOrder";
+      }
+      {
+        label = "POR does not record skipped child";
+        needle = "assert!(!graph.contains_configuration(&covered));";
+      }
+      {
+        label = "dependent app-random same stream";
+        needle = "assert!(!same_stream_a.is_independent_from(&same_stream_b, &same_stream_proof));";
+      }
+      {
+        label = "POR proof policy used by tests";
+        needle = "PartialOrderReductionPolicy::new().with_independent_pair";
+      }
+      {
+        label = "symmetry class map used by tests";
+        needle = "SymmetryReductionClasses::new()";
+      }
+      {
         label = "missing parent reason";
         needle = "descendant-missing-parent";
       }
@@ -796,6 +952,10 @@
         label = "phase1 content-address lists T-TEMP-9";
         needle = "\"T-TEMP-9\"";
       }
+      {
+        label = "phase1 content-address lists T-TEMP-10";
+        needle = "\"T-TEMP-10\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
@@ -878,6 +1038,22 @@
       }
       {
         label = "T-TEMP-9 completion names content-address gate";
+        needle = "`checks.crucible.phase1.gates.contentAddress`";
+      }
+      {
+        label = "T-TEMP-10 checklist complete";
+        needle = "- [x] **T-TEMP-10**";
+      }
+      {
+        label = "T-TEMP-10 completion names frontier policy";
+        needle = "`crucible::FrontierReductionPolicy`";
+      }
+      {
+        label = "T-TEMP-10 completion names reduced enumeration";
+        needle = "`TemporalGraph::enumerate_frontier_reduced`";
+      }
+      {
+        label = "T-TEMP-10 completion names content-address gate";
         needle = "`checks.crucible.phase1.gates.contentAddress`";
       }
     ];
@@ -989,6 +1165,10 @@ in
             dag_gc_cache_rule=collect-cache-not-identity
             dag_gc_store=delete-unreachable-store-keys
             dag_gc_pins=pinned-stays-realizable
+            search_reduction=symmetry,partial-order
+            search_reduction_scope=graph-level-content-addressed-dag
+            symmetry_reduction=explicit-classes-coverage-full-state-canonical-relabeling
+            partial_order_reduction=explicit-proof-disjoint-node-recorded-representative
             RESULT
           '';
         }

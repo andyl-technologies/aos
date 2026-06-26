@@ -879,11 +879,32 @@ command.
     roots fail without deleting store objects; and pinned/cache-collected
     checkpoints keep their ancestor/delta closure replay-oracle-realizable after
     GC.
-- [ ] **T-TEMP-10** Implement symmetry reduction and partial-order reduction as
+- [x] **T-TEMP-10** Implement symmetry reduction and partial-order reduction as
   sound, graph-level node-deduplication optimizations over the content-addressed
   DAG (canonical-relabeling fingerprint; conservative decision independence),
   explicitly not a formal-methods engine. — satisfies [TEMP-27], [TEMP-28],
   [TEMP-29]; spec §9; cross-ref 22.
+  - Completed by `crucible::FrontierReductionPolicy`,
+    `crucible::FrontierReductionReport`,
+    `crucible::SymmetryReductionClasses`,
+    `crucible::SymmetryReductionKey`,
+    `crucible::PartialOrderReductionPolicy`,
+    `crucible::PartialOrderReductionKey`,
+    `Decision::touched_nodes`, `Decision::is_independent_from`,
+    `Decision::reduction_order_key`,
+    `Checkpoint::symmetry_reduction_key`,
+    `TemporalGraph::symmetry_reduction_key`,
+    `TemporalGraph::enumerate_frontier_reduced`, and
+    `checks.crucible.phase1.gates.contentAddress`: reduced frontier expansion
+    keeps existing content-addressed configuration identities, treats symmetric
+    cached checkpoints as covered only when explicit interchangeable-node
+    classes, non-default `coverage_fingerprint`, and the full loadable
+    materialized state yield the same unambiguous canonical-relabeling
+    fingerprint, skips only the non-canonical ordering of disjoint-node
+    decisions with an explicit independence proof whose representative is
+    already recorded, and explores when coverage, materialized state, symmetry
+    classes, touched nodes, representative state, or ordering resources are
+    unknown.
 - [ ] **T-TEMP-11** Wire save/resume/fork/replay/search as operations on the
   temporal graph via `instantiate`, with no checkpoint store or state
   representation outside the DAG. — satisfies [TEMP-30]; spec §10; cross-ref
