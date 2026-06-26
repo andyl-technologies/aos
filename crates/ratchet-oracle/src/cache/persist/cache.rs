@@ -18,21 +18,29 @@ pub struct PersistCache {
     parse_artifact_index: PersistParseArtifactIndex,
     node_metadata_index: PersistNodeMetadataIndex,
     node_trace_log: PersistNodeTraceLog,
-    blob_write_locks: Arc<PersistBlobWriteLocks>,
+    root_locks: Arc<PersistRootLocks>,
 }
 
 #[derive(Debug)]
-struct PersistBlobWriteLocks {
+struct PersistRootLocks {
+    open: Mutex<()>,
     values: Mutex<()>,
     files: Mutex<()>,
 }
 
-impl PersistBlobWriteLocks {
+impl PersistRootLocks {
     fn new() -> Self {
         Self {
+            open: Mutex::new(()),
             values: Mutex::new(()),
             files: Mutex::new(()),
         }
+    }
+
+    fn lock_open(&self) -> Result<MutexGuard<'_, ()>, PersistError> {
+        self.open
+            .lock()
+            .map_err(|_| PersistError::RootOpenLockPoisoned)
     }
 
     fn lock(
@@ -48,26 +56,25 @@ impl PersistBlobWriteLocks {
     }
 }
 
-static PERSIST_BLOB_WRITE_LOCK_REGISTRY: OnceLock<
-    Mutex<BTreeMap<PathBuf, Weak<PersistBlobWriteLocks>>>,
-> = OnceLock::new();
+static PERSIST_ROOT_LOCK_REGISTRY: OnceLock<Mutex<BTreeMap<PathBuf, Weak<PersistRootLocks>>>> =
+    OnceLock::new();
 
-fn blob_write_locks_for_root(root: &Path) -> Result<Arc<PersistBlobWriteLocks>, PersistError> {
+fn root_locks_for_root(root: &Path) -> Result<Arc<PersistRootLocks>, PersistError> {
     let canonical_root =
         fs::canonicalize(root).map_err(|source| PersistError::CanonicalizeRoot {
             path: root.to_path_buf(),
             source,
         })?;
-    let registry = PERSIST_BLOB_WRITE_LOCK_REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let registry = PERSIST_ROOT_LOCK_REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()));
     let mut locks = registry
         .lock()
-        .map_err(|_| PersistError::BlobWriteLockRegistryPoisoned)?;
+        .map_err(|_| PersistError::RootLockRegistryPoisoned)?;
     locks.retain(|_, candidate| candidate.strong_count() > 0);
     if let Some(existing) = locks.get(&canonical_root).and_then(Weak::upgrade) {
         return Ok(existing);
     }
 
-    let created = Arc::new(PersistBlobWriteLocks::new());
+    let created = Arc::new(PersistRootLocks::new());
     locks.insert(canonical_root, Arc::downgrade(&created));
     Ok(created)
 }
@@ -395,7 +402,8 @@ impl PersistCache {
     /// Returns [`PersistError`] if the cache root cannot be created or
     /// canonicalized, schema metadata cannot be read, parsed, or written, cache
     /// payload directories cannot be created or discarded, the process-local
-    /// write-lock registry is poisoned, or packfiles or sidecar indexes cannot
+    /// root-lock registry is poisoned, the same-root open lock is poisoned, or
+    /// packfiles or sidecar indexes cannot
     /// be initialized.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, PersistError> {
         let layout = PersistLayout::new(root);
@@ -409,6 +417,8 @@ impl PersistCache {
                 source,
             }
         })?);
+        let root_locks = root_locks_for_root(layout.root())?;
+        let open_guard = root_locks.lock_open()?;
         match read_schema_version(&layout)? {
             Some(PERSIST_CACHE_SCHEMA_VERSION) => {
                 ensure_payload_dirs(&layout)?;
@@ -423,7 +433,6 @@ impl PersistCache {
                 write_schema(&layout)?;
             }
         }
-        let blob_write_locks = blob_write_locks_for_root(layout.root())?;
         let value_pack_path = layout.value_packfile_path();
         let value_pack = PersistBlobPack::open(value_pack_path.clone()).map_err(|source| {
             PersistError::OpenBlobPack {
@@ -480,6 +489,7 @@ impl PersistCache {
                     source,
                 }
             })?;
+        drop(open_guard);
         Ok(Self {
             layout,
             value_pack,
@@ -490,8 +500,13 @@ impl PersistCache {
             parse_artifact_index,
             node_metadata_index,
             node_trace_log,
-            blob_write_locks,
+            root_locks,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn lock_open_for_tests(&self) -> Result<MutexGuard<'_, ()>, PersistError> {
+        self.root_locks.lock_open()
     }
 
     #[cfg(test)]
@@ -499,7 +514,7 @@ impl PersistCache {
         &self,
         store: PersistBlobStore,
     ) -> Result<MutexGuard<'_, ()>, PersistBlobIndexedWriteError> {
-        self.blob_write_locks.lock(store)
+        self.root_locks.lock(store)
     }
 
     /// Compacts every current append-only sidecar to its newest entries.
@@ -1454,7 +1469,7 @@ impl PersistCache {
         key: PersistBlobKey,
         payload: &[u8],
     ) -> Result<PersistBlobIndexEntry, PersistBlobIndexedWriteError> {
-        let _write_guard = self.blob_write_locks.lock(key.store())?;
+        let _write_guard = self.root_locks.lock(key.store())?;
         if let Ok(Some(location)) = self.lookup_blob_location(key) {
             if matches!(self.read_blob(key, location), Ok(existing) if existing == payload) {
                 return Ok(PersistBlobIndexEntry::new(key, location));

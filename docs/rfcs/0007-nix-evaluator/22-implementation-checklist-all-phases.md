@@ -1375,11 +1375,24 @@ alone (`M-1`/`Q-A`).
       collapses to one fresh verified pack record and newest sidecar entry for
       the selected store, a poisoned same-root lock is reported before any
       append/index write, and an opened symlink-root handle keeps writing the
-      canonical target it opened even if the symlink is retargeted. Schema/open
-      initialization, raw `append_blob_indexed` calls, different roots,
-      multi-process writers, two-machine misses, durable filesystem locks/CAS,
-      automatic compaction, GC/repack, mmap reads, LMDB/redb indexes, and
-      loom/harness proof remain open (`C-13`/`R-4`/`R-14`).
+      canonical target it opened even if the symlink is retargeted. Raw
+      `append_blob_indexed` calls, different roots, multi-process writers,
+      two-machine misses, durable filesystem locks/CAS, automatic compaction,
+      GC/repack, mmap reads, LMDB/redb indexes, and loom/harness proof remain
+      open (`C-13`/`R-4`/`R-14`).
+- [x] Current same-process same-root open-initialization lock precursor:
+      `PersistCache::open` now creates the caller-supplied root, canonicalizes
+      it, acquires a process-local same-root open mutex from the shared weak
+      root-lock registry, and only then performs schema validation/rewrites plus
+      pack/index initialization through the canonical layout. If a panic
+      poisons a live same-root open lock while another cache handle or waiter
+      keeps that root's lock object alive, later same-root opens report the
+      poison before touching schema or sidecars; first-open/no-survivor sticky
+      poison remains intentionally outside the weak-registry guarantee. This is
+      same-process initialization serialization only; raw lower-level sidecar
+      helpers, different roots, multi-process writers, two-machine misses,
+      durable filesystem locks/CAS, automatic repair/GC policy, LMDB/redb
+      transactions, and loom/harness proof remain open (`C-13`/`R-4`/`R-14`).
 - [x] Current explicit fixed-record sidecar compaction substrate:
       `PersistBlobIndex`, `PersistFileArtifactIndex`, and
       `PersistParseArtifactIndex` now expose `latest_entries` and

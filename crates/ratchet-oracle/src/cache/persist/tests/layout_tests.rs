@@ -161,6 +161,25 @@ fn opened_cache_layout_uses_canonical_paths_after_symlink_retarget() {
 }
 
 #[test]
+fn open_reports_poisoned_live_same_root_initialization_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = cache.clone();
+    let poisoner = std::thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_open_for_tests()
+            .expect("open lock acquires");
+        panic!("poison persistent root open lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let error = PersistCache::open(&root).expect_err("poisoned open lock rejects reopen");
+    assert!(matches!(error, PersistError::RootOpenLockPoisoned));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn corrupt_blob_pack_errors_without_rewriting() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

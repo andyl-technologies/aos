@@ -1380,9 +1380,12 @@ pub enum PersistError {
         /// The underlying filesystem error.
         source: io::Error,
     },
-    /// The process-local blob write-lock registry was poisoned by a prior panic.
-    #[error("persistent blob write-lock registry is poisoned")]
-    BlobWriteLockRegistryPoisoned,
+    /// The process-local root-lock registry was poisoned by a prior panic.
+    #[error("persistent cache root-lock registry is poisoned")]
+    RootLockRegistryPoisoned,
+    /// The same-root open initialization lock was poisoned by a prior panic.
+    #[error("persistent cache root open lock is poisoned")]
+    RootOpenLockPoisoned,
     /// Existing cache payload could not be discarded after a schema mismatch.
     #[error("failed to discard persistent cache payload {path}")]
     DiscardPayload {
