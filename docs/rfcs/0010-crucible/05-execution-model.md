@@ -1017,9 +1017,17 @@ information that cannot be recomputed.
     The canonical gate target map now includes the `crucible` model target, and
     `checks.crucible.phase1.gates.singleVmFingerprint` runs it alongside the
     existing QEMU run-twice evidence.
-- [ ] **T-EXEC-18** Run the model determinism tests under adversarial host
+- [x] **T-EXEC-18** Run the model determinism tests under adversarial host
   conditions (load, task reordering, varied core counts) and assert identical
   fingerprints. — satisfies [EXEC-32]; spec §11.
+  - Completed by `crates/crucible/tests/gate_single_vm_fingerprint.rs`:
+    `gate_single_vm_fingerprint_model_determinism_survives_adversarial_host_profiles`
+    runs the same representative model configurations under quiet single-core,
+    loaded single-core, reordered two-worker, and loaded many-worker profiles,
+    injecting deterministic host load/yields and reordering task execution while
+    asserting identical canonical execution fingerprints.
+    `checks.crucible.phase1.gates.singleVmFingerprint` runs this matrix with
+    the model same-configuration validator.
 - [x] **T-EXEC-19** Implement the `Decision::Preemption` variant
   (`VcpuSwitch` / `InterruptAt`, `PreemptionKind`) with the
   default-recomputable / override-stored discipline: prove the default RR/timer

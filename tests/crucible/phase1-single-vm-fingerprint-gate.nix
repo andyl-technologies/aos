@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.singleVmFingerprint",
-  taskIds ? ["T-HARN-6" "T-HARN-7" "T-DET-9" "T-EXEC-17"],
+  taskIds ? ["T-HARN-6" "T-HARN-7" "T-DET-9" "T-EXEC-17" "T-EXEC-18"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -82,6 +82,58 @@
       }
     ]
     ++ failuresFor "crates/crucible/tests/gate_single_vm_fingerprint.rs" crucibleModelGate [
+      {
+        label = "adversarial host profile matrix test";
+        needle = "gate_single_vm_fingerprint_model_determinism_survives_adversarial_host_profiles";
+      }
+      {
+        label = "host adversary profile type";
+        needle = "struct HostAdversaryProfile";
+      }
+      {
+        label = "host load profile";
+        needle = "loaded-single-core";
+      }
+      {
+        label = "task reordering profile";
+        needle = "reordered-two-core";
+      }
+      {
+        label = "varied core count profile";
+        needle = "loaded-many-core";
+      }
+      {
+        label = "host task ordering variation";
+        needle = "enum HostTaskOrder";
+      }
+      {
+        label = "worker-count variation";
+        needle = "worker_count: 4";
+      }
+      {
+        label = "yield perturbation";
+        needle = "std::thread::yield_now();";
+      }
+      {
+        label = "determinism matrix equality";
+        needle = "assert_eq!(candidate, baseline";
+      }
+      {
+        label = "adversarial profiles use same-configuration fixtures";
+        needle = "same_configuration_fixtures(&scenario)";
+      }
+      {
+        label = "adversarial matrix validates same-configuration fixture";
+        needle = "validate_same_configuration_fixture(scenario, fixture)";
+      }
+      {
+        label = "concurrent host load wrapper";
+        needle = "fn with_concurrent_host_load";
+      }
+      {
+        label = "background load worker";
+        needle = "scope.spawn(move || inject_host_load(profile, task_index))";
+      }
       {
         label = "same-configuration validator test";
         needle = "gate_single_vm_fingerprint_same_configuration_twice_validates_start_resume_fork_and_snapshot_completeness";
@@ -437,6 +489,10 @@
         label = "phase1 gate lists T-EXEC-17";
         needle = "\"T-EXEC-17\"";
       }
+      {
+        label = "phase1 gate lists T-EXEC-18";
+        needle = "\"T-EXEC-18\"";
+      }
     ]
     ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -468,6 +524,14 @@
       {
         label = "T-EXEC-17 completion note";
         needle = "Completed by `crates/crucible/tests/gate_single_vm_fingerprint.rs`";
+      }
+      {
+        label = "T-EXEC-18 checklist complete";
+        needle = "- [x] **T-EXEC-18**";
+      }
+      {
+        label = "T-EXEC-18 completion note";
+        needle = "gate_single_vm_fingerprint_model_determinism_survives_adversarial_host_profiles";
       }
     ];
 in
@@ -588,6 +652,8 @@ in
             model_gate_target=crucible::gate_single_vm_fingerprint
             model_validator=same-configuration-twice
             model_probes=start,resume,fork,snapshot-completeness
+            model_adversarial_profiles=quiet-single-core,loaded-single-core,reordered-two-core,loaded-many-core
+            model_adversarial_dimensions=host-load,task-reordering,varied-core-counts
             real_qemu_source=checks.crucible.phase0.s1Fingerprint
             run_model=run-twice-and-diff
             scenario=stock-linux-diskless-initramfs-workload
