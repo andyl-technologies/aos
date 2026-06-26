@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.contentAddress",
-  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8"],
+  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -87,6 +87,10 @@
         needle = "fn exists(&self, key: &ContentHash) -> Result<bool, DagStoreError>;";
       }
       {
+        label = "DAG store delete";
+        needle = "fn delete(&self, key: &ContentHash) -> Result<bool, DagStoreError>;";
+      }
+      {
         label = "memory DAG store backend";
         needle = "pub struct MemoryDagStore";
       }
@@ -123,8 +127,64 @@
         needle = "pub enum TemporalGraphStoreError";
       }
       {
+        label = "temporal graph GC roots";
+        needle = "pub struct TemporalGraphGcRoots";
+      }
+      {
+        label = "temporal graph GC live tips";
+        needle = "pub live_tips: BTreeMap<ContentHash, usize>";
+      }
+      {
+        label = "temporal graph GC pinned checkpoints";
+        needle = "pub pinned_checkpoints: BTreeMap<ContentHash, usize>";
+      }
+      {
+        label = "temporal graph GC reference counts";
+        needle = "pub struct TemporalGraphReferenceCounts";
+      }
+      {
+        label = "temporal graph GC report";
+        needle = "pub struct TemporalGraphGcReport";
+      }
+      {
         label = "temporal graph DagStore persistence API";
         needle = "pub fn persist_checkpoint_closure<S>";
+      }
+      {
+        label = "temporal graph reference counting API";
+        needle = "pub fn reference_counts(";
+      }
+      {
+        label = "temporal graph mark-and-sweep API";
+        needle = "pub fn garbage_collect(";
+      }
+      {
+        label = "temporal graph store-backed GC API";
+        needle = "pub fn garbage_collect_store<S>";
+      }
+      {
+        label = "temporal graph cache collection API";
+        needle = "pub fn collect_cached_snapshot(";
+      }
+      {
+        label = "temporal graph store-backed cache collection API";
+        needle = "pub fn collect_cached_snapshot_store<S>";
+      }
+      {
+        label = "temporal graph GC mark helper";
+        needle = "fn mark_live_checkpoints(";
+      }
+      {
+        label = "temporal graph GC checkpoint sweep";
+        needle = "self.checkpoint_nodes";
+      }
+      {
+        label = "temporal graph GC cache sweep";
+        needle = "self.cached_snapshots";
+      }
+      {
+        label = "temporal graph GC store-key delete";
+        needle = "operation: \"delete-gc-object\"";
       }
       {
         label = "temporal graph cached snapshot store operation";
@@ -461,6 +521,10 @@
         needle = "ccd5518b5e42662190b09ab692a0d86827cea51e1c2e782cabe9474e575a0ee3";
       }
       {
+        label = "DAG store delete assertion";
+        needle = "stored object delete should succeed";
+      }
+      {
         label = "local DAG store two-level layout test";
         needle = "gate_content_address_local_dag_store_uses_two_level_layout";
       }
@@ -515,6 +579,82 @@
       {
         label = "temporal graph persisted log CoW ref";
         needle = "first_keys.cow_deltas.contains_key(&log_ref)";
+      }
+      {
+        label = "GC refcount abandoned branch test";
+        needle = "gate_content_address_gc_refcounts_abandoned_branch_unique_objects";
+      }
+      {
+        label = "GC shared CoW refcount assertion";
+        needle = "assert_eq!(counts.cow_deltas[&shared_vm_ref], 2);";
+      }
+      {
+        label = "GC shared CoW retained after sibling abandon";
+        needle = "assert!(!report.collectible_cow_deltas.contains(&shared_vm_ref));";
+      }
+      {
+        label = "GC store-backed API exercised";
+        needle = "garbage_collect_store(&store";
+      }
+      {
+        label = "GC deleted store keys assertion";
+        needle = "report.deleted_store_keys.contains(&left_overlay_store_key)";
+      }
+      {
+        label = "GC missing store keys assertion";
+        needle = "assert!(report.missing_store_keys.is_empty());";
+      }
+      {
+        label = "GC mark sweep roots and pins test";
+        needle = "gate_content_address_gc_mark_sweep_roots_live_tips_pins_and_genesis";
+      }
+      {
+        label = "GC pinned root API exercised";
+        needle = "with_pinned_checkpoint(second.id())";
+      }
+      {
+        label = "GC pinned checkpoint remains realizable";
+        needle = "pinned checkpoint should remain realizable";
+      }
+      {
+        label = "GC counted root refs assertion";
+        needle = "report.live_reference_counts.checkpoint_nodes[&second.id()]";
+      }
+      {
+        label = "GC counted root refs expected value";
+        needle = "        2\n    );";
+      }
+      {
+        label = "GC zero-count roots are ignored";
+        needle = "roots.live_tips.insert(abandoned.id(), 0);";
+      }
+      {
+        label = "GC missing root negative test";
+        needle = "gate_content_address_gc_missing_root_errors_without_deleting_store_objects";
+      }
+      {
+        label = "GC missing root leaves store untouched";
+        needle = "store count should be readable after failed GC";
+      }
+      {
+        label = "GC cache not identity test";
+        needle = "gate_content_address_gc_collects_cache_not_identity";
+      }
+      {
+        label = "GC cache collection API exercised";
+        needle = "collect_cached_snapshot_store(&store, &first)";
+      }
+      {
+        label = "GC cache collection deletes cached snapshot store key";
+        needle = "report.deleted_store_keys.contains(&cache_store_key)";
+      }
+      {
+        label = "GC cache collection retains thin checkpoint store key";
+        needle = "thin checkpoint key should remain";
+      }
+      {
+        label = "GC collected cache becomes thin";
+        needle = "assert_eq!(thin.kind, CheckpointKind::Thin);";
       }
       {
         label = "missing parent reason";
@@ -652,6 +792,10 @@
         label = "phase1 content-address lists T-TEMP-8";
         needle = "\"T-TEMP-8\"";
       }
+      {
+        label = "phase1 content-address lists T-TEMP-9";
+        needle = "\"T-TEMP-9\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
@@ -719,6 +863,22 @@
       {
         label = "T-TEMP-8 completion names store-key artifact";
         needle = "`crucible::DagStoreReproductionArtifact`";
+      }
+      {
+        label = "T-TEMP-9 checklist complete";
+        needle = "- [x] **T-TEMP-9**";
+      }
+      {
+        label = "T-TEMP-9 completion names GC roots";
+        needle = "`crucible::TemporalGraphGcRoots`";
+      }
+      {
+        label = "T-TEMP-9 completion names GC report";
+        needle = "`crucible::TemporalGraphGcReport`";
+      }
+      {
+        label = "T-TEMP-9 completion names content-address gate";
+        needle = "`checks.crucible.phase1.gates.contentAddress`";
       }
     ];
 in
@@ -824,6 +984,11 @@ in
             temporal_graph_store=checkpoint-closure
             temporal_graph_store_objects=checkpoint-nodes,cached-snapshots,cow-deltas
             reproduction_artifact=store-key-closure
+            dag_gc=reference-counts,mark-and-sweep
+            dag_gc_roots=live-tips,pinned-checkpoints,genesis
+            dag_gc_cache_rule=collect-cache-not-identity
+            dag_gc_store=delete-unreachable-store-keys
+            dag_gc_pins=pinned-stays-realizable
             RESULT
           '';
         }

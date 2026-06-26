@@ -39,9 +39,10 @@ pub use model::{
     PendingFrame, PreemptionDecision, PreemptionKind, ReadyPoint, ReplayOracleCheck, RngDecision,
     RngStreamId, RngStreamPosition, RuntimeState, SavevmCompletenessHedge, ScenarioDef, Schedule,
     ScheduleError, SchedulerState, SchedulingPoint, Shift, SimDuration, SimInstant, SimOffset,
-    State, TemporalGraph, TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError,
-    TimerId, TimerRegistry, TimerState, VcpuId, VirtualInstant, VirtualTime, VmSnapshotRef,
-    WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
+    State, TemporalGraph, TemporalGraphGcReport, TemporalGraphGcRoots,
+    TemporalGraphReferenceCounts, TemporalGraphStoreError, TemporalGraphStoreKeys,
+    TimeConversionError, TimerId, TimerRegistry, TimerState, VcpuId, VirtualInstant, VirtualTime,
+    VmSnapshotRef, WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
@@ -788,6 +789,55 @@ mod tests {
         assert!(graph.cached_snapshot(&config).is_none());
         assert_eq!(graph.cached_snapshot_count(), 0);
         assert_eq!(exact_runtime, replay_runtime);
+    }
+
+    #[test]
+    fn temporal_graph_gc_cache_collection_preserves_replay_oracle_path() {
+        let scenario = generated_scenario(84);
+        let genesis = Configuration::genesis(scenario.clone());
+        let config = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(84, 3),
+        };
+        let mut graph = match TemporalGraph::empty()
+            .with_baked_genesis(&scenario, genesis_checkpoint_for(&genesis))
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+        let fat = match graph.materialize_checkpoint(&config) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("checkpoint should materialize before cache GC: {error}"),
+        };
+        let before_check = match graph.replay_checkpoint(&config, &fat) {
+            Ok(check) => check,
+            Err(error) => panic!("fat snapshot should match thin derivation before GC: {error}"),
+        };
+
+        let thin = match graph.collect_cached_snapshot(&config) {
+            Ok(Some(checkpoint)) => checkpoint,
+            Ok(None) => panic!("fat cache entry should exist before collection"),
+            Err(error) => panic!("fat cache collection should succeed: {error}"),
+        };
+        let replay_runtime = match instantiate(&graph, &config) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                panic!("thin derivation should remain realizable after cache GC: {error}")
+            }
+        };
+        let after_check = match graph.replay_checkpoint(&config, &fat) {
+            Ok(check) => check,
+            Err(error) => {
+                panic!("fat snapshot should still match thin derivation after GC: {error}")
+            }
+        };
+
+        assert_eq!(thin.kind, CheckpointKind::Thin);
+        assert!(thin.state.is_none());
+        assert!(graph.cached_snapshot(&config).is_none());
+        assert_eq!(before_check, after_check);
+        assert_eq!(replay_runtime.configuration, config.id());
+        assert_eq!(replay_runtime.id, reduced_state_id(&config));
     }
 
     #[test]

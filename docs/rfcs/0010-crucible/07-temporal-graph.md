@@ -856,11 +856,29 @@ command.
     fat snapshots, and typed CoW delta descriptors through the store; and
     reproduction artifacts can name the scenario, genesis snapshot, and schedule
     deltas purely as deduplicated store-key closures.
-- [ ] **T-TEMP-9** Implement DAG garbage collection: reference counting that
+- [x] **T-TEMP-9** Implement DAG garbage collection: reference counting that
   frees only objects unique to an abandoned branch, periodic mark-and-sweep
   rooted at live tips / pinned checkpoints / genesis, and the cache-not-identity
   / pinned-stays-realizable rules. — satisfies [TEMP-24], [TEMP-25], [TEMP-26];
   spec §8.
+  - Completed by `crucible::TemporalGraphGcRoots`,
+    `crucible::TemporalGraphReferenceCounts`,
+    `crucible::TemporalGraphGcReport`,
+    `TemporalGraph::reference_counts`, `TemporalGraph::garbage_collect`,
+    `TemporalGraph::garbage_collect_store`,
+    `TemporalGraph::collect_cached_snapshot`,
+    `TemporalGraph::collect_cached_snapshot_store`,
+    `crucible::DagStore::delete`, `checks.crucible.phase1.gates.contentAddress`, and
+    `checks.crucible.phase1.gates.replayOracle`: live session tips, pinned
+    checkpoints, and baked genesis snapshots form the mark roots; root
+    multiplicity is reflected in checkpoint reference counts; sweep removes only
+    unreachable checkpoint/cache/configuration entries, identifies CoW refs that
+    fell to zero, and deletes their deterministic store-key closure through the
+    backend; sibling-shared deltas are retained; explicit cache collection turns
+    a fat snapshot back into a thin checkpoint without changing identity; missing
+    roots fail without deleting store objects; and pinned/cache-collected
+    checkpoints keep their ancestor/delta closure replay-oracle-realizable after
+    GC.
 - [ ] **T-TEMP-10** Implement symmetry reduction and partial-order reduction as
   sound, graph-level node-deduplication optimizations over the content-addressed
   DAG (canonical-relabeling fingerprint; conservative decision independence),
