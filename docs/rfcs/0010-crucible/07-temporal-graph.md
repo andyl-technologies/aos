@@ -769,12 +769,20 @@ command.
     reconstructs a two-step schedule from parent-chain `schedule_delta` values,
     asserts the root is the exact baked fat checkpoint, and asserts each
     checkpoint id is the corresponding schedule-prefix configuration id.
-- [ ] **T-TEMP-3** Define `MaterializedState` capturing per-VM snapshot ref +
+- [x] **T-TEMP-3** Define `MaterializedState` capturing per-VM snapshot ref +
   icount (13, 15), per-device CoW overlay delta + device RNG (15), scheduler
   state (horizons, pending frame queues + delivery icounts, timer registry,
   active faults — 08, 17), decision-RNG positions (04), and event-log offset
   (19); test it is sufficient for the `loadvm` branch. — satisfies [TEMP-7],
   [TEMP-8], [TEMP-9], [TEMP-10]; spec §3.
+  - Completed by `crucible::MaterializedState`,
+    `checks.crucible.phase1.gates.contentAddress`, and
+    `checks.crucible.phase1.gates.replayOracle`: fat checkpoints now carry
+    structured VM snapshot refs with icounts, device overlay deltas with device
+    RNG state, scheduler state, decision-RNG cursors, and event-log offsets.
+    The content-address gate checks the component hash shape and icount
+    sensitivity; the replay-oracle gate loads baked genesis through the `loadvm`
+    branch and rejects incomplete fat checkpoint state.
 - [ ] **T-TEMP-4** Implement thin checkpoints (`state = None`, realized by
   ancestor-replay) and fat checkpoints (`MaterializedState`, realized by
   `loadvm`), the thin-is-source-of-truth rule, and the materialize-hot-nodes /

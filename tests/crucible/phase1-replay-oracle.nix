@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11"],
+  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -78,6 +78,22 @@
       {
         label = "schedule content hash";
         needle = "pub fn content_hash(&self) -> ContentHash";
+      }
+      {
+        label = "materialized state load validator";
+        needle = "fn validate_materialized_state(checkpoint: &Checkpoint) -> Result<(), EngineError>";
+      }
+      {
+        label = "materialized state incomplete error";
+        needle = "CheckpointMaterializedStateIncomplete";
+      }
+      {
+        label = "fat checkpoint state id validation";
+        needle = "materialized-state-id-mismatch";
+      }
+      {
+        label = "extra VM snapshot rejection";
+        needle = "extra-vm-snapshot";
       }
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
@@ -229,6 +245,30 @@
         label = "artifact carries deterministic seed";
         needle = "seed = 0x0010_0027";
       }
+      {
+        label = "materialized state loadvm sufficiency test";
+        needle = "gate_replay_oracle_materialized_state_loadvm_branch_captures_resume_components";
+      }
+      {
+        label = "incomplete materialized state rejection test";
+        needle = "gate_replay_oracle_loadvm_rejects_incomplete_materialized_state";
+      }
+      {
+        label = "saved descendant materialized state test";
+        needle = "gate_replay_oracle_saved_descendant_fat_checkpoint_carries_vm_snapshot_refs";
+      }
+      {
+        label = "baked VM snapshot icount assertion";
+        needle = "assert_eq!(snapshot.icount, Icount { retired: 321 });";
+      }
+      {
+        label = "saved descendant icount assertion";
+        needle = "assert_eq!(checkpoint.node_icounts[&node], Icount { retired: 988 });";
+      }
+      {
+        label = "saved descendant CoW assertion";
+        needle = "assert!(matches!(snapshot.blob, NodeBlobRef::CowDelta { .. }));";
+      }
     ]
     ++ forbiddenFor "crates/crucible/tests/gate_replay_oracle.rs" replayGate [
       {
@@ -360,6 +400,22 @@
         needle = "load_exact_snapshot_for_replay_oracle_probe";
       }
       {
+        label = "QEMU loadvm materialized-state validator";
+        needle = "fn validate_checkpoint_loadvm_state(";
+      }
+      {
+        label = "QEMU materialized state id validation";
+        needle = "materialized state id does not match its components";
+      }
+      {
+        label = "QEMU rejects incomplete exact snapshot state";
+        needle = "qemu_exact_snapshot_rejects_incomplete_materialized_state";
+      }
+      {
+        label = "QEMU rejects incomplete replay-oracle probe state";
+        needle = "qemu_replay_oracle_rejects_incomplete_materialized_state_probe";
+      }
+      {
         label = "thin replay derivation";
         needle = "fn realize_qemu_replay_oracle_thin_path(";
       }
@@ -455,6 +511,10 @@
         label = "phase1 replay-oracle lists T-EXEC-11";
         needle = "\"T-EXEC-11\"";
       }
+      {
+        label = "phase1 replay-oracle lists T-TEMP-3";
+        needle = "\"T-TEMP-3\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
       {
@@ -484,6 +544,16 @@
       {
         label = "T-EXEC-11 checklist complete";
         needle = "- [x] **T-EXEC-11**";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/07-temporal-graph.md" (builtins.readFile ../../docs/rfcs/0010-crucible/07-temporal-graph.md) [
+      {
+        label = "T-TEMP-3 checklist complete";
+        needle = "- [x] **T-TEMP-3**";
+      }
+      {
+        label = "T-TEMP-3 completion names replay-oracle gate";
+        needle = "`checks.crucible.phase1.gates.replayOracle`";
       }
     ];
 in
@@ -560,6 +630,14 @@ in
               --lib \
               replay_oracle \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-replay-oracle-target" \
+              -p crucible-qemu \
+              --lib \
+              qemu_exact_snapshot_rejects_incomplete_materialized_state \
+              -- --test-threads=1
           '';
         }
         {
@@ -607,6 +685,9 @@ in
             oracle=fat-materialized-equals-thin-from-ancestor
             qemu_oracle=loadvm-snapshot-equals-replay-from-ancestor
             qemu_oracle_probe_authorization=snapshot-completeness
+            loadvm_materialized_state=vm-snapshot-icount,scheduler,decision-rng,event-log
+            loadvm_incomplete_state=rejected
+            loadvm_saved_descendant_state=target-cow-vm-snapshot-ref-and-icount
             artifact_round_trip=re-run-from-seed-scenario-schedule-build-identity
             artifact_replay_assertions=fingerprint-equality,oracle-case-equality
             artifact_replay_negative_controls=build-identity-drift,seed-drift,scenario-drift,schedule-drift,oracle-case-drift,replay-failure,expected-oracle-mismatch,reproduced-oracle-mismatch

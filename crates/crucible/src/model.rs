@@ -978,18 +978,304 @@ pub struct AppRandomDecision {
     pub value: u64,
 }
 
+/// A per-VM snapshot reference captured by a fat checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct VmSnapshotRef {
+    /// The content-addressed VM-state blob or CoW delta.
+    pub blob: NodeBlobRef,
+    /// The retired-instruction count at which the snapshot was taken.
+    pub icount: Icount,
+}
+
+impl VmSnapshotRef {
+    /// Builds a VM snapshot reference from a blob ref and snapshot icount.
+    #[must_use]
+    pub fn new(blob: NodeBlobRef, icount: Icount) -> Self {
+        Self { blob, icount }
+    }
+}
+
+/// A device or I/O sub-node identifier.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceId {
+    /// The canonical device name.
+    pub name: String,
+}
+
+/// A deterministic RNG stream cursor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct RngStreamPosition {
+    /// Number of draws already consumed from the stream.
+    pub draws: u64,
+}
+
+impl RngStreamPosition {
+    /// Builds a deterministic RNG stream cursor.
+    #[must_use]
+    pub fn new(draws: u64) -> Self {
+        Self { draws }
+    }
+}
+
+/// The deterministic RNG state owned by one device overlay.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct DeviceRngState {
+    /// Per-stream cursor positions for device-local randomness.
+    pub streams: BTreeMap<RngStreamId, RngStreamPosition>,
+}
+
+impl DeviceRngState {
+    /// Builds an empty device RNG state.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            streams: BTreeMap::new(),
+        }
+    }
+}
+
+/// A per-device copy-on-write overlay delta captured by a checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DeviceOverlayDelta {
+    /// Parent overlay or read-only base content address.
+    pub parent: ContentHash,
+    /// Dirty-page delta content address.
+    pub delta: ContentHash,
+    /// Resolved overlay content address after applying `delta`.
+    pub resolved: ContentHash,
+    /// Device-local deterministic RNG state at this checkpoint.
+    pub rng: DeviceRngState,
+}
+
+impl DeviceOverlayDelta {
+    /// Builds a device overlay delta from content-addressed pieces.
+    #[must_use]
+    pub fn new(
+        parent: ContentHash,
+        delta: ContentHash,
+        resolved: ContentHash,
+        rng: DeviceRngState,
+    ) -> Self {
+        Self {
+            parent,
+            delta,
+            resolved,
+            rng,
+        }
+    }
+}
+
+/// A pending cross-node frame captured in scheduler state.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PendingFrame {
+    /// The source node that produced the frame.
+    pub source: NodeId,
+    /// Stable source-local frame sequence.
+    pub sequence: u64,
+    /// Delivery instruction count selected by the scheduler.
+    pub delivery_icount: Icount,
+    /// Content-addressed payload reference.
+    pub payload: ContentHash,
+}
+
+/// A timer identifier inside the scheduler state.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TimerId {
+    /// The canonical timer name.
+    pub name: String,
+}
+
+/// An armed timer captured by the scheduler state.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TimerState {
+    /// The node that owns the timer.
+    pub owner: NodeId,
+    /// Virtual time when the timer was armed.
+    pub armed_at: VirtualTime,
+    /// Virtual time when the timer should fire.
+    pub fire_at: VirtualTime,
+    /// Instruction count corresponding to the fire point.
+    pub fire_icount: Icount,
+}
+
+/// The set of armed timers captured by a materialized checkpoint.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TimerRegistry {
+    /// Timers keyed by stable timer id.
+    pub timers: BTreeMap<TimerId, TimerState>,
+}
+
+impl TimerRegistry {
+    /// Builds an empty timer registry.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            timers: BTreeMap::new(),
+        }
+    }
+}
+
+/// An active fault captured in scheduler state.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FaultState {
+    /// Virtual time at which the fault became active.
+    pub active_since: VirtualTime,
+    /// Optional virtual time when the fault should heal.
+    pub heal_at: Option<VirtualTime>,
+}
+
+/// Authoritative scheduler state needed to resume a fat checkpoint.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SchedulerState {
+    /// Per-node scheduler horizons.
+    pub horizons: BTreeMap<NodeId, VirtualTime>,
+    /// Pending frame queues with deterministic delivery counts.
+    pub pending_frames: BTreeMap<NodeId, Vec<PendingFrame>>,
+    /// Armed timer registry.
+    pub timers: TimerRegistry,
+    /// Faults currently active in the scheduler.
+    pub active_faults: BTreeMap<FaultId, FaultState>,
+}
+
+impl SchedulerState {
+    /// Builds an empty scheduler state.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            horizons: BTreeMap::new(),
+            pending_frames: BTreeMap::new(),
+            timers: TimerRegistry::empty(),
+            active_faults: BTreeMap::new(),
+        }
+    }
+}
+
+/// Harness decision-RNG cursor state captured at a checkpoint.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct DecisionRngState {
+    /// Per-stream cursor positions.
+    pub positions: BTreeMap<RngStreamId, RngStreamPosition>,
+}
+
+impl DecisionRngState {
+    /// Builds an empty decision-RNG state.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            positions: BTreeMap::new(),
+        }
+    }
+}
+
+/// The shared event-log prefix position for a checkpoint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct EventLogOffset {
+    /// Content address of the shared event-log prefix.
+    pub prefix: ContentHash,
+    /// Byte offset at which resume continues appending.
+    pub bytes: u64,
+    /// Event count at which resume continues appending.
+    pub events: u64,
+}
+
+impl EventLogOffset {
+    /// Builds an event-log offset from prefix, byte offset, and event count.
+    #[must_use]
+    pub fn new(prefix: ContentHash, bytes: u64, events: u64) -> Self {
+        Self {
+            prefix,
+            bytes,
+            events,
+        }
+    }
+}
+
 /// The cached realization carried by a fat checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MaterializedState {
     /// Content address of the materialized runtime/cache payload.
     pub id: ContentHash,
+    /// Per-VM snapshot refs and the icount at which each was taken.
+    pub vm_snapshots: BTreeMap<NodeId, VmSnapshotRef>,
+    /// Per-device CoW overlay deltas and device RNG state.
+    pub device_overlays: BTreeMap<DeviceId, DeviceOverlayDelta>,
+    /// Scheduler state required to resume cross-node ordering.
+    pub scheduler: SchedulerState,
+    /// Harness decision-RNG cursor positions.
+    pub decision_rng: DecisionRngState,
+    /// Event-log prefix position at this checkpoint.
+    pub event_log: EventLogOffset,
 }
 
 impl MaterializedState {
-    /// Builds a materialized-state handle from an existing content address.
+    /// Builds a legacy materialized-state handle from an existing content address.
+    ///
+    /// The resulting value is not sufficient for a loadable fat checkpoint
+    /// unless `id` is the canonical hash of the empty component set. Use
+    /// [`Self::from_components`] for loadable checkpoint state.
     #[must_use]
     pub fn from_content_hash(id: ContentHash) -> Self {
-        Self { id }
+        Self {
+            id,
+            vm_snapshots: BTreeMap::new(),
+            device_overlays: BTreeMap::new(),
+            scheduler: SchedulerState::empty(),
+            decision_rng: DecisionRngState::empty(),
+            event_log: EventLogOffset::default(),
+        }
+    }
+
+    /// Builds a materialized state from content-addressed components.
+    #[must_use]
+    pub fn from_components(
+        vm_snapshots: BTreeMap<NodeId, VmSnapshotRef>,
+        device_overlays: BTreeMap<DeviceId, DeviceOverlayDelta>,
+        scheduler: SchedulerState,
+        decision_rng: DecisionRngState,
+        event_log: EventLogOffset,
+    ) -> Self {
+        let id = canonical::materialized_state_hash(
+            &vm_snapshots,
+            &device_overlays,
+            &scheduler,
+            &decision_rng,
+            event_log,
+        );
+        Self {
+            id,
+            vm_snapshots,
+            device_overlays,
+            scheduler,
+            decision_rng,
+            event_log,
+        }
+    }
+
+    /// Builds an empty structured materialized state.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::from_components(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            SchedulerState::empty(),
+            DecisionRngState::empty(),
+            EventLogOffset::default(),
+        )
+    }
+
+    /// Builds a materialized state from checkpoint VM refs.
+    #[must_use]
+    pub fn from_checkpoint_parts(
+        node_icounts: &BTreeMap<NodeId, Icount>,
+        node_blobs: &BTreeMap<NodeId, NodeBlobRef>,
+    ) -> Self {
+        Self::from_components(
+            materialized_vm_snapshots(node_icounts, node_blobs),
+            BTreeMap::new(),
+            SchedulerState::empty(),
+            DecisionRngState::empty(),
+            EventLogOffset::default(),
+        )
     }
 }
 
@@ -1081,8 +1367,8 @@ impl Checkpoint {
             parent,
             schedule_delta,
             virtual_time,
+            state: materialized_state_for_kind(kind, &node_icounts, &node_blobs),
             node_icounts,
-            state: materialized_state_for_kind(kind, configuration.id()),
             coverage_fingerprint: ContentHash::default(),
             metadata: CheckpointMeta::empty(),
             node_blobs,
@@ -1106,7 +1392,7 @@ impl Checkpoint {
             schedule_delta: Schedule::empty(),
             virtual_time: VirtualTime::default(),
             node_icounts: BTreeMap::new(),
-            state: materialized_state_for_kind(kind, configuration),
+            state: materialized_state_for_kind(kind, &BTreeMap::new(), &node_blobs),
             coverage_fingerprint: ContentHash::default(),
             metadata: CheckpointMeta::empty(),
             node_blobs,
@@ -1627,6 +1913,10 @@ pub struct RuntimeState {
     pub id: ContentHash,
     /// The configuration materialized by this runtime state.
     pub configuration: ContentHash,
+    /// Per-node VM-state refs available to a fat checkpoint materialization.
+    pub node_blobs: BTreeMap<NodeId, NodeBlobRef>,
+    /// Per-node retired instruction counters at the materialization point.
+    pub node_icounts: BTreeMap<NodeId, Icount>,
 }
 
 /// Appends one decision to a configuration without materializing runtime state.
@@ -1706,26 +1996,15 @@ pub fn bake(world: &World) -> Result<GenesisCheckpoint, EngineError> {
     world.validate_ready_point_policies()?;
     let def = world.scenario_def();
     let genesis = Configuration::genesis(def);
-    let material = format!(
-        "{}\ngenesis_configuration={}",
-        world_hash_material(world),
-        content_hash_hex(genesis.id()),
-    );
 
     let checkpoint = Checkpoint::from_recorded_configuration(
         &genesis,
         None,
         VirtualTime::default(),
-        BTreeMap::new(),
+        baked_node_icounts(world),
         CheckpointKind::Fat,
         baked_node_blobs(world),
-    )?
-    .with_materialized_state(Some(MaterializedState::from_content_hash(
-        ContentHash::from_canonical_material(
-            "crucible.model.baked-genesis-checkpoint.v1",
-            &material,
-        ),
-    )));
+    )?;
 
     Ok(GenesisCheckpoint { checkpoint })
 }
@@ -1768,6 +2047,13 @@ pub enum EngineError {
         /// The checkpoint whose topology was invalid.
         checkpoint: ContentHash,
         /// Stable reason for the topology rejection.
+        reason: &'static str,
+    },
+    /// A fat checkpoint does not carry enough materialized state for `loadvm`.
+    CheckpointMaterializedStateIncomplete {
+        /// The checkpoint whose materialized state is incomplete.
+        checkpoint: ContentHash,
+        /// Stable reason for the state rejection.
         reason: &'static str,
     },
     /// A checkpoint DAG node was requested before it was recorded.
@@ -1849,6 +2135,9 @@ impl fmt::Display for EngineError {
             Self::CheckpointTopologyMismatch { reason, .. } => {
                 write!(f, "checkpoint topology is invalid: {reason}")
             }
+            Self::CheckpointMaterializedStateIncomplete { reason, .. } => {
+                write!(f, "checkpoint materialized state is incomplete: {reason}")
+            }
             Self::CheckpointNotRecorded { .. } => {
                 f.write_str("checkpoint is not recorded in the temporal graph")
             }
@@ -1883,13 +2172,23 @@ fn load_snapshot(
     checkpoint: &Checkpoint,
 ) -> Result<RuntimeState, EngineError> {
     validate_loadable_checkpoint(checkpoint, configuration)?;
-    runtime_for_configuration(configuration)
+    runtime_for_configuration(
+        configuration,
+        checkpoint.node_blobs.clone(),
+        checkpoint.node_icounts.clone(),
+    )
 }
 
-fn runtime_for_configuration(configuration: &Configuration) -> Result<RuntimeState, EngineError> {
+fn runtime_for_configuration(
+    configuration: &Configuration,
+    node_blobs: BTreeMap<NodeId, NodeBlobRef>,
+    node_icounts: BTreeMap<NodeId, Icount>,
+) -> Result<RuntimeState, EngineError> {
     Ok(RuntimeState {
         id: reduce(&configuration.def, &configuration.schedule)?.id,
         configuration: configuration.id(),
+        node_blobs,
+        node_icounts,
     })
 }
 
@@ -1919,7 +2218,9 @@ fn replay_suffix(
         });
     }
 
-    runtime_for_configuration(&replayed)
+    let node_blobs = replayed_node_blobs(&runtime.node_blobs, start, suffix, target);
+    let node_icounts = replayed_node_icounts(&runtime.node_icounts, suffix);
+    runtime_for_configuration(&replayed, node_blobs, node_icounts)
 }
 
 fn instantiate_thin_replay(
@@ -1958,27 +2259,22 @@ fn materialized_checkpoint_for_runtime(
     configuration: &Configuration,
     runtime: RuntimeState,
 ) -> Result<Checkpoint, EngineError> {
+    if runtime.configuration != configuration.id() {
+        return Err(EngineError::RuntimeConfigurationMismatch {
+            runtime: runtime.id,
+            expected: configuration.id(),
+            actual: runtime.configuration,
+        });
+    }
     let parent = immediate_parent_configuration(configuration)?;
-    let checkpoint = Checkpoint::from_recorded_configuration(
+    Checkpoint::from_recorded_configuration(
         configuration,
         parent.as_ref(),
         VirtualTime::default(),
-        BTreeMap::new(),
+        runtime.node_icounts,
         CheckpointKind::Fat,
-        BTreeMap::new(),
-    )?
-    .with_materialized_state(Some(MaterializedState::from_content_hash(
-        ContentHash::from_canonical_material(
-            "crucible.model.fat-checkpoint.v1",
-            &format!(
-                "configuration={}\nruntime_configuration={}\nruntime={}\n",
-                content_hash_hex(configuration.id()),
-                content_hash_hex(runtime.configuration),
-                content_hash_hex(runtime.id),
-            ),
-        ),
-    )));
-    Ok(checkpoint)
+        runtime.node_blobs,
+    )
 }
 
 fn validate_loadable_checkpoint(
@@ -2027,6 +2323,76 @@ fn validate_loadable_checkpoint(
             reason: "schedule-delta-mismatch",
         });
     }
+    validate_materialized_state(checkpoint)?;
+
+    Ok(())
+}
+
+fn validate_materialized_state(checkpoint: &Checkpoint) -> Result<(), EngineError> {
+    let state =
+        checkpoint
+            .state
+            .as_ref()
+            .ok_or(EngineError::CheckpointMaterializedStateIncomplete {
+                checkpoint: checkpoint.id,
+                reason: "missing-state",
+            })?;
+    let expected_state_id = canonical::materialized_state_hash(
+        &state.vm_snapshots,
+        &state.device_overlays,
+        &state.scheduler,
+        &state.decision_rng,
+        state.event_log,
+    );
+    if state.id != expected_state_id {
+        return Err(EngineError::CheckpointMaterializedStateIncomplete {
+            checkpoint: checkpoint.id,
+            reason: "materialized-state-id-mismatch",
+        });
+    }
+
+    for (node, blob) in &checkpoint.node_blobs {
+        let snapshot = state.vm_snapshots.get(node).ok_or(
+            EngineError::CheckpointMaterializedStateIncomplete {
+                checkpoint: checkpoint.id,
+                reason: "missing-vm-snapshot",
+            },
+        )?;
+        if &snapshot.blob != blob {
+            return Err(EngineError::CheckpointMaterializedStateIncomplete {
+                checkpoint: checkpoint.id,
+                reason: "vm-snapshot-blob-mismatch",
+            });
+        }
+        let expected_icount = checkpoint
+            .node_icounts
+            .get(node)
+            .copied()
+            .unwrap_or_default();
+        if snapshot.icount != expected_icount {
+            return Err(EngineError::CheckpointMaterializedStateIncomplete {
+                checkpoint: checkpoint.id,
+                reason: "vm-snapshot-icount-mismatch",
+            });
+        }
+    }
+
+    for node in checkpoint.node_icounts.keys() {
+        if !state.vm_snapshots.contains_key(node) {
+            return Err(EngineError::CheckpointMaterializedStateIncomplete {
+                checkpoint: checkpoint.id,
+                reason: "missing-icount-vm-snapshot",
+            });
+        }
+    }
+    for node in state.vm_snapshots.keys() {
+        if !checkpoint.node_blobs.contains_key(node) {
+            return Err(EngineError::CheckpointMaterializedStateIncomplete {
+                checkpoint: checkpoint.id,
+                reason: "extra-vm-snapshot",
+            });
+        }
+    }
 
     Ok(())
 }
@@ -2040,12 +2406,84 @@ fn checkpoint_kind_label(kind: CheckpointKind) -> &'static str {
 
 fn materialized_state_for_kind(
     kind: CheckpointKind,
-    configuration: ContentHash,
+    node_icounts: &BTreeMap<NodeId, Icount>,
+    node_blobs: &BTreeMap<NodeId, NodeBlobRef>,
 ) -> Option<MaterializedState> {
     match kind {
-        CheckpointKind::Fat => Some(MaterializedState::from_content_hash(configuration)),
+        CheckpointKind::Fat => Some(MaterializedState::from_checkpoint_parts(
+            node_icounts,
+            node_blobs,
+        )),
         CheckpointKind::Thin => None,
     }
+}
+
+fn materialized_vm_snapshots(
+    node_icounts: &BTreeMap<NodeId, Icount>,
+    node_blobs: &BTreeMap<NodeId, NodeBlobRef>,
+) -> BTreeMap<NodeId, VmSnapshotRef> {
+    node_blobs
+        .iter()
+        .map(|(node, blob)| {
+            let icount = node_icounts.get(node).copied().unwrap_or_default();
+            (node.clone(), VmSnapshotRef::new(blob.clone(), icount))
+        })
+        .collect()
+}
+
+fn replayed_node_blobs(
+    ancestor_blobs: &BTreeMap<NodeId, NodeBlobRef>,
+    start: &Configuration,
+    suffix: &Schedule,
+    target: &Configuration,
+) -> BTreeMap<NodeId, NodeBlobRef> {
+    ancestor_blobs
+        .iter()
+        .map(|(node, blob)| {
+            let parent = blob.content_hash();
+            let delta = ContentHash::from_canonical_material(
+                "crucible.model.replayed-node-blob.delta.v1",
+                &format!(
+                    "node={}\nstart={}\ntarget={}\nsuffix={}",
+                    node.name,
+                    content_hash_hex(start.id()),
+                    content_hash_hex(target.id()),
+                    content_hash_hex(suffix.content_hash())
+                ),
+            );
+            let resolved = ContentHash::from_canonical_material(
+                "crucible.model.replayed-node-blob.resolved.v1",
+                &format!(
+                    "node={}\nparent={}\ndelta={}",
+                    node.name,
+                    content_hash_hex(parent),
+                    content_hash_hex(delta)
+                ),
+            );
+            (
+                node.clone(),
+                NodeBlobRef::cow_delta(parent, delta, resolved),
+            )
+        })
+        .collect()
+}
+
+fn replayed_node_icounts(
+    ancestor_icounts: &BTreeMap<NodeId, Icount>,
+    suffix: &Schedule,
+) -> BTreeMap<NodeId, Icount> {
+    let delta = suffix.len() as u64;
+    ancestor_icounts
+        .iter()
+        .map(|(node, icount)| {
+            (
+                node.clone(),
+                Icount {
+                    retired: icount.retired.saturating_add(delta),
+                },
+            )
+        })
+        .collect()
 }
 
 fn checkpoint_edge(
@@ -2148,6 +2586,21 @@ fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
                 ),
             );
             (node.id, NodeBlobRef::baked(blob))
+        })
+        .collect()
+}
+
+fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
+    canonical_world_nodes(&world.nodes)
+        .into_iter()
+        .map(|node| {
+            let icount = match node.ready_point {
+                ReadyPoint::FixedIcount { icount } => icount,
+                ReadyPoint::NetworkIdle { .. }
+                | ReadyPoint::ConsoleMarker { .. }
+                | ReadyPoint::AgentSignal => Icount::default(),
+            };
+            (node.id, icount)
         })
         .collect()
 }

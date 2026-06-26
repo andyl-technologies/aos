@@ -1,9 +1,12 @@
 //! Canonical hashing for execution-model identities.
 
 use super::{
-    Configuration, ContentHash, Decision, Icount, PreemptionKind, ScenarioDef, Schedule,
-    VirtualTime,
+    Configuration, ContentHash, Decision, DecisionRngState, DeviceOverlayDelta, DeviceRngState,
+    EventLogOffset, FaultState, Icount, NodeBlobRef, NodeId, PendingFrame, PreemptionKind,
+    RngStreamPosition, ScenarioDef, Schedule, SchedulerState, TimerRegistry, TimerState,
+    VirtualTime, VmSnapshotRef,
 };
+use std::collections::BTreeMap;
 
 pub(super) fn content_hash_from_canonical_material(domain: &str, material: &str) -> ContentHash {
     let mut hasher = MaterialHasher::new();
@@ -39,6 +42,25 @@ pub(super) fn reduced_state_hash(def: &ScenarioDef, schedule: &Schedule) -> Cont
     hasher.write_bytes(b"crucible.reduce.state.v1");
     write_content_hash(&mut hasher, &def.id);
     write_schedule(&mut hasher, schedule);
+    ContentHash {
+        bytes: hasher.finish(),
+    }
+}
+
+pub(super) fn materialized_state_hash(
+    vm_snapshots: &BTreeMap<NodeId, VmSnapshotRef>,
+    device_overlays: &BTreeMap<super::DeviceId, DeviceOverlayDelta>,
+    scheduler: &SchedulerState,
+    decision_rng: &DecisionRngState,
+    event_log: EventLogOffset,
+) -> ContentHash {
+    let mut hasher = MaterialHasher::new();
+    hasher.write_bytes(b"crucible.materialized-state.v1");
+    write_vm_snapshots(&mut hasher, vm_snapshots);
+    write_device_overlays(&mut hasher, device_overlays);
+    write_scheduler_state(&mut hasher, scheduler);
+    write_decision_rng_state(&mut hasher, decision_rng);
+    write_event_log_offset(&mut hasher, event_log);
     ContentHash {
         bytes: hasher.finish(),
     }
@@ -107,6 +129,133 @@ fn write_preemption_kind(hasher: &mut MaterialHasher, kind: &PreemptionKind) {
             hasher.write_u64(u64::from(irq.vector));
         }
     }
+}
+
+fn write_vm_snapshots(hasher: &mut MaterialHasher, snapshots: &BTreeMap<NodeId, VmSnapshotRef>) {
+    hasher.write_u64(snapshots.len() as u64);
+    for (node, snapshot) in snapshots {
+        write_node_id(hasher, node);
+        write_node_blob_ref(hasher, &snapshot.blob);
+        write_icount(hasher, snapshot.icount);
+    }
+}
+
+fn write_device_overlays(
+    hasher: &mut MaterialHasher,
+    overlays: &BTreeMap<super::DeviceId, DeviceOverlayDelta>,
+) {
+    hasher.write_u64(overlays.len() as u64);
+    for (device, overlay) in overlays {
+        hasher.write_bytes(device.name.as_bytes());
+        write_content_hash(hasher, &overlay.parent);
+        write_content_hash(hasher, &overlay.delta);
+        write_content_hash(hasher, &overlay.resolved);
+        write_device_rng_state(hasher, &overlay.rng);
+    }
+}
+
+fn write_device_rng_state(hasher: &mut MaterialHasher, state: &DeviceRngState) {
+    hasher.write_u64(state.streams.len() as u64);
+    for (stream, position) in &state.streams {
+        hasher.write_bytes(stream.name.as_bytes());
+        write_rng_stream_position(hasher, *position);
+    }
+}
+
+fn write_scheduler_state(hasher: &mut MaterialHasher, state: &SchedulerState) {
+    hasher.write_u64(state.horizons.len() as u64);
+    for (node, horizon) in &state.horizons {
+        write_node_id(hasher, node);
+        write_virtual_time(hasher, *horizon);
+    }
+    hasher.write_u64(state.pending_frames.len() as u64);
+    for (node, frames) in &state.pending_frames {
+        write_node_id(hasher, node);
+        hasher.write_u64(frames.len() as u64);
+        for frame in frames {
+            write_pending_frame(hasher, frame);
+        }
+    }
+    write_timer_registry(hasher, &state.timers);
+    hasher.write_u64(state.active_faults.len() as u64);
+    for (fault, state) in &state.active_faults {
+        hasher.write_bytes(fault.name.as_bytes());
+        write_fault_state(hasher, state);
+    }
+}
+
+fn write_pending_frame(hasher: &mut MaterialHasher, frame: &PendingFrame) {
+    write_node_id(hasher, &frame.source);
+    hasher.write_u64(frame.sequence);
+    write_icount(hasher, frame.delivery_icount);
+    write_content_hash(hasher, &frame.payload);
+}
+
+fn write_timer_registry(hasher: &mut MaterialHasher, registry: &TimerRegistry) {
+    hasher.write_u64(registry.timers.len() as u64);
+    for (timer, state) in &registry.timers {
+        hasher.write_bytes(timer.name.as_bytes());
+        write_timer_state(hasher, state);
+    }
+}
+
+fn write_timer_state(hasher: &mut MaterialHasher, state: &TimerState) {
+    write_node_id(hasher, &state.owner);
+    write_virtual_time(hasher, state.armed_at);
+    write_virtual_time(hasher, state.fire_at);
+    write_icount(hasher, state.fire_icount);
+}
+
+fn write_fault_state(hasher: &mut MaterialHasher, state: &FaultState) {
+    write_virtual_time(hasher, state.active_since);
+    match state.heal_at {
+        Some(heal_at) => {
+            hasher.write_bool(true);
+            write_virtual_time(hasher, heal_at);
+        }
+        None => hasher.write_bool(false),
+    }
+}
+
+fn write_decision_rng_state(hasher: &mut MaterialHasher, state: &DecisionRngState) {
+    hasher.write_u64(state.positions.len() as u64);
+    for (stream, position) in &state.positions {
+        hasher.write_bytes(stream.name.as_bytes());
+        write_rng_stream_position(hasher, *position);
+    }
+}
+
+fn write_rng_stream_position(hasher: &mut MaterialHasher, position: RngStreamPosition) {
+    hasher.write_u64(position.draws);
+}
+
+fn write_event_log_offset(hasher: &mut MaterialHasher, offset: EventLogOffset) {
+    write_content_hash(hasher, &offset.prefix);
+    hasher.write_u64(offset.bytes);
+    hasher.write_u64(offset.events);
+}
+
+fn write_node_blob_ref(hasher: &mut MaterialHasher, blob: &NodeBlobRef) {
+    match blob {
+        NodeBlobRef::Baked(hash) => {
+            hasher.write_u64(0);
+            write_content_hash(hasher, hash);
+        }
+        NodeBlobRef::CowDelta {
+            parent,
+            delta,
+            resolved,
+        } => {
+            hasher.write_u64(1);
+            write_content_hash(hasher, parent);
+            write_content_hash(hasher, delta);
+            write_content_hash(hasher, resolved);
+        }
+    }
+}
+
+fn write_node_id(hasher: &mut MaterialHasher, node: &NodeId) {
+    hasher.write_bytes(node.name.as_bytes());
 }
 
 fn write_content_hash(hasher: &mut MaterialHasher, hash: &ContentHash) {

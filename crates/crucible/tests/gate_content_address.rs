@@ -7,9 +7,11 @@ use std::fmt::Debug;
 
 use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash,
-    Decision, DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, Icount,
-    MaterializedState, NodeBlobRef, NodeId, RngDecision, RngStreamId, ScenarioDef, Schedule, State,
-    TemporalGraph, VirtualTime, World, bake, reduce, step,
+    Decision, DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta,
+    DeviceRngState, EngineError, EventKey, EventLogOffset, FaultDecision, FaultId, FaultState,
+    Icount, MaterializedState, NodeBlobRef, NodeId, PendingFrame, RngDecision, RngStreamId,
+    RngStreamPosition, ScenarioDef, Schedule, SchedulerState, State, TemporalGraph, TimerId,
+    TimerRegistry, TimerState, VirtualTime, VmSnapshotRef, World, bake, reduce, step,
 };
 
 #[test]
@@ -271,6 +273,122 @@ fn gate_content_address_checkpoint_identity_matches_configuration_id() {
         assert_eq!(annotated.id, checkpoint.id);
         assert_eq!(annotated.configuration, configuration.id());
     }
+}
+
+#[test]
+fn gate_content_address_materialized_state_hashes_loadvm_components() {
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let peer = NodeId {
+        name: String::from("node-b"),
+    };
+    let device = DeviceId {
+        name: String::from("disk-a"),
+    };
+    let timer = TimerId {
+        name: String::from("heal-after"),
+    };
+    let fault = FaultId {
+        name: String::from("partition-a-b"),
+    };
+    let stream = RngStreamId {
+        name: String::from("device/disk-a"),
+    };
+    let parent_blob =
+        ContentHash::from_canonical_material("crucible.test.materialized-state", "parent-blob");
+    let delta_blob =
+        ContentHash::from_canonical_material("crucible.test.materialized-state", "delta-blob");
+    let resolved_blob =
+        ContentHash::from_canonical_material("crucible.test.materialized-state", "resolved-blob");
+    let payload =
+        ContentHash::from_canonical_material("crucible.test.materialized-state", "frame-payload");
+    let event_log = EventLogOffset::new(
+        ContentHash::from_canonical_material(
+            "crucible.test.materialized-state",
+            "event-log-prefix",
+        ),
+        128,
+        9,
+    );
+    let snapshots = BTreeMap::from([(
+        node.clone(),
+        VmSnapshotRef::new(
+            NodeBlobRef::cow_delta(parent_blob, delta_blob, resolved_blob),
+            Icount { retired: 4096 },
+        ),
+    )]);
+    let device_rng = DeviceRngState {
+        streams: BTreeMap::from([(stream.clone(), RngStreamPosition::new(7))]),
+    };
+    let overlays = BTreeMap::from([(
+        device,
+        DeviceOverlayDelta::new(parent_blob, delta_blob, resolved_blob, device_rng),
+    )]);
+    let scheduler = SchedulerState {
+        horizons: BTreeMap::from([(node.clone(), VirtualTime { ticks: 44 })]),
+        pending_frames: BTreeMap::from([(
+            peer.clone(),
+            vec![PendingFrame {
+                source: node.clone(),
+                sequence: 3,
+                delivery_icount: Icount { retired: 8192 },
+                payload,
+            }],
+        )]),
+        timers: TimerRegistry {
+            timers: BTreeMap::from([(
+                timer,
+                TimerState {
+                    owner: peer,
+                    armed_at: VirtualTime { ticks: 12 },
+                    fire_at: VirtualTime { ticks: 99 },
+                    fire_icount: Icount { retired: 16384 },
+                },
+            )]),
+        },
+        active_faults: BTreeMap::from([(
+            fault,
+            FaultState {
+                active_since: VirtualTime { ticks: 15 },
+                heal_at: Some(VirtualTime { ticks: 120 }),
+            },
+        )]),
+    };
+    let decision_rng = DecisionRngState {
+        positions: BTreeMap::from([(stream, RngStreamPosition::new(11))]),
+    };
+    let state = MaterializedState::from_components(
+        snapshots.clone(),
+        overlays.clone(),
+        scheduler.clone(),
+        decision_rng.clone(),
+        event_log,
+    );
+    let same = MaterializedState::from_components(
+        snapshots.clone(),
+        overlays.clone(),
+        scheduler.clone(),
+        decision_rng.clone(),
+        event_log,
+    );
+    let mut changed_snapshots = snapshots;
+    changed_snapshots
+        .get_mut(&node)
+        .unwrap_or_else(|| panic!("snapshot fixture should contain node"))
+        .icount = Icount { retired: 4097 };
+    let changed = MaterializedState::from_components(
+        changed_snapshots,
+        overlays,
+        scheduler,
+        decision_rng,
+        event_log,
+    );
+
+    assert_eq!(state.id, same.id);
+    assert_ne!(state.id, changed.id);
+    assert_eq!(state.vm_snapshots[&node].blob.content_hash(), resolved_blob);
+    assert_eq!(state.event_log, event_log);
 }
 
 #[test]
