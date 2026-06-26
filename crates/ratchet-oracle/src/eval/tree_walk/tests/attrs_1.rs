@@ -687,6 +687,36 @@ fn force_attr_a(evaluator: &mut TreeWalk, ir: &Ir, a: Symbol) -> Value {
     force_attr(evaluator, ir, a, "a")
 }
 
+fn assert_source_order_attrset_ints(evaluator: &TreeWalk, value: Value, expected: &[(&[u8], i64)]) {
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("forced value is an attrset");
+    assert_ne!(
+        attrs.source_order(),
+        attrs.iteration_order(),
+        "attrset must preserve source-order metadata"
+    );
+    let source_order: Vec<_> = attrs
+        .iter_source_order()
+        .map(|entry| {
+            (
+                evaluator
+                    .symbols
+                    .resolve(entry.key)
+                    .expect("entry symbol resolves")
+                    .to_vec(),
+                entry.value.as_int().expect("entry value is an int"),
+            )
+        })
+        .collect();
+    let expected = expected
+        .iter()
+        .map(|(name, value)| (name.to_vec(), *value))
+        .collect::<Vec<_>>();
+    assert_eq!(source_order, expected);
+}
+
 fn force_attr_a_string(evaluator: &mut TreeWalk, ir: &Ir, a: Symbol, expected: &[u8]) {
     let value = force_attr_a(evaluator, ir, a);
     let string = evaluator
@@ -6730,29 +6760,7 @@ fn source_ordered_attrset_payloads_rehydrate_after_heap_lookup() {
     let hit = second
         .lookup_forced_inline_expression_result(Some(subject))
         .expect("source-order attrset payload hits");
-    let attrs = second
-        .heap()
-        .get_attrs(hit)
-        .expect("source-order attrset rehydrates into this evaluator heap");
-    assert_ne!(
-        attrs.source_order(),
-        attrs.iteration_order(),
-        "rehydrated attrset must preserve source-order metadata"
-    );
-    let source_order: Vec<_> = attrs
-        .iter_source_order()
-        .map(|entry| {
-            (
-                second
-                    .symbols
-                    .resolve(entry.key)
-                    .expect("entry symbol resolves")
-                    .to_vec(),
-                entry.value.as_int().expect("entry value is an int"),
-            )
-        })
-        .collect();
-    assert_eq!(source_order, vec![(b"c".to_vec(), 2), (b"b".to_vec(), 1)]);
+    assert_source_order_attrset_ints(&second, hit, &[(b"c", 2), (b"b", 1)]);
     assert_eq!(second.stats().cache_hits(), 1);
     assert_eq!(second.stats().cache_misses(), 0);
 }
@@ -8582,8 +8590,7 @@ fn closed_composite_literal_thunks_admit_on_first_raw_force() {
     );
 }
 
-#[test]
-fn closed_source_order_attrset_literal_thunks_admit_and_rehydrate_source_order() {
+fn position_free_source_order_attrset_ir() -> (Ir, Symbol) {
     let mut symbols = SymbolTable::new();
     let a = symbols.intern(b"a").expect("a interns");
     let c = symbols.intern(b"c").expect("c interns");
@@ -8641,6 +8648,12 @@ fn closed_source_order_attrset_literal_thunks_admit_and_rehydrate_source_order()
         ],
         vec![IrShape::new(Box::new([c, b])), IrShape::new(Box::new([a]))],
     );
+    (ir, a)
+}
+
+#[test]
+fn closed_source_order_attrset_literal_thunks_admit_and_rehydrate_source_order() {
+    let (ir, a) = position_free_source_order_attrset_ir();
     let source = "{ a = { c = 2; b = 1; }; }";
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
 
@@ -8681,29 +8694,7 @@ fn closed_source_order_attrset_literal_thunks_admit_and_rehydrate_source_order()
         let forced = evaluator
             .force_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("source-order attrset literal force succeeds");
-        let attrs = evaluator
-            .heap()
-            .get_attrs(forced)
-            .expect("forced value is an attrset");
-        assert_ne!(
-            attrs.source_order(),
-            attrs.iteration_order(),
-            "forced attrset must preserve source-order metadata"
-        );
-        let source_order: Vec<_> = attrs
-            .iter_source_order()
-            .map(|entry| {
-                (
-                    evaluator
-                        .symbols
-                        .resolve(entry.key)
-                        .expect("entry symbol resolves")
-                        .to_vec(),
-                    entry.value.as_int().expect("entry value is an int"),
-                )
-            })
-            .collect();
-        assert_eq!(source_order, vec![(b"c".to_vec(), 2), (b"b".to_vec(), 1)]);
+        assert_source_order_attrset_ints(&evaluator, forced, &[(b"c", 2), (b"b", 1)]);
         assert_eq!(evaluator.stats().force_cache_memoization_bypasses(), 0);
         assert_eq!(evaluator.stats().force_cache_memoization_admits(), 1);
         assert_eq!(
@@ -8712,6 +8703,51 @@ fn closed_source_order_attrset_literal_thunks_admit_and_rehydrate_source_order()
             "second raw force should hit the closed source-order attrset payload"
         );
     }
+}
+
+#[test]
+fn persistent_source_order_attrset_payloads_rehydrate_source_order() {
+    let persist_root = unique_temp_dir("force-cache-persistent-source-order-attrs");
+    let (ir, a) = position_free_source_order_attrset_ir();
+    let source = "{ a = { c = 2; b = 1; }; }";
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options.clone(),
+        "persistent-source-order-attrs.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let thunk_value = seed_prior_persistent_demand_for_attr(&mut first, &ir, a, &persist_root, "a");
+    let forced = first
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("source-order attrset materializing force succeeds");
+    assert_source_order_attrset_ints(&first, forced, &[(b"c", 2), (b"b", 1)]);
+    assert_eq!(first.stats().cache_hits(), 0);
+    assert_eq!(first.stats().cache_misses(), 1);
+    drop(first);
+
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "persistent-source-order-attrs.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let forced = force_attr_a(&mut second, &ir, a);
+    assert_source_order_attrset_ints(&second, forced, &[(b"c", 2), (b"b", 1)]);
+    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().cache_misses(), 0);
+    assert_eq!(
+        second.persist_force_cache_hit_keys.len(),
+        1,
+        "fresh runtime should load the durable source-order attrset payload"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
 }
 
 #[test]

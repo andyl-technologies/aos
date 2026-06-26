@@ -1506,11 +1506,13 @@ alone (`M-1`/`Q-A`).
       `CachedExpressionValue::encode_persistent_payload` and
       `decode_persistent_payload` round-trip the current replayable force-cache
       payload set (inline scalars, context-free strings, context-bearing
-      strings, path payloads with or without context, replayable lists, and replayable attrsets) as the canonical BLAKE3 preimage used by
+      strings, path payloads with or without context, replayable lists, and
+      replayable attrsets including source-order-tagged attrsets) as the canonical BLAKE3 preimage used by
       `ValueHash`, so hashing the encoded bytes yields the payload's durable
       value-hash digest. The decoder rejects malformed and non-canonical
       string-context payloads, malformed/truncated nested list element payloads,
-      and malformed/non-canonical attrset binding payloads. `PersistCache::materialize_cached_expression_value_indexed`,
+      and malformed/non-canonical attrset binding payloads including duplicate
+      source-order binding names. `PersistCache::materialize_cached_expression_value_indexed`,
       `materialize_cached_expression_value_indexed_with_signals`, and
       `load_cached_expression_value_indexed` write and read those payloads
       through the indexed `values/` pack by value hash, and loads rehash the
@@ -1677,7 +1679,8 @@ alone (`M-1`/`Q-A`).
       `getEnv`) share this path through a force-cache subject keyed by
       apply-node identity, builtin name, and argument value hash. Hits
       rehydrate replayable payloads into the
-      current evaluator heap, seed the caller-owned in-memory runtime with the
+      current evaluator heap, preserving source-order attrset metadata when the
+      durable payload carries the source-order attrset tag, seed the caller-owned in-memory runtime with the
       payload and any revalidated input edges, record fresh revalidated impure
       inputs into the enclosing evaluation trace when present, record
       current-run persistent demand, and count the result as a cache hit.
