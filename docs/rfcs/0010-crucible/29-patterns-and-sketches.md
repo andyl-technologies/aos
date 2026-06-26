@@ -1093,9 +1093,18 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
 > [`32-implementation-plan.md`](32-implementation-plan.md); each item below
 > references the area task(s) that actually build the pattern.
 
-- [ ] **T-PAT-1** Ensure the session/engine driver is built to the §29.1
+- [x] **T-PAT-1** Ensure the session/engine driver is built to the §29.1
   enum-of-states + bounded-quantum actor-loop shape. — satisfies [PAT-1],
   [PAT-2]; realized by **T-EXEC-14**, **T-SESS-2** (spec 05 §10, 20 §3).
+  - Completed by `crates/crucible-session/src/lib.rs`: `EngineState` is the
+    closed Loaded/Running/Paused/Stopped run-state enum with typed
+    `PauseReason` and `Outcome`, `Engine` keeps `Configuration` as the source of
+    truth and `RuntimeState` as a rebuildable cache, and `SessionActor::run`
+    delegates to bounded `run_once` iterations that poll deferred/mailbox
+    commands before each running quantum, apply one command or one
+    `Engine::step_quantum`, publish the `LiveSnapshot` mirror, and yield
+    cooperatively. `checks.crucible.phase1.executionEngineStateMachine` and
+    `checks.crucible.phase1.executionLiveSnapshot` gate the pattern.
 - [x] **T-PAT-4** Ensure the temporal graph follows the §29.4 content-addressed
   store + thin/fat + CoW-delta shape. — satisfies [PAT-6]; realized by the 07
   temporal-graph tasks and **T-EXEC-10** (spec 07 §§2–5).
