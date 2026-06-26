@@ -61,8 +61,8 @@
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
       {
-        label = "world link field";
-        needle = "pub links: Vec<LinkDef>";
+        label = "world link accessor";
+        needle = "pub fn links(&self) -> &[LinkDef]";
       }
       {
         label = "link definition";

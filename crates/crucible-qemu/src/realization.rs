@@ -774,7 +774,7 @@ fn validate_baked_genesis_node_blobs(
     snapshot: &QemuBakedGenesisSnapshot,
     world: &World,
 ) -> Result<(), QemuVmRealizationError> {
-    for node in &world.nodes {
+    for node in world.nodes() {
         if !matches!(
             snapshot.checkpoint.node_blob(&node.id),
             Some(NodeBlobRef::Baked(_))
@@ -1802,32 +1802,25 @@ mod tests {
 
     #[test]
     fn qemu_bake_rejects_agent_signal_without_white_box_opt_in() {
-        let world = World {
-            id: hash("world", "qemu-invalid-agent-ready"),
-            nodes: vec![WorldNode {
+        let error = match World::from_recorded_parts(
+            hash("world", "qemu-invalid-agent-ready"),
+            vec![WorldNode {
                 id: NodeId {
                     name: String::from("agent"),
                 },
                 ready_point: ReadyPoint::AgentSignal,
                 white_box: WhiteBoxPolicy::Disabled,
             }],
-            links: Vec::new(),
-        };
-        let log = shared_log();
-        let mut executor = scripted_executor(Rc::clone(&log));
-
-        let error = match bake_qemu_genesis_vm(&world, &mut executor) {
-            Ok(_) => panic!("invalid agent-signal ready point should not bake"),
+            Vec::new(),
+        ) {
             Err(error) => error,
+            Ok(_) => panic!("invalid agent-signal ready point should not build a world"),
         };
 
         assert!(matches!(
             error,
-            QemuVmRealizationError::ReadyPointPolicy {
-                source: EngineError::WhiteBoxReadyPointWithoutOptIn { .. }
-            }
+            EngineError::WhiteBoxReadyPointWithoutOptIn { .. }
         ));
-        assert_eq!(logged(&log), Vec::<RealizationCall>::new());
     }
 
     #[test]
@@ -2134,7 +2127,7 @@ mod tests {
 
     fn qemu_baked_node_blobs(world: &World) -> std::collections::BTreeMap<NodeId, NodeBlobRef> {
         world
-            .nodes
+            .nodes()
             .iter()
             .map(|node| {
                 let blob = hash(
