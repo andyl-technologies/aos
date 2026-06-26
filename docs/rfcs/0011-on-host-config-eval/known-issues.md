@@ -7,7 +7,14 @@ forced (they need a human call), and the **revision log** of fixes applied to th
 other docs. The findings themselves were the review's; the resolutions here are
 the RFC's response.
 
-## Open decisions (forks — need a call)
+## Open decisions (forks)
+
+> **RESOLVED.** F1, F2, and F3 are now locked with decision-free mechanisms in
+> [`decisions.md`](decisions.md): **F1** → dm-verity on the erofs root, roothash
+> on the measured UKI `.cmdline` (PCR-11 covers the producer); **F2** → manifest
+> carries job-script text, materializer writes gen-local paths; **F3** →
+> capability-scoped contribution surface (owner declares contributable
+> sub-paths). The original framing is kept below for context.
 
 ### F1 — How is the on-host evaluator + base lib anchored to measured boot? (from C1)
 

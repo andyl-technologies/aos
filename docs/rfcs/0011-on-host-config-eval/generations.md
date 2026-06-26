@@ -184,7 +184,13 @@ needs the ABI contract — which is why the structural-core/extension split
 fetched shared-root extension additionally carries its *own* interface ABI, so
 interfaces evolve independently of the base.
 
-## Open questions (tuning, non-blocking)
+## Open questions (RESOLVED — see [`decisions.md`](decisions.md))
+
+> All five are now locked in [`decisions.md`](decisions.md) (OQ): keep ≥1 prior
+> base-lib via a dedicated per-image-gen GC root; `module_abi` measured via the
+> UKI `.cmdline`; `stateVersion` and `module_abi` stay orthogonal; image+config
+> upgrade uses a first-boot re-eval service (not a reboot-spanning transaction);
+> each config-gen pins its `host_nix_ref`. Original framing kept for context.
 
 1. **Retention depth mismatch.** Config-gens are cheap (`/var`, many);
    image-gens are expensive (ESP ×2 → 2 slots). Keeping config-gens parented to

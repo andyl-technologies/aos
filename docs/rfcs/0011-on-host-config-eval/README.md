@@ -1,12 +1,15 @@
 # RFC-0011: On-host, eval-only configuration — generations from downloaded Nix modules
 
-- **Status:** Accepted, **revised after an adversarial review** (2 critical + 13
-  major findings folded in; see [`known-issues.md`](known-issues.md) for the
-  revision log). **Three open decisions remain** and need a call before
-  implementation — F1 (how the evaluator/base-lib on the erofs root are anchored
-  to measured boot), F2 (how shell-snippet service options render on-host), F3
-  (what authorizes cross-package composition vs. conscription). Implementation is
-  phased: **P1** runs the existing from-source stock C++ Nix
+- **Status:** Accepted, revised after an adversarial review, and **made
+  goal-mode-executable**. The three forks (F1/F2/F3) and the generations open
+  questions are now **resolved** with locked choices + decision-free mechanisms
+  ([`decisions.md`](decisions.md)); field-level interface/schema contracts are in
+  [`build-spec.md`](build-spec.md); and every implementation-plan item has a
+  definition-of-done in [`acceptance-criteria.md`](acceptance-criteria.md). F1 is
+  resolved as **dm-verity on the erofs root with the roothash baked into the
+  measured UKI `.cmdline`** (so PCR-11 transitively covers the evaluator +
+  base-lib), reusing the existing `package-root-image.nix` verity recipe.
+  Implementation is phased: **P1** runs the existing from-source stock C++ Nix
   (`pkgs/tools/nix.nix`, 2.24.12) as the on-host evaluator; **P2** swaps in
   `aos-nix` ([RFC-0007](../0007-nix-evaluator/)) behind the same
   `eval → manifest` seam with no change to the registry format, the module
@@ -55,10 +58,16 @@ the invariants, and the resolved decisions; the topic files hold the detail:
   green on master *before* implementation (the first code into the PR), the
   barrier pattern, and the red-first new-subsystem test specs.
 - [`implementation-plan.md`](implementation-plan.md) — the phased checklist.
-- [`known-issues.md`](known-issues.md) — the adversarial-review accounting: the
-  **three open decisions** (F1 root-measurement, F2 job-script rendering, F3
-  conscription-vs-composition) that need a human call, plus the revision log of
-  fixes applied to the other docs.
+- [`decisions.md`](decisions.md) — the **locked resolutions** of F1/F2/F3 + the
+  generations open questions, each with a decision-free mechanism.
+- [`build-spec.md`](build-spec.md) — **field-level interface/schema contracts**
+  (manifest, config output, registry index, the resolver fixpoint algorithm, the
+  unit-graph compiler, the metadata `PlatformFetcher`, trust/secrets, generation
+  data structures) so implementation has nothing left to invent.
+- [`acceptance-criteria.md`](acceptance-criteria.md) — a **definition-of-done**
+  (concrete check/assertion) for every implementation-plan item.
+- [`known-issues.md`](known-issues.md) — the adversarial-review accounting and
+  revision log. (F1/F2/F3 are now resolved in [`decisions.md`](decisions.md).)
 
 ## Problem
 
