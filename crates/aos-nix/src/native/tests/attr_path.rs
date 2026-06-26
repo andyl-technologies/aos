@@ -206,6 +206,185 @@ fn native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closur
     Ok(())
 }
 
+fn instantiate_file_closure_with_stats(
+    native: &NixNative,
+    file: &Path,
+    attr: &str,
+) -> Result<(NativeDrvClosure, crate::eval::EvalStats)> {
+    let attr_path = attr_path_drv_path_segments(attr)?;
+    let mut options = native.instantiation_options();
+    let file = native_source_file(file, &options)?;
+    let source_name = path_bytes(&file)?;
+    let source_name_text = String::from_utf8_lossy(&source_name);
+    let source = fs::read(&file).map_err(|source| NativeEvalError::EvalError {
+        message: format!(
+            "failed to read native instantiation source {}: {source}",
+            source_name_text
+        ),
+    })?;
+    let diagnostic_source = std::str::from_utf8(&source)
+        .ok()
+        .map(|source| NativeDiagnosticSource::new(source_name_text.as_ref(), source, None));
+    let base = file.parent().unwrap_or_else(|| Path::new("/"));
+    options.set_path_literal_base(path_bytes(base)?)?;
+    let ir = native.lower_native_source_bytes(
+        &source,
+        Some(source_name_text.to_string()),
+        Some(file.as_path()),
+        None,
+        diagnostic_source,
+    )?;
+    if let Some((feature, span)) = native_instantiation_cli_fallback_feature(&ir, &native.options) {
+        return Err(NativeEvalError::Unsupported {
+            feature: feature.to_string(),
+            span: Some(crate::error::SrcSpan {
+                start: span.start,
+                end: span.end,
+            }),
+        }
+        .into());
+    }
+    let outcome = eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
+        &ir,
+        &attr_path,
+        options,
+        source_name.clone(),
+        source.clone(),
+        native.ifd_realizer.clone(),
+        native.eval_cache.clone(),
+    )
+    .map_err(|error| match diagnostic_source {
+        Some(diagnostic_source) => native_eval_error_with_source(error, diagnostic_source),
+        None => native_eval_error(error, None),
+    })?;
+    let stats = *outcome.stats();
+    native.observe_eval_cache(&outcome);
+    let closure = native.native_drv_closure_from_outcome(outcome)?;
+    Ok((closure, stats))
+}
+
+#[test]
+fn native_file_instantiation_force_cache_sidecar_hashes_do_not_leak_into_drv_closure() -> Result<()>
+{
+    let root = unique_temp_dir("native-file-instantiation-force-cache-leak");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let _cleanup = TempTreeCleanup::new(root.clone());
+    let store = root.join("store");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join("default.nix");
+    fs::write(
+        &file,
+        r#"let
+          b = builtins;
+        in {
+          pkgs.hello = derivationStrict {
+            name = "native-file-force-cache-leak";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            args = [ b.currentSystem ];
+          };
+        }"#,
+    )?;
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+
+    let mut uncached_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    uncached_options.set_store_dir(store_bytes.clone())?;
+    let (uncached, uncached_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, uncached_options)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(uncached_stats.force_cache_hits(), 0);
+    assert_eq!(uncached_stats.force_cache_misses(), 0);
+    assert_eq!(uncached.drvs().len(), 1);
+    assert!(
+        uncached.root().starts_with(&store),
+        "{}",
+        uncached.root().display()
+    );
+
+    let mut first_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    first_options.set_store_dir(store_bytes.clone())?;
+    first_options.set_persist_cache_root(&persist_root);
+    first_options.set_eval_cache_enabled(true);
+    let (first, first_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, first_options)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(first, uncached);
+    assert_eq!(first_stats.force_cache_hits(), 0);
+    assert!(
+        first_stats.force_cache_misses() > 0,
+        "first native file force-cache run should miss before recording demand"
+    );
+
+    let mut materialize_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    materialize_options.set_store_dir(store_bytes.clone())?;
+    materialize_options.set_persist_cache_root(&persist_root);
+    materialize_options.set_eval_cache_enabled(true);
+    let (materialized, materialized_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, materialize_options)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(materialized, uncached);
+    assert_eq!(materialized_stats.force_cache_hits(), 0);
+    assert!(
+        materialized_stats.force_cache_misses() > 0,
+        "materializing native file force-cache run should miss before writing persistent payloads"
+    );
+
+    let mut hit_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    hit_options.set_store_dir(store_bytes)?;
+    hit_options.set_persist_cache_root(&persist_root);
+    hit_options.set_eval_cache_enabled(true);
+    let (hit, hit_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, hit_options)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(hit, uncached);
+    assert!(
+        hit_stats.force_cache_hits() > 0,
+        "fresh native file runtime should load the persistent force-cache payload"
+    );
+    assert_eq!(
+        hit_stats.force_cache_misses(),
+        0,
+        "fresh native file runtime should not recompute the materialized force-cache payload"
+    );
+
+    let mut canaries = assert_persistent_force_cache_payload_entries(&persist_root)?;
+    let hot_canary = context_free_nix_string_xxh3(b"x86_64-linux");
+    canaries.extend(hot_xxh3_surface_canaries("hot xxh3", hot_canary));
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached native file force-cache closure",
+        &uncached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "first native file force-cache closure",
+        &first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "materialized native file force-cache closure",
+        &materialized,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "persistent-hit native file force-cache closure",
+        &hit,
+        &canaries,
+    );
+
+    Ok(())
+}
+
 #[test]
 fn native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure() -> Result<()> {
     use crate::cache::{DurableBlake3Hash, ParseCache, ParseFileKey};
