@@ -1,7 +1,7 @@
 //! The Cloudflare Workers read-path target for the AOS registry hub (RFC-0004).
 //!
 //! RFC-0004 specifies a Cloudflare Workers deployment of the registry hub —
-//! `wasm32-unknown-unknown` via `workers-rs`, with D1 as the sqlite backend, R2
+//! `wasm32-unknown-unknown` via `workers-rs`, with a colocated-SQLite system of record, R2
 //! as a zero-egress facade, KV for sessions, and Cron Triggers driving the
 //! indexer ("Architecture and runtime targets"). The native hub is a sync
 //! axum + tokio + rusqlite binary that cannot compile to wasm32, so this is a
@@ -13,7 +13,7 @@
 //!   Ed25519 verification) the native hub indexer and `apm` already run, reused
 //!   verbatim in the Cron indexer ([`indexer`]).
 //! - [`aos_hub_core`] — the shared `Database` (schema `MIGRATIONS` + read
-//!   queries) the native hub runs, driven over the D1 [`d1backend`] so the
+//!   queries) the native hub runs, driven over the [`sqldobackend`] so the
 //!   Worker's read path and indexer cannot drift from the hub's.
 //! - The native hub's facade classification — [`keymap`] is a faithful copy of
 //!   `compat::{is_machine_path, cache_control, content_type}`.
@@ -21,11 +21,11 @@
 //! # What is and isn't here (yet)
 //!
 //! The data layer is shared with the native hub
-//! (`aos_hub_core::Database` over the D1 [`d1backend`]), and the **entire
+//! (`aos_hub_core::Database` over the [`sqldobackend`]), and the **entire
 //! request surface is now served by the *same* shared `axum` router the native
 //! hub's RPC path mounts** ([`aos_hub_core::connect::router`]) — bridged to
 //! the Workers runtime by [`bridge`] over the Worker's
-//! [`RpcService`](aos_hub_core::service) (D1 backend, R2 [`surface`]
+//! [`RpcService`](aos_hub_core::service) (SQLite-DO backend, R2 [`surface`]
 //! provider, Durable-Object-backed rate limiter via [`coordinatorobj`]). One
 //! router serves three surfaces:
 //!
@@ -59,9 +59,10 @@
 //! native is the hub's nested-canonical fallback for slugs with slashes.
 //!
 //! Worker-local: only the Cron-trigger indexer ([`indexer`]). The `fetch`
-//! handler bridges every request to the shared router; there is no schema-init
-//! endpoint — migrations are CLI-driven over D1 (`aos-hub init --target
-//! d1:<name>`). See `README.md` and the RFC.
+//! handler bridges every request to the shared router; the schema is migrated
+//! inside the `HubDb` Durable Object on first use (no external init step), and
+//! the root admin is bootstrapped over a seal-gated `HubDb` endpoint. See
+//! `README.md` and the RFC.
 //!
 //! # Module map
 //!
@@ -71,7 +72,7 @@
 //!
 //! The Cron indexer no longer carries a bespoke `Registry` row model or a
 //! `indexlogic` rules module: it projects the core
-//! [`RegistryRecord`](aos_hub_core::db::RegistryRecord) from D1 and runs the
+//! [`RegistryRecord`](aos_hub_core::db::RegistryRecord) from the database and runs the
 //! shared [`aos_hub_core::indexer`] (the partition target checks, the
 //! channel anti-rollback floor, and the snapshot write all live there now), so
 //! the Worker's Cron index is byte-identical to the native hub's (RFC-0004
@@ -79,21 +80,22 @@
 //!
 //! Worker glue (wasm32-only, gated behind `#[cfg(target_arch = "wasm32")]`):
 //!
-//! - `d1backend` — the [`aos_hub_core::backend::Backend`] over D1.
+//! - `sqldobackend` — the [`aos_hub_core::backend::Backend`] over the `HubDb`
+//!   Durable Object's colocated SQLite (the system of record — there is no D1).
 //! - `handlers` — the Wrangler binding names.
-//! - `indexer` — the Cron-trigger indexer: lists public registries from D1 and
-//!   runs the shared [`aos_hub_core::indexer`] over each registry's R2
-//!   [`surface`] fetcher.
+//! - `indexer` — the Cron-trigger indexer: lists public registries and runs the
+//!   shared [`aos_hub_core::indexer`] over each registry's R2 [`surface`]
+//!   fetcher (driven inside `HubDb` over `sqldobackend`).
 //! - `bridge` — the hand-rolled `worker`⇄`axum` bridge that runs the shared
 //!   Connect-JSON router for the RPC surface (no `axum-cloudflare-adapter`).
 //! - `surface` — the R2-backed [`aos_hub_core::fetch::SurfaceProvider`]
 //!   the shared git/facade read logic uses.
 //! - `workerkv` — the Workers KV [`aos_hub_core::kv::KvStore`] for hot
-//!   point-key state (sessions/tokens/config/routing), off the D1 read path.
+//!   point-key state (sessions/tokens/config/routing), off the read path.
 //! - `coordinatorobj` — the `CoordinatorObject` Durable Object and its
 //!   `WorkerCoordinator` client: the strongly-consistent
 //!   [`aos_hub_core::coordinator::Coordinator`] backing the rate limiter and the
-//!   publish lease without a D1 write (RFC-0004 ch.14).
+//!   publish lease without a relational write (RFC-0004 ch.14).
 //! - `consoleports` — the Worker's console ports: the logging mailer, the
 //!   Fetch-API OIDC [`HttpClient`](aos_hub_core::web::console::ports::HttpClient),
 //!   and the Cron-deferring [`Reindexer`](aos_hub_core::reindex::Reindexer)
@@ -211,7 +213,7 @@ mod entry {
     /// Build the shared `axum` router over the Worker's D1/R2 bindings.
     ///
     /// Constructs the runtime-neutral pieces once — a non-migrating [`Database`]
-    /// over the D1 [`crate::d1backend`] (the schema is applied by the operator
+    /// over the colocated-SQLite [`crate::sqldobackend`] (the schema is applied by the operator
     /// CLI, `aos-hub init --target d1:<name>`), the HS256 [`JwtKeys`],
     /// the external URL, and the Durable-Object-backed rate limiter
     /// ([`crate::coordinatorobj`]) — and wires them into **both** shared routers:
@@ -246,7 +248,7 @@ mod entry {
     /// Build the shared router/service/console over a **pre-built** `Database`,
     /// independent of the backend.
     ///
-    /// The `db` is constructed by the caller — the D1 [`D1Backend`](crate::d1backend)
+    /// The `db` is constructed by the caller — the D1 [`SqlDoBackend`](crate::sqldobackend)
     /// in the `fetch` handler, or the colocated [`SqlDoBackend`](crate::sqldobackend)
     /// inside the [`HubDb`](crate::hubdb) Durable Object (RFC-0004 ch.14 Phase E,
     /// "get off D1"). Everything else (JWT, rate-limit bindings, surface, lease,
@@ -478,10 +480,10 @@ mod entry {
     /// all single-sourced with the native hub. The [`crate::surface`]
     /// `SurfaceProvider` backs the facade and the `GitService` reads, and the
     /// shared [`aos_hub_core::web`] browse reads the same `RpcService` read
-    /// methods. There is no schema-init endpoint: migrations and root bootstrap
-    /// are applied by the authenticated operator's CLI over D1 (`aos-hub
-    /// init --target d1:<name>`), never over HTTP. A handler error is logged and
-    /// returned as a `500` so a binding/back-end failure never panics the isolate.
+    /// methods. The schema is migrated inside the `HubDb` Durable Object on first
+    /// use; root bootstrap goes through the seal-gated `HubDb` endpoint — there is
+    /// no unauthenticated init path. A handler error is logged and returned as a
+    /// `500` so a binding/back-end failure never panics the isolate.
     #[worker::event(fetch, respond_with_errors)]
     async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // Route the shared core's `tracing` events to the console so handler

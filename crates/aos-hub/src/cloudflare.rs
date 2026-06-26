@@ -10,15 +10,17 @@
 //! [`Assets::from_env`], packaged by the `aos-hub-cloudflare` Nix
 //! wrapper) for the **provider-specific** part of a deployment:
 //!
-//! 1. **provision** — create the D1 database, R2 bucket, and KV namespace,
+//! 1. **provision** — create the R2 bucket and KV namespace (the relational
+//!    system of record is the `HubDb` Durable Object's SQLite — RFC-0004 ch.14
+//!    Phase E — not a D1 database),
 //! 2. **deploy** — render a [`wrangler.toml`](render_wrangler_toml) over the
 //!    bundled wasm dist and `wrangler deploy` it,
 //! 3. **secrets** — `wrangler secret put` the runtime secrets.
 //!
-//! Database migration and root-admin bootstrap are **not** done here and there
-//! is no public init endpoint: they run through the provider-neutral CLI `init`
-//! over `--target d1:<name>` (the [`WranglerD1Backend`] in this module), so the
-//! schema is applied by the authenticated operator, not over HTTP.
+//! Schema migration runs **inside `HubDb`** on first use (no external step). The
+//! root admin is bootstrapped over a seal-gated `HubDb` endpoint via
+//! [`bootstrap_root_remote`] (driven by `worker install` / `worker
+//! bootstrap-root`), so there is still no unauthenticated init path.
 //!
 //! The generated config has no `[build]` command — it deploys the *prebuilt*
 //! hermetic dist rather than re-running `worker-build` on the operator's
@@ -35,11 +37,6 @@
 //!
 //! [placement]
 //! mode = "off"
-//!
-//! [[d1_databases]]
-//! binding = "REGISTRY_DB"
-//! database_name = "aos-hub"
-//! database_id = "…"
 //!
 //! [[r2_buckets]]
 //! binding = "REGISTRY_BUCKET"
