@@ -1,4 +1,5 @@
-//! Generic runtime value representation: tagged values, lists, and the bump heap.
+//! Generic runtime value representation: tagged values, hash-consing, lists,
+//! and the bump heap.
 //!
 //! This is the `ratchet-value` crate — the value-representation layer of the
 //! RFC-0007 §1.1 crate topology, extracted from the former `aos-nix`
@@ -17,6 +18,7 @@
 pub use aos_nix_syntax as syntax;
 
 pub mod attrs;
+pub mod hashcons;
 pub mod heap;
 pub mod list;
 pub mod value;

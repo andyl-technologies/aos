@@ -18,7 +18,7 @@
 // Re-exports so the moved modules' paths to lower crates keep resolving.
 pub use aos_nix_syntax as syntax;
 pub use ratchet_core as compile;
-pub use ratchet_value::{attrs, heap, list, value};
+pub use ratchet_value::{attrs, hashcons, heap, list, value};
 
 pub mod cache;
 pub mod eval;

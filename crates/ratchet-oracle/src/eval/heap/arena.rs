@@ -8,8 +8,8 @@ impl EvalHeap {
         Self {
             arena: BumpArena::new(),
             records: Vec::new(),
-            string_cons: HashMap::new(),
-            path_cons: HashMap::new(),
+            string_cons: HashConsTable::new(),
+            path_cons: HashConsTable::new(),
         }
     }
 
@@ -24,8 +24,8 @@ impl EvalHeap {
             arena: BumpArena::with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
             records: Vec::new(),
-            string_cons: HashMap::new(),
-            path_cons: HashMap::new(),
+            string_cons: HashConsTable::new(),
+            path_cons: HashConsTable::new(),
         })
     }
 
@@ -60,7 +60,7 @@ impl EvalHeap {
             return Ok(value);
         }
         self.reserve_record_slot()?;
-        self.reserve_cons_slot(ValueTag::String, hash)?;
+        let cons_slot = self.reserve_string_cons_slot(hash)?;
         let allocation = self
             .arena
             .aos_alloc_string(string.len())
@@ -71,7 +71,7 @@ impl EvalHeap {
             structural_hash: Some(hash),
             object: HeapObjectValue::String(string),
         });
-        self.push_cons_value(ValueTag::String, hash, value);
+        self.push_string_cons_value(cons_slot, value);
         Ok(value)
     }
 
@@ -91,7 +91,7 @@ impl EvalHeap {
             return Ok(value);
         }
         self.reserve_record_slot()?;
-        self.reserve_cons_slot(ValueTag::Path, hash)?;
+        let cons_slot = self.reserve_path_cons_slot(hash)?;
         let allocation = self
             .arena
             .aos_alloc_string(path.len())
@@ -102,7 +102,7 @@ impl EvalHeap {
             structural_hash: Some(hash),
             object: HeapObjectValue::Path(path),
         });
-        self.push_cons_value(ValueTag::Path, hash, value);
+        self.push_path_cons_value(cons_slot, value);
         Ok(value)
     }
 
@@ -516,19 +516,19 @@ impl EvalHeap {
         hash: HotXxh3Hash,
         string: &NixString,
     ) -> Result<Option<Value>, EvalHeapError> {
-        let Some(bucket) = self.string_cons.get(&hash) else {
-            return Ok(None);
-        };
-        for value in bucket.iter().copied() {
-            let ptr = value.as_string_ptr().map_err(EvalHeapError::Value)?;
-            let record = self.record_or_unknown(ValueTag::String, ptr)?;
-            if record.structural_hash == Some(hash)
-                && matches!(&record.object, HeapObjectValue::String(candidate) if candidate == string)
-            {
-                return Ok(Some(value));
-            }
-        }
-        Ok(None)
+        self.string_cons
+            .try_find(&hash, |value| {
+                let value = *value;
+                let ptr = value.as_string_ptr().map_err(EvalHeapError::Value)?;
+                let record = self.record_or_unknown(ValueTag::String, ptr)?;
+                let same_hash = record.structural_hash == Some(hash);
+                let same_string = matches!(
+                    &record.object,
+                    HeapObjectValue::String(candidate) if candidate == string
+                );
+                Ok(same_hash && same_string)
+            })
+            .map(|value| value.copied())
     }
 
     fn lookup_path_cons(
@@ -536,66 +536,53 @@ impl EvalHeap {
         hash: HotXxh3Hash,
         path: &NixString,
     ) -> Result<Option<Value>, EvalHeapError> {
-        let Some(bucket) = self.path_cons.get(&hash) else {
-            return Ok(None);
-        };
-        for value in bucket.iter().copied() {
-            let ptr = value.as_path_ptr().map_err(EvalHeapError::Value)?;
-            let record = self.record_or_unknown(ValueTag::Path, ptr)?;
-            if record.structural_hash == Some(hash)
-                && matches!(&record.object, HeapObjectValue::Path(candidate) if candidate == path)
-            {
-                return Ok(Some(value));
-            }
-        }
-        Ok(None)
+        self.path_cons
+            .try_find(&hash, |value| {
+                let value = *value;
+                let ptr = value.as_path_ptr().map_err(EvalHeapError::Value)?;
+                let record = self.record_or_unknown(ValueTag::Path, ptr)?;
+                let same_hash = record.structural_hash == Some(hash);
+                let same_path = matches!(
+                    &record.object,
+                    HeapObjectValue::Path(candidate) if candidate == path
+                );
+                Ok(same_hash && same_path)
+            })
+            .map(|value| value.copied())
     }
 
-    fn reserve_cons_slot(&mut self, tag: ValueTag, hash: HotXxh3Hash) -> Result<(), EvalHeapError> {
-        let table = match tag {
-            ValueTag::String => &mut self.string_cons,
-            ValueTag::Path => &mut self.path_cons,
-            _ => return Ok(()),
-        };
-
-        if let Some(bucket) = table.get_mut(&hash) {
-            let entries = bucket
-                .len()
-                .checked_add(1)
-                .ok_or(EvalHeapError::ConsTableLengthOverflow)?;
-            bucket
-                .try_reserve_exact(1)
-                .map_err(|_| EvalHeapError::ConsTableAllocationFailed { entries })?;
-            return Ok(());
-        }
-
-        table
-            .try_reserve(1)
-            .map_err(|_| EvalHeapError::ConsTableAllocationFailed {
-                entries: table.len().saturating_add(1),
-            })?;
-        let mut bucket = Vec::new();
-        bucket
-            .try_reserve_exact(1)
-            .map_err(|_| EvalHeapError::ConsTableAllocationFailed { entries: 1 })?;
-        table.insert(hash, bucket);
-        Ok(())
+    fn reserve_string_cons_slot(
+        &mut self,
+        hash: HotXxh3Hash,
+    ) -> Result<HashConsSlot<HotXxh3Hash>, EvalHeapError> {
+        self.string_cons
+            .reserve_slot(hash)
+            .map_err(EvalHeapError::from)
     }
 
-    fn push_cons_value(&mut self, tag: ValueTag, hash: HotXxh3Hash, value: Value) {
-        let table = match tag {
-            ValueTag::String => &mut self.string_cons,
-            ValueTag::Path => &mut self.path_cons,
-            _ => return,
-        };
-        if let Some(bucket) = table.get_mut(&hash) {
-            bucket.push(value);
-        } else {
-            debug_assert!(
-                false,
-                "cons-table slot should be reserved before allocation"
-            );
-        }
+    fn reserve_path_cons_slot(
+        &mut self,
+        hash: HotXxh3Hash,
+    ) -> Result<HashConsSlot<HotXxh3Hash>, EvalHeapError> {
+        self.path_cons
+            .reserve_slot(hash)
+            .map_err(EvalHeapError::from)
+    }
+
+    fn push_string_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
+        let pushed = self.string_cons.push_reserved(slot, value);
+        debug_assert!(
+            pushed,
+            "cons-table slot should be reserved before allocation"
+        );
+    }
+
+    fn push_path_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
+        let pushed = self.path_cons.push_reserved(slot, value);
+        debug_assert!(
+            pushed,
+            "cons-table slot should be reserved before allocation"
+        );
     }
 
     fn record(&self, ptr: NonNull<HeapObject>) -> Option<&HeapRecord> {

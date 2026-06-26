@@ -7,7 +7,6 @@
 //! [`NixList`], [`FlatAttrs`], [`EvalLambda`], [`EvalPrimOp`], and
 //! [`EvalThunk`] values.
 
-use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
@@ -19,6 +18,7 @@ use super::thunk::ThunkCell;
 use crate::attrs::FlatAttrs;
 use crate::cache::HotXxh3Hash;
 use crate::compile::{FrameId, IrAttrPathId, IrId};
+use crate::hashcons::{HashConsError, HashConsSlot, HashConsTable};
 use crate::heap::arena::{ArenaError, ArenaStats, BumpArena};
 use crate::list::NixList;
 use crate::runtime::builtins::Builtin;
@@ -153,8 +153,8 @@ pub struct EvalPrimOp {
 pub struct EvalHeap {
     arena: BumpArena,
     records: Vec<HeapRecord>,
-    string_cons: HashMap<HotXxh3Hash, Vec<Value>>,
-    path_cons: HashMap<HotXxh3Hash, Vec<Value>>,
+    string_cons: HashConsTable<HotXxh3Hash, Value>,
+    path_cons: HashConsTable<HotXxh3Hash, Value>,
 }
 
 impl Default for EvalHeap {
@@ -259,6 +259,18 @@ impl EvalHeapError {
             expected,
             actual,
             address: ptr.as_ptr() as usize,
+        }
+    }
+}
+
+impl From<HashConsError> for EvalHeapError {
+    fn from(error: HashConsError) -> Self {
+        match error {
+            HashConsError::BucketLengthOverflow => Self::ConsTableLengthOverflow,
+            HashConsError::TableAllocationFailed { entries }
+            | HashConsError::BucketAllocationFailed { entries } => {
+                Self::ConsTableAllocationFailed { entries }
+            }
         }
     }
 }
