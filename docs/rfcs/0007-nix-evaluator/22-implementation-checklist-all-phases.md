@@ -1627,11 +1627,13 @@ alone (`M-1`/`Q-A`).
       with a fresh-runtime persistent forced-value hit for a replayed
       `builtins.currentSystem` payload. It requires identical `.drv` paths and
       ATerm bytes across all runs and requires the final run to report a
-      force-cache hit. This samples the current replayable forced-value hit
-      path inside a derivation input surface; full cached-vs-uncached closure
-      parity, derivationStrict-node SHA-256 early cutoff, lazy replay payloads,
-      mmap reads, GC/repack, and future value-memoization safety net remain
-      open (`S-14`).
+      force-cache hit. It also scans those derivation surfaces for the
+      persisted force-cache node/value/trace hashes in hex, raw bytes, and Nix
+      base32. This samples the current replayable forced-value hit path inside
+      a derivation input surface; full cached-vs-uncached closure parity, the
+      full leak invariant, derivationStrict-node SHA-256 early cutoff, lazy
+      replay payloads, mmap reads, GC/repack, and future value-memoization
+      safety net remain open (`S-14`).
 - [x] Current effectful persistent force-value `.drv` surface parity canary:
       `persistent_effectful_force_cache_hit_preserves_drv_surfaces` evaluates
       the same derivation attr path with eval cache disabled, with configured
@@ -1641,9 +1643,12 @@ alone (`M-1`/`Q-A`).
       identical `.drv` paths and ATerm bytes across all runs, requires the
       final run to report a force-cache hit, and requires persistent-hit
       revalidation to replay the path-exists fingerprint into the enclosing
-      impure-input trace. This samples the current effectful replayable
-      forced-value hit path inside a derivation input surface; full
-      cached-vs-uncached closure parity, derivationStrict-node SHA-256 early
+      impure-input trace. It also scans those derivation surfaces for the
+      exercised path-exists trace identity/observation hashes plus persisted
+      force-cache node/value/trace hashes in hex, raw bytes, and Nix base32.
+      This samples the current effectful replayable forced-value hit path
+      inside a derivation input surface; full cached-vs-uncached closure
+      parity, the full leak invariant, derivationStrict-node SHA-256 early
       cutoff, lazy replay payloads, stale-input miss surfaces, mmap reads,
       GC/repack, and future value-memoization safety net remain open (`S-14`).
 - [x] Current filesystem impure-leaf persistent force-value `.drv` surface
@@ -1720,12 +1725,15 @@ alone (`M-1`/`Q-A`).
       requires recomputation to replay the new path-exists fingerprint, and
       requires the resulting `.drv` path and ATerm bytes to match a cache-off
       marker-missing run while differing from the marker-present materialized
-      surface. This samples the current stale-input fallback inside a
-      derivation input surface; full
-      cached-vs-uncached closure parity, derivationStrict-node SHA-256 early
-      cutoff, dirty propagation beyond fallback, same-run post-recompute reuse
-      behavior, lazy replay payloads, mmap reads, GC/repack, and future
-      value-memoization safety net remain open (`S-14`).
+      surface. It also scans original/materialized/missing/stale surfaces for
+      the exercised path-exists trace identity/observation hashes plus
+      persisted force-cache node/value/trace hashes in hex, raw bytes, and Nix
+      base32. This samples the current stale-input fallback inside a
+      derivation input surface; full cached-vs-uncached closure parity, the
+      full leak invariant, derivationStrict-node SHA-256 early cutoff, dirty
+      propagation beyond fallback, same-run post-recompute reuse behavior, lazy
+      replay payloads, mmap reads, GC/repack, and future value-memoization
+      safety net remain open (`S-14`).
 - [x] Current uncacheable `currentTime` `.drv` surface canary:
       `persistent_current_time_force_cache_no_replay_preserves_drv_surfaces`
       evaluates a derivation attr path whose `args` depend on

@@ -1267,6 +1267,32 @@ fn persistent_force_cache_hit_preserves_drv_surfaces() {
     assert_eq!(hit_force_hits, 1);
     assert_eq!(hit_force_misses, 0);
 
+    let canaries = persistent_force_cache_surface_canaries(&persist_root, &[]);
+    assert_drv_surface_canaries_absent(
+        "uncached currentSystem force-cache surface",
+        &uncached_path,
+        &uncached_aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "cold currentSystem force-cache surface",
+        &first_path,
+        &first_aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "materializing currentSystem force-cache surface",
+        &materialize_path,
+        &materialize_aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "persistent-hit currentSystem force-cache surface",
+        &hit_path,
+        &hit_aterm,
+        &canaries,
+    );
+
     fs::remove_dir_all(persist_root).expect("temp directory removes");
 }
 
@@ -1363,6 +1389,32 @@ fn persistent_effectful_force_cache_hit_preserves_drv_surfaces() {
     assert_eq!(hit.cache_hits, 1);
     assert_eq!(hit.force_cache_hits, 1);
     assert_eq!(hit.force_cache_misses, 0);
+
+    let canaries = persistent_force_cache_surface_canaries(&persist_root, &[&expected_trace]);
+    assert_drv_surface_canaries_absent(
+        "uncached pathExists force-cache surface",
+        &uncached.path,
+        &uncached.aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "cold pathExists force-cache surface",
+        &first.path,
+        &first.aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "materializing pathExists force-cache surface",
+        &materialize.path,
+        &materialize.aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "persistent-hit pathExists force-cache surface",
+        &hit.path,
+        &hit.aterm,
+        &canaries,
+    );
 
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
     fs::remove_dir_all(root).expect("source temp directory removes");
@@ -1609,6 +1661,33 @@ fn persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces() {
     assert!(
         stale.thunks_forced > 0,
         "stale persistent observations should fall back to ordinary forcing"
+    );
+
+    let canaries =
+        persistent_force_cache_surface_canaries(&persist_root, &[&present_trace, &missing_trace]);
+    assert_drv_surface_canaries_absent(
+        "original pathExists force-cache surface",
+        &first.path,
+        &first.aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "materializing pathExists force-cache surface",
+        &materialize.path,
+        &materialize.aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "missing uncached pathExists force-cache surface",
+        &uncached_missing.path,
+        &uncached_missing.aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "stale-miss pathExists force-cache surface",
+        &stale.path,
+        &stale.aterm,
+        &canaries,
     );
 
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");

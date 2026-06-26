@@ -13,120 +13,12 @@ struct CachedDerivationSurface {
     force_cache_misses: u64,
 }
 
-fn durable_hash_surface_canaries(
-    label: &str,
-    hash: crate::cache::DurableBlake3Hash,
-) -> Vec<(String, Vec<u8>)> {
-    vec![
-        (format!("{label} hex"), hash.to_hex().into_bytes()),
-        (format!("{label} raw bytes"), hash.as_bytes().to_vec()),
-        (
-            format!("{label} Nix base32"),
-            nix_compat::nixbase32::encode(&hash.as_bytes()).into_bytes(),
-        ),
-    ]
-}
-
-fn add_impure_trace_surface_canaries(
-    canaries: &mut Vec<(String, Vec<u8>)>,
-    trace: &[ImpureInputFingerprint],
-) {
-    for input in trace {
-        let Some(input) = input.as_cacheable() else {
-            continue;
-        };
-        canaries.extend(durable_hash_surface_canaries(
-            "force trace identity BLAKE3",
-            input.identity().hash(),
-        ));
-        canaries.extend(durable_hash_surface_canaries(
-            "force trace observation BLAKE3",
-            input.observation_hash(),
-        ));
-    }
-}
-
-fn persistent_force_cache_surface_canaries(
-    persist_root: &Path,
-    traces: &[&[ImpureInputFingerprint]],
-) -> Vec<(String, Vec<u8>)> {
-    let mut canaries = Vec::new();
-    for trace in traces {
-        add_impure_trace_surface_canaries(&mut canaries, trace);
-    }
-
-    if !persist_root.exists() {
-        return canaries;
-    }
-
-    let persist = PersistCache::open(persist_root).expect("persistent cache opens");
-    for entry in persist
-        .node_metadata_index()
-        .latest_entries()
-        .expect("persistent node metadata entries load")
-    {
-        canaries.extend(durable_hash_surface_canaries(
-            "force node metadata BLAKE3",
-            entry.key().hash(),
-        ));
-        if let Some(value_hash) = entry.value().materialized_value_hash() {
-            canaries.extend(durable_hash_surface_canaries(
-                "force materialized value BLAKE3",
-                value_hash.as_durable_hash(),
-            ));
-        }
-    }
-    for entry in persist
-        .node_trace_log()
-        .latest_entries()
-        .expect("persistent node trace entries load")
-    {
-        canaries.extend(durable_hash_surface_canaries(
-            "force trace value BLAKE3",
-            entry.value_hash().as_durable_hash(),
-        ));
-        for input in entry.payload().inputs() {
-            canaries.extend(durable_hash_surface_canaries(
-                "force trace identity BLAKE3",
-                input.identity().hash(),
-            ));
-            canaries.extend(durable_hash_surface_canaries(
-                "force trace observation BLAKE3",
-                input.observation_hash(),
-            ));
-        }
-    }
-    canaries
-}
-
 fn assert_derivation_surface_canaries_absent(
     surface_name: &str,
     surface: &CachedDerivationSurface,
     canaries: &[(String, Vec<u8>)],
 ) {
-    assert_surface_canaries_absent(surface_name, ".drv path", surface.path.as_bytes(), canaries);
-    assert_surface_canaries_absent(surface_name, "ATerm bytes", &surface.aterm, canaries);
-}
-
-fn assert_surface_canaries_absent(
-    surface_name: &str,
-    field_name: &str,
-    surface: &[u8],
-    canaries: &[(String, Vec<u8>)],
-) {
-    for (canary_name, canary) in canaries {
-        assert!(
-            !contains_bytes(surface, canary),
-            "{canary_name} leaked into {surface_name} {field_name}: {surface:?}"
-        );
-    }
-}
-
-fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty()
-        && haystack
-            .windows(needle.len())
-            .any(|window| window == needle)
+    assert_drv_surface_canaries_absent(surface_name, &surface.path, &surface.aterm, canaries);
 }
 
 fn evaluate_cached_derivation_surface(
