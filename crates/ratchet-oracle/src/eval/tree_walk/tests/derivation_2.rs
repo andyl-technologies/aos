@@ -1105,6 +1105,7 @@ fn configured_import_cache_preserves_drv_surfaces() {
     let import_path = root.join("imported.nix");
     let imported_source = br#""surface-value""#;
     fs::write(&import_path, imported_source).expect("import source writes");
+    let import_realpath = fs::canonicalize(&import_path).expect("import path canonicalizes");
     let source = format!(
         r#"let
              imported = import {};
@@ -1146,6 +1147,38 @@ fn configured_import_cache_preserves_drv_surfaces() {
     assert_eq!(hit_stats, (1, 0));
     assert_eq!(hit_path, uncached_path);
     assert_eq!(hit_aterm, uncached_aterm);
+    let import_parse_key = ParseCacheKey::for_source(
+        imported_source,
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let import_file_key = ParseFileKey::for_source(&import_realpath, imported_source);
+    let mut canaries = durable_hash_surface_canaries(
+        "imported-file parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(import_parse_key.as_bytes()),
+    );
+    canaries.extend(durable_hash_surface_canaries(
+        "imported-file content BLAKE3",
+        import_file_key.content_hash(),
+    ));
+    assert_drv_surface_canaries_absent(
+        "uncached import-cache derivation surface",
+        &uncached_path,
+        &uncached_aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "cache-miss import-cache derivation surface",
+        &miss_path,
+        &miss_aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "persistent-hit import-cache derivation surface",
+        &hit_path,
+        &hit_aterm,
+        &canaries,
+    );
     assert!(
         ParseCache::new(&second_parse_root)
             .entry_for_source(imported_source)

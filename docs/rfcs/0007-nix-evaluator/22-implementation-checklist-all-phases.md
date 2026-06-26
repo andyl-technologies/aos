@@ -1015,8 +1015,10 @@ alone (`M-1`/`Q-A`).
       imported-file derivation with import caching disabled, with configured
       parse/persist roots on a miss/write path, and with a later persistent-hit
       path, then requires identical `.drv` paths and ATerm bytes across all
-      three runs. This is selected current-substrate coverage only, not the
-      full cached/uncached closure parity gate (`S-15`).
+      three runs. It also scans those surfaces for the imported file
+      parse-cache and file-content BLAKE3 renderings in hex, raw bytes, and Nix
+      base32. This is selected current-substrate coverage only, not the full
+      cached/uncached closure parity gate (`S-15`).
 - [x] Current hash-builtin cache-surface canary:
       `configured_import_cache_preserves_hash_builtin_surface` evaluates
       `builtins.hashString "sha256" (import file)` with import caching disabled,
