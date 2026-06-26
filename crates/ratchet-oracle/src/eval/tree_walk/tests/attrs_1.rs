@@ -8975,6 +8975,285 @@ fn closed_composite_literal_thunks_admit_on_first_raw_force() {
     );
 }
 
+// Builds synthetic position-free IR rather than parser-lowered source IR so
+// attr position metadata does not block the replayable payload path under test.
+fn position_free_closed_literal_lazy_list_ir() -> (Ir, Symbol) {
+    let mut symbols = SymbolTable::new();
+    let a = symbols.intern(b"a").expect("a interns");
+    let ir = Ir {
+        root: IrId::new(4),
+        arena: IrArena::from_raw_parts(
+            vec![
+                pure_node(IrKind::Int, Span::new(8, 9), IrData::Int(1)),
+                pure_node(
+                    IrKind::ThunkAlloc,
+                    Span::new(8, 9),
+                    IrData::Node(IrId::new(0)),
+                ),
+                pure_node(
+                    IrKind::List,
+                    Span::new(6, 11),
+                    IrData::Children(IrChildSlice::new(0, 1)),
+                ),
+                pure_node(
+                    IrKind::ThunkAlloc,
+                    Span::new(6, 11),
+                    IrData::Node(IrId::new(2)),
+                ),
+                pure_node(
+                    IrKind::AttrSet,
+                    Span::new(0, 13),
+                    IrData::AttrSet {
+                        shape: IrShapeId::new(0),
+                        bindings: IrBindingSlice::new(0, 1),
+                        recursive: false,
+                        has_dynamic: false,
+                        frame: None,
+                    },
+                ),
+            ],
+            vec![IrId::new(1)],
+        ),
+        symbols,
+        frames: Vec::new().into_boxed_slice(),
+        with_chains: Vec::new().into_boxed_slice(),
+        attr_paths: Vec::new().into_boxed_slice(),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(a),
+            position: None,
+            value: IrId::new(3),
+        }]
+        .into_boxed_slice(),
+        shapes: vec![IrShape::new(Box::new([a]))].into_boxed_slice(),
+    };
+    (ir, a)
+}
+
+#[test]
+fn closed_literal_lazy_list_payload_hits_rehydrate_static_elements() {
+    let (ir, a) = position_free_closed_literal_lazy_list_ir();
+    let source = "{ a = [ 1 ]; }";
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    assert!(ir.bindings.iter().all(|binding| binding.position.is_none()));
+
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "closed-literal-lazy-list-hit.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("a is a node thunk");
+            let body = thunk.body().expect("a has a lowered list body");
+            let node = ir.arena.node(body).expect("list body exists");
+            assert_eq!(node.kind, IrKind::List);
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("closed literal lazy list subject builds")
+        };
+        assert_eq!(
+            subject.memoization_admission,
+            ForceCacheMemoizationAdmission::SelectedSubstrate,
+            "closed literal lazy lists should admit on first demand"
+        );
+
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("closed literal lazy list force succeeds");
+        let list = evaluator
+            .heap()
+            .get_list(forced)
+            .expect("forced value is a list");
+        let element = list.get(0).expect("element exists");
+        if expected_hit {
+            assert_eq!(element.as_int(), Ok(1));
+        } else {
+            assert_eq!(element.tag(), ValueTag::Thunk);
+            let element_thunk = evaluator
+                .heap()
+                .get_thunk(element)
+                .expect("cold list keeps the literal element lazy");
+            assert_eq!(element_thunk.cell().state(), Ok(ThunkState::Suspended));
+        }
+        assert_eq!(evaluator.stats().force_cache_memoization_bypasses(), 0);
+        assert!(
+            evaluator.stats().force_cache_memoization_admits() > 0,
+            "closed literal lazy list forces should be admitted"
+        );
+        assert!(
+            evaluator.stats().force_cache_probes() > 0,
+            "closed literal lazy list forces should probe the shared cache"
+        );
+        if expected_hit {
+            assert!(evaluator.stats().force_cache_hits() > 0);
+            assert_eq!(evaluator.stats().force_cache_misses(), 0);
+        } else {
+            assert_eq!(evaluator.stats().force_cache_hits(), 0);
+            assert!(evaluator.stats().force_cache_misses() > 0);
+        }
+        assert_eq!(
+            evaluator.stats().thunks_forced(),
+            if expected_hit { 0 } else { 1 }
+        );
+    }
+}
+
+// Builds synthetic position-free IR rather than parser-lowered source IR so
+// attr position metadata does not block the replayable payload path under test.
+fn position_free_closed_literal_lazy_attrset_ir() -> (Ir, Symbol, Symbol) {
+    let mut symbols = SymbolTable::new();
+    let a = symbols.intern(b"a").expect("a interns");
+    let b = symbols.intern(b"b").expect("b interns");
+    let ir = manual_ir_with_attr_tables(
+        IrId::new(4),
+        vec![
+            pure_node(IrKind::Int, Span::new(12, 13), IrData::Int(1)),
+            pure_node(
+                IrKind::ThunkAlloc,
+                Span::new(12, 13),
+                IrData::Node(IrId::new(0)),
+            ),
+            pure_node(
+                IrKind::AttrSet,
+                Span::new(6, 15),
+                IrData::AttrSet {
+                    shape: IrShapeId::new(0),
+                    bindings: IrBindingSlice::new(1, 1),
+                    recursive: false,
+                    has_dynamic: false,
+                    frame: None,
+                },
+            ),
+            pure_node(
+                IrKind::ThunkAlloc,
+                Span::new(6, 15),
+                IrData::Node(IrId::new(2)),
+            ),
+            pure_node(
+                IrKind::AttrSet,
+                Span::new(0, 17),
+                IrData::AttrSet {
+                    shape: IrShapeId::new(1),
+                    bindings: IrBindingSlice::new(0, 1),
+                    recursive: false,
+                    has_dynamic: false,
+                    frame: None,
+                },
+            ),
+        ],
+        symbols,
+        vec![
+            IrBinding {
+                key: IrAttrPathSegment::Static(a),
+                position: None,
+                value: IrId::new(3),
+            },
+            IrBinding {
+                key: IrAttrPathSegment::Static(b),
+                position: None,
+                value: IrId::new(1),
+            },
+        ],
+        vec![IrShape::new(Box::new([b])), IrShape::new(Box::new([a]))],
+    );
+    (ir, a, b)
+}
+
+#[test]
+fn closed_literal_lazy_attrset_payload_hits_rehydrate_static_bindings() {
+    let (ir, a, b) = position_free_closed_literal_lazy_attrset_ir();
+    let source = "{ a = { b = 1; }; }";
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    assert!(ir.bindings.iter().all(|binding| binding.position.is_none()));
+
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "closed-literal-lazy-attrset-hit.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("a is a node thunk");
+            let body = thunk.body().expect("a has a lowered attrset body");
+            let node = ir.arena.node(body).expect("attrset body exists");
+            assert_eq!(node.kind, IrKind::AttrSet);
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("closed literal lazy attrset subject builds")
+        };
+        assert_eq!(
+            subject.memoization_admission,
+            ForceCacheMemoizationAdmission::SelectedSubstrate,
+            "closed literal lazy attrsets should admit on first demand"
+        );
+
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("closed literal lazy attrset force succeeds");
+        let attrs = evaluator
+            .heap()
+            .get_attrs(forced)
+            .expect("forced value is an attrset");
+        let binding = attrs.get(b).expect("b exists");
+        if expected_hit {
+            assert_eq!(binding.as_int(), Ok(1));
+        } else {
+            assert_eq!(binding.tag(), ValueTag::Thunk);
+            let binding_thunk = evaluator
+                .heap()
+                .get_thunk(binding)
+                .expect("cold attrset keeps the literal binding lazy");
+            assert_eq!(binding_thunk.cell().state(), Ok(ThunkState::Suspended));
+        }
+        assert_eq!(evaluator.stats().force_cache_memoization_bypasses(), 0);
+        assert!(
+            evaluator.stats().force_cache_memoization_admits() > 0,
+            "closed literal lazy attrset forces should be admitted"
+        );
+        assert!(
+            evaluator.stats().force_cache_probes() > 0,
+            "closed literal lazy attrset forces should probe the shared cache"
+        );
+        if expected_hit {
+            assert!(evaluator.stats().force_cache_hits() > 0);
+            assert_eq!(evaluator.stats().force_cache_misses(), 0);
+        } else {
+            assert_eq!(evaluator.stats().force_cache_hits(), 0);
+            assert!(evaluator.stats().force_cache_misses() > 0);
+        }
+        assert_eq!(
+            evaluator.stats().thunks_forced(),
+            if expected_hit { 0 } else { 1 }
+        );
+    }
+}
+
 fn position_free_source_order_attrset_ir() -> (Ir, Symbol) {
     let mut symbols = SymbolTable::new();
     let a = symbols.intern(b"a").expect("a interns");
