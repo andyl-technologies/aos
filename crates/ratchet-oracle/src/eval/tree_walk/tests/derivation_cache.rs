@@ -119,6 +119,76 @@ fn assert_cacheable_impure_leaf_force_hit_preserves_drv_surface(
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
 }
 
+fn assert_cacheable_impure_leaf_force_stale_miss_preserves_drv_surface(
+    persist_prefix: &str,
+    ir: &Ir,
+    source: &str,
+    first_trace: Vec<ImpureInputFingerprint>,
+    changed_trace: Vec<ImpureInputFingerprint>,
+    configure_options: impl Fn(&mut TreeWalkOptions),
+    mutate_input: impl FnOnce(),
+) {
+    let persist_root = unique_temp_dir(persist_prefix);
+
+    let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    configure_options(&mut first_options);
+    first_options.set_persist_cache_root(&persist_root);
+    let first =
+        evaluate_cached_derivation_surface(ir, source, first_options, EvalCacheRuntime::enabled());
+    assert_eq!(first.trace, first_trace);
+    assert_eq!(first.cache_hits, 0);
+    assert_eq!(first.force_cache_hits, 0);
+    assert_eq!(first.force_cache_misses, 0);
+
+    let mut materialize_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    configure_options(&mut materialize_options);
+    materialize_options.set_persist_cache_root(&persist_root);
+    let materialize = evaluate_cached_derivation_surface(
+        ir,
+        source,
+        materialize_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(materialize.path, first.path);
+    assert_eq!(materialize.aterm, first.aterm);
+    assert_eq!(materialize.trace, first_trace);
+    assert_eq!(materialize.cache_hits, 0);
+    assert_eq!(materialize.force_cache_hits, 0);
+    assert_eq!(materialize.force_cache_misses, 1);
+
+    mutate_input();
+
+    let mut uncached_changed_options = TreeWalkOptions::new();
+    configure_options(&mut uncached_changed_options);
+    let uncached_changed = evaluate_cached_derivation_surface(
+        ir,
+        source,
+        uncached_changed_options,
+        EvalCacheRuntime::disabled(),
+    );
+    assert_eq!(uncached_changed.trace, changed_trace);
+    assert_eq!(uncached_changed.cache_hits, 0);
+    assert_eq!(uncached_changed.force_cache_hits, 0);
+    assert_eq!(uncached_changed.force_cache_misses, 0);
+    assert_ne!(uncached_changed.path, materialize.path);
+    assert_ne!(uncached_changed.aterm, materialize.aterm);
+
+    let mut stale_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    configure_options(&mut stale_options);
+    stale_options.set_persist_cache_root(&persist_root);
+    let stale =
+        evaluate_cached_derivation_surface(ir, source, stale_options, EvalCacheRuntime::enabled());
+    assert_eq!(stale.path, uncached_changed.path);
+    assert_eq!(stale.aterm, uncached_changed.aterm);
+    assert_eq!(stale.trace, changed_trace);
+    assert!(
+        stale.thunks_forced > 0,
+        "stale persistent observations should fall back to ordinary forcing"
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
 #[test]
 fn persistent_read_file_force_cache_hit_preserves_drv_surfaces() {
     let root = unique_temp_dir("force-cache-read-file-drv-source");
@@ -158,7 +228,6 @@ fn persistent_read_file_force_cache_hit_preserves_drv_surfaces() {
 
 #[test]
 fn persistent_read_file_force_cache_stale_miss_preserves_drv_surfaces() {
-    let persist_root = unique_temp_dir("force-cache-read-file-drv-stale-parity");
     let root = unique_temp_dir("force-cache-read-file-drv-stale-source");
     fs::write(root.join("input.txt"), b"first payload").expect("input file writes");
     let root = fs::canonicalize(root).expect("source root canonicalizes");
@@ -183,71 +252,22 @@ fn persistent_read_file_force_cache_stale_miss_preserves_drv_surfaces() {
            }"#;
     let ir = lower(source);
 
-    let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
-    first_options
-        .set_path_literal_base(path_bytes(&root))
-        .expect("path base configures");
-    first_options.set_persist_cache_root(&persist_root);
-    let first =
-        evaluate_cached_derivation_surface(&ir, source, first_options, EvalCacheRuntime::enabled());
-    assert_eq!(first.trace, first_trace);
-    assert_eq!(first.cache_hits, 0);
-    assert_eq!(first.force_cache_hits, 0);
-    assert_eq!(first.force_cache_misses, 0);
-
-    let mut materialize_options = TreeWalkOptions::with_eval_cache_enabled(true);
-    materialize_options
-        .set_path_literal_base(path_bytes(&root))
-        .expect("path base configures");
-    materialize_options.set_persist_cache_root(&persist_root);
-    let materialize = evaluate_cached_derivation_surface(
+    assert_cacheable_impure_leaf_force_stale_miss_preserves_drv_surface(
+        "force-cache-read-file-drv-stale-parity",
         &ir,
         source,
-        materialize_options,
-        EvalCacheRuntime::enabled(),
-    );
-    assert_eq!(materialize.path, first.path);
-    assert_eq!(materialize.aterm, first.aterm);
-    assert_eq!(materialize.trace, first_trace);
-    assert_eq!(materialize.cache_hits, 0);
-    assert_eq!(materialize.force_cache_hits, 0);
-    assert_eq!(materialize.force_cache_misses, 1);
-
-    fs::write(root.join("input.txt"), b"changed payload").expect("input file changes");
-
-    let mut uncached_changed_options = TreeWalkOptions::new();
-    uncached_changed_options
-        .set_path_literal_base(path_bytes(&root))
-        .expect("path base configures");
-    let uncached_changed = evaluate_cached_derivation_surface(
-        &ir,
-        source,
-        uncached_changed_options,
-        EvalCacheRuntime::disabled(),
-    );
-    assert_eq!(uncached_changed.trace, changed_trace);
-    assert_eq!(uncached_changed.cache_hits, 0);
-    assert_eq!(uncached_changed.force_cache_hits, 0);
-    assert_eq!(uncached_changed.force_cache_misses, 0);
-    assert_ne!(uncached_changed.path, materialize.path);
-    assert_ne!(uncached_changed.aterm, materialize.aterm);
-
-    let mut stale_options = TreeWalkOptions::with_eval_cache_enabled(true);
-    stale_options
-        .set_path_literal_base(path_bytes(&root))
-        .expect("path base configures");
-    stale_options.set_persist_cache_root(&persist_root);
-    let stale =
-        evaluate_cached_derivation_surface(&ir, source, stale_options, EvalCacheRuntime::enabled());
-    assert_eq!(stale.path, uncached_changed.path);
-    assert_eq!(stale.aterm, uncached_changed.aterm);
-    assert_eq!(stale.trace, changed_trace);
-    assert!(
-        stale.thunks_forced > 0,
-        "stale persistent observations should fall back to ordinary forcing"
+        first_trace,
+        changed_trace,
+        |options| {
+            options
+                .set_path_literal_base(path_bytes(&root))
+                .expect("path base configures");
+        },
+        || {
+            fs::write(root.join("input.txt"), b"changed payload").expect("input file changes");
+        },
     );
 
-    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
     fs::remove_dir_all(root).expect("source temp directory removes");
 }
 
@@ -293,6 +313,59 @@ fn persistent_read_dir_force_cache_hit_preserves_drv_surfaces() {
 }
 
 #[test]
+fn persistent_read_dir_force_cache_stale_miss_preserves_drv_surfaces() {
+    let root = unique_temp_dir("force-cache-read-dir-drv-stale-source");
+    fs::create_dir(root.join("dir")).expect("directory creates");
+    fs::write(root.join("dir").join("target"), b"data").expect("target writes");
+    let root = fs::canonicalize(root).expect("source root canonicalizes");
+    let dir_path = path_bytes(&root.join("dir"));
+    let first_trace = vec![
+        ImpureInputFingerprint::read_dir(
+            &dir_path,
+            [DirEntryInput::new(b"target", FileTypeForInput::Regular)],
+        )
+        .expect("first fingerprint builds"),
+    ];
+    let changed_trace = vec![
+        ImpureInputFingerprint::read_dir(
+            &dir_path,
+            [DirEntryInput::new(b"target", FileTypeForInput::Directory)],
+        )
+        .expect("changed fingerprint builds"),
+    ];
+    let source = r#"let
+             b = builtins;
+           in {
+             pkg = derivationStrict {
+               name = "force-cache-read-dir-drv-stale-surface";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ (b.readDir ./dir).target ];
+             };
+           }"#;
+    let ir = lower(source);
+
+    assert_cacheable_impure_leaf_force_stale_miss_preserves_drv_surface(
+        "force-cache-read-dir-drv-stale-parity",
+        &ir,
+        source,
+        first_trace,
+        changed_trace,
+        |options| {
+            options
+                .set_path_literal_base(path_bytes(&root))
+                .expect("path base configures");
+        },
+        || {
+            fs::remove_file(root.join("dir").join("target")).expect("target file removes");
+            fs::create_dir(root.join("dir").join("target")).expect("target directory creates");
+        },
+    );
+
+    fs::remove_dir_all(root).expect("source temp directory removes");
+}
+
+#[test]
 fn persistent_read_file_type_force_cache_hit_preserves_drv_surfaces() {
     let root = unique_temp_dir("force-cache-read-file-type-drv-source");
     fs::write(root.join("target"), b"data").expect("target writes");
@@ -323,6 +396,52 @@ fn persistent_read_file_type_force_cache_hit_preserves_drv_surfaces() {
             options
                 .set_path_literal_base(path_bytes(&root))
                 .expect("path base configures");
+        },
+    );
+
+    fs::remove_dir_all(root).expect("source temp directory removes");
+}
+
+#[test]
+fn persistent_read_file_type_force_cache_stale_miss_preserves_drv_surfaces() {
+    let root = unique_temp_dir("force-cache-read-file-type-drv-stale-source");
+    fs::write(root.join("target"), b"data").expect("target writes");
+    let root = fs::canonicalize(root).expect("source root canonicalizes");
+    let target_path = path_bytes(&root.join("target"));
+    let first_trace = vec![
+        ImpureInputFingerprint::read_file_type(&target_path, FileTypeForInput::Regular)
+            .expect("first fingerprint builds"),
+    ];
+    let changed_trace = vec![
+        ImpureInputFingerprint::read_file_type(&target_path, FileTypeForInput::Directory)
+            .expect("changed fingerprint builds"),
+    ];
+    let source = r#"let
+             b = builtins;
+           in {
+             pkg = derivationStrict {
+               name = "force-cache-read-file-type-drv-stale-surface";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ (b.readFileType ./target) ];
+             };
+           }"#;
+    let ir = lower(source);
+
+    assert_cacheable_impure_leaf_force_stale_miss_preserves_drv_surface(
+        "force-cache-read-file-type-drv-stale-parity",
+        &ir,
+        source,
+        first_trace,
+        changed_trace,
+        |options| {
+            options
+                .set_path_literal_base(path_bytes(&root))
+                .expect("path base configures");
+        },
+        || {
+            fs::remove_file(root.join("target")).expect("target file removes");
+            fs::create_dir(root.join("target")).expect("target directory creates");
         },
     );
 
