@@ -481,6 +481,11 @@ impl TreeWalk {
         let Some(identity) = identity else {
             return;
         };
+        if !payload.attr_positions_all_in_module(EvalModuleId::ROOT.as_u32()) {
+            self.invalidate_cached_forced_expression_payload(&subject);
+            self.clear_persist_forced_expression_payload(&subject);
+            return;
+        }
 
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
@@ -599,7 +604,7 @@ impl TreeWalk {
         if !self.options.eval_cache_enabled() {
             return None;
         }
-        if payload.retains_attr_positions() {
+        if !payload.attr_positions_all_in_module(EvalModuleId::ROOT.as_u32()) {
             self.clear_persist_forced_expression_payload(subject);
             return None;
         }
@@ -1225,6 +1230,23 @@ impl TreeWalk {
             &mut revalidator,
         ) {
             Ok(Some(payload)) => {
+                if !payload.attr_positions_all_in_module(EvalModuleId::ROOT.as_u32()) {
+                    if let Err(error) = cache.invalidate_inline_expression_payload(
+                        identity,
+                        subject.free_var_value_hashes.iter().copied(),
+                    ) {
+                        tracing::warn!(
+                            target: "aos_nix::cache",
+                            error = %error,
+                            "tree-walk evaluator incompatible positioned payload invalidation failed"
+                        );
+                    }
+                    drop(revalidator);
+                    drop(cache);
+                    self.clear_persist_forced_expression_payload(&subject);
+                    self.increment_eval_cache_miss();
+                    return None;
+                }
                 let trace = revalidator.into_revalidated_trace();
                 drop(cache);
                 let Some(value) = self.value_for_cached_expression_payload(payload) else {
@@ -1290,6 +1312,10 @@ impl TreeWalk {
                 return None;
             }
         };
+        if !payload.attr_positions_all_in_module(EvalModuleId::ROOT.as_u32()) {
+            self.clear_persist_forced_expression_payload(subject);
+            return None;
+        }
         let trace = revalidator.into_revalidated_trace();
         let value = self.value_for_cached_expression_payload(payload.clone())?;
         self.observe_persist_forced_expression_runtime_hit(subject, payload, &trace);

@@ -24,6 +24,7 @@ use super::{
 };
 use crate::attrs::AttrPosition;
 use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};
+use crate::syntax::Span;
 use crate::value::Value;
 
 const MAX_CACHED_EXPRESSION_PAYLOAD_NESTING: usize = 64;
@@ -530,8 +531,6 @@ impl CachedExpressionValue {
     /// values and whose optional binding positions are observable through
     /// `builtins.unsafeGetAttrPos`. It does not represent lazy binding thunks.
     /// Inputs with no positions canonicalize to [`Self::strict_attrs`].
-    /// Persistent materialization for payloads that retain positions is
-    /// deliberately not available in this precursor.
     ///
     /// # Errors
     ///
@@ -611,9 +610,7 @@ impl CachedExpressionValue {
     /// values, whose source-order permutation is observable, and whose optional
     /// binding positions are observable through `builtins.unsafeGetAttrPos`.
     /// It does not represent lazy binding thunks. Inputs with no positions
-    /// canonicalize to [`Self::source_ordered_attrs`]. Persistent materialization
-    /// for payloads that retain positions is deliberately not available in this
-    /// precursor.
+    /// canonicalize to [`Self::source_ordered_attrs`].
     ///
     /// # Errors
     ///
@@ -671,14 +668,12 @@ impl CachedExpressionValue {
     /// preimage used by [`Self::value_hash`]. Consequently
     /// `DurableBlake3Hash::for_bytes(encoded) == self.value_hash().as_durable_hash()`,
     /// allowing the persistent pack to address payload bytes by the same value
-    /// hash the demand graph records. Payloads that retain binding positions
-    /// currently hash in memory only and return an error instead of encoding.
+    /// hash the demand graph records.
     ///
     /// # Errors
     ///
     /// Returns [`CachedExpressionValuePayloadError`] if the encoded payload
-    /// cannot reserve enough byte storage or if the payload retains binding
-    /// positions, which are not persistent yet.
+    /// cannot reserve enough byte storage.
     pub fn encode_persistent_payload(&self) -> Result<Vec<u8>, CachedExpressionValuePayloadError> {
         self.payload.encode_persistent_payload()
     }
@@ -956,6 +951,10 @@ impl CachedExpressionValue {
     pub(crate) fn retains_attr_positions(&self) -> bool {
         self.payload.retains_attr_positions()
     }
+
+    pub(crate) fn attr_positions_all_in_module(&self, module: u32) -> bool {
+        self.payload.attr_positions_all_in_module(module)
+    }
 }
 
 /// Persistent cached-expression payload encoding failed.
@@ -1060,9 +1059,9 @@ pub enum CachedExpressionValuePayloadError {
         /// The zero-based index of the out-of-order or duplicate binding name.
         index: usize,
     },
-    /// Position-bearing attrset payloads are not yet persisted.
-    #[error("position-bearing cached expression attrset payloads are not persistent yet")]
-    PositionedAttrsNotPersistent,
+    /// A positioned attrset payload used a positioned tag without any positions.
+    #[error("cached expression positioned attrset payload has no positioned bindings")]
+    PositionlessPositionedAttrsPayload,
     /// Nested payload decoding exceeded the supported recursion depth.
     #[error("cached expression payload nesting exceeded {limit} levels")]
     PayloadNestingLimitExceeded {
@@ -2369,6 +2368,36 @@ impl InlineValuePayload {
         }
     }
 
+    fn attr_positions_all_in_module(&self, module: u32) -> bool {
+        match self {
+            Self::PositionedAttrs(entries) | Self::SourceOrderedPositionedAttrs(entries) => {
+                entries.iter().all(|entry| {
+                    entry
+                        .position
+                        .map(|position| position.module == module)
+                        .unwrap_or(true)
+                        && entry.value.attr_positions_all_in_module(module)
+                })
+            }
+            Self::List(elements) => elements
+                .iter()
+                .all(|element| element.attr_positions_all_in_module(module)),
+            Self::Attrs(entries) | Self::SourceOrderedAttrs(entries) => entries
+                .iter()
+                .all(|entry| entry.value.attr_positions_all_in_module(module)),
+            Self::Int(_)
+            | Self::Float(_)
+            | Self::Bool(_)
+            | Self::Null
+            | Self::ContextFreeString(_)
+            | Self::ContextString { .. }
+            | Self::Path(_)
+            | Self::ContextPath { .. }
+            | Self::EmptyList
+            | Self::EmptyAttrs => true,
+        }
+    }
+
     fn value_hash_from_persistent_payload(&self) -> ValueHash {
         let mut hasher = blake3::Hasher::new();
         self.update_persistent_payload_preimage(&mut hasher);
@@ -2652,8 +2681,29 @@ impl InlineValuePayload {
                     append_payload_bytes(&mut out, &entry.value.encode_persistent_payload()?)?;
                 }
             }
-            Self::PositionedAttrs(_) | Self::SourceOrderedPositionedAttrs(_) => {
-                return Err(CachedExpressionValuePayloadError::PositionedAttrsNotPersistent);
+            Self::PositionedAttrs(entries) => {
+                append_payload_bytes(&mut out, ATTRS_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, POSITIONED_ATTRS_PAYLOAD_TAG)?;
+                append_payload_u128(&mut out, entries.len() as u128)?;
+                for entry in entries {
+                    append_payload_u128(&mut out, entry.name.len() as u128)?;
+                    append_payload_bytes(&mut out, &entry.name)?;
+                    append_attr_position_payload(&mut out, entry.position)?;
+                    append_payload_u128(&mut out, entry.value.persistent_payload_len())?;
+                    append_payload_bytes(&mut out, &entry.value.encode_persistent_payload()?)?;
+                }
+            }
+            Self::SourceOrderedPositionedAttrs(entries) => {
+                append_payload_bytes(&mut out, ATTRS_VALUE_HASH_DOMAIN_VERSION)?;
+                append_payload_bytes(&mut out, SOURCE_ORDERED_POSITIONED_ATTRS_PAYLOAD_TAG)?;
+                append_payload_u128(&mut out, entries.len() as u128)?;
+                for entry in entries {
+                    append_payload_u128(&mut out, entry.name.len() as u128)?;
+                    append_payload_bytes(&mut out, &entry.name)?;
+                    append_attr_position_payload(&mut out, entry.position)?;
+                    append_payload_u128(&mut out, entry.value.persistent_payload_len())?;
+                    append_payload_bytes(&mut out, &entry.value.encode_persistent_payload()?)?;
+                }
             }
         }
         Ok(out)
@@ -2766,14 +2816,19 @@ impl InlineValuePayload {
         if bytes.starts_with(ATTRS_VALUE_HASH_DOMAIN_VERSION) {
             let mut cursor = PayloadCursor::new(bytes);
             cursor.take_marker(ATTRS_VALUE_HASH_DOMAIN_VERSION, "attrs value domain")?;
-            if cursor.remaining().starts_with(POSITIONED_ATTRS_PAYLOAD_TAG)
-                || cursor
-                    .remaining()
-                    .starts_with(SOURCE_ORDERED_POSITIONED_ATTRS_PAYLOAD_TAG)
+            let (source_ordered, positioned) = if cursor
+                .remaining()
+                .starts_with(SOURCE_ORDERED_POSITIONED_ATTRS_PAYLOAD_TAG)
             {
-                return Err(CachedExpressionValuePayloadError::PositionedAttrsNotPersistent);
-            }
-            let source_ordered = if cursor
+                cursor.take_marker(
+                    SOURCE_ORDERED_POSITIONED_ATTRS_PAYLOAD_TAG,
+                    "source-order positioned attrs payload tag",
+                )?;
+                (true, true)
+            } else if cursor.remaining().starts_with(POSITIONED_ATTRS_PAYLOAD_TAG) {
+                cursor.take_marker(POSITIONED_ATTRS_PAYLOAD_TAG, "positioned attrs payload tag")?;
+                (false, true)
+            } else if cursor
                 .remaining()
                 .starts_with(SOURCE_ORDERED_ATTRS_PAYLOAD_TAG)
             {
@@ -2781,15 +2836,64 @@ impl InlineValuePayload {
                     SOURCE_ORDERED_ATTRS_PAYLOAD_TAG,
                     "source-order attrs payload tag",
                 )?;
-                true
+                (true, false)
             } else {
                 cursor.take_marker(b"attrs", "attrs payload tag")?;
-                false
+                (false, false)
             };
             let len = cursor.take_len()?;
             if len == 0 {
                 cursor.finish()?;
+                if positioned {
+                    return Err(
+                        CachedExpressionValuePayloadError::PositionlessPositionedAttrsPayload,
+                    );
+                }
                 return Ok(Self::EmptyAttrs);
+            }
+            if positioned {
+                let mut entries: Vec<PositionedAttrPayloadEntry> = Vec::new();
+                entries.try_reserve_exact(len).map_err(|_| {
+                    CachedExpressionValuePayloadError::AttrsAllocationFailed { len }
+                })?;
+                let mut has_position = false;
+                for index in 0..len {
+                    let name = cursor.take_length_prefixed_bytes()?;
+                    if !source_ordered
+                        && let Some(previous) = entries.last()
+                        && previous.name.as_slice() >= name.as_slice()
+                    {
+                        return Err(
+                            CachedExpressionValuePayloadError::NonCanonicalAttrsPayloadName {
+                                index,
+                            },
+                        );
+                    }
+                    let position = cursor.take_attr_position()?;
+                    has_position |= position.is_some();
+                    let value = cursor.take_length_prefixed_bytes()?;
+                    entries.push(PositionedAttrPayloadEntry {
+                        name,
+                        position,
+                        value: Self::decode_persistent_payload_with_depth(
+                            &value,
+                            depth.saturating_add(1),
+                        )?,
+                    });
+                }
+                cursor.finish()?;
+                if !has_position {
+                    return Err(
+                        CachedExpressionValuePayloadError::PositionlessPositionedAttrsPayload,
+                    );
+                }
+                if source_ordered {
+                    ensure_unique_attr_payload_names(
+                        entries.iter().map(|entry| entry.name.as_slice()),
+                    )?;
+                    return Ok(Self::SourceOrderedPositionedAttrs(entries));
+                }
+                return Ok(Self::PositionedAttrs(entries));
             }
             let mut entries: Vec<AttrPayloadEntry> = Vec::new();
             entries
@@ -2880,6 +2984,21 @@ fn positioned_attr_entry_payload_len(entry: &PositionedAttrPayloadEntry) -> u128
 
 const fn attr_position_payload_len(position: Option<AttrPosition>) -> u128 {
     if position.is_some() { 13 } else { 1 }
+}
+
+fn append_attr_position_payload(
+    out: &mut Vec<u8>,
+    position: Option<AttrPosition>,
+) -> Result<(), CachedExpressionValuePayloadError> {
+    match position {
+        Some(position) => {
+            append_payload_byte(out, 1)?;
+            append_payload_bytes(out, &position.module.to_le_bytes())?;
+            append_payload_bytes(out, &position.span.start.to_le_bytes())?;
+            append_payload_bytes(out, &position.span.end.to_le_bytes())
+        }
+        None => append_payload_byte(out, 0),
+    }
 }
 
 fn append_payload_byte(
@@ -3083,6 +3202,13 @@ impl<'a> PayloadCursor<'a> {
         Ok(u64::from_le_bytes(out))
     }
 
+    fn take_u32(&mut self) -> Result<u32, CachedExpressionValuePayloadError> {
+        let bytes = self.take_bytes(4)?;
+        let mut out = [0; 4];
+        out.copy_from_slice(bytes);
+        Ok(u32::from_le_bytes(out))
+    }
+
     fn take_u128(&mut self) -> Result<u128, CachedExpressionValuePayloadError> {
         let bytes = self.take_bytes(16)?;
         let mut out = [0; 16];
@@ -3139,6 +3265,24 @@ impl<'a> PayloadCursor<'a> {
             elements.push(element);
         }
         Ok(StringContext::new(elements))
+    }
+
+    fn take_attr_position(
+        &mut self,
+    ) -> Result<Option<AttrPosition>, CachedExpressionValuePayloadError> {
+        match self.take_byte()? {
+            0 => Ok(None),
+            1 => {
+                let module = self.take_u32()?;
+                let start = self.take_u32()?;
+                let end = self.take_u32()?;
+                Ok(Some(AttrPosition::new(module, Span::new(start, end))))
+            }
+            tag => Err(CachedExpressionValuePayloadError::InvalidTag {
+                section: "attr position",
+                tag,
+            }),
+        }
     }
 
     fn take_bytes(&mut self, len: usize) -> Result<&'a [u8], CachedExpressionValuePayloadError> {
@@ -4114,6 +4258,41 @@ mod tests {
                 ),
             ])
             .expect("source-order attrs payload builds"),
+            CachedExpressionValue::positioned_attrs(vec![
+                (
+                    b"b".to_vec(),
+                    Some(AttrPosition::new(0, Span::new(8, 9))),
+                    CachedExpressionValue::context_free_string(b"value".to_vec()),
+                ),
+                (
+                    b"a".to_vec(),
+                    None,
+                    CachedExpressionValue::strict_list(vec![
+                        CachedExpressionValue::immediate(Value::bool(true))
+                            .expect("bool payload builds"),
+                    ]),
+                ),
+            ])
+            .expect("positioned attrs payload builds"),
+            CachedExpressionValue::source_ordered_positioned_attrs(vec![
+                (
+                    b"c".to_vec(),
+                    Some(AttrPosition::new(0, Span::new(12, 13))),
+                    CachedExpressionValue::immediate(Value::int(2)).expect("int payload builds"),
+                ),
+                (
+                    b"b".to_vec(),
+                    Some(AttrPosition::new(0, Span::new(16, 17))),
+                    CachedExpressionValue::positioned_attrs(vec![(
+                        b"a".to_vec(),
+                        Some(AttrPosition::new(0, Span::new(20, 21))),
+                        CachedExpressionValue::immediate(Value::int(1))
+                            .expect("int payload builds"),
+                    )])
+                    .expect("nested positioned attrs payload builds"),
+                ),
+            ])
+            .expect("source-order positioned attrs payload builds"),
         ];
 
         for payload in payloads {
@@ -4370,6 +4549,61 @@ mod tests {
             error,
             CachedExpressionValuePayloadError::NonCanonicalAttrsPayloadName { index: 1 }
         );
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_invalid_attr_position_tag() {
+        let mut encoded = Vec::new();
+        append_payload_bytes(&mut encoded, ATTRS_VALUE_HASH_DOMAIN_VERSION)
+            .expect("domain appends");
+        append_payload_bytes(&mut encoded, POSITIONED_ATTRS_PAYLOAD_TAG).expect("tag appends");
+        append_payload_u128(&mut encoded, 1).expect("attrs length appends");
+        append_length_prefixed_payload_bytes(&mut encoded, b"a").expect("name appends");
+        append_payload_byte(&mut encoded, 9).expect("invalid position tag appends");
+
+        let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+            .expect_err("invalid attr position tag errors");
+
+        assert_eq!(
+            error,
+            CachedExpressionValuePayloadError::InvalidTag {
+                section: "attr position",
+                tag: 9,
+            }
+        );
+    }
+
+    #[test]
+    fn cached_expression_payload_decode_rejects_positioned_attrset_without_positions() {
+        let value = CachedExpressionValue::immediate(Value::int(1))
+            .expect("int payload builds")
+            .encode_persistent_payload()
+            .expect("value encodes");
+        let mut empty_positioned = Vec::new();
+        append_payload_bytes(&mut empty_positioned, ATTRS_VALUE_HASH_DOMAIN_VERSION)
+            .expect("domain appends");
+        append_payload_bytes(&mut empty_positioned, POSITIONED_ATTRS_PAYLOAD_TAG)
+            .expect("tag appends");
+        append_payload_u128(&mut empty_positioned, 0).expect("attrs length appends");
+        let mut all_none = Vec::new();
+        append_payload_bytes(&mut all_none, ATTRS_VALUE_HASH_DOMAIN_VERSION)
+            .expect("domain appends");
+        append_payload_bytes(&mut all_none, SOURCE_ORDERED_POSITIONED_ATTRS_PAYLOAD_TAG)
+            .expect("tag appends");
+        append_payload_u128(&mut all_none, 1).expect("attrs length appends");
+        append_length_prefixed_payload_bytes(&mut all_none, b"a").expect("name appends");
+        append_payload_byte(&mut all_none, 0).expect("absent position tag appends");
+        append_length_prefixed_payload_bytes(&mut all_none, &value).expect("value appends");
+
+        for encoded in [empty_positioned, all_none] {
+            let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+                .expect_err("positionless positioned attrset errors");
+
+            assert_eq!(
+                error,
+                CachedExpressionValuePayloadError::PositionlessPositionedAttrsPayload
+            );
+        }
     }
 
     #[test]
@@ -6107,18 +6341,44 @@ mod tests {
     }
 
     #[test]
-    fn positioned_attrs_payloads_are_not_persistent_yet() {
-        let payload = CachedExpressionValue::positioned_attrs(vec![(
-            b"a".to_vec(),
-            Some(AttrPosition::new(0, Span::new(4, 5))),
-            CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
-        )])
-        .expect("positioned attrs payload builds");
+    fn positioned_attrs_payloads_round_trip_through_persistent_encoding() {
+        let first_position = AttrPosition::new(0, Span::new(4, 5));
+        let second_position = AttrPosition::new(0, Span::new(8, 9));
+        let payload = CachedExpressionValue::source_ordered_positioned_attrs(vec![
+            (
+                b"c".to_vec(),
+                Some(first_position),
+                CachedExpressionValue::immediate(Value::int(2)).expect("int payload builds"),
+            ),
+            (
+                b"b".to_vec(),
+                Some(second_position),
+                CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
+            ),
+        ])
+        .expect("source-ordered positioned attrs payload builds");
+
+        let encoded = payload
+            .encode_persistent_payload()
+            .expect("positioned attrset payload encodes");
+        let decoded = CachedExpressionValue::decode_persistent_payload(&encoded)
+            .expect("positioned attrset payload decodes");
+        let entries = decoded
+            .attrs_entries_with_positions()
+            .expect("decoded payload carries positioned attrset entries");
+        let entry_names: Vec<_> = entries.iter().map(|(name, _, _)| name.as_slice()).collect();
 
         assert_eq!(
-            payload.encode_persistent_payload(),
-            Err(CachedExpressionValuePayloadError::PositionedAttrsNotPersistent)
+            DurableBlake3Hash::for_bytes(&encoded),
+            payload
+                .value_hash()
+                .expect("positioned attrset payload hashes")
+                .as_durable_hash()
         );
+        assert_eq!(decoded, payload);
+        assert_eq!(entry_names, vec![b"c".as_slice(), b"b".as_slice()]);
+        assert_eq!(entries[0].1, Some(first_position));
+        assert_eq!(entries[1].1, Some(second_position));
     }
 
     #[test]

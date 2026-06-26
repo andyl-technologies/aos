@@ -1,6 +1,7 @@
 //! Tests for routed blob I/O and materialization decisions on the cache.
 
 use super::*;
+use crate::attrs::AttrPosition;
 use crate::cache::cutoff::CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION;
 use crate::cache::{
     CacheableInputFingerprint, CachedExpressionValue, CachedExpressionValuePayloadError,
@@ -8,6 +9,7 @@ use crate::cache::{
     ValueHash,
 };
 use crate::string::{ContextElement, StringContext};
+use crate::syntax::Span;
 use crate::value::Value;
 
 #[derive(Clone, Debug)]
@@ -3307,6 +3309,54 @@ fn cache_strict_attrs_payload_materializes_and_loads_by_value_hash() {
             .load_cached_expression_value_indexed(value_hash)
             .expect("strict attrset payload loads")
             .expect("strict attrset payload exists"),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_positioned_attrs_payload_materializes_and_loads_by_value_hash() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let first_position = AttrPosition::new(0, Span::new(4, 5));
+    let second_position = AttrPosition::new(0, Span::new(8, 9));
+    let payload = CachedExpressionValue::source_ordered_positioned_attrs(vec![
+        (
+            b"c".to_vec(),
+            Some(first_position),
+            CachedExpressionValue::immediate(Value::int(2)).expect("payload builds"),
+        ),
+        (
+            b"b".to_vec(),
+            Some(second_position),
+            CachedExpressionValue::strict_list(vec![
+                CachedExpressionValue::immediate(Value::int(1)).expect("payload builds"),
+            ]),
+        ),
+    ])
+    .expect("positioned attrset payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+
+    let result = cache
+        .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
+        .expect("positioned attrset payload materializes");
+
+    let PersistMaterialization::Materialized(location) = result else {
+        panic!("positioned attrset payload should materialize");
+    };
+    assert_eq!(
+        cache
+            .lookup_blob_location(key)
+            .expect("indexed lookup succeeds"),
+        Some(location)
+    );
+    assert_eq!(
+        cache
+            .load_cached_expression_value_indexed(value_hash)
+            .expect("positioned attrset payload loads")
+            .expect("positioned attrset payload exists"),
         payload
     );
 

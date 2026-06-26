@@ -9456,19 +9456,22 @@ fn persistent_source_order_attrset_payloads_rehydrate_source_order() {
 }
 
 #[test]
-fn positioned_attrset_payloads_clear_persistent_materialization() {
-    let persist_root = unique_temp_dir("force-cache-persistent-positioned-attrs-clear");
+fn persistent_positioned_attrset_payloads_rehydrate_binding_positions() {
+    let persist_root = unique_temp_dir("force-cache-persistent-positioned-attrs");
     let source = "{ a = { b = 1; }; }";
+    let source_name = "persistent-positioned-attrs.nix";
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let (expected_line, expected_column) = source_line_column(source, "b = 1");
     let mut options = TreeWalkOptions::new();
     options.set_eval_cache_enabled(true);
     options.set_persist_cache_root(&persist_root);
 
     let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
         &ir,
-        options,
-        "persistent-positioned-attrs-clear.nix",
+        options.clone(),
+        source_name,
         source,
         Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
     );
@@ -9491,42 +9494,160 @@ fn positioned_attrset_payloads_clear_persistent_materialization() {
 
     let mut verifier = TreeWalk::with_options_and_source_and_eval_cache(
         &ir,
-        TreeWalkOptions::new(),
-        "persistent-positioned-attrs-clear.nix",
+        options,
+        source_name,
         source,
         Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
     );
-    let root = verifier.eval_root().expect("attrset evaluates");
+    let file = verifier.symbols.intern(b"file").expect("file interns");
+    let line = verifier.symbols.intern(b"line").expect("line interns");
+    let column = verifier.symbols.intern(b"column").expect("column interns");
+    let forced = force_attr_a(&mut verifier, &ir, a);
+    let attrs = verifier
+        .heap()
+        .get_attrs(forced)
+        .expect("persistent hit is an attrset");
+    assert_eq!(attrs.get(b).expect("b exists").as_int(), Ok(1));
+    assert!(
+        attrset_has_binding_position(attrs),
+        "persistent positioned attrset hits must retain binding positions"
+    );
+    assert_eq!(
+        verifier.stats().cache_hits(),
+        1,
+        "fresh runtime should load the durable positioned attrset payload"
+    );
+    assert_eq!(verifier.stats().cache_misses(), 0);
+    assert!(
+        !verifier.persist_force_cache_hit_keys.is_empty(),
+        "persistent positioned attrset hit should record the durable node key"
+    );
+
+    let position = verifier
+        .eval_unsafe_get_attr_pos_attrs_value(
+            ir.root,
+            Span::new(0, 0),
+            b,
+            ir.root,
+            Span::new(0, source.len() as u32),
+            forced,
+        )
+        .expect("unsafeGetAttrPos succeeds after persistent hit");
+    let position_attrs = verifier
+        .heap()
+        .get_attrs(position)
+        .expect("unsafeGetAttrPos returns an attrset");
+    let file_value = position_attrs.get(file).expect("file exists");
+    let file_string = verifier
+        .heap()
+        .get_string(file_value)
+        .expect("file is a string");
+    assert_eq!(file_string.bytes(), source_name.as_bytes());
+    assert_eq!(
+        position_attrs.get(line).expect("line exists").as_int(),
+        Ok(expected_line as i64)
+    );
+    assert_eq!(
+        position_attrs.get(column).expect("column exists").as_int(),
+        Ok(expected_column as i64)
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn imported_positioned_attrsets_skip_persistence_until_module_positions_are_stable() {
+    let persist_root = unique_temp_dir("force-cache-persistent-imported-positioned-attrs");
+    let root = fs::canonicalize(unique_temp_dir(
+        "force-cache-persistent-imported-positioned-attrs-source",
+    ))
+    .expect("source root canonicalizes");
+    fs::write(root.join("dep.nix"), b"{ b = 1; }").expect("import source writes");
+    let source = "{ a = import ./dep.nix; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options.clone(),
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = first.eval_root().expect("attrset evaluates");
     let thunk_value = {
-        let attrs = verifier
+        let attrs = first
             .heap()
-            .get_attrs(root)
+            .get_attrs(root_value)
             .expect("attrset is heap-owned");
         attrs.get(a).expect("a exists")
     };
     let subject = {
-        let thunk = verifier
+        let thunk = first
             .heap()
             .get_thunk(thunk_value)
             .expect("a remains a suspended thunk");
-        verifier
+        first
             .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
-            .expect("a force-cache subject builds")
+            .expect("import force-cache subject builds")
     };
     let identity = subject
         .metadata_identity
-        .expect("a has persistent metadata identity");
+        .expect("import force-cache subject has persistent metadata identity");
     let key = PersistNodeMetadataKey::for_expression(
         identity,
         subject.free_var_value_hashes.iter().copied(),
     );
+    PersistCache::open(&persist_root)
+        .expect("persistent cache opens")
+        .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
+        .expect("prior-run demand records");
+    let forced = first
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("imported attrset force succeeds");
+    let b = first.symbols.intern(b"b").expect("b interns");
+    let attrs = first
+        .heap()
+        .get_attrs(forced)
+        .expect("import result is an attrset");
+    let position = attrs
+        .get_entry(b)
+        .expect("b entry exists")
+        .position
+        .expect("imported binding has source position");
+    assert_ne!(
+        position.module,
+        EvalModuleId::ROOT.as_u32(),
+        "fixture must produce a non-root module binding position"
+    );
+    assert_eq!(first.stats().cache_hits(), 0);
+    assert_eq!(first.stats().cache_misses(), 1);
+    drop(first);
+    assert_eq!(
+        cache
+            .lock()
+            .expect("cache lock is valid")
+            .cache()
+            .expect("cache is enabled")
+            .len(),
+        0,
+        "imported-module positioned payloads must not populate the shared in-memory force cache"
+    );
+
     let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
     assert_eq!(
         persist
             .load_cached_expression_node_value_indexed(key)
             .expect("persistent value lookup succeeds"),
         None,
-        "position-bearing payloads should not materialize persistent values yet"
+        "imported-module positioned payloads must not materialize until module ids are stable"
     );
     assert!(
         persist
@@ -9534,10 +9655,37 @@ fn positioned_attrset_payloads_clear_persistent_materialization() {
             .expect("persistent trace lookup succeeds")
             .map(|trace| trace.payload().is_tombstone())
             .unwrap_or(true),
-        "position-bearing payloads should leave no live persistent force trace"
+        "imported-module positioned payloads must leave no live persistent trace"
+    );
+    drop(persist);
+
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache,
+    );
+    let forced = force_attr_a(&mut second, &ir, a);
+    let b = second.symbols.intern(b"b").expect("b interns");
+    let attrs = second
+        .heap()
+        .get_attrs(forced)
+        .expect("import result is an attrset");
+    assert_eq!(attrs.get(b).expect("b exists").as_int(), Ok(1));
+    assert_eq!(
+        second.stats().cache_hits(),
+        0,
+        "fresh runtime must recompute instead of replaying non-root module positions"
+    );
+    assert_eq!(second.stats().cache_misses(), 1);
+    assert!(
+        second.persist_force_cache_hit_keys.is_empty(),
+        "non-root positioned attrsets must not be durable hits"
     );
 
-    fs::remove_dir_all(persist_root).expect("temp tree removed");
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+    fs::remove_dir_all(root).expect("source temp tree removed");
 }
 
 #[test]
