@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.singleVmFingerprint",
-  taskIds ? ["T-HARN-6" "T-HARN-7" "T-DET-9" "T-EXEC-17" "T-EXEC-18"],
+  taskIds ? ["T-HARN-6" "T-HARN-7" "T-DET-9" "T-EXEC-17" "T-EXEC-18" "T-PAT-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -33,6 +33,7 @@
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   executionModel = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -536,6 +537,10 @@
         label = "phase1 gate lists T-EXEC-18";
         needle = "\"T-EXEC-18\"";
       }
+      {
+        label = "phase1 gate lists T-PAT-9";
+        needle = "\"T-PAT-9\"";
+      }
     ]
     ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -575,6 +580,24 @@
       {
         label = "T-EXEC-18 completion note";
         needle = "gate_single_vm_fingerprint_model_determinism_survives_adversarial_host_profiles";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+      {
+        label = "T-PAT-9 checklist complete";
+        needle = "- [x] **T-PAT-9**";
+      }
+      {
+        label = "T-PAT-9 completion names same-configuration fingerprint gate";
+        needle = "same-configuration-twice";
+      }
+      {
+        label = "T-PAT-9 completion names snapshot-completeness probe";
+        needle = "snapshot-completeness";
+      }
+      {
+        label = "T-PAT-9 completion names single VM fingerprint gate";
+        needle = "`checks.crucible.phase1.gates.singleVmFingerprint`";
       }
     ];
 in
@@ -695,6 +718,7 @@ in
             model_gate_target=crucible::gate_single_vm_fingerprint
             model_validator=same-configuration-twice
             model_probes=start,resume,fork,snapshot-completeness
+            pattern_PAT_11=start-resume-fork-equality
             model_adversarial_profiles=quiet-single-core,loaded-single-core,reordered-two-core,loaded-many-core
             model_adversarial_dimensions=host-load,task-reordering,varied-core-counts
             real_qemu_source=checks.crucible.phase0.s1Fingerprint

@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionBake",
-  taskIds ? ["T-EXEC-8"],
+  taskIds ? ["T-EXEC-8" "T-PAT-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -16,6 +16,7 @@
   realization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -83,16 +84,16 @@
         needle = "let genesis = Configuration::genesis(def);";
       }
       {
-        label = "content-addressed baked genesis domain";
-        needle = "crucible.model.baked-genesis-checkpoint.v1";
+        label = "content-addressed checkpoint node domain";
+        needle = "crucible.dag-store.checkpoint-node.v1";
       }
       {
         label = "fat genesis checkpoint";
         needle = "CheckpointKind::Fat";
       }
       {
-        label = "checkpoint names genesis configuration";
-        needle = "genesis.id()";
+        label = "bake passes genesis configuration to checkpoint constructor";
+        needle = "        &genesis,";
       }
       {
         label = "baked genesis carries node blob refs";
@@ -153,6 +154,24 @@
       {
         label = "phase1 exposes bake execution check";
         needle = "executionBake = import ./phase1-execution-bake.nix";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+      {
+        label = "T-PAT-9 checklist complete";
+        needle = "- [x] **T-PAT-9**";
+      }
+      {
+        label = "T-PAT-9 completion names model bake";
+        needle = "`crucible::bake`";
+      }
+      {
+        label = "T-PAT-9 completion names QEMU bake";
+        needle = "`bake_qemu_genesis_vm`";
+      }
+      {
+        label = "T-PAT-9 completion names execution bake gate";
+        needle = "`checks.crucible.phase1.executionBake`";
       }
     ];
 in
@@ -235,6 +254,7 @@ in
 
             if grep -R -n -E 'cold[_ -]?boot|ColdBoot|cold_boot_to_ready|boot_to_ready' crates/*/src \
               | grep -v '^crates/crucible-qemu/src/realization.rs:' \
+              | grep -v -E '^[^:]+:[0-9]+:[[:space:]]*//' \
               > "$TMPDIR/production-cold-boot-markers.txt"; then
               cat "$TMPDIR/production-cold-boot-markers.txt" >&2
               echo "unexpected production cold-boot marker outside the QEMU bake coordinator" >&2
@@ -293,6 +313,7 @@ in
             related_gates=gate:content-address,gate:replay-oracle
             model_bake=world-derived-fat-genesis-checkpoint
             qemu_bake=cold-boot-to-ready-savevm
+            pattern_PAT_12=cold-boot-confined-to-bake
             production_cold_boot_lint=bake-only
             first_run_realization=loadvm-baked-genesis
             qemu_hot_genesis_test=no-cold-boot

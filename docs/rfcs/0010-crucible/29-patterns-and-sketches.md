@@ -1128,10 +1128,22 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
 - [ ] **T-PAT-6** Ensure the session drives nodes through the §29.6
   `SimulationBackend` trait with an in-process drop-in double. — satisfies
   [PAT-8]; realized by **T-SESS-11**, **T-SESS-12** (spec 20 §10, 24 §3).
-- [ ] **T-PAT-9** Ensure the runtime realizer follows the §29.9 recursive
+- [x] **T-PAT-9** Ensure the runtime realizer follows the §29.9 recursive
   `instantiate` shape with start ≡ resume ≡ fork and the cold boot confined to
   `bake`. — satisfies [PAT-11], [PAT-12]; realized by **T-EXEC-6**,
   **T-EXEC-7**, **T-EXEC-8**, **T-EXEC-17** (spec 05 §§5–6, §11).
+  - Completed by `crucible::instantiate`, `TemporalGraph::with_baked_genesis`,
+    `crucible::bake`, `crucible_qemu::instantiate_qemu_vm`,
+    `crucible_qemu::start_qemu_vm`, `crucible_qemu::resume_qemu_vm`,
+    `crucible_qemu::fork_qemu_vm`, and the same-configuration-twice
+    fingerprint gate: the model resolves exact snapshot, ancestor replay, then
+    baked genesis; QEMU lifecycle wrappers share one instantiate coordinator
+    and leave cold boot inside `bake_qemu_genesis_vm`; and the fingerprint gate
+    validates start/resume/fork/snapshot-completeness through one equality.
+    `checks.crucible.phase1.executionInstantiate`,
+    `checks.crucible.phase1.executionBake`,
+    `checks.crucible.phase1.executionStartResumeFork`, and
+    `checks.crucible.phase1.gates.singleVmFingerprint` gate the pattern.
 - [ ] **T-PAT-3** Ensure the SPSC ring + ceiling handshake + futex follow the
   §29.3 shape and carry the `loom`/property concurrency tests. — satisfies
   [PAT-4], [PAT-5]; realized by **T-SHM-6**, **T-SHM-8**, **T-SHM-9**,
