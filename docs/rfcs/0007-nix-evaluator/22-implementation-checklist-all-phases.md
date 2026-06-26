@@ -680,17 +680,19 @@ alone (`M-1`/`Q-A`).
       `currentTime`, and runtime selections such as
       `let b = builtins; in b.currentSystem` use synthetic identities keyed by
       module identity, force-site `IrId` and lowered source span, builtin
-      symbol, and execution tag. The observation-only synthetic `currentTime`
-      canary also asserts that persistent force metadata and trace sidecars
-      remain empty. This
+      symbol, and execution tag. The observation-only `currentTime`
+      canaries assert that ordinary forcing leaves persistent force metadata
+      and trace sidecars empty, while seeded stale durable node-thunk and
+      synthetic builtin-attr `currentTime` payloads are cleared and tombstoned
+      without recording demand. This
       deliberately skips the recursive `builtins` attrset, `nixPath`,
       derivation, first-class primops, synthetic apply/select thunks,
       broader persistence, and cached/uncached harness proof. The gate covers
       source-backed and source-less ambient and synthetic currentSystem
       hit/miss, synthetic storeDir hit/miss/symbol-separation, synthetic
       force-site span separation, synthetic immediate constants, reified currentTime laziness, stale synthetic
-      currentTime payload invalidation, observation-only synthetic currentTime
-      sidecar-empty canary, and source-backed/source-less
+      currentTime runtime payload invalidation, observation-only currentTime
+      sidecar-empty and stale-durable tombstone canaries, and source-backed/source-less
       currentTime uncacheable-trace force-cache tests (`C-1`/`C-2`/`R-10`).
 - [x] Current source-less lowered-IR force-cache identity substrate:
       `cache::parse::lowered_ir_fingerprint` hashes the stable `ir.bin` and
@@ -1542,13 +1544,18 @@ alone (`M-1`/`Q-A`).
       Rejected impure observations and unsupported recomputed payloads clear any
       existing durable node-value link after the in-memory force-cache has
       rejected the observation or had an opportunity to invalidate any runtime
-      payload. The writeback lazily opens the configured persistent cache root,
+      payload; observation-only uncacheable subjects such as `currentTime` can
+      clear a stale durable record through their observation identity without
+      using that identity for demand, hit selection, or writeback, and missing
+      durable records remain a no-op. The writeback lazily opens the configured persistent cache root,
       skips disabled runtimes, unavailable persistent roots, negative threshold
       decisions, and advisory write errors. This is threshold-driven force
       payload writeback/clear only; evaluator-wide durable hit selection,
       measured cost collection or AOS tuning, lazy-element list or lazy-binding attrset values, mmap
       reads, GC/repack, and cached/uncached harness proof
-      remain open (`C-13`/`C-14`/`S-14`).
+      remain open. The gate covers force-cache persistent-demand/value
+      writeback, threshold skip/materialize, stale-clear, and observation-only
+      currentTime stale-durable tombstone tests (`C-13`/`C-14`/`S-14`).
 - [x] Current node verifying-trace payload codec:
       `PersistNodeTracePayload` frames complete cacheable impure-input traces
       as versioned little-endian bytes with a magic header, typed input
@@ -1847,8 +1854,15 @@ alone (`M-1`/`Q-A`).
       changed cache-disabled surface instead of replaying the older one, again
       without force-cache hits or misses. Each run records the uncacheable
       currentTime trace, and the canary asserts that persistent force metadata
-      and trace sidecars remain empty. This samples currentTime inside one
-      derivation input surface; general currentTime taint propagation through
+      and trace sidecars remain empty. The adjacent
+      `source_backed_current_time_tombstones_stale_persistent_payload` and
+      `observation_only_current_time_tombstones_stale_persistent_payload`
+      canaries seed stale durable payloads under the source-backed node-thunk
+      and synthetic builtin-attr currentTime observation identities and require
+      uncacheable forcing to clear the value link, tombstone the trace, and
+      leave seeded reuse counters unchanged.
+      This samples currentTime inside one derivation input surface plus one
+      stale durable force-value boundary; general currentTime taint propagation through
       persisted dependents, full cached-vs-uncached closure parity,
       derivationStrict-node SHA-256 early cutoff, mmap reads, GC/repack, and
       future value-memoization safety net remain open

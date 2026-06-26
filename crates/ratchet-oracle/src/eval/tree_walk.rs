@@ -520,6 +520,7 @@ struct ForceCacheSubject {
     pure_observation_identity: Option<CacheExprIdentity>,
     impure_observation_identity: Option<CacheExprIdentity>,
     metadata_identity: Option<CacheExprIdentity>,
+    persistent_clear_identity: Option<CacheExprIdentity>,
     free_var_value_hashes: Vec<DurableBlake3Hash>,
     memoization_admission: ForceCacheMemoizationAdmission,
 }

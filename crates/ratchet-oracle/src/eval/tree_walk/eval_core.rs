@@ -731,7 +731,10 @@ impl TreeWalk {
         if !self.options.eval_cache_enabled() {
             return;
         }
-        let Some(identity) = subject.metadata_identity else {
+        let Some(identity) = subject
+            .metadata_identity
+            .or(subject.persistent_clear_identity)
+        else {
             return;
         };
         self.open_persist_eval_cache();
@@ -742,12 +745,32 @@ impl TreeWalk {
             identity,
             subject.free_var_value_hashes.iter().copied(),
         );
-        if let Err(error) = persist_cache.clear_node_materialized_value_hash(key) {
-            tracing::warn!(
-                target: "aos_nix::cache",
-                error = %error,
-                "tree-walk evaluator persistent force payload clear failed"
-            );
+        let cleared_materialized_value = match persist_cache.clear_node_materialized_value_hash(key)
+        {
+            Ok(cleared) => cleared,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent force payload clear failed"
+                );
+                false
+            }
+        };
+        let has_live_trace = match persist_cache.lookup_node_trace(key) {
+            Ok(Some(trace)) => !trace.payload().is_tombstone(),
+            Ok(None) => false,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent force trace lookup before tombstone failed"
+                );
+                false
+            }
+        };
+        if !cleared_materialized_value && !has_live_trace {
+            return;
         }
         if let Err(error) = persist_cache.record_node_trace_tombstone(key) {
             tracing::warn!(
@@ -1427,6 +1450,7 @@ impl TreeWalk {
                     pure_observation_identity,
                     impure_observation_identity,
                     metadata_identity: lookup_identity,
+                    persistent_clear_identity: impure_observation_identity,
                     free_var_value_hashes,
                     memoization_admission,
                 })
@@ -1513,6 +1537,7 @@ impl TreeWalk {
             pure_observation_identity: lookup_identity,
             impure_observation_identity: observation_identity,
             metadata_identity: lookup_identity,
+            persistent_clear_identity: observation_identity,
             free_var_value_hashes: Vec::new(),
             memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
         })
@@ -1542,6 +1567,7 @@ impl TreeWalk {
             pure_observation_identity: None,
             impure_observation_identity: Some(identity),
             metadata_identity: Some(identity),
+            persistent_clear_identity: Some(identity),
             free_var_value_hashes,
             memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
         })

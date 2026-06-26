@@ -4131,6 +4131,109 @@ fn source_less_current_time_thunks_record_uncacheable_trace_without_payload() {
 }
 
 #[test]
+fn source_backed_current_time_tombstones_stale_persistent_payload() {
+    let persist_root = unique_temp_dir("force-cache-persistent-stale-current-time-node");
+    let source = "{ a = builtins.currentTime; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let mut options =
+        TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let mut evaluator = TreeWalk::with_options_and_source(&ir, options, "expr.nix", source);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a suspended node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("currentTime node thunk has force-cache observation subject")
+    };
+    assert!(
+        subject.lookup_identity.is_none() && subject.metadata_identity.is_none(),
+        "currentTime node thunks must stay ineligible for hit selection and demand accounting"
+    );
+    let identity = subject
+        .persistent_clear_identity
+        .expect("currentTime node thunk has persistent clear identity");
+    let key = PersistNodeMetadataKey::for_expression(
+        identity,
+        subject.free_var_value_hashes.iter().copied(),
+    );
+    let stale_payload = CachedExpressionValue::immediate(Value::int(123))
+        .expect("stale scalar payload is cacheable");
+    let stale_value_hash = stale_payload.value_hash().expect("stale payload hashes");
+    let stale_trace_payload =
+        persistent_path_exists_trace_payload(b"/tmp/aos-stale-current-time-node", true);
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .record_node_materialization_reuse(key, MaterializationReuse::new(2, 3))
+        .expect("seed persistent demand records");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            key,
+            &stale_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("stale persistent payload materializes");
+    persist
+        .record_node_trace(key, stale_value_hash, &stale_trace_payload)
+        .expect("stale persistent trace records");
+    drop(persist);
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("currentTime force succeeds");
+    assert_eq!(forced.as_int(), Ok(1_700_000_000));
+    assert_eq!(
+        evaluator.impure_input_trace(),
+        [ImpureInputFingerprint::current_time()].as_slice()
+    );
+    assert_eq!(
+        evaluator.stats().cache_hits(),
+        0,
+        "source-backed currentTime must not replay stale persistent payloads"
+    );
+    drop(evaluator);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
+    assert_eq!(
+        persist
+            .lookup_node_materialization_reuse(key)
+            .expect("metadata lookup succeeds"),
+        Some(MaterializationReuse::new(2, 3)),
+        "uncacheable currentTime should clear stale values without recording demand"
+    );
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "uncacheable currentTime clears the stale persistent value link"
+    );
+    assert!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds")
+            .expect("persistent trace tombstone records")
+            .payload()
+            .is_tombstone(),
+        "uncacheable currentTime tombstones stale persistent traces"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
 fn reified_builtins_current_time_entry_is_lazy() {
     let ir = lower("builtins");
     let options = TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
@@ -4882,6 +4985,7 @@ fn rejected_force_observation_clears_persistent_value_link() {
         pure_observation_identity: Some(identity),
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
@@ -4956,6 +5060,7 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
         pure_observation_identity: Some(identity),
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
@@ -5128,6 +5233,7 @@ fn unsupported_force_payload_clears_persistent_value_link() {
         pure_observation_identity: Some(identity),
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
@@ -5328,6 +5434,109 @@ fn observation_only_current_time_skips_persistent_current_demand() {
     assert_persistent_force_cache_sidecars_empty(
         &persist_root,
         "observation-only synthetic currentTime canary",
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn observation_only_current_time_tombstones_stale_persistent_payload() {
+    let persist_root = unique_temp_dir("force-cache-persistent-stale-current-time");
+    let source = "let b = builtins; in { a = b.currentTime; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let current_time = symbol_for(&ir, b"currentTime");
+    let builtin = lookup_builtin(b"currentTime").expect("currentTime builtin is registered");
+    let mut options =
+        TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+
+    let mut evaluator =
+        TreeWalk::with_options_and_source(&ir, options, "synthetic-current-time.nix", source);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let select_id = evaluator
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a remains a suspended select thunk")
+        .body()
+        .expect("a thunk has a lowered select body");
+    let identity = evaluator
+        .cache_synthetic_builtin_attr_identity(
+            EvalNodeRef::new(EvalModuleId::ROOT, select_id),
+            current_time,
+            builtin,
+        )
+        .expect("synthetic currentTime observation identity builds");
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let stale_payload = CachedExpressionValue::immediate(Value::int(123))
+        .expect("stale scalar payload is cacheable");
+    let stale_value_hash = stale_payload.value_hash().expect("stale payload hashes");
+    let stale_trace_payload =
+        persistent_path_exists_trace_payload(b"/tmp/aos-stale-current-time", true);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .record_node_materialization_reuse(key, MaterializationReuse::new(2, 3))
+        .expect("seed persistent demand records");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            key,
+            &stale_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("stale persistent payload materializes");
+    persist
+        .record_node_trace(key, stale_value_hash, &stale_trace_payload)
+        .expect("stale persistent trace records");
+    drop(persist);
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("currentTime force succeeds");
+    assert_eq!(forced.as_int(), Ok(1_700_000_000));
+    assert_eq!(
+        evaluator.impure_input_trace(),
+        [ImpureInputFingerprint::current_time()].as_slice()
+    );
+    assert_eq!(
+        evaluator.stats().cache_hits(),
+        0,
+        "observation-only currentTime must not replay stale persistent payloads"
+    );
+    drop(evaluator);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
+    assert_eq!(
+        persist
+            .lookup_node_materialization_reuse(key)
+            .expect("metadata lookup succeeds"),
+        Some(MaterializationReuse::new(2, 3)),
+        "uncacheable currentTime should clear stale values without recording demand"
+    );
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "uncacheable currentTime clears the stale persistent value link"
+    );
+    assert!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds")
+            .expect("persistent trace tombstone records")
+            .payload()
+            .is_tombstone(),
+        "uncacheable currentTime tombstones stale persistent traces"
     );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");
@@ -6372,6 +6581,7 @@ fn strict_attrset_payloads_rehydrate_after_heap_lookup() {
         pure_observation_identity: Some(identity),
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
@@ -6433,6 +6643,7 @@ fn strict_attrset_payloads_skip_position_bearing_attrsets() {
         pure_observation_identity: Some(identity),
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
@@ -6482,6 +6693,7 @@ fn strict_attrset_payloads_skip_noncanonical_source_order_attrsets() {
         pure_observation_identity: Some(identity),
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
@@ -6574,6 +6786,7 @@ fn context_path_payloads_rehydrate_after_heap_lookup() {
         pure_observation_identity: Some(identity),
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
@@ -7164,6 +7377,7 @@ fn materialized_replayable_attrset_capture_hashes_key_runtime_payloads() {
         pure_observation_identity: Some(identity),
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
         free_var_value_hashes: vec![hash],
         memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
     };
