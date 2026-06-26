@@ -29,13 +29,14 @@ pub use backend::{
 };
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use model::{
-    AppRandomDecision, Checkpoint, CheckpointKind, ChoiceTag, ClockDriftRate, Configuration,
-    ContentHash, Decision, DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId,
-    FrontierChild, GenesisCheckpoint, Icount, IrqVector, NodeBlobRef, NodeClockSkew, NodeCounter,
-    NodeId, OverrideDecision, PreemptionDecision, PreemptionKind, ReadyPoint, ReplayOracleCheck,
-    RngDecision, RngStreamId, RuntimeState, ScenarioDef, Schedule, ScheduleError, SchedulingPoint,
-    Shift, SimDuration, SimInstant, SimOffset, State, TemporalGraph, TimeConversionError, VcpuId,
-    VirtualInstant, VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
+    AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, ChoiceTag, ClockDriftRate,
+    Configuration, ContentHash, Decision, DeliveryOrderDecision, EngineError, EventKey,
+    FaultDecision, FaultId, FrontierChild, GenesisCheckpoint, Icount, IrqVector, MaterializedState,
+    NodeBlobRef, NodeClockSkew, NodeCounter, NodeId, OverrideDecision, PreemptionDecision,
+    PreemptionKind, ReadyPoint, ReplayOracleCheck, RngDecision, RngStreamId, RuntimeState,
+    ScenarioDef, Schedule, ScheduleError, SchedulingPoint, Shift, SimDuration, SimInstant,
+    SimOffset, State, TemporalGraph, TimeConversionError, VcpuId, VirtualInstant, VirtualTime,
+    WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
@@ -751,7 +752,7 @@ mod tests {
         assert_eq!(genesis_check.thin_checkpoint, genesis_checkpoint.id);
         assert!(matches!(
             mismatch,
-            EngineError::ReplayOracleMismatch { checkpoint, .. } if checkpoint == corrupted.id
+            EngineError::CheckpointIdentityMismatch { checkpoint, .. } if checkpoint == corrupted.id
         ));
     }
 
@@ -1235,6 +1236,13 @@ mod tests {
         let other = Configuration::genesis(scenario);
         let mismatched = Checkpoint::new(config.id(), other.id(), CheckpointKind::Fat);
         let thin = Checkpoint::new(config.id(), config.id(), CheckpointKind::Thin);
+        let valid = fat_checkpoint_for(&config);
+        let mut wrong_scenario = valid.clone();
+        wrong_scenario.scenario_ref = generated_scenario(62).id;
+        let mut wrong_parent = valid.clone();
+        wrong_parent.parent = None;
+        let mut wrong_delta = valid.clone();
+        wrong_delta.schedule_delta = Schedule::empty();
 
         let mismatch_error = match TemporalGraph::empty().with_cached_snapshot(&config, mismatched)
         {
@@ -1243,6 +1251,20 @@ mod tests {
         };
         let thin_error = match TemporalGraph::empty().with_cached_snapshot(&config, thin) {
             Ok(_) => panic!("thin snapshot should be rejected"),
+            Err(error) => error,
+        };
+        let scenario_error =
+            match TemporalGraph::empty().with_cached_snapshot(&config, wrong_scenario) {
+                Ok(_) => panic!("scenario-ref mismatch should be rejected"),
+                Err(error) => error,
+            };
+        let parent_error = match TemporalGraph::empty().with_cached_snapshot(&config, wrong_parent)
+        {
+            Ok(_) => panic!("parent mismatch should be rejected"),
+            Err(error) => error,
+        };
+        let delta_error = match TemporalGraph::empty().with_cached_snapshot(&config, wrong_delta) {
+            Ok(_) => panic!("schedule-delta mismatch should be rejected"),
             Err(error) => error,
         };
 
@@ -1254,6 +1276,27 @@ mod tests {
             thin_error,
             EngineError::CheckpointNotLoadable {
                 kind: CheckpointKind::Thin,
+                ..
+            }
+        ));
+        assert!(matches!(
+            scenario_error,
+            EngineError::CheckpointTopologyMismatch {
+                reason: "scenario-ref-mismatch",
+                ..
+            }
+        ));
+        assert!(matches!(
+            parent_error,
+            EngineError::CheckpointTopologyMismatch {
+                reason: "parent-mismatch",
+                ..
+            }
+        ));
+        assert!(matches!(
+            delta_error,
+            EngineError::CheckpointTopologyMismatch {
+                reason: "schedule-delta-mismatch",
                 ..
             }
         ));
@@ -1577,14 +1620,32 @@ mod tests {
     }
 
     fn fat_checkpoint_for(configuration: &Configuration) -> Checkpoint {
-        Checkpoint::new(
-            ContentHash::from_canonical_material(
-                "crucible.test.fat-checkpoint",
-                &format!("{:?}", configuration.id().bytes),
-            ),
-            configuration.id(),
+        let parent = if configuration.is_genesis() {
+            None
+        } else {
+            let schedule = match configuration
+                .schedule
+                .prefix(configuration.schedule.len().saturating_sub(1))
+            {
+                Ok(schedule) => schedule,
+                Err(error) => panic!("test schedule prefix should build: {error}"),
+            };
+            Some(Configuration {
+                def: configuration.def.clone(),
+                schedule,
+            })
+        };
+        match Checkpoint::from_recorded_configuration(
+            configuration,
+            parent.as_ref(),
+            VirtualTime::default(),
+            std::collections::BTreeMap::new(),
             CheckpointKind::Fat,
-        )
+            std::collections::BTreeMap::new(),
+        ) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("test checkpoint should be recorded-shaped: {error}"),
+        }
     }
 
     fn genesis_checkpoint_for(configuration: &Configuration) -> GenesisCheckpoint {

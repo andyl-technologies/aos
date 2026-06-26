@@ -2,13 +2,14 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 
 use crucible::{
-    AppRandomDecision, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
-    DeliveryOrderDecision, EventKey, FaultDecision, FaultId, NodeId, RngDecision, RngStreamId,
-    ScenarioDef, Schedule, State, VirtualTime, reduce, step,
+    AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash,
+    Decision, DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, Icount,
+    MaterializedState, NodeBlobRef, NodeId, RngDecision, RngStreamId, ScenarioDef, Schedule, State,
+    TemporalGraph, VirtualTime, reduce, step,
 };
 
 #[test]
@@ -198,6 +199,172 @@ fn gate_content_address_excludes_materialization_cache_from_identity() {
 }
 
 #[test]
+fn gate_content_address_checkpoint_identity_matches_configuration_id() {
+    for seed in 0..64 {
+        let scenario = scenario(&format!("scenario=checkpoint\nseed={seed}\n"));
+        let parent = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(seed, 2),
+        };
+        let configuration = step(&parent, generated_decision(seed, 99));
+        let schedule_delta = match configuration.schedule.suffix_from(parent.schedule.len()) {
+            Ok(schedule) => schedule,
+            Err(error) => panic!("generated parent must be a prefix: {error}"),
+        };
+        let node = NodeId {
+            name: format!("node-{seed}"),
+        };
+        let node_icounts = BTreeMap::from([(
+            node.clone(),
+            Icount {
+                retired: seed * 17 + 3,
+            },
+        )]);
+        let node_blobs = BTreeMap::from([(
+            node,
+            NodeBlobRef::baked(ContentHash::from_canonical_material(
+                "crucible.test.content-address.checkpoint-blob",
+                &format!("seed={seed}"),
+            )),
+        )]);
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            &configuration,
+            Some(&parent),
+            VirtualTime { ticks: seed * 23 },
+            node_icounts.clone(),
+            CheckpointKind::Thin,
+            node_blobs,
+        )
+        .unwrap_or_else(|error| panic!("valid parent edge should build checkpoint: {error}"));
+        let materialized =
+            checkpoint
+                .clone()
+                .with_materialized_state(Some(MaterializedState::from_content_hash(
+                    ContentHash::from_canonical_material(
+                        "crucible.test.content-address.materialized-state",
+                        &format!("seed={seed}"),
+                    ),
+                )));
+        let covered =
+            materialized
+                .clone()
+                .with_coverage_fingerprint(ContentHash::from_canonical_material(
+                    "crucible.test.content-address.coverage",
+                    &format!("seed={seed}"),
+                ));
+        let annotated = covered
+            .clone()
+            .with_metadata(CheckpointMeta::from_labels(BTreeMap::from([(
+                String::from("owner"),
+                format!("case-{seed}"),
+            )])));
+
+        assert_eq!(checkpoint.id, configuration.id());
+        assert_eq!(checkpoint.configuration, configuration.id());
+        assert_eq!(checkpoint.scenario_ref, scenario.id);
+        assert_eq!(checkpoint.parent, Some(parent.id()));
+        assert_eq!(checkpoint.schedule_delta, schedule_delta);
+        assert_eq!(checkpoint.virtual_time, VirtualTime { ticks: seed * 23 });
+        assert_eq!(checkpoint.node_icounts, node_icounts);
+        assert_eq!(materialized.id, checkpoint.id);
+        assert_eq!(covered.id, checkpoint.id);
+        assert_eq!(annotated.id, checkpoint.id);
+        assert_eq!(annotated.configuration, configuration.id());
+    }
+}
+
+#[test]
+fn gate_content_address_checkpoint_rejects_malformed_parent_edges() {
+    let scenario_def = scenario("scenario=checkpoint-parent\nseed=89\n");
+    let parent = Configuration {
+        def: scenario_def.clone(),
+        schedule: generated_schedule(89, 2),
+    };
+    let configuration = step(&parent, generated_decision(89, 99));
+    let sibling_parent = Configuration {
+        def: scenario_def.clone(),
+        schedule: generated_schedule(89, 1).appended(generated_decision(90, 44)),
+    };
+    let other_scenario_parent = Configuration::genesis(scenario("scenario=other\nseed=89\n"));
+
+    assert!(
+        Checkpoint::from_recorded_configuration(
+            &configuration,
+            Some(&parent),
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Thin,
+            BTreeMap::new(),
+        )
+        .is_ok()
+    );
+    assert_checkpoint_topology_reason(
+        Checkpoint::from_recorded_configuration(
+            &configuration,
+            None,
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Thin,
+            BTreeMap::new(),
+        ),
+        "descendant-missing-parent",
+    );
+    assert_checkpoint_topology_reason(
+        Checkpoint::from_recorded_configuration(
+            &Configuration::genesis(scenario_def.clone()),
+            Some(&parent),
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Thin,
+            BTreeMap::new(),
+        ),
+        "genesis-has-parent",
+    );
+    assert_checkpoint_topology_reason(
+        Checkpoint::from_recorded_configuration(
+            &configuration,
+            Some(&sibling_parent),
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Thin,
+            BTreeMap::new(),
+        ),
+        "parent-not-schedule-prefix",
+    );
+    assert_checkpoint_topology_reason(
+        Checkpoint::from_recorded_configuration(
+            &configuration,
+            Some(&other_scenario_parent),
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Thin,
+            BTreeMap::new(),
+        ),
+        "parent-scenario-mismatch",
+    );
+}
+
+#[test]
+fn gate_content_address_rejects_corrupt_checkpoint_cache_topology() {
+    let scenario_def = scenario("scenario=checkpoint-cache\nseed=144\n");
+    let configuration = Configuration {
+        def: scenario_def,
+        schedule: generated_schedule(144, 3),
+    };
+    let valid = recorded_fat_checkpoint(&configuration);
+    let mut wrong_scenario = valid.clone();
+    wrong_scenario.scenario_ref = scenario("scenario=other-cache\nseed=144\n").id;
+    let mut wrong_parent = valid.clone();
+    wrong_parent.parent = None;
+    let mut wrong_delta = valid.clone();
+    wrong_delta.schedule_delta = Schedule::empty();
+
+    assert_cache_topology_reason(&configuration, wrong_scenario, "scenario-ref-mismatch");
+    assert_cache_topology_reason(&configuration, wrong_parent, "parent-mismatch");
+    assert_cache_topology_reason(&configuration, wrong_delta, "schedule-delta-mismatch");
+}
+
+#[test]
 fn gate_content_address_collision_corpus_has_unique_ids() {
     let mut seen = BTreeSet::new();
 
@@ -234,6 +401,33 @@ where
     first
 }
 
+fn assert_checkpoint_topology_reason(
+    result: Result<Checkpoint, EngineError>,
+    expected_reason: &'static str,
+) {
+    match result {
+        Ok(_) => panic!("malformed checkpoint edge should fail"),
+        Err(EngineError::CheckpointTopologyMismatch { reason, .. }) => {
+            assert_eq!(reason, expected_reason);
+        }
+        Err(error) => panic!("wrong checkpoint error: {error:?}"),
+    }
+}
+
+fn assert_cache_topology_reason(
+    configuration: &Configuration,
+    checkpoint: Checkpoint,
+    expected_reason: &'static str,
+) {
+    match TemporalGraph::empty().with_cached_snapshot(configuration, checkpoint) {
+        Ok(_) => panic!("corrupt checkpoint topology should fail cache validation"),
+        Err(EngineError::CheckpointTopologyMismatch { reason, .. }) => {
+            assert_eq!(reason, expected_reason);
+        }
+        Err(error) => panic!("wrong cache validation error: {error:?}"),
+    }
+}
+
 fn scenario(material: &str) -> ScenarioDef {
     ScenarioDef::from_canonical_material("crucible.test.content-address.scenario", material)
 }
@@ -262,6 +456,64 @@ fn fixed_schedule() -> Schedule {
             width: 32,
             value: 0xabcd_1234,
         }))
+}
+
+fn generated_schedule(seed: u64, decisions: u64) -> Schedule {
+    let mut schedule = Schedule::empty();
+    for index in 0..decisions {
+        schedule = schedule.appended(generated_decision(seed, index));
+    }
+    schedule
+}
+
+fn generated_decision(seed: u64, index: u64) -> Decision {
+    match (seed + index) % 3 {
+        0 => Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime {
+                ticks: seed + index,
+            },
+            order: vec![EventKey { sequence: index }],
+        }),
+        1 => Decision::FaultFires(FaultDecision {
+            at: VirtualTime {
+                ticks: seed + index,
+            },
+            fault: FaultId {
+                name: format!("fault-{seed}-{index}"),
+            },
+            fired: index % 2 == 0,
+        }),
+        _ => Decision::RngDraw(RngDecision {
+            stream: RngStreamId {
+                name: format!("stream-{seed}"),
+            },
+            value: seed ^ index,
+        }),
+    }
+}
+
+fn recorded_fat_checkpoint(configuration: &Configuration) -> Checkpoint {
+    let parent = if configuration.is_genesis() {
+        None
+    } else {
+        let schedule = configuration
+            .schedule
+            .prefix(configuration.schedule.len().saturating_sub(1))
+            .unwrap_or_else(|error| panic!("test schedule prefix should build: {error}"));
+        Some(Configuration {
+            def: configuration.def.clone(),
+            schedule,
+        })
+    };
+    Checkpoint::from_recorded_configuration(
+        configuration,
+        parent.as_ref(),
+        VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .unwrap_or_else(|error| panic!("test checkpoint should be recorded-shaped: {error}"))
 }
 
 fn fixed_vectors(

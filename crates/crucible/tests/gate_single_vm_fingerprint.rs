@@ -345,27 +345,40 @@ fn record_representative_decision(recorder: &mut DecisionRecorder, index: u64) {
 
 fn genesis_checkpoint(scenario: &ScenarioDef) -> GenesisCheckpoint {
     let genesis = Configuration::genesis(scenario.clone());
-    GenesisCheckpoint {
-        checkpoint: Checkpoint::new(
-            ContentHash::from_canonical_material(
-                "crucible.gate.single-vm-fingerprint.genesis",
-                &format!("{:?}", genesis.id().bytes),
-            ),
-            genesis.id(),
-            CheckpointKind::Fat,
-        ),
-    }
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &genesis,
+        None,
+        VirtualTime::default(),
+        std::collections::BTreeMap::new(),
+        CheckpointKind::Fat,
+        std::collections::BTreeMap::new(),
+    )
+    .unwrap_or_else(|error| panic!("genesis checkpoint should be recorded-shaped: {error}"));
+    GenesisCheckpoint { checkpoint }
 }
 
 fn fat_checkpoint_for(configuration: &Configuration) -> Checkpoint {
-    Checkpoint::new(
-        ContentHash::from_canonical_material(
-            "crucible.gate.single-vm-fingerprint.snapshot",
-            &format!("{:?}", configuration.id().bytes),
-        ),
-        configuration.id(),
+    let parent = if configuration.is_genesis() {
+        None
+    } else {
+        let schedule = configuration
+            .schedule
+            .prefix(configuration.schedule.len().saturating_sub(1))
+            .unwrap_or_else(|error| panic!("test schedule prefix should build: {error}"));
+        Some(Configuration {
+            def: configuration.def.clone(),
+            schedule,
+        })
+    };
+    Checkpoint::from_recorded_configuration(
+        configuration,
+        parent.as_ref(),
+        VirtualTime::default(),
+        std::collections::BTreeMap::new(),
         CheckpointKind::Fat,
+        std::collections::BTreeMap::new(),
     )
+    .unwrap_or_else(|error| panic!("fat checkpoint should be recorded-shaped: {error}"))
 }
 
 fn generated_scenario(seed: u64) -> ScenarioDef {
