@@ -501,12 +501,13 @@ alone (`M-1`/`Q-A`).
       cached/uncached `.drv` parity.
 - [x] Current `force_memoized` claimed-thunk boundary: tree-walk `force_value`
       delegates newly claimed thunk forcing to `force_memoized_claimed_thunk`,
-      which builds an advisory force-cache subject only after demand reaches the
-      thunk, consults the shared in-memory/durable force-cache path before
-      evaluating the thunk body, publishes cache hits into the thunk cell, and
-      observes successful WHNF results after uncached body evaluation.
+      which builds a force-cache subject only after demand reaches the thunk,
+      routes policy-admitted subjects through the shared in-memory/durable
+      force-cache path before evaluating the thunk body, publishes cache hits
+      into the thunk cell, and observes successful WHNF results after admitted
+      uncached body evaluation.
       Allocating a source-backed lazy attr thunk leaves the shared `EvalCache`
-      empty until the thunk is actually forced. This is the current
+      empty until the thunk is actually forced and admitted. This is the current
       claimed-thunk inline payload boundary only; full demand-node lifecycle,
       dynamic dependency capture, canonical free-variable production, general
       memo lookup, persistent graph integration, and cached/uncached `.drv`
@@ -539,9 +540,11 @@ alone (`M-1`/`Q-A`).
       and in a conservative self-contained IR-kind whitelist, and whose WHNF
       result is either an inline scalar, a Nix string payload with or without
       context, a Nix path payload with or without context, a replayable Nix list
-      whose existing spine elements are all non-thunk replayable payloads, or a
+      whose existing spine elements are non-thunk replayable payloads or
+      suspended closed literal thunks with replayable static payloads, or a
       position-free, source-order-canonical replayable Nix attrset whose existing
-      bindings are all non-thunk replayable payloads. The
+      bindings are non-thunk replayable payloads or suspended closed literal
+      thunks with replayable static payloads. The
       precursor expression identity uses a domain-separated hash of source name,
       source bytes, module path-literal base, evaluator-option salt, and the
       lowered node source span, then pairs that expression-positioned artifact
@@ -557,8 +560,9 @@ alone (`M-1`/`Q-A`).
       search-path/global/builtin/primop/application/dialect nodes pending
       explicit option and impure-input keys, synthetic apply/select
       thunks, canonical free-variable hashes, general memo lookup,
-      remaining suspended/non-replayable captured thunk-cell free variables,
-      lazy-element list and lazy-binding attrset payloads, position/source-order-bearing attrset payloads, and
+      remaining suspended non-literal/non-replayable captured thunk-cell free
+      variables, arbitrary lazy-element list and lazy-binding attrset payloads,
+      position/source-order-bearing attrset payloads, and
       other composite value hashing, persistence, and cached/uncached harness proof remain open
       (`S-14`/`S-15`).
 - [x] Current pure closed force-cache hit substrate: `EvalCache` keeps per-node
@@ -566,9 +570,9 @@ alone (`M-1`/`Q-A`).
       hashes, `EvalCacheRuntime::lookup_inline_expression_payload` returns a
       memoized payload only for clean nodes whose payload hash still matches the
       graph, and tree-walk `force_value` consults this shared cache before
-      evaluating a newly claimed closed source-backed thunk whose entire body
-      subtree is both speculable and in the conservative self-contained IR-kind
-      whitelist. Hits publish immediate scalars directly and rehydrate
+      evaluating a policy-admitted newly claimed closed source-backed thunk whose
+      entire body subtree is both speculable and in the conservative
+      self-contained IR-kind whitelist. Hits publish immediate scalars directly and rehydrate
       context-free string bytes, context-bearing string bytes plus context, path bytes with or without context, replayable Nix lists, or replayable Nix attrsets into the evaluator-local heap before finishing
       the thunk cell; disabled runtimes, unknown nodes, dirty nodes, missing
       payloads, and stale payloads are misses. This is a scalar/string/path/replayable-list/replayable-attrset
@@ -577,8 +581,9 @@ alone (`M-1`/`Q-A`).
       thunks, ambient/synthetic builtin values outside the admitted constant subset,
       search-path/global/builtin/primop/application/dialect nodes pending
       explicit option and impure-input keys, synthetic apply/select
-      thunks, canonical free-variable hashes, remaining suspended/non-replayable
-      captured thunk-cell free variables, lazy-element lists, lazy-binding attrsets, and other composite payloads,
+      thunks, canonical free-variable hashes, remaining suspended
+      non-literal/non-replayable captured thunk-cell free variables, arbitrary
+      lazy-element lists, lazy-binding attrsets, and other composite payloads,
       transitive dirty scheduling, persistence, `derivationStrict` SHA-256
       short-circuiting, and cached/uncached harness proof remain open
       (`S-14`/`S-15`).
@@ -608,8 +613,9 @@ alone (`M-1`/`Q-A`).
       search-path/global/builtin/
       application/dialect nodes beyond the traceable primop subset, canonical
       free-variable hashes, typed input-identity retention, force-time input
-      revalidation, remaining suspended/non-replayable captured thunk-cell free
-      variables, lazy-element lists, lazy-binding attrsets, and other composite payloads, transitive dirty scheduling,
+      revalidation, remaining suspended non-literal/non-replayable captured
+      thunk-cell free variables, arbitrary lazy-element lists, lazy-binding
+      attrsets, and other composite payloads, transitive dirty scheduling,
       persistence, `derivationStrict` SHA-256 short-circuiting, and
       cached/uncached harness proof remain open (`R-10`/`S-14`).
 - [x] Current force-time inline impure revalidation substrate: trace-backed
@@ -642,8 +648,9 @@ alone (`M-1`/`Q-A`).
       thunks, ambient builtin values outside the admitted constant subset,
       search-path/global/builtin/application/dialect nodes beyond the
       traceable primop subset, canonical free-variable hashes, persistent
-      input-identity retention, remaining suspended/non-replayable captured
-      thunk-cell free variables, lazy-element lists, lazy-binding attrsets, and other composite payloads, transitive dirty
+      input-identity retention, remaining suspended non-literal/non-replayable
+      captured thunk-cell free variables, arbitrary lazy-element lists,
+      lazy-binding attrsets, and other composite payloads, transitive dirty
       scheduling, persistent graph/value cache integration, `derivationStrict`
       SHA-256 short-circuiting, and cached/uncached harness proof remain open
       (`R-10`/`S-14`).
@@ -652,7 +659,7 @@ alone (`M-1`/`Q-A`).
       `current_system`, configured `current_time`, and `eval_mode` alongside
       source name or lowered-IR fingerprint, path-literal base, lowered node
       source span, and IR node id.
-      This prevents the current advisory force cache from sharing inline
+      This prevents the current admitted force-cache path from sharing inline
       payloads across evaluator configurations that can change path/context,
       ambient builtin constants, impurity-policy behavior, or expression source
       position. It is deliberately conservative and may miss across option/span
@@ -708,9 +715,11 @@ alone (`M-1`/`Q-A`).
       durable hashes for referenced captured lexical slots when every captured
       slot value is either an inline scalar supported by
       `ValueHash::from_inline_value`, a Nix string with or without context, a
-      Nix path with or without context, a replayable Nix list, or a
-      position-free, source-order-canonical replayable Nix attrset, or a
-      fulfilled thunk cell whose cached value is one of those replayable values.
+      Nix path with or without context, a replayable Nix list, a
+      position-free, source-order-canonical replayable Nix attrset, a
+      fulfilled thunk cell whose cached value is one of those replayable values,
+      or a suspended closed literal thunk whose static payload is one of those
+      replayable values.
       Strings and paths are hashed in one durable force-capture domain with typed
       string/path tags; contextual values append canonical context element tags
       and length-prefixed path/output bytes. Replayable list/attrset captures
@@ -720,10 +729,10 @@ alone (`M-1`/`Q-A`).
       combiner, so repeated captured inline/string/path/replayable-composite
       thunks hit only when their free-variable value hashes match and miss when
       those captured values differ. This deliberately skips dynamic `with`
-      scopes, scoped-import globals, lazy-element lists, lazy-binding attrsets,
+      scopes, scoped-import globals, arbitrary lazy-element lists, lazy-binding attrsets,
       position/source-order-bearing attrsets, lambdas, primops,
-      suspended/non-replayable thunk-cell captures including computed values not
-      already forced in the captured slot, captured bodies with nested lexical-frame introducers, apply/select
+      suspended non-literal/non-replayable thunk-cell captures including computed
+      values not already forced in the captured slot, captured bodies with nested lexical-frame introducers, apply/select
       thunks, full strictness/escape free-variable analysis, remaining
       heap/composite value hashes, persistence, and cached/uncached harness
       proof. The gate covers captured inline/string/path/list and empty-attrset
@@ -759,9 +768,9 @@ alone (`M-1`/`Q-A`).
       computation used-many on the second observed demand, and feeds that signal
       into the existing admission decision when the caller supplies
       value-hash cost information. This is policy vocabulary only; evaluator
-      subject selection, cardinality-analysis signal bridges,
-      policy-driven `force_memoized` admission,
-      persistence/materialization decisions, and measured AOS tuning remain open
+      subject selection beyond the current force-cache thunk bridge,
+      cardinality-analysis signal bridges, measured value-hash cost sampling,
+      persistence/materialization policy refinement, and measured AOS tuning remain open
       (`M-11`).
 - [x] Current force-cache memoization demand signal bridge: enabled
       `EvalCacheRuntime` records same-run `MemoizationDemand` by the same
@@ -770,25 +779,41 @@ alone (`M-1`/`Q-A`).
       decision, and exposes read-only demand telemetry without allocating
       demand-graph expression nodes. Tree-walk claimed-thunk forcing now reports
       `MemoizationSubject::Thunk` demand with the current cheap-value-hash signal
-      before the existing force-cache lookup, while disabled runtimes remain
-      no-ops. This is telemetry only: the decision does not yet bypass, probe,
-      populate, persist, or materialize force-cache payloads, and aggregate
-      hit/miss semantics are unchanged. Cardinality-analysis signals, measured
-      value-hash cost sampling, policy-driven `force_memoized` admission,
-      persistence/materialization decisions, and AOS tuning remain open
+      before force-cache admission, while disabled runtimes remain no-ops. This
+      is the same-run signal bridge only; cardinality-analysis signals, measured
+      value-hash cost sampling, broader evaluator subject selection, and AOS
+      tuning remain open
       (`M-11`). The gate covers `cache::runtime` memoization-demand tests plus
       the source-backed force-cache demand bridge test.
 - [x] Current force-cache memoization policy stats precursor: `EvalStats` and
       the `aos_nix::eval::stats` tracing event report
       `force_cache_memoization_admits`, `force_cache_memoization_bypasses`, and
-      derived `force_cache_memoization_demands` from the existing runtime
-      demand bridge. These counters expose the current policy decision stream
-      only; they do not gate lookup, population, persistence, materialization,
-      or force-cache hit/miss accounting. Cardinality analysis, measured
-      value-hash cost sampling, policy-driven `force_memoized` admission,
-      persistence/materialization decisions, and AOS tuning remain open
+      derived `force_cache_memoization_demands` from the runtime
+      demand/admission bridge. These counters expose the policy decision stream;
+      the counters themselves do not choose subjects, sample costs, or tune
+      thresholds. Cardinality analysis, measured value-hash cost sampling,
+      broader evaluator subject selection, and AOS tuning remain open
       (`M-11`). The gate covers stats trace tests plus the source-backed demand
       bridge stats test.
+- [x] Current force-cache memoization admission gate: tree-walk consumes the
+      force-cache `MemoizationDecision` before lookup/observation. `Bypass`
+      forces the thunk normally and records persistent current demand, but skips
+      in-memory and durable lookup, impure-trace slicing for force payloads,
+      payload observation, value materialization, and force-cache hit/miss
+      accounting. `Admit` preserves the existing lookup, revalidation,
+      observation, materialization, and hit/miss paths. Tree-walk treats
+      captured-free-variable node thunks, synthetic builtin-attr constants, and
+      closed replayable composite literal node thunks as selected subjects that
+      admit on first demand; ordinary node thunks remain conditional.
+      Conditional thunk subjects admit on the second cheap same-run demand or on
+      the first demand of a later run when persistent node metadata shows prior-run demand;
+      missing subjects, disabled runtimes, lock errors, and demand-recording
+      errors fail open to the old direct-evaluation path. This is a coarse thunk
+      admission gate only; cardinality analysis, measured value-hash cost
+      sampling, non-thunk evaluator subject selection, full `force_memoized`
+      demand-node lifecycle, and AOS tuning remain open (`M-11`/`S-14`). The
+      gate covers first-demand bypass/admit/hit force-cache tests plus
+      persistent force-cache surface canaries.
 - [x] Current force-cache hit/overhead stats precursor: `EvalStats` reports
       force-cache-specific hits, misses, and probes separately from aggregate
       evaluator cache hits/misses, and the stats tracing event emits

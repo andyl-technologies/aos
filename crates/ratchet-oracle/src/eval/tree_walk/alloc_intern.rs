@@ -753,19 +753,24 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let cache_subject =
             self.force_cache_subject_for_thunk(EvalNodeRef::new(self.current_module, id), thunk);
-        if let Some(subject) = &cache_subject {
-            self.record_force_cache_memoization_demand(subject);
-        }
-        if let Some(value) = self.lookup_forced_inline_expression_result(cache_subject.clone()) {
-            let value = guard.finish(value).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
-            })?;
-            self.lazy_identity_thunks.remove(&forced_payload);
-            return Ok(value);
+        let memoization_decision = cache_subject
+            .as_ref()
+            .map(|subject| self.record_force_cache_memoization_demand(subject))
+            .unwrap_or(MemoizationDecision::Admit);
+        let memoization_admitted = memoization_decision == MemoizationDecision::Admit;
+        if memoization_admitted {
+            if let Some(value) = self.lookup_forced_inline_expression_result(cache_subject.clone())
+            {
+                let value = guard.finish(value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
+                })?;
+                self.lazy_identity_thunks.remove(&forced_payload);
+                return Ok(value);
+            }
         }
 
         self.increment_thunks_forced();
-        let impure_trace_cursor = self.impure_input_trace_cursor();
+        let impure_trace_cursor = memoization_admitted.then(|| self.impure_input_trace_cursor());
         let result = match thunk.kind() {
             EvalThunkKind::Node {
                 body,
@@ -842,7 +847,8 @@ impl TreeWalk {
             }
         };
         let value = result?;
-        let impure_trace = self.force_cache_impure_input_trace_segment(impure_trace_cursor);
+        let impure_trace =
+            impure_trace_cursor.map(|cursor| self.force_cache_impure_input_trace_segment(cursor));
         let value = guard
             .finish(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
@@ -850,7 +856,9 @@ impl TreeWalk {
         if let Some(subject) = &cache_subject {
             self.record_forced_expression_demand(subject);
         }
-        self.observe_forced_inline_expression_result(cache_subject, value, impure_trace);
+        if let Some(impure_trace) = impure_trace {
+            self.observe_forced_inline_expression_result(cache_subject, value, impure_trace);
+        }
         Ok(value)
     }
 }

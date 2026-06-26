@@ -758,6 +758,193 @@ impl TreeWalk {
         self.force_cache_payload_for_value_with_depth(value, 0)
     }
 
+    fn force_cache_payload_for_suspended_thunk(
+        &self,
+        thunk: &EvalThunk,
+        depth: usize,
+    ) -> Option<CachedExpressionValue> {
+        let EvalThunkKind::Node {
+            body,
+            env,
+            with_env,
+            scoped_globals,
+        } = thunk.kind()
+        else {
+            return None;
+        };
+        if !with_env.scopes().is_empty() || !scoped_globals.scopes().is_empty() {
+            return None;
+        }
+        let module = self.modules.get(body.module().index())?;
+        let slots = Self::captured_free_variable_slots(&module.ir, body.id(), env.frames().len())?;
+        if !slots.is_empty() {
+            return None;
+        }
+        self.force_cache_payload_for_closed_ir_node(*body, depth)
+    }
+
+    fn force_cache_payload_for_closed_ir_node(
+        &self,
+        id: EvalNodeRef,
+        depth: usize,
+    ) -> Option<CachedExpressionValue> {
+        if depth > FORCE_CACHE_PAYLOAD_MAX_DEPTH {
+            return None;
+        }
+        let module_id = id.module();
+        let node_id = id.id();
+        let node = *self
+            .modules
+            .get(module_id.index())?
+            .ir
+            .arena
+            .node(node_id)?;
+        if !node.effect.is_speculable() {
+            return None;
+        }
+        match node.kind {
+            IrKind::Int => {
+                let IrData::Int(value) = node.data else {
+                    return None;
+                };
+                CachedExpressionValue::immediate(Value::int(value)).ok()
+            }
+            IrKind::Float => {
+                let IrData::Float(value) = node.data else {
+                    return None;
+                };
+                CachedExpressionValue::immediate(Value::float(value)).ok()
+            }
+            IrKind::Bool => {
+                let IrData::Bool(value) = node.data else {
+                    return None;
+                };
+                CachedExpressionValue::immediate(Value::bool(value)).ok()
+            }
+            IrKind::Null => CachedExpressionValue::immediate(Value::null()).ok(),
+            IrKind::Str | IrKind::Uri => {
+                let IrData::Symbol(symbol) = node.data else {
+                    return None;
+                };
+                let module = self.modules.get(module_id.index())?;
+                let bytes = module.ir.symbols.resolve(symbol)?;
+                Some(CachedExpressionValue::context_free_string(
+                    try_clone_bytes(bytes).ok()?,
+                ))
+            }
+            IrKind::Path => {
+                let IrData::Symbol(symbol) = node.data else {
+                    return None;
+                };
+                let module = self.modules.get(module_id.index())?;
+                let bytes = module.ir.symbols.resolve(symbol)?;
+                let path = self
+                    .path_literal_bytes_for_module_node(module_id, node_id, node.span, bytes)
+                    .ok()?;
+                Some(CachedExpressionValue::path(path))
+            }
+            IrKind::List => {
+                self.force_cache_payload_for_closed_ir_list(module_id, node_id, node.data, depth)
+            }
+            IrKind::AttrSet => {
+                self.force_cache_payload_for_closed_ir_attrset(module_id, node_id, node.data, depth)
+            }
+            IrKind::ThunkAlloc => {
+                let IrData::Node(child) = node.data else {
+                    return None;
+                };
+                self.force_cache_payload_for_closed_ir_node(
+                    EvalNodeRef::new(module_id, child),
+                    depth.saturating_add(1),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    fn force_cache_payload_for_closed_ir_list(
+        &self,
+        module_id: EvalModuleId,
+        _id: IrId,
+        data: IrData,
+        depth: usize,
+    ) -> Option<CachedExpressionValue> {
+        let IrData::Children(children) = data else {
+            return None;
+        };
+        let children = self
+            .modules
+            .get(module_id.index())?
+            .ir
+            .arena
+            .child_slice(children)?
+            .to_vec();
+        let mut elements = Vec::new();
+        elements.try_reserve_exact(children.len()).ok()?;
+        for child in children {
+            elements.push(self.force_cache_payload_for_closed_ir_node(
+                EvalNodeRef::new(module_id, child),
+                depth.saturating_add(1),
+            )?);
+        }
+        Some(CachedExpressionValue::strict_list(elements))
+    }
+
+    fn force_cache_payload_for_closed_ir_attrset(
+        &self,
+        module_id: EvalModuleId,
+        _id: IrId,
+        data: IrData,
+        depth: usize,
+    ) -> Option<CachedExpressionValue> {
+        let IrData::AttrSet {
+            bindings,
+            recursive,
+            has_dynamic,
+            ..
+        } = data
+        else {
+            return None;
+        };
+        if recursive || has_dynamic {
+            return None;
+        }
+        let entries = {
+            let module = self.modules.get(module_id.index())?;
+            let start = bindings.start as usize;
+            let end = start.checked_add(bindings.len())?;
+            let bindings = module.ir.bindings.get(start..end)?;
+            let mut entries = Vec::new();
+            entries.try_reserve_exact(bindings.len()).ok()?;
+            for binding in bindings {
+                let IrAttrPathSegment::Static(symbol) = binding.key else {
+                    return None;
+                };
+                if binding.position.is_some() {
+                    return None;
+                }
+                let name = try_clone_bytes(module.ir.symbols.resolve(symbol)?).ok()?;
+                entries.push((name, binding.value));
+            }
+            entries
+        };
+        if entries.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return None;
+        }
+        let mut payload_entries = Vec::new();
+        payload_entries.try_reserve_exact(entries.len()).ok()?;
+        for (name, value) in entries {
+            payload_entries.push((
+                name,
+                self.force_cache_payload_for_closed_ir_node(
+                    EvalNodeRef::new(module_id, value),
+                    depth.saturating_add(1),
+                )?,
+            ));
+        }
+        CachedExpressionValue::strict_attrs(payload_entries).ok()
+    }
+
     fn force_cache_payload_for_value_with_depth(
         &self,
         value: Value,
@@ -832,22 +1019,36 @@ impl TreeWalk {
                     CachedExpressionValue::strict_attrs(entries).ok()
                 }
             }
+            ValueTag::Thunk => {
+                let thunk = self.heap.get_thunk(value).ok()?;
+                match thunk.cell().cached_value().ok()? {
+                    Some(cached) if cached.is_thunk() => None,
+                    Some(cached) => self
+                        .force_cache_payload_for_value_with_depth(cached, depth.saturating_add(1)),
+                    None => {
+                        self.force_cache_payload_for_suspended_thunk(thunk, depth.saturating_add(1))
+                    }
+                }
+            }
             _ => None,
         }
     }
 
-    pub(super) fn record_force_cache_memoization_demand(&mut self, subject: &ForceCacheSubject) {
+    pub(super) fn record_force_cache_memoization_demand(
+        &mut self,
+        subject: &ForceCacheSubject,
+    ) -> MemoizationDecision {
         let Some(identity) = subject.lookup_identity else {
-            return;
+            return MemoizationDecision::Admit;
         };
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
                 target: "aos_nix::cache",
                 "tree-walk evaluator cache lock was poisoned; skipping forced expression memoization demand"
             );
-            return;
+            return MemoizationDecision::Admit;
         };
-        let decision = match cache.record_memoization_demand(
+        let observed_decision = match cache.record_memoization_demand(
             identity,
             subject.free_var_value_hashes.iter().copied(),
             MemoizationSubject::Thunk,
@@ -865,8 +1066,46 @@ impl TreeWalk {
             }
         };
         drop(cache);
-        if let Some(decision) = decision {
+        let mut decision = observed_decision.unwrap_or(MemoizationDecision::Admit);
+        if subject.memoization_admission.admits_on_first_demand() {
+            decision = MemoizationDecision::Admit;
+        } else if decision == MemoizationDecision::Bypass
+            && self.force_cache_has_prior_persistent_demand(subject)
+        {
+            decision = MemoizationDecision::Admit;
+        }
+        if observed_decision.is_some() {
             self.increment_force_cache_memoization_decision(decision);
+        }
+        decision
+    }
+
+    fn force_cache_has_prior_persistent_demand(&mut self, subject: &ForceCacheSubject) -> bool {
+        if !self.options.eval_cache_enabled() {
+            return false;
+        }
+        let Some(identity) = subject.metadata_identity else {
+            return false;
+        };
+        self.open_persist_eval_cache();
+        let Some(persist_cache) = &self.persist_cache else {
+            return false;
+        };
+        let key = PersistNodeMetadataKey::for_expression(
+            identity,
+            subject.free_var_value_hashes.iter().copied(),
+        );
+        match persist_cache.lookup_node_materialization_reuse(key) {
+            Ok(Some(reuse)) => reuse.likely_redemanded_across_runs(),
+            Ok(None) => false,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent force memoization demand lookup failed"
+                );
+                false
+            }
         }
     }
 
@@ -1172,12 +1411,18 @@ impl TreeWalk {
                 {
                     return None;
                 }
+                let memoization_admission = if free_var_value_hashes.is_empty() {
+                    self.force_cache_memoization_admission_for_node(*body)
+                } else {
+                    ForceCacheMemoizationAdmission::SelectedSubstrate
+                };
                 Some(ForceCacheSubject {
                     lookup_identity,
                     pure_observation_identity,
                     impure_observation_identity,
                     metadata_identity: lookup_identity,
                     free_var_value_hashes,
+                    memoization_admission,
                 })
             }
             EvalThunkKind::BuiltinAttr { symbol, builtin } => {
@@ -1186,6 +1431,53 @@ impl TreeWalk {
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
             | EvalThunkKind::Select { .. } => None,
+        }
+    }
+
+    fn force_cache_memoization_admission_for_node(
+        &self,
+        body: EvalNodeRef,
+    ) -> ForceCacheMemoizationAdmission {
+        if self
+            .force_cache_closed_composite_payload_for_node(body, 0)
+            .is_some()
+        {
+            ForceCacheMemoizationAdmission::SelectedSubstrate
+        } else {
+            ForceCacheMemoizationAdmission::ConditionalThunk
+        }
+    }
+
+    fn force_cache_closed_composite_payload_for_node(
+        &self,
+        body: EvalNodeRef,
+        depth: usize,
+    ) -> Option<CachedExpressionValue> {
+        if depth > FORCE_CACHE_PAYLOAD_MAX_DEPTH {
+            return None;
+        }
+        let module_id = body.module();
+        let node_id = body.id();
+        let node = *self
+            .modules
+            .get(module_id.index())?
+            .ir
+            .arena
+            .node(node_id)?;
+        match node.kind {
+            IrKind::List | IrKind::AttrSet => {
+                self.force_cache_payload_for_closed_ir_node(body, depth.saturating_add(1))
+            }
+            IrKind::ThunkAlloc => {
+                let IrData::Node(child) = node.data else {
+                    return None;
+                };
+                self.force_cache_closed_composite_payload_for_node(
+                    EvalNodeRef::new(module_id, child),
+                    depth.saturating_add(1),
+                )
+            }
+            _ => None,
         }
     }
 
@@ -1216,6 +1508,7 @@ impl TreeWalk {
             impure_observation_identity: observation_identity,
             metadata_identity: lookup_identity,
             free_var_value_hashes: Vec::new(),
+            memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
         })
     }
 
@@ -1325,7 +1618,13 @@ impl TreeWalk {
             ValueTag::Thunk => {
                 let cached = {
                     let thunk = self.heap.get_thunk(value).ok()?;
-                    thunk.cell().cached_value().ok()??
+                    match thunk.cell().cached_value().ok()? {
+                        Some(cached) => cached,
+                        None => {
+                            let payload = self.force_cache_payload_for_suspended_thunk(thunk, 0)?;
+                            return Self::force_cache_free_var_payload_hash(&payload);
+                        }
+                    }
                 };
                 if cached.is_thunk() {
                     return None;
@@ -1334,6 +1633,46 @@ impl TreeWalk {
             }
             _ => return None,
         }
+    }
+
+    fn force_cache_free_var_payload_hash(
+        payload: &CachedExpressionValue,
+    ) -> Option<DurableBlake3Hash> {
+        if let Some(value) = payload.immediate_value() {
+            return ValueHash::from_inline_value(value)
+                .ok()
+                .map(|hash| hash.as_durable_hash());
+        }
+
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
+        if let Some(bytes) = payload.context_free_string_bytes() {
+            hasher.update(b"string");
+            Self::update_cache_identity_chunk(&mut hasher, bytes)?;
+            return Some(DurableBlake3Hash::from_hasher(hasher));
+        }
+        if let Some((bytes, context)) = payload.context_string_parts() {
+            hasher.update(b"string");
+            Self::update_cache_identity_chunk(&mut hasher, bytes)?;
+            Self::update_force_capture_string_context(&mut hasher, context)?;
+            return Some(DurableBlake3Hash::from_hasher(hasher));
+        }
+        if let Some(bytes) = payload.path_bytes() {
+            hasher.update(b"path");
+            Self::update_cache_identity_chunk(&mut hasher, bytes)?;
+            return Some(DurableBlake3Hash::from_hasher(hasher));
+        }
+        if let Some((bytes, context)) = payload.context_path_parts() {
+            hasher.update(b"path");
+            Self::update_cache_identity_chunk(&mut hasher, bytes)?;
+            Self::update_force_capture_string_context(&mut hasher, context)?;
+            return Some(DurableBlake3Hash::from_hasher(hasher));
+        }
+
+        let value_hash = payload.value_hash().ok()?;
+        hasher.update(b"composite");
+        hasher.update(&value_hash.as_durable_hash().as_bytes());
+        Some(DurableBlake3Hash::from_hasher(hasher))
     }
 
     fn update_force_capture_string_context(

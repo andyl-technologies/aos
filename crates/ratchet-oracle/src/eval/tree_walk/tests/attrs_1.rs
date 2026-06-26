@@ -662,7 +662,7 @@ fn forcing_attr_value_thunks_memoizes_whnf_results() {
     );
 
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("thunk force succeeds");
     assert_eq!(forced.as_int(), Ok(3));
     let thunk = evaluator
@@ -678,7 +678,7 @@ fn forcing_attr_value_thunks_memoizes_whnf_results() {
     assert!(cached.raw_eq(Value::int(3)));
 
     let forced_again = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("forced thunk reuses cache");
     assert_eq!(forced_again.as_int(), Ok(3));
 }
@@ -724,6 +724,36 @@ fn force_attr_a_attrs_strings(
     }
 }
 
+trait ForceAdmittedValue {
+    fn force_admitted_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError>;
+}
+
+impl ForceAdmittedValue for TreeWalk {
+    fn force_admitted_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let subject = {
+            let thunk = self.heap().get_thunk(value).ok();
+            thunk.and_then(|thunk| {
+                self.force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, id), thunk)
+            })
+        };
+        if let Some(subject) = subject {
+            self.record_force_cache_memoization_demand(&subject);
+            self.record_force_cache_memoization_demand(&subject);
+        }
+        TreeWalk::force_value(self, id, span, value)
+    }
+}
+
 fn force_attr(evaluator: &mut TreeWalk, ir: &Ir, attr: Symbol, label: &str) -> Value {
     let root = evaluator.eval_root().expect("attrset evaluates");
     let thunk_value = {
@@ -734,7 +764,7 @@ fn force_attr(evaluator: &mut TreeWalk, ir: &Ir, attr: Symbol, label: &str) -> V
         attrs.get(attr).unwrap_or_else(|| panic!("{label} exists"))
     };
     evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("attr force succeeds")
 }
 
@@ -890,6 +920,16 @@ fn source_backed_forced_inline_thunks_record_memoization_policy_demand() {
             u64::from(expected_demands == 2),
             "second observed thunk demand should admit through the conditional policy"
         );
+        assert_eq!(
+            evaluator.stats().force_cache_misses(),
+            u64::from(expected_demands == 2),
+            "only an admitted conditional thunk should probe and miss"
+        );
+        assert_eq!(
+            evaluator.stats().force_cache_probes(),
+            u64::from(expected_demands == 2),
+            "bypassed conditional thunks should not probe the force cache"
+        );
 
         let runtime = cache.lock().expect("cache lock is valid");
         let demand = runtime
@@ -899,8 +939,8 @@ fn source_backed_forced_inline_thunks_record_memoization_policy_demand() {
         assert_eq!(demand.current_run_demands(), expected_demands);
         assert_eq!(
             runtime.cache().expect("cache is enabled").len(),
-            1,
-            "policy demand telemetry must not allocate extra demand nodes"
+            usize::from(expected_demands == 2),
+            "only admitted policy demand should allocate an expression node"
         );
     }
 }
@@ -943,12 +983,43 @@ fn source_backed_force_cache_creates_expression_node_only_on_force() {
         .force_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("thunk force succeeds");
     assert_eq!(forced.as_int(), Ok(3));
-    assert_eq!(evaluator.stats().cache_misses(), 1);
+    assert_eq!(evaluator.stats().force_cache_memoization_bypasses(), 1);
+    assert_eq!(evaluator.stats().cache_misses(), 0);
+    {
+        let runtime = cache.lock().expect("cache lock is valid");
+        assert_eq!(
+            runtime.cache().expect("cache is enabled").len(),
+            0,
+            "the first conditional thunk demand bypasses expression node allocation"
+        );
+    }
+
+    let mut admitted = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root = admitted.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = admitted
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = admitted
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("admitted thunk force succeeds");
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(admitted.stats().force_cache_memoization_admits(), 1);
+    assert_eq!(admitted.stats().cache_misses(), 1);
     let runtime = cache.lock().expect("cache lock is valid");
     assert_eq!(
         runtime.cache().expect("cache is enabled").len(),
         1,
-        "forcing the thunk creates the expression cache node on demand"
+        "an admitted force creates the expression cache node on demand"
     );
 }
 
@@ -976,10 +1047,11 @@ fn source_backed_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() 
         .expect("first force succeeds");
     assert_eq!(forced.as_int(), Ok(3));
     assert_eq!(first.stats().thunks_forced(), 1);
+    assert_eq!(first.stats().force_cache_memoization_bypasses(), 1);
     assert_eq!(first.stats().force_cache_hits(), 0);
-    assert_eq!(first.stats().force_cache_misses(), 1);
-    assert_eq!(first.stats().force_cache_probes(), 1);
-    assert_eq!(first.stats().cache_misses(), 1);
+    assert_eq!(first.stats().force_cache_misses(), 0);
+    assert_eq!(first.stats().force_cache_probes(), 0);
+    assert_eq!(first.stats().cache_misses(), 0);
 
     let mut second = TreeWalk::with_options_and_source_and_eval_cache(
         &ir,
@@ -998,28 +1070,51 @@ fn source_backed_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() 
     };
     let forced = second
         .force_value(ir.root, Span::new(0, 0), thunk_value)
-        .expect("second force succeeds from cache");
+        .expect("second force succeeds and populates cache");
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(second.stats().thunks_forced(), 1);
+    assert_eq!(second.stats().force_cache_memoization_admits(), 1);
+    assert_eq!(second.stats().cache_hits(), 0);
+    assert_eq!(second.stats().force_cache_hits(), 0);
+    assert_eq!(second.stats().force_cache_misses(), 1);
+    assert_eq!(second.stats().force_cache_probes(), 1);
+
+    let mut third = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root = third.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = third.heap().get_attrs(root).expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = third
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("third force succeeds from cache");
     assert_eq!(forced.as_int(), Ok(3));
     assert_eq!(
-        second.stats().thunks_forced(),
+        third.stats().thunks_forced(),
         0,
         "cache hits publish the scalar without evaluating the thunk body"
     );
-    assert_eq!(second.stats().cache_hits(), 1);
-    assert_eq!(second.stats().force_cache_hits(), 1);
-    assert_eq!(second.stats().force_cache_misses(), 0);
-    assert_eq!(second.stats().force_cache_probes(), 1);
+    assert_eq!(third.stats().cache_hits(), 1);
+    assert_eq!(third.stats().force_cache_hits(), 1);
+    assert_eq!(third.stats().force_cache_misses(), 0);
+    assert_eq!(third.stats().force_cache_probes(), 1);
 
-    let thunk = second
+    let thunk = third
         .heap()
         .get_thunk(thunk_value)
         .expect("thunk remains heap-owned");
     assert_eq!(thunk.cell().state(), Ok(ThunkState::Forced));
-    let forced_again = second
+    let forced_again = third
         .force_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("published cache hit reuses thunk cell");
     assert_eq!(forced_again.as_int(), Ok(3));
-    assert_eq!(second.stats().thunk_cache_hits(), 1);
+    assert_eq!(third.stats().thunk_cache_hits(), 1);
 }
 
 #[test]
@@ -1074,7 +1169,7 @@ fn source_less_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() {
         attrs.get(a).expect("a exists")
     };
     let forced = first
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("first force succeeds");
     assert_eq!(forced.as_int(), Ok(3));
     assert_eq!(first.stats().thunks_forced(), 1);
@@ -1091,7 +1186,7 @@ fn source_less_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() {
         attrs.get(a).expect("a exists")
     };
     let forced = second
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("second force succeeds from lowered-IR cache identity");
     assert_eq!(forced.as_int(), Ok(3));
     assert_eq!(
@@ -1125,7 +1220,7 @@ fn source_less_forced_inline_thunks_include_lowered_ir_in_cache_identity() {
         attrs.get(first_a).expect("a exists")
     };
     let forced = first
-        .force_value(first_ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(first_ir.root, Span::new(0, 0), thunk_value)
         .expect("first force succeeds");
     assert_eq!(forced.as_int(), Ok(3));
 
@@ -1140,7 +1235,7 @@ fn source_less_forced_inline_thunks_include_lowered_ir_in_cache_identity() {
         attrs.get(second_a).expect("a exists")
     };
     let forced = second
-        .force_value(second_ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(second_ir.root, Span::new(0, 0), thunk_value)
         .expect("second force succeeds");
     assert_eq!(forced.as_int(), Ok(4));
     assert_eq!(
@@ -1187,7 +1282,7 @@ fn source_less_forced_inline_thunks_include_path_base_in_cache_identity() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("thunk force succeeds");
         assert_eq!(
             path_value_bytes(&evaluator, forced),
@@ -1433,7 +1528,7 @@ fn source_backed_forced_inline_thunks_include_path_base_in_cache_identity() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("thunk force succeeds");
         assert_eq!(forced.as_int(), Ok(3));
     }
@@ -1479,7 +1574,7 @@ fn source_backed_forced_inline_thunks_include_store_dir_in_cache_identity() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("thunk force succeeds");
         assert_eq!(forced.as_int(), Ok(3));
     }
@@ -1530,7 +1625,7 @@ fn source_backed_forced_inline_thunks_include_home_dir_in_cache_identity() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("thunk force succeeds");
         assert_eq!(forced.as_bool(), Ok(expected));
         assert_eq!(
@@ -1575,7 +1670,7 @@ fn source_backed_forced_inline_thunks_include_eval_mode_in_cache_identity() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("thunk force succeeds");
         assert_eq!(forced.as_int(), Ok(3));
     }
@@ -1631,7 +1726,7 @@ fn effectful_forced_inline_thunks_revalidate_impure_edges_before_hits() {
         attrs.get(a).expect("a exists")
     };
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("thunk force succeeds");
 
     assert_eq!(forced.as_bool(), Ok(true));
@@ -1670,7 +1765,7 @@ fn effectful_forced_inline_thunks_revalidate_impure_edges_before_hits() {
         attrs.get(a).expect("a exists")
     };
     let forced_again = second
-        .force_value(ir.root, Span::new(0, 0), second_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), second_thunk)
         .expect("second force revalidates and hits");
 
     assert_eq!(forced_again.as_bool(), Ok(true));
@@ -1723,7 +1818,7 @@ fn changed_effectful_forced_inline_thunks_miss_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     assert_eq!(
-        eval.force_value(ir.root, Span::new(0, 0), thunk)
+        eval.force_admitted_value(ir.root, Span::new(0, 0), thunk)
             .expect("thunk force succeeds")
             .as_bool(),
         Ok(true)
@@ -1751,7 +1846,7 @@ fn changed_effectful_forced_inline_thunks_miss_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let forced_changed = changed
-        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), changed_thunk)
         .expect("changed force recomputes");
 
     assert_eq!(forced_changed.as_bool(), Ok(false));
@@ -1785,7 +1880,7 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
     );
     let thunk_value = seed_prior_persistent_demand_for_attr(&mut first, &ir, a, &persist_root, "a");
     let forced = first
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("attr force succeeds");
     assert_eq!(forced.as_bool(), Ok(true));
     assert_eq!(first.stats().cache_misses(), 1);
@@ -1896,7 +1991,7 @@ fn changed_effectful_forced_inline_thunks_miss_persistent_cache_after_revalidati
     );
     let thunk_value = seed_prior_persistent_demand_for_attr(&mut first, &ir, a, &persist_root, "a");
     let forced = first
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("attr force succeeds");
     assert_eq!(forced.as_bool(), Ok(true));
     drop(first);
@@ -2152,7 +2247,7 @@ fn read_file_backed_inline_thunks_hit_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     assert_eq!(
-        eval.force_value(ir.root, Span::new(0, 0), thunk)
+        eval.force_admitted_value(ir.root, Span::new(0, 0), thunk)
             .expect("readFile-backed force succeeds")
             .as_bool(),
         Ok(true)
@@ -2178,7 +2273,7 @@ fn read_file_backed_inline_thunks_hit_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let forced = second
-        .force_value(ir.root, Span::new(0, 0), second_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), second_thunk)
         .expect("readFile-backed force revalidates and hits");
 
     assert_eq!(forced.as_bool(), Ok(true));
@@ -2234,7 +2329,7 @@ fn changed_read_file_backed_inline_thunks_miss_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     assert_eq!(
-        eval.force_value(ir.root, Span::new(0, 0), thunk)
+        eval.force_admitted_value(ir.root, Span::new(0, 0), thunk)
             .expect("readFile-backed force succeeds")
             .as_bool(),
         Ok(true)
@@ -2262,7 +2357,7 @@ fn changed_read_file_backed_inline_thunks_miss_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let forced_changed = changed
-        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), changed_thunk)
         .expect("changed readFile-backed force recomputes");
 
     assert_eq!(forced_changed.as_bool(), Ok(false));
@@ -2306,8 +2401,36 @@ fn force_cache_recompute_same_value_counts_early_cutoff_after_trace_miss() {
         .expect("readFile-backed force succeeds");
     assert_eq!(forced.as_int(), Ok(3));
     assert_eq!(eval.stats().cache_hits(), 0);
-    assert!(eval.stats().cache_misses() > 0);
+    assert_eq!(eval.stats().cache_misses(), 0);
+    assert!(eval.stats().force_cache_memoization_bypasses() > 0);
     assert_eq!(eval.stats().early_cutoffs(), 0);
+
+    let mut admitted_options = TreeWalkOptions::new();
+    admitted_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut admitted = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        admitted_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let admitted_root = admitted.eval_root().expect("attrset evaluates again");
+    let admitted_thunk = {
+        let attrs = admitted
+            .heap()
+            .get_attrs(admitted_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced_admitted = admitted
+        .force_value(ir.root, Span::new(0, 0), admitted_thunk)
+        .expect("admitted readFile-backed force populates");
+    assert_eq!(forced_admitted.as_int(), Ok(3));
+    assert_eq!(admitted.stats().cache_hits(), 0);
+    assert!(admitted.stats().cache_misses() > 0);
+    assert_eq!(admitted.stats().early_cutoffs(), 0);
 
     fs::write(root.join("target"), b"second").expect("target changes");
 
@@ -2374,7 +2497,7 @@ fn read_file_string_payload_thunks_hit_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let forced = eval
-        .force_value(ir.root, Span::new(0, 0), thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk)
         .expect("readFile string payload force succeeds");
     assert_eq!(
         eval.heap()
@@ -2404,7 +2527,7 @@ fn read_file_string_payload_thunks_hit_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let second_forced = second
-        .force_value(ir.root, Span::new(0, 0), second_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), second_thunk)
         .expect("readFile string payload revalidates and hits");
     let second_string = second
         .heap()
@@ -2461,7 +2584,7 @@ fn changed_read_file_string_payload_thunks_miss_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let forced = eval
-        .force_value(ir.root, Span::new(0, 0), thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk)
         .expect("readFile string payload force succeeds");
     assert_eq!(
         eval.heap()
@@ -2493,7 +2616,7 @@ fn changed_read_file_string_payload_thunks_miss_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let forced_changed = changed
-        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), changed_thunk)
         .expect("changed readFile string payload recomputes");
     let changed_string = changed
         .heap()
@@ -2882,7 +3005,7 @@ fn read_file_context_string_payload_thunks_hit_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let forced = eval
-        .force_value(ir.root, Span::new(0, 0), thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk)
         .expect("readFile context string payload force succeeds");
     let string = eval
         .heap()
@@ -2915,7 +3038,7 @@ fn read_file_context_string_payload_thunks_hit_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let second_forced = second
-        .force_value(ir.root, Span::new(0, 0), second_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), second_thunk)
         .expect("readFile context string payload revalidates and hits");
     let second_string = second
         .heap()
@@ -2977,7 +3100,7 @@ fn changed_read_file_context_string_payload_thunks_miss_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let forced = eval
-        .force_value(ir.root, Span::new(0, 0), thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk)
         .expect("readFile context string payload force succeeds");
     let string = eval
         .heap()
@@ -3011,7 +3134,7 @@ fn changed_read_file_context_string_payload_thunks_miss_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let changed_forced = changed
-        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), changed_thunk)
         .expect("changed readFile context string payload recomputes");
     let changed_string = changed
         .heap()
@@ -3060,7 +3183,7 @@ fn import_backed_inline_thunks_hit_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     assert_eq!(
-        eval.force_value(ir.root, Span::new(0, 0), thunk)
+        eval.force_admitted_value(ir.root, Span::new(0, 0), thunk)
             .expect("import-backed force succeeds")
             .as_int(),
         Ok(1)
@@ -3086,7 +3209,7 @@ fn import_backed_inline_thunks_hit_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let forced = second
-        .force_value(ir.root, Span::new(0, 0), second_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), second_thunk)
         .expect("import-backed force revalidates and hits");
 
     assert_eq!(forced.as_int(), Ok(1));
@@ -3137,7 +3260,7 @@ fn changed_import_backed_inline_thunks_miss_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     assert_eq!(
-        eval.force_value(ir.root, Span::new(0, 0), thunk)
+        eval.force_admitted_value(ir.root, Span::new(0, 0), thunk)
             .expect("import-backed force succeeds")
             .as_int(),
         Ok(1)
@@ -3165,7 +3288,7 @@ fn changed_import_backed_inline_thunks_miss_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let forced_changed = changed
-        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), changed_thunk)
         .expect("changed import-backed force recomputes");
 
     assert_eq!(forced_changed.as_int(), Ok(2));
@@ -3207,7 +3330,7 @@ fn import_backed_path_payload_thunks_hit_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let first = eval
-        .force_value(ir.root, Span::new(0, 0), thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk)
         .expect("import-backed path force succeeds");
     let first_path = eval.heap().get_path(first).expect("first result is a path");
     assert_eq!(first_path.bytes(), b"/tmp/imported-path");
@@ -3232,7 +3355,7 @@ fn import_backed_path_payload_thunks_hit_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let forced = second
-        .force_value(ir.root, Span::new(0, 0), second_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), second_thunk)
         .expect("import-backed path force revalidates and hits");
     let path = second
         .heap()
@@ -3288,7 +3411,7 @@ fn changed_import_backed_path_payload_thunks_miss_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let first = eval
-        .force_value(ir.root, Span::new(0, 0), thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk)
         .expect("import-backed path force succeeds");
     let first_path = eval.heap().get_path(first).expect("first result is a path");
     assert_eq!(first_path.bytes(), b"/tmp/imported-path");
@@ -3315,7 +3438,7 @@ fn changed_import_backed_path_payload_thunks_miss_after_revalidation() {
         attrs.get(a).expect("a exists")
     };
     let forced_changed = changed
-        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), changed_thunk)
         .expect("changed import-backed path force recomputes");
     let changed_path = changed
         .heap()
@@ -3363,13 +3486,13 @@ fn import_cache_hits_keep_force_cache_impure_edges() {
         )
     };
     assert_eq!(
-        eval.force_value(ir.root, Span::new(0, 0), warm_thunk)
+        eval.force_admitted_value(ir.root, Span::new(0, 0), warm_thunk)
             .expect("warm import force succeeds")
             .as_int(),
         Ok(1)
     );
     assert_eq!(
-        eval.force_value(ir.root, Span::new(0, 0), a_thunk)
+        eval.force_admitted_value(ir.root, Span::new(0, 0), a_thunk)
             .expect("cached import force succeeds")
             .as_int(),
         Ok(1)
@@ -3397,7 +3520,7 @@ fn import_cache_hits_keep_force_cache_impure_edges() {
         attrs.get(a).expect("a exists")
     };
     let forced_changed = changed
-        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), changed_thunk)
         .expect("changed import-cache-backed force recomputes");
 
     assert_eq!(forced_changed.as_int(), Ok(2));
@@ -3446,13 +3569,13 @@ fn symlinked_import_cache_hits_skip_force_cache_hits() {
         )
     };
     assert_eq!(
-        eval.force_value(ir.root, Span::new(0, 0), warm_thunk)
+        eval.force_admitted_value(ir.root, Span::new(0, 0), warm_thunk)
             .expect("safe import force succeeds")
             .as_int(),
         Ok(1)
     );
     assert_eq!(
-        eval.force_value(ir.root, Span::new(0, 0), a_thunk)
+        eval.force_admitted_value(ir.root, Span::new(0, 0), a_thunk)
             .expect("symlinked import-cache hit succeeds")
             .as_int(),
         Ok(1)
@@ -3482,7 +3605,7 @@ fn symlinked_import_cache_hits_skip_force_cache_hits() {
         attrs.get(a).expect("a exists")
     };
     let forced_changed = changed
-        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), changed_thunk)
         .expect("retargeted symlink import-cache force recomputes");
 
     assert_eq!(forced_changed.as_int(), Ok(2));
@@ -3525,7 +3648,7 @@ fn symlinked_import_backed_inline_thunks_skip_force_cache_hits() {
         attrs.get(a).expect("a exists")
     };
     assert_eq!(
-        eval.force_value(ir.root, Span::new(0, 0), thunk)
+        eval.force_admitted_value(ir.root, Span::new(0, 0), thunk)
             .expect("symlinked import-backed force succeeds")
             .as_int(),
         Ok(1)
@@ -3555,7 +3678,7 @@ fn symlinked_import_backed_inline_thunks_skip_force_cache_hits() {
         attrs.get(a).expect("a exists")
     };
     let forced_changed = changed
-        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), changed_thunk)
         .expect("retargeted symlink import-backed force recomputes");
 
     assert_eq!(forced_changed.as_int(), Ok(2));
@@ -3600,7 +3723,7 @@ fn symlinked_import_parent_inline_thunks_skip_force_cache_hits() {
         attrs.get(a).expect("a exists")
     };
     assert_eq!(
-        eval.force_value(ir.root, Span::new(0, 0), thunk)
+        eval.force_admitted_value(ir.root, Span::new(0, 0), thunk)
             .expect("parent-symlinked import-backed force succeeds")
             .as_int(),
         Ok(1)
@@ -3630,7 +3753,7 @@ fn symlinked_import_parent_inline_thunks_skip_force_cache_hits() {
         attrs.get(a).expect("a exists")
     };
     let forced_changed = changed
-        .force_value(ir.root, Span::new(0, 0), changed_thunk)
+        .force_admitted_value(ir.root, Span::new(0, 0), changed_thunk)
         .expect("retargeted parent-symlinked import-backed force recomputes");
 
     assert_eq!(forced_changed.as_int(), Ok(2));
@@ -3669,7 +3792,7 @@ fn effectful_descendant_forced_inline_thunks_record_impure_edges() {
         attrs.get(a).expect("a exists")
     };
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("thunk force succeeds");
 
     assert_eq!(forced.as_int(), Ok(1));
@@ -3970,7 +4093,7 @@ fn ambient_current_time_forced_inline_thunks_record_uncacheable_trace_without_pa
         attrs.get(a).expect("a exists")
     };
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("thunk force succeeds");
 
     assert_eq!(forced.as_int(), Ok(1_700_000_000));
@@ -4220,7 +4343,7 @@ fn synthetic_builtin_attr_cold_force_records_demand_without_materializing() {
             .lookup_node_materialization_reuse(key)
             .expect("metadata lookup succeeds"),
         Some(MaterializationReuse::new(0, 2)),
-        "in-memory hits also record current-run demand"
+        "admitted recomputation also records current-run demand"
     );
     assert_eq!(
         persist
@@ -4483,7 +4606,7 @@ fn synthetic_builtin_attr_hits_persistent_current_system_with_empty_trace() {
         .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
         .expect("prior-run demand records");
     let forced = first
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("currentSystem force succeeds");
     assert_eq!(
         first
@@ -4760,6 +4883,7 @@ fn rejected_force_observation_clears_persistent_value_link() {
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     evaluator.observe_forced_inline_expression_result(
         Some(subject),
@@ -4833,6 +4957,7 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     PersistCache::open(&persist_root)
         .expect("persistent cache opens")
@@ -4927,7 +5052,7 @@ fn unprofitable_force_observation_skips_persistent_value_link_with_prior_demand(
         .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
         .expect("prior-run demand records");
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("currentSystem force succeeds");
     assert_eq!(
         evaluator
@@ -5004,6 +5129,7 @@ fn unsupported_force_payload_clears_persistent_value_link() {
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     evaluator.observe_forced_inline_expression_result(
         Some(subject),
@@ -5095,7 +5221,7 @@ fn disabled_eval_cache_skips_persistent_current_demand() {
         .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
         .expect("prior-run demand records");
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("currentSystem force succeeds");
     assert_eq!(
         evaluator
@@ -5186,7 +5312,7 @@ fn observation_only_current_time_skips_persistent_current_demand() {
     let key =
         PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("currentTime force succeeds");
     assert_eq!(forced.as_int(), Ok(1_700_000_000));
     drop(evaluator);
@@ -5713,7 +5839,7 @@ fn synthetic_builtin_attr_current_time_ignores_and_invalidates_stale_payload() {
     }
 
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("currentTime force succeeds");
     assert_eq!(forced.as_int(), Ok(1_700_000_000));
     assert_eq!(
@@ -5761,7 +5887,7 @@ fn search_path_forced_inline_thunks_wait_for_impure_input_edges() {
         attrs.get(a).expect("a exists")
     };
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("thunk force succeeds");
 
     assert_eq!(forced.as_bool(), Ok(true));
@@ -5867,7 +5993,7 @@ fn context_free_string_result_thunks_hit_after_heap_rehydration() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("string thunk force succeeds");
         let string = evaluator
             .heap()
@@ -5917,7 +6043,7 @@ fn context_string_result_thunks_hit_after_heap_rehydration() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("context string thunk force succeeds");
         let string = evaluator
             .heap()
@@ -5964,7 +6090,7 @@ fn path_result_thunks_hit_after_heap_rehydration() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("path thunk force succeeds");
         let path = evaluator
             .heap()
@@ -6011,7 +6137,7 @@ fn empty_list_result_thunks_hit_after_heap_rehydration() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("empty list thunk force succeeds");
         let list = evaluator
             .heap()
@@ -6057,7 +6183,7 @@ fn strict_list_result_thunks_hit_after_heap_rehydration() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("strict list thunk force succeeds");
         let list = evaluator
             .heap()
@@ -6109,7 +6235,7 @@ fn strict_list_result_thunks_with_heap_elements_hit_after_heap_rehydration() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("strict heap-backed list thunk force succeeds");
         let list = evaluator
             .heap()
@@ -6165,7 +6291,7 @@ fn non_empty_list_literals_with_lazy_elements_wait_for_element_payloads() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("lazy list thunk force succeeds");
         let list = evaluator
             .heap()
@@ -6207,7 +6333,7 @@ fn empty_attrset_result_thunks_hit_after_heap_rehydration() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("empty attrset thunk force succeeds");
         let attrs = evaluator
             .heap()
@@ -6243,6 +6369,7 @@ fn strict_attrset_payloads_rehydrate_after_heap_lookup() {
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
 
@@ -6303,6 +6430,7 @@ fn strict_attrset_payloads_skip_position_bearing_attrsets() {
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let mut evaluator =
@@ -6351,6 +6479,7 @@ fn strict_attrset_payloads_skip_noncanonical_source_order_attrsets() {
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let mut evaluator =
@@ -6411,7 +6540,7 @@ fn non_empty_attrset_literals_with_lazy_bindings_wait_for_binding_payloads() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("lazy attrset thunk force succeeds");
         let attrs = evaluator
             .heap()
@@ -6442,6 +6571,7 @@ fn context_path_payloads_rehydrate_after_heap_lookup() {
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let context = StringContext::singleton(
@@ -6506,7 +6636,7 @@ fn captured_context_free_let_string_thunks_use_free_variable_hashes() {
         attrs.get(a).expect("a exists")
     };
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("thunk force succeeds");
 
     assert_eq!(forced.as_bool(), Ok(true));
@@ -6550,11 +6680,11 @@ fn captured_context_free_string_thunks_use_free_variable_hashes() {
     };
 
     let first = evaluator
-        .force_value(ir.root, Span::new(0, 0), elements[0])
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[0])
         .expect("first captured string attr force succeeds");
     assert_eq!(first.as_bool(), Ok(true));
     let second = evaluator
-        .force_value(ir.root, Span::new(0, 0), elements[1])
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[1])
         .expect("second captured string attr force succeeds");
 
     assert_eq!(second.as_bool(), Ok(false));
@@ -6594,7 +6724,7 @@ fn captured_context_free_string_thunks_hit_when_hashes_match() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("captured string force succeeds");
         assert_eq!(forced.as_bool(), Ok(true));
         assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
@@ -6633,11 +6763,11 @@ fn captured_path_thunks_use_free_variable_hashes() {
     };
 
     let first = evaluator
-        .force_value(ir.root, Span::new(0, 0), elements[0])
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[0])
         .expect("first captured path attr force succeeds");
     assert_eq!(first.as_bool(), Ok(true));
     let second = evaluator
-        .force_value(ir.root, Span::new(0, 0), elements[1])
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[1])
         .expect("second captured path attr force succeeds");
 
     assert_eq!(second.as_bool(), Ok(false));
@@ -6677,7 +6807,7 @@ fn captured_path_thunks_hit_when_hashes_match() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("captured path force succeeds");
         assert_eq!(forced.as_bool(), Ok(true));
         assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
@@ -6716,11 +6846,11 @@ fn captured_string_and_path_values_do_not_share_free_variable_hashes() {
     };
 
     let first = evaluator
-        .force_value(ir.root, Span::new(0, 0), elements[0])
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[0])
         .expect("captured string attr force succeeds");
     assert_eq!(first.as_bool(), Ok(true));
     let second = evaluator
-        .force_value(ir.root, Span::new(0, 0), elements[1])
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[1])
         .expect("captured path attr force succeeds");
 
     assert_eq!(second.as_bool(), Ok(true));
@@ -6759,7 +6889,7 @@ fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
         attrs.get(a).expect("a exists")
     };
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("captured unsupported heap value force succeeds");
 
     assert_eq!(forced.as_bool(), Ok(true));
@@ -6793,7 +6923,7 @@ fn captured_empty_lists_use_free_variable_hashes() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("captured empty list force succeeds");
 
         assert_eq!(forced.as_bool(), Ok(true));
@@ -6829,12 +6959,109 @@ fn captured_replayable_lists_hit_when_hashes_match() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("captured list force succeeds");
 
         assert_eq!(forced.as_bool(), Ok(true));
         assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
     }
+}
+
+#[test]
+fn captured_free_variable_thunks_admit_on_first_raw_force() {
+    let source = r#"let f = x: { a = x == "value"; }; in { a = (f "value").a; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-first-demand.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured attr force succeeds");
+
+    assert_eq!(forced.as_bool(), Ok(true));
+    assert_eq!(
+        evaluator.stats().force_cache_memoization_bypasses(),
+        0,
+        "captured free-variable subjects should not need helper pre-admission"
+    );
+    assert!(
+        evaluator.stats().force_cache_memoization_admits() > 0,
+        "captured free-variable subjects should admit on first raw force"
+    );
+    assert!(
+        evaluator.stats().force_cache_misses() > 0,
+        "first raw force should probe and populate the selected captured subject"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        !runtime.cache().expect("cache is enabled").is_empty(),
+        "first raw force should allocate a captured expression node"
+    );
+}
+
+#[test]
+fn closed_composite_literal_thunks_admit_on_first_raw_force() {
+    let source = "{ a = [ 1 true null ]; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "composite-first-demand.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("composite literal force succeeds");
+
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_list(forced)
+            .expect("forced value is a list")
+            .len(),
+        3
+    );
+    assert_eq!(evaluator.stats().force_cache_memoization_bypasses(), 0);
+    assert_eq!(
+        evaluator.stats().force_cache_memoization_admits(),
+        1,
+        "closed replayable composite literals should admit on first raw force"
+    );
+    assert_eq!(evaluator.stats().force_cache_misses(), 1);
+    assert_eq!(evaluator.stats().force_cache_probes(), 1);
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "first raw force should allocate the closed composite expression node"
+    );
 }
 
 #[test]
@@ -6865,11 +7092,11 @@ in [ (f [ 1 ]).a (f [ 2 ]).a ]
     };
 
     let first = evaluator
-        .force_value(ir.root, Span::new(0, 0), elements[0])
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[0])
         .expect("first captured list attr force succeeds");
     assert_eq!(first.as_bool(), Ok(true));
     let second = evaluator
-        .force_value(ir.root, Span::new(0, 0), elements[1])
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[1])
         .expect("second captured list attr force succeeds");
 
     assert_eq!(second.as_bool(), Ok(false));
@@ -6908,7 +7135,7 @@ fn captured_empty_attrsets_use_free_variable_hashes() {
             attrs.get(a).expect("a exists")
         };
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("captured empty attrset force succeeds");
 
         assert_eq!(forced.as_bool(), Ok(true));
@@ -6934,6 +7161,7 @@ fn materialized_replayable_attrset_capture_hashes_key_runtime_payloads() {
         impure_observation_identity: Some(identity),
         metadata_identity: Some(identity),
         free_var_value_hashes: vec![hash],
+        memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
 
@@ -7075,7 +7303,7 @@ fn materialized_non_empty_lists_are_free_variable_hashable() {
 }
 
 #[test]
-fn suspended_thunk_cells_are_not_free_variable_hashable_yet() {
+fn suspended_computed_thunk_cells_are_not_free_variable_hashable() {
     let ir = lower("{ a = 1 + 2; }");
     let a = symbol_for(&ir, b"a");
     let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
@@ -7106,6 +7334,41 @@ fn suspended_thunk_cells_are_not_free_variable_hashable_yet() {
 }
 
 #[test]
+fn suspended_closed_literal_thunk_cells_are_free_variable_hashable_without_forcing() {
+    let ir = lower("{ a = [ 1 true null ]; }");
+    let a = symbol_for(&ir, b"a");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let thunk = evaluator
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a is a thunk");
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+
+    assert!(
+        evaluator
+            .force_cache_free_var_value_hash(thunk_value)
+            .is_some()
+    );
+    let thunk = evaluator
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a is still a thunk");
+    assert_eq!(
+        thunk.cell().state(),
+        Ok(ThunkState::Suspended),
+        "hashing a suspended closed literal thunk cell must not force it"
+    );
+}
+
+#[test]
 fn fulfilled_thunk_cells_use_cached_free_variable_hashes() {
     let ir = lower("{ a = 1 + 2; }");
     let a = symbol_for(&ir, b"a");
@@ -7119,7 +7382,7 @@ fn fulfilled_thunk_cells_use_cached_free_variable_hashes() {
         attrs.get(a).expect("a exists")
     };
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("thunk force succeeds");
     assert_eq!(forced.as_int(), Ok(3));
 
@@ -7143,7 +7406,7 @@ fn fulfilled_replayable_attrset_thunk_cells_use_cached_free_variable_hashes() {
         attrs.get(a).expect("a exists")
     };
     let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("thunk force succeeds");
     assert_eq!(forced.tag(), ValueTag::Attrs);
 
@@ -7299,7 +7562,7 @@ fn captured_preforced_computed_context_bearing_string_thunks_use_materialized_ca
         };
         let hits_before = evaluator.stats().cache_hits();
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("captured context-bearing string force succeeds");
 
         assert_eq!(forced.as_bool(), Ok(true));
@@ -7336,11 +7599,11 @@ fn lowered_captured_inline_forced_thunks_use_free_variable_hashes() {
     };
 
     let first = evaluator
-        .force_value(ir.root, Span::new(0, 0), elements[0])
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[0])
         .expect("first captured attr force succeeds");
     assert_eq!(first.as_int(), Ok(3));
     let second = evaluator
-        .force_value(ir.root, Span::new(0, 0), elements[1])
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[1])
         .expect("second captured attr force succeeds");
 
     assert_eq!(second.as_int(), Ok(7));
@@ -7377,11 +7640,11 @@ fn source_less_lowered_captured_inline_forced_thunks_use_free_variable_hashes() 
     };
 
     let first = evaluator
-        .force_value(ir.root, Span::new(0, 0), elements[0])
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[0])
         .expect("first captured attr force succeeds");
     assert_eq!(first.as_int(), Ok(3));
     let second = evaluator
-        .force_value(ir.root, Span::new(0, 0), elements[1])
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[1])
         .expect("second captured attr force succeeds");
 
     assert_eq!(second.as_int(), Ok(7));
@@ -7474,7 +7737,7 @@ fn captured_inline_forced_thunks_hit_when_free_variable_hashes_match() {
         );
         let root = evaluator.eval_root().expect("manual let yields a thunk");
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 23), root)
+            .force_admitted_value(ir.root, Span::new(0, 23), root)
             .expect("manual captured thunk force succeeds");
         assert_eq!(forced.as_int(), Ok(3));
         assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
@@ -7503,7 +7766,7 @@ fn captured_inline_forced_thunks_include_free_variable_hashes_in_cache_key() {
         );
         let root = evaluator.eval_root().expect("manual let yields a thunk");
         let forced = evaluator
-            .force_value(ir.root, Span::new(0, 23), root)
+            .force_admitted_value(ir.root, Span::new(0, 23), root)
             .expect("manual captured thunk force succeeds");
         assert_eq!(forced.as_int(), Ok(expected));
         assert_eq!(

@@ -1128,7 +1128,7 @@ fn persistent_effectful_force_cache_hit_preserves_drv_surfaces() {
     assert_eq!(first.trace, expected_trace);
     assert_eq!(first.cache_hits, 0);
     assert_eq!(first.force_cache_hits, 0);
-    assert_eq!(first.force_cache_misses, 1);
+    assert_eq!(first.force_cache_misses, 0);
 
     let mut materialize_options = TreeWalkOptions::with_eval_cache_enabled(true);
     materialize_options
@@ -1259,7 +1259,7 @@ fn persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces() {
     assert_eq!(first.trace, present_trace);
     assert_eq!(first.cache_hits, 0);
     assert_eq!(first.force_cache_hits, 0);
-    assert_eq!(first.force_cache_misses, 1);
+    assert_eq!(first.force_cache_misses, 0);
 
     let mut materialize_options = TreeWalkOptions::with_eval_cache_enabled(true);
     materialize_options

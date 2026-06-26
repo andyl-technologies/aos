@@ -501,6 +501,18 @@ struct ForceCacheOptionsIdentity {
     eval_mode: EvalMode,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ForceCacheMemoizationAdmission {
+    ConditionalThunk,
+    SelectedSubstrate,
+}
+
+impl ForceCacheMemoizationAdmission {
+    const fn admits_on_first_demand(self) -> bool {
+        matches!(self, Self::SelectedSubstrate)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ForceCacheSubject {
     lookup_identity: Option<CacheExprIdentity>,
@@ -508,6 +520,7 @@ struct ForceCacheSubject {
     impure_observation_identity: Option<CacheExprIdentity>,
     metadata_identity: Option<CacheExprIdentity>,
     free_var_value_hashes: Vec<DurableBlake3Hash>,
+    memoization_admission: ForceCacheMemoizationAdmission,
 }
 
 #[derive(Clone, Debug)]
