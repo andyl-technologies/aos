@@ -1405,6 +1405,17 @@ alone (`M-1`/`Q-A`).
       multi-process writers, two-machine races, durable filesystem locks/CAS,
       LMDB/redb node tables, automatic GC/repack, and loom/harness proof remain
       open (`C-13`/`R-4`/`S-14`).
+- [x] Current same-process same-root node-trace writer lock precursor:
+      independently opened `PersistCache` handles in one process acquire their
+      node-trace write mutex from the same process-local weak root-lock
+      registry, so trace appends and trace-log compaction serialize for a live
+      canonical cache root. Concurrent same-root trace appends keep every
+      complete record readable, and a poisoned live trace lock is reported
+      before any log write. Raw lower-level `PersistNodeTraceLog` users,
+      different roots, multi-process writers, two-machine races, durable
+      filesystem locks/CAS, LMDB/redb node tables, transactionality with
+      metadata/value blobs, automatic GC/repack, and loom/harness proof remain
+      open (`C-13`/`R-4`/`S-14`).
 - [x] Current explicit fixed-record sidecar compaction substrate:
       `PersistBlobIndex`, `PersistFileArtifactIndex`, and
       `PersistParseArtifactIndex` now expose `latest_entries` and
@@ -1709,12 +1720,13 @@ alone (`M-1`/`Q-A`).
       returns the newest record for a node key through linear lookup.
       `PersistCache::record_node_trace`, `record_node_trace_tombstone`, and
       `lookup_node_trace` expose the sidecar through the opened cache root.
+      Same-process same-root cache-level appends share the trace write lock.
       This schema-version-4 log is a simple append-only substrate only;
       LMDB/redb node tables, transactionality with node metadata or value
       blobs, automatic evaluator writeback beyond the force-cache bridge below,
       durable hit selection, revalidation, currentTime taint propagation through
-      persisted dependents, automatic compaction/GC policy, mmap reads, and
-      cached/uncached harness proof remain open
+      persisted dependents, cross-process writer coordination, automatic
+      compaction/GC policy, mmap reads, and cached/uncached harness proof remain open
       (`C-13`/`R-10`/`S-14`).
 - [x] Current explicit node trace-log compaction substrate:
       `PersistNodeTraceLog::latest_entries` scans the append-only
@@ -1722,9 +1734,10 @@ alone (`M-1`/`Q-A`).
       tombstones when they are newest; `compact_latest_entries` rewrites those
       newest entries in stable key order through a temporary log and rename;
       and `PersistCache::compact_node_traces` exposes the operation at cache
-      level. This is an explicit caller-driven maintenance primitive only;
+      level. This is an explicit caller-driven maintenance primitive with
+      same-process same-root writers serialized by the trace write lock;
       automatic compaction/GC policy, LMDB/redb node table, transactionality
-      with metadata/value blobs, concurrent writer coordination, mmap reads,
+      with metadata/value blobs, cross-process writer coordination, mmap reads,
       and cached/uncached harness proof remain open (`C-13`/`R-10`/`S-14`).
 - [x] Current explicit all-sidecar compaction adapter:
       `PersistCache::compact_sidecars` runs the current value/file blob-index,
@@ -1734,7 +1747,7 @@ alone (`M-1`/`Q-A`).
       `PersistCompactionError` preserving the failing sidecar type. This is a
       caller-driven maintenance helper only; it is sequential rather than
       transactional, requires callers to serialize sidecar writes outside the
-      current node-metadata same-root lock, does not rewrite blob packs or drop
+      current node same-root locks, does not rewrite blob packs or drop
       unreferenced blobs, and still leaves automatic compaction/GC policy,
       cross-process writer coordination, LMDB/redb indexes, pack GC/repack,
       mmap reads, Attic transport, and cached/uncached harness proof open

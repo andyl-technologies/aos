@@ -1572,6 +1572,96 @@ fn cache_node_trace_log_records_and_looks_up_payloads() {
 }
 
 #[test]
+fn cache_node_trace_log_serializes_independently_opened_same_root_handles() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let workers = 16usize;
+    let barrier = Arc::new(Barrier::new(workers));
+    let mut handles = Vec::new();
+
+    for worker in 0..workers {
+        let worker_cache = PersistCache::open(&root).expect("worker cache opens");
+        let worker_barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            let subject = format!("input-{worker}");
+            let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(
+                subject.as_bytes(),
+            ));
+            let value_subject = format!("value-{worker}");
+            let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(
+                value_subject.as_bytes(),
+            ));
+            let payload = test_node_trace_payload(subject.as_bytes(), worker as u8);
+
+            worker_barrier.wait();
+            worker_cache
+                .record_node_trace(key, value_hash, &payload)
+                .expect("node trace records");
+            (key, value_hash, payload)
+        }));
+    }
+
+    let mut recorded = Vec::new();
+    for handle in handles {
+        recorded.push(handle.join().expect("worker should not panic"));
+    }
+
+    for (key, value_hash, payload) in &recorded {
+        assert_eq!(
+            cache
+                .lookup_node_trace(*key)
+                .expect("node trace lookup succeeds"),
+            Some(PersistNodeTraceLogEntry::new(
+                *key,
+                *value_hash,
+                payload.clone()
+            ))
+        );
+    }
+    assert_eq!(
+        cache
+            .node_trace_log()
+            .latest_entries()
+            .expect("latest trace entries")
+            .len(),
+        workers
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_node_trace_log_reports_poisoned_same_root_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = PersistCache::open(&root).expect("second cache opens");
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_node_traces_for_tests()
+            .expect("node trace lock acquires");
+        panic!("poison persistent node trace write lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+    let payload = test_node_trace_payload(b"input", 1);
+    let error = cache
+        .record_node_trace(key, value_hash, &payload)
+        .expect_err("poisoned same-root trace lock should reject writes");
+
+    assert!(matches!(error, PersistNodeTraceLogError::WriteLockPoisoned));
+    assert_eq!(
+        fs::metadata(cache.node_trace_log().path())
+            .expect("node trace log metadata")
+            .len(),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_storage_maintenance_compacts_sidecars_rebuilds_indexes_and_trims_tails() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

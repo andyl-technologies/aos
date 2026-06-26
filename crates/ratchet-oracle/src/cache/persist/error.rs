@@ -350,6 +350,9 @@ pub enum PersistNodeTraceLogFormatError {
 /// Variable-length node trace log IO failed.
 #[derive(Debug, Error)]
 pub enum PersistNodeTraceLogError {
+    /// The in-process node trace write lock was poisoned by a prior panic.
+    #[error("persistent node trace write lock was poisoned")]
+    WriteLockPoisoned,
     /// The log parent directory could not be created.
     #[error("failed to create persistent node trace log parent {path:?}")]
     CreateParent {

@@ -27,6 +27,7 @@ struct PersistRootLocks {
     values: Mutex<()>,
     files: Mutex<()>,
     node_metadata: Mutex<()>,
+    node_traces: Mutex<()>,
 }
 
 impl PersistRootLocks {
@@ -36,6 +37,7 @@ impl PersistRootLocks {
             values: Mutex::new(()),
             files: Mutex::new(()),
             node_metadata: Mutex::new(()),
+            node_traces: Mutex::new(()),
         }
     }
 
@@ -61,6 +63,12 @@ impl PersistRootLocks {
         self.node_metadata
             .lock()
             .map_err(|_| PersistNodeMetadataIndexError::WriteLockPoisoned)
+    }
+
+    fn lock_node_traces(&self) -> Result<MutexGuard<'_, ()>, PersistNodeTraceLogError> {
+        self.node_traces
+            .lock()
+            .map_err(|_| PersistNodeTraceLogError::WriteLockPoisoned)
     }
 }
 
@@ -532,6 +540,13 @@ impl PersistCache {
         self.root_locks.lock_node_metadata()
     }
 
+    #[cfg(test)]
+    pub(super) fn lock_node_traces_for_tests(
+        &self,
+    ) -> Result<MutexGuard<'_, ()>, PersistNodeTraceLogError> {
+        self.root_locks.lock_node_traces()
+    }
+
     /// Compacts every current append-only sidecar to its newest entries.
     ///
     /// This explicit maintenance operation rewrites the value and file blob
@@ -840,22 +855,24 @@ impl PersistCache {
 
     /// Appends a durable verifying-trace payload for one materialized demand node.
     ///
-    /// The trace log is append-only and newest-record-wins on lookup. This
-    /// fixed-file sidecar has no cross-process write lock; callers must
-    /// serialize concurrent writes to the same log. The caller supplies the
-    /// materialized value hash so future hit selection can reject stale
-    /// trace/value pairings.
+    /// The trace log is append-only and newest-record-wins on lookup.
+    /// Same-process writers opened on the same cache root share a trace write
+    /// lock while appending. Cross-process writers must still be excluded by
+    /// the caller. The caller supplies the materialized value hash so future
+    /// hit selection can reject stale trace/value pairings.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeTraceLogError`] if the trace log cannot be opened,
-    /// validated, written, flushed, or decoded during validation.
+    /// Returns [`PersistNodeTraceLogError`] if the same-root trace write lock
+    /// is poisoned or if the trace log cannot be opened, validated, written,
+    /// flushed, or decoded during validation.
     pub fn record_node_trace(
         &self,
         key: PersistNodeMetadataKey,
         value_hash: ValueHash,
         payload: &PersistNodeTracePayload,
     ) -> Result<(), PersistNodeTraceLogError> {
+        let _write_guard = self.root_locks.lock_node_traces()?;
         self.node_trace_log.append_trace(key, value_hash, payload)
     }
 
@@ -867,8 +884,9 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeTraceLogError`] if the trace log cannot be opened,
-    /// validated, written, flushed, or decoded during validation.
+    /// Returns [`PersistNodeTraceLogError`] if the same-root trace write lock
+    /// is poisoned or if the trace log cannot be opened, validated, written,
+    /// flushed, or decoded during validation.
     pub fn record_node_trace_tombstone(
         &self,
         key: PersistNodeMetadataKey,
@@ -896,15 +914,17 @@ impl PersistCache {
 
     /// Compacts node traces to the newest record for every known demand node.
     ///
-    /// This delegates to [`PersistNodeTraceLog::compact_latest_entries`].
-    /// Callers must serialize writes to the node trace sidecar while this
-    /// method runs.
+    /// Same-process writers opened on the same cache root share a trace write
+    /// lock while this method rewrites the log. Cross-process writers must
+    /// still be excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeTraceLogError`] if the trace log cannot be opened,
-    /// read, decoded, written, flushed, or renamed into place.
+    /// Returns [`PersistNodeTraceLogError`] if the same-root trace write lock
+    /// is poisoned or if the trace log cannot be opened, read, decoded,
+    /// written, flushed, or renamed into place.
     pub fn compact_node_traces(&self) -> Result<usize, PersistNodeTraceLogError> {
+        let _write_guard = self.root_locks.lock_node_traces()?;
         self.node_trace_log.compact_latest_entries()
     }
 

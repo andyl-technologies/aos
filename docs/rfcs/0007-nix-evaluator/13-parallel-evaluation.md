@@ -777,6 +777,15 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       locking/CAS, the final LMDB/redb node table, work-stealing integration, or
       loom/Miri audit (§4.3, [12](12-incremental-evaluation-cache.md) §6.5) —
       **P3.5** precursor, `R-4`/`S-14`.
+- [x] Current same-root persistent node-trace writer lock precursor:
+      independently opened `PersistCache` handles in one process now serialize
+      trace-log appends and compaction through a process-local mutex keyed by
+      the canonical cache root, so concurrent same-root appends preserve
+      complete trace records and poisoned live trace locks fail before writing
+      the log. This is same-process log coordination only, not cross-process
+      locking/CAS, the final LMDB/redb node table, work-stealing integration, or
+      loom/Miri audit (§4.3, [12](12-incremental-evaluation-cache.md) §6.5) —
+      **P3.5** precursor, `R-4`/`S-14`.
 - [ ] Read-mostly concurrent shared tables with idempotent insert-or-get: lock-free append-only symbol interner, hash-cons table, and the incremental cache as a concurrent content-addressed map — races converge, never diverge (§4.3) — **P3.5**, `C-12`; the hash-cons table is the `S-7`/`P2` substrate.
 - [ ] Output-determinism guarantees under nondeterministic scheduling: order-independent string-context union, sorted `.drv` output collection, content-only SHA-256 hashing, deterministic-iteration attrsets (§4.4) — **P3.5**, `C-12`/`S-13`; differential `.drv` harness asserts identical output across thread counts `{1, 2, 8, N}`.
 
