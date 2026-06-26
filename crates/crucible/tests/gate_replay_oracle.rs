@@ -11,9 +11,11 @@ use crucible::{
     RngStreamId, ScenarioDef, Schedule, State, VirtualTime, reduce, step,
 };
 use crucible_harness::replay_oracle::{
-    ReplayOracleCheckpointKind, ReplayOracleMaterializedCase, ReplayOracleMismatch,
-    ReplayOracleSamplingConfig, ReplayOracleSearchMaterialization, ReplayOracleSearchSamplingError,
-    check_materialized_replay_oracle, check_sampled_search_replay_oracle,
+    ReplayOracleArtifactRun, ReplayOracleBuildIdentity, ReplayOracleCheckpointKind,
+    ReplayOracleMaterializedCase, ReplayOracleMismatch, ReplayOracleReproductionArtifact,
+    ReplayOracleRoundTripError, ReplayOracleSamplingConfig, ReplayOracleSearchMaterialization,
+    ReplayOracleSearchSamplingError, check_materialized_replay_oracle,
+    check_replay_oracle_reproduction_artifact_round_trip, check_sampled_search_replay_oracle,
 };
 
 struct SimDouble;
@@ -187,6 +189,144 @@ fn gate_replay_oracle_sampled_mismatch_requests_bisection() -> Result<(), Box<dy
     Ok(())
 }
 
+#[test]
+fn gate_replay_oracle_reproduction_artifact_round_trips() -> Result<(), Box<dyn Error>> {
+    let artifact = representative_replay_oracle_reproduction_artifact()?;
+    let report = check_replay_oracle_reproduction_artifact_round_trip(
+        &artifact,
+        &simdouble_replay_build_identity(),
+        replay_reproduction_artifact,
+    )?;
+
+    assert_eq!(report.seed, 0x0010_0027);
+    assert_eq!(report.expected.fingerprint, report.reproduced.fingerprint);
+    assert_eq!(report.expected.oracle_case, report.reproduced.oracle_case);
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_reproduction_artifact_rejects_build_identity_drift()
+-> Result<(), Box<dyn Error>> {
+    let mut artifact = representative_replay_oracle_reproduction_artifact()?;
+    artifact.build_identity.backend_build_id = String::from("wrong-build");
+
+    let error = match check_replay_oracle_reproduction_artifact_round_trip(
+        &artifact,
+        &simdouble_replay_build_identity(),
+        replay_reproduction_artifact,
+    ) {
+        Ok(_) => panic!("build identity drift should fail artifact replay"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ReplayOracleRoundTripError::BuildIdentityMismatch { .. }
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_reproduction_artifact_detects_schedule_drift() -> Result<(), Box<dyn Error>> {
+    let mut artifact = representative_replay_oracle_reproduction_artifact()?;
+    artifact.schedule = artifact.schedule.appended(Decision::RngDraw(RngDecision {
+        stream: RngStreamId {
+            name: String::from("artifact/drift"),
+        },
+        value: 0xdead_beef,
+    }));
+
+    let error = match check_replay_oracle_reproduction_artifact_round_trip(
+        &artifact,
+        &simdouble_replay_build_identity(),
+        replay_reproduction_artifact,
+    ) {
+        Ok(_) => panic!("schedule drift should change the reproduced fingerprint"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ReplayOracleRoundTripError::FingerprintMismatch { .. }
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_reproduction_artifact_detects_seed_drift() -> Result<(), Box<dyn Error>> {
+    let mut artifact = representative_replay_oracle_reproduction_artifact()?;
+    artifact.seed = 0x0010_0028;
+
+    let error = match check_replay_oracle_reproduction_artifact_round_trip(
+        &artifact,
+        &simdouble_replay_build_identity(),
+        replay_reproduction_artifact,
+    ) {
+        Ok(_) => panic!("seed drift should change the reproduced fingerprint"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ReplayOracleRoundTripError::FingerprintMismatch { .. }
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_reproduction_artifact_detects_scenario_drift() -> Result<(), Box<dyn Error>> {
+    let mut artifact = representative_replay_oracle_reproduction_artifact()?;
+    artifact.scenario = ScenarioDef::from_canonical_material(
+        "crucible.test.replay-oracle.artifact",
+        "nodes=artifact-a,artifact-b,artifact-c\nseed=mutated",
+    );
+
+    let error = match check_replay_oracle_reproduction_artifact_round_trip(
+        &artifact,
+        &simdouble_replay_build_identity(),
+        replay_reproduction_artifact,
+    ) {
+        Ok(_) => panic!("scenario drift should change the reproduced fingerprint"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ReplayOracleRoundTripError::FingerprintMismatch { .. }
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn gate_replay_oracle_reproduction_artifact_detects_oracle_case_drift() -> Result<(), Box<dyn Error>>
+{
+    let artifact = representative_replay_oracle_reproduction_artifact()?;
+    let error = match check_replay_oracle_reproduction_artifact_round_trip(
+        &artifact,
+        &simdouble_replay_build_identity(),
+        |artifact| {
+            let mut run = replay_reproduction_artifact(artifact)?;
+            run.oracle_case.checkpoint_id = String::from("artifact-cp-replayed");
+            Ok::<_, Box<dyn Error>>(run)
+        },
+    ) {
+        Ok(_) => panic!("oracle case drift should fail artifact replay"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ReplayOracleRoundTripError::OracleCaseMismatch { .. }
+    ));
+
+    Ok(())
+}
+
 fn assert_replay_oracle_fixed_checkpoint_corpus()
 -> Result<Vec<ReplayOracleMaterializedCase>, Box<dyn Error>> {
     let scenario =
@@ -244,6 +384,109 @@ fn assert_replay_oracle_fixed_checkpoint_corpus()
     }
 
     Ok(cases)
+}
+
+fn representative_replay_oracle_reproduction_artifact()
+-> Result<ReplayOracleReproductionArtifact<ScenarioDef, Schedule>, Box<dyn Error>> {
+    let seed = 0x0010_0027;
+    let scenario = ScenarioDef::from_canonical_material(
+        "crucible.test.replay-oracle.artifact",
+        &format!("nodes=artifact-a,artifact-b\nseed={seed}"),
+    );
+    let schedule = Schedule::empty()
+        .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime { ticks: 3 },
+            order: vec![EventKey { sequence: 10 }, EventKey { sequence: 11 }],
+        }))
+        .appended(Decision::FaultFires(FaultDecision {
+            at: VirtualTime { ticks: 8 },
+            fault: FaultId {
+                name: String::from("artifact/link-drop"),
+            },
+            fired: true,
+        }))
+        .appended(Decision::AppRandom(AppRandomDecision {
+            node: NodeId {
+                name: String::from("artifact-a"),
+            },
+            stream: RngStreamId {
+                name: String::from("artifact/request"),
+            },
+            request_id: 27,
+            width: 64,
+            value: 0xfeed_0010_0027,
+        }));
+    let configuration = Configuration {
+        def: scenario.clone(),
+        schedule: schedule.clone(),
+    };
+    let genesis = Configuration::genesis(scenario.clone());
+    let double = SimDouble;
+    let materialized =
+        double.materialize_fat_checkpoint(String::from("artifact-cp"), &genesis, &configuration)?;
+
+    Ok(ReplayOracleReproductionArtifact {
+        seed,
+        scenario,
+        schedule,
+        build_identity: simdouble_replay_build_identity(),
+        expected: ReplayOracleArtifactRun {
+            fingerprint: replay_oracle_artifact_fingerprint(
+                seed,
+                &configuration.def,
+                &configuration.schedule,
+            )?,
+            oracle_case: double.replay_case(&materialized)?,
+        },
+    })
+}
+
+fn replay_reproduction_artifact(
+    artifact: &ReplayOracleReproductionArtifact<ScenarioDef, Schedule>,
+) -> Result<ReplayOracleArtifactRun, Box<dyn Error>> {
+    let genesis = Configuration::genesis(artifact.scenario.clone());
+    let configuration = Configuration {
+        def: artifact.scenario.clone(),
+        schedule: artifact.schedule.clone(),
+    };
+    let double = SimDouble;
+    let materialized =
+        double.materialize_fat_checkpoint(String::from("artifact-cp"), &genesis, &configuration)?;
+
+    Ok(ReplayOracleArtifactRun {
+        fingerprint: replay_oracle_artifact_fingerprint(
+            artifact.seed,
+            &artifact.scenario,
+            &artifact.schedule,
+        )?,
+        oracle_case: double.replay_case(&materialized)?,
+    })
+}
+
+fn simdouble_replay_build_identity() -> ReplayOracleBuildIdentity {
+    ReplayOracleBuildIdentity {
+        harness_abi: String::from("crucible-replay-oracle-artifact-v1"),
+        backend: String::from("SimDouble"),
+        backend_build_id: String::from("crucible-model-test-double-v1"),
+    }
+}
+
+fn replay_oracle_artifact_fingerprint(
+    seed: u64,
+    scenario: &ScenarioDef,
+    schedule: &Schedule,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let state = reduce(scenario, schedule)?;
+    let material = format!(
+        "seed={seed}\nscenario={}\nschedule={}\nstate={}\n",
+        hash_hex(scenario.id),
+        hash_hex(schedule.content_hash()),
+        hash_hex(state.id)
+    );
+    Ok(hash_bytes(ContentHash::from_canonical_material(
+        "crucible.test.replay-oracle.artifact-fingerprint",
+        &material,
+    )))
 }
 
 fn assert_replay_oracle_in_search_sampling(

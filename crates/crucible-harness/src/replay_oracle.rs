@@ -65,6 +65,54 @@ pub struct ReplayOracleMaterializedCase {
     pub thin_hash: Vec<u8>,
 }
 
+/// Build identity pinned into a replay-oracle reproduction artifact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayOracleBuildIdentity {
+    /// Harness ABI or artifact schema version.
+    pub harness_abi: String,
+    /// Backend family that produced the artifact.
+    pub backend: String,
+    /// Deterministic backend build identifier.
+    pub backend_build_id: String,
+}
+
+/// Fingerprint and oracle output produced by one artifact replay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayOracleArtifactRun {
+    /// Final deterministic fingerprint bytes for the replayed configuration.
+    pub fingerprint: Vec<u8>,
+    /// Materialized fat-vs-thin oracle case for the replayed checkpoint.
+    pub oracle_case: ReplayOracleMaterializedCase,
+}
+
+/// A self-contained replay-oracle reproduction artifact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayOracleReproductionArtifact<Scenario, Schedule> {
+    /// Deterministic campaign seed.
+    pub seed: u64,
+    /// Backend-specific scenario definition.
+    pub scenario: Scenario,
+    /// Recorded backend-specific schedule.
+    pub schedule: Schedule,
+    /// Pinned build identity.
+    pub build_identity: ReplayOracleBuildIdentity,
+    /// Expected run output recorded when the artifact was produced.
+    pub expected: ReplayOracleArtifactRun,
+}
+
+/// A successful replay-oracle artifact round-trip report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayOracleRoundTripReport {
+    /// Deterministic campaign seed that was replayed.
+    pub seed: u64,
+    /// Pinned build identity accepted for replay.
+    pub build_identity: ReplayOracleBuildIdentity,
+    /// Expected run output recorded in the artifact.
+    pub expected: ReplayOracleArtifactRun,
+    /// Run output reproduced from the artifact.
+    pub reproduced: ReplayOracleArtifactRun,
+}
+
 /// The first replay-oracle mismatch in a corpus.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayOracleMismatch {
@@ -270,6 +318,47 @@ pub struct ReplayOracleSearchSamplingReport {
     pub sampled_checkpoints: Vec<String>,
 }
 
+/// A replay-oracle reproduction artifact failed to round-trip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplayOracleRoundTripError {
+    /// The reproduction artifact was produced by a different build identity.
+    BuildIdentityMismatch {
+        /// Expected build identity.
+        expected: ReplayOracleBuildIdentity,
+        /// Build identity in the artifact.
+        actual: ReplayOracleBuildIdentity,
+    },
+    /// Replaying from the artifact failed before producing comparison outputs.
+    ReplayFailed {
+        /// Human-readable replay failure.
+        reason: String,
+    },
+    /// The oracle case recorded in the artifact is internally inconsistent.
+    ExpectedOracleMismatch {
+        /// First replay-oracle mismatch from the recorded case.
+        mismatch: ReplayOracleMismatch,
+    },
+    /// The oracle case reproduced from the artifact is internally inconsistent.
+    ReproducedOracleMismatch {
+        /// First replay-oracle mismatch from the reproduced case.
+        mismatch: ReplayOracleMismatch,
+    },
+    /// The reproduced fingerprint differs from the artifact fingerprint.
+    FingerprintMismatch {
+        /// Fingerprint bytes recorded in the artifact.
+        expected: Vec<u8>,
+        /// Fingerprint bytes reproduced from the artifact.
+        reproduced: Vec<u8>,
+    },
+    /// The reproduced oracle case differs from the artifact oracle case.
+    OracleCaseMismatch {
+        /// Oracle case recorded in the artifact.
+        expected: Box<ReplayOracleMaterializedCase>,
+        /// Oracle case reproduced from the artifact.
+        reproduced: Box<ReplayOracleMaterializedCase>,
+    },
+}
+
 /// A failed in-search replay-oracle sampling run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReplayOracleSearchSamplingError {
@@ -300,6 +389,59 @@ pub enum ReplayOracleSearchBisectionError {
         /// Diagnostic payload for the failed localization.
         failure: Box<ReplayOracleSearchLocalizationFailure>,
     },
+}
+
+impl fmt::Display for ReplayOracleRoundTripError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BuildIdentityMismatch { expected, actual } => write!(
+                formatter,
+                "replay-oracle artifact build identity mismatch: expected {:?}, got {:?}",
+                expected, actual
+            ),
+            Self::ReplayFailed { reason } => {
+                write!(formatter, "replay-oracle artifact replay failed: {reason}")
+            }
+            Self::ExpectedOracleMismatch { mismatch } => write!(
+                formatter,
+                "replay-oracle artifact recorded an inconsistent oracle case: {mismatch}"
+            ),
+            Self::ReproducedOracleMismatch { mismatch } => write!(
+                formatter,
+                "replay-oracle artifact reproduced an inconsistent oracle case: {mismatch}"
+            ),
+            Self::FingerprintMismatch {
+                expected,
+                reproduced,
+            } => write!(
+                formatter,
+                "replay-oracle artifact fingerprint mismatch: expected {} reproduced {}",
+                hex_bytes(expected),
+                hex_bytes(reproduced)
+            ),
+            Self::OracleCaseMismatch {
+                expected,
+                reproduced,
+            } => write!(
+                formatter,
+                "replay-oracle artifact oracle case mismatch: expected checkpoint `{}` reproduced checkpoint `{}`",
+                expected.checkpoint_id, reproduced.checkpoint_id
+            ),
+        }
+    }
+}
+
+impl Error for ReplayOracleRoundTripError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ExpectedOracleMismatch { mismatch }
+            | Self::ReproducedOracleMismatch { mismatch } => Some(mismatch),
+            Self::BuildIdentityMismatch { .. }
+            | Self::ReplayFailed { .. }
+            | Self::FingerprintMismatch { .. }
+            | Self::OracleCaseMismatch { .. } => None,
+        }
+    }
 }
 
 impl fmt::Display for ReplayOracleSearchSamplingError {
@@ -464,6 +606,74 @@ pub fn check_materialized_replay_oracle(
         }
     }
     Ok(())
+}
+
+/// Replays an artifact and checks fingerprint and oracle equality.
+///
+/// The artifact is accepted only when its build identity matches the expected
+/// identity, the recorded oracle case is valid, the reproduced oracle case is
+/// valid, and the reproduced fingerprint and oracle case exactly match the
+/// values recorded in the artifact.
+///
+/// # Errors
+///
+/// Returns [`ReplayOracleRoundTripError`] when the build identity drifts, replay
+/// fails, either oracle case is internally inconsistent, or the reproduced
+/// fingerprint or oracle case differs from the artifact.
+pub fn check_replay_oracle_reproduction_artifact_round_trip<
+    Scenario,
+    Schedule,
+    Replay,
+    ReplayError,
+>(
+    artifact: &ReplayOracleReproductionArtifact<Scenario, Schedule>,
+    expected_build_identity: &ReplayOracleBuildIdentity,
+    replay: Replay,
+) -> Result<ReplayOracleRoundTripReport, ReplayOracleRoundTripError>
+where
+    Replay: FnOnce(
+        &ReplayOracleReproductionArtifact<Scenario, Schedule>,
+    ) -> Result<ReplayOracleArtifactRun, ReplayError>,
+    ReplayError: fmt::Display,
+{
+    if artifact.build_identity != *expected_build_identity {
+        return Err(ReplayOracleRoundTripError::BuildIdentityMismatch {
+            expected: expected_build_identity.clone(),
+            actual: artifact.build_identity.clone(),
+        });
+    }
+
+    check_materialized_replay_oracle(std::slice::from_ref(&artifact.expected.oracle_case))
+        .map_err(|mismatch| ReplayOracleRoundTripError::ExpectedOracleMismatch { mismatch })?;
+
+    let reproduced =
+        replay(artifact).map_err(|source| ReplayOracleRoundTripError::ReplayFailed {
+            reason: source.to_string(),
+        })?;
+
+    check_materialized_replay_oracle(std::slice::from_ref(&reproduced.oracle_case))
+        .map_err(|mismatch| ReplayOracleRoundTripError::ReproducedOracleMismatch { mismatch })?;
+
+    if artifact.expected.fingerprint != reproduced.fingerprint {
+        return Err(ReplayOracleRoundTripError::FingerprintMismatch {
+            expected: artifact.expected.fingerprint.clone(),
+            reproduced: reproduced.fingerprint,
+        });
+    }
+
+    if artifact.expected.oracle_case != reproduced.oracle_case {
+        return Err(ReplayOracleRoundTripError::OracleCaseMismatch {
+            expected: Box::new(artifact.expected.oracle_case.clone()),
+            reproduced: Box::new(reproduced.oracle_case),
+        });
+    }
+
+    Ok(ReplayOracleRoundTripReport {
+        seed: artifact.seed,
+        build_identity: artifact.build_identity.clone(),
+        expected: artifact.expected.clone(),
+        reproduced,
+    })
 }
 
 /// Localizes a replay-oracle mismatch to the first differing decision or icount.
@@ -660,6 +870,16 @@ fn fold_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 #[cfg(test)]
@@ -869,6 +1089,116 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reproduction_artifact_round_trip_accepts_matching_replay() {
+        let artifact = reproduction_artifact(vec![9], materialized_case("cp-artifact"));
+        let report = match check_replay_oracle_reproduction_artifact_round_trip(
+            &artifact,
+            &build_identity(),
+            |artifact| Ok::<_, String>(artifact.expected.clone()),
+        ) {
+            Ok(report) => report,
+            Err(error) => panic!("matching artifact should round-trip: {error}"),
+        };
+
+        assert_eq!(report.seed, 27);
+        assert_eq!(report.expected, report.reproduced);
+    }
+
+    #[test]
+    fn reproduction_artifact_round_trip_rejects_fingerprint_mismatch() {
+        let artifact = reproduction_artifact(vec![9], materialized_case("cp-artifact"));
+        let error = match check_replay_oracle_reproduction_artifact_round_trip(
+            &artifact,
+            &build_identity(),
+            |_| {
+                Ok::<_, String>(ReplayOracleArtifactRun {
+                    fingerprint: vec![8],
+                    oracle_case: materialized_case("cp-artifact"),
+                })
+            },
+        ) {
+            Ok(_) => panic!("fingerprint mismatch should fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error,
+            ReplayOracleRoundTripError::FingerprintMismatch {
+                expected: vec![9],
+                reproduced: vec![8],
+            }
+        );
+    }
+
+    #[test]
+    fn reproduction_artifact_round_trip_reports_replay_failure() {
+        let artifact = reproduction_artifact(vec![9], materialized_case("cp-artifact"));
+        let error = match check_replay_oracle_reproduction_artifact_round_trip(
+            &artifact,
+            &build_identity(),
+            |_| Err::<ReplayOracleArtifactRun, _>(String::from("backend stopped")),
+        ) {
+            Ok(_) => panic!("replay failure should fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error,
+            ReplayOracleRoundTripError::ReplayFailed {
+                reason: String::from("backend stopped"),
+            }
+        );
+    }
+
+    #[test]
+    fn reproduction_artifact_round_trip_rejects_inconsistent_expected_oracle() {
+        let mut artifact = reproduction_artifact(vec![9], materialized_case("cp-artifact"));
+        artifact.expected.oracle_case.fat_hash = vec![6];
+        let error = match check_replay_oracle_reproduction_artifact_round_trip(
+            &artifact,
+            &build_identity(),
+            |artifact| Ok::<_, String>(artifact.expected.clone()),
+        ) {
+            Ok(_) => panic!("inconsistent expected oracle case should fail"),
+            Err(error) => error,
+        };
+
+        let ReplayOracleRoundTripError::ExpectedOracleMismatch { mismatch } = error else {
+            panic!("expected oracle mismatch should be reported");
+        };
+        assert_eq!(mismatch.checkpoint_id, "cp-artifact");
+        assert_eq!(mismatch.fat_hash, vec![6]);
+        assert_eq!(mismatch.thin_hash, vec![5]);
+    }
+
+    #[test]
+    fn reproduction_artifact_round_trip_rejects_inconsistent_reproduced_oracle() {
+        let artifact = reproduction_artifact(vec![9], materialized_case("cp-artifact"));
+        let error = match check_replay_oracle_reproduction_artifact_round_trip(
+            &artifact,
+            &build_identity(),
+            |_| {
+                let mut run = ReplayOracleArtifactRun {
+                    fingerprint: vec![9],
+                    oracle_case: materialized_case("cp-artifact"),
+                };
+                run.oracle_case.thin_hash = vec![6];
+                Ok::<_, String>(run)
+            },
+        ) {
+            Ok(_) => panic!("inconsistent reproduced oracle case should fail"),
+            Err(error) => error,
+        };
+
+        let ReplayOracleRoundTripError::ReproducedOracleMismatch { mismatch } = error else {
+            panic!("reproduced oracle mismatch should be reported");
+        };
+        assert_eq!(mismatch.checkpoint_id, "cp-artifact");
+        assert_eq!(mismatch.fat_hash, vec![5]);
+        assert_eq!(mismatch.thin_hash, vec![6]);
+    }
+
     fn search_materialization(
         sequence: u64,
         checkpoint_id: &str,
@@ -892,5 +1222,46 @@ mod tests {
                 thin_hash,
             },
         )
+    }
+
+    fn build_identity() -> ReplayOracleBuildIdentity {
+        ReplayOracleBuildIdentity {
+            harness_abi: String::from("replay-oracle-artifact-v1"),
+            backend: String::from("unit-test"),
+            backend_build_id: String::from("unit-test-build"),
+        }
+    }
+
+    fn reproduction_artifact(
+        fingerprint: Vec<u8>,
+        oracle_case: ReplayOracleMaterializedCase,
+    ) -> ReplayOracleReproductionArtifact<(), ()> {
+        ReplayOracleReproductionArtifact {
+            seed: 27,
+            scenario: (),
+            schedule: (),
+            build_identity: build_identity(),
+            expected: ReplayOracleArtifactRun {
+                fingerprint,
+                oracle_case,
+            },
+        }
+    }
+
+    fn materialized_case(checkpoint_id: &str) -> ReplayOracleMaterializedCase {
+        ReplayOracleMaterializedCase {
+            checkpoint_id: checkpoint_id.to_owned(),
+            kind: ReplayOracleCheckpointKind::Fat,
+            fat_checkpoint_hash: vec![1],
+            thin_checkpoint_hash: vec![1],
+            fat_configuration_hash: vec![2],
+            thin_configuration_hash: vec![2],
+            fat_ancestor_hash: vec![3],
+            thin_ancestor_hash: vec![3],
+            fat_schedule_delta_hash: vec![4],
+            thin_schedule_delta_hash: vec![4],
+            fat_hash: vec![5],
+            thin_hash: vec![5],
+        }
     }
 }
