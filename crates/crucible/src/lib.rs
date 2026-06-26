@@ -38,20 +38,20 @@ pub use model::{
     FrontierReductionReport, GenesisCheckpoint, Icount, IrqVector, LinkDef, LinkLossProbability,
     LocalDagStore, MIN_LINK_LATENCY, MarkerId, MaterializationPolicy, MaterializationTrigger,
     MaterializedState, MembershipFault, MemoryDagStore, NodeBlobRef, NodeClockSkew, NodeCounter,
-    NodeId, OverrideDecision, PartialOrderIndependenceProof, PartialOrderReductionKey,
-    PartialOrderReductionPolicy, PartitionDirection, PendingFrame, Plan, PlanEntry, Predicate,
-    PreemptionDecision, PreemptionKind, Properties, Property, ReachabilityExpectation,
-    ReachableDisposition, ReadyPoint, ReplayOracleCheck, RestartPolicy, RngDecision, RngStreamId,
-    RngStreamPosition, RuntimeState, SavevmCompletenessHedge, ScenarioDef, Schedule, ScheduleError,
-    SchedulerState, SchedulingPoint, SearchReplayOracleBisectionRequest,
-    SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport, Seed, SeededRngStream,
-    Shift, SimDuration, SimInstant, SimOffset, State, SymmetryClassId, SymmetryReductionClasses,
-    SymmetryReductionKey, TemporalGraph, TemporalGraphFork, TemporalGraphGcReport,
-    TemporalGraphGcRoots, TemporalGraphReferenceCounts, TemporalGraphRuntime, TemporalGraphSave,
-    TemporalGraphSearch, TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError,
-    TimerId, TimerRegistry, TimerState, VcpuId, VirtualInstant, VirtualTime, VmSnapshotRef,
-    WhiteBoxPolicy, World, WorldLookaheadEdge, WorldNode, WorldStaticTopology, bake, instantiate,
-    reduce, step,
+    NodeId, NodeTemplate, OverrideDecision, PartialOrderIndependenceProof,
+    PartialOrderReductionKey, PartialOrderReductionPolicy, PartitionDirection, PendingFrame, Plan,
+    PlanEntry, Predicate, PreemptionDecision, PreemptionKind, Properties, Property,
+    ReachabilityExpectation, ReachableDisposition, ReadyPoint, ReplayOracleCheck, RestartPolicy,
+    RngDecision, RngStreamId, RngStreamPosition, RuntimeState, SavevmCompletenessHedge,
+    ScenarioBuilder, ScenarioDef, Schedule, ScheduleError, SchedulerState, SchedulingPoint,
+    SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
+    SearchReplayOracleSamplingReport, Seed, SeededRngStream, Shift, SimDuration, SimInstant,
+    SimOffset, State, SymmetryClassId, SymmetryReductionClasses, SymmetryReductionKey,
+    TemporalGraph, TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots,
+    TemporalGraphReferenceCounts, TemporalGraphRuntime, TemporalGraphSave, TemporalGraphSearch,
+    TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError, TimerId, TimerRegistry,
+    TimerState, VcpuId, VirtualInstant, VirtualTime, VmSnapshotRef, WhiteBoxPolicy, World,
+    WorldLookaheadEdge, WorldNode, WorldStaticTopology, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
@@ -2524,6 +2524,186 @@ mod tests {
         assert!(matches!(
             empty_compound,
             Err(EngineError::PropertyPredicateEmptyCompound { kind }) if kind == "all-of"
+        ));
+    }
+
+    #[test]
+    fn scenario_builder_keeps_authoring_layers_structurally_orthogonal() {
+        let seed = Seed::from_u64(0x0010_0015);
+        let plan_entry = PlanEntry::Activate {
+            at: VirtualTime { ticks: 3 },
+            tag: tag("split"),
+            fault: MembershipFault::Partition {
+                endpoint_a: node_id("a"),
+                endpoint_b: node_id("b"),
+                direction: PartitionDirection::Bidirectional,
+            },
+        };
+        let property = assertion(
+            "both-alive",
+            "both nodes stay alive",
+            Property::Always {
+                predicate: Predicate::AllOf {
+                    predicates: vec![
+                        named_predicate("node_alive", &["b"]),
+                        named_predicate("node_alive", &["a"]),
+                    ],
+                },
+            },
+        );
+
+        let scenario = ScenarioBuilder::new()
+            .node(
+                "a",
+                NodeTemplate::fixed_icount(Icount { retired: 11 })
+                    .white_box(WhiteBoxPolicy::Disabled),
+            )
+            .node_like("b", "a")
+            .link_with_transport(
+                "b",
+                "a",
+                SimDuration { nanos: 10 },
+                SimDuration { nanos: 1 },
+                LinkLossProbability::ZERO,
+                Some(1_000_000),
+            )
+            .plan_entry(plan_entry.clone())
+            .property(property.clone())
+            .seed(seed)
+            .build()
+            .unwrap_or_else(|error| panic!("builder-authored scenario should be valid: {error}"));
+        let manual_world = world_from_nodes_and_links(
+            vec![
+                ready_node(
+                    "a",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 11 },
+                    },
+                ),
+                ready_node(
+                    "b",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 11 },
+                    },
+                ),
+            ],
+            vec![transport_link("a", "b", 10, 1, 0, Some(1_000_000))],
+        );
+        let manual_plan = Plan::from_entries_for_world(&manual_world, vec![plan_entry])
+            .unwrap_or_else(|error| panic!("manual plan should be valid: {error}"));
+        let manual_properties =
+            Properties::from_assertions_for_world(&manual_world, vec![property])
+                .unwrap_or_else(|error| panic!("manual properties should be valid: {error}"));
+        let manual_scenario = manual_world
+            .scenario_def_with_plan_properties_and_seed(&manual_plan, &manual_properties, seed)
+            .unwrap_or_else(|error| panic!("manual scenario composition should be valid: {error}"));
+        let reused_world_scenario = ScenarioBuilder::new()
+            .world(&manual_world)
+            .seed(seed)
+            .build()
+            .unwrap_or_else(|error| panic!("world-template scenario should be valid: {error}"));
+        let complete_layer_scenario = ScenarioBuilder::new()
+            .world(&manual_world)
+            .plan(manual_plan.clone())
+            .properties(manual_properties.clone())
+            .seed(seed)
+            .build()
+            .unwrap_or_else(|error| panic!("complete-layer scenario should be valid: {error}"));
+        let templated_world_scenario = ScenarioBuilder::new()
+            .node("fixed", NodeTemplate::fixed_icount(Icount { retired: 5 }))
+            .node(
+                "idle",
+                NodeTemplate::network_idle(SimDuration { nanos: 1_000 }),
+            )
+            .node("console", NodeTemplate::console_marker("ready"))
+            .node("agent", NodeTemplate::agent_signal())
+            .link("fixed", "idle")
+            .link_def(link("agent", "console"))
+            .seed(seed)
+            .build()
+            .unwrap_or_else(|error| panic!("templated world scenario should be valid: {error}"));
+        let templated_world = world_from_nodes_and_links(
+            vec![
+                ready_node(
+                    "fixed",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 5 },
+                    },
+                ),
+                ready_node(
+                    "idle",
+                    ReadyPoint::NetworkIdle {
+                        window: SimDuration { nanos: 1_000 },
+                    },
+                ),
+                ready_node(
+                    "console",
+                    ReadyPoint::ConsoleMarker {
+                        marker: String::from("ready"),
+                    },
+                ),
+                WorldNode {
+                    id: node_id("agent"),
+                    ready_point: ReadyPoint::AgentSignal,
+                    white_box: WhiteBoxPolicy::Enabled,
+                },
+            ],
+            vec![link("idle", "fixed"), link("console", "agent")],
+        );
+
+        assert_eq!(scenario, manual_scenario);
+        assert_eq!(complete_layer_scenario, manual_scenario);
+        assert_eq!(
+            templated_world_scenario,
+            templated_world.scenario_def_with_seed(seed)
+        );
+        assert_eq!(
+            reused_world_scenario,
+            manual_world.scenario_def_with_seed(seed)
+        );
+        assert!(matches!(
+            ScenarioBuilder::new().node_like("copy", "missing").build(),
+            Err(EngineError::ScenarioBuilderUnknownNodeTemplate { node, template })
+                if node == node_id("copy") && template == node_id("missing")
+        ));
+        assert!(matches!(
+            ScenarioBuilder::new()
+                .node("a", NodeTemplate::fixed_icount(Icount { retired: 1 }))
+                .node("b", NodeTemplate::fixed_icount(Icount { retired: 2 }))
+                .plan_entry(PlanEntry::Activate {
+                    at: VirtualTime { ticks: 1 },
+                    tag: tag("split"),
+                    fault: MembershipFault::Partition {
+                        endpoint_a: node_id("a"),
+                        endpoint_b: node_id("b"),
+                        direction: PartitionDirection::Bidirectional,
+                    },
+                })
+                .build(),
+            Err(EngineError::PlanFaultUnknownLink {
+                endpoint_a,
+                endpoint_b,
+            }) if endpoint_a == node_id("a") && endpoint_b == node_id("b")
+        ));
+        assert!(matches!(
+            ScenarioBuilder::new()
+                .node("a", NodeTemplate::fixed_icount(Icount { retired: 1 }))
+                .property(assertion(
+                    "missing",
+                    "missing node should be rejected",
+                    Property::Always {
+                        predicate: named_predicate("node_alive", &["b"]),
+                    },
+                ))
+                .build(),
+            Err(EngineError::PropertyPredicateUnknownNode { node }) if node == node_id("b")
+        ));
+        assert!(matches!(
+            ScenarioBuilder::new()
+                .node("agent", NodeTemplate::new(ReadyPoint::AgentSignal))
+                .build(),
+            Err(EngineError::WhiteBoxReadyPointWithoutOptIn { node })
+                if node == node_id("agent")
         ));
     }
 

@@ -1111,9 +1111,20 @@ authority for its shape. The contract those files may rely on:
     the stream root, node/link domain separation, and unchanged existing stream
     roots across unrelated world edits. `checks.crucible.phase1.spatialSeedComponent`
     gates the task.
-- [ ] **T-SPAT-15** Implement the code-first `ScenarioBuilder` with structurally
+- [x] **T-SPAT-15** Implement the code-first `ScenarioBuilder` with structurally
   orthogonal entry points and node/world templating; no boot-event folding. —
   satisfies [SPAT-23]; spec §6, §10.
+  - Completed in `crates/crucible/src/model.rs`: `ScenarioBuilder` now exposes
+    distinct world-layer entry points (`world`, `node`, `node_like`, `link`,
+    `link_with_transport`, `link_def`), plan-layer entry points (`plan`,
+    `plan_entry`), properties-layer entry points (`properties`, `property`), and
+    `seed`, all flowing through the existing validated component composition path.
+    `NodeTemplate` supports reusable node settings and builder-level `node_like`
+    templating, with no boot-event topology/assertion folding API. The focused
+    `scenario_builder_keeps_authoring_layers_structurally_orthogonal` test and
+    `checks.crucible.phase1.spatialScenarioBuilder` gate cover builder/manual
+    identity equality, world reuse, node-template rejection, and plan/properties
+    validation against the static world layer.
 - [ ] **T-SPAT-16** Implement the serializable content-addressed form (canonical
   TOML + compact binary, same canonical bytes) with round-trip equality and
   content-addressed-reference-only images. — satisfies [SPAT-24], [SPAT-25]; spec
