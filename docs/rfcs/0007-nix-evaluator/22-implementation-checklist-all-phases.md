@@ -1646,6 +1646,25 @@ alone (`M-1`/`Q-A`).
       cached-vs-uncached closure parity, derivationStrict-node SHA-256 early
       cutoff, lazy replay payloads, stale-input miss surfaces, mmap reads,
       GC/repack, and future value-memoization safety net remain open (`S-14`).
+- [x] Current filesystem impure-leaf persistent force-value `.drv` surface
+      parity canaries:
+      `persistent_read_file_force_cache_hit_preserves_drv_surfaces`,
+      `persistent_read_dir_force_cache_hit_preserves_drv_surfaces`, and
+      `persistent_read_file_type_force_cache_hit_preserves_drv_surfaces`
+      evaluate derivation attr paths with eval cache disabled, with configured
+      persistent force-cache demand/writeback on cold and materializing paths,
+      and with fresh-runtime trace-verified persistent forced-value hits for
+      `builtins.readFile`, `builtins.readDir`, and `builtins.readFileType`
+      values used inside derivation `args`. They require identical `.drv` paths
+      and ATerm bytes across all runs, require final runs to report force-cache
+      hits, and require persistent-hit revalidation to replay the matching
+      filesystem fingerprints into the enclosing impure-input trace. This
+      samples the current replayable filesystem impure-leaf hit paths inside
+      derivation input surfaces; it does not cover `getEnv`, full
+      cached-vs-uncached closure parity, derivationStrict-node SHA-256 early
+      cutoff, stale-input miss surfaces for these leaves, lazy replay payloads,
+      mmap reads, GC/repack, or future value-memoization safety net
+      (`R-10`/`S-14`).
 - [x] Current stale effectful persistent force-value `.drv` surface parity
       canary: `persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces`
       materializes a trace-verified `builtins.pathExists ./marker`

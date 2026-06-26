@@ -235,6 +235,7 @@ mod control;
 mod derivation_1;
 mod derivation_2;
 mod derivation_3;
+mod derivation_cache;
 mod fetch_git;
 mod fetch_tarball;
 mod fetch_tree_1;
