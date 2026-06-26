@@ -223,6 +223,7 @@ in {
     qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {inherit pkgs lib;};
     qemuPatchSeries = import ./phase2-qemu-patch-series.nix {inherit pkgs lib;};
     qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {inherit pkgs lib;};
+    qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuNodeWrapper = import ./phase2-qemu-node-wrapper.nix {inherit pkgs lib;};
     qemuQmpClient = import ./phase2-qemu-qmp-client.nix {inherit pkgs lib;};
@@ -250,7 +251,7 @@ in {
       patchMicrotestsCheck = import ./phase2-patch-microtests.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.patchMicrotests";
-        taskIds = ["T-PLAN-3" "T-HARN-20" "T-PATCH-2" "T-PATCH-20"];
+        taskIds = ["T-PLAN-3" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21"];
       };
     in {
       abiConformance = import ./phase2-abi-conformance.nix {

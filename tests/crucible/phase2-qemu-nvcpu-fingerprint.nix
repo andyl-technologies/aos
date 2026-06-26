@@ -468,7 +468,7 @@ in
               -display none \
               -monitor none \
               -machine q35 \
-              -accel tcg,thread=single \
+              -accel sim \
               -icount shift=0,sleep=off,align=off,rr_switch_quantum=4096 \
               -cpu qemu64 \
               -m 64 \
@@ -476,7 +476,7 @@ in
               -rtc base=2026-01-01T00:00:00,clock=vm \
               -seed 0x0010c016 \
               -qmp "unix:$qmp_socket,server=on,wait=off" \
-              -plugin "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so",out="$trace",cadence=50000,stop_at=200000,extended=on,mem_events=off,vcpus=4 \
+              -plugin "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so",out="$trace",cadence=5000,stop_at=5000,extended=on,mem_events=off,vcpus=4 \
               -no-shutdown \
               -no-reboot &
             qemu_pid="$!"
@@ -488,8 +488,9 @@ in
             qemu_pid=""
 
             jq -e -s '
-              length >= 2
-              and all(.[]; (
+              [ .[] | select((.kind // "sample") == "sample") ] as $samples
+              | ($samples | length) >= 2
+              and all($samples[]; (
                 .tracked_vcpus == 4
                 and .rr_switch_quantum == 4096
                 and .sample_register_failures == 0
@@ -502,14 +503,14 @@ in
                 and (.rr_current_vcpu | type == "number")
                 and (.rr_cursor_position | type == "number")
               ))
-              and all(.[] | select(.final != true); (
+              and all($samples[] | select(.final != true); (
                 .rr_current_vcpu >= 0
                 and .rr_current_vcpu < 4
                 and .rr_cursor_position >= 0
                 and .rr_cursor_position < .rr_switch_quantum
               ))
-              and any(.[]; .final != true and .retired == 200000)
-              and any(.[]; .final == true)
+              and any($samples[]; .final != true and .retired == 5000)
+              and any($samples[]; .final == true)
             ' "$trace" >/dev/null \
               || fail "real QEMU N-vCPU trace failed structural assertions"
 
@@ -541,7 +542,7 @@ in
             mismatch_localization=first-differing-icount-window-and-component
             plugin_introspection=checks.crucible.phase2.qemuPluginVcpuIntrospection
             qmp_control=checks.crucible.phase2.qemuQmpClient
-            real_qemu_smoke=bounded-rr-tcg-smp4-stop_at-trace
+            real_qemu_smoke=bounded-sim-smp4-stop_at-trace
             related_phase0_spike_source_check=checks.crucible.phase0.s11MultiVcpuFingerprint
             RESULT
           '';

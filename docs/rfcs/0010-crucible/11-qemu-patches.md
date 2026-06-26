@@ -1425,11 +1425,20 @@ time-control primitives the whole design rests on.
     series, and the aggregate gate now consumes
     `checks.crucible.phase2.qemuPluginFailLoud` so missing required QEMU/plugin
     capabilities fail with distinct diagnostics and no wall-clock fallback.
-- [ ] **T-PATCH-21** Implement `crucible-rr-quantum-icount`: make the
+- [x] **T-PATCH-21** Implement `crucible-rr-quantum-icount`: make the
   single-threaded round-robin vCPU-switch boundary the pinned node-icount
   `rr_switch_quantum` (ascending rotation) in sim mode, supplied by the launch
   config; cross-run bit-identical switch-icount micro-test, with the adaptive
   realtime quantum reverting to red. — satisfies [PATCH-44]; spec §11.4.
+  - Completed by `checks.crucible.phase2.qemuRrQuantumIcount` and consumed by
+    `gate:patch-microtests`: the QEMU patch exposes and clamps
+    `rr_switch_quantum` in node-icount units only under `-accel sim`, the launch
+    gate hashes the fixed quantum and ascending vCPU rotation while rejecting
+    MTTCG and unpinned quantum launches, a bounded S11 multi-vCPU trace runs
+    under `-accel sim` to a fixed `stop_at` horizon and diffs plugin-emitted RR
+    switch-boundary and per-vCPU icount-delta event traces across a jittered
+    second run, and the aggregate gate consumes adaptive and configured-non-sim
+    RR switch trace negative controls as red evidence.
 - [ ] **T-PATCH-22** Implement `crucible-det-ipi`: deterministic inter-vCPU
   IPI/SIPI/INIT delivery at a fixed node-icount via the round-robin event path,
   with a cross-run identical-delivery-icount micro-test on a multi-vCPU guest. —

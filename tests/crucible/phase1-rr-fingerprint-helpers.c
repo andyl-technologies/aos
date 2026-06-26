@@ -116,6 +116,7 @@ static CPUState *current_cpu = &cpu0;
 static CPUState *first_cpu = &cpu0;
 static bool test_icount_enabled;
 static int64_t test_icount_limit = 100;
+static const char *test_accel_name = "sim";
 static bool idle_loop_state;
 static unsigned int rr_stop_kick_timer_calls;
 static unsigned int rr_warp_timer_calls;
@@ -138,6 +139,12 @@ static RAMBlock ram_blocks[] = {
     {.idstr = "ram.low", .used_length = sizeof(ram0), .host = ram0},
     {.idstr = "ram.high", .used_length = sizeof(ram1), .host = ram1},
 };
+
+static const char *
+current_accel_name(void)
+{
+  return test_accel_name;
+}
 
 static bool
 icount_enabled(void)
@@ -383,6 +390,46 @@ stock_percpu_budget(int64_t limit, int cpu_count)
   return timeslice == 0 ? limit : timeslice;
 }
 
+static void
+build_switch_trace(int64_t (*budget_fn)(int64_t limit, int cpu_count),
+                   int64_t limit_a, int64_t limit_b, int cpu_count,
+                   int64_t *trace, size_t trace_len)
+{
+  uint64_t node_icount = 0;
+  int current_vcpu = 0;
+
+  for (size_t index = 0; index < trace_len; index++) {
+    const int64_t limit = (index % 2 == 0) ? limit_a : limit_b;
+    int64_t budget = budget_fn(limit, cpu_count);
+
+    if (budget < 1) {
+      budget = 1;
+    }
+    node_icount += (uint64_t)budget;
+    trace[index] = (int64_t)node_icount;
+    current_vcpu = (current_vcpu + 1) % cpu_count;
+  }
+  (void)current_vcpu;
+}
+
+static int64_t
+patched_budget_for_trace(int64_t limit, int cpu_count)
+{
+  test_icount_limit = limit;
+  return icount_percpu_budget(cpu_count);
+}
+
+static int
+traces_equal(const int64_t *left, const int64_t *right, size_t len)
+{
+  for (size_t index = 0; index < len; index++) {
+    if (left[index] != right[index]) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 static int
 test_rr_quantum_configuration_and_budget(void)
 {
@@ -408,6 +455,7 @@ test_rr_quantum_configuration_and_budget(void)
       .has_sleep = true,
   };
 
+  test_accel_name = "sim";
   if (icount_configure(&missing_shift, &err) || err == NULL) {
     fputs("rr_switch_quantum without shift was not rejected\n", stderr);
     return 1;
@@ -434,8 +482,80 @@ test_rr_quantum_configuration_and_budget(void)
     return 1;
   }
 
+  test_accel_name = "tcg";
+  if (icount_crucible_rr_switch_quantum() != 0 ||
+      icount_percpu_budget(4) != stock_percpu_budget(100, 4) ||
+      icount_crucible_rr_cursor_position(&cpu0) != 0) {
+    fputs("configured rr_switch_quantum changed non-sim budgeting\n", stderr);
+    return 1;
+  }
+
+  test_accel_name = "sim";
   if (!icount_configure(&stock_budget, &err) || icount_percpu_budget(4) != 25) {
     fputs("unconfigured rr_switch_quantum did not preserve stock budget\n",
+          stderr);
+    return 1;
+  }
+  return 0;
+}
+
+static int
+test_rr_switch_trace_negative_control(void)
+{
+  Error *err = NULL;
+  int64_t pinned_slow[6] = {0};
+  int64_t pinned_fast[6] = {0};
+  int64_t adaptive_slow[6] = {0};
+  int64_t adaptive_fast[6] = {0};
+  int64_t non_sim_slow[6] = {0};
+  int64_t non_sim_fast[6] = {0};
+  QemuOpts configured = {
+      .shift = "0",
+      .rr_switch_quantum = 12,
+      .sleep = true,
+      .has_sleep = true,
+  };
+
+  if (!icount_configure(&configured, &err)) {
+    fputs("rr_switch_quantum trace setup failed\n", stderr);
+    return 1;
+  }
+
+  test_accel_name = "sim";
+  build_switch_trace(patched_budget_for_trace, 100, 100, 4, pinned_slow,
+                     sizeof(pinned_slow) / sizeof(pinned_slow[0]));
+  build_switch_trace(patched_budget_for_trace, 100, 400, 4, pinned_fast,
+                     sizeof(pinned_fast) / sizeof(pinned_fast[0]));
+  if (!traces_equal(pinned_slow, pinned_fast,
+                    sizeof(pinned_slow) / sizeof(pinned_slow[0]))) {
+    fputs("pinned RR switch trace changed under host-speed perturbation\n",
+          stderr);
+    return 1;
+  }
+
+  test_accel_name = "tcg";
+  build_switch_trace(patched_budget_for_trace, 100, 100, 4, non_sim_slow,
+                     sizeof(non_sim_slow) / sizeof(non_sim_slow[0]));
+  build_switch_trace(patched_budget_for_trace, 100, 400, 4, non_sim_fast,
+                     sizeof(non_sim_fast) / sizeof(non_sim_fast[0]));
+  build_switch_trace(stock_percpu_budget, 100, 100, 4, adaptive_slow,
+                     sizeof(adaptive_slow) / sizeof(adaptive_slow[0]));
+  build_switch_trace(stock_percpu_budget, 100, 400, 4, adaptive_fast,
+                     sizeof(adaptive_fast) / sizeof(adaptive_fast[0]));
+  if (!traces_equal(non_sim_fast, adaptive_fast,
+                    sizeof(non_sim_fast) / sizeof(non_sim_fast[0]))) {
+    fputs("non-sim rr_switch_quantum path did not preserve stock trace\n",
+          stderr);
+    return 1;
+  }
+  if (traces_equal(non_sim_slow, non_sim_fast,
+                   sizeof(non_sim_slow) / sizeof(non_sim_slow[0]))) {
+    fputs("configured non-sim RR switch trace did not stay adaptive\n", stderr);
+    return 1;
+  }
+  if (traces_equal(adaptive_slow, adaptive_fast,
+                   sizeof(adaptive_slow) / sizeof(adaptive_slow[0]))) {
+    fputs("adaptive RR switch trace did not diverge under perturbation\n",
           stderr);
     return 1;
   }
@@ -453,6 +573,7 @@ test_rr_cursor_and_idle_boundary(void)
       .has_sleep = true,
   };
 
+  test_accel_name = "sim";
   if (!icount_configure(&configured, &err)) {
     fputs("rr_switch_quantum setup failed\n", stderr);
     return 1;
@@ -600,6 +721,7 @@ int
 main(void)
 {
   if (test_rr_quantum_configuration_and_budget() != 0 ||
+      test_rr_switch_trace_negative_control() != 0 ||
       test_rr_cursor_and_idle_boundary() != 0 ||
       test_plugin_fingerprint_exports() != 0 ||
       test_migration_host_timer_normalization() != 0) {
@@ -612,6 +734,11 @@ main(void)
   puts("rr_switch_quantum_requires_shift=true");
   puts("rr_switch_quantum_rejects_oversized=true");
   puts("rr_budget_pinned=true");
+  puts("rr_switch_quantum_sim_gated=true");
+  puts("non_sim_rr_switch_quantum_uses_stock_budget=true");
+  puts("rr_switch_trace_pinned_under_host_jitter=true");
+  puts("adaptive_rr_switch_trace_negative_control=red");
+  puts("patched_non_sim_rr_switch_trace_negative_control=red");
   puts("rr_cursor_clamped=true");
   puts("rr_idle_boundary_accounts_warp=true");
   puts("rr_idle_boundary_inert_without_icount=true");

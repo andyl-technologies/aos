@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.patchMicrotests",
-  taskIds ? ["T-HARN-20" "T-PATCH-2" "T-PATCH-20"],
+  taskIds ? ["T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
@@ -10,6 +10,7 @@
   defaultNix = builtins.readFile ./default.nix;
   qemuPatchSeries = import ./phase2-qemu-patch-series.nix {inherit pkgs lib;};
   qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
+  qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
   qemuPackage = pkgs.qemu-crucible;
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
@@ -336,6 +337,17 @@ in
             grep -q '^PASS$' "$out/qemu-plugin-fail-loud.result"
             grep -q '^missing_capability=distinct-errors$' "$out/qemu-plugin-fail-loud.result"
             grep -q '^wall_clock_fallback=forbidden$' "$out/qemu-plugin-fail-loud.result"
+            cp "${qemuRrQuantumIcount}/result" "$out/qemu-rr-quantum-icount.result"
+            grep -q '^PASS$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^accelerator=sim$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^vcpus=2$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,stop_at=16384)$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^cross_run_switch_icount_trace_match=true$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^cross_run_per_vcpu_delta_trace_match=true$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^adaptive_realtime_quantum_negative_control=red$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^adaptive_rr_switch_trace_negative_control=red$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^patched_non_sim_rr_switch_trace_negative_control=red$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^non_sim_rr_switch_quantum_uses_stock_budget=true$' "$out/qemu-rr-quantum-icount.result"
             cp "${qemuDoorbellNoPatch}/result" "$out/qemu-doorbell-no-patch.result"
             grep -q '^PASS$' "$out/qemu-doorbell-no-patch.result"
             grep -q '^gate=gate:patch-microtests$' "$out/qemu-doorbell-no-patch.result"
@@ -371,6 +383,13 @@ in
             qemu_package_patch_phase_generated_from_manifest=true
             qemu_plugin_fail_loud_gate_passed=true
             missing_required_capability_fails_loud=true
+            qemu_rr_quantum_icount_gate_passed=true
+            cross_run_switch_icount_trace_match=true
+            cross_run_per_vcpu_delta_trace_match=true
+            adaptive_realtime_quantum_negative_control=red
+            adaptive_rr_switch_trace_negative_control=red
+            patched_non_sim_rr_switch_trace_negative_control=red
+            non_sim_rr_switch_quantum_uses_stock_budget=true
             qemu_doorbell_no_patch_gate_passed=true
             qemu_diagnostic_patches_dev_only_gate_passed=true
             apply_clean_pinned_qemu=true

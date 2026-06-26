@@ -49,6 +49,12 @@ static bool capture_memory_events;
 static bool stop_requested;
 static unsigned int tracked_vcpus = 1;
 static struct register_set register_sets[MAX_TRACKED_VCPUS];
+static uint64_t per_vcpu_retired[MAX_TRACKED_VCPUS];
+static uint64_t last_switch_per_vcpu_retired[MAX_TRACKED_VCPUS];
+static uint64_t last_rr_current_vcpu = UINT64_MAX;
+static uint64_t last_rr_cursor_position = UINT64_MAX;
+static uint64_t rr_switch_events;
+static bool rr_switch_trace_initialized;
 
 static uint64_t
 fnv1a_u64(uint64_t hash, uint64_t value)
@@ -345,6 +351,79 @@ record_sample(unsigned int vcpu_index, bool final)
 }
 
 static void
+record_rr_switch_event(void)
+{
+  if (trace_file == NULL || !extended_fingerprint) {
+    return;
+  }
+
+  const uint64_t rr_switch_quantum = qemu_plugin_crucible_rr_switch_quantum();
+  if (rr_switch_quantum == 0) {
+    rr_switch_trace_initialized = false;
+    last_rr_current_vcpu = UINT64_MAX;
+    last_rr_cursor_position = UINT64_MAX;
+    return;
+  }
+
+  const uint64_t rr_current_vcpu = qemu_plugin_crucible_rr_current_vcpu();
+  const uint64_t rr_cursor_position = qemu_plugin_crucible_rr_cursor_position();
+  if (rr_current_vcpu == UINT64_MAX || rr_current_vcpu >= tracked_vcpus) {
+    return;
+  }
+
+  if (!rr_switch_trace_initialized) {
+    rr_switch_trace_initialized = true;
+    last_rr_current_vcpu = rr_current_vcpu;
+    last_rr_cursor_position = rr_cursor_position;
+    return;
+  }
+
+  if (rr_current_vcpu == last_rr_current_vcpu &&
+      rr_cursor_position >= last_rr_cursor_position) {
+    last_rr_cursor_position = rr_cursor_position;
+    return;
+  }
+
+  rr_switch_events++;
+  fprintf(
+      trace_file,
+      "{\"kind\":\"rr_switch\""
+      ",\"rr_switch_event\":%" PRIu64
+      ",\"retired\":%" PRIu64
+      ",\"from_vcpu\":%" PRIu64
+      ",\"to_vcpu\":%" PRIu64
+      ",\"rr_cursor_position\":%" PRIu64
+      ",\"rr_switch_quantum\":%" PRIu64
+      ",\"per_vcpu_retired\":[",
+      rr_switch_events,
+      retired,
+      last_rr_current_vcpu,
+      rr_current_vcpu,
+      rr_cursor_position,
+      rr_switch_quantum);
+
+  for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
+    fprintf(
+        trace_file,
+        "%s%" PRIu64,
+        vcpu == 0 ? "" : ",",
+        per_vcpu_retired[vcpu]);
+  }
+
+  fprintf(trace_file, "],\"per_vcpu_delta\":[");
+  for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
+    const uint64_t delta =
+        per_vcpu_retired[vcpu] - last_switch_per_vcpu_retired[vcpu];
+    fprintf(trace_file, "%s%" PRIu64, vcpu == 0 ? "" : ",", delta);
+    last_switch_per_vcpu_retired[vcpu] = per_vcpu_retired[vcpu];
+  }
+
+  fprintf(trace_file, "]}\n");
+  last_rr_current_vcpu = rr_current_vcpu;
+  last_rr_cursor_position = rr_cursor_position;
+}
+
+static void
 on_mem(unsigned int vcpu_index, qemu_plugin_meminfo_t info, uint64_t vaddr, void *userdata)
 {
   (void)userdata;
@@ -385,10 +464,14 @@ on_insn(unsigned int vcpu_index, void *userdata)
   bool sampled_this_instruction = false;
 
   retired++;
+  if (vcpu_index < MAX_TRACKED_VCPUS) {
+    per_vcpu_retired[vcpu_index]++;
+  }
   stream_hash = fnv1a_u64(stream_hash, (uint64_t)vcpu_index);
   stream_hash = fnv1a_u64(stream_hash, insn->vaddr);
   stream_hash = fnv1a_u64(stream_hash, (uint64_t)insn->size);
   stream_hash = fnv1a_bytes(stream_hash, insn->bytes, insn->size);
+  record_rr_switch_event();
 
   if (retired >= next_sample) {
     record_sample(vcpu_index, false);

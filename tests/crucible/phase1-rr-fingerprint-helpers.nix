@@ -68,6 +68,10 @@
       needle = "return MIN(limit, (int64_t)rr_switch_quantum);";
     }
     {
+      label = "RR switch quantum sim accelerator guard";
+      needle = ''strcmp(current_accel_name(), "sim") != 0'';
+    }
+    {
       label = "RR idle warp accounting";
       needle = "icount_handle_deadline();";
     }
@@ -121,6 +125,30 @@
     {
       label = "RR budget stock negative control";
       needle = "stock_negative_control_rr_budget_unpinned=true";
+    }
+    {
+      label = "current accelerator fixture";
+      needle = "current_accel_name(void)";
+    }
+    {
+      label = "sim-gated RR quantum assertion";
+      needle = "rr_switch_quantum_sim_gated=true";
+    }
+    {
+      label = "non-sim stock budget assertion";
+      needle = "non_sim_rr_switch_quantum_uses_stock_budget=true";
+    }
+    {
+      label = "pinned RR switch trace assertion";
+      needle = "rr_switch_trace_pinned_under_host_jitter=true";
+    }
+    {
+      label = "adaptive RR switch trace negative control";
+      needle = "adaptive_rr_switch_trace_negative_control=red";
+    }
+    {
+      label = "configured non-sim RR switch trace negative control";
+      needle = "patched_non_sim_rr_switch_trace_negative_control=red";
     }
     {
       label = "symbol stock negative control";
@@ -182,6 +210,7 @@ in
               migration/vmstate.h \
               plugins/plugin.h \
               qapi/error.h \
+              qemu/accel.h \
               qemu/cutils.h \
               qemu/error-report.h \
               qemu/log.h \
@@ -190,6 +219,7 @@ in
               qemu/plugin.h \
               qemu/plugin-memory.h \
               qemu/timer.h \
+              sysemu/replay.h \
               system/cpus.h \
               system/cpu-timers.h \
               system/runstate.h \
@@ -201,6 +231,17 @@ in
             : > disas/disas.h
 
             cat > accel/tcg/icount-common.c <<'QEMU_FIXTURE'
+
+            #include "qemu/osdep.h"
+            #include "qemu/cutils.h"
+            #include "migration/vmstate.h"
+            #include "qapi/error.h"
+            #include "qemu/error-report.h"
+            #include "qemu/main-loop.h"
+            #include "qemu/timer.h"
+            #include "sysemu/replay.h"
+            #include "system/cpu-timers.h"
+
             static bool icount_sleep = true;
             /* Arbitrarily pick 1MIPS as the minimum allowable speed.  */
             #define MAX_ICOUNT_SHIFT 10
@@ -455,6 +496,11 @@ in
             grep -q '^rr_switch_quantum_requires_shift=true$' "$out/result"
             grep -q '^rr_switch_quantum_rejects_oversized=true$' "$out/result"
             grep -q '^rr_budget_pinned=true$' "$out/result"
+            grep -q '^rr_switch_quantum_sim_gated=true$' "$out/result"
+            grep -q '^non_sim_rr_switch_quantum_uses_stock_budget=true$' "$out/result"
+            grep -q '^rr_switch_trace_pinned_under_host_jitter=true$' "$out/result"
+            grep -q '^adaptive_rr_switch_trace_negative_control=red$' "$out/result"
+            grep -q '^patched_non_sim_rr_switch_trace_negative_control=red$' "$out/result"
             grep -q '^rr_cursor_clamped=true$' "$out/result"
             grep -q '^rr_idle_boundary_accounts_warp=true$' "$out/result"
             grep -q '^rr_idle_boundary_inert_without_icount=true$' "$out/result"
@@ -485,6 +531,11 @@ in
             ${qemuPackageResultLines}
             rr_switch_quantum_configured=true
             rr_budget_pinned=true
+            rr_switch_quantum_sim_gated=true
+            non_sim_rr_switch_quantum_uses_stock_budget=true
+            rr_switch_trace_pinned_under_host_jitter=true
+            adaptive_rr_switch_trace_negative_control=red
+            patched_non_sim_rr_switch_trace_negative_control=red
             rr_cursor_export=true
             rr_idle_boundary_inert_without_icount=true
             plugin_register_exports=true
