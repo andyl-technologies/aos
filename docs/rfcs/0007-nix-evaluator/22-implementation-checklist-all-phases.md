@@ -1178,12 +1178,13 @@ alone (`M-1`/`Q-A`).
       `PersistCache::ensure_blob_indexed` reuses an existing sidecar location
       only after the pointed pack record verifies for the requested
       `PersistBlobKey` and payload bytes, appending a fresh record and newer
-      index entry for missing or stale locations; indexed value payload,
-      file-artifact, and parse-artifact materializers use this path so
-      duplicate materialization does not grow `values/` or `files/` packs. This
-      is local best-effort duplicate suppression only; cross-process
-      locking/CAS, sidecar compaction, GC/repack, mmap reads, LMDB/redb indexes,
-      and harness proof remain open (`C-13`/`R-14`).
+      index entry for missing or stale locations, including stale pointers to
+      another valid pack record; indexed value payload, file-artifact, and
+      parse-artifact materializers use this path so duplicate materialization
+      does not grow `values/` or `files/` packs. This is local best-effort
+      duplicate suppression only; cross-process locking/CAS, automatic
+      compaction, GC/repack, mmap reads, LMDB/redb indexes, and harness proof
+      remain open (`C-13`/`R-14`).
 - [x] Current explicit fixed-record sidecar compaction substrate:
       `PersistBlobIndex`, `PersistFileArtifactIndex`, and
       `PersistParseArtifactIndex` now expose `latest_entries` and
@@ -1191,10 +1192,13 @@ alone (`M-1`/`Q-A`).
       deterministic newest-entry-per-key order and rewriting through a
       truncated temporary file plus rename. `PersistCache::compact_blob_index`,
       `compact_file_artifact_index`, and `compact_parse_artifact_index` expose
-      those operations through the opened cache root. This is caller-driven
-      maintenance only; automatic compaction/GC policy, cross-process
-      writer coordination, LMDB/redb indexes, pack GC/repack, mmap reads, Attic
-      transport, and harness proof remain open (`C-13`/`R-14`).
+      those operations through the opened cache root. Blob-index compaction
+      keeps the repaired newest same-key pointer after stale indexed
+      materialization repair while leaving old pack bytes untouched. This is
+      caller-driven maintenance only; automatic compaction/GC policy,
+      cross-process writer coordination, LMDB/redb indexes, pack GC/repack,
+      mmap reads, Attic transport, and harness proof remain open
+      (`C-13`/`R-14`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and

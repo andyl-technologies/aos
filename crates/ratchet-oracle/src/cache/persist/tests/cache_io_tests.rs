@@ -1519,6 +1519,107 @@ fn cache_indexed_materialization_replaces_stale_index_location() {
 }
 
 #[test]
+fn cache_indexed_materialization_repairs_wrong_record_pointer_before_compaction() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let other_payload = b"other payload";
+    let other_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(other_payload));
+    let stale_location = cache
+        .append_blob(other_key, other_payload)
+        .expect("other blob appends");
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(key, stale_location))
+        .expect("wrong-record index entry appends");
+
+    let stale_read = cache
+        .read_blob_indexed(key)
+        .expect_err("wrong-record pointer does not verify for key");
+    assert!(matches!(
+        stale_read,
+        PersistBlobIndexedReadError::Read {
+            source: PersistBlobPackError::RecordHashMismatch { .. },
+        }
+    ));
+
+    let result = cache
+        .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
+        .expect("indexed materialization repairs wrong-record pointer");
+    let PersistMaterialization::Materialized(fresh_location) = result else {
+        panic!("materialization should append fresh bytes");
+    };
+
+    assert_ne!(fresh_location, stale_location);
+    assert_eq!(
+        cache
+            .lookup_blob_location(key)
+            .expect("indexed lookup succeeds"),
+        Some(fresh_location)
+    );
+    assert_eq!(
+        cache
+            .read_blob_indexed(key)
+            .expect("indexed read succeeds")
+            .expect("indexed blob exists")
+            .as_slice(),
+        payload
+    );
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        (PERSIST_BLOB_INDEX_ENTRY_LEN * 2) as u64
+    );
+    let pack_len_after_repair = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata")
+        .len();
+    assert_eq!(
+        cache
+            .read_blob(other_key, stale_location)
+            .expect("stale pack record remains readable before compaction")
+            .as_slice(),
+        other_payload
+    );
+
+    assert_eq!(
+        cache
+            .compact_blob_index(PersistBlobStore::Values)
+            .expect("value index compacts"),
+        1
+    );
+
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata")
+            .len(),
+        pack_len_after_repair
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(key)
+            .expect("compacted lookup succeeds"),
+        Some(fresh_location)
+    );
+    assert_eq!(
+        cache
+            .read_blob(other_key, stale_location)
+            .expect("unreferenced pack record remains readable")
+            .as_slice(),
+        other_payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_cached_expression_payload_materialization_can_skip_without_writing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
