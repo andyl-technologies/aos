@@ -264,7 +264,7 @@ fn persistent_read_file_force_cache_hit_preserves_drv_surfaces() {
 }
 
 #[test]
-fn persistent_get_env_force_cache_no_replay_preserves_drv_surfaces() {
+fn persistent_get_env_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
     let name = b"AOS_FORCE_CACHE_DRV_TEST";
     let source = r#"let
              b = builtins;
@@ -312,25 +312,33 @@ fn persistent_get_env_force_cache_no_replay_preserves_drv_surfaces() {
     assert_eq!(first.force_cache_hits, 0);
     assert_eq!(first.force_cache_misses, 0);
 
-    let mut replay_options = TreeWalkOptions::with_eval_cache_enabled(true);
-    replay_options.set_env_var(name.to_vec(), b"env payload".to_vec());
-    replay_options.set_persist_cache_root(&persist_root);
-    let replay = evaluate_cached_derivation_surface(
+    let mut materialize_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    materialize_options.set_env_var(name.to_vec(), b"env payload".to_vec());
+    materialize_options.set_persist_cache_root(&persist_root);
+    let materialize = evaluate_cached_derivation_surface(
         &ir,
         source,
-        replay_options,
+        materialize_options,
         EvalCacheRuntime::enabled(),
     );
-    assert_eq!(replay.path, uncached.path);
-    assert_eq!(replay.aterm, uncached.aterm);
-    assert_eq!(replay.trace, expected_trace);
-    assert_eq!(replay.cache_hits, 0);
-    assert_eq!(replay.force_cache_hits, 0);
-    assert_eq!(replay.force_cache_misses, 0);
-    assert!(
-        replay.thunks_forced > 0,
-        "current getEnv derivation surfaces should recompute rather than replay a force-cache hit"
-    );
+    assert_eq!(materialize.path, uncached.path);
+    assert_eq!(materialize.aterm, uncached.aterm);
+    assert_eq!(materialize.trace, expected_trace);
+    assert_eq!(materialize.cache_hits, 0);
+    assert_eq!(materialize.force_cache_hits, 0);
+    assert_eq!(materialize.force_cache_misses, 1);
+
+    let mut hit_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    hit_options.set_env_var(name.to_vec(), b"env payload".to_vec());
+    hit_options.set_persist_cache_root(&persist_root);
+    let hit =
+        evaluate_cached_derivation_surface(&ir, source, hit_options, EvalCacheRuntime::enabled());
+    assert_eq!(hit.path, uncached.path);
+    assert_eq!(hit.aterm, uncached.aterm);
+    assert_eq!(hit.trace, expected_trace);
+    assert_eq!(hit.cache_hits, 1);
+    assert_eq!(hit.force_cache_hits, 1);
+    assert_eq!(hit.force_cache_misses, 0);
 
     let mut uncached_changed_options = TreeWalkOptions::new();
     uncached_changed_options.set_env_var(name.to_vec(), b"changed payload".to_vec());
@@ -361,13 +369,22 @@ fn persistent_get_env_force_cache_no_replay_preserves_drv_surfaces() {
     assert_eq!(changed_replay.trace, changed_trace);
     assert_eq!(changed_replay.cache_hits, 0);
     assert_eq!(changed_replay.force_cache_hits, 0);
-    assert_eq!(changed_replay.force_cache_misses, 0);
+    assert_eq!(changed_replay.force_cache_misses, 1);
+    assert!(
+        changed_replay.thunks_forced > 0,
+        "stale persistent getEnv observations should fall back to ordinary forcing"
+    );
 
     let canaries =
         persistent_force_cache_surface_canaries(&persist_root, &[&expected_trace, &changed_trace]);
     assert_derivation_surface_canaries_absent("uncached getEnv surface", &uncached, &canaries);
     assert_derivation_surface_canaries_absent("cold getEnv surface", &first, &canaries);
-    assert_derivation_surface_canaries_absent("same-env getEnv replay surface", &replay, &canaries);
+    assert_derivation_surface_canaries_absent(
+        "materializing getEnv surface",
+        &materialize,
+        &canaries,
+    );
+    assert_derivation_surface_canaries_absent("same-env getEnv hit surface", &hit, &canaries);
     assert_derivation_surface_canaries_absent(
         "changed uncached getEnv surface",
         &uncached_changed,
@@ -377,10 +394,6 @@ fn persistent_get_env_force_cache_no_replay_preserves_drv_surfaces() {
         "changed getEnv replay surface",
         &changed_replay,
         &canaries,
-    );
-    assert_persistent_force_cache_sidecars_empty(
-        &persist_root,
-        "configured getEnv derivation no-replay canary",
     );
 
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");

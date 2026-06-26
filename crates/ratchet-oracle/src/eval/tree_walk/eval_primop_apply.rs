@@ -388,10 +388,33 @@ impl TreeWalk {
                 span,
             ));
         }
+        let cache_subject =
+            self.force_cache_subject_for_first_class_get_env_call(id, builtin, &args);
+        let memoization_decision = cache_subject
+            .as_ref()
+            .map(|subject| self.record_force_cache_memoization_demand(subject))
+            .unwrap_or(MemoizationDecision::Admit);
+        let memoization_admitted =
+            cache_subject.is_some() && memoization_decision == MemoizationDecision::Admit;
+        if memoization_admitted
+            && let Some(value) = self.lookup_forced_inline_expression_result(cache_subject.clone())
+        {
+            return Ok(value);
+        }
+
         self.enter_call(id, span)?;
+        let impure_trace_cursor = memoization_admitted.then(|| self.impure_input_trace_cursor());
         let result = (|| builtin.apply(self, BuiltinCall::new(id, span, primop.symbol()), &args))();
         self.leave_call();
-        result
+        let value = result?;
+        if let Some(subject) = &cache_subject {
+            self.record_forced_expression_demand(subject);
+        }
+        if let Some(cursor) = impure_trace_cursor {
+            let impure_trace = self.force_cache_impure_input_trace_segment(cursor);
+            self.observe_forced_inline_expression_result(cache_subject, value, impure_trace);
+        }
+        Ok(value)
     }
 
     pub(super) fn eval_strict_ternary_primop_direct(

@@ -4,6 +4,8 @@ use super::*;
 
 const FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION: &[u8] = b"aos-nix-force-expression-identity-v1";
 const FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-force-captured-value-hash-v1";
+const FORCE_FIRST_CLASS_PRIMOP_CALL_IDENTITY_DOMAIN_VERSION: &[u8] =
+    b"aos-nix-force-first-class-primop-call-identity-v1";
 const FORCE_SYNTHETIC_BUILTIN_ATTR_IDENTITY_DOMAIN_VERSION: &[u8] =
     b"aos-nix-force-synthetic-builtin-attr-identity-v1";
 const DERIVATION_ATERM_EXPRESSION_IDENTITY_DOMAIN_VERSION: &[u8] =
@@ -1512,6 +1514,40 @@ impl TreeWalk {
         })
     }
 
+    pub(super) fn force_cache_subject_for_first_class_get_env_call(
+        &self,
+        id: IrId,
+        builtin: Builtin,
+        args: &[EvalPrimOpArg],
+    ) -> Option<ForceCacheSubject> {
+        if !matches!(
+            builtin.execution(),
+            BuiltinExecution::StrictUnary {
+                primop: StrictUnaryPrimOp::GetEnv,
+                ..
+            }
+        ) || args.len() != 1
+            || !self.with_scopes.is_empty()
+            || !self.scoped_globals.is_empty()
+        {
+            return None;
+        }
+        let identity = self.cache_first_class_primop_call_identity_for_current_node(id, builtin)?;
+        let mut free_var_value_hashes = Vec::new();
+        free_var_value_hashes.try_reserve_exact(args.len()).ok()?;
+        for arg in args {
+            free_var_value_hashes.push(self.force_cache_free_var_value_hash(arg.value())?);
+        }
+        Some(ForceCacheSubject {
+            lookup_identity: Some(identity),
+            pure_observation_identity: None,
+            impure_observation_identity: Some(identity),
+            metadata_identity: Some(identity),
+            free_var_value_hashes,
+            memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
+        })
+    }
+
     fn inline_free_var_value_hashes_for_body(
         &self,
         body: EvalNodeRef,
@@ -1814,6 +1850,30 @@ impl TreeWalk {
         hasher.update(&module_hash.as_bytes());
         hasher.update(&node.span.start.to_le_bytes());
         hasher.update(&node.span.end.to_le_bytes());
+        Some(CacheExprIdentity::new(
+            DurableBlake3Hash::from_hasher(hasher),
+            id,
+        ))
+    }
+
+    fn cache_first_class_primop_call_identity_for_current_node(
+        &self,
+        id: IrId,
+        builtin: Builtin,
+    ) -> Option<CacheExprIdentity> {
+        let module = self.modules.get(self.current_module.index())?;
+        let module_hash = Self::cache_module_identity_hash(module)?;
+        let node = module.ir.arena.node(id)?;
+        if node.kind != IrKind::Apply {
+            return None;
+        }
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(FORCE_FIRST_CLASS_PRIMOP_CALL_IDENTITY_DOMAIN_VERSION);
+        hasher.update(b"node-v1");
+        hasher.update(&module_hash.as_bytes());
+        hasher.update(&node.span.start.to_le_bytes());
+        hasher.update(&node.span.end.to_le_bytes());
+        Self::update_cache_identity_chunk(&mut hasher, builtin.name())?;
         Some(CacheExprIdentity::new(
             DurableBlake3Hash::from_hasher(hasher),
             id,
