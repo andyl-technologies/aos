@@ -673,11 +673,11 @@ impl TreeWalk {
         } else {
             None
         };
-        let has_overrides = overrides_symbol.is_some_and(|symbol| {
+        let active_overrides_symbol = overrides_symbol.filter(|symbol| {
             binding_range.clone().any(|binding_index| {
                 matches!(
                     self.current_ir().bindings[binding_index].key,
-                    IrAttrPathSegment::Static(binding_symbol) if binding_symbol == symbol
+                    IrAttrPathSegment::Static(binding_symbol) if binding_symbol == *symbol
                 )
             })
         });
@@ -766,10 +766,13 @@ impl TreeWalk {
                 }
             }
 
-            if has_overrides {
-                let frame_values = frame_values
-                    .as_ref()
-                    .expect("recursive attrsets with overrides have a frame");
+            if let Some(overrides_symbol) = active_overrides_symbol {
+                let Some(frame_values) = frame_values.as_ref() else {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::MissingFrameMetadata { id },
+                        node.span,
+                    ));
+                };
                 let mut slot = 0u32;
                 for binding_index in binding_range.clone() {
                     let binding = self.current_ir().bindings[binding_index];
@@ -792,7 +795,7 @@ impl TreeWalk {
                 self.apply_recursive_attrset_overrides(
                     id,
                     node.span,
-                    overrides_symbol.expect("overrides symbol exists"),
+                    overrides_symbol,
                     frame_values,
                     &static_slots,
                     &mut entries,
