@@ -1096,9 +1096,22 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
 - [ ] **T-PAT-1** Ensure the session/engine driver is built to the §29.1
   enum-of-states + bounded-quantum actor-loop shape. — satisfies [PAT-1],
   [PAT-2]; realized by **T-EXEC-14**, **T-SESS-2** (spec 05 §10, 20 §3).
-- [ ] **T-PAT-4** Ensure the temporal graph follows the §29.4 content-addressed
+- [x] **T-PAT-4** Ensure the temporal graph follows the §29.4 content-addressed
   store + thin/fat + CoW-delta shape. — satisfies [PAT-6]; realized by the 07
   temporal-graph tasks and **T-EXEC-10** (spec 07 §§2–5).
+  - Completed by the temporal-graph model and gates: `crucible::Checkpoint`
+    identity is schedule-derived and independent of cached state,
+    `crucible::NodeBlobRef` represents both baked and CoW-delta VM state,
+    `crucible::CowDeltaRef` records typed VM/device/schedule/log deltas,
+    `crucible::DagStore` / `crucible::LocalDagStore` provide idempotent
+    content-addressed storage, and `TemporalGraph::persist_checkpoint_closure`
+    plus `TemporalGraph::collect_cached_snapshot_store` preserve the
+    store-key closure while fat cache entries can be collected back to thin
+    checkpoints. `crucible::MaterializationPolicy`,
+    `TemporalGraph::evict_fat_checkpoint_to_thin`, and the replay-oracle
+    admission path keep materialization a cache policy rather than identity.
+    `checks.crucible.phase1.gates.contentAddress` and
+    `checks.crucible.phase1.gates.replayOracle` gate the pattern.
 - [ ] **T-PAT-5** Ensure the decision RNG follows the §29.5 name-hash forking
   shape with recorded `RngStreamId`. — satisfies [PAT-7]; realized by
   **T-EXEC-2** and the 04 determinism-contract tasks (spec 04 §4.7).
