@@ -179,6 +179,19 @@ pre {
   margin: 0.7rem 0 1.6rem;
 }
 
+/* Action buttons inside a table cell must never break their label
+ * character-by-character: the data-cell `word-break: break-word` rule (there to
+ * wrap long store-path hashes) would otherwise collapse a narrow action column
+ * into "un / pi / n". Keep buttons and the chips/labels beside them whole. */
+td button { white-space: nowrap; }
+
+/* Wide multi-column tables (cache links, pins) scroll horizontally inside a
+ * narrow settings column rather than squishing every column into unreadable
+ * slivers. The wrapper provides the scroll; the table keeps a sensible minimum
+ * width so it stays legible and only scrolls when it genuinely cannot fit. */
+.table-scroll { overflow-x: auto; margin: 0.6rem 0 1.6rem; }
+.table-scroll table { margin: 0; min-width: 34rem; }
+
 .ok { color: var(--ok); }
 .warn { color: var(--warn); }
 .bad { color: var(--bad); }

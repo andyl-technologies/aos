@@ -2078,17 +2078,11 @@ pub fn cache_page(
         );
     }
 
-    page_with_session(
-        &format!("cache {}", cache.slug),
-        &[
-            ("/-/orgs".into(), "organizations".into()),
-            (format!("/-/org/{org_slug}"), org_slug.to_string()),
-            (String::new(), format!("cache {}", cache.slug)),
-        ],
-        &body,
-        &StateLine::timed(started),
-        &indicator(email),
-    )
+    // Render inside the org settings chrome (left-tabs sidebar) so a cache's
+    // detail page shares the information architecture of every other org/registry
+    // settings page, with "Binary caches" highlighted — rather than a standalone
+    // full-width page.
+    org_settings_chrome(email, org_slug, "caches", &body, started)
 }
 
 /// Render the "Pins (manual GC roots)" section of a cache's detail page.
@@ -2113,8 +2107,12 @@ fn cache_pins_section(org_slug: &str, csrf: &str, cache: &Cache, pins: &[CachePi
     if pins.is_empty() {
         body.push_str("<p class=\"dim\">No manual pins. Add one below to root a store path.</p>\n");
     } else {
+        // A plain `<table>` (the 6-column grid here must NOT use `.linktable`,
+        // which is a 4-column `display:grid` meant for the div-based links list —
+        // applying it to a real table mangles the columns into unreadable slivers).
+        body.push_str("<div class=\"table-scroll\">\n");
         body.push_str(
-            "<table class=\"linktable\"><tr>\
+            "<table><tr>\
              <th>package</th><th>store hash</th><th>closure</th>\
              <th>expires</th><th>created</th><th></th></tr>\n",
         );
@@ -2165,7 +2163,7 @@ fn cache_pins_section(org_slug: &str, csrf: &str, cache: &Cache, pins: &[CachePi
                 csrf = csrf_field(csrf),
             );
         }
-        body.push_str("</table>\n");
+        body.push_str("</table>\n</div>\n");
     }
 
     // -- Add / renew pin -----------------------------------------------------
