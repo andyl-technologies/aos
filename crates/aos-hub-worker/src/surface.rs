@@ -57,6 +57,14 @@ async fn registry_s3_surface(
     let Some(binding) = db.storage_binding(id).await? else {
         return Ok(None);
     };
+    // The instance-default binding *is* the hub's own bound R2 bucket
+    // (`REGISTRY_BUCKET`): read it directly via `env.bucket` (the `Ok(None)`
+    // fallthrough), not over the R2 S3 API — the Worker has no credentials or
+    // public-read path to its own bucket through that endpoint, so an S3 fetch
+    // 400s. Only genuinely external bindings serve their surface over S3.
+    if binding.is_instance_default {
+        return Ok(None);
+    }
     S3Surface::from_binding(&binding, &registry.prefix, sealer)
 }
 
@@ -85,6 +93,11 @@ async fn cache_s3_surface(
     let Some(binding) = db.storage_binding(binding_id).await? else {
         return Ok(None);
     };
+    // Instance-default binding → the hub's bound R2 bucket (read via `env.bucket`,
+    // the `Ok(None)` fallthrough), not the R2 S3 API. See `registry_s3_surface`.
+    if binding.is_instance_default {
+        return Ok(None);
+    }
     S3Surface::from_binding(&binding, &cache.prefix, sealer)
 }
 

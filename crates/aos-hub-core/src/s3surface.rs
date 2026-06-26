@@ -235,7 +235,14 @@ impl S3Surface {
         // resource's prefix — the same containment the filesystem and R2 writers
         // enforce, applied here before the key reaches the origin.
         crate::url_guard::validate_http_surface_path(path)?;
-        let key = format!("{}/{}", self.key_prefix, path);
+        // Avoid a doubled slash when `key_prefix` is empty (a binding whose root
+        // and sub-prefix are both empty) or carries a trailing slash — an
+        // `s3://host/bucket//key` URL is rejected (R2 returns 400).
+        let key = if self.key_prefix.is_empty() {
+            path.to_string()
+        } else {
+            format!("{}/{}", self.key_prefix.trim_end_matches('/'), path)
+        };
         let object_path = format!("/{key}");
         match &self.creds {
             Some(creds) => {
