@@ -29,65 +29,18 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
 
 use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
 
-/// The `keys.toml` schema version this build reads and writes.
-pub const KEYS_TOML_SCHEMA: u32 = 1;
-
-/// A currently active registry signing key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RosterKey {
-    /// Human-chosen stable identifier used by revocation entries.
-    pub id: String,
-    /// Key in `registry:Ed25519:<base64>` form.
-    pub key: String,
-}
-
-/// A planned retired key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RevokedKey {
-    /// Identifier of the roster key being revoked.
-    pub id: String,
-    /// Retired public key, retained for historical provenance verification.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-    /// First transparency sequence that must not trust this retired key.
-    #[serde(
-        default,
-        rename = "provenance-before-sequence",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub provenance_before_sequence: Option<u64>,
-    /// Optional human-readable revocation reason.
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-/// Trust roster stored as the committed tree file `keys.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KeysToml {
-    /// Schema version; must equal [`KEYS_TOML_SCHEMA`].
-    #[serde(default = "default_schema")]
-    pub schema: u32,
-    /// Currently active signing keys (`[[keys]]` in the file).
-    #[serde(default, rename = "keys")]
-    pub active: Vec<RosterKey>,
-    /// Keys declared revoked (`[[revoked]]` in the file).
-    #[serde(default)]
-    pub revoked: Vec<RevokedKey>,
-}
-
-impl Default for KeysToml {
-    fn default() -> Self {
-        Self {
-            schema: KEYS_TOML_SCHEMA,
-            active: Vec::new(),
-            revoked: Vec::new(),
-        }
-    }
-}
+// The committed-roster schema (`KeysToml`, `RosterKey`, `RevokedKey`, and the
+// `KEYS_TOML_SCHEMA` version) moved to the wasm-clean `aos-registry-surface`
+// crate (RFC-0004 Phase 5) so the registry hub's indexer and the Cloudflare
+// Worker can deserialize a committed roster — to extend the trusted key set
+// during a verified walk — without pulling `aos-package` (native-only).
+// Re-exported here so `aos_package::registry::keys::{KeysToml, RosterKey,
+// RevokedKey, KEYS_TOML_SCHEMA}` paths are unchanged; the native load/validate/
+// pin helpers below layer on top.
+pub use aos_registry_surface::manifest::{KeysToml, RevokedKey, RosterKey, KEYS_TOML_SCHEMA};
 
 /// Load and validate `keys.toml` from a checked-out registry tree.
 ///
@@ -248,10 +201,6 @@ fn validate_roster(roster: &KeysToml) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn default_schema() -> u32 {
-    KEYS_TOML_SCHEMA
 }
 
 #[cfg(test)]

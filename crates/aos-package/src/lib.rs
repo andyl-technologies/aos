@@ -1048,6 +1048,12 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: ChannelCommand,
     },
+    /// Git-backed config change requests (hub `refs/hub/changes/*`)
+    Change {
+        /// The change-request operation to run
+        #[command(subcommand)]
+        command: ChangeCommand,
+    },
     /// Static Nix-cache operations
     Cache {
         /// The cache operation to run
@@ -1065,6 +1071,12 @@ pub enum RegistryCommand {
         /// The origin operation to run
         #[command(subcommand)]
         command: OriginCommand,
+    },
+    /// Static web-surface operations (the on-CDN no-JS browse pages)
+    Web {
+        /// The web operation to run
+        #[command(subcommand)]
+        command: WebCommand,
     },
     /// Run the ordered producer release pipeline
     Release {
@@ -1490,6 +1502,48 @@ pub enum ChannelCommand {
     },
 }
 
+/// Git-backed config change-request subcommands.
+///
+/// A hub commits web edits to committed config as *change requests* under
+/// `refs/hub/changes/<id>`, signed by a non-roster draft-signing key (so they
+/// never verify for consumers). These subcommands let a maintainer list, review
+/// the diff of, and **promote** a change request — re-signing the same tree
+/// with a roster key onto the tracked branch.
+#[derive(Subcommand)]
+pub enum ChangeCommand {
+    /// List the registry's open change requests
+    List {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show a change request's diff vs the current branch HEAD
+    Show {
+        /// The change-request id (the `refs/hub/changes/<id>` suffix)
+        id: String,
+        /// Show only file stats
+        #[arg(long)]
+        stat: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Promote a change request: re-sign its tree onto the branch and push
+    Merge {
+        /// The change-request id to promote
+        id: String,
+        /// Signing key file (an SSH private key) to re-sign with
+        #[arg(long)]
+        key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
 /// `store/` realisation-graph subcommands (RFC-0005).
 #[derive(Subcommand)]
 pub enum StoreCommand {
@@ -1618,6 +1672,52 @@ pub enum CacheCommand {
         /// Report candidates without deleting them
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+/// Static web-surface subcommands.
+///
+/// The web surface is RFC-0004's on-CDN, no-JS browse tier: a registry
+/// serves content-bearing `index.html`, JSON snapshots under `web/`, and
+/// `browse/<name>.html` pages from its own bucket, with zero hub in the
+/// serving path. `apr web generate` is the producer-side analogue of
+/// `apr cache generate`.
+#[derive(Subcommand)]
+pub enum WebCommand {
+    /// Generate the static no-JS web surface (index.html, JSON snapshots,
+    /// browse pages) from the committed registry tree
+    Generate {
+        /// Output directory for the generated web surface (default: a
+        /// `web` directory beside the registry clone)
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Branding name shown on pages and in config.json (default: the
+        /// registry.toml name)
+        #[arg(long)]
+        name: Option<String>,
+        /// Optional hub base URL the SPA connects to, recorded in config.json
+        #[arg(long = "hub-url")]
+        hub_url: Option<String>,
+        /// Optional accent color for the SPA theme, recorded in config.json
+        #[arg(long)]
+        accent: Option<String>,
+        /// Optional path to a built Leptos CSR SPA dist (the output of
+        /// `trunk build --release` in crates/aos-registry-spa); when given,
+        /// its wasm/js/css are staged into web/ and the generated pages load
+        /// them, progressively enhancing the no-JS floor
+        #[arg(long = "spa-dist")]
+        spa_dist: Option<PathBuf>,
+        /// Backend URL to upload generated files to; repeat for multiple
+        /// destinations (file://, s3://, sftp://, http://; default: the
+        /// upload_urls persisted by `origin config`)
+        #[arg(long = "upload-url")]
+        upload_urls: Vec<String>,
+        /// Authentication and backend-specific upload options
+        #[command(flatten)]
+        auth: CacheUploadAuthArgs,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
     },
 }
 
@@ -2797,6 +2897,9 @@ async fn run_registry(
         RegistryCommand::Channel { command } => {
             registry_ops::run_channel(config, command, printer).await
         }
+        RegistryCommand::Change { command } => {
+            registry_ops::run_change(config, command, printer).await
+        }
         RegistryCommand::Cache { command } => {
             registry_ops::run_cache(config, command, printer).await
         }
@@ -2806,6 +2909,7 @@ async fn run_registry(
         RegistryCommand::Origin { command } => {
             registry_ops::run_origin(config, command, printer).await
         }
+        RegistryCommand::Web { command } => registry_ops::run_web(config, command, printer).await,
         RegistryCommand::Release {
             semver,
             store_path,

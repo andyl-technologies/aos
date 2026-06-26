@@ -1,0 +1,35 @@
+[package]
+name = "aos-registry-spa"
+version = "0.1.0"
+edition = "2021"
+description = "The registry web-surface SPA (RFC-0004): a Leptos client-side-rendered WASM app that progressively enhances a registry's static no-JS pages and verifies channel partitions in the browser using the hub's own surface reader"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "aos-registry-spa"
+path = "src/main.rs"
+
+[dependencies]
+# In-browser verification reuses the *exact* reader the hub indexer and apm
+# run — the pure, wasm-clean surface core. No divergent parser.
+aos-registry-surface = { workspace = true }
+
+leptos = { version = "0.7", features = ["csr"] }
+leptos_router = { version = "0.7" }
+
+# Same-origin fetches and the optional hub ConnectRPC POST.
+gloo-net = { version = "0.6", default-features = false, features = ["http"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+# Fixture construction for the in-browser verifier's unit tests: software
+# Ed25519 signing keys + the SSHSIG armor the surface crate verifies.
+ed25519-dalek = { workspace = true }

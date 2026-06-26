@@ -53,9 +53,27 @@ use aos_net::{HashAlgorithm, TransferEngine, TransferEngineConfig, TransferReque
 pub struct DownloadRequest {
     /// Full store path of the NAR to download.
     pub store_path: String,
-    /// Cache base URL — the prefix shared by `<base>/<storeHash>.narinfo`
-    /// and `<base>/<narinfo.url>`. No `/nar` suffix.
+    /// Primary cache base URL — the prefix shared by
+    /// `<base>/<storeHash>.narinfo` and `<base>/<narinfo.url>`. No `/nar`
+    /// suffix. This is the highest-priority cache; on a narinfo/NAR
+    /// not-found (404) it falls through to [`Self::fallback_mirrors`]
+    /// (RFC-0004 "Cache stores, stacks, and consistency validation":
+    /// miss-fallthrough, the flattened-`[[caches]]` `try` stack).
     pub mirror_url: String,
+    /// Lower-priority cache base URLs, in descending priority, consulted in
+    /// order when the primary (and earlier fallbacks) return not-found.
+    /// Empty for a single-cache registry, in which case behavior is
+    /// identical to before this field existed.
+    #[allow(clippy::struct_field_names)]
+    pub fallback_mirrors: Vec<String>,
+}
+
+impl DownloadRequest {
+    /// The mirror base URLs to try in order: the primary then each fallback.
+    fn mirror_chain(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.mirror_url.as_str())
+            .chain(self.fallback_mirrors.iter().map(String::as_str))
+    }
 }
 
 /// A `DownloadRequest` paired with its fetched narinfo. Produced by
@@ -155,6 +173,69 @@ pub fn resolve_mirror(registries_base: &Path, registry: &RegistryConfig) -> Stri
     registry.url.trim_end_matches('/').to_string()
 }
 
+/// Determine the full ordered cache base-URL chain for a registry.
+///
+/// Like [`resolve_mirror`], but returns *every* committed-plus-client cache
+/// base URL in descending priority (trailing slashes trimmed), enabling
+/// miss-fallthrough: the narinfo/NAR fetch tries each in turn and only fails
+/// when all return not-found. The first element matches what [`resolve_mirror`]
+/// returns; the rest become a [`DownloadRequest`]'s
+/// [`fallback_mirrors`](DownloadRequest::fallback_mirrors). When no cache is
+/// committed or configured, falls back to the single registry URL — identical
+/// to [`resolve_mirror`].
+///
+/// [`fallback_mirrors`]: DownloadRequest::fallback_mirrors
+pub fn resolve_mirror_chain(registries_base: &Path, registry: &RegistryConfig) -> Vec<String> {
+    let registries_dir = registries_base.join(&registry.name);
+    let mirrors = crate::registry_ops::resolve_mirrors_for_registry(&registries_dir, registry);
+
+    let mut chain: Vec<String> = Vec::new();
+    for cache in &mirrors {
+        let url = cache.url.trim_end_matches('/').to_string();
+        if !chain.contains(&url) {
+            chain.push(url);
+        }
+    }
+    if chain.is_empty() {
+        chain.push(registry.url.trim_end_matches('/').to_string());
+    }
+    chain
+}
+
+/// Split a mirror chain into its primary URL and fallback URLs.
+///
+/// The first element of `chain` (the highest-priority cache) becomes the
+/// [`DownloadRequest::mirror_url`]; the rest become its
+/// [`fallback_mirrors`](DownloadRequest::fallback_mirrors). An empty chain
+/// yields an empty primary (no caches configured) — callers should pass a
+/// non-empty chain from [`resolve_mirror_chain`].
+pub fn split_mirror_chain(chain: &[String]) -> (String, Vec<String>) {
+    match chain.split_first() {
+        Some((primary, rest)) => (primary.clone(), rest.to_vec()),
+        None => (String::new(), Vec::new()),
+    }
+}
+
+/// Whether an error is a cache *not-found* (a missing object) — the signal to
+/// fall through to the next cache rather than fail.
+///
+/// Recognizes both transports: an HTTP 404 (the protocol layer formats these
+/// as `HTTP 404 for …`) and a `file://` miss (a [`std::io::Error`] of kind
+/// [`NotFound`](std::io::ErrorKind::NotFound) somewhere in the cause chain).
+/// Any other error — hash mismatch, transient network failure, a non-404
+/// status — is *not* a miss and must not trigger fallthrough.
+fn is_not_found(err: &anyhow::Error) -> bool {
+    if err
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|io| io.kind() == std::io::ErrorKind::NotFound)
+    {
+        return true;
+    }
+    let message = format!("{err:#}");
+    message.contains("HTTP 404")
+}
+
 // ---------------------------------------------------------------------------
 // Narinfo fetch
 // ---------------------------------------------------------------------------
@@ -184,7 +265,6 @@ pub async fn fetch_narinfos(
     let mut handles = Vec::with_capacity(requests.len());
 
     for (idx, req) in requests.iter().enumerate() {
-        let url = narinfo_url(&req.mirror_url, &req.store_path);
         let req_clone = req.clone();
         let engine = Arc::clone(&engine);
         let permit = Arc::clone(&semaphore)
@@ -193,13 +273,19 @@ pub async fn fetch_narinfos(
             .context("acquiring semaphore permit")?;
 
         let handle = tokio::spawn(async move {
-            let result = fetch_one_narinfo(&engine, &url, &req_clone).await;
+            let result = fetch_one_narinfo(&engine, &req_clone).await;
             drop(permit);
-            result.map(|info| {
+            result.map(|(mirror_url, info)| {
                 (
                     idx,
                     ResolvedDownload {
-                        req: req_clone,
+                        req: DownloadRequest {
+                            // Pin the request to the mirror that actually
+                            // served the narinfo, so the matching NAR is
+                            // fetched from the same cache without re-probing.
+                            mirror_url,
+                            ..req_clone
+                        },
                         narinfo: info,
                     },
                 )
@@ -274,6 +360,7 @@ pub async fn fetch_narinfo_closure(
                 candidates.push(DownloadRequest {
                     store_path: reference_store_path(reference, &item.narinfo.store_path),
                     mirror_url: item.req.mirror_url.clone(),
+                    fallback_mirrors: item.req.fallback_mirrors.clone(),
                 });
             }
 
@@ -308,8 +395,38 @@ async fn filter_missing_download_requests(
         .collect())
 }
 
-/// GET and parse a single narinfo document.
+/// GET and parse a single narinfo document, falling through on cache misses.
+///
+/// Tries each cache in the request's [`mirror_chain`](DownloadRequest), in
+/// priority order: a not-found (404 / `file://` miss) from one cache falls
+/// through to the next, and only an all-caches miss surfaces the last
+/// not-found error. Any non-miss error (hash mismatch, transient network,
+/// unparseable body) fails immediately without consulting later caches.
+///
+/// Returns the base URL of the cache that served the narinfo alongside the
+/// parsed document, so the NAR can be fetched from the same cache.
 async fn fetch_one_narinfo(
+    engine: &TransferEngine,
+    req: &DownloadRequest,
+) -> Result<(String, NarInfo)> {
+    let mut last_not_found: Option<anyhow::Error> = None;
+    for mirror_url in req.mirror_chain() {
+        let url = narinfo_url(mirror_url, &req.store_path);
+        match fetch_one_narinfo_from(engine, &url, req).await {
+            Ok(info) => return Ok((mirror_url.to_string(), info)),
+            Err(err) if is_not_found(&err) => {
+                // Cache miss: fall through to the next cache in priority order.
+                last_not_found = Some(err);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_not_found
+        .unwrap_or_else(|| anyhow::anyhow!("no cache configured for {}", req.store_path)))
+}
+
+/// GET and parse a single narinfo document from one specific cache URL.
+async fn fetch_one_narinfo_from(
     engine: &TransferEngine,
     url: &str,
     req: &DownloadRequest,
@@ -422,15 +539,18 @@ fn push_narinfo_dependencies_first(
 /// cache serves an uncompressed NAR (`Compression: none`) without one, the
 /// `NarHash` covers the same bytes and is used instead. A valid cached copy
 /// at `dest` short-circuits the network entirely.
+///
+/// Like the narinfo fetch, the NAR download falls through on a cache miss:
+/// the request's [`mirror_chain`](DownloadRequest) is tried in priority order
+/// (starting from the cache that served the narinfo), and a not-found from one
+/// cache moves on to the next; only an all-caches miss surfaces. The narinfo's
+/// `URL:` field is content-addressed and therefore identical across caches.
 async fn download_one(
     engine: &TransferEngine,
     resolved: &ResolvedDownload,
     dest: &Path,
     _printer: &Printer,
 ) -> Result<DownloadResult> {
-    let url = join_cache_url(&resolved.req.mirror_url, &resolved.narinfo.url);
-    let label = short_label(&resolved.req.store_path);
-
     // FileHash is authoritative for the compressed stream when the cache
     // emits a compressed NAR. AOS-server populates it unconditionally;
     // a missing FileHash on a compressed NAR is a server bug we want to
@@ -452,10 +572,47 @@ async fn download_one(
         return Ok(result);
     }
 
-    let transfer_req = TransferRequest::get(&url).with_hash(HashAlgorithm::Sha256, &expected_hex);
+    let label = short_label(&resolved.req.store_path);
+    let mut last_not_found: Option<anyhow::Error> = None;
+    for mirror_url in resolved.req.mirror_chain() {
+        let url = join_cache_url(mirror_url, &resolved.narinfo.url);
+        match download_nar_from(engine, &url, dest, &expected_hex, &resolved.narinfo, &label).await
+        {
+            Ok(()) => {
+                return Ok(DownloadResult {
+                    store_path: resolved.req.store_path.clone(),
+                    local_path: dest.to_path_buf(),
+                    download_hash: file_hash,
+                    nar_hash: resolved.narinfo.nar_hash.clone(),
+                    references: resolved.narinfo.references.clone(),
+                    deriver: resolved.narinfo.deriver.clone(),
+                });
+            }
+            Err(err) if is_not_found(&err) => {
+                // Cache miss: fall through to the next cache in priority order.
+                last_not_found = Some(err);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_not_found
+        .unwrap_or_else(|| anyhow::anyhow!("no cache configured for {}", resolved.req.store_path)))
+}
 
-    let pb_size = resolved.narinfo.file_size.unwrap_or(0);
-    let pb = create_download_bar(pb_size, &label);
+/// Download one NAR from a single fully-qualified URL into `dest`, verifying
+/// the compressed-stream hash.
+async fn download_nar_from(
+    engine: &TransferEngine,
+    url: &str,
+    dest: &Path,
+    expected_hex: &str,
+    narinfo: &NarInfo,
+    label: &str,
+) -> Result<()> {
+    let transfer_req = TransferRequest::get(url).with_hash(HashAlgorithm::Sha256, expected_hex);
+
+    let pb_size = narinfo.file_size.unwrap_or(0);
+    let pb = create_download_bar(pb_size, label);
 
     let result = engine.execute(transfer_req).await;
 
@@ -467,21 +624,13 @@ async fn download_one(
         tokio::fs::write(dest, body)
             .await
             .with_context(|| format!("writing to {}", dest.display()))?;
+        Ok(())
     } else {
-        return Err(AosError::DownloadError {
+        Err(AosError::DownloadError {
             message: format!("no response body for {url}"),
         }
-        .into());
+        .into())
     }
-
-    Ok(DownloadResult {
-        store_path: resolved.req.store_path.clone(),
-        local_path: dest.to_path_buf(),
-        download_hash: file_hash,
-        nar_hash: resolved.narinfo.nar_hash.clone(),
-        references: resolved.narinfo.references.clone(),
-        deriver: resolved.narinfo.deriver.clone(),
-    })
 }
 
 /// Reuse a previously downloaded NAR at `dest` if its hash still matches.
@@ -826,6 +975,7 @@ mod tests {
             req: DownloadRequest {
                 store_path: "/nix/store/abc123-package".to_string(),
                 mirror_url: format!("file://{}", source.path().display()),
+                fallback_mirrors: Vec::new(),
             },
             narinfo: NarInfo {
                 store_path: "/nix/store/abc123-package".to_string(),
@@ -868,6 +1018,7 @@ mod tests {
             req: DownloadRequest {
                 store_path: "/nix/store/abc123-package".to_string(),
                 mirror_url: "http://127.0.0.1:9".to_string(),
+                fallback_mirrors: Vec::new(),
             },
             narinfo: NarInfo {
                 store_path: "/nix/store/abc123-package".to_string(),
@@ -912,6 +1063,7 @@ mod tests {
             req: DownloadRequest {
                 store_path: "/nix/store/abc123-package".to_string(),
                 mirror_url: format!("file://{}", source.path().display()),
+                fallback_mirrors: Vec::new(),
             },
             narinfo: NarInfo {
                 store_path: "/nix/store/abc123-package".to_string(),
@@ -937,6 +1089,101 @@ mod tests {
         assert_eq!(std::fs::read(&results[0].local_path).unwrap(), nar_bytes);
     }
 
+    #[test]
+    fn is_not_found_recognizes_404_and_file_miss() {
+        let http = anyhow::anyhow!("downloading x: HTTP 404 for http://c/a.narinfo: not found");
+        assert!(is_not_found(&http));
+        let io = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no such file",
+        ));
+        assert!(is_not_found(&io));
+        let other = anyhow::anyhow!("hash mismatch for http://c/a.nar");
+        assert!(!is_not_found(&other));
+        let http_500 = anyhow::anyhow!("HTTP 500 for http://c/a.narinfo");
+        assert!(!is_not_found(&http_500));
+    }
+
+    #[test]
+    fn split_mirror_chain_separates_primary_and_fallbacks() {
+        let chain = vec!["https://a".to_string(), "https://b".to_string()];
+        let (primary, fallbacks) = split_mirror_chain(&chain);
+        assert_eq!(primary, "https://a");
+        assert_eq!(fallbacks, vec!["https://b".to_string()]);
+        assert_eq!(split_mirror_chain(&[]), (String::new(), Vec::new()));
+    }
+
+    /// Write a valid narinfo + NAR for `store_path` into a `file://` cache
+    /// directory, returning the directory's `file://` URL. The NAR bytes are
+    /// `b"narbytes"` and the narinfo's `URL:` points at it.
+    fn seed_cache(store_path: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let hash = narinfo::store_hash(store_path);
+        let nar_bytes = b"narbytes";
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
+        std::fs::create_dir_all(dir.path().join("nar")).unwrap();
+        std::fs::write(dir.path().join("nar/data.nar"), nar_bytes).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{hash}.narinfo")),
+            format!(
+                "StorePath: {store_path}\nURL: nar/data.nar\nNarHash: sha256:def\n\
+                 NarSize: 8\nFileHash: {file_hash}\nFileSize: 8\nCompression: none\n\
+                 References: \n"
+            ),
+        )
+        .unwrap();
+        let url = format!("file://{}", dir.path().display());
+        (dir, url)
+    }
+
+    #[tokio::test]
+    async fn narinfo_fetch_falls_through_to_second_cache_on_miss() {
+        let printer = Printer::new(0, true, false);
+        let engine = Arc::new(default_engine());
+        let store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pkg-1.0";
+
+        // First cache is empty (every narinfo 404s); the second holds it.
+        let empty = tempfile::TempDir::new().unwrap();
+        let empty_url = format!("file://{}", empty.path().display());
+        let (_holder, holder_url) = seed_cache(store_path);
+
+        let request = DownloadRequest {
+            store_path: store_path.to_string(),
+            mirror_url: empty_url,
+            fallback_mirrors: vec![holder_url.clone()],
+        };
+        let resolved = fetch_narinfos(engine, std::slice::from_ref(&request), 1, &printer)
+            .await
+            .unwrap();
+
+        assert_eq!(resolved.len(), 1);
+        // The request was pinned to the cache that actually served it, so the
+        // NAR fetch targets the holder.
+        assert_eq!(resolved[0].req.mirror_url, holder_url);
+        assert_eq!(resolved[0].narinfo.store_path, store_path);
+    }
+
+    #[tokio::test]
+    async fn narinfo_fetch_fails_when_all_caches_miss() {
+        let printer = Printer::new(0, true, false);
+        let engine = Arc::new(default_engine());
+        let store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-pkg-1.0";
+
+        let a = tempfile::TempDir::new().unwrap();
+        let b = tempfile::TempDir::new().unwrap();
+        let request = DownloadRequest {
+            store_path: store_path.to_string(),
+            mirror_url: format!("file://{}", a.path().display()),
+            fallback_mirrors: vec![format!("file://{}", b.path().display())],
+        };
+
+        let err = fetch_narinfos(engine, std::slice::from_ref(&request), 1, &printer)
+            .await
+            .unwrap_err();
+        // The surfaced error is the (last) not-found, not a generic failure.
+        assert!(is_not_found(&err), "expected not-found, got: {err:#}");
+    }
+
     #[tokio::test]
     async fn fetch_narinfos_empty() {
         let printer = Printer::new(0, true, false);
@@ -950,6 +1197,7 @@ mod tests {
             req: DownloadRequest {
                 store_path: store_path.to_string(),
                 mirror_url: "http://cache.example.invalid".to_string(),
+                fallback_mirrors: Vec::new(),
             },
             narinfo: NarInfo {
                 store_path: store_path.to_string(),

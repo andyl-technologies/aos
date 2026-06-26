@@ -37,7 +37,8 @@
 //!   a retirement); [`run_trust`] manages the consumer-side pinned trust
 //!   store.
 //! - **Distribution**: [`run_cache`] generates and uploads the static Nix
-//!   binary cache; [`run_origin`] uploads the static git origin files.
+//!   binary cache; [`run_origin`] uploads the static git origin files;
+//!   [`run_web`] generates and uploads the static no-JS web surface.
 //!
 //! After any operation that adds commits or moves refs, the static
 //! dumb-HTTP object store metadata is refreshed so plain-file origins stay
@@ -77,6 +78,7 @@ use crate::registry::static_upload;
 use crate::registry::store::{self, DepEdge, NarBytes, Realisation, StoreMap, UpsertOutcome};
 use crate::registry::tuf;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
+use crate::registry::webgen::{self, WebConfig};
 use crate::security::{
     KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key, verify_tag_signature,
 };
@@ -94,8 +96,8 @@ use crate::types::{
     validate_permissions_meta, validate_platform_name, validate_registry_name,
 };
 use crate::{
-    BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
-    SbCertsCommand, StoreCommand, TrustCommand, UploadConfigField,
+    BranchCommand, CacheCommand, CacheUploadAuthArgs, ChangeCommand, ChannelCommand, KeysCommand,
+    OriginCommand, SbCertsCommand, StoreCommand, TrustCommand, UploadConfigField, WebCommand,
 };
 
 #[cfg(not(test))]
@@ -7068,6 +7070,273 @@ pub async fn run_channel(
     }
 }
 
+/// The remote ref namespace a hub writes git-backed config change requests to.
+///
+/// A change request lives at `refs/hub/changes/<id>` — a ref, not a branch, so
+/// consumers (who follow only signed tags and partitions) never see it. `apr
+/// change` fetches these into a local `refs/hub/changes/*` mirror.
+const HUB_CHANGES_NS: &str = "refs/hub/changes/";
+
+/// The `AOS-Change-Id` commit-message trailer a hub stamps on draft commits.
+const CHANGE_ID_TRAILER: &str = "AOS-Change-Id";
+
+/// Dispatch the `apr change` subcommands (RFC-0004 "Configuration management",
+/// git-backed change requests).
+///
+/// A hub commits web edits to committed config as change requests under
+/// `refs/hub/changes/<id>`, signed by a non-roster draft-signing key. These
+/// subcommands let a maintainer review and **promote** them locally:
+///
+/// - `list` fetches the remote's `refs/hub/changes/*` and lists each draft.
+/// - `show` fetches one draft and diffs it against the current branch HEAD.
+/// - `merge` fetches one draft, verifies it is a fast-forward of HEAD, replays
+///   its tree as a new commit re-signed with a roster key, and pushes — the
+///   draft (hub-signed, non-roster) becomes roster-signed state consumers
+///   accept. The hub's draft-signing key is **not** a roster key, so a draft
+///   never verifies for consumers until this promotion.
+///
+/// # Errors
+///
+/// Returns an error on a missing registry/clone, a fetch/push failure, an
+/// unknown change id, a non-fast-forwardable draft, a missing signing key, or
+/// any underlying git failure.
+pub async fn run_change(
+    config: &ApmConfig,
+    command: &ChangeCommand,
+    printer: &Printer,
+) -> Result<()> {
+    match command {
+        ChangeCommand::List { registry } => change_list(config, registry.as_deref(), printer).await,
+        ChangeCommand::Show { id, stat, registry } => {
+            change_show(config, id, *stat, registry.as_deref(), printer).await
+        }
+        ChangeCommand::Merge {
+            id,
+            key,
+            key_id,
+            registry,
+        } => {
+            change_merge(
+                config,
+                id,
+                key.as_deref(),
+                key_id.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+    }
+}
+
+/// Fetch the remote's `refs/hub/changes/*` into the local clone, mirroring them
+/// under the same namespace. Returns nothing; the refs are then readable
+/// locally with `git for-each-ref`/`git log`.
+fn fetch_change_refs(dir: &Path) -> Result<()> {
+    let refspec = format!("+{HUB_CHANGES_NS}*:{HUB_CHANGES_NS}*");
+    git_transport(dir, &["fetch", "origin", &refspec, "--force"])?;
+    Ok(())
+}
+
+/// The local ref path for change request `id`.
+fn change_ref(id: &str) -> String {
+    format!("{HUB_CHANGES_NS}{id}")
+}
+
+/// One change request discovered in the local `refs/hub/changes/*` mirror.
+struct DiscoveredChange {
+    id: String,
+    commit: String,
+    summary: String,
+    change_id_trailer: Option<String>,
+}
+
+/// List the change requests mirrored under `refs/hub/changes/*`.
+fn discover_changes(dir: &Path) -> Result<Vec<DiscoveredChange>> {
+    let listing = git(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%09%(objectname)%09%(contents:subject)",
+            HUB_CHANGES_NS,
+        ],
+    )?;
+    let mut out = Vec::new();
+    for line in listing.lines().filter(|l| !l.trim().is_empty()) {
+        let mut parts = line.splitn(3, '\t');
+        let (Some(refname), Some(commit)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let summary = parts.next().unwrap_or("").to_string();
+        let id = refname
+            .strip_prefix(HUB_CHANGES_NS)
+            .unwrap_or(refname)
+            .to_string();
+        let body = git(dir, &["log", "-1", "--format=%B", commit]).unwrap_or_default();
+        let change_id_trailer = body.lines().find_map(|l| {
+            l.trim()
+                .strip_prefix(&format!("{CHANGE_ID_TRAILER}:"))
+                .map(|rest| rest.trim().to_string())
+        });
+        out.push(DiscoveredChange {
+            id,
+            commit: commit.to_string(),
+            summary,
+            change_id_trailer,
+        });
+    }
+    Ok(out)
+}
+
+/// `apr change list` — fetch and list the registry's open change requests.
+async fn change_list(config: &ApmConfig, registry: Option<&str>, printer: &Printer) -> Result<()> {
+    let dir = registry_dir(config, registry)?;
+    fetch_change_refs(&dir)?;
+    let changes = discover_changes(&dir)?;
+
+    if printer.mode() == OutputMode::Json {
+        let rows: Vec<_> = changes
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "commit": c.commit,
+                    "summary": c.summary,
+                    "change_id": c.change_id_trailer,
+                })
+            })
+            .collect();
+        printer.json(&serde_json::json!({ "change_requests": rows }));
+        return Ok(());
+    }
+    if changes.is_empty() {
+        printer.info("No open change requests.");
+        return Ok(());
+    }
+    for change in &changes {
+        printer.plain(&format!(
+            "{}  {}  {}",
+            &change.commit[..change.commit.len().min(12)],
+            change.id,
+            change.summary
+        ));
+    }
+    Ok(())
+}
+
+/// `apr change show <id>` — diff a change request vs the current branch HEAD.
+async fn change_show(
+    config: &ApmConfig,
+    id: &str,
+    stat: bool,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    let dir = registry_dir(config, registry)?;
+    fetch_change_refs(&dir)?;
+    let reference = change_ref(id);
+    if !git_ref_exists(&dir, &reference)? {
+        bail!("no change request '{id}' (looked for {reference})");
+    }
+    let mut args = vec!["diff", "HEAD", reference.as_str()];
+    if stat {
+        args.push("--stat");
+    }
+    let output = git(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "id": id,
+            "ref": reference,
+            "stat": stat,
+            "clean": output.is_empty(),
+            "output": output,
+        }));
+        return Ok(());
+    }
+    if output.is_empty() {
+        printer.info("Change request matches the current branch (no diff).");
+    } else {
+        printer.plain(&output);
+    }
+    Ok(())
+}
+
+/// `apr change merge <id>` — promote a change request onto the tracked branch.
+///
+/// Fetches the draft, verifies it is a fast-forward of the current HEAD (so its
+/// tree cleanly replaces the branch tip), replays its tree as a new commit
+/// re-signed with the maintainer's roster key, refreshes the static object
+/// store, and pushes. The promotion turns a non-roster, hub-signed draft into
+/// roster-signed state consumers accept.
+async fn change_merge(
+    config: &ApmConfig,
+    id: &str,
+    key: Option<&str>,
+    key_id: Option<&str>,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
+    fetch_change_refs(&dir)?;
+    let reference = change_ref(id);
+    if !git_ref_exists(&dir, &reference)? {
+        bail!("no change request '{id}' (looked for {reference})");
+    }
+
+    // The draft must be a fast-forward of HEAD: the current tip is an ancestor
+    // of the draft, so replaying its tree is an unambiguous promotion (not a
+    // merge). A stale draft (HEAD moved on past its base) is rejected.
+    let (is_ancestor, _, _) = git_try(&dir, &["merge-base", "--is-ancestor", "HEAD", &reference])?;
+    if !is_ancestor {
+        bail!(
+            "change request '{id}' is not a fast-forward of the current branch HEAD; \
+             it was branched from an older commit — re-create the change against the \
+             current tip before merging"
+        );
+    }
+
+    // Show the diff so the maintainer reviews exactly what they are signing.
+    let diff = git(&dir, &["diff", "HEAD", &reference])?;
+    if !diff.is_empty() {
+        printer.plain(&diff);
+    }
+
+    // Resolve the roster signing key (the same producer signing path the rest
+    // of `apr` uses).
+    let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+
+    // Replay the draft's tree onto the working tree + index, then commit it as a
+    // fresh, roster-signed child of HEAD (a cherry-pick of the change).
+    let change_commit = git(&dir, &["rev-parse", &reference])?;
+    git(&dir, &["read-tree", "-u", "--reset", &change_commit])?;
+    let subject = git(&dir, &["log", "-1", "--format=%s", &reference])?;
+    let message = format!("{subject}\n\npromoted from change request {id}");
+    commit_staged_registry(&dir, &message, Some(signing_key.path()))?;
+
+    // Refresh the dumb-HTTP object store so the new commit is fetchable, then
+    // push the branch.
+    refresh_registry_object_store(&dir)?;
+    let branch = current_git_branch(&dir)?;
+    git_transport(&dir, &["push", "origin", &branch])?;
+
+    let new_commit = git(&dir, &["rev-parse", "HEAD"])?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "id": id,
+            "branch": branch,
+            "commit": new_commit,
+            "promoted_from": change_commit,
+        }));
+        return Ok(());
+    }
+    printer.info(&format!(
+        "Promoted change request {id} as {} on {branch} (pushed).",
+        &new_commit[..new_commit.len().min(12)]
+    ));
+    Ok(())
+}
+
 /// `apr cache` subcommands for the static Nix binary cache.
 ///
 /// `generate` renders the registry's published store paths into a static
@@ -7562,6 +7831,78 @@ pub async fn run_cache(
                     output.display(),
                 ));
             }
+            Ok(())
+        }
+    }
+}
+
+/// `apr web` subcommands for the static on-CDN web surface.
+///
+/// `generate` renders the committed registry tree into the no-JS web
+/// surface — `index.html`, `web/config.json`, `web/index.json`, per-package
+/// `web/packages/<name>.json` snapshots, and `browse/<name>.html` static
+/// pages — into `--output` (defaulting to a `web` directory beside the
+/// registry clone), then optionally uploads it to each `--upload-url`
+/// (falling back to the `upload_urls` persisted by `apr origin config` when
+/// no flag is given), reusing the same static-upload path as
+/// `apr cache generate` / `apr origin upload`.
+///
+/// The SPA dist (the WASM app) is out of scope here: this command emits the
+/// content-bearing no-JS floor that the SPA progressively enhances when it
+/// is dropped in alongside.
+///
+/// # Errors
+///
+/// Fails when web-surface generation or an upload fails.
+pub async fn run_web(config: &ApmConfig, command: &WebCommand, printer: &Printer) -> Result<()> {
+    match command {
+        WebCommand::Generate {
+            output,
+            name,
+            hub_url,
+            accent,
+            spa_dist,
+            upload_urls,
+            auth,
+            registry,
+        } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            let output_dir = output.clone().unwrap_or_else(|| dir.join("web"));
+            let upload_urls = resolve_upload_urls(config, &registry_name, upload_urls);
+
+            let web_config = WebConfig {
+                name: name.clone().unwrap_or_default(),
+                accent: accent.clone(),
+                hub_url: hub_url.clone(),
+                spa_dist: spa_dist.clone(),
+            };
+            let written = webgen::generate_web_surface(&dir, &output_dir, web_config)?;
+
+            printer.success(&format!(
+                "Generated web surface: {} file(s) in {}",
+                written.len(),
+                output_dir.display(),
+            ));
+
+            if !upload_urls.is_empty() {
+                let auth = auth
+                    .auth_options_with_config(registry_upload_auth_config(config, &registry_name));
+                webgen::upload_web_surface_to_all(&output_dir, &upload_urls, &auth, printer)
+                    .await?;
+            }
+
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "web_generate",
+                    "registry": registry_name,
+                    "output_dir": output_dir.to_string_lossy().to_string(),
+                    "files": written.len(),
+                    "upload_urls": upload_urls,
+                    "uploaded": !upload_urls.is_empty(),
+                }));
+            }
+
             Ok(())
         }
     }

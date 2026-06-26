@@ -14,6 +14,7 @@ pub mod describe;
 pub mod fmt;
 pub mod gc;
 pub mod graph;
+pub mod hub;
 pub mod lint;
 pub mod package;
 pub mod prefetch;

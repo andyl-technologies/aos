@@ -37,8 +37,8 @@ use anyhow::{Context, Result};
 use super::config::ApmConfig;
 use super::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
-    fetch_narinfos, order_resolved_downloads, reference_store_path, resolve_mirror,
-    resolved_downloads_json,
+    fetch_narinfos, order_resolved_downloads, reference_store_path, resolve_mirror_chain,
+    resolved_downloads_json, split_mirror_chain,
 };
 use super::exposed_units::{
     rebuild_generation_expose_image_roots, rebuild_generation_expose_roots,
@@ -1121,9 +1121,14 @@ fn build_expose_artifact_download_requests(
         let registry = registries
             .get_registry(&artifact.registry_name)
             .with_context(|| format!("registry '{}' not loaded", artifact.registry_name))?;
+        let chain = crate::download::resolve_mirror_chain(
+            &config.scope.registries_path(),
+            &registry.config,
+        );
         requests.push(DownloadRequest {
             store_path: artifact.store_path.clone(),
-            mirror_url: resolve_mirror(&config.scope.registries_path(), &registry.config),
+            mirror_url: chain.first().cloned().unwrap_or_default(),
+            fallback_mirrors: chain.into_iter().skip(1).collect(),
         });
     }
 
@@ -1727,9 +1732,10 @@ fn build_download_requests(
     to_download: &[&PackageMeta],
     config: &ApmConfig,
 ) -> Result<Vec<DownloadRequest>> {
-    // Build a map of registry_name -> mirror_url for quick lookup.
+    // Build a map of registry_name -> mirror chain (primary + fallbacks) for
+    // quick lookup. The chain enables narinfo/NAR miss-fallthrough.
     let registries_base = config.scope.registries_path();
-    let mirror_map: std::collections::HashMap<String, String> = closures
+    let mirror_map: std::collections::HashMap<String, Vec<String>> = closures
         .iter()
         .map(|c| {
             let reg_config = config
@@ -1737,13 +1743,13 @@ fn build_download_requests(
                 .iter()
                 .find(|(cfg, _)| cfg.name == c.registry_name)
                 .map(|(cfg, _)| cfg);
-            let mirror_url = if let Some(cfg) = reg_config {
-                resolve_mirror(&registries_base, cfg)
+            let chain = if let Some(cfg) = reg_config {
+                resolve_mirror_chain(&registries_base, cfg)
             } else {
                 // Fallback: construct from the default pattern.
-                format!("https://registry.aos.dev/{}", c.registry_name)
+                vec![format!("https://registry.aos.dev/{}", c.registry_name)]
             };
-            (c.registry_name.clone(), mirror_url)
+            (c.registry_name.clone(), chain)
         })
         .collect();
 
@@ -1765,13 +1771,15 @@ fn build_download_requests(
         let registry_name = hash_to_registry
             .get(&hash)
             .context("internal error: missing registry for package")?;
-        let mirror_url = mirror_map
+        let chain = mirror_map
             .get(registry_name)
             .context("internal error: missing mirror for registry")?;
+        let (mirror_url, fallback_mirrors) = split_mirror_chain(chain);
 
         requests.push(DownloadRequest {
             store_path: meta.store_path.clone(),
-            mirror_url: mirror_url.clone(),
+            mirror_url,
+            fallback_mirrors,
         });
     }
 
