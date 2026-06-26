@@ -162,7 +162,7 @@ in {
       singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase1.gates.singleVmFingerprint";
-        taskIds = ["T-PLAN-3" "T-HARN-6" "T-HARN-7" "T-DET-8" "T-DET-9" "T-TIME-8" "T-TIME-9" "T-EXEC-17"];
+        taskIds = ["T-PLAN-3" "T-HARN-6" "T-HARN-7" "T-DET-8" "T-DET-9" "T-TIME-8" "T-TIME-9" "T-EXEC-17" "T-EXEC-18"];
       };
       divergenceBisect = import ./phase1-divergence-bisect.nix {
         inherit pkgs lib;
