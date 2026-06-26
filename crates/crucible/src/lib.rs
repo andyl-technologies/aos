@@ -33,13 +33,14 @@ pub use model::{
     Configuration, ContentHash, CowDeltaKind, CowDeltaRef, CowSharingStats, DagStore,
     DagStoreError, DagStoreReproductionArtifact, Decision, DecisionRngState, DeliveryOrderDecision,
     DeviceId, DeviceOverlayDelta, DeviceRngState, EngineError, EventKey, EventLogOffset,
-    FaultDecision, FaultId, FaultState, FrontierChild, FrontierCoveredChild,
+    FaultDecision, FaultId, FaultState, FaultTag, FrontierChild, FrontierCoveredChild,
     FrontierReductionPolicy, FrontierReductionReason, FrontierReductionReport, GenesisCheckpoint,
     Icount, IrqVector, LinkDef, LinkLossProbability, LocalDagStore, MIN_LINK_LATENCY,
-    MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore, NodeBlobRef,
-    NodeClockSkew, NodeCounter, NodeId, OverrideDecision, PartialOrderIndependenceProof,
-    PartialOrderReductionKey, PartialOrderReductionPolicy, PendingFrame, PreemptionDecision,
-    PreemptionKind, ReadyPoint, ReplayOracleCheck, RngDecision, RngStreamId, RngStreamPosition,
+    MaterializationPolicy, MaterializationTrigger, MaterializedState, MembershipFault,
+    MemoryDagStore, NodeBlobRef, NodeClockSkew, NodeCounter, NodeId, OverrideDecision,
+    PartialOrderIndependenceProof, PartialOrderReductionKey, PartialOrderReductionPolicy,
+    PartitionDirection, PendingFrame, Plan, PlanEntry, PreemptionDecision, PreemptionKind,
+    ReadyPoint, ReplayOracleCheck, RestartPolicy, RngDecision, RngStreamId, RngStreamPosition,
     RuntimeState, SavevmCompletenessHedge, ScenarioDef, Schedule, ScheduleError, SchedulerState,
     SchedulingPoint, SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
     SearchReplayOracleSamplingReport, Shift, SimDuration, SimInstant, SimOffset, State,
@@ -1899,6 +1900,229 @@ mod tests {
         );
     }
 
+    #[test]
+    fn membership_plan_faults_layer_over_static_world_topology() {
+        let world = world_from_nodes_and_links(
+            vec![
+                ready_node(
+                    "a",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 1 },
+                    },
+                ),
+                ready_node(
+                    "b",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 2 },
+                    },
+                ),
+                ready_node(
+                    "c",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 3 },
+                    },
+                ),
+            ],
+            vec![link("a", "b"), link("b", "c")],
+        );
+        let topology = world.static_topology();
+        let plan = match Plan::from_entries_for_world(
+            &world,
+            vec![
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 0 },
+                    tag: tag("joining-c"),
+                    fault: MembershipFault::NotYetJoined { node: node_id("c") },
+                },
+                PlanEntry::Heal {
+                    at: VirtualTime { ticks: 10 },
+                    tag: tag("joining-c"),
+                },
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 20 },
+                    tag: tag("crash-a"),
+                    fault: MembershipFault::Crash {
+                        node: node_id("a"),
+                        restart: RestartPolicy::FromReadyPoint,
+                    },
+                },
+                PlanEntry::Heal {
+                    at: VirtualTime { ticks: 30 },
+                    tag: tag("crash-a"),
+                },
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 40 },
+                    tag: tag("split-ab"),
+                    fault: MembershipFault::Partition {
+                        endpoint_a: node_id("a"),
+                        endpoint_b: node_id("b"),
+                        direction: PartitionDirection::Bidirectional,
+                    },
+                },
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 50 },
+                    tag: tag("isolate-b"),
+                    fault: MembershipFault::Isolate { node: node_id("b") },
+                },
+            ],
+        ) {
+            Ok(plan) => plan,
+            Err(error) => panic!("membership plan should reference declared topology: {error}"),
+        };
+
+        assert_eq!(plan.entries().len(), 6);
+        assert_eq!(world.static_topology(), topology);
+        assert_eq!(
+            topology.participants,
+            vec![node_id("a"), node_id("b"), node_id("c")]
+        );
+        assert_eq!(topology.bake_nodes, topology.participants);
+        assert!(matches!(
+            &plan.entries()[0],
+            PlanEntry::Activate {
+                fault: MembershipFault::NotYetJoined { node },
+                ..
+            } if *node == node_id("c")
+        ));
+    }
+
+    #[test]
+    fn membership_plan_rejects_dynamic_or_undeclared_topology_targets() {
+        let world = world_from_nodes_and_links(
+            vec![
+                ready_node(
+                    "a",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 1 },
+                    },
+                ),
+                ready_node(
+                    "b",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 2 },
+                    },
+                ),
+                ready_node(
+                    "c",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 3 },
+                    },
+                ),
+            ],
+            vec![link("a", "b")],
+        );
+
+        let unknown_node = Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Activate {
+                at: VirtualTime { ticks: 0 },
+                tag: tag("crash-missing"),
+                fault: MembershipFault::Crash {
+                    node: node_id("missing"),
+                    restart: RestartPolicy::StayDown,
+                },
+            }],
+        );
+        let unknown_link = Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Activate {
+                at: VirtualTime { ticks: 0 },
+                tag: tag("split-ac"),
+                fault: MembershipFault::Partition {
+                    endpoint_a: node_id("a"),
+                    endpoint_b: node_id("c"),
+                    direction: PartitionDirection::EndpointAToEndpointB,
+                },
+            }],
+        );
+        let unknown_heal = Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Heal {
+                at: VirtualTime { ticks: 0 },
+                tag: tag("missing"),
+            }],
+        );
+        let heal_before_activate = Plan::from_entries_for_world(
+            &world,
+            vec![
+                PlanEntry::Heal {
+                    at: VirtualTime { ticks: 5 },
+                    tag: tag("late-join"),
+                },
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 10 },
+                    tag: tag("late-join"),
+                    fault: MembershipFault::NotYetJoined { node: node_id("c") },
+                },
+            ],
+        );
+        let not_yet_joined_after_start = Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Activate {
+                at: VirtualTime { ticks: 10 },
+                tag: tag("late-hold"),
+                fault: MembershipFault::NotYetJoined { node: node_id("c") },
+            }],
+        );
+        let replaced_tag_heals_after_first_activation = Plan::from_entries_for_world(
+            &world,
+            vec![
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 10 },
+                    tag: tag("replaceable"),
+                    fault: MembershipFault::Crash {
+                        node: node_id("a"),
+                        restart: RestartPolicy::StayDown,
+                    },
+                },
+                PlanEntry::Heal {
+                    at: VirtualTime { ticks: 20 },
+                    tag: tag("replaceable"),
+                },
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 30 },
+                    tag: tag("replaceable"),
+                    fault: MembershipFault::Crash {
+                        node: node_id("b"),
+                        restart: RestartPolicy::StayDown,
+                    },
+                },
+            ],
+        );
+
+        assert!(matches!(
+            unknown_node,
+            Err(EngineError::PlanFaultUnknownNode { node }) if node == node_id("missing")
+        ));
+        assert!(matches!(
+            unknown_link,
+            Err(EngineError::PlanFaultUnknownLink {
+                endpoint_a,
+                endpoint_b,
+            }) if endpoint_a == node_id("a") && endpoint_b == node_id("c")
+        ));
+        assert!(matches!(
+            unknown_heal,
+            Err(EngineError::PlanHealUnknownTag { tag }) if tag == self::tag("missing")
+        ));
+        assert!(matches!(
+            heal_before_activate,
+            Err(EngineError::PlanHealBeforeActivate {
+                tag,
+                activate_at,
+                heal_at,
+            }) if tag == self::tag("late-join")
+                && activate_at.ticks == 10
+                && heal_at.ticks == 5
+        ));
+        assert!(matches!(
+            not_yet_joined_after_start,
+            Err(EngineError::PlanNotYetJoinedAfterStart { node, at })
+                if node == node_id("c") && at.ticks == 10
+        ));
+        assert!(replaced_tag_heals_after_first_activation.is_ok());
+    }
+
     #[cfg(feature = "test-double")]
     #[test]
     fn world_logical_topology_ignores_physical_transport_layout() {
@@ -2623,6 +2847,10 @@ mod tests {
         NodeId {
             name: name.to_owned(),
         }
+    }
+
+    fn tag(name: &str) -> FaultTag {
+        FaultTag::from_name(name)
     }
 
     fn device_id(name: &str) -> DeviceId {

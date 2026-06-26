@@ -1735,6 +1735,151 @@ pub struct FaultId {
     pub name: String,
 }
 
+/// A stable tag used to activate and heal a planned fault.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FaultTag {
+    /// The canonical tag name.
+    pub name: String,
+}
+
+impl FaultTag {
+    /// Builds a fault tag from a canonical name.
+    #[must_use]
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+/// Restart behavior used when a crash fault heals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RestartPolicy {
+    /// Reboot the node from its baked ready-point checkpoint.
+    FromReadyPoint,
+    /// Resume the node from its most recent pre-crash checkpoint.
+    FromLastCheckpoint,
+    /// Keep the node stopped until a later explicit start command.
+    StayDown,
+}
+
+/// Direction for a planned partition over a declared link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PartitionDirection {
+    /// Suppress delivery in both directions.
+    Bidirectional,
+    /// Suppress delivery from `endpoint_a` to `endpoint_b`.
+    EndpointAToEndpointB,
+    /// Suppress delivery from `endpoint_b` to `endpoint_a`.
+    EndpointBToEndpointA,
+}
+
+/// A membership-dynamics fault layered over a static [`World`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MembershipFault {
+    /// Stop a declared node until the fault heals or its restart policy acts.
+    Crash {
+        /// The declared node that stops.
+        node: NodeId,
+        /// How the node restarts when the crash heals.
+        restart: RestartPolicy,
+    },
+    /// Suppress delivery on a declared link without removing it from the world.
+    Partition {
+        /// One declared endpoint of the partitioned link.
+        endpoint_a: NodeId,
+        /// The other declared endpoint of the partitioned link.
+        endpoint_b: NodeId,
+        /// Direction of delivery suppression.
+        direction: PartitionDirection,
+    },
+    /// Suppress all links incident to a declared node without removing the node.
+    Isolate {
+        /// The declared node held isolated.
+        node: NodeId,
+    },
+    /// Hold a declared node inactive until a later heal/rejoin event.
+    NotYetJoined {
+        /// The declared participant that starts inactive.
+        node: NodeId,
+    },
+}
+
+/// One entry in the declarative membership-fault plan.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlanEntry {
+    /// Activate a membership fault at an exact virtual time.
+    Activate {
+        /// Virtual time when the fault activates.
+        at: VirtualTime,
+        /// Stable tag used by a later heal.
+        tag: FaultTag,
+        /// Membership fault to layer over the static world.
+        fault: MembershipFault,
+    },
+    /// Heal, restart, or rejoin a previously activated fault tag at an exact virtual time.
+    Heal {
+        /// Virtual time when the fault heals.
+        at: VirtualTime,
+        /// Stable tag naming the fault to heal.
+        tag: FaultTag,
+    },
+}
+
+/// A declarative fault plan layered over a static [`World`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Plan {
+    entries: Vec<PlanEntry>,
+}
+
+impl Plan {
+    /// Builds an empty plan.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Builds a plan after validating every entry against `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::PlanFaultUnknownNode`] when a membership fault
+    /// names a node that is not declared by `world`,
+    /// [`EngineError::PlanFaultUnknownLink`] when a partition names no declared
+    /// link, [`EngineError::PlanHealUnknownTag`] when a heal names no activated
+    /// fault tag in the plan, [`EngineError::PlanHealBeforeActivate`] when a
+    /// heal is not after its activation, or
+    /// [`EngineError::PlanNotYetJoinedAfterStart`] when an initial join hold is
+    /// scheduled after `t = 0`.
+    pub fn from_entries_for_world(
+        world: &World,
+        entries: Vec<PlanEntry>,
+    ) -> Result<Self, EngineError> {
+        validate_plan_entries_for_world(world, &entries)?;
+        Ok(Self { entries })
+    }
+
+    /// Returns plan entries in their declared order.
+    #[must_use]
+    pub fn entries(&self) -> &[PlanEntry] {
+        &self.entries
+    }
+
+    /// Validates this plan against `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::PlanFaultUnknownNode`],
+    /// [`EngineError::PlanFaultUnknownLink`],
+    /// [`EngineError::PlanHealUnknownTag`],
+    /// [`EngineError::PlanHealBeforeActivate`], or
+    /// [`EngineError::PlanNotYetJoinedAfterStart`] when an entry cannot be
+    /// layered over the static world topology.
+    pub fn validate_for_world(&self, world: &World) -> Result<(), EngineError> {
+        validate_plan_entries_for_world(world, &self.entries)
+    }
+}
+
 /// A deterministic decision-stream identifier.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RngStreamId {
@@ -4863,6 +5008,39 @@ pub enum EngineError {
         /// The node whose ready-point configuration is invalid.
         node: NodeId,
     },
+    /// A plan membership fault references an undeclared node.
+    PlanFaultUnknownNode {
+        /// The undeclared node.
+        node: NodeId,
+    },
+    /// A plan partition references no declared world link.
+    PlanFaultUnknownLink {
+        /// One endpoint requested by the plan fault.
+        endpoint_a: NodeId,
+        /// The other endpoint requested by the plan fault.
+        endpoint_b: NodeId,
+    },
+    /// A plan heal references no activated fault tag.
+    PlanHealUnknownTag {
+        /// The unknown heal tag.
+        tag: FaultTag,
+    },
+    /// A plan heal is not after the tag activation it heals.
+    PlanHealBeforeActivate {
+        /// The invalid heal tag.
+        tag: FaultTag,
+        /// Virtual time when the tag activates.
+        activate_at: VirtualTime,
+        /// Virtual time when the tag was healed.
+        heal_at: VirtualTime,
+    },
+    /// A not-yet-joined membership hold was scheduled after the run starts.
+    PlanNotYetJoinedAfterStart {
+        /// The node that would be held inactive too late.
+        node: NodeId,
+        /// Virtual time when the hold was scheduled.
+        at: VirtualTime,
+    },
     /// A runtime was replayed from a configuration it does not materialize.
     RuntimeConfigurationMismatch {
         /// The runtime-state id whose metadata was invalid.
@@ -4964,6 +5142,21 @@ impl fmt::Display for EngineError {
             }
             Self::WhiteBoxReadyPointWithoutOptIn { .. } => {
                 f.write_str("agent-signal ready point requires white-box opt-in")
+            }
+            Self::PlanFaultUnknownNode { .. } => {
+                f.write_str("plan membership fault references an undeclared node")
+            }
+            Self::PlanFaultUnknownLink { .. } => {
+                f.write_str("plan partition references no declared world link")
+            }
+            Self::PlanHealUnknownTag { .. } => {
+                f.write_str("plan heal references no activated fault tag")
+            }
+            Self::PlanHealBeforeActivate { .. } => {
+                f.write_str("plan heal is not after its fault activation")
+            }
+            Self::PlanNotYetJoinedAfterStart { .. } => {
+                f.write_str("not-yet-joined fault must be active at run start")
             }
             Self::RuntimeConfigurationMismatch { .. } => {
                 f.write_str("runtime configuration does not match replay start configuration")
@@ -5900,6 +6093,128 @@ fn validate_world_links(nodes: &[WorldNode], links: &[LinkDef]) -> Result<(), En
     }
 
     Ok(())
+}
+
+fn validate_plan_entries_for_world(
+    world: &World,
+    entries: &[PlanEntry],
+) -> Result<(), EngineError> {
+    let node_ids = world
+        .nodes
+        .iter()
+        .map(|node| &node.id)
+        .collect::<BTreeSet<_>>();
+    let link_ids = world
+        .links
+        .iter()
+        .map(|link| {
+            let (left, right) = link.endpoints();
+            (left.clone(), right.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    let mut activated_tags = BTreeMap::<FaultTag, Vec<VirtualTime>>::new();
+    for entry in entries {
+        if let PlanEntry::Activate { at, tag, .. } = entry {
+            activated_tags.entry(tag.clone()).or_default().push(*at);
+        }
+    }
+
+    for entry in entries {
+        match entry {
+            PlanEntry::Activate { at, fault, .. } => {
+                validate_membership_fault_for_world(*at, fault, &node_ids, &link_ids)?;
+            }
+            PlanEntry::Heal { tag, .. } => {
+                validate_plan_heal(tag, entry, &activated_tags)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_membership_fault_for_world(
+    at: VirtualTime,
+    fault: &MembershipFault,
+    node_ids: &BTreeSet<&NodeId>,
+    link_ids: &BTreeSet<(NodeId, NodeId)>,
+) -> Result<(), EngineError> {
+    match fault {
+        MembershipFault::Crash { node, .. } | MembershipFault::Isolate { node } => {
+            validate_plan_node(node, node_ids)
+        }
+        MembershipFault::NotYetJoined { node } => {
+            validate_plan_node(node, node_ids)?;
+            if at != VirtualTime::default() {
+                return Err(EngineError::PlanNotYetJoinedAfterStart {
+                    node: node.clone(),
+                    at,
+                });
+            }
+            Ok(())
+        }
+        MembershipFault::Partition {
+            endpoint_a,
+            endpoint_b,
+            ..
+        } => {
+            validate_plan_node(endpoint_a, node_ids)?;
+            validate_plan_node(endpoint_b, node_ids)?;
+            let link = canonical_link_endpoint_pair(endpoint_a, endpoint_b);
+            if !link_ids.contains(&link) {
+                return Err(EngineError::PlanFaultUnknownLink {
+                    endpoint_a: endpoint_a.clone(),
+                    endpoint_b: endpoint_b.clone(),
+                });
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_plan_heal(
+    tag: &FaultTag,
+    entry: &PlanEntry,
+    activated_tags: &BTreeMap<FaultTag, Vec<VirtualTime>>,
+) -> Result<(), EngineError> {
+    let PlanEntry::Heal { at: heal_at, .. } = entry else {
+        return Ok(());
+    };
+    let Some(activation_times) = activated_tags.get(tag) else {
+        return Err(EngineError::PlanHealUnknownTag { tag: tag.clone() });
+    };
+    if activation_times
+        .iter()
+        .copied()
+        .any(|activate_at| activate_at < *heal_at)
+    {
+        return Ok(());
+    }
+
+    if let Some(activate_at) = activation_times.iter().copied().min() {
+        return Err(EngineError::PlanHealBeforeActivate {
+            tag: tag.clone(),
+            activate_at,
+            heal_at: *heal_at,
+        });
+    }
+    Err(EngineError::PlanHealUnknownTag { tag: tag.clone() })
+}
+
+fn validate_plan_node(node: &NodeId, node_ids: &BTreeSet<&NodeId>) -> Result<(), EngineError> {
+    if node_ids.contains(node) {
+        Ok(())
+    } else {
+        Err(EngineError::PlanFaultUnknownNode { node: node.clone() })
+    }
+}
+
+fn canonical_link_endpoint_pair(left: &NodeId, right: &NodeId) -> (NodeId, NodeId) {
+    if left <= right {
+        (left.clone(), right.clone())
+    } else {
+        (right.clone(), left.clone())
+    }
 }
 
 fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError> {
