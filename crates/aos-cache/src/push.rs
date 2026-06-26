@@ -80,13 +80,11 @@ pub async fn run_push(
     printer.info("Resolving installables...");
     let store_paths = resolve_installables(&nix, installables, file, attr, expr)?;
 
-    // 2. Enumerate closure.
+    // 2. Enumerate closure — one `nix-store -qR` over all installables rather
+    //    than one subprocess per path.
     printer.info("Enumerating closure...");
-    let mut all_paths = Vec::new();
-    for path in &store_paths {
-        let closure = nix.closure(path)?;
-        all_paths.extend(closure);
-    }
+    let store_path_refs: Vec<&str> = store_paths.iter().map(String::as_str).collect();
+    let mut all_paths = nix.closure_many(&store_path_refs)?;
     all_paths.sort();
     all_paths.dedup();
     printer.info(&format!("{} paths in closure", all_paths.len()));
