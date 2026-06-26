@@ -5,7 +5,7 @@
 //! choose which computations to observe, which memoization subject applies, and
 //! which value-hash cost signals are available.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use thiserror::Error;
 
@@ -954,6 +954,10 @@ impl CachedExpressionValue {
 
     pub(crate) fn attr_positions_all_in_module(&self, module: u32) -> bool {
         self.payload.attr_positions_all_in_module(module)
+    }
+
+    pub(crate) fn collect_attr_position_modules(&self, modules: &mut BTreeSet<u32>) {
+        self.payload.collect_attr_position_modules(modules);
     }
 }
 
@@ -2395,6 +2399,39 @@ impl InlineValuePayload {
             | Self::ContextPath { .. }
             | Self::EmptyList
             | Self::EmptyAttrs => true,
+        }
+    }
+
+    fn collect_attr_position_modules(&self, modules: &mut BTreeSet<u32>) {
+        match self {
+            Self::PositionedAttrs(entries) | Self::SourceOrderedPositionedAttrs(entries) => {
+                for entry in entries {
+                    if let Some(position) = entry.position {
+                        modules.insert(position.module);
+                    }
+                    entry.value.collect_attr_position_modules(modules);
+                }
+            }
+            Self::List(elements) => {
+                for element in elements {
+                    element.collect_attr_position_modules(modules);
+                }
+            }
+            Self::Attrs(entries) | Self::SourceOrderedAttrs(entries) => {
+                for entry in entries {
+                    entry.value.collect_attr_position_modules(modules);
+                }
+            }
+            Self::Int(_)
+            | Self::Float(_)
+            | Self::Bool(_)
+            | Self::Null
+            | Self::ContextFreeString(_)
+            | Self::ContextString { .. }
+            | Self::Path(_)
+            | Self::ContextPath { .. }
+            | Self::EmptyList
+            | Self::EmptyAttrs => {}
         }
     }
 

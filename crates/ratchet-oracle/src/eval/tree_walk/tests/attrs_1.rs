@@ -7939,88 +7939,201 @@ fn captured_root_position_bearing_attrset_values_use_free_variable_hashes() {
 }
 
 #[test]
-fn captured_imported_position_bearing_attrset_values_do_not_build_force_cache_subjects() {
+fn captured_imported_position_bearing_attrset_values_use_source_salted_free_variable_hashes() {
     let root = fs::canonicalize(unique_temp_dir(
         "force-cache-captured-imported-positioned-attrs",
     ))
     .expect("source root canonicalizes");
-    fs::write(root.join("dep.nix"), b"{ b = 1; }").expect("import source writes");
-    let source = "let x = import ./dep.nix; in builtins.seq x { a = x.b == 1; }";
-    let ir = lower(source);
-    let a = symbol_for(&ir, b"a");
+    fs::write(root.join("dep-a.nix"), b"{ b = 1; }").expect("first import source writes");
+    fs::write(root.join("dep-b.nix"), b"{ b = 1; }").expect("second import source writes");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
-    let mut options = TreeWalkOptions::new();
-    options
-        .set_path_literal_base(path_bytes(&root))
-        .expect("path base configures");
-    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
-        &ir,
-        options,
-        "default.nix",
-        source,
-        cache.clone(),
-    );
-    let root_value = evaluator.eval_root().expect("attrset evaluates");
-    let thunk_value = {
+    let mut dep_a_hash = None;
+
+    for (dep_file, expected_hit) in [
+        ("dep-a.nix", false),
+        ("dep-b.nix", false),
+        ("dep-a.nix", true),
+    ] {
+        let source = format!("let x = import ./{dep_file}; in builtins.seq x {{ a = x.b == 1; }}");
+        let ir = lower(&source);
+        let a = symbol_for(&ir, b"a");
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(&root))
+            .expect("path base configures");
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source.as_str(),
+            cache.clone(),
+        );
+        let root_value = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root_value)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let (_, cached_x) =
+            captured_fulfilled_slot_with_cached_tag(&evaluator, thunk_value, 0, 0, ValueTag::Attrs)
+                .expect("x is a fulfilled imported attrset capture in the first let slot");
+        let b = evaluator.symbols.intern(b"b").expect("b interns");
         let attrs = evaluator
             .heap()
-            .get_attrs(root_value)
-            .expect("attrset is heap-owned");
-        attrs.get(a).expect("a exists")
-    };
-    let (_, cached_x) =
-        captured_fulfilled_slot_with_cached_tag(&evaluator, thunk_value, 0, 0, ValueTag::Attrs)
-            .expect("x is a fulfilled imported attrset capture in the first let slot");
-    let b = evaluator.symbols.intern(b"b").expect("b interns");
-    let attrs = evaluator
-        .heap()
-        .get_attrs(cached_x)
-        .expect("x cached payload is an attrset");
-    let position = attrs
-        .get_entry(b)
-        .expect("b entry exists")
-        .position
-        .expect("imported binding has a source position");
-    assert_ne!(
-        position.module,
-        EvalModuleId::ROOT.as_u32(),
-        "fixture must carry a non-root binding position"
-    );
-    let subject = {
-        let thunk = evaluator
-            .heap()
-            .get_thunk(thunk_value)
-            .expect("a is a node thunk");
-        evaluator
-            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
-    };
-    assert!(
-        subject.is_none(),
-        "captured imported positioned attrsets need module-source remapping before hashing"
-    );
+            .get_attrs(cached_x)
+            .expect("x cached payload is an attrset");
+        let position = attrs
+            .get_entry(b)
+            .expect("b entry exists")
+            .position
+            .expect("imported binding has a source position");
+        assert_ne!(
+            position.module,
+            EvalModuleId::ROOT.as_u32(),
+            "fixture must carry a non-root binding position"
+        );
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("a is a node thunk");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("captured imported positioned attrset subject builds")
+        };
+        assert_eq!(
+            subject.free_var_value_hashes.len(),
+            1,
+            "captured imported positioned attrsets should hash into demand keys"
+        );
+        let capture_hash = subject.free_var_value_hashes[0];
+        match (dep_file, dep_a_hash) {
+            ("dep-a.nix", None) => dep_a_hash = Some(capture_hash),
+            ("dep-a.nix", Some(hash)) => assert_eq!(
+                capture_hash, hash,
+                "matching imported source should reuse the same captured value hash"
+            ),
+            ("dep-b.nix", Some(hash)) => assert_ne!(
+                capture_hash, hash,
+                "different imported source identities must change the captured value hash"
+            ),
+            ("dep-b.nix", None) => panic!("dep-a source hash should be recorded first"),
+            _ => unreachable!("test fixture only uses dep-a.nix and dep-b.nix"),
+        }
 
-    let forced = evaluator
-        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
-        .expect("captured imported positioned attrset value force succeeds");
+        let hits_before = evaluator.stats().force_cache_hits();
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("captured imported positioned attrset value force succeeds");
 
-    assert_eq!(forced.as_bool(), Ok(true));
+        assert_eq!(forced.as_bool(), Ok(true));
+        assert_eq!(
+            evaluator.stats().force_cache_hits() > hits_before,
+            expected_hit,
+            "second run should hit through the source-salted imported positioned attrset hash"
+        );
+    }
     assert!(
         cache
             .lock()
             .expect("cache lock is valid")
             .cache()
             .expect("cache is enabled")
-            .is_empty(),
-        "captured imported positioned attrsets should not populate the force cache"
+            .len()
+            > 0,
+        "captured imported positioned attrsets should populate source-salted force-cache payloads"
     );
 
     fs::remove_dir_all(root).expect("source temp tree removed");
 }
 
 #[test]
-fn captured_root_positioned_attrsets_in_imported_bodies_do_not_build_force_cache_subjects() {
+fn captured_root_positioned_attrsets_in_imported_bodies_use_source_salted_free_variable_hashes() {
     let root = fs::canonicalize(unique_temp_dir(
         "force-cache-imported-body-captured-root-positioned-attrs",
+    ))
+    .expect("source root canonicalizes");
+    fs::write(root.join("dep.nix"), b"x: { a = x.b == 1; }").expect("import source writes");
+    let source = "(import ./dep.nix) { b = 1; }";
+    let ir = lower(source);
+    let mut root_a_hash = None;
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for (source_name, expected_hit) in [
+        ("root-a.nix", false),
+        ("root-b.nix", false),
+        ("root-a.nix", true),
+    ] {
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(&root))
+            .expect("path base configures");
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            source_name,
+            source,
+            cache.clone(),
+        );
+        let root_value = evaluator.eval_root().expect("attrset evaluates");
+        let a = evaluator.symbols.intern(b"a").expect("a interns");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root_value)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("a is a node thunk");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("captured root positioned attrset subject builds in imported body")
+        };
+        assert_eq!(
+            subject.free_var_value_hashes.len(),
+            1,
+            "root-positioned captures in imported bodies should hash with source identity"
+        );
+        let capture_hash = subject.free_var_value_hashes[0];
+        match (source_name, root_a_hash) {
+            ("root-a.nix", None) => root_a_hash = Some(capture_hash),
+            ("root-a.nix", Some(hash)) => assert_eq!(
+                capture_hash, hash,
+                "matching caller root source should reuse the same captured value hash"
+            ),
+            ("root-b.nix", Some(hash)) => assert_ne!(
+                capture_hash, hash,
+                "different caller root source identities must change the captured value hash"
+            ),
+            ("root-b.nix", None) => panic!("root-a source hash should be recorded first"),
+            _ => unreachable!("test fixture only uses root-a.nix and root-b.nix"),
+        }
+
+        let hits_before = evaluator.stats().force_cache_hits();
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("captured root positioned attrset in imported body force succeeds");
+
+        assert_eq!(forced.as_bool(), Ok(true));
+        assert_eq!(
+            evaluator.stats().force_cache_hits() > hits_before,
+            expected_hit,
+            "source-salted positioned captures should hit only for the matching root source"
+        );
+    }
+
+    fs::remove_dir_all(root).expect("source temp tree removed");
+}
+
+#[test]
+fn captured_root_positioned_attrsets_in_imported_unsafe_get_attr_pos_bodies_stay_uncached() {
+    let root = fs::canonicalize(unique_temp_dir(
+        "force-cache-imported-unsafe-get-attr-pos-captured-root-positioned-attrs",
     ))
     .expect("source root canonicalizes");
     fs::write(
@@ -8031,7 +8144,8 @@ fn captured_root_positioned_attrsets_in_imported_bodies_do_not_build_force_cache
     let source = "(import ./dep.nix) { b = 1; }";
     let ir = lower(source);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
-    for source_name in ["root-a.nix", "root-b.nix"] {
+
+    for source_name in ["root-a.nix", "root-b.nix", "root-a.nix"] {
         let mut options = TreeWalkOptions::new();
         options
             .set_path_literal_base(path_bytes(&root))
@@ -8062,13 +8176,12 @@ fn captured_root_positioned_attrsets_in_imported_bodies_do_not_build_force_cache
         };
         assert!(
             subject.is_none(),
-            "root-positioned captures in imported bodies need source remapping before hashing"
+            "unsafeGetAttrPos bodies are not in the force-cache whitelist"
         );
 
         let forced = evaluator
             .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
-            .expect("captured root positioned attrset in imported body force succeeds");
-
+            .expect("captured root positioned attrset in unsafeGetAttrPos body force succeeds");
         let file_string = evaluator
             .heap()
             .get_string(forced)
@@ -8076,7 +8189,7 @@ fn captured_root_positioned_attrsets_in_imported_bodies_do_not_build_force_cache
         assert_eq!(
             file_string.bytes(),
             source_name.as_bytes(),
-            "fixture must read the captured caller-root binding position"
+            "uncached unsafeGetAttrPos body must read the current caller-root binding position"
         );
     }
 
@@ -10056,7 +10169,47 @@ fn materialized_root_position_bearing_attrsets_are_free_variable_hashable() {
 }
 
 #[test]
-fn materialized_non_root_position_bearing_attrsets_are_not_free_variable_hashable_yet() {
+fn materialized_imported_position_bearing_attrsets_are_free_variable_hashable() {
+    let root = fs::canonicalize(unique_temp_dir(
+        "force-cache-materialized-imported-positioned-attrs",
+    ))
+    .expect("source root canonicalizes");
+    fs::write(root.join("dep.nix"), b"{ b = 1; }").expect("import source writes");
+    let source = "import ./dep.nix";
+    let ir = lower(source);
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    let mut evaluator = TreeWalk::with_options_and_source(&ir, options, "default.nix", source);
+    let attrs_value = evaluator.eval_root().expect("imported attrset evaluates");
+    let b = evaluator.symbols.intern(b"b").expect("b interns");
+    let attrs = evaluator
+        .heap()
+        .get_attrs(attrs_value)
+        .expect("imported value is an attrset");
+    let position = attrs
+        .get_entry(b)
+        .expect("b entry exists")
+        .position
+        .expect("imported binding has a source position");
+    assert_ne!(
+        position.module,
+        EvalModuleId::ROOT.as_u32(),
+        "fixture must carry a non-root binding position"
+    );
+
+    assert!(
+        evaluator
+            .force_cache_free_var_value_hash(attrs_value)
+            .is_some()
+    );
+
+    fs::remove_dir_all(root).expect("source temp tree removed");
+}
+
+#[test]
+fn materialized_unknown_module_position_bearing_attrsets_are_not_free_variable_hashable_yet() {
     let ir = lower("1");
     let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
     let a = evaluator.symbols.intern(b"a").expect("a interns");

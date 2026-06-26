@@ -563,7 +563,7 @@ alone (`M-1`/`Q-A`).
       thunks, canonical free-variable hashes, general memo lookup,
       remaining suspended non-literal/non-replayable captured thunk-cell free
       variables, arbitrary lazy-element list and lazy-binding attrset payloads,
-      non-root/imported position-bearing attrset free-variable hashes, non-root/imported
+      non-root/imported
       binding-position persistence and module-source remapping, and other
       composite value hashing, persistence, and cached/uncached harness proof remain open
       (`S-14`/`S-15`). The gate includes positioned attrset force-cache hit and
@@ -589,8 +589,7 @@ alone (`M-1`/`Q-A`).
       explicit option and impure-input keys, synthetic apply/select
       thunks, canonical free-variable hashes, remaining suspended
       non-literal/non-replayable captured thunk-cell free variables, arbitrary
-      non-literal lazy-element lists and lazy-binding attrsets, captured
-      position-bearing attrset free-variable hashes, non-root/imported
+      non-literal lazy-element lists and lazy-binding attrsets, non-root/imported
       binding-position module-source remapping, and other composite payloads,
       transitive dirty scheduling, persistence, `derivationStrict` SHA-256
       short-circuiting, and cached/uncached harness proof remain open
@@ -731,9 +730,8 @@ alone (`M-1`/`Q-A`).
       slot value is either an inline scalar supported by
       `ValueHash::from_inline_value`, a Nix string with or without context, a
       Nix path with or without context, a replayable Nix list, a replayable Nix
-      attrset whose source-order metadata is preserved when present and whose
-      binding positions are absent or belong to the root module while the hashed
-      expression body is also in the root module, a
+      attrset whose source-order metadata and binding positions are preserved
+      when present, a
       fulfilled thunk cell whose cached value is one of those replayable values,
       or a suspended closed literal thunk whose static payload is one of those
       replayable values.
@@ -741,15 +739,18 @@ alone (`M-1`/`Q-A`).
       string/path tags; contextual values append canonical context element tags
       and length-prefixed path/output bytes. Replayable list/attrset captures
       hash the current replayable payload value hash under the same
-      force-capture domain with a composite tag. Lookup and observation feed
+      force-capture domain with a composite tag; positioned composites
+      additionally salt the captured hash with the cache identity of every
+      module referenced by retained binding positions. Lookup and observation feed
       those hashes into the existing ordered/length-prefixed demand-key
       combiner, so repeated captured inline/string/path/replayable-composite
       thunks hit only when their free-variable value hashes match and miss when
-      those captured values differ. This deliberately skips dynamic `with`
+      those captured values differ or their referenced position-source
+      identities differ. This deliberately skips dynamic `with`
       scopes, scoped-import globals, arbitrary non-literal lazy-element lists,
       arbitrary non-literal lazy-binding attrsets,
-      non-root/imported position-bearing attrsets, root-positioned attrsets
-      captured by imported/non-root bodies, lambdas, primops,
+      position-bearing attrsets whose retained module ids cannot be resolved to
+      loaded module identities, lambdas, primops,
       suspended non-literal/non-replayable thunk-cell captures including computed
       values not already forced in the captured slot, captured bodies with nested lexical-frame introducers, apply/select
       thunks, full strictness/escape free-variable analysis, remaining
@@ -763,9 +764,8 @@ alone (`M-1`/`Q-A`).
       global subject-skip canaries, lambda/recursive-attrset nested
       lexical-frame subject-skip canaries, captured lambda/primop value
       subject-skip canaries, synthetic apply/apply2/select thunk subject-skip
-      canaries, captured root-body root-positioned attrset admission, imported
-      position-bearing attrset subject-skip, imported-body root-positioned
-      attrset subject-skip, source-order attrset admission canaries, captured closed-literal lazy-element list and
+      canaries, captured root/imported positioned attrset source-salted
+      admission and hit/miss canaries, source-order attrset admission canaries, captured closed-literal lazy-element list and
       lazy-binding attrset admission canaries, captured computed lazy-element list
       and lazy-binding attrset subject-skip canaries, and representative captured unsupported free-variable skips
       (`C-1`/`C-2`).
@@ -872,12 +872,11 @@ alone (`M-1`/`Q-A`).
       tags, module ids, and source spans participate in the hash; attrset
       hashing uses raw-byte-sorted binding order for canonical attrsets and
       distinct source-order tags when construction order is observable.
-      Arbitrary non-literal lazy-element list and lazy-binding attrset cacheability, non-root/imported position-bearing attrset free-variable hashes and replay, functions/thunks cacheability
+      Arbitrary non-literal lazy-element list and lazy-binding attrset cacheability, non-root/imported position-bearing attrset replay, functions/thunks cacheability
       policy, generic hash-cons value fields, `force_memoized` integration, and
       harness proof remain open (`S-14`/`S-15`). The gate includes positioned
-      attrset payload lookup/hash/root-position persistence coverage,
-      root-body root-positioned captured attrset hash coverage, and
-      imported-body root-positioned skip coverage.
+      attrset payload lookup/hash/root-position persistence coverage and
+      source-salted positioned captured attrset hash coverage.
 - [x] Current inline-value early-cutoff adapter:
       `DemandGraph::reconsider_inline_value_node` and
       `EvalCache::reconsider_inline_value_node` hash a recomputed inline scalar

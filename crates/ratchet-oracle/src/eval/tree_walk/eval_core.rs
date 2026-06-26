@@ -1651,9 +1651,7 @@ impl TreeWalk {
         let mut free_var_value_hashes = Vec::new();
         free_var_value_hashes.try_reserve_exact(args.len()).ok()?;
         for arg in args {
-            free_var_value_hashes.push(
-                self.force_cache_free_var_value_hash_in_module(arg.value(), self.current_module)?,
-            );
+            free_var_value_hashes.push(self.force_cache_free_var_value_hash(arg.value())?);
         }
         Some(ForceCacheSubject {
             lookup_identity: Some(identity),
@@ -1714,7 +1712,7 @@ impl TreeWalk {
         hashes.try_reserve_exact(slots.len()).ok()?;
         for (frame_index, slot) in slots {
             let value = frames.get(frame_index)?.get(slot).ok()?;
-            let hash = self.force_cache_free_var_value_hash_in_module(value, body.module())?;
+            let hash = self.force_cache_free_var_value_hash(value)?;
             hashes.push(hash);
         }
         Some(hashes)
@@ -1757,18 +1755,9 @@ impl TreeWalk {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn force_cache_free_var_value_hash(
         &self,
         value: Value,
-    ) -> Option<DurableBlake3Hash> {
-        self.force_cache_free_var_value_hash_in_module(value, self.current_module)
-    }
-
-    fn force_cache_free_var_value_hash_in_module(
-        &self,
-        value: Value,
-        module: EvalModuleId,
     ) -> Option<DurableBlake3Hash> {
         if let Ok(hash) = ValueHash::from_inline_value(value) {
             return Some(hash.as_durable_hash());
@@ -1798,16 +1787,9 @@ impl TreeWalk {
             }
             ValueTag::List | ValueTag::Attrs => {
                 let payload = self.force_cache_payload_for_value(value)?;
-                if !Self::force_cache_free_var_payload_positions_hashable_in_module(
-                    &payload, module,
-                ) {
-                    return None;
-                }
-                let value_hash = payload.value_hash().ok()?;
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
-                hasher.update(b"composite");
-                hasher.update(&value_hash.as_durable_hash().as_bytes());
+                self.update_force_capture_composite_payload_hash(&mut hasher, &payload)?;
                 return Some(DurableBlake3Hash::from_hasher(hasher));
             }
             ValueTag::Thunk => {
@@ -1817,22 +1799,22 @@ impl TreeWalk {
                         Some(cached) => cached,
                         None => {
                             let payload = self.force_cache_payload_for_suspended_thunk(thunk, 0)?;
-                            return Self::force_cache_free_var_payload_hash(&payload, module);
+                            return self.force_cache_free_var_payload_hash(&payload);
                         }
                     }
                 };
                 if cached.is_thunk() {
                     return None;
                 }
-                return self.force_cache_free_var_value_hash_in_module(cached, module);
+                return self.force_cache_free_var_value_hash(cached);
             }
             _ => return None,
         }
     }
 
     fn force_cache_free_var_payload_hash(
+        &self,
         payload: &CachedExpressionValue,
-        module: EvalModuleId,
     ) -> Option<DurableBlake3Hash> {
         if let Some(value) = payload.immediate_value() {
             return ValueHash::from_inline_value(value)
@@ -1865,22 +1847,36 @@ impl TreeWalk {
             return Some(DurableBlake3Hash::from_hasher(hasher));
         }
 
-        if !Self::force_cache_free_var_payload_positions_hashable_in_module(payload, module) {
-            return None;
-        }
-        let value_hash = payload.value_hash().ok()?;
-        hasher.update(b"composite");
-        hasher.update(&value_hash.as_durable_hash().as_bytes());
+        self.update_force_capture_composite_payload_hash(&mut hasher, payload)?;
         Some(DurableBlake3Hash::from_hasher(hasher))
     }
 
-    fn force_cache_free_var_payload_positions_hashable_in_module(
+    fn update_force_capture_composite_payload_hash(
+        &self,
+        hasher: &mut blake3::Hasher,
         payload: &CachedExpressionValue,
-        module: EvalModuleId,
-    ) -> bool {
-        !payload.retains_attr_positions()
-            || (module == EvalModuleId::ROOT
-                && payload.attr_positions_all_in_module(EvalModuleId::ROOT.as_u32()))
+    ) -> Option<()> {
+        let value_hash = payload.value_hash().ok()?;
+        hasher.update(b"composite");
+        hasher.update(&value_hash.as_durable_hash().as_bytes());
+        if !payload.retains_attr_positions() {
+            hasher.update(b"no-attr-position-modules");
+            return Some(());
+        }
+
+        let mut modules = BTreeSet::new();
+        payload.collect_attr_position_modules(&mut modules);
+        let len = u64::try_from(modules.len()).ok()?;
+        hasher.update(b"attr-position-modules");
+        hasher.update(&len.to_le_bytes());
+        for module_id in modules {
+            hasher.update(&module_id.to_le_bytes());
+            let module_index = usize::try_from(module_id).ok()?;
+            let module = self.modules.get(module_index)?;
+            let module_hash = Self::cache_module_identity_hash(module)?;
+            hasher.update(&module_hash.as_bytes());
+        }
+        Some(())
     }
 
     fn update_force_capture_string_context(
