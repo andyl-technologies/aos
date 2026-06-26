@@ -400,9 +400,12 @@ green.
       moved from `PRAGMA user_version` to a `_do_migrations` table.
 - [deploy] DO read replicas for global readers; native streaming SQLite replication
       for HA + read scale. *Deploy-gated platform configuration on the above.*
-- [deploy] Decommission D1 as the tenant system of record once parity + data migration
-      are verified (retain as cold archive / reporting if useful). *Terminal
-      step — gated on the full E migration + a deploy-based parity verification.*
+- [x] Decommission D1 as the system of record. **Done in effect:** with
+      `HUB_SQLITE_DO=1` live on prod, **`HubDb`'s colocated SQLite is the
+      authoritative SoR**; D1 is no longer on the request path. The D1 database is
+      **retained as a cold fallback/archive** (unset the flag to fail back), not
+      deleted — the safe terminal state. Full deletion is an optional later
+      housekeeping step once `HubDb` has soaked.
 
 ### Cross-cutting gates (every phase)
 
@@ -436,10 +439,14 @@ green.
       Phase-B DO coordinator + KV session/rate-limit path under the real Workers
       runtime (the home floor dropped ~4×). The deploy generator now emits the
       `COORDINATOR` DO binding + migration (`cloudflare.rs`).
-- [deploy] The **prod cutover** to `aos.andyl.org` — the operator's step. The
-      *first* prod deploy (the DO-coordinator build) regressed 140→240 ms and is
-      understood (see the rate-limiter correction); the **corrected build** (edge
-      rate-limit binding — removes the regression — plus `HubDb`) needs a prod
-      re-deploy, then the **D1 → `HubDb` data migration + flip `HUB_SQLITE_DO=1`**
-      for the actual floor fix. Re-measure against the real (populated) DB before
-      and after — *not* a fresh one.
+- [x] The **prod cutover** to `aos.andyl.org` — **DONE (2026-06-25).** Prod now
+      runs **full Phase E**: corrected build (edge rate-limit binding + `HubDb`),
+      `HUB_SQLITE_DO=1`, and the **D1 data migrated into `HubDb`** (757 rows,
+      FK-dependency-ordered, replayed through a seal-gated `POST /_admin/sql`
+      cutover path on the DO). **Measured on prod with the real dataset: home
+      ~25 ms warm I/O / ~54–64 ms TTFB**, vs D1's ~140 ms / ~180–200 ms — **~5–7×
+      faster, zero exceptions**, and *not* a fresh-DB artifact (full data, local
+      SQLite is µs regardless of size). **The D1 session floor is eliminated
+      live.** DO-SQLite findings handled in the process: `PRAGMA` forbidden
+      (`SQLITE_AUTH`) → table-tracked migrations; FKs enforced + no
+      `foreign_keys=OFF` → the replay is dependency-ordered.
