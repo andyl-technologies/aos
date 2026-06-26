@@ -32,13 +32,14 @@ pub use model::{
     AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, ChoiceTag, ClockDriftRate,
     Configuration, ContentHash, Decision, DecisionRngState, DeliveryOrderDecision, DeviceId,
     DeviceOverlayDelta, DeviceRngState, EngineError, EventKey, EventLogOffset, FaultDecision,
-    FaultId, FaultState, FrontierChild, GenesisCheckpoint, Icount, IrqVector, MaterializedState,
-    NodeBlobRef, NodeClockSkew, NodeCounter, NodeId, OverrideDecision, PendingFrame,
-    PreemptionDecision, PreemptionKind, ReadyPoint, ReplayOracleCheck, RngDecision, RngStreamId,
-    RngStreamPosition, RuntimeState, ScenarioDef, Schedule, ScheduleError, SchedulerState,
-    SchedulingPoint, Shift, SimDuration, SimInstant, SimOffset, State, TemporalGraph,
-    TimeConversionError, TimerId, TimerRegistry, TimerState, VcpuId, VirtualInstant, VirtualTime,
-    VmSnapshotRef, WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
+    FaultId, FaultState, FrontierChild, GenesisCheckpoint, Icount, IrqVector,
+    MaterializationPolicy, MaterializationTrigger, MaterializedState, NodeBlobRef, NodeClockSkew,
+    NodeCounter, NodeId, OverrideDecision, PendingFrame, PreemptionDecision, PreemptionKind,
+    ReadyPoint, ReplayOracleCheck, RngDecision, RngStreamId, RngStreamPosition, RuntimeState,
+    ScenarioDef, Schedule, ScheduleError, SchedulerState, SchedulingPoint, Shift, SimDuration,
+    SimInstant, SimOffset, State, TemporalGraph, TimeConversionError, TimerId, TimerRegistry,
+    TimerState, VcpuId, VirtualInstant, VirtualTime, VmSnapshotRef, WhiteBoxPolicy, World,
+    WorldNode, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
@@ -698,11 +699,164 @@ mod tests {
         assert_eq!(checkpoint.kind, CheckpointKind::Fat);
         assert_eq!(graph.cached_snapshot(&config), Some(&checkpoint));
         assert_eq!(graph.cached_snapshot_count(), 1);
+        assert!(matches!(
+            graph.checkpoint_node(config.id()),
+            Some(source) if source.kind == CheckpointKind::Thin && source.state.is_none()
+        ));
         assert!(graph.contains_configuration(&config));
         assert_eq!(
             instantiate(&graph, &config).map(|runtime| runtime.id),
             Ok(reduced_state_id(&config))
         );
+    }
+
+    #[test]
+    fn temporal_graph_materialized_cache_keeps_thin_checkpoint_source_of_truth() {
+        let scenario = generated_scenario(76);
+        let genesis = Configuration::genesis(scenario.clone());
+        let config = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(76, 3),
+        };
+        let mut graph = match TemporalGraph::empty()
+            .with_baked_genesis(&scenario, genesis_checkpoint_for(&genesis))
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+
+        let thin = match graph.record_thin_checkpoint(&config) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("thin checkpoint should record: {error}"),
+        };
+        let fat = match graph.materialize_checkpoint(&config) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("hot checkpoint should materialize: {error}"),
+        };
+        let source = match graph.checkpoint_node(config.id()) {
+            Some(checkpoint) => checkpoint,
+            None => panic!("source checkpoint should remain recorded"),
+        };
+
+        assert_eq!(thin.id, config.id());
+        assert_eq!(thin.kind, CheckpointKind::Thin);
+        assert!(thin.state.is_none());
+        assert_eq!(fat.id, thin.id);
+        assert_eq!(fat.kind, CheckpointKind::Fat);
+        assert!(fat.state.is_some());
+        assert_eq!(source, &thin);
+        assert_eq!(graph.cached_snapshot(&config), Some(&fat));
+    }
+
+    #[test]
+    fn temporal_graph_evicts_fat_checkpoint_back_to_thin_without_state_change() {
+        let scenario = generated_scenario(80);
+        let genesis = Configuration::genesis(scenario.clone());
+        let config = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(80, 3),
+        };
+        let mut graph = match TemporalGraph::empty()
+            .with_baked_genesis(&scenario, genesis_checkpoint_for(&genesis))
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+        let fat = match graph.materialize_checkpoint(&config) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("checkpoint should materialize: {error}"),
+        };
+        let exact_runtime = match instantiate(&graph, &config) {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("exact cached checkpoint should instantiate: {error}"),
+        };
+
+        let thin = match graph.evict_fat_checkpoint_to_thin(&config) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("fat checkpoint should evict to thin: {error}"),
+        };
+        let replay_runtime = match instantiate(&graph, &config) {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("thin checkpoint should replay from ancestor: {error}"),
+        };
+
+        assert_eq!(fat.id, thin.id);
+        assert_eq!(thin.kind, CheckpointKind::Thin);
+        assert!(thin.state.is_none());
+        assert!(graph.cached_snapshot(&config).is_none());
+        assert_eq!(graph.cached_snapshot_count(), 0);
+        assert_eq!(exact_runtime, replay_runtime);
+    }
+
+    #[test]
+    fn temporal_graph_materialization_policy_keeps_cold_or_over_budget_nodes_thin() {
+        let scenario = generated_scenario(81);
+        let genesis = Configuration::genesis(scenario.clone());
+        let first = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(81, 1),
+        };
+        let cold = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(82, 1),
+        };
+        let over_budget = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(83, 1),
+        };
+        let mut graph = match TemporalGraph::empty()
+            .with_baked_genesis(&scenario, genesis_checkpoint_for(&genesis))
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+        let policy = MaterializationPolicy::with_budget(1);
+
+        let hot = match graph.materialize_hot_checkpoint(
+            &first,
+            policy,
+            MaterializationTrigger::RepeatedForkSource,
+        ) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("first hot checkpoint should materialize: {error}"),
+        };
+        let cold_checkpoint =
+            match graph.materialize_hot_checkpoint(&cold, policy, MaterializationTrigger::Cold) {
+                Ok(checkpoint) => checkpoint,
+                Err(error) => panic!("cold checkpoint should remain thin: {error}"),
+            };
+        let over_budget_checkpoint = match graph.materialize_hot_checkpoint(
+            &over_budget,
+            policy,
+            MaterializationTrigger::SharedReplayPath,
+        ) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("over-budget hot checkpoint should remain thin: {error}"),
+        };
+
+        assert_eq!(hot.kind, CheckpointKind::Fat);
+        assert_eq!(graph.cached_snapshot_count(), 1);
+        assert_eq!(cold_checkpoint.kind, CheckpointKind::Thin);
+        assert_eq!(over_budget_checkpoint.kind, CheckpointKind::Thin);
+        assert!(graph.cached_snapshot(&cold).is_none());
+        assert!(graph.cached_snapshot(&over_budget).is_none());
+
+        match graph.evict_fat_checkpoint_to_thin(&first) {
+            Ok(checkpoint) => assert_eq!(checkpoint.kind, CheckpointKind::Thin),
+            Err(error) => panic!("eviction should free the materialization budget: {error}"),
+        }
+        let interactive = match graph.materialize_hot_checkpoint(
+            &over_budget,
+            policy,
+            MaterializationTrigger::InteractiveTarget,
+        ) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("interactive target should materialize after eviction: {error}"),
+        };
+
+        assert_eq!(interactive.kind, CheckpointKind::Fat);
+        assert_eq!(graph.cached_snapshot(&over_budget), Some(&interactive));
+        assert_eq!(graph.cached_snapshot_count(), 1);
     }
 
     #[test]
@@ -755,6 +909,76 @@ mod tests {
         assert!(matches!(
             mismatch,
             EngineError::CheckpointIdentityMismatch { checkpoint, .. } if checkpoint == corrupted.id
+        ));
+    }
+
+    #[test]
+    fn temporal_graph_replay_checkpoint_rejects_materialized_payload_drift() {
+        let node = node_id("node");
+        let world = world_from_nodes(vec![WorldNode {
+            id: node.clone(),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: Icount { retired: 10 },
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+        }]);
+        let scenario = world.scenario_def();
+        let genesis = Configuration::genesis(scenario.clone());
+        let config = step(&genesis, generated_decision(84, 0));
+        let baked = match bake(&world) {
+            Ok(genesis) => genesis,
+            Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),
+        };
+        let mut graph = match TemporalGraph::empty().with_baked_genesis(&scenario, baked) {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+        let checkpoint = match graph.materialize_checkpoint(&config) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("checkpoint should materialize through thin replay: {error}"),
+        };
+        let mut corrupted = checkpoint.clone();
+        corrupted.node_blobs.insert(
+            node,
+            NodeBlobRef::baked(ContentHash::from_canonical_material(
+                "crucible.test.materialized-payload-drift",
+                "wrong-vm-blob",
+            )),
+        );
+        corrupted.state = Some(MaterializedState::from_checkpoint_parts(
+            &corrupted.node_icounts,
+            &corrupted.node_blobs,
+        ));
+        let expected_state = checkpoint
+            .state
+            .as_ref()
+            .map(|state| state.id)
+            .unwrap_or_else(|| panic!("valid materialized checkpoint should carry state"));
+        let actual_state = corrupted
+            .state
+            .as_ref()
+            .map(|state| state.id)
+            .unwrap_or_else(|| panic!("corrupted checkpoint should carry recomputed state"));
+
+        let error = match graph.replay_checkpoint(&config, &corrupted) {
+            Ok(_) => panic!("payload drift should fail replay-oracle validation"),
+            Err(error) => error,
+        };
+
+        assert_eq!(corrupted.id, checkpoint.id);
+        assert_eq!(corrupted.configuration, checkpoint.configuration);
+        assert_eq!(corrupted.parent, checkpoint.parent);
+        assert_eq!(corrupted.schedule_delta, checkpoint.schedule_delta);
+        assert_ne!(actual_state, expected_state);
+        assert!(matches!(
+            error,
+            EngineError::ReplayOracleMismatch {
+                checkpoint: corrupt_id,
+                expected,
+                actual,
+            } if corrupt_id == corrupted.id
+                && expected == expected_state
+                && actual == actual_state
         ));
     }
 

@@ -783,10 +783,18 @@ command.
     The content-address gate checks the component hash shape and icount
     sensitivity; the replay-oracle gate loads baked genesis through the `loadvm`
     branch and rejects incomplete fat checkpoint state.
-- [ ] **T-TEMP-4** Implement thin checkpoints (`state = None`, realized by
+- [x] **T-TEMP-4** Implement thin checkpoints (`state = None`, realized by
   ancestor-replay) and fat checkpoints (`MaterializedState`, realized by
   `loadvm`), the thin-is-source-of-truth rule, and the materialize-hot-nodes /
   evict-fat→thin policy. — satisfies [TEMP-11], [TEMP-12], [TEMP-14]; spec §4.
+  - Completed by `crucible::TemporalGraph`, `crucible::MaterializationPolicy`,
+    and `checks.crucible.phase1.gates.replayOracle`: descendant checkpoint DAG
+    nodes remain thin (`state = None`) while exact fat snapshots live in the
+    separate cache, `materialize_checkpoint` validates a fat cache against the
+    thin ancestor path before insertion, `materialize_hot_checkpoint` applies
+    the repeated-fork/shared-replay/interactive-target budget, and
+    `evict_fat_checkpoint_to_thin` drops the fat cache without changing the
+    checkpoint id or replayed runtime state.
 - [ ] **T-TEMP-5** Implement the savevm-completeness hedge: keep affected
   checkpoints thin when a device's snapshot is unreliable, proving
   replay-from-ancestor stays bit-correct independent of snapshot completeness.
