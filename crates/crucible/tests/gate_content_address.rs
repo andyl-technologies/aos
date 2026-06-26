@@ -4,15 +4,22 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash,
-    CowDeltaKind, CowDeltaRef, Decision, DecisionRngState, DeliveryOrderDecision, DeviceId,
-    DeviceOverlayDelta, DeviceRngState, EngineError, EventKey, EventLogOffset, FaultDecision,
-    FaultId, FaultState, Icount, MaterializedState, NodeBlobRef, NodeId, PendingFrame, RngDecision,
-    RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerState, State, TemporalGraph,
-    TimerId, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef, World, bake, reduce, step,
+    CowDeltaKind, CowDeltaRef, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
+    DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
+    EngineError, EventKey, EventLogOffset, FaultDecision, FaultId, FaultState, Icount,
+    LocalDagStore, MaterializedState, MemoryDagStore, NodeBlobRef, NodeId, PendingFrame,
+    RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerState, State,
+    TemporalGraph, TimerId, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef, World, bake,
+    reduce, step,
 };
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn gate_content_address_keeps_fixed_vectors_stable() {
@@ -467,6 +474,254 @@ fn gate_content_address_cow_sharing_dedups_identical_fork_deltas() {
 }
 
 #[test]
+fn gate_content_address_dag_store_put_get_exists_dedups_equal_bytes() {
+    let store = MemoryDagStore::new();
+    let bytes = b"checkpoint-node\nparent=genesis\ndelta=decision-0\n";
+    let first = store
+        .put(bytes)
+        .unwrap_or_else(|error| panic!("first store put should succeed: {error}"));
+    let second = store
+        .put(bytes)
+        .unwrap_or_else(|error| panic!("second identical store put should succeed: {error}"));
+    let changed = store
+        .put(b"checkpoint-node\nparent=genesis\ndelta=decision-1\n")
+        .unwrap_or_else(|error| panic!("changed store put should succeed: {error}"));
+    let missing = ContentHash::from_bytes(b"missing-object");
+
+    assert_eq!(first, second);
+    assert_ne!(first, changed);
+    assert_eq!(
+        first.to_hex(),
+        "ccd5518b5e42662190b09ab692a0d86827cea51e1c2e782cabe9474e575a0ee3"
+    );
+    assert_eq!(
+        store
+            .get(&first)
+            .unwrap_or_else(|error| panic!("stored object should be readable: {error}")),
+        bytes
+    );
+    assert!(
+        store
+            .exists(&first)
+            .unwrap_or_else(|error| panic!("stored object lookup should succeed: {error}"))
+    );
+    assert!(
+        !store
+            .exists(&missing)
+            .unwrap_or_else(|error| panic!("missing object lookup should succeed: {error}"))
+    );
+    assert!(matches!(
+        store.get(&missing),
+        Err(DagStoreError::NotFound { key }) if key == missing
+    ));
+    assert_eq!(
+        store
+            .object_count()
+            .unwrap_or_else(|error| panic!("memory store count should be readable: {error}")),
+        2
+    );
+}
+
+#[test]
+fn gate_content_address_local_dag_store_uses_two_level_layout() {
+    let root = unique_temp_dir("local-dag-store");
+    let store = LocalDagStore::new(root.clone());
+    let bytes = b"vm-delta\npage=7\nbytes=dirty\n";
+    let key = store
+        .put(bytes)
+        .unwrap_or_else(|error| panic!("local store put should succeed: {error}"));
+    let path = store.object_path(&key);
+    let hex = key.to_hex();
+
+    assert_eq!(path, root.join(&hex[0..2]).join(&hex));
+    assert_eq!(
+        fs::read(&path).unwrap_or_else(|error| panic!("object file should be readable: {error}")),
+        bytes
+    );
+    assert_eq!(
+        store
+            .get(&key)
+            .unwrap_or_else(|error| panic!("local object should be readable: {error}")),
+        bytes
+    );
+    assert!(
+        store
+            .exists(&key)
+            .unwrap_or_else(|error| panic!("local object lookup should succeed: {error}"))
+    );
+
+    let repeated = store
+        .put(bytes)
+        .unwrap_or_else(|error| panic!("repeated local put should dedup: {error}"));
+    let fanout_entries = fs::read_dir(root.join(&hex[0..2]))
+        .unwrap_or_else(|error| panic!("fanout directory should be readable: {error}"))
+        .count();
+
+    assert_eq!(repeated, key);
+    assert_eq!(fanout_entries, 1);
+
+    fs::remove_dir_all(&root)
+        .unwrap_or_else(|error| panic!("temporary DAG store root should remove: {error}"));
+}
+
+#[test]
+fn gate_content_address_local_dag_store_repairs_corrupt_object_path() {
+    let root = unique_temp_dir("local-dag-store-corrupt");
+    let store = LocalDagStore::new(root.clone());
+    let bytes = b"vm-delta\npage=9\nbytes=repaired\n";
+    let key = ContentHash::from_bytes(bytes);
+    let path = store.object_path(&key);
+    let parent = path
+        .parent()
+        .unwrap_or_else(|| panic!("object path should have a fanout parent"));
+
+    fs::create_dir_all(parent)
+        .unwrap_or_else(|error| panic!("fanout directory should be creatable: {error}"));
+    fs::write(&path, b"corrupt-object")
+        .unwrap_or_else(|error| panic!("corrupt object fixture should be writable: {error}"));
+
+    assert!(matches!(
+        store.get(&key),
+        Err(DagStoreError::ContentMismatch { expected, .. }) if expected == key
+    ));
+    assert!(matches!(
+        store.exists(&key),
+        Err(DagStoreError::ContentMismatch { expected, .. }) if expected == key
+    ));
+
+    let repaired = store
+        .put(bytes)
+        .unwrap_or_else(|error| panic!("put should repair corrupt content-address path: {error}"));
+
+    assert_eq!(repaired, key);
+    assert_eq!(
+        fs::read(&path).unwrap_or_else(|error| panic!("repaired object should read: {error}")),
+        bytes
+    );
+    assert!(
+        store
+            .exists(&key)
+            .unwrap_or_else(|error| panic!("repaired object lookup should succeed: {error}"))
+    );
+
+    fs::remove_dir_all(&root)
+        .unwrap_or_else(|error| panic!("temporary DAG store root should remove: {error}"));
+}
+
+#[test]
+fn gate_content_address_reproduction_artifact_is_store_key_closure() {
+    let store = MemoryDagStore::new();
+    let scenario_key = store
+        .put(b"scenario-def\nnodes=a,b\nseed=42\n")
+        .unwrap_or_else(|error| panic!("scenario bytes should store: {error}"));
+    let genesis_key = store
+        .put(b"genesis-snapshot\nnode=a\nnode=b\n")
+        .unwrap_or_else(|error| panic!("genesis bytes should store: {error}"));
+    let first_delta = store
+        .put(b"schedule-delta\ndecision=deliver-a-b\n")
+        .unwrap_or_else(|error| panic!("first delta should store: {error}"));
+    let second_delta = store
+        .put(b"schedule-delta\ndecision=deliver-a-b\n")
+        .unwrap_or_else(|error| panic!("duplicate delta should dedup: {error}"));
+    let artifact = DagStoreReproductionArtifact::new(
+        scenario_key,
+        genesis_key,
+        vec![first_delta, second_delta],
+    );
+
+    assert_eq!(first_delta, second_delta);
+    assert_eq!(
+        artifact.store_keys(),
+        BTreeSet::from([scenario_key, genesis_key, first_delta])
+    );
+    for key in artifact.store_keys() {
+        assert!(
+            store
+                .exists(&key)
+                .unwrap_or_else(|error| panic!("artifact key lookup should succeed: {error}"))
+        );
+    }
+}
+
+#[test]
+fn gate_content_address_temporal_graph_persists_checkpoint_closure_in_dag_store() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "dag-store-persist-root",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let first = step(&genesis, generated_decision(610, 0));
+    let vm_delta =
+        ContentHash::from_canonical_material("crucible.test.dag-store-persist.vm", "dirty-page=11");
+    let overlay_delta =
+        ContentHash::from_canonical_material("crucible.test.dag-store-persist.overlay", "sector=7");
+    let log_prefix =
+        ContentHash::from_canonical_material("crucible.test.dag-store-persist.log", "prefix");
+    let log_segment =
+        ContentHash::from_canonical_material("crucible.test.dag-store-persist.log", "segment");
+    let fat_checkpoint = cow_fork_checkpoint(
+        &first,
+        &genesis,
+        vm_delta,
+        overlay_delta,
+        log_prefix,
+        log_segment,
+    );
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(
+            &scenario,
+            bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    graph
+        .cache_snapshot(&first, fat_checkpoint)
+        .unwrap_or_else(|error| panic!("fat checkpoint should cache: {error}"));
+    let store = MemoryDagStore::new();
+
+    let first_keys = graph
+        .persist_checkpoint_closure(&store, &first)
+        .unwrap_or_else(|error| panic!("checkpoint closure should persist: {error}"));
+    let second_keys = graph
+        .persist_checkpoint_closure(&store, &first)
+        .unwrap_or_else(|error| panic!("checkpoint closure should dedup on replay: {error}"));
+    let schedule_ref = CowDeltaRef::new(CowDeltaKind::ScheduleDelta, first.schedule.content_hash());
+    let vm_ref = CowDeltaRef::new(CowDeltaKind::VmMemory, vm_delta);
+    let overlay_ref = CowDeltaRef::new(CowDeltaKind::DeviceOverlay, overlay_delta);
+    let log_ref = CowDeltaRef::new(CowDeltaKind::EventLogSegment, log_segment);
+
+    assert_eq!(first_keys, second_keys);
+    assert_eq!(first_keys.checkpoint_nodes.len(), 2);
+    assert_eq!(first_keys.cached_snapshots.len(), 1);
+    assert_eq!(first_keys.reproduction_artifact.schedule_deltas.len(), 1);
+    assert!(first_keys.checkpoint_nodes.contains_key(&genesis.id()));
+    assert!(first_keys.checkpoint_nodes.contains_key(&first.id()));
+    assert!(first_keys.cached_snapshots.contains_key(&first.id()));
+    assert!(first_keys.cow_deltas.contains_key(&schedule_ref));
+    assert!(first_keys.cow_deltas.contains_key(&vm_ref));
+    assert!(first_keys.cow_deltas.contains_key(&overlay_ref));
+    assert!(first_keys.cow_deltas.contains_key(&log_ref));
+    assert_eq!(first_keys.cow_deltas.len(), 4);
+    assert_eq!(
+        first_keys.reproduction_artifact.schedule_deltas[0],
+        first_keys.cow_deltas[&schedule_ref]
+    );
+    assert_eq!(
+        store
+            .object_count()
+            .unwrap_or_else(|error| panic!("memory store count should be readable: {error}")),
+        first_keys.store_keys().len()
+    );
+    for key in first_keys.store_keys() {
+        assert!(
+            store
+                .exists(&key)
+                .unwrap_or_else(|error| panic!("persisted graph key should exist: {error}"))
+        );
+    }
+}
+
+#[test]
 fn gate_content_address_checkpoint_rejects_malformed_parent_edges() {
     let scenario_def = scenario("scenario=checkpoint-parent\nseed=89\n");
     let parent = Configuration {
@@ -744,6 +999,18 @@ fn assert_cache_topology_reason(
         }
         Err(error) => panic!("wrong cache validation error: {error:?}"),
     }
+}
+
+fn unique_temp_dir(label: &str) -> PathBuf {
+    let index = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let root =
+        std::env::temp_dir().join(format!("crucible-{label}-{}-{index}", std::process::id()));
+    match fs::remove_dir_all(&root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("temporary DAG store root should be clearable: {error}"),
+    }
+    root
 }
 
 fn scenario(material: &str) -> ScenarioDef {

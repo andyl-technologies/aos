@@ -13,6 +13,7 @@ qemu-backend = []
 workspace = true
 
 [dependencies]
+blake3 = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
 crucible-shmem = { path = "../crucible-shmem", optional = true }
 crucible-protocol = { path = "../crucible-protocol", optional = true }

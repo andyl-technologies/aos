@@ -2,13 +2,13 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.contentAddress",
-  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6"],
+  taskIds ? ["T-HARN-11" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
+    hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
   model = builtins.readFile ../../crates/crucible/src/model.rs;
   modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
@@ -61,6 +61,90 @@
       {
         label = "scenario canonical material entry point";
         needle = "pub fn from_canonical_material(domain: &str, material: &str) -> Self";
+      }
+      {
+        label = "raw byte BLAKE3 DAG store key";
+        needle = "pub fn from_bytes(bytes: &[u8]) -> Self";
+      }
+      {
+        label = "content hash hex rendering";
+        needle = "pub fn to_hex(self) -> String";
+      }
+      {
+        label = "DAG store trait";
+        needle = "pub trait DagStore: Send + Sync";
+      }
+      {
+        label = "DAG store put";
+        needle = "fn put(&self, bytes: &[u8]) -> Result<ContentHash, DagStoreError>;";
+      }
+      {
+        label = "DAG store get";
+        needle = "fn get(&self, key: &ContentHash) -> Result<Vec<u8>, DagStoreError>;";
+      }
+      {
+        label = "DAG store exists";
+        needle = "fn exists(&self, key: &ContentHash) -> Result<bool, DagStoreError>;";
+      }
+      {
+        label = "memory DAG store backend";
+        needle = "pub struct MemoryDagStore";
+      }
+      {
+        label = "filesystem DAG store backend";
+        needle = "pub struct LocalDagStore";
+      }
+      {
+        label = "two-level object path API";
+        needle = "pub fn object_path(&self, key: &ContentHash) -> PathBuf";
+      }
+      {
+        label = "two-level object path implementation";
+        needle = "self.root.join(&hex[0..2]).join(hex)";
+      }
+      {
+        label = "store-key reproduction artifact";
+        needle = "pub struct DagStoreReproductionArtifact";
+      }
+      {
+        label = "store-key artifact closure";
+        needle = "pub fn store_keys(&self) -> BTreeSet<ContentHash>";
+      }
+      {
+        label = "temporal graph store key report";
+        needle = "pub struct TemporalGraphStoreKeys";
+      }
+      {
+        label = "temporal graph cached snapshot store keys";
+        needle = "pub cached_snapshots: BTreeMap<ContentHash, ContentHash>";
+      }
+      {
+        label = "temporal graph store persistence error";
+        needle = "pub enum TemporalGraphStoreError";
+      }
+      {
+        label = "temporal graph DagStore persistence API";
+        needle = "pub fn persist_checkpoint_closure<S>";
+      }
+      {
+        label = "temporal graph cached snapshot store operation";
+        needle = "put-cached-snapshot";
+      }
+      {
+        label = "temporal graph CoW persistence helper";
+        needle = "fn persist_checkpoint_cow_deltas<S>";
+      }
+      {
+        label = "temporal graph checkpoint node store bytes";
+        needle = "fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8>";
+      }
+      {
+        label = "temporal graph schedule delta store bytes";
+        needle = "fn schedule_delta_store_bytes(schedule: &Schedule) -> Vec<u8>";
+      }
+      {
+        label = "temporal graph CoW delta store bytes";
+        needle = "fn cow_delta_store_bytes(cow_ref: CowDeltaRef) -> Vec<u8>";
       }
       {
         label = "configuration content hash";
@@ -369,6 +453,70 @@
         needle = "assert_eq!(stats.unique_objects, 5);";
       }
       {
+        label = "DAG store put get exists test";
+        needle = "gate_content_address_dag_store_put_get_exists_dedups_equal_bytes";
+      }
+      {
+        label = "DAG store fixed BLAKE3 vector";
+        needle = "ccd5518b5e42662190b09ab692a0d86827cea51e1c2e782cabe9474e575a0ee3";
+      }
+      {
+        label = "local DAG store two-level layout test";
+        needle = "gate_content_address_local_dag_store_uses_two_level_layout";
+      }
+      {
+        label = "local DAG store fanout assertion";
+        needle = "root.join(&hex[0..2]).join(&hex)";
+      }
+      {
+        label = "local DAG store corruption repair test";
+        needle = "gate_content_address_local_dag_store_repairs_corrupt_object_path";
+      }
+      {
+        label = "local DAG store corruption mismatch assertion";
+        needle = "Err(DagStoreError::ContentMismatch { expected, .. }) if expected == key";
+      }
+      {
+        label = "DAG store reproduction artifact test";
+        needle = "gate_content_address_reproduction_artifact_is_store_key_closure";
+      }
+      {
+        label = "DAG store artifact dedup assertion";
+        needle = "BTreeSet::from([scenario_key, genesis_key, first_delta])";
+      }
+      {
+        label = "temporal graph DagStore persistence test";
+        needle = "gate_content_address_temporal_graph_persists_checkpoint_closure_in_dag_store";
+      }
+      {
+        label = "temporal graph persistence API exercised";
+        needle = "persist_checkpoint_closure(&store, &first)";
+      }
+      {
+        label = "temporal graph persisted checkpoint nodes";
+        needle = "first_keys.checkpoint_nodes.len(), 2";
+      }
+      {
+        label = "temporal graph persisted cached snapshots";
+        needle = "first_keys.cached_snapshots.len(), 1";
+      }
+      {
+        label = "temporal graph persisted schedule delta CoW ref";
+        needle = "first_keys.cow_deltas[&schedule_ref]";
+      }
+      {
+        label = "temporal graph persisted VM CoW ref";
+        needle = "first_keys.cow_deltas.contains_key(&vm_ref)";
+      }
+      {
+        label = "temporal graph persisted device CoW ref";
+        needle = "first_keys.cow_deltas.contains_key(&overlay_ref)";
+      }
+      {
+        label = "temporal graph persisted log CoW ref";
+        needle = "first_keys.cow_deltas.contains_key(&log_ref)";
+      }
+      {
         label = "missing parent reason";
         needle = "descendant-missing-parent";
       }
@@ -500,6 +648,10 @@
         label = "phase1 content-address lists T-TEMP-6";
         needle = "\"T-TEMP-6\"";
       }
+      {
+        label = "phase1 content-address lists T-TEMP-8";
+        needle = "\"T-TEMP-8\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
@@ -551,6 +703,22 @@
       {
         label = "T-TEMP-6 completion names content-address gate";
         needle = "`checks.crucible.phase1.gates.contentAddress`";
+      }
+      {
+        label = "T-TEMP-8 checklist complete";
+        needle = "- [x] **T-TEMP-8**";
+      }
+      {
+        label = "T-TEMP-8 completion names DAG store trait";
+        needle = "`crucible::DagStore`";
+      }
+      {
+        label = "T-TEMP-8 completion names local backend";
+        needle = "`crucible::LocalDagStore`";
+      }
+      {
+        label = "T-TEMP-8 completion names store-key artifact";
+        needle = "`crucible::DagStoreReproductionArtifact`";
       }
     ];
 in
@@ -648,6 +816,14 @@ in
             cow_sharing=typed-content-addressed-delta-refs
             cow_marginal_fork_cost=delta-objects-not-full-state
             cow_dedup=identical-deltas-stored-once
+            dag_store=put-get-exists
+            dag_store_keys=blake3-content-hash
+            dag_store_dedup=idempotent-equal-bytes
+            dag_store_backend=local-two-level-layout
+            dag_store_integrity=corrupt-path-repair
+            temporal_graph_store=checkpoint-closure
+            temporal_graph_store_objects=checkpoint-nodes,cached-snapshots,cow-deltas
+            reproduction_artifact=store-key-closure
             RESULT
           '';
         }

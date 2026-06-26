@@ -17,7 +17,7 @@ in
     cargoDeps = fetchCargoDeps {
       inherit src;
       sourceRoot = "source/crates";
-      hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
+      hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
     };
 
     cargoFlags = "-p crucible-qemu-plugin";
