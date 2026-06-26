@@ -7479,6 +7479,172 @@ fn captured_primop_values_do_not_build_force_cache_subjects() {
 }
 
 #[test]
+fn synthetic_apply_thunks_do_not_build_force_cache_subjects() {
+    let source = "x: x + 1";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "synthetic-apply-force-cache.nix",
+        source,
+        cache.clone(),
+    );
+    let function = evaluator.eval_root().expect("lambda evaluates");
+    assert_eq!(function.tag(), ValueTag::Lambda);
+    let thunk_value = evaluator
+        .alloc_apply_thunk(
+            ir.root,
+            Span::new(0, source.len() as u32),
+            ir.root,
+            Span::new(0, source.len() as u32),
+            function,
+            ir.root,
+            Value::int(2),
+        )
+        .expect("apply thunk allocates");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("synthetic apply thunk is heap-owned");
+        assert!(matches!(thunk.kind(), EvalThunkKind::Apply { .. }));
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "synthetic apply thunks must not be hashed into demand keys"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, source.len() as u32), thunk_value)
+        .expect("synthetic apply thunk force succeeds");
+
+    assert_eq!(forced.as_int(), Ok(3));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "synthetic apply thunk subjects should skip expression node allocation"
+    );
+}
+
+#[test]
+fn synthetic_apply2_thunks_do_not_build_force_cache_subjects() {
+    let source = "x: y: x + y";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "synthetic-apply2-force-cache.nix",
+        source,
+        cache.clone(),
+    );
+    let function = evaluator.eval_root().expect("lambda evaluates");
+    assert_eq!(function.tag(), ValueTag::Lambda);
+    let thunk_value = evaluator
+        .alloc_apply2_thunk(
+            ir.root,
+            Span::new(0, source.len() as u32),
+            ir.root,
+            Span::new(0, source.len() as u32),
+            function,
+            ir.root,
+            Span::new(0, 1),
+            Value::int(2),
+            ir.root,
+            Value::int(3),
+        )
+        .expect("apply2 thunk allocates");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("synthetic apply2 thunk is heap-owned");
+        assert!(matches!(thunk.kind(), EvalThunkKind::Apply2 { .. }));
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "synthetic apply2 thunks must not be hashed into demand keys"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, source.len() as u32), thunk_value)
+        .expect("synthetic apply2 thunk force succeeds");
+
+    assert_eq!(forced.as_int(), Ok(5));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "synthetic apply2 thunk subjects should skip expression node allocation"
+    );
+}
+
+#[test]
+fn synthetic_select_thunks_do_not_build_force_cache_subjects() {
+    let source = "{ a = 1; }.a";
+    let ir = lower(source);
+    let path = {
+        let node = ir.arena.node(ir.root).expect("root select exists");
+        let IrData::Select { path, .. } = node.data else {
+            panic!("root is a select");
+        };
+        path
+    };
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "synthetic-select-force-cache.nix",
+        source,
+        cache.clone(),
+    );
+    let attrs = FlatAttrs::new(vec![AttrEntry::new(a, Value::int(7))], &evaluator.symbols)
+        .expect("receiver attrs build");
+    let receiver = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("receiver attrs allocate");
+    let thunk_value = evaluator
+        .alloc_select_thunk(
+            ir.root,
+            Span::new(0, source.len() as u32),
+            ir.root,
+            receiver,
+            path,
+        )
+        .expect("select thunk allocates");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("synthetic select thunk is heap-owned");
+        assert!(matches!(thunk.kind(), EvalThunkKind::Select { .. }));
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "synthetic select thunks must not be hashed into demand keys"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, source.len() as u32), thunk_value)
+        .expect("synthetic select thunk force succeeds");
+
+    assert_eq!(forced.as_int(), Ok(7));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "synthetic select thunk subjects should skip expression node allocation"
+    );
+}
+
+#[test]
 fn captured_suspended_computed_thunks_do_not_build_force_cache_subjects() {
     let source = "let x = 1 + 2; in { a = x == 3; }";
     let ir = lower(source);
