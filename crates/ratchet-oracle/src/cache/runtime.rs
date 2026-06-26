@@ -214,7 +214,7 @@ impl CachedDerivationOutputPaths {
         &self.output_paths
     }
 
-    fn value_hash(&self, pre_output_aterm: &[u8]) -> ValueHash {
+    pub(crate) fn value_hash(&self, pre_output_aterm: &[u8]) -> ValueHash {
         let mut hasher = blake3::Hasher::new();
         hasher.update(STATIC_DERIVATION_OUTPUT_PATHS_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"pre-output-aterm");
@@ -231,6 +231,104 @@ impl CachedDerivationOutputPaths {
     }
 }
 
+/// Persistent payload for cached static derivation output paths.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CachedStaticDerivationOutputPathsPayload {
+    pre_output_aterm: Vec<u8>,
+    output_paths: CachedDerivationOutputPaths,
+}
+
+impl CachedStaticDerivationOutputPathsPayload {
+    /// Creates a static-output payload from pre-output ATerm bytes and paths.
+    pub(crate) fn new(
+        pre_output_aterm: Vec<u8>,
+        output_paths: CachedDerivationOutputPaths,
+    ) -> Self {
+        Self {
+            pre_output_aterm,
+            output_paths,
+        }
+    }
+
+    /// Returns the pre-output ATerm bytes this payload belongs to.
+    pub(crate) fn pre_output_aterm_bytes(&self) -> &[u8] {
+        &self.pre_output_aterm
+    }
+
+    /// Consumes the payload and returns the cached static output paths.
+    pub(crate) fn into_output_paths(self) -> CachedDerivationOutputPaths {
+        self.output_paths
+    }
+
+    /// Returns the durable side-payload value hash.
+    pub(crate) fn value_hash(&self) -> ValueHash {
+        self.output_paths.value_hash(&self.pre_output_aterm)
+    }
+
+    /// Encodes this payload for the persistent `values/` pack.
+    ///
+    /// The encoded bytes are the canonical BLAKE3 preimage used by
+    /// [`Self::value_hash`], so the persistent blob hash matches the demand
+    /// node's side-payload value hash.
+    pub(crate) fn encode_persistent_payload(
+        &self,
+    ) -> Result<Vec<u8>, CachedDerivationSidePayloadError> {
+        let mut out = Vec::new();
+        append_derivation_payload_bytes(
+            &mut out,
+            STATIC_DERIVATION_OUTPUT_PATHS_VALUE_HASH_DOMAIN_VERSION,
+        )?;
+        append_derivation_payload_bytes(&mut out, b"pre-output-aterm")?;
+        append_derivation_length_prefixed_bytes(&mut out, &self.pre_output_aterm)?;
+        append_derivation_payload_bytes(&mut out, b"hash-derivation-modulo")?;
+        append_derivation_payload_bytes(&mut out, &self.output_paths.hash_derivation_modulo)?;
+        append_derivation_payload_bytes(&mut out, b"output-paths")?;
+        append_derivation_payload_u128(&mut out, self.output_paths.output_paths.len() as u128)?;
+        for output_path in &self.output_paths.output_paths {
+            append_derivation_length_prefixed_bytes(&mut out, &output_path.name)?;
+            append_derivation_length_prefixed_bytes(&mut out, &output_path.path)?;
+        }
+        Ok(out)
+    }
+
+    /// Decodes a payload produced by [`Self::encode_persistent_payload`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CachedDerivationSidePayloadError`] if `bytes` are not a
+    /// complete, canonical cached static-output side payload.
+    pub(crate) fn decode_persistent_payload(
+        bytes: &[u8],
+    ) -> Result<Self, CachedDerivationSidePayloadError> {
+        let mut cursor = DerivationSidePayloadCursor::new(bytes);
+        cursor.take_marker(
+            STATIC_DERIVATION_OUTPUT_PATHS_VALUE_HASH_DOMAIN_VERSION,
+            "static derivation output paths domain",
+        )?;
+        cursor.take_marker(b"pre-output-aterm", "pre-output ATerm tag")?;
+        let pre_output_aterm = cursor.take_length_prefixed_bytes()?;
+        cursor.take_marker(b"hash-derivation-modulo", "derivation modulo hash tag")?;
+        let mut hash_derivation_modulo = [0; 32];
+        hash_derivation_modulo.copy_from_slice(cursor.take_bytes(32)?);
+        cursor.take_marker(b"output-paths", "output paths tag")?;
+        let output_count = cursor.take_len()?;
+        let mut output_paths = Vec::new();
+        output_paths.try_reserve_exact(output_count).map_err(|_| {
+            CachedDerivationSidePayloadError::PayloadAllocationFailed { len: output_count }
+        })?;
+        for _ in 0..output_count {
+            let name = cursor.take_length_prefixed_bytes()?;
+            let path = cursor.take_length_prefixed_bytes()?;
+            output_paths.push(CachedDerivationOutputPath::new(name, path));
+        }
+        cursor.finish()?;
+        Ok(Self {
+            pre_output_aterm,
+            output_paths: CachedDerivationOutputPaths::new(hash_derivation_modulo, output_paths),
+        })
+    }
+}
+
 /// A cached final `.drv` path tied to exact derivation ATerm bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CachedDerivationAtermPath {
@@ -239,7 +337,7 @@ pub(crate) struct CachedDerivationAtermPath {
 }
 
 impl CachedDerivationAtermPath {
-    /// Creates a cached derivation path payload from exact ATerm and path bytes.
+    /// Creates a cached derivation side payload from exact ATerm and path bytes.
     pub(crate) fn new(aterm: Vec<u8>, path: Vec<u8>) -> Self {
         Self { aterm, path }
     }
@@ -266,7 +364,7 @@ impl CachedDerivationAtermPath {
     /// node's side-payload value hash.
     pub(crate) fn encode_persistent_payload(
         &self,
-    ) -> Result<Vec<u8>, CachedDerivationAtermPathPayloadError> {
+    ) -> Result<Vec<u8>, CachedDerivationSidePayloadError> {
         let len = DERIVATION_ATERM_PATH_VALUE_HASH_DOMAIN_VERSION
             .len()
             .saturating_add(b"aterm".len())
@@ -277,7 +375,7 @@ impl CachedDerivationAtermPath {
             .saturating_add(self.path.len());
         let mut out = Vec::new();
         out.try_reserve_exact(len)
-            .map_err(|_| CachedDerivationAtermPathPayloadError::PayloadAllocationFailed { len })?;
+            .map_err(|_| CachedDerivationSidePayloadError::PayloadAllocationFailed { len })?;
         append_derivation_payload_bytes(&mut out, DERIVATION_ATERM_PATH_VALUE_HASH_DOMAIN_VERSION)?;
         append_derivation_payload_bytes(&mut out, b"aterm")?;
         append_derivation_length_prefixed_bytes(&mut out, &self.aterm)?;
@@ -290,12 +388,12 @@ impl CachedDerivationAtermPath {
     ///
     /// # Errors
     ///
-    /// Returns [`CachedDerivationAtermPathPayloadError`] if `bytes` are not a
-    /// complete, canonical cached derivation path payload.
+    /// Returns [`CachedDerivationSidePayloadError`] if `bytes` are not a
+    /// complete, canonical cached derivation side payload.
     pub(crate) fn decode_persistent_payload(
         bytes: &[u8],
-    ) -> Result<Self, CachedDerivationAtermPathPayloadError> {
-        let mut cursor = DerivationAtermPathPayloadCursor::new(bytes);
+    ) -> Result<Self, CachedDerivationSidePayloadError> {
+        let mut cursor = DerivationSidePayloadCursor::new(bytes);
         cursor.take_marker(
             DERIVATION_ATERM_PATH_VALUE_HASH_DOMAIN_VERSION,
             "derivation ATerm path domain",
@@ -759,17 +857,17 @@ pub enum CachedExpressionValuePayloadError {
     },
 }
 
-/// Persistent cached derivation path payload encoding failed.
+/// Persistent cached derivation side payload encoding failed.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub(crate) enum CachedDerivationAtermPathPayloadError {
+pub(crate) enum CachedDerivationSidePayloadError {
     /// Payload byte storage could not be reserved.
-    #[error("failed to reserve cached derivation path payload storage for {len} bytes")]
+    #[error("failed to reserve cached derivation side payload storage for {len} bytes")]
     PayloadAllocationFailed {
         /// The requested byte capacity.
         len: usize,
     },
     /// Payload byte length arithmetic overflowed.
-    #[error("cached derivation path payload length overflow: {current} + {additional}")]
+    #[error("cached derivation side payload length overflow: {current} + {additional}")]
     PayloadLengthOverflow {
         /// The current payload length.
         current: usize,
@@ -777,7 +875,7 @@ pub(crate) enum CachedDerivationAtermPathPayloadError {
         additional: usize,
     },
     /// The payload ended before a required section was complete.
-    #[error("cached derivation path payload has {actual} bytes, expected at least {expected}")]
+    #[error("cached derivation side payload has {actual} bytes, expected at least {expected}")]
     ShortPayload {
         /// The minimum required payload length.
         expected: usize,
@@ -785,19 +883,19 @@ pub(crate) enum CachedDerivationAtermPathPayloadError {
         actual: usize,
     },
     /// A fixed payload marker was absent at the current cursor position.
-    #[error("cached derivation path payload is missing {marker}")]
+    #[error("cached derivation side payload is missing {marker}")]
     MissingMarker {
         /// The marker name.
         marker: &'static str,
     },
     /// A length field cannot fit in `usize` on this host.
-    #[error("cached derivation path payload length {len} cannot fit in usize")]
+    #[error("cached derivation side payload length {len} cannot fit in usize")]
     LengthOverflow {
         /// The oversized encoded length.
         len: u128,
     },
     /// The decoder did not consume the whole payload.
-    #[error("cached derivation path payload has {remaining} trailing bytes")]
+    #[error("cached derivation side payload has {remaining} trailing bytes")]
     TrailingBytes {
         /// The number of unconsumed bytes.
         remaining: usize,
@@ -1757,22 +1855,22 @@ fn update_derivation_side_payload_hash_chunk(hasher: &mut blake3::Hasher, bytes:
 fn append_derivation_payload_u128(
     out: &mut Vec<u8>,
     value: u128,
-) -> Result<(), CachedDerivationAtermPathPayloadError> {
+) -> Result<(), CachedDerivationSidePayloadError> {
     append_derivation_payload_bytes(out, &value.to_le_bytes())
 }
 
 fn append_derivation_payload_bytes(
     out: &mut Vec<u8>,
     bytes: &[u8],
-) -> Result<(), CachedDerivationAtermPathPayloadError> {
+) -> Result<(), CachedDerivationSidePayloadError> {
     let len = out.len().checked_add(bytes.len()).ok_or(
-        CachedDerivationAtermPathPayloadError::PayloadLengthOverflow {
+        CachedDerivationSidePayloadError::PayloadLengthOverflow {
             current: out.len(),
             additional: bytes.len(),
         },
     )?;
     out.try_reserve_exact(bytes.len())
-        .map_err(|_| CachedDerivationAtermPathPayloadError::PayloadAllocationFailed { len })?;
+        .map_err(|_| CachedDerivationSidePayloadError::PayloadAllocationFailed { len })?;
     out.extend_from_slice(bytes);
     Ok(())
 }
@@ -1780,27 +1878,27 @@ fn append_derivation_payload_bytes(
 fn append_derivation_length_prefixed_bytes(
     out: &mut Vec<u8>,
     bytes: &[u8],
-) -> Result<(), CachedDerivationAtermPathPayloadError> {
+) -> Result<(), CachedDerivationSidePayloadError> {
     append_derivation_payload_u128(out, bytes.len() as u128)?;
     append_derivation_payload_bytes(out, bytes)
 }
 
-struct DerivationAtermPathPayloadCursor<'a> {
+struct DerivationSidePayloadCursor<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
 
-impl<'a> DerivationAtermPathPayloadCursor<'a> {
+impl<'a> DerivationSidePayloadCursor<'a> {
     const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }
 
-    fn finish(&self) -> Result<(), CachedDerivationAtermPathPayloadError> {
+    fn finish(&self) -> Result<(), CachedDerivationSidePayloadError> {
         let remaining = self.bytes.len() - self.offset;
         if remaining == 0 {
             Ok(())
         } else {
-            Err(CachedDerivationAtermPathPayloadError::TrailingBytes { remaining })
+            Err(CachedDerivationSidePayloadError::TrailingBytes { remaining })
         }
     }
 
@@ -1808,53 +1906,48 @@ impl<'a> DerivationAtermPathPayloadCursor<'a> {
         &mut self,
         marker: &'static [u8],
         name: &'static str,
-    ) -> Result<(), CachedDerivationAtermPathPayloadError> {
+    ) -> Result<(), CachedDerivationSidePayloadError> {
         let actual = self.take_bytes(marker.len())?;
         if actual == marker {
             Ok(())
         } else {
-            Err(CachedDerivationAtermPathPayloadError::MissingMarker { marker: name })
+            Err(CachedDerivationSidePayloadError::MissingMarker { marker: name })
         }
     }
 
-    fn take_u128(&mut self) -> Result<u128, CachedDerivationAtermPathPayloadError> {
+    fn take_u128(&mut self) -> Result<u128, CachedDerivationSidePayloadError> {
         let bytes = self.take_bytes(16)?;
         let mut out = [0; 16];
         out.copy_from_slice(bytes);
         Ok(u128::from_le_bytes(out))
     }
 
-    fn take_len(&mut self) -> Result<usize, CachedDerivationAtermPathPayloadError> {
+    fn take_len(&mut self) -> Result<usize, CachedDerivationSidePayloadError> {
         let len = self.take_u128()?;
-        usize::try_from(len)
-            .map_err(|_| CachedDerivationAtermPathPayloadError::LengthOverflow { len })
+        usize::try_from(len).map_err(|_| CachedDerivationSidePayloadError::LengthOverflow { len })
     }
 
-    fn take_length_prefixed_bytes(
-        &mut self,
-    ) -> Result<Vec<u8>, CachedDerivationAtermPathPayloadError> {
+    fn take_length_prefixed_bytes(&mut self) -> Result<Vec<u8>, CachedDerivationSidePayloadError> {
         let len = self.take_len()?;
         let bytes = self.take_bytes(len)?;
         let mut out = Vec::new();
         out.try_reserve_exact(bytes.len()).map_err(|_| {
-            CachedDerivationAtermPathPayloadError::PayloadAllocationFailed { len: bytes.len() }
+            CachedDerivationSidePayloadError::PayloadAllocationFailed { len: bytes.len() }
         })?;
         out.extend_from_slice(bytes);
         Ok(out)
     }
 
-    fn take_bytes(
-        &mut self,
-        len: usize,
-    ) -> Result<&'a [u8], CachedDerivationAtermPathPayloadError> {
-        let end = self.offset.checked_add(len).ok_or(
-            CachedDerivationAtermPathPayloadError::ShortPayload {
-                expected: usize::MAX,
-                actual: self.bytes.len(),
-            },
-        )?;
+    fn take_bytes(&mut self, len: usize) -> Result<&'a [u8], CachedDerivationSidePayloadError> {
+        let end =
+            self.offset
+                .checked_add(len)
+                .ok_or(CachedDerivationSidePayloadError::ShortPayload {
+                    expected: usize::MAX,
+                    actual: self.bytes.len(),
+                })?;
         if end > self.bytes.len() {
-            return Err(CachedDerivationAtermPathPayloadError::ShortPayload {
+            return Err(CachedDerivationSidePayloadError::ShortPayload {
                 expected: end,
                 actual: self.bytes.len(),
             });
@@ -5719,6 +5812,37 @@ mod tests {
 
         assert_eq!(reconsideration.decision(), CutoffDecision::Propagate);
         assert_eq!(lookup, Some(output_paths));
+    }
+
+    #[test]
+    fn cached_static_derivation_output_paths_round_trip_through_persistent_encoding() {
+        let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
+        let output_paths = CachedDerivationOutputPaths::new(
+            [7; 32],
+            vec![CachedDerivationOutputPath::new(
+                b"out".to_vec(),
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x".to_vec(),
+            )],
+        );
+        let payload = CachedStaticDerivationOutputPathsPayload::new(
+            pre_output_aterm.to_vec(),
+            output_paths.clone(),
+        );
+        let value_hash = payload.value_hash();
+
+        let encoded = payload
+            .encode_persistent_payload()
+            .expect("persistent payload encodes");
+        let decoded = CachedStaticDerivationOutputPathsPayload::decode_persistent_payload(&encoded)
+            .expect("persistent payload decodes");
+
+        assert_eq!(
+            DurableBlake3Hash::for_bytes(&encoded),
+            value_hash.as_durable_hash()
+        );
+        assert_eq!(decoded.pre_output_aterm_bytes(), pre_output_aterm);
+        assert_eq!(decoded.value_hash(), value_hash);
+        assert_eq!(decoded.into_output_paths(), output_paths);
     }
 
     #[test]

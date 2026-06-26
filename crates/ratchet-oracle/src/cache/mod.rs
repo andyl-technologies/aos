@@ -78,6 +78,7 @@ pub use policy::{
 };
 pub(crate) use runtime::{
     CachedDerivationAtermPath, CachedDerivationOutputPath, CachedDerivationOutputPaths,
+    CachedStaticDerivationOutputPathsPayload,
 };
 pub use runtime::{
     CachedExpressionValue, CachedExpressionValuePayloadError, EvalCache, EvalCacheRuntime,
