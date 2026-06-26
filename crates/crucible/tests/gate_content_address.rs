@@ -15,8 +15,8 @@ use crucible::{
     EngineError, EventKey, EventLogOffset, FaultDecision, FaultId, FaultState, Icount,
     LocalDagStore, MaterializedState, MemoryDagStore, NodeBlobRef, NodeId, PendingFrame,
     RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerState, State,
-    TemporalGraph, TimerId, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef, World, bake,
-    reduce, step,
+    TemporalGraph, TemporalGraphGcRoots, TemporalGraphStoreError, TimerId, TimerRegistry,
+    TimerState, VirtualTime, VmSnapshotRef, World, bake, instantiate, reduce, step,
 };
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -510,6 +510,21 @@ fn gate_content_address_dag_store_put_get_exists_dedups_equal_bytes() {
             .exists(&missing)
             .unwrap_or_else(|error| panic!("missing object lookup should succeed: {error}"))
     );
+    assert!(
+        store
+            .delete(&changed)
+            .unwrap_or_else(|error| panic!("stored object delete should succeed: {error}"))
+    );
+    assert!(
+        !store
+            .exists(&changed)
+            .unwrap_or_else(|error| panic!("deleted object lookup should succeed: {error}"))
+    );
+    assert!(
+        !store
+            .delete(&changed)
+            .unwrap_or_else(|error| panic!("repeated delete should be idempotent: {error}"))
+    );
     assert!(matches!(
         store.get(&missing),
         Err(DagStoreError::NotFound { key }) if key == missing
@@ -518,7 +533,7 @@ fn gate_content_address_dag_store_put_get_exists_dedups_equal_bytes() {
         store
             .object_count()
             .unwrap_or_else(|error| panic!("memory store count should be readable: {error}")),
-        2
+        1
     );
 }
 
@@ -559,6 +574,21 @@ fn gate_content_address_local_dag_store_uses_two_level_layout() {
 
     assert_eq!(repeated, key);
     assert_eq!(fanout_entries, 1);
+    assert!(
+        store
+            .delete(&key)
+            .unwrap_or_else(|error| panic!("local object delete should succeed: {error}"))
+    );
+    assert!(
+        !store
+            .exists(&key)
+            .unwrap_or_else(|error| panic!("deleted local object lookup should succeed: {error}"))
+    );
+    assert!(
+        !store
+            .delete(&key)
+            .unwrap_or_else(|error| panic!("repeated local delete should be idempotent: {error}"))
+    );
 
     fs::remove_dir_all(&root)
         .unwrap_or_else(|error| panic!("temporary DAG store root should remove: {error}"));
@@ -719,6 +749,344 @@ fn gate_content_address_temporal_graph_persists_checkpoint_closure_in_dag_store(
                 .unwrap_or_else(|error| panic!("persisted graph key should exist: {error}"))
         );
     }
+}
+
+#[test]
+fn gate_content_address_gc_refcounts_abandoned_branch_unique_objects() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "gc-refcount-root",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let left = step(&genesis, generated_decision(620, 0));
+    let right = step(&genesis, generated_decision(621, 0));
+    let shared_vm_delta =
+        ContentHash::from_canonical_material("crucible.test.gc-refcount.vm", "shared-dirty-page");
+    let left_overlay_delta =
+        ContentHash::from_canonical_material("crucible.test.gc-refcount.overlay", "left-sector");
+    let right_overlay_delta =
+        ContentHash::from_canonical_material("crucible.test.gc-refcount.overlay", "right-sector");
+    let log_prefix =
+        ContentHash::from_canonical_material("crucible.test.gc-refcount.log", "shared-prefix");
+    let left_log_segment =
+        ContentHash::from_canonical_material("crucible.test.gc-refcount.log", "left-segment");
+    let right_log_segment =
+        ContentHash::from_canonical_material("crucible.test.gc-refcount.log", "right-segment");
+    let left_checkpoint = cow_fork_checkpoint(
+        &left,
+        &genesis,
+        shared_vm_delta,
+        left_overlay_delta,
+        log_prefix,
+        left_log_segment,
+    );
+    let right_checkpoint = cow_fork_checkpoint(
+        &right,
+        &genesis,
+        shared_vm_delta,
+        right_overlay_delta,
+        log_prefix,
+        right_log_segment,
+    );
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(
+            &scenario,
+            bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    graph
+        .cache_snapshot(&left, left_checkpoint)
+        .unwrap_or_else(|error| panic!("left fork should cache: {error}"));
+    graph
+        .cache_snapshot(&right, right_checkpoint)
+        .unwrap_or_else(|error| panic!("right fork should cache: {error}"));
+    let shared_vm_ref = CowDeltaRef::new(CowDeltaKind::VmMemory, shared_vm_delta);
+    let left_overlay_ref = CowDeltaRef::new(CowDeltaKind::DeviceOverlay, left_overlay_delta);
+    let left_log_ref = CowDeltaRef::new(CowDeltaKind::EventLogSegment, left_log_segment);
+    let left_schedule_ref =
+        CowDeltaRef::new(CowDeltaKind::ScheduleDelta, left.schedule.content_hash());
+    let right_overlay_ref = CowDeltaRef::new(CowDeltaKind::DeviceOverlay, right_overlay_delta);
+    let both_roots = TemporalGraphGcRoots::new()
+        .with_live_tip(left.id())
+        .with_live_tip(right.id());
+    let store = MemoryDagStore::new();
+    let left_keys = graph
+        .persist_checkpoint_closure(&store, &left)
+        .unwrap_or_else(|error| panic!("left branch should persist before GC: {error}"));
+    let right_keys = graph
+        .persist_checkpoint_closure(&store, &right)
+        .unwrap_or_else(|error| panic!("right branch should persist before GC: {error}"));
+    let shared_vm_store_key = left_keys.cow_deltas[&shared_vm_ref];
+    let left_overlay_store_key = left_keys.cow_deltas[&left_overlay_ref];
+    let left_log_store_key = left_keys.cow_deltas[&left_log_ref];
+    let left_schedule_store_key = left_keys.cow_deltas[&left_schedule_ref];
+    let left_checkpoint_store_key = left_keys.checkpoint_nodes[&left.id()];
+    let left_cache_store_key = left_keys.cached_snapshots[&left.id()];
+
+    let counts = graph
+        .reference_counts(&both_roots)
+        .unwrap_or_else(|error| panic!("reference counts should compute: {error}"));
+
+    assert_eq!(counts.cow_deltas[&shared_vm_ref], 2);
+    assert_eq!(counts.checkpoint_nodes[&right.id()], 1);
+    assert_eq!(counts.cow_deltas[&left_overlay_ref], 1);
+    assert_eq!(counts.cow_deltas[&left_log_ref], 1);
+    assert_eq!(shared_vm_store_key, right_keys.cow_deltas[&shared_vm_ref]);
+    assert!(
+        store
+            .exists(&left_overlay_store_key)
+            .unwrap_or_else(|error| panic!("left overlay store key should exist: {error}"))
+    );
+
+    let report = graph
+        .garbage_collect_store(
+            &store,
+            &TemporalGraphGcRoots::new().with_live_tip(right.id()),
+        )
+        .unwrap_or_else(|error| {
+            panic!("store-backed GC should collect abandoned left branch: {error}")
+        });
+
+    assert!(report.collected_checkpoints.contains(&left.id()));
+    assert!(report.collected_cached_snapshots.contains(&left.id()));
+    assert!(report.collected_configurations.contains(&left.id()));
+    assert!(report.collectible_cow_deltas.contains(&left_overlay_ref));
+    assert!(report.collectible_cow_deltas.contains(&left_log_ref));
+    assert!(!report.collectible_cow_deltas.contains(&shared_vm_ref));
+    assert!(
+        report
+            .live_reference_counts
+            .cow_deltas
+            .contains_key(&right_overlay_ref)
+    );
+    assert!(report.deleted_store_keys.contains(&left_overlay_store_key));
+    assert!(report.deleted_store_keys.contains(&left_log_store_key));
+    assert!(report.deleted_store_keys.contains(&left_schedule_store_key));
+    assert!(
+        report
+            .deleted_store_keys
+            .contains(&left_checkpoint_store_key)
+    );
+    assert!(report.deleted_store_keys.contains(&left_cache_store_key));
+    assert!(report.missing_store_keys.is_empty());
+    assert!(
+        !store
+            .exists(&left_overlay_store_key)
+            .unwrap_or_else(|error| panic!(
+                "left overlay store key lookup should succeed: {error}"
+            ))
+    );
+    assert!(
+        !store
+            .exists(&left_log_store_key)
+            .unwrap_or_else(|error| panic!("left log store key lookup should succeed: {error}"))
+    );
+    assert!(
+        store
+            .exists(&shared_vm_store_key)
+            .unwrap_or_else(|error| panic!("shared VM store key should remain: {error}"))
+    );
+    assert!(graph.checkpoint_node(left.id()).is_none());
+    assert!(graph.cached_snapshot(&left).is_none());
+    assert!(graph.checkpoint_node(right.id()).is_some());
+    assert!(graph.cached_snapshot(&right).is_some());
+}
+
+#[test]
+fn gate_content_address_gc_mark_sweep_roots_live_tips_pins_and_genesis() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "gc-mark-sweep-root",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let first_decision = generated_decision(720, 0);
+    let first = step(&genesis, first_decision.clone());
+    let second_decision = generated_decision(720, 1);
+    let second = step(&first, second_decision.clone());
+    let abandoned_decision = generated_decision(721, 0);
+    let abandoned = step(&genesis, abandoned_decision.clone());
+    let first_delta_ref = CowDeltaRef::new(
+        CowDeltaKind::ScheduleDelta,
+        Schedule::empty()
+            .appended(first_decision.clone())
+            .content_hash(),
+    );
+    let second_delta_ref = CowDeltaRef::new(
+        CowDeltaKind::ScheduleDelta,
+        Schedule::empty()
+            .appended(second_decision.clone())
+            .content_hash(),
+    );
+    let abandoned_delta_ref = CowDeltaRef::new(
+        CowDeltaKind::ScheduleDelta,
+        Schedule::empty()
+            .appended(abandoned_decision.clone())
+            .content_hash(),
+    );
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(
+            &scenario,
+            bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    graph
+        .record_step(&genesis, first_decision)
+        .unwrap_or_else(|error| panic!("first step should record: {error}"));
+    graph
+        .record_step(&first, second_decision)
+        .unwrap_or_else(|error| panic!("second step should record: {error}"));
+    graph
+        .record_step(&genesis, abandoned_decision)
+        .unwrap_or_else(|error| panic!("abandoned sibling should record: {error}"));
+    let mut roots = TemporalGraphGcRoots::new()
+        .with_live_tip(second.id())
+        .with_pinned_checkpoint(second.id());
+    roots.live_tips.insert(abandoned.id(), 0);
+
+    let report = graph
+        .garbage_collect(&roots)
+        .unwrap_or_else(|error| panic!("GC should retain pinned branch: {error}"));
+    let chain = graph
+        .checkpoint_parent_chain(second.id())
+        .unwrap_or_else(|error| panic!("pinned checkpoint chain should remain: {error}"));
+    let runtime = instantiate(&graph, &second)
+        .unwrap_or_else(|error| panic!("pinned checkpoint should remain realizable: {error}"));
+
+    assert!(report.live_checkpoints.contains(&genesis.id()));
+    assert!(report.live_checkpoints.contains(&first.id()));
+    assert!(report.live_checkpoints.contains(&second.id()));
+    assert!(report.collected_checkpoints.contains(&abandoned.id()));
+    assert!(report.collectible_cow_deltas.contains(&abandoned_delta_ref));
+    assert_eq!(
+        report.live_reference_counts.checkpoint_nodes[&second.id()],
+        2
+    );
+    assert!(
+        report
+            .live_reference_counts
+            .cow_deltas
+            .contains_key(&first_delta_ref)
+    );
+    assert!(
+        report
+            .live_reference_counts
+            .cow_deltas
+            .contains_key(&second_delta_ref)
+    );
+    assert_eq!(chain.len(), 3);
+    assert_eq!(runtime.configuration, second.id());
+    assert!(graph.checkpoint_node(abandoned.id()).is_none());
+}
+
+#[test]
+fn gate_content_address_gc_missing_root_errors_without_deleting_store_objects() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "gc-missing-root",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let first = step(&genesis, generated_decision(725, 0));
+    let missing = ContentHash::from_canonical_material(
+        "crucible.test.content-address.gc",
+        "missing-live-root",
+    );
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(
+            &scenario,
+            bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    graph
+        .record_thin_checkpoint(&first)
+        .unwrap_or_else(|error| panic!("thin checkpoint should record: {error}"));
+    let store = MemoryDagStore::new();
+    graph
+        .persist_checkpoint_closure(&store, &first)
+        .unwrap_or_else(|error| panic!("recorded branch should persist before GC: {error}"));
+    let before_objects = store
+        .object_count()
+        .unwrap_or_else(|error| panic!("store count should be readable before GC: {error}"));
+    let before_checkpoints = graph.checkpoint_node_count();
+
+    let error = graph
+        .garbage_collect_store(&store, &TemporalGraphGcRoots::new().with_live_tip(missing))
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        TemporalGraphStoreError::Engine {
+            source: EngineError::CheckpointNotRecorded { checkpoint },
+            ..
+        } if checkpoint == missing
+    ));
+    assert_eq!(graph.checkpoint_node_count(), before_checkpoints);
+    assert_eq!(
+        store.object_count().unwrap_or_else(|error| panic!(
+            "store count should be readable after failed GC: {error}"
+        )),
+        before_objects
+    );
+    assert!(graph.checkpoint_node(first.id()).is_some());
+}
+
+#[test]
+fn gate_content_address_gc_collects_cache_not_identity() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "gc-cache-not-identity-root",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let first = step(&genesis, generated_decision(730, 0));
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(
+            &scenario,
+            bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    graph
+        .cache_snapshot(&first, recorded_fat_checkpoint(&first))
+        .unwrap_or_else(|error| panic!("fat checkpoint should cache: {error}"));
+    let store = MemoryDagStore::new();
+    let keys = graph
+        .persist_checkpoint_closure(&store, &first)
+        .unwrap_or_else(|error| panic!("fat checkpoint should persist before cache GC: {error}"));
+    let cache_store_key = keys.cached_snapshots[&first.id()];
+    let thin_store_key = keys.checkpoint_nodes[&first.id()];
+
+    let report = graph
+        .collect_cached_snapshot_store(&store, &first)
+        .unwrap_or_else(|error| panic!("fat snapshot cache should collect from store: {error}"))
+        .unwrap_or_else(|| panic!("collecting existing fat snapshot should report deleted keys"));
+    let runtime = instantiate(&graph, &first)
+        .unwrap_or_else(|error| panic!("thin checkpoint should replay after cache GC: {error}"));
+    let thin = graph
+        .checkpoint_node(first.id())
+        .unwrap_or_else(|| panic!("thin checkpoint should remain after cache GC"));
+
+    assert!(report.collected_cached_snapshots.contains(&first.id()));
+    assert!(report.deleted_store_keys.contains(&cache_store_key));
+    assert!(
+        !store
+            .exists(&cache_store_key)
+            .unwrap_or_else(|error| panic!("cache store key lookup should succeed: {error}"))
+    );
+    assert!(
+        store
+            .exists(&thin_store_key)
+            .unwrap_or_else(|error| panic!("thin checkpoint key should remain: {error}"))
+    );
+    assert_eq!(thin.kind, CheckpointKind::Thin);
+    assert_eq!(graph.cached_snapshot_count(), 0);
+    assert!(graph.cached_snapshot(&first).is_none());
+    assert!(matches!(
+        graph.checkpoint_node(first.id()),
+        Some(checkpoint) if checkpoint.kind == CheckpointKind::Thin
+    ));
+    assert_eq!(runtime.configuration, first.id());
 }
 
 #[test]

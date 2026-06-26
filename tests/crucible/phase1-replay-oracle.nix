@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-7"],
+  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-7" "T-TEMP-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -284,6 +284,14 @@
       {
         label = "cached ancestor replay-oracle admission failure message";
         needle = "cached target should not validate against an unadmitted corrupt ancestor";
+      }
+      {
+        label = "GC cache collection replay-oracle test";
+        needle = "temporal_graph_gc_cache_collection_preserves_replay_oracle_path";
+      }
+      {
+        label = "GC cache collection keeps thin replay valid";
+        needle = "fat snapshot should still match thin derivation after GC";
       }
     ]
     ++ failuresFor "crates/crucible/Cargo.toml" cargoManifest [
@@ -679,6 +687,10 @@
         label = "phase1 replay-oracle lists T-TEMP-5";
         needle = "\"T-TEMP-5\"";
       }
+      {
+        label = "phase1 replay-oracle lists T-TEMP-9";
+        needle = "\"T-TEMP-9\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
       {
@@ -754,6 +766,14 @@
       {
         label = "T-TEMP-7 names whole-cache invariant";
         needle = "`TemporalGraph::validate_cached_snapshots_with_replay_oracle`";
+      }
+      {
+        label = "T-TEMP-9 checklist complete";
+        needle = "- [x] **T-TEMP-9**";
+      }
+      {
+        label = "T-TEMP-9 completion names replay-oracle gate";
+        needle = "`checks.crucible.phase1.gates.replayOracle`";
       }
     ];
 in
@@ -903,6 +923,7 @@ in
             savevm_full_s3_fallback=thin-replay-until-full-s3
             replay_oracle_cached_admission=corrupt-fat-cache-evicted-to-thin
             replay_oracle_structural_invariant=all-cached-fat-snapshots
+            gc_cache_collection=thin-replay-oracle-preserved
             artifact_round_trip=re-run-from-seed-scenario-schedule-build-identity
             artifact_replay_assertions=fingerprint-equality,oracle-case-equality
             artifact_replay_negative_controls=build-identity-drift,seed-drift,scenario-drift,schedule-drift,oracle-case-drift,replay-failure,expected-oracle-mismatch,reproduced-oracle-mismatch

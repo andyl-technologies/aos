@@ -162,6 +162,16 @@ pub trait DagStore: Send + Sync {
     ///
     /// Returns [`DagStoreError`] when the backend cannot query the object.
     fn exists(&self, key: &ContentHash) -> Result<bool, DagStoreError>;
+
+    /// Deletes the object addressed by `key`.
+    ///
+    /// Returns `Ok(true)` when an object existed and was removed, and
+    /// `Ok(false)` when no object was present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DagStoreError`] when the backend cannot delete the object.
+    fn delete(&self, key: &ContentHash) -> Result<bool, DagStoreError>;
 }
 
 /// In-memory [`DagStore`] implementation used by model tests and adapters.
@@ -229,6 +239,16 @@ impl DagStore for MemoryDagStore {
                 operation: "exists",
             })?;
         Ok(objects.contains_key(key))
+    }
+
+    fn delete(&self, key: &ContentHash) -> Result<bool, DagStoreError> {
+        let mut objects = self
+            .objects
+            .lock()
+            .map_err(|_| DagStoreError::StorePoisoned {
+                operation: "delete",
+            })?;
+        Ok(objects.remove(key).is_some())
     }
 }
 
@@ -356,6 +376,19 @@ impl DagStore for LocalDagStore {
             Err(error) => Err(error),
         }
     }
+
+    fn delete(&self, key: &ContentHash) -> Result<bool, DagStoreError> {
+        let path = self.object_path(key);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(source) => Err(DagStoreError::Io {
+                operation: "delete",
+                path,
+                source,
+            }),
+        }
+    }
 }
 
 /// Reproduction artifact expressed only as DAG-store keys.
@@ -416,6 +449,92 @@ impl TemporalGraphStoreKeys {
         keys.extend(self.cow_deltas.values().copied());
         keys
     }
+}
+
+/// Root set used by temporal-graph garbage collection.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TemporalGraphGcRoots {
+    /// Checkpoint ids currently held by live sessions, counted by holder.
+    pub live_tips: BTreeMap<ContentHash, usize>,
+    /// Saved checkpoint ids that must remain replay-realizable, counted by pin.
+    pub pinned_checkpoints: BTreeMap<ContentHash, usize>,
+}
+
+impl TemporalGraphGcRoots {
+    /// Builds an empty explicit root set.
+    ///
+    /// Baked genesis checkpoints are implicit roots supplied by the graph during
+    /// every GC pass.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a live session tip root.
+    #[must_use]
+    pub fn with_live_tip(mut self, checkpoint: ContentHash) -> Self {
+        *self.live_tips.entry(checkpoint).or_insert(0) += 1;
+        self
+    }
+
+    /// Adds a saved or pinned checkpoint root.
+    #[must_use]
+    pub fn with_pinned_checkpoint(mut self, checkpoint: ContentHash) -> Self {
+        *self.pinned_checkpoints.entry(checkpoint).or_insert(0) += 1;
+        self
+    }
+}
+
+/// Reference counts computed for the live temporal-graph closure.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TemporalGraphReferenceCounts {
+    /// Live references to checkpoint DAG nodes.
+    pub checkpoint_nodes: BTreeMap<ContentHash, usize>,
+    /// Live references to fat cached snapshots attached to live checkpoint ids.
+    pub cached_snapshots: BTreeMap<ContentHash, usize>,
+    /// Live references to typed CoW delta objects.
+    pub cow_deltas: BTreeMap<CowDeltaRef, usize>,
+}
+
+impl TemporalGraphReferenceCounts {
+    fn increment_checkpoint(&mut self, checkpoint: ContentHash) {
+        *self.checkpoint_nodes.entry(checkpoint).or_insert(0) += 1;
+    }
+
+    fn increment_cached_snapshot(&mut self, checkpoint: ContentHash) {
+        *self.cached_snapshots.entry(checkpoint).or_insert(0) += 1;
+    }
+
+    fn increment_cow_delta(&mut self, cow_ref: CowDeltaRef) {
+        *self.cow_deltas.entry(cow_ref).or_insert(0) += 1;
+    }
+}
+
+/// Result of one temporal-graph garbage-collection pass.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TemporalGraphGcReport {
+    /// Explicit roots used for the pass; baked genesis checkpoints are implicit.
+    pub roots: TemporalGraphGcRoots,
+    /// Checkpoint ids retained by root-to-genesis reachability.
+    pub live_checkpoints: BTreeSet<ContentHash>,
+    /// Reference counts for the retained closure.
+    pub live_reference_counts: TemporalGraphReferenceCounts,
+    /// Thin checkpoint DAG nodes removed because no root reaches them.
+    pub collected_checkpoints: BTreeSet<ContentHash>,
+    /// Fat cached snapshots removed because their checkpoint id is unreachable.
+    pub collected_cached_snapshots: BTreeSet<ContentHash>,
+    /// Recorded configurations removed with unreachable checkpoint nodes.
+    pub collected_configurations: BTreeSet<ContentHash>,
+    /// Typed CoW objects no longer referenced by any retained checkpoint or cache.
+    pub collectible_cow_deltas: BTreeSet<CowDeltaRef>,
+    /// DAG-store keys still referenced by the retained graph closure.
+    pub live_store_keys: BTreeSet<ContentHash>,
+    /// DAG-store keys no longer referenced by the retained graph closure.
+    pub collectible_store_keys: BTreeSet<ContentHash>,
+    /// DAG-store keys actually deleted by a store-backed GC pass.
+    pub deleted_store_keys: BTreeSet<ContentHash>,
+    /// Collectible DAG-store keys that were already absent during store-backed GC.
+    pub missing_store_keys: BTreeSet<ContentHash>,
 }
 
 /// Error returned while persisting temporal-graph objects into a [`DagStore`].
@@ -2904,6 +3023,240 @@ impl TemporalGraph {
         })
     }
 
+    /// Computes reference counts for objects reachable from `roots`.
+    ///
+    /// Baked genesis checkpoints are implicit roots. A live or pinned checkpoint
+    /// roots its parent chain, cached snapshot when present, and all typed CoW
+    /// deltas referenced by the retained checkpoint/cache closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointNotRecorded`] when a live or pinned root
+    /// is absent from the checkpoint DAG. Returns
+    /// [`EngineError::CheckpointTopologyMismatch`] when a parent chain is
+    /// malformed.
+    pub fn reference_counts(
+        &self,
+        roots: &TemporalGraphGcRoots,
+    ) -> Result<TemporalGraphReferenceCounts, EngineError> {
+        let live_checkpoints = self.mark_live_checkpoints(roots)?;
+        Ok(self.reference_counts_for_live_checkpoints(roots, &live_checkpoints))
+    }
+
+    /// Runs mark-and-sweep garbage collection over the temporal graph.
+    ///
+    /// The sweep is rooted at live session tips, pinned checkpoints, and every
+    /// baked genesis checkpoint. Unreachable thin checkpoint nodes and exact
+    /// cached snapshots are removed; reachable fat cache entries stay cache
+    /// entries because they are still referenced by a live identity. Use
+    /// [`Self::collect_cached_snapshot`] to explicitly collect a reachable fat
+    /// cache entry without deleting its checkpoint identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointNotRecorded`] when a live or pinned root
+    /// is absent from the checkpoint DAG. Returns
+    /// [`EngineError::CheckpointTopologyMismatch`] when a parent chain is
+    /// malformed.
+    pub fn garbage_collect(
+        &mut self,
+        roots: &TemporalGraphGcRoots,
+    ) -> Result<TemporalGraphGcReport, EngineError> {
+        let before_checkpoints = self
+            .checkpoint_nodes
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let before_cached_snapshots = self
+            .cached_snapshots
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let before_configurations = self
+            .recorded_configurations
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let before_cow_deltas = self.cow_delta_ref_set();
+        let before_store_keys = self.store_keys_for_checkpoint_ids(&self.store_checkpoint_ids());
+        let live_checkpoints = self.mark_live_checkpoints(roots)?;
+        let live_reference_counts =
+            self.reference_counts_for_live_checkpoints(roots, &live_checkpoints);
+        let live_store_keys = self.store_keys_for_checkpoint_ids(&live_checkpoints);
+
+        self.checkpoint_nodes
+            .retain(|checkpoint, _| live_checkpoints.contains(checkpoint));
+        self.cached_snapshots
+            .retain(|checkpoint, _| live_checkpoints.contains(checkpoint));
+        self.recorded_configurations
+            .retain(|configuration, _| live_checkpoints.contains(configuration));
+
+        let retained_checkpoints = self
+            .checkpoint_nodes
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let retained_cached_snapshots = self
+            .cached_snapshots
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let retained_configurations = self
+            .recorded_configurations
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let retained_cow_deltas = live_reference_counts
+            .cow_deltas
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        Ok(TemporalGraphGcReport {
+            roots: roots.clone(),
+            live_checkpoints,
+            live_reference_counts,
+            collected_checkpoints: before_checkpoints
+                .difference(&retained_checkpoints)
+                .copied()
+                .collect(),
+            collected_cached_snapshots: before_cached_snapshots
+                .difference(&retained_cached_snapshots)
+                .copied()
+                .collect(),
+            collected_configurations: before_configurations
+                .difference(&retained_configurations)
+                .copied()
+                .collect(),
+            collectible_cow_deltas: before_cow_deltas
+                .difference(&retained_cow_deltas)
+                .copied()
+                .collect(),
+            live_store_keys: live_store_keys.clone(),
+            collectible_store_keys: before_store_keys
+                .difference(&live_store_keys)
+                .copied()
+                .collect(),
+            deleted_store_keys: BTreeSet::new(),
+            missing_store_keys: BTreeSet::new(),
+        })
+    }
+
+    /// Runs mark-and-sweep GC and deletes swept objects from `store`.
+    ///
+    /// The graph first computes the pre-sweep and retained content-addressed
+    /// store-key closures. After unreachable graph/cache/configuration entries
+    /// are removed, every store key unique to the swept closure is deleted from
+    /// `store`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemporalGraphStoreError::Engine`] when root reachability cannot
+    /// be computed. Returns [`TemporalGraphStoreError::Store`] when `store`
+    /// rejects a delete operation. A store error may occur after the graph maps
+    /// have been swept.
+    pub fn garbage_collect_store<S>(
+        &mut self,
+        store: &S,
+        roots: &TemporalGraphGcRoots,
+    ) -> Result<TemporalGraphGcReport, TemporalGraphStoreError>
+    where
+        S: DagStore + ?Sized,
+    {
+        let mut report =
+            self.garbage_collect(roots)
+                .map_err(|source| TemporalGraphStoreError::Engine {
+                    operation: "garbage-collect",
+                    source,
+                })?;
+        delete_collectible_store_keys(store, &mut report)?;
+        Ok(report)
+    }
+
+    /// Collects a reachable fat cache entry without deleting its checkpoint.
+    ///
+    /// This is the cache-not-identity GC rule: the exact snapshot is removed,
+    /// and the checkpoint remains as a thin DAG node that can be replayed from
+    /// its retained ancestor chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when the graph cannot record
+    /// the thin source node for `configuration`. Returns
+    /// [`EngineError::CheckpointNotRecorded`] if the thin node is absent after
+    /// closure recording.
+    pub fn collect_cached_snapshot(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<Checkpoint>, EngineError> {
+        if self.cached_snapshot(configuration).is_none() {
+            return Ok(None);
+        }
+        self.evict_fat_checkpoint_to_thin(configuration).map(Some)
+    }
+
+    /// Collects a reachable fat cache entry and deletes its now-unreferenced store keys.
+    ///
+    /// This is the store-backed form of [`Self::collect_cached_snapshot`]. The
+    /// thin checkpoint identity remains in the graph, while the persisted
+    /// cached-snapshot descriptor and any cache-only CoW descriptor keys are
+    /// removed from `store`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemporalGraphStoreError::Engine`] when the graph cannot evict
+    /// the fat cache entry to its thin source node. Returns
+    /// [`TemporalGraphStoreError::Store`] when `store` rejects a delete
+    /// operation.
+    pub fn collect_cached_snapshot_store<S>(
+        &mut self,
+        store: &S,
+        configuration: &Configuration,
+    ) -> Result<Option<TemporalGraphGcReport>, TemporalGraphStoreError>
+    where
+        S: DagStore + ?Sized,
+    {
+        if self.cached_snapshot(configuration).is_none() {
+            return Ok(None);
+        }
+
+        let before_store_keys = self.store_keys_for_checkpoint_ids(&self.store_checkpoint_ids());
+        let before_cow_deltas = self.cow_delta_ref_set();
+        self.collect_cached_snapshot(configuration)
+            .map_err(|source| TemporalGraphStoreError::Engine {
+                operation: "collect-cached-snapshot",
+                source,
+            })?;
+        let live_checkpoints = self
+            .checkpoint_nodes
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let live_store_keys = self.store_keys_for_checkpoint_ids(&self.store_checkpoint_ids());
+        let retained_cow_deltas = self.cow_delta_ref_set();
+        let mut report = TemporalGraphGcReport {
+            roots: TemporalGraphGcRoots::new(),
+            live_checkpoints,
+            live_reference_counts: TemporalGraphReferenceCounts::default(),
+            collected_checkpoints: BTreeSet::new(),
+            collected_cached_snapshots: BTreeSet::from([configuration.id()]),
+            collected_configurations: BTreeSet::new(),
+            collectible_cow_deltas: before_cow_deltas
+                .difference(&retained_cow_deltas)
+                .copied()
+                .collect(),
+            live_store_keys: live_store_keys.clone(),
+            collectible_store_keys: before_store_keys
+                .difference(&live_store_keys)
+                .copied()
+                .collect(),
+            deleted_store_keys: BTreeSet::new(),
+            missing_store_keys: BTreeSet::new(),
+        };
+        delete_collectible_store_keys(store, &mut report)?;
+        Ok(Some(report))
+    }
+
     /// Returns whether `configuration` is recorded in the temporal graph.
     #[must_use]
     pub fn contains_configuration(&self, configuration: &Configuration) -> bool {
@@ -2969,6 +3322,135 @@ impl TemporalGraph {
 
     fn cow_delta_ref_set(&self) -> BTreeSet<CowDeltaRef> {
         self.cow_delta_refs().into_iter().collect()
+    }
+
+    fn mark_live_checkpoints(
+        &self,
+        roots: &TemporalGraphGcRoots,
+    ) -> Result<BTreeSet<ContentHash>, EngineError> {
+        let mut live = BTreeSet::new();
+        for root in self.gc_root_checkpoint_ids(roots) {
+            let chain = self.checkpoint_parent_chain(root)?;
+            live.extend(chain.into_iter().map(|checkpoint| checkpoint.id));
+        }
+        Ok(live)
+    }
+
+    fn gc_root_checkpoint_ids(&self, roots: &TemporalGraphGcRoots) -> BTreeSet<ContentHash> {
+        let mut root_ids = BTreeSet::new();
+        root_ids.extend(
+            roots
+                .live_tips
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(checkpoint, _)| *checkpoint),
+        );
+        root_ids.extend(
+            roots
+                .pinned_checkpoints
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(checkpoint, _)| *checkpoint),
+        );
+        root_ids.extend(
+            self.baked_genesis
+                .values()
+                .map(|genesis| genesis.checkpoint.id),
+        );
+        root_ids
+    }
+
+    fn reference_counts_for_live_checkpoints(
+        &self,
+        roots: &TemporalGraphGcRoots,
+        live_checkpoints: &BTreeSet<ContentHash>,
+    ) -> TemporalGraphReferenceCounts {
+        let mut counts = TemporalGraphReferenceCounts::default();
+        for (root, refcount) in self.gc_root_refcounts(roots) {
+            if live_checkpoints.contains(&root) {
+                for _ in 0..refcount {
+                    counts.increment_checkpoint(root);
+                }
+            }
+        }
+        for checkpoint_id in live_checkpoints {
+            let Some(checkpoint) = self.checkpoint_nodes.get(checkpoint_id) else {
+                continue;
+            };
+            if let Some(parent) = checkpoint.parent
+                && live_checkpoints.contains(&parent)
+            {
+                counts.increment_checkpoint(parent);
+            }
+            for cow_ref in checkpoint.cow_delta_refs() {
+                counts.increment_cow_delta(cow_ref);
+            }
+            if let Some(snapshot) = self.cached_snapshots.get(checkpoint_id) {
+                counts.increment_cached_snapshot(*checkpoint_id);
+                for cow_ref in snapshot.cow_delta_refs() {
+                    counts.increment_cow_delta(cow_ref);
+                }
+            }
+        }
+        counts
+    }
+
+    fn gc_root_refcounts(&self, roots: &TemporalGraphGcRoots) -> BTreeMap<ContentHash, usize> {
+        let mut refcounts = BTreeMap::new();
+        for (checkpoint, count) in &roots.live_tips {
+            if *count == 0 {
+                continue;
+            }
+            *refcounts.entry(*checkpoint).or_insert(0) += *count;
+        }
+        for (checkpoint, count) in &roots.pinned_checkpoints {
+            if *count == 0 {
+                continue;
+            }
+            *refcounts.entry(*checkpoint).or_insert(0) += *count;
+        }
+        for genesis in self.baked_genesis.values() {
+            *refcounts.entry(genesis.checkpoint.id).or_insert(0) += 1;
+        }
+        refcounts
+    }
+
+    fn store_checkpoint_ids(&self) -> BTreeSet<ContentHash> {
+        let mut checkpoints = self
+            .checkpoint_nodes
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        checkpoints.extend(self.cached_snapshots.keys().copied());
+        checkpoints
+    }
+
+    fn store_keys_for_checkpoint_ids(
+        &self,
+        checkpoints: &BTreeSet<ContentHash>,
+    ) -> BTreeSet<ContentHash> {
+        let mut keys = BTreeSet::new();
+        for configuration in self.recorded_configurations.values() {
+            if checkpoints.contains(&configuration.id()) {
+                keys.insert(ContentHash::from_bytes(&scenario_def_store_bytes(
+                    &configuration.def,
+                )));
+                if let Some(genesis) = self.genesis_snapshot(&configuration.def) {
+                    keys.insert(ContentHash::from_bytes(&checkpoint_store_bytes(
+                        &genesis.checkpoint,
+                    )));
+                }
+            }
+        }
+        for checkpoint_id in checkpoints {
+            if let Some(checkpoint) = self.checkpoint_nodes.get(checkpoint_id) {
+                insert_checkpoint_store_keys(checkpoint, &mut keys);
+            }
+            if let Some(snapshot) = self.cached_snapshots.get(checkpoint_id) {
+                insert_checkpoint_store_keys(snapshot, &mut keys);
+            }
+        }
+        keys
     }
 
     fn has_replay_oracle_path(&self, configuration: &Configuration) -> Result<bool, EngineError> {
@@ -3920,6 +4402,43 @@ where
                     })?,
             };
         cow_deltas.insert(cow_ref, delta_key);
+    }
+    Ok(())
+}
+
+fn insert_checkpoint_store_keys(checkpoint: &Checkpoint, keys: &mut BTreeSet<ContentHash>) {
+    keys.insert(ContentHash::from_bytes(&checkpoint_store_bytes(checkpoint)));
+    if !checkpoint.schedule_delta.is_empty() {
+        keys.insert(ContentHash::from_bytes(&schedule_delta_store_bytes(
+            &checkpoint.schedule_delta,
+        )));
+    }
+    for cow_ref in checkpoint.cow_delta_refs() {
+        if cow_ref.kind != CowDeltaKind::ScheduleDelta {
+            keys.insert(ContentHash::from_bytes(&cow_delta_store_bytes(cow_ref)));
+        }
+    }
+}
+
+fn delete_collectible_store_keys<S>(
+    store: &S,
+    report: &mut TemporalGraphGcReport,
+) -> Result<(), TemporalGraphStoreError>
+where
+    S: DagStore + ?Sized,
+{
+    for key in &report.collectible_store_keys {
+        let deleted = store
+            .delete(key)
+            .map_err(|source| TemporalGraphStoreError::Store {
+                operation: "delete-gc-object",
+                source,
+            })?;
+        if deleted {
+            report.deleted_store_keys.insert(*key);
+        } else {
+            report.missing_store_keys.insert(*key);
+        }
     }
     Ok(())
 }
