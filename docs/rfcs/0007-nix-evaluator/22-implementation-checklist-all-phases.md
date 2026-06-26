@@ -2122,10 +2122,13 @@ alone (`M-1`/`Q-A`).
       with the first leaf source, rewrite either comments/whitespace or an
       unused derivation package in that leaf, and then require cache-disabled
       and cached runs to keep the two-derivation `.drv` closure byte-identical
-      while the changed leaf reparses into the fresh cache root. This samples
-      one comment/whitespace leaf edit and one unused leaf-package edit, not
-      bounded recomputation measurement, full AOS closure coverage, or future
-      value-memoization safety net
+      while the changed leaf reparses into the fresh cache root. They also
+      scan uncached/cached first and changed closures for the exercised
+      first/changed leaf parse-cache and file-content BLAKE3 renderings in
+      hex, raw bytes, and Nix base32. This samples one comment/whitespace leaf
+      edit and one unused leaf-package edit, not bounded recomputation
+      measurement, full AOS closure coverage, the full leak invariant, or
+      future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
       future incremental persistence/value memoization, and CI must periodically

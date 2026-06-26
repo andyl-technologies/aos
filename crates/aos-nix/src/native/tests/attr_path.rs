@@ -208,7 +208,7 @@ fn native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closur
 
 #[test]
 fn native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure() -> Result<()> {
-    use crate::cache::ParseCache;
+    use crate::cache::{DurableBlake3Hash, ParseCache, ParseFileKey};
 
     let root = unique_temp_dir("aos-nix-native-instantiate-semantic-edit");
     fs::create_dir_all(&root)?;
@@ -243,6 +243,7 @@ fn native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure() -> R
     let first_leaf_source = b"# first comment\n\"leaf-value\"\n";
     let second_leaf_source = b"\n# changed comment with extra whitespace\n\n\"leaf-value\"\n";
     fs::write(&leaf, first_leaf_source)?;
+    let leaf_realpath = fs::canonicalize(&leaf)?;
     let store_bytes = store.as_os_str().as_bytes().to_vec();
 
     let uncached_first_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
@@ -257,6 +258,14 @@ fn native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure() -> R
     let cached_first = NixNative::with_options(0, cached_first_options)?
         .instantiate_closure(&file, "pkgs.hello")?;
     assert_eq!(cached_first, uncached_first);
+    let first_parse_cache = ParseCache::new(&first_parse_root);
+    let first_parse_key = first_parse_cache.key_for_source(first_leaf_source);
+    assert!(
+        first_parse_cache
+            .entry_for_source(first_leaf_source)
+            .is_complete(),
+        "initial leaf should be parsed into the first cache root"
+    );
 
     fs::write(&leaf, second_leaf_source)?;
 
@@ -288,11 +297,52 @@ fn native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure() -> R
             .clone(),
         vec![NativePersistentParseHit::Source]
     );
+    let second_parse_cache = ParseCache::new(&second_parse_root);
+    let second_parse_key = second_parse_cache.key_for_source(second_leaf_source);
     assert!(
-        ParseCache::new(&second_parse_root)
+        second_parse_cache
             .entry_for_source(second_leaf_source)
             .is_complete(),
         "changed leaf should be reparsed into the fresh cache root"
+    );
+
+    let first_leaf_key = ParseFileKey::for_source(&leaf_realpath, first_leaf_source);
+    let second_leaf_key = ParseFileKey::for_source(&leaf_realpath, second_leaf_source);
+    let mut canaries = durable_hash_surface_canaries(
+        "initial comment leaf parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(first_parse_key.as_bytes()),
+    );
+    canaries.extend(durable_hash_surface_canaries(
+        "changed comment leaf parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(second_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "initial comment leaf content BLAKE3",
+        first_leaf_key.content_hash(),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "changed comment leaf content BLAKE3",
+        second_leaf_key.content_hash(),
+    ));
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached initial semantic-edit closure",
+        &uncached_first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cached initial semantic-edit closure",
+        &cached_first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached changed semantic-edit closure",
+        &uncached_second,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cached changed semantic-edit closure",
+        &cached_second,
+        &canaries,
     );
 
     fs::remove_dir_all(root)?;
@@ -301,7 +351,7 @@ fn native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure() -> R
 
 #[test]
 fn native_file_instantiation_unused_leaf_package_edit_preserves_drv_closure() -> Result<()> {
-    use crate::cache::ParseCache;
+    use crate::cache::{DurableBlake3Hash, ParseCache, ParseFileKey};
 
     let root = unique_temp_dir("aos-nix-native-instantiate-unused-leaf-edit");
     fs::create_dir_all(&root)?;
@@ -352,6 +402,7 @@ fn native_file_instantiation_unused_leaf_package_edit_preserves_drv_closure() ->
 }
 "#;
     fs::write(&leaf, first_leaf_source)?;
+    let leaf_realpath = fs::canonicalize(&leaf)?;
     let store_bytes = store.as_os_str().as_bytes().to_vec();
 
     let uncached_first_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
@@ -366,6 +417,14 @@ fn native_file_instantiation_unused_leaf_package_edit_preserves_drv_closure() ->
     let cached_first = NixNative::with_options(0, cached_first_options)?
         .instantiate_closure(&file, "pkgs.hello")?;
     assert_eq!(cached_first, uncached_first);
+    let first_parse_cache = ParseCache::new(&first_parse_root);
+    let first_parse_key = first_parse_cache.key_for_source(first_leaf_source);
+    assert!(
+        first_parse_cache
+            .entry_for_source(first_leaf_source)
+            .is_complete(),
+        "initial leaf package should be parsed into the first cache root"
+    );
 
     fs::write(&leaf, second_leaf_source)?;
 
@@ -397,11 +456,52 @@ fn native_file_instantiation_unused_leaf_package_edit_preserves_drv_closure() ->
             .clone(),
         vec![NativePersistentParseHit::Source]
     );
+    let second_parse_cache = ParseCache::new(&second_parse_root);
+    let second_parse_key = second_parse_cache.key_for_source(second_leaf_source);
     assert!(
-        ParseCache::new(&second_parse_root)
+        second_parse_cache
             .entry_for_source(second_leaf_source)
             .is_complete(),
         "changed leaf package should be reparsed into the fresh cache root"
+    );
+
+    let first_leaf_key = ParseFileKey::for_source(&leaf_realpath, first_leaf_source);
+    let second_leaf_key = ParseFileKey::for_source(&leaf_realpath, second_leaf_source);
+    let mut canaries = durable_hash_surface_canaries(
+        "initial unused leaf parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(first_parse_key.as_bytes()),
+    );
+    canaries.extend(durable_hash_surface_canaries(
+        "changed unused leaf parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(second_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "initial unused leaf content BLAKE3",
+        first_leaf_key.content_hash(),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "changed unused leaf content BLAKE3",
+        second_leaf_key.content_hash(),
+    ));
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached initial unused-leaf closure",
+        &uncached_first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cached initial unused-leaf closure",
+        &cached_first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached changed unused-leaf closure",
+        &uncached_second,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cached changed unused-leaf closure",
+        &cached_second,
+        &canaries,
     );
 
     fs::remove_dir_all(root)?;
