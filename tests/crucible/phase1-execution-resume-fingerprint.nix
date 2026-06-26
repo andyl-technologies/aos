@@ -52,11 +52,11 @@
       }
       {
         label = "uninterrupted recorder constructor";
-        needle = "DecisionRecorder::new(Configuration::genesis(scenario.clone()), seed)";
+        needle = "DecisionRecorder::new(Configuration::genesis(scenario.clone()))";
       }
       {
         label = "resume from prefix configuration";
-        needle = "let mut resumed = DecisionRecorder::new(prefix.clone(), seed);";
+        needle = "let mut resumed = DecisionRecorder::new(prefix.clone());";
       }
       {
         label = "continuation starts after prefix";

@@ -4,8 +4,8 @@
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, DecisionRecorder, ExecutionFingerprint,
-    FaultId, GenesisCheckpoint, NodeId, RngStreamId, RuntimeState, ScenarioDef, TemporalGraph,
-    VirtualTime, instantiate,
+    FaultId, GenesisCheckpoint, NodeId, RngStreamId, RuntimeState, ScenarioDef, Seed,
+    TemporalGraph, VirtualTime, instantiate,
 };
 use crucible_harness::adversarial::{
     HostAdversaryProfile, canonical_host_adversary_matrix, run_profiled_tasks,
@@ -303,7 +303,7 @@ fn graph_with_saved_checkpoint_exact_only(
 }
 
 fn representative_configuration(scenario: ScenarioDef, decisions: u64) -> Configuration {
-    let mut recorder = DecisionRecorder::new(Configuration::genesis(scenario), 0x0010_0017);
+    let mut recorder = DecisionRecorder::new(Configuration::genesis(scenario));
     for index in 0..decisions {
         record_representative_decision(&mut recorder, index);
     }
@@ -382,9 +382,10 @@ fn fat_checkpoint_for(configuration: &Configuration) -> Checkpoint {
 }
 
 fn generated_scenario(seed: u64) -> ScenarioDef {
-    ScenarioDef::from_canonical_material(
+    ScenarioDef::from_canonical_material_with_seed(
         "crucible.gate.single-vm-fingerprint.scenario",
         &format!("seed={seed}"),
+        Seed::from_u64(seed),
     )
 }
 

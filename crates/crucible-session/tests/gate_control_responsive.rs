@@ -6,7 +6,7 @@ use crucible::{
     Checkpoint, CheckpointKind, Configuration, ControlOperation, ControlOperationKind, Decision,
     DeliveryOrderDecision, EventKey, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome,
     QuantumRequest, ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError,
-    SchedulerNodeId, SchedulingNodeKind, TemporalGraph, VirtualTime, step,
+    SchedulerNodeId, SchedulingNodeKind, Seed, TemporalGraph, VirtualTime, step,
 };
 use crucible_session::{Engine, LiveStateKind, SessionActor, SessionCommand};
 use tokio::sync::mpsc;
@@ -147,9 +147,10 @@ fn genesis_checkpoint(configuration: &Configuration) -> GenesisCheckpoint {
 }
 
 fn generated_scenario(seed: u64) -> ScenarioDef {
-    ScenarioDef::from_canonical_material(
+    ScenarioDef::from_canonical_material_with_seed(
         "crucible.session.gate-control-responsive.scenario",
         &format!("seed={seed}"),
+        Seed::from_u64(seed),
     )
 }
 

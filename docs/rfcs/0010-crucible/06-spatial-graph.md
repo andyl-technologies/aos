@@ -1097,9 +1097,20 @@ authority for its shape. The contract those files may rely on:
     scenario identity sensitivity to properties, and rejection of undeclared
     predicate nodes. `checks.crucible.phase1.spatialPropertiesComponent` gates
     the task.
-- [ ] **T-SPAT-14** Carry `Seed` as the root entropy (04), part of identity, with
+- [x] **T-SPAT-14** Carry `Seed` as the root entropy (04), part of identity, with
   name-hashed per-entity stream forking so unrelated `World` edits don't perturb
   other streams. — satisfies [SPAT-22]; spec §5.3.
+  - Completed in `crates/crucible/src/model.rs`: `Seed` now carries the 256-bit
+    root entropy component, participates directly in `ScenarioDef` identity via
+    `World::scenario_def_with_plan_properties_and_seed`, and derives per-entity
+    decision-RNG streams from the seed plus stable `RngStreamId` domain/name
+    material. `World::seeded_rng_streams` projects the static world stream set
+    into seed-derived stream roots, and the focused
+    `seed_is_scenario_identity_and_name_hashed_stream_root` test covers explicit
+    default-seed compatibility, seed identity sensitivity, all seed bytes feeding
+    the stream root, node/link domain separation, and unchanged existing stream
+    roots across unrelated world edits. `checks.crucible.phase1.spatialSeedComponent`
+    gates the task.
 - [ ] **T-SPAT-15** Implement the code-first `ScenarioBuilder` with structurally
   orthogonal entry points and node/world templating; no boot-event folding. —
   satisfies [SPAT-23]; spec §6, §10.

@@ -44,13 +44,14 @@ pub use model::{
     ReachableDisposition, ReadyPoint, ReplayOracleCheck, RestartPolicy, RngDecision, RngStreamId,
     RngStreamPosition, RuntimeState, SavevmCompletenessHedge, ScenarioDef, Schedule, ScheduleError,
     SchedulerState, SchedulingPoint, SearchReplayOracleBisectionRequest,
-    SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport, Shift, SimDuration,
-    SimInstant, SimOffset, State, SymmetryClassId, SymmetryReductionClasses, SymmetryReductionKey,
-    TemporalGraph, TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots,
-    TemporalGraphReferenceCounts, TemporalGraphRuntime, TemporalGraphSave, TemporalGraphSearch,
-    TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError, TimerId, TimerRegistry,
-    TimerState, VcpuId, VirtualInstant, VirtualTime, VmSnapshotRef, WhiteBoxPolicy, World,
-    WorldLookaheadEdge, WorldNode, WorldStaticTopology, bake, instantiate, reduce, step,
+    SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport, Seed, SeededRngStream,
+    Shift, SimDuration, SimInstant, SimOffset, State, SymmetryClassId, SymmetryReductionClasses,
+    SymmetryReductionKey, TemporalGraph, TemporalGraphFork, TemporalGraphGcReport,
+    TemporalGraphGcRoots, TemporalGraphReferenceCounts, TemporalGraphRuntime, TemporalGraphSave,
+    TemporalGraphSearch, TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError,
+    TimerId, TimerRegistry, TimerState, VcpuId, VirtualInstant, VirtualTime, VmSnapshotRef,
+    WhiteBoxPolicy, World, WorldLookaheadEdge, WorldNode, WorldStaticTopology, bake, instantiate,
+    reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
@@ -75,9 +76,10 @@ mod tests {
 
     #[test]
     fn step_appends_decision_without_mutating_parent() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
+        let config = Configuration::genesis(ScenarioDef::from_canonical_material(
+            "crucible.test.step",
+            "scenario=stub",
+        ));
         let decision = Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("root"),
             value: 42,
@@ -330,8 +332,9 @@ mod tests {
         assert!(skewed_material.contains("clock_skew_applies_to=guest-visible-only"));
         assert!(skewed_material.contains("clock_skew_scheduling_axis=unskewed-icount-derived"));
         assert_ne!(
-            ScenarioDef::from_canonical_material("crucible.test.clock-skew", &perfect_material).id,
-            ScenarioDef::from_canonical_material("crucible.test.clock-skew", &skewed_material).id,
+            ScenarioDef::from_canonical_material("crucible.test.clock-skew", &perfect_material)
+                .id(),
+            ScenarioDef::from_canonical_material("crucible.test.clock-skew", &skewed_material).id(),
         );
     }
 
@@ -347,8 +350,8 @@ mod tests {
             ScenarioDef::from_canonical_material("crucible.test.other", "field=a\nvalue=1");
 
         assert_eq!(first, second);
-        assert_ne!(first.id, changed_material.id);
-        assert_ne!(first.id, changed_domain.id);
+        assert_ne!(first.id(), changed_material.id());
+        assert_ne!(first.id(), changed_domain.id());
     }
 
     #[test]
@@ -524,21 +527,19 @@ mod tests {
     #[test]
     fn resume_continue_matches_uninterrupted_run_by_fingerprint() {
         let scenario = generated_scenario(0x500);
-        let seed = 0x0010_5005;
-        let mut uninterrupted =
-            DecisionRecorder::new(Configuration::genesis(scenario.clone()), seed);
+        let mut uninterrupted = DecisionRecorder::new(Configuration::genesis(scenario.clone()));
         for index in 0..8 {
             record_representative_decision(&mut uninterrupted, index);
         }
         let uninterrupted = uninterrupted.into_configuration();
 
-        let mut prefix = DecisionRecorder::new(Configuration::genesis(scenario), seed);
+        let mut prefix = DecisionRecorder::new(Configuration::genesis(scenario));
         for index in 0..4 {
             record_representative_decision(&mut prefix, index);
         }
         let prefix = prefix.into_configuration();
         let prefix_len = prefix.schedule.len();
-        let mut resumed = DecisionRecorder::new(prefix.clone(), seed);
+        let mut resumed = DecisionRecorder::new(prefix.clone());
         for index in 4..8 {
             record_representative_decision(&mut resumed, index);
         }
@@ -1397,7 +1398,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            EngineError::MissingBakedGenesis { scenario: missing } if missing == scenario.id
+            EngineError::MissingBakedGenesis { scenario: missing } if missing == scenario.id()
         ));
     }
 
@@ -2526,6 +2527,141 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn seed_is_scenario_identity_and_name_hashed_stream_root() {
+        let world = world_from_nodes_and_links(
+            two_ready_nodes(),
+            vec![transport_link("a", "b", 10, 1, 0, None)],
+        );
+        let expanded_world = world_from_nodes_and_links(
+            vec![
+                ready_node(
+                    "a",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 1 },
+                    },
+                ),
+                ready_node(
+                    "b",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 2 },
+                    },
+                ),
+                ready_node(
+                    "c",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 3 },
+                    },
+                ),
+            ],
+            vec![transport_link("a", "b", 10, 1, 0, None)],
+        );
+        let seed = Seed::from_u64(42);
+        let other_seed = Seed::from_u64(43);
+        let mut tail_changed_bytes = seed.bytes();
+        tail_changed_bytes[31] = 1;
+        let tail_changed_seed = Seed::from_bytes(tail_changed_bytes);
+        let empty_plan = Plan::empty();
+        let empty_properties = Properties::empty();
+        let node_stream = RngStreamId::for_node("a");
+        let link_stream = RngStreamId::for_link("a");
+        let generic_seeded = ScenarioDef::from_canonical_material_with_seed(
+            "crucible.test.seeded-scenario",
+            "world=opaque",
+            seed,
+        );
+        let generic_other_seed = ScenarioDef::from_canonical_material_with_seed(
+            "crucible.test.seeded-scenario",
+            "world=opaque",
+            other_seed,
+        );
+        let world_streams = seeded_stream_map(world.seeded_rng_streams(seed));
+        let expanded_streams = seeded_stream_map(expanded_world.seeded_rng_streams(seed));
+        let mut world_node_draws = seed.fork_stream(&node_stream);
+        let mut expanded_node_draws = seed.fork_stream(&node_stream);
+        let mut seeded_recorder =
+            DecisionRecorder::new(Configuration::genesis(world.scenario_def_with_seed(seed)));
+        let mut expected_recorder_stream = seed.fork_stream(&node_stream);
+
+        assert_eq!(
+            world.scenario_def(),
+            world.scenario_def_with_seed(Seed::default())
+        );
+        assert_eq!(
+            world
+                .scenario_def_with_plan_and_properties(&empty_plan, &empty_properties)
+                .unwrap_or_else(|error| panic!(
+                    "default-seed empty components should compose: {error}"
+                )),
+            world
+                .scenario_def_with_plan_properties_and_seed(
+                    &empty_plan,
+                    &empty_properties,
+                    Seed::default(),
+                )
+                .unwrap_or_else(|error| panic!("explicit default seed should compose: {error}"))
+        );
+        assert_ne!(world.scenario_def(), world.scenario_def_with_seed(seed));
+        assert_ne!(
+            world.scenario_def_with_seed(seed),
+            world.scenario_def_with_seed(other_seed)
+        );
+        assert_ne!(generic_seeded.id(), generic_other_seed.id());
+        assert_ne!(generic_seeded.seed(), generic_other_seed.seed());
+        assert_ne!(
+            Configuration::genesis(generic_seeded.clone()).id(),
+            Configuration::genesis(generic_other_seed.clone()).id()
+        );
+        assert_ne!(
+            reduce(&generic_seeded, &Schedule::empty())
+                .unwrap_or_else(|error| panic!("seeded reduce should succeed: {error}"))
+                .id,
+            reduce(&generic_other_seed, &Schedule::empty())
+                .unwrap_or_else(|error| panic!("other seeded reduce should succeed: {error}"))
+                .id
+        );
+        assert_ne!(
+            seed.stream_seed(&node_stream),
+            other_seed.stream_seed(&node_stream)
+        );
+        assert_ne!(
+            seed.stream_seed(&node_stream),
+            tail_changed_seed.stream_seed(&node_stream)
+        );
+        for index in 0..32 {
+            let mut bytes = seed.bytes();
+            bytes[index] ^= 0x80;
+            let changed_seed = Seed::from_bytes(bytes);
+            assert_ne!(
+                seed.stream_seed(&node_stream),
+                changed_seed.stream_seed(&node_stream),
+                "byte {index} should contribute to stream derivation"
+            );
+        }
+        assert_ne!(
+            seed.stream_seed(&node_stream),
+            seed.stream_seed(&link_stream)
+        );
+        assert_eq!(
+            seed.stream_seed(&node_stream),
+            seed.fork_stream(&node_stream).seed()
+        );
+        assert_eq!(world_node_draws.next_u64(), expanded_node_draws.next_u64());
+        assert_eq!(
+            seeded_recorder.draw_u64(node_stream.clone()),
+            expected_recorder_stream.next_u64()
+        );
+
+        for stream in world.static_topology().rng_streams {
+            assert_eq!(
+                world_streams.get(&stream),
+                expanded_streams.get(&stream),
+                "stream seed should be stable for existing stream {stream:?}"
+            );
+        }
+        assert!(expanded_streams.contains_key(&RngStreamId::for_node("c")));
+    }
+
     #[cfg(feature = "test-double")]
     #[test]
     fn world_logical_topology_ignores_physical_transport_layout() {
@@ -2856,7 +2992,7 @@ mod tests {
         let thin = Checkpoint::new(config.id(), config.id(), CheckpointKind::Thin);
         let valid = fat_checkpoint_for(&config);
         let mut wrong_scenario = valid.clone();
-        wrong_scenario.scenario_ref = generated_scenario(62).id;
+        wrong_scenario.scenario_ref = generated_scenario(62).id();
         let mut wrong_parent = valid.clone();
         wrong_parent.parent = None;
         let mut wrong_delta = valid.clone();
@@ -3114,9 +3250,10 @@ mod tests {
     }
 
     fn generated_scenario(seed: u64) -> ScenarioDef {
-        ScenarioDef::from_canonical_material(
+        ScenarioDef::from_canonical_material_with_seed(
             "crucible.test.configuration.generated",
             &format!("node=a\nseed={seed}\nimage=generated-{seed:04}"),
+            Seed::from_u64(seed),
         )
     }
 
@@ -3277,6 +3414,15 @@ mod tests {
             message: message.to_owned(),
             property,
         }
+    }
+
+    fn seeded_stream_map(
+        streams: Vec<SeededRngStream>,
+    ) -> std::collections::BTreeMap<RngStreamId, u64> {
+        streams
+            .into_iter()
+            .map(|stream| (stream.stream, stream.seed))
+            .collect()
     }
 
     fn device_id(name: &str) -> DeviceId {

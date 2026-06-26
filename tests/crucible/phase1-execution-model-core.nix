@@ -78,7 +78,7 @@
       }
       {
         label = "scenario id in configuration hash";
-        needle = "write_content_hash(&mut hasher, &configuration.def.id);";
+        needle = "write_content_hash(&mut hasher, &configuration.def.id());";
       }
       {
         label = "schedule in configuration hash";

@@ -16,7 +16,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_sim::{
-    DECISION_RNG_LINK_STREAM_DOMAIN, DECISION_RNG_NAME_HASH_DOMAIN, DECISION_RNG_NODE_STREAM_DOMAIN,
+    DECISION_RNG_LINK_STREAM_DOMAIN, DECISION_RNG_NAME_HASH_DOMAIN,
+    DECISION_RNG_NODE_STREAM_DOMAIN, DecisionRng, DecisionStream,
 };
 
 mod canonical;
@@ -592,18 +593,45 @@ impl Error for TemporalGraphStoreError {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScenarioDef {
     /// The content address of the scenario definition.
-    pub id: ContentHash,
+    id: ContentHash,
+    /// The root entropy carried by this scenario definition.
+    seed: Seed,
 }
 
 impl ScenarioDef {
+    /// Returns the content address of this scenario definition.
+    #[must_use]
+    pub fn id(&self) -> ContentHash {
+        self.id
+    }
+
+    /// Returns the root entropy carried by this scenario definition.
+    #[must_use]
+    pub fn seed(&self) -> Seed {
+        self.seed
+    }
+
     /// Builds a scenario definition from canonical material.
     ///
     /// This helper is the engine-side content-addressing entry point for
     /// backend-produced canonical material.
     #[must_use]
     pub fn from_canonical_material(domain: &str, material: &str) -> Self {
+        Self::from_canonical_material_with_seed(domain, material, Seed::default())
+    }
+
+    /// Builds a scenario definition from canonical material and root seed.
+    ///
+    /// This helper is the compatibility entry point for backend-produced
+    /// canonical material when the caller also has the scenario seed component.
+    /// The seed is included in the returned content address so it cannot drift
+    /// from scenario identity.
+    #[must_use]
+    pub fn from_canonical_material_with_seed(domain: &str, material: &str, seed: Seed) -> Self {
+        let material = format!("{material}\n{}", seed_material(seed));
         Self {
-            id: ContentHash::from_canonical_material(domain, material),
+            id: ContentHash::from_canonical_material(domain, &material),
+            seed,
         }
     }
 }
@@ -763,14 +791,14 @@ impl World {
     }
 
     /// Builds the canonical genesis scenario definition for this world, empty plan,
-    /// and empty properties.
+    /// empty properties, and the default seed.
     ///
-    /// Later spatial-graph tasks add `Seed`; until then this helper composes the
-    /// independently hashed `World`, empty [`Plan`], and empty [`Properties`]
-    /// components.
+    /// Later builder work provides the explicit authoring surface; until then
+    /// this helper composes the independently hashed `World`, empty [`Plan`],
+    /// empty [`Properties`], and default [`Seed`] components.
     #[must_use]
     pub fn scenario_def(&self) -> ScenarioDef {
-        self.scenario_def_from_components(&Plan::empty(), &Properties::empty())
+        self.scenario_def_from_components(&Plan::empty(), &Properties::empty(), Seed::default())
     }
 
     /// Builds the canonical scenario definition for this world, plan, and empty
@@ -786,7 +814,7 @@ impl World {
     /// layered over this world's static topology.
     pub fn scenario_def_with_plan(&self, plan: &Plan) -> Result<ScenarioDef, EngineError> {
         plan.validate_for_world(self)?;
-        Ok(self.scenario_def_from_components(plan, &Properties::empty()))
+        Ok(self.scenario_def_from_components(plan, &Properties::empty(), Seed::default()))
     }
 
     /// Builds the canonical scenario definition for this world, empty plan, and
@@ -803,11 +831,11 @@ impl World {
         properties: &Properties,
     ) -> Result<ScenarioDef, EngineError> {
         properties.validate_for_world(self)?;
-        Ok(self.scenario_def_from_components(&Plan::empty(), properties))
+        Ok(self.scenario_def_from_components(&Plan::empty(), properties, Seed::default()))
     }
 
     /// Builds the canonical scenario definition for this world, plan, and
-    /// properties.
+    /// properties, using the default seed.
     ///
     /// # Errors
     ///
@@ -822,14 +850,63 @@ impl World {
     ) -> Result<ScenarioDef, EngineError> {
         plan.validate_for_world(self)?;
         properties.validate_for_world(self)?;
-        Ok(self.scenario_def_from_components(plan, properties))
+        Ok(self.scenario_def_from_components(plan, properties, Seed::default()))
     }
 
-    fn scenario_def_from_components(&self, plan: &Plan, properties: &Properties) -> ScenarioDef {
-        ScenarioDef::from_canonical_material(
-            "crucible.model.world-plan-properties-scenario.v1",
-            &scenario_world_plan_properties_material(self, plan, properties),
-        )
+    /// Builds the canonical scenario definition for this world, empty plan,
+    /// empty properties, and `seed`.
+    #[must_use]
+    pub fn scenario_def_with_seed(&self, seed: Seed) -> ScenarioDef {
+        self.scenario_def_from_components(&Plan::empty(), &Properties::empty(), seed)
+    }
+
+    /// Builds the canonical scenario definition for this world, plan,
+    /// properties, and seed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plan validation error when `plan` cannot be layered over this
+    /// world's static topology, or a property validation error when `properties`
+    /// names undeclared predicate nodes or otherwise violates the declarative
+    /// property model.
+    pub fn scenario_def_with_plan_properties_and_seed(
+        &self,
+        plan: &Plan,
+        properties: &Properties,
+        seed: Seed,
+    ) -> Result<ScenarioDef, EngineError> {
+        plan.validate_for_world(self)?;
+        properties.validate_for_world(self)?;
+        Ok(self.scenario_def_from_components(plan, properties, seed))
+    }
+
+    /// Derives this world's per-entity decision-RNG stream seeds from `seed`.
+    #[must_use]
+    pub fn seeded_rng_streams(&self, seed: Seed) -> Vec<SeededRngStream> {
+        self.static_topology()
+            .rng_streams
+            .into_iter()
+            .map(|stream| SeededRngStream {
+                seed: seed.stream_seed(&stream),
+                stream,
+            })
+            .collect()
+    }
+
+    fn scenario_def_from_components(
+        &self,
+        plan: &Plan,
+        properties: &Properties,
+        seed: Seed,
+    ) -> ScenarioDef {
+        let material = scenario_world_plan_properties_seed_material(self, plan, properties, seed);
+        ScenarioDef {
+            id: ContentHash::from_canonical_material(
+                "crucible.model.world-plan-properties-seed-scenario.v1",
+                &material,
+            ),
+            seed,
+        }
     }
 }
 
@@ -2171,6 +2248,83 @@ impl Properties {
             assertions,
         }
     }
+}
+
+/// The 256-bit root entropy component of a scenario definition.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Seed {
+    bytes: [u8; 32],
+}
+
+impl Seed {
+    /// Builds a seed from canonical root-entropy bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self { bytes }
+    }
+
+    /// Builds a seed from a small deterministic integer.
+    ///
+    /// This is a convenience constructor for examples and tests. The integer is
+    /// encoded into the low eight bytes of the 256-bit seed; all remaining bytes
+    /// are zero.
+    #[must_use]
+    pub fn from_u64(value: u64) -> Self {
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(&value.to_le_bytes());
+        Self { bytes }
+    }
+
+    /// Returns this seed's canonical 256-bit byte representation.
+    #[must_use]
+    pub fn bytes(self) -> [u8; 32] {
+        self.bytes
+    }
+
+    /// Renders this seed as 64 lowercase hexadecimal characters.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        bytes_hex(&self.bytes)
+    }
+
+    /// Builds the deterministic decision RNG rooted at this seed.
+    #[must_use]
+    pub fn decision_rng(self) -> DecisionRng {
+        DecisionRng::new(self.decision_rng_root_seed())
+    }
+
+    /// Returns the deterministic fork seed for `stream`.
+    #[must_use]
+    pub fn stream_seed(self, stream: &RngStreamId) -> u64 {
+        self.decision_rng()
+            .stream_seed_in_domain(&stream.domain, &stream.name)
+    }
+
+    /// Forks a deterministic decision stream for `stream`.
+    #[must_use]
+    pub fn fork_stream(self, stream: &RngStreamId) -> DecisionStream {
+        self.decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name)
+    }
+
+    fn decision_rng_root_seed(self) -> u64 {
+        let hash = ContentHash::from_canonical_material(
+            "crucible.model.seed-decision-rng-root.v1",
+            &seed_material(self),
+        );
+        let mut root = [0; 8];
+        root.copy_from_slice(&hash.bytes[..8]);
+        u64::from_le_bytes(root)
+    }
+}
+
+/// One world-declared decision-RNG stream after forking from a scenario seed.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SeededRngStream {
+    /// The declared per-entity stream id.
+    pub stream: RngStreamId,
+    /// The deterministic stream seed derived from [`Seed`] and stream name-hash.
+    pub seed: u64,
 }
 
 /// A deterministic decision-stream identifier.
@@ -6936,16 +7090,18 @@ fn canonical_world_identity(world: &World) -> ContentHash {
     ContentHash::from_canonical_material("crucible.model.world.v1", &world_material(&nodes, &links))
 }
 
-fn scenario_world_plan_properties_material(
+fn scenario_world_plan_properties_seed_material(
     world: &World,
     plan: &Plan,
     properties: &Properties,
+    seed: Seed,
 ) -> String {
     format!(
-        "world_ref={}\nplan_ref={}\nproperties_ref={}",
+        "world_ref={}\nplan_ref={}\nproperties_ref={}\n{}",
         content_hash_hex(canonical_world_identity(world)),
         content_hash_hex(plan.content_hash()),
-        content_hash_hex(properties.content_hash())
+        content_hash_hex(properties.content_hash()),
+        seed_material(seed)
     )
 }
 
@@ -7189,6 +7345,10 @@ fn marker_id_material(id: &MarkerId) -> String {
     format!("marker_id_len={}\nmarker_id={}", id.name.len(), id.name)
 }
 
+fn seed_material(seed: Seed) -> String {
+    format!("seed_bytes={}", seed.to_hex())
+}
+
 fn node_ref_material(prefix: &str, node: &NodeId) -> String {
     format!("{prefix}_len={}\n{prefix}={}", node.name.len(), node.name)
 }
@@ -7317,8 +7477,9 @@ where
 
 fn scenario_def_store_bytes(def: &ScenarioDef) -> Vec<u8> {
     format!(
-        "crucible.dag-store.scenario-def.v1\nscenario_ref={}\n",
-        content_hash_hex(def.id)
+        "crucible.dag-store.scenario-def.v1\nscenario_ref={}\n{}\n",
+        content_hash_hex(def.id),
+        seed_material(def.seed)
     )
     .into_bytes()
 }
@@ -7538,12 +7699,16 @@ fn fold_fnv_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
 }
 
 fn content_hash_hex(hash: ContentHash) -> String {
+    bytes_hex(&hash.bytes)
+}
+
+fn bytes_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
-    let mut encoded = String::with_capacity(64);
-    for byte in hash.bytes {
-        encoded.push(HEX[usize::from(byte >> 4)] as char);
-        encoded.push(HEX[usize::from(byte & 0x0f)] as char);
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(HEX[usize::from(*byte >> 4)] as char);
+        encoded.push(HEX[usize::from(*byte & 0x0f)] as char);
     }
     encoded
 }

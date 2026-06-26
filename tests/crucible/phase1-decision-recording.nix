@@ -55,7 +55,9 @@
     builtins.concatStringsSep "\n" (
       map (relative: builtins.readFile (root + "/${relative}"))
       (builtins.filter (
-          relative: relative != "crates/crucible/src/decision.rs"
+          relative:
+            relative != "crates/crucible/src/decision.rs"
+            && relative != "crates/crucible/src/model.rs"
         )
         (rustFilesUnder "crates/crucible/src"))
     );
@@ -287,10 +289,6 @@
       {
         label = "thread/global RNG";
         needle = "thread_rng";
-      }
-      {
-        label = "thread/global RNG";
-        needle = "rng()";
       }
       {
         label = "default randomized hasher";

@@ -56,7 +56,7 @@ where
     }
 
     Ok(SingleVmFingerprintGateReport {
-        scenario_id: scenario.id.clone(),
+        scenario_id: scenario.id().to_owned(),
         matching_final_fingerprint: first_stream.final_fingerprint.clone(),
         sample_count: first_stream.samples.len(),
         first_stream,

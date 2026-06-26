@@ -2140,9 +2140,7 @@ mod tests {
     }
 
     fn scenario(name: &str) -> ScenarioDef {
-        ScenarioDef {
-            id: hash("scenario", name),
-        }
+        ScenarioDef::from_canonical_material("crucible.test.qemu.scenario", name)
     }
 
     fn config_with_decisions(def: ScenarioDef, count: usize) -> Configuration {
@@ -2175,7 +2173,7 @@ mod tests {
     ) -> std::collections::BTreeMap<NodeId, NodeBlobRef> {
         let parent = hash(
             "qemu-test-node-blob-parent",
-            &format!("scenario={:?}", config.def.id.bytes),
+            &format!("scenario={:?}", config.def.id().bytes),
         );
         let delta = hash(
             "qemu-test-node-blob-delta",

@@ -1156,7 +1156,7 @@ impl From<TimeConversionError> for SchedulerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContentHash, ScenarioDef, step};
+    use crate::{ScenarioDef, step};
 
     #[test]
     fn quantum_loop_trait_is_object_safe() {
@@ -1177,9 +1177,10 @@ mod tests {
             }
         }
 
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
+        let config = Configuration::genesis(ScenarioDef::from_canonical_material(
+            "crucible.test.scheduler.quantum-loop",
+            "scenario=stub",
+        ));
         let request = QuantumRequest {
             configuration: config.clone(),
             control: Vec::new(),
@@ -1377,9 +1378,10 @@ mod tests {
 
     #[test]
     fn quantum_outcome_carries_step_decisions() {
-        let config = Configuration::genesis(ScenarioDef {
-            id: ContentHash::default(),
-        });
+        let config = Configuration::genesis(ScenarioDef::from_canonical_material(
+            "crucible.test.scheduler.quantum-outcome",
+            "scenario=stub",
+        ));
         let decision = crate::Decision::RngDraw(crate::RngDecision {
             stream: crate::RngStreamId::from_name("scheduler"),
             value: 7,
