@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuMultiVcpuLaunch",
-  taskIds ? ["T-QEMU-15" "T-DET-29"],
+  taskIds ? ["T-QEMU-15" "T-DET-29" "T-DET-30"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -58,6 +58,18 @@
       {
         label = "T-DET-29 completion note names MTTCG rejection";
         needle = "rejects MTTCG";
+      }
+      {
+        label = "T-DET-30 checklist complete";
+        needle = "- [x] **T-DET-30**";
+      }
+      {
+        label = "T-DET-30 completion note names launch check";
+        needle = "`checks.crucible.phase2.qemuMultiVcpuLaunch`";
+      }
+      {
+        label = "T-DET-30 completion note names fixed topology";
+        needle = "fixed-at-genesis topology";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
@@ -130,6 +142,14 @@
         needle = "format!(\"smp_vcpus={}\", self.smp_vcpus),";
       }
       {
+        label = "scenario material records fixed topology";
+        needle = "\"vcpu_topology=fixed-at-genesis\".to_owned(),";
+      }
+      {
+        label = "scenario material forbids runtime CPU hotplug";
+        needle = "\"runtime_cpu_hotplug=forbidden\".to_owned(),";
+      }
+      {
         label = "scenario material hashes RR quantum";
         needle = "format!(\"rr_switch_quantum={}\", self.rr_switch_quantum),";
       }
@@ -140,6 +160,26 @@
       {
         label = "scenario material records ascending vCPU rotation";
         needle = "\"rr_vcpu_rotation=ascending-vcpu-id\".to_owned(),";
+      }
+      {
+        label = "scenario material records uniform per-vCPU CPU model";
+        needle = "\"per_vcpu_cpu_model=uniform\".to_owned(),";
+      }
+      {
+        label = "scenario material records per-vCPU TSC source";
+        needle = "\"per_vcpu_tsc_source=node-icount\".to_owned(),";
+      }
+      {
+        label = "scenario material records per-vCPU RNG source";
+        needle = "\"per_vcpu_rng_source=scenario-seed-and-run-seed\".to_owned(),";
+      }
+      {
+        label = "scenario material records per-vCPU RNG timing axis";
+        needle = "\"per_vcpu_rng_timing_axis=node-icount\".to_owned(),";
+      }
+      {
+        label = "scenario material records deterministic secondary vCPU bringup";
+        needle = "\"secondary_vcpu_bringup=rr-tcg-icount-deterministic\".to_owned(),";
       }
       {
         label = "vCPU count accessor";
@@ -222,8 +262,40 @@
         needle = "validation.smp_vcpus(), 4";
       }
       {
+        label = "multi-vCPU CPU model validation assertion";
+        needle = "validation.cpu_model(), \"qemu64,-rdrand,-rdseed\"";
+      }
+      {
         label = "multi-vCPU scenario material assertion";
         needle = "material.contains(\"smp_vcpus=4\")";
+      }
+      {
+        label = "multi-vCPU fixed topology assertion";
+        needle = "material.contains(\"vcpu_topology=fixed-at-genesis\")";
+      }
+      {
+        label = "multi-vCPU no runtime hotplug assertion";
+        needle = "material.contains(\"runtime_cpu_hotplug=forbidden\")";
+      }
+      {
+        label = "multi-vCPU uniform CPU model assertion";
+        needle = "material.contains(\"per_vcpu_cpu_model=uniform\")";
+      }
+      {
+        label = "multi-vCPU per-vCPU TSC assertion";
+        needle = "material.contains(\"per_vcpu_tsc_source=node-icount\")";
+      }
+      {
+        label = "multi-vCPU per-vCPU RNG assertion";
+        needle = "material.contains(\"per_vcpu_rng_source=scenario-seed-and-run-seed\")";
+      }
+      {
+        label = "multi-vCPU per-vCPU RNG timing assertion";
+        needle = "material.contains(\"per_vcpu_rng_timing_axis=node-icount\")";
+      }
+      {
+        label = "multi-vCPU deterministic secondary bringup assertion";
+        needle = "material.contains(\"secondary_vcpu_bringup=rr-tcg-icount-deterministic\")";
       }
       {
         label = "vCPU count changes scenario material";
@@ -347,11 +419,18 @@ in
             rr_switch_quantum_current_qemu_option=rr_switch_quantum
             rr_switch_quantum_rfc_alias=crucible-rr-quantum-icount
             rr_vcpu_rotation=ascending-vcpu-id
+            cpu_model_scope=uniform-all-vcpus
+            per_vcpu_tsc_source=node-icount
+            per_vcpu_rng_source=scenario-seed-and-run-seed
+            per_vcpu_rng_timing_axis=node-icount
+            vcpu_topology=fixed-at-genesis
+            runtime_cpu_hotplug=false
+            secondary_vcpu_bringup=rr-tcg-icount-deterministic
             rejects_mttcg=true
             rejects_unpinned_rr_switch_quantum=true
             rejects_adaptive_rr_quantum=true
             rejects_realtime_switching=true
-            scenario_hash_folds=smp_vcpus,rr_switch_quantum,rr_vcpu_rotation
+            scenario_hash_folds=smp_vcpus,rr_switch_quantum,rr_vcpu_rotation,cpu_model,per_vcpu_entropy,vcpu_topology
             rust_test=crucible-qemu::deterministic_launch::multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed
             RESULT
           '';

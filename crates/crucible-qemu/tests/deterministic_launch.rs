@@ -186,6 +186,7 @@ fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed() {
     assert_eq!(validation.accelerator(), "tcg,thread=single");
     assert_eq!(validation.smp_vcpus(), 4);
     assert_eq!(validation.rr_switch_quantum(), 8192);
+    assert_eq!(validation.cpu_model(), "qemu64,-rdrand,-rdseed");
 
     let mut alias_args = args.clone();
     replace_option_value(
@@ -200,9 +201,16 @@ fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed() {
 
     let material = profile.scenario_hash_material();
     assert!(material.contains("smp_vcpus=4"));
+    assert!(material.contains("vcpu_topology=fixed-at-genesis"));
+    assert!(material.contains("runtime_cpu_hotplug=forbidden"));
     assert!(material.contains("rr_switch_quantum=8192"));
     assert!(material.contains("rr_switch_quantum_units=node-icount"));
     assert!(material.contains("rr_vcpu_rotation=ascending-vcpu-id"));
+    assert!(material.contains("per_vcpu_cpu_model=uniform"));
+    assert!(material.contains("per_vcpu_tsc_source=node-icount"));
+    assert!(material.contains("per_vcpu_rng_source=scenario-seed-and-run-seed"));
+    assert!(material.contains("per_vcpu_rng_timing_axis=node-icount"));
+    assert!(material.contains("secondary_vcpu_bringup=rr-tcg-icount-deterministic"));
 
     let different_vcpu_count = deterministic(
         LaunchProfileCandidate::default()
@@ -984,12 +992,16 @@ fn launch_hash_material_records_every_determinism_field() {
         "machine_type=pc-q35-9.2",
         "memory_mib=512",
         "smp_vcpus=1",
+        "vcpu_topology=fixed-at-genesis",
+        "runtime_cpu_hotplug=forbidden",
         "accelerator=tcg,thread=single",
         "icount_shift=0",
         "rr_switch_quantum=4096",
         "rr_switch_quantum_units=node-icount",
         "rr_vcpu_rotation=ascending-vcpu-id",
         "virtual_time_ns=icount<<shift",
+        "per_vcpu_cpu_model=uniform",
+        "per_vcpu_tsc_source=node-icount",
         "rtc_epoch_utc=2026-01-01T00:00:00",
         "rtc_clock=vm",
         "guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time",
@@ -1016,6 +1028,9 @@ fn launch_hash_material_records_every_determinism_field() {
         "guest_entropy_rng_object=rng-builtin,id=crucible-rng0",
         "guest_entropy_rng_device=virtio-rng-pci,rng=crucible-rng0",
         "guest_entropy_host_sources=disabled",
+        "per_vcpu_rng_source=scenario-seed-and-run-seed",
+        "per_vcpu_rng_timing_axis=node-icount",
+        "secondary_vcpu_bringup=rr-tcg-icount-deterministic",
         "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off",
     ] {
         assert!(material.contains(expected), "missing {expected}");

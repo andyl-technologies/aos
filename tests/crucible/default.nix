@@ -95,7 +95,12 @@ in {
     qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase1.qemuMultiVcpuLaunch";
-      taskIds = ["T-DET-29"];
+      taskIds = ["T-DET-29" "T-DET-30"];
+    };
+    qemuPluginPreemption = import ./phase2-plugin-preemption.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase1.qemuPluginPreemption";
+      taskIds = ["T-DET-30"];
     };
     qemuNetDeterministic = import ./phase1-qemu-net-deterministic.nix {inherit pkgs lib;};
     qemuNetTxCallback = import ./phase1-qemu-net-tx-callback.nix {inherit pkgs lib;};
@@ -144,6 +149,7 @@ in {
           "T-DET-7"
           "T-DET-28"
           "T-DET-29"
+          "T-DET-30"
           "T-DET-8"
           "T-DET-9"
           "T-DET-10"

@@ -821,12 +821,22 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     plus `N`/quantum/rotation in scenario hash material. The pre-spawn validator
     rejects MTTCG, missing/duplicate RR quantum declarations, adaptive icount
     mode, realtime icount switching, and QEMU realtime launch flags before spawn.
-- [ ] **T-DET-30** Verify per-vCPU entropy uniformity and IPI determinism: a
+- [x] **T-DET-30** Verify per-vCPU entropy uniformity and IPI determinism: a
   uniform `-cpu` pin across all vCPUs, per-vCPU TSC/RNG derived from node icount
   (E23), inter-vCPU IPI delivered at a deterministic node-icount via a fixed
   modeled latency at the next RR switch (E22), and deterministic secondary-vCPU
   SIPI/INIT bringup with no runtime hotplug (E24). — satisfies [DET-18] (E22, E23,
   E24), [DET-43]; spec §4.6 (E22, E23, E24), §4.4.
+  - Completed by `checks.crucible.phase2.qemuMultiVcpuLaunch` and
+    `checks.crucible.phase2.qemuPluginPreemption`, consumed by
+    `checks.crucible.phase1.gates.layer0Determinism`: the launch profile hashes
+    the uniform `-cpu` model, node-icount TSC source, scenario/run-seed-backed
+    per-vCPU RNG source with node-icount-timed delivery, fixed-at-genesis topology,
+    no runtime hotplug, and deterministic RR-TCG/icount secondary-vCPU bringup. The
+    plugin preemption gate plans inter-vCPU IPI delivery as sender
+    icount plus fixed modeled IPI latency, rounded to the next fixed RR switch
+    boundary, and emits the resulting interrupt through the commanded-icount
+    preemption path rather than a realtime callback.
 - [ ] **T-DET-31** Implement app-requested randomness served from the single
   seeded decision source: white-box opt-in (16), per-`(node, stream-name)`
   name-hash fork, each draw a recorded `Decision` delivered under the injection

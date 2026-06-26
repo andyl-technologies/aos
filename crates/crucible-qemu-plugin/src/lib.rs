@@ -164,10 +164,11 @@ pub use ninep_io::{
     handle_9p_poll_callback, handle_9p_submit_callback,
 };
 pub use preemption::{
-    PluginPreemptionApplication, PluginPreemptionDecision, PluginPreemptionInjector,
-    PluginPreemptionKind, PreemptionError, PreemptionWindow, QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL,
-    QEMU_PREEMPTION_KIND_INTERRUPT_AT, QEMU_PREEMPTION_KIND_VCPU_SWITCH,
-    QEMU_PREEMPTION_UNUSED_ARG, QemuInjectPreemptionFn, QemuPreemptionCommand,
+    DeterministicIpiDelivery, PluginPreemptionApplication, PluginPreemptionDecision,
+    PluginPreemptionInjector, PluginPreemptionKind, PreemptionError, PreemptionWindow,
+    QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL, QEMU_PREEMPTION_KIND_INTERRUPT_AT,
+    QEMU_PREEMPTION_KIND_VCPU_SWITCH, QEMU_PREEMPTION_UNUSED_ARG, QemuInjectPreemptionFn,
+    QemuPreemptionCommand, plan_deterministic_ipi_delivery,
 };
 pub use registration::{
     PluginCallbackCapabilities, PluginRegistrationFailure, PluginRegistrationReady,
