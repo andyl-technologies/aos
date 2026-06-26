@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3" "T-TEMP-4"],
+  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-EXEC-4" "T-EXEC-11" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -135,6 +135,38 @@
         label = "fat thin materialized state comparison";
         needle = "fat_state.id != thin_state.id";
       }
+      {
+        label = "savevm completeness hedge type";
+        needle = "pub struct SavevmCompletenessHedge";
+      }
+      {
+        label = "thin replay until full S3 hedge";
+        needle = "pub fn thin_replay_until_full_s3() -> Self";
+      }
+      {
+        label = "unreliable device hedge constructor";
+        needle = "pub fn with_unreliable_devices<I>(devices: I) -> Self";
+      }
+      {
+        label = "hedge rejects unreliable device overlays";
+        needle = ".all(|device| !self.unreliable_devices.contains(device))";
+      }
+      {
+        label = "cache snapshot hedge API";
+        needle = "pub fn cache_snapshot_with_savevm_hedge(";
+      }
+      {
+        label = "hedge rejection evicts stale fat cache";
+        needle = "if hedge.allows_checkpoint(&checkpoint) {\n            self.cache_snapshot(configuration, checkpoint.clone())?;\n            Ok(checkpoint)\n        } else {\n            self.evict_fat_checkpoint_to_thin(configuration)\n        }";
+      }
+      {
+        label = "materialize checkpoint hedge API";
+        needle = "pub fn materialize_checkpoint_with_savevm_hedge(";
+      }
+      {
+        label = "hot checkpoint hedge API";
+        needle = "pub fn materialize_hot_checkpoint_with_savevm_hedge(";
+      }
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
       {
@@ -178,6 +210,10 @@
         needle = "MaterializationTrigger";
       }
       {
+        label = "savevm hedge export";
+        needle = "SavevmCompletenessHedge";
+      }
+      {
         label = "thin source-of-truth test";
         needle = "temporal_graph_materialized_cache_keeps_thin_checkpoint_source_of_truth";
       }
@@ -192,6 +228,14 @@
       {
         label = "hot-node materialization policy test";
         needle = "temporal_graph_materialization_policy_keeps_cold_or_over_budget_nodes_thin";
+      }
+      {
+        label = "unreliable device hedge test";
+        needle = "temporal_graph_savevm_hedge_keeps_unreliable_device_checkpoint_thin";
+      }
+      {
+        label = "full S3 fallback eviction test";
+        needle = "temporal_graph_savevm_full_s3_fallback_evicts_hot_checkpoint_to_thin";
       }
     ]
     ++ failuresFor "crates/crucible/Cargo.toml" cargoManifest [
@@ -583,6 +627,10 @@
         label = "phase1 replay-oracle lists T-TEMP-4";
         needle = "\"T-TEMP-4\"";
       }
+      {
+        label = "phase1 replay-oracle lists T-TEMP-5";
+        needle = "\"T-TEMP-5\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
       {
@@ -634,6 +682,18 @@
       {
         label = "T-TEMP-4 completion names eviction API";
         needle = "`evict_fat_checkpoint_to_thin`";
+      }
+      {
+        label = "T-TEMP-5 checklist complete";
+        needle = "- [x] **T-TEMP-5**";
+      }
+      {
+        label = "T-TEMP-5 completion names savevm hedge";
+        needle = "`crucible::SavevmCompletenessHedge`";
+      }
+      {
+        label = "T-TEMP-5 completion names thin replay fallback";
+        needle = "`thin_replay_until_full_s3`";
       }
     ];
 in
@@ -779,6 +839,8 @@ in
             thin_source_of_truth=checkpoint-node-state-none
             fat_cache_policy=hot-nodes-budgeted
             fat_eviction=ancestor-replay-preserves-state
+            savevm_completeness_hedge=unreliable-device-snapshots-stay-thin
+            savevm_full_s3_fallback=thin-replay-until-full-s3
             artifact_round_trip=re-run-from-seed-scenario-schedule-build-identity
             artifact_replay_assertions=fingerprint-equality,oracle-case-equality
             artifact_replay_negative_controls=build-identity-drift,seed-drift,scenario-drift,schedule-drift,oracle-case-drift,replay-failure,expected-oracle-mismatch,reproduced-oracle-mismatch

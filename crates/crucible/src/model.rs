@@ -1499,6 +1499,76 @@ impl MaterializationPolicy {
     }
 }
 
+/// Policy for hedging incomplete backend `savevm` coverage.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SavevmCompletenessHedge {
+    fat_snapshot_default: bool,
+    unreliable_devices: BTreeSet<DeviceId>,
+}
+
+impl SavevmCompletenessHedge {
+    /// Builds a hedge that permits fat snapshots after full replay-oracle proof.
+    #[must_use]
+    pub fn verified() -> Self {
+        Self {
+            fat_snapshot_default: true,
+            unreliable_devices: BTreeSet::new(),
+        }
+    }
+
+    /// Builds the conservative fallback adopted until full S3 is green.
+    #[must_use]
+    pub fn thin_replay_until_full_s3() -> Self {
+        Self {
+            fat_snapshot_default: false,
+            unreliable_devices: BTreeSet::new(),
+        }
+    }
+
+    /// Builds a hedge that keeps checkpoints touching `devices` thin.
+    #[must_use]
+    pub fn with_unreliable_devices<I>(devices: I) -> Self
+    where
+        I: IntoIterator<Item = DeviceId>,
+    {
+        Self {
+            fat_snapshot_default: true,
+            unreliable_devices: devices.into_iter().collect(),
+        }
+    }
+
+    /// Returns whether fat snapshots are usable by default.
+    #[must_use]
+    pub const fn fat_snapshot_default(&self) -> bool {
+        self.fat_snapshot_default
+    }
+
+    /// Returns the devices whose materialized snapshots must stay thin.
+    #[must_use]
+    pub fn unreliable_devices(&self) -> &BTreeSet<DeviceId> {
+        &self.unreliable_devices
+    }
+
+    /// Returns whether `state` is eligible to be cached as a fat snapshot.
+    #[must_use]
+    pub fn allows_materialized_state(&self, state: &MaterializedState) -> bool {
+        self.fat_snapshot_default
+            && state
+                .device_overlays
+                .keys()
+                .all(|device| !self.unreliable_devices.contains(device))
+    }
+
+    /// Returns whether `checkpoint` is eligible to be cached as a fat snapshot.
+    #[must_use]
+    pub fn allows_checkpoint(&self, checkpoint: &Checkpoint) -> bool {
+        checkpoint
+            .state
+            .as_ref()
+            .is_some_and(|state| self.allows_materialized_state(state))
+    }
+}
+
 /// A baked genesis checkpoint handle.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GenesisCheckpoint {
@@ -1603,6 +1673,34 @@ impl TemporalGraph {
         Ok(())
     }
 
+    /// Registers `checkpoint` only when the savevm hedge allows fat caching.
+    ///
+    /// If the hedge marks the snapshot unreliable, the graph records and
+    /// returns the thin source-of-truth checkpoint instead of inserting the fat
+    /// cache entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointConfigurationMismatch`] or related
+    /// checkpoint-validation errors when the supplied fat checkpoint metadata is
+    /// invalid. Returns [`EngineError::MissingBakedGenesis`] when the hedge
+    /// rejects the fat checkpoint but no baked root exists to support thin
+    /// replay.
+    pub fn cache_snapshot_with_savevm_hedge(
+        &mut self,
+        configuration: &Configuration,
+        checkpoint: Checkpoint,
+        hedge: &SavevmCompletenessHedge,
+    ) -> Result<Checkpoint, EngineError> {
+        validate_loadable_checkpoint(&checkpoint, configuration)?;
+        if hedge.allows_checkpoint(&checkpoint) {
+            self.cache_snapshot(configuration, checkpoint.clone())?;
+            Ok(checkpoint)
+        } else {
+            self.evict_fat_checkpoint_to_thin(configuration)
+        }
+    }
+
     /// Returns a graph with the baked genesis checkpoint registered for `def`.
     ///
     /// # Errors
@@ -1704,6 +1802,55 @@ impl TemporalGraph {
         Ok(checkpoint)
     }
 
+    /// Materializes `configuration` only when the savevm hedge permits it.
+    ///
+    /// The thin checkpoint is returned when fat snapshots are disabled or when
+    /// the materialized state touches a device whose snapshot is unreliable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when the graph cannot
+    /// record or replay the thin source-of-truth path. Returns other
+    /// [`EngineError`] variants from checkpoint validation or replay-oracle
+    /// validation.
+    pub fn materialize_checkpoint_with_savevm_hedge(
+        &mut self,
+        configuration: &Configuration,
+        hedge: &SavevmCompletenessHedge,
+    ) -> Result<Checkpoint, EngineError> {
+        self.record_configuration(configuration.clone());
+        if configuration.is_genesis() {
+            let genesis = self.genesis_snapshot(&configuration.def).ok_or(
+                EngineError::MissingBakedGenesis {
+                    scenario: configuration.def.id,
+                },
+            )?;
+            return Ok(genesis.checkpoint.clone());
+        }
+        if self.genesis_snapshot(&configuration.def).is_some() {
+            self.record_thin_checkpoint(configuration)?;
+        }
+        if let Some(checkpoint) = self.cached_snapshot(configuration).cloned() {
+            if hedge.allows_checkpoint(&checkpoint) {
+                return Ok(checkpoint);
+            }
+            return self.evict_fat_checkpoint_to_thin(configuration);
+        }
+        if !hedge.fat_snapshot_default() {
+            return self.record_thin_checkpoint(configuration);
+        }
+
+        let runtime = instantiate(self, configuration)?;
+        let checkpoint = materialized_checkpoint_for_runtime(configuration, runtime)?;
+        self.replay_checkpoint(configuration, &checkpoint)?;
+        if hedge.allows_checkpoint(&checkpoint) {
+            self.cache_snapshot(configuration, checkpoint.clone())?;
+            Ok(checkpoint)
+        } else {
+            self.record_thin_checkpoint(configuration)
+        }
+    }
+
     /// Applies the hot-node materialization policy to `configuration`.
     ///
     /// Hot nodes within budget are materialized through
@@ -1726,6 +1873,36 @@ impl TemporalGraph {
         }
         if policy.should_materialize(self.cached_snapshot_count(), trigger) {
             self.materialize_checkpoint(configuration)
+        } else {
+            self.record_thin_checkpoint(configuration)
+        }
+    }
+
+    /// Applies both hot-node policy and the savevm-completeness hedge.
+    ///
+    /// Even hot nodes remain thin when fat snapshots are globally disabled or
+    /// their materialized state contains an unreliable device snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when the graph cannot
+    /// record or replay the thin source-of-truth path. Returns other
+    /// [`EngineError`] variants from checkpoint validation.
+    pub fn materialize_hot_checkpoint_with_savevm_hedge(
+        &mut self,
+        configuration: &Configuration,
+        policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+        hedge: &SavevmCompletenessHedge,
+    ) -> Result<Checkpoint, EngineError> {
+        if let Some(checkpoint) = self.cached_snapshot(configuration).cloned() {
+            if hedge.allows_checkpoint(&checkpoint) {
+                return Ok(checkpoint);
+            }
+            return self.evict_fat_checkpoint_to_thin(configuration);
+        }
+        if policy.should_materialize(self.cached_snapshot_count(), trigger) {
+            self.materialize_checkpoint_with_savevm_hedge(configuration, hedge)
         } else {
             self.record_thin_checkpoint(configuration)
         }

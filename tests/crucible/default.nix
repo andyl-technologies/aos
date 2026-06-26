@@ -181,6 +181,7 @@ in {
           "T-EXEC-11"
           "T-TEMP-3"
           "T-TEMP-4"
+          "T-TEMP-5"
         ];
       };
       singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {

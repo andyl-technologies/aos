@@ -795,10 +795,17 @@ command.
     the repeated-fork/shared-replay/interactive-target budget, and
     `evict_fat_checkpoint_to_thin` drops the fat cache without changing the
     checkpoint id or replayed runtime state.
-- [ ] **T-TEMP-5** Implement the savevm-completeness hedge: keep affected
+- [x] **T-TEMP-5** Implement the savevm-completeness hedge: keep affected
   checkpoints thin when a device's snapshot is unreliable, proving
   replay-from-ancestor stays bit-correct independent of snapshot completeness.
   — satisfies [TEMP-13], [TEMP-20]; spec §4, §6; cross-ref 30.
+  - Completed by `crucible::SavevmCompletenessHedge` and
+    `checks.crucible.phase1.gates.replayOracle`: `cache_snapshot_with_savevm_hedge`
+    refuses fat cache insertion for materialized states touching unreliable
+    device overlays, `materialize_checkpoint_with_savevm_hedge` and
+    `materialize_hot_checkpoint_with_savevm_hedge` keep such nodes thin, and
+    `thin_replay_until_full_s3` evicts an already-hot fat checkpoint back to
+    the thin ancestor-replay path while preserving the realized runtime hash.
 - [ ] **T-TEMP-6** Implement CoW sharing across the DAG: a fork stores only
   dirty VM pages, dirty overlay pages, its schedule delta, and its appended log
   segment; unchanged pieces resolve by reference; all deltas BLAKE3-keyed and
