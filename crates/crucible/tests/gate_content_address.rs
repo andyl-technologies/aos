@@ -12,11 +12,13 @@ use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash,
     CowDeltaKind, CowDeltaRef, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
     DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
-    EngineError, EventKey, EventLogOffset, FaultDecision, FaultId, FaultState, Icount,
-    LocalDagStore, MaterializedState, MemoryDagStore, NodeBlobRef, NodeId, PendingFrame,
-    RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerState, State,
+    EngineError, EventKey, EventLogOffset, FaultDecision, FaultId, FaultState,
+    FrontierReductionPolicy, FrontierReductionReason, Icount, IrqVector, LocalDagStore,
+    MaterializedState, MemoryDagStore, NodeBlobRef, NodeId, PartialOrderReductionPolicy,
+    PendingFrame, PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, RngStreamPosition,
+    ScenarioDef, Schedule, SchedulerState, State, SymmetryClassId, SymmetryReductionClasses,
     TemporalGraph, TemporalGraphGcRoots, TemporalGraphStoreError, TimerId, TimerRegistry,
-    TimerState, VirtualTime, VmSnapshotRef, World, bake, instantiate, reduce, step,
+    TimerState, VcpuId, VirtualTime, VmSnapshotRef, World, bake, instantiate, reduce, step,
 };
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1277,6 +1279,361 @@ fn gate_content_address_temporal_graph_frontier_records_checkpoint_dag_children(
 }
 
 #[test]
+fn gate_content_address_temporal_graph_symmetry_reduction_covers_relabelled_frontier() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "temporal-graph-symmetry-reduction",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(&scenario, baked)
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    let replica_a = node_id("replica-a");
+    let replica_b = node_id("replica-b");
+    let symmetry_classes = SymmetryReductionClasses::new()
+        .with_node_class(replica_a.clone(), symmetry_class("replicas"))
+        .with_node_class(replica_b.clone(), symmetry_class("replicas"));
+    let base = node_blob("symmetry/base");
+    let dirty = node_blob("symmetry/dirty");
+    let coverage = ContentHash::from_canonical_material(
+        "crucible.test.content-address.coverage",
+        "symmetry-class",
+    );
+    let left_decision = preemption_decision("replica-a", 11);
+    let right_decision = preemption_decision("replica-b", 11);
+    let left_config = step(&genesis, left_decision.clone());
+    let right_config = step(&genesis, right_decision.clone());
+    let left_checkpoint = fat_checkpoint_with_coverage(
+        &left_config,
+        &genesis,
+        coverage,
+        BTreeMap::from([
+            (replica_a.clone(), dirty.clone()),
+            (replica_b.clone(), base.clone()),
+        ]),
+    );
+    let right_checkpoint = fat_checkpoint_with_coverage(
+        &right_config,
+        &genesis,
+        coverage,
+        BTreeMap::from([(replica_a, base), (replica_b, dirty)]),
+    );
+
+    graph
+        .cache_snapshot(&left_config, left_checkpoint)
+        .unwrap_or_else(|error| panic!("left symmetric checkpoint should cache: {error}"));
+    graph
+        .cache_snapshot(&right_config, right_checkpoint)
+        .unwrap_or_else(|error| panic!("right symmetric checkpoint should cache: {error}"));
+    let recorded_before = graph.checkpoint_node_count();
+
+    let left_key = graph
+        .symmetry_reduction_key(&left_config, &symmetry_classes)
+        .unwrap_or_else(|| panic!("left checkpoint should have a symmetry key"));
+    let right_key = graph
+        .symmetry_reduction_key(&right_config, &symmetry_classes)
+        .unwrap_or_else(|| panic!("right checkpoint should have a symmetry key"));
+    let report = graph
+        .enumerate_frontier_reduced(
+            &genesis,
+            vec![left_decision, right_decision],
+            FrontierReductionPolicy::none().with_symmetry_classes(symmetry_classes),
+        )
+        .unwrap_or_else(|error| panic!("reduced frontier should enumerate: {error}"));
+
+    assert_ne!(left_config.id(), right_config.id());
+    assert_eq!(left_key, right_key);
+    assert_eq!(report.explored.len(), 1);
+    assert_eq!(report.covered.len(), 1);
+    assert_eq!(report.covered[0].reason, FrontierReductionReason::Symmetry);
+    assert_eq!(
+        report.covered[0].representative,
+        report.explored[0].configuration.id()
+    );
+    assert_eq!(report.covered[0].reduction_key, left_key.fingerprint);
+    assert_eq!(graph.checkpoint_node_count(), recorded_before);
+}
+
+#[test]
+fn gate_content_address_temporal_graph_symmetry_reduction_explores_without_proof() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "temporal-graph-symmetry-conservative",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(&scenario, baked)
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    let left_decision = preemption_decision("replica-a", 17);
+    let right_decision = preemption_decision("replica-b", 17);
+
+    let report = graph
+        .enumerate_frontier_reduced(
+            &genesis,
+            vec![left_decision, right_decision],
+            FrontierReductionPolicy::none(),
+        )
+        .unwrap_or_else(|error| panic!("reduced frontier should enumerate: {error}"));
+
+    assert_eq!(report.explored.len(), 2);
+    assert!(report.covered.is_empty());
+    assert!(report.explored.iter().all(|child| {
+        graph
+            .symmetry_reduction_key(&child.configuration, &SymmetryReductionClasses::new())
+            .is_none()
+    }));
+}
+
+#[test]
+fn gate_content_address_temporal_graph_symmetry_reduction_explores_when_state_differs() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "temporal-graph-symmetry-state-differs",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(&scenario, baked)
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    let replica_a = node_id("replica-a");
+    let replica_b = node_id("replica-b");
+    let symmetry_classes = SymmetryReductionClasses::new()
+        .with_node_class(replica_a.clone(), symmetry_class("replicas"))
+        .with_node_class(replica_b.clone(), symmetry_class("replicas"));
+    let base = node_blob("symmetry/state/base");
+    let dirty = node_blob("symmetry/state/dirty");
+    let coverage = ContentHash::from_canonical_material(
+        "crucible.test.content-address.coverage",
+        "symmetry-state-differs",
+    );
+    let left_decision = preemption_decision("replica-a", 41);
+    let right_decision = preemption_decision("replica-b", 41);
+    let left_config = step(&genesis, left_decision.clone());
+    let right_config = step(&genesis, right_decision.clone());
+    let left_checkpoint = fat_checkpoint_with_coverage_and_event_log(
+        &left_config,
+        &genesis,
+        coverage,
+        BTreeMap::from([
+            (replica_a.clone(), dirty.clone()),
+            (replica_b.clone(), base.clone()),
+        ]),
+        EventLogOffset::with_appended_segment(
+            ContentHash::from_canonical_material("crucible.test.event-log", "prefix"),
+            8,
+            1,
+            ContentHash::from_canonical_material("crucible.test.event-log", "left"),
+        ),
+    );
+    let right_checkpoint = fat_checkpoint_with_coverage_and_event_log(
+        &right_config,
+        &genesis,
+        coverage,
+        BTreeMap::from([(replica_a, base), (replica_b, dirty)]),
+        EventLogOffset::with_appended_segment(
+            ContentHash::from_canonical_material("crucible.test.event-log", "prefix"),
+            8,
+            1,
+            ContentHash::from_canonical_material("crucible.test.event-log", "right"),
+        ),
+    );
+
+    graph
+        .cache_snapshot(&left_config, left_checkpoint)
+        .unwrap_or_else(|error| panic!("left checkpoint should cache: {error}"));
+    graph
+        .cache_snapshot(&right_config, right_checkpoint)
+        .unwrap_or_else(|error| panic!("right checkpoint should cache: {error}"));
+
+    let left_key = graph
+        .symmetry_reduction_key(&left_config, &symmetry_classes)
+        .unwrap_or_else(|| panic!("left checkpoint should have a symmetry key"));
+    let right_key = graph
+        .symmetry_reduction_key(&right_config, &symmetry_classes)
+        .unwrap_or_else(|| panic!("right checkpoint should have a symmetry key"));
+    let report = graph
+        .enumerate_frontier_reduced(
+            &genesis,
+            vec![left_decision, right_decision],
+            FrontierReductionPolicy::none().with_symmetry_classes(symmetry_classes),
+        )
+        .unwrap_or_else(|error| panic!("reduced frontier should enumerate: {error}"));
+
+    assert_ne!(left_key, right_key);
+    assert_eq!(report.explored.len(), 2);
+    assert!(report.covered.is_empty());
+}
+
+#[test]
+fn gate_content_address_temporal_graph_partial_order_reduction_skips_noncanonical_interleaving() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "temporal-graph-partial-order-reduction",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(&scenario, baked)
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    let left = preemption_decision("node-a", 21);
+    let right = preemption_decision("node-b", 21);
+    let (first, second) = if left.reduction_order_key() < right.reduction_order_key() {
+        (right, left)
+    } else {
+        (left, right)
+    };
+    let frontier = step(&genesis, first.clone());
+    let covered = step(&frontier, second.clone());
+    let canonical_frontier = step(&genesis, second.clone());
+    let representative = Configuration {
+        def: scenario,
+        schedule: Schedule::empty()
+            .appended(second.clone())
+            .appended(first.clone()),
+    };
+    let partial_order = PartialOrderReductionPolicy::new().with_independent_pair(&first, &second);
+
+    assert!(first.is_independent_from(&second, &partial_order));
+    graph
+        .record_step(&genesis, second.clone())
+        .unwrap_or_else(|error| panic!("canonical frontier should record: {error}"));
+    graph
+        .record_step(&canonical_frontier, first.clone())
+        .unwrap_or_else(|error| panic!("canonical representative should record: {error}"));
+    graph
+        .record_step(&genesis, first)
+        .unwrap_or_else(|error| panic!("frontier should record: {error}"));
+    assert!(graph.contains_configuration(&representative));
+
+    let report = graph
+        .enumerate_frontier_reduced(
+            &frontier,
+            vec![second],
+            FrontierReductionPolicy::none().with_partial_order(partial_order),
+        )
+        .unwrap_or_else(|error| panic!("reduced frontier should enumerate: {error}"));
+
+    assert!(report.explored.is_empty());
+    assert_eq!(report.covered.len(), 1);
+    assert_eq!(
+        report.covered[0].reason,
+        FrontierReductionReason::PartialOrder
+    );
+    assert_eq!(report.covered[0].configuration.id(), covered.id());
+    assert_eq!(report.covered[0].representative, representative.id());
+    assert!(!graph.contains_configuration(&covered));
+    assert!(!graph.checkpoint_node(covered.id()).is_some());
+}
+
+#[test]
+fn gate_content_address_temporal_graph_partial_order_reduction_explores_without_representative() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "temporal-graph-partial-order-missing-representative",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario);
+    let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(&genesis.def, baked)
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    let left = preemption_decision("node-a", 51);
+    let right = preemption_decision("node-b", 51);
+    let (first, second) = if left.reduction_order_key() < right.reduction_order_key() {
+        (right, left)
+    } else {
+        (left, right)
+    };
+    let frontier = step(&genesis, first.clone());
+    let covered = step(&frontier, second.clone());
+    let representative = Configuration {
+        def: genesis.def.clone(),
+        schedule: Schedule::empty()
+            .appended(second.clone())
+            .appended(first.clone()),
+    };
+    let partial_order = PartialOrderReductionPolicy::new().with_independent_pair(&first, &second);
+
+    graph
+        .record_step(&genesis, first)
+        .unwrap_or_else(|error| panic!("frontier should record: {error}"));
+    assert!(!graph.contains_configuration(&representative));
+
+    let report = graph
+        .enumerate_frontier_reduced(
+            &frontier,
+            vec![second],
+            FrontierReductionPolicy::none().with_partial_order(partial_order),
+        )
+        .unwrap_or_else(|error| panic!("reduced frontier should enumerate: {error}"));
+
+    assert_eq!(report.explored.len(), 1);
+    assert!(report.covered.is_empty());
+    assert_eq!(report.explored[0].configuration.id(), covered.id());
+    assert!(graph.contains_configuration(&covered));
+}
+
+#[test]
+fn gate_content_address_temporal_graph_partial_order_reduction_explores_when_dependent() {
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "temporal-graph-partial-order-dependent",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(&scenario, baked)
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    let first = preemption_decision("node-a", 31);
+    let frontier = step(&genesis, first.clone());
+    let same_node = preemption_decision("node-a", 32);
+    let unknown = Decision::RngDraw(RngDecision {
+        stream: RngStreamId {
+            name: String::from("global"),
+        },
+        value: 9,
+    });
+    let same_stream_a = app_random_decision("node-a", "shared", 1);
+    let same_stream_b = app_random_decision("node-b", "shared", 2);
+    let different_stream_b = app_random_decision("node-b", "other", 2);
+    let dependent_proofs = PartialOrderReductionPolicy::new()
+        .with_independent_pair(&first, &same_node)
+        .with_independent_pair(&first, &unknown);
+    let same_stream_proof =
+        PartialOrderReductionPolicy::new().with_independent_pair(&same_stream_a, &same_stream_b);
+    let different_stream_proof = PartialOrderReductionPolicy::new()
+        .with_independent_pair(&same_stream_a, &different_stream_b);
+
+    assert!(!same_node.is_independent_from(&first, &dependent_proofs));
+    assert!(!unknown.is_independent_from(&first, &dependent_proofs));
+    assert!(!same_stream_a.is_independent_from(&same_stream_b, &same_stream_proof));
+    assert!(same_stream_a.is_independent_from(&different_stream_b, &different_stream_proof));
+    graph
+        .record_step(&genesis, first)
+        .unwrap_or_else(|error| panic!("frontier should record: {error}"));
+
+    let report = graph
+        .enumerate_frontier_reduced(
+            &frontier,
+            vec![same_node.clone(), unknown.clone()],
+            FrontierReductionPolicy::none().with_partial_order(dependent_proofs),
+        )
+        .unwrap_or_else(|error| panic!("reduced frontier should enumerate: {error}"));
+
+    assert_eq!(report.explored.len(), 2);
+    assert!(report.covered.is_empty());
+    assert!(graph.contains_configuration(&step(&frontier, same_node)));
+    assert!(graph.contains_configuration(&step(&frontier, unknown)));
+}
+
+#[test]
 fn gate_content_address_temporal_graph_requires_baked_genesis_root() {
     let scenario = scenario("temporal-graph-missing-root");
     let genesis = Configuration::genesis(scenario.clone());
@@ -1443,6 +1800,113 @@ fn generated_decision(seed: u64, index: u64) -> Decision {
             value: seed ^ index,
         }),
     }
+}
+
+fn node_id(name: &str) -> NodeId {
+    NodeId {
+        name: String::from(name),
+    }
+}
+
+fn symmetry_class(name: &str) -> SymmetryClassId {
+    SymmetryClassId {
+        name: String::from(name),
+    }
+}
+
+fn node_blob(material: &str) -> NodeBlobRef {
+    NodeBlobRef::baked(ContentHash::from_canonical_material(
+        "crucible.test.content-address.node-blob",
+        material,
+    ))
+}
+
+fn preemption_decision(node: &str, retired: u64) -> Decision {
+    Decision::Preemption(PreemptionDecision {
+        node: node_id(node),
+        at: Icount { retired },
+        kind: PreemptionKind::InterruptAt {
+            target_vcpu: VcpuId { index: 0 },
+            irq: IrqVector { vector: 32 },
+        },
+    })
+}
+
+fn app_random_decision(node: &str, stream: &str, value: u64) -> Decision {
+    Decision::AppRandom(AppRandomDecision {
+        node: node_id(node),
+        stream: RngStreamId {
+            name: String::from(stream),
+        },
+        request_id: value,
+        width: 64,
+        value,
+    })
+}
+
+fn fat_checkpoint_with_coverage(
+    configuration: &Configuration,
+    parent: &Configuration,
+    coverage: ContentHash,
+    node_blobs: BTreeMap<NodeId, NodeBlobRef>,
+) -> Checkpoint {
+    fat_checkpoint_with_coverage_and_event_log(
+        configuration,
+        parent,
+        coverage,
+        node_blobs,
+        EventLogOffset::default(),
+    )
+}
+
+fn fat_checkpoint_with_coverage_and_event_log(
+    configuration: &Configuration,
+    parent: &Configuration,
+    coverage: ContentHash,
+    node_blobs: BTreeMap<NodeId, NodeBlobRef>,
+    event_log: EventLogOffset,
+) -> Checkpoint {
+    let node_icounts = node_blobs
+        .keys()
+        .cloned()
+        .map(|node| (node, Icount { retired: 99 }))
+        .collect::<BTreeMap<_, _>>();
+    let state = MaterializedState::from_components(
+        materialized_snapshots_for_blobs(&node_blobs, &node_icounts),
+        BTreeMap::new(),
+        SchedulerState::empty(),
+        DecisionRngState::empty(),
+        event_log,
+    );
+    Checkpoint::from_recorded_configuration(
+        configuration,
+        Some(parent),
+        VirtualTime::default(),
+        node_icounts,
+        CheckpointKind::Fat,
+        node_blobs,
+    )
+    .unwrap_or_else(|error| panic!("fat checkpoint should be constructible: {error}"))
+    .with_materialized_state(Some(state))
+    .with_coverage_fingerprint(coverage)
+}
+
+fn materialized_snapshots_for_blobs(
+    node_blobs: &BTreeMap<NodeId, NodeBlobRef>,
+    node_icounts: &BTreeMap<NodeId, Icount>,
+) -> BTreeMap<NodeId, VmSnapshotRef> {
+    node_blobs
+        .iter()
+        .map(|(node, blob)| {
+            (
+                node.clone(),
+                VmSnapshotRef::new(
+                    blob.clone(),
+                    node_icounts.get(node).copied().unwrap_or_default(),
+                ),
+            )
+        })
+        .collect()
 }
 
 fn cow_fork_checkpoint(

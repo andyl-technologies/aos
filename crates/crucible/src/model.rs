@@ -723,6 +723,37 @@ pub enum Decision {
     AppRandom(AppRandomDecision),
 }
 
+impl Decision {
+    /// Returns the set of nodes this decision is known to touch.
+    ///
+    /// `None` means the current model cannot prove the decision is node-local,
+    /// so search reductions must treat it as dependent on other decisions.
+    #[must_use]
+    pub fn touched_nodes(&self) -> Option<BTreeSet<NodeId>> {
+        decision_touched_nodes(self)
+    }
+
+    /// Returns whether `policy` proves this decision independent from `other`.
+    ///
+    /// Independence requires an explicit unordered-pair proof, known disjoint
+    /// node sets, and no shared ordered decision resource. Unknown/global
+    /// decision kinds are treated as dependent.
+    #[must_use]
+    pub fn is_independent_from(&self, other: &Self, policy: &PartialOrderReductionPolicy) -> bool {
+        decisions_are_independent(self, other, policy)
+    }
+
+    /// Returns the deterministic ordering key used by partial-order reduction.
+    ///
+    /// Search uses this key only to pick one representative interleaving for
+    /// decisions already proven independent; it is not part of configuration
+    /// identity.
+    #[must_use]
+    pub fn reduction_order_key(&self) -> ContentHash {
+        decision_reduction_order_key(self)
+    }
+}
+
 /// A totally ordered sequence of [`Decision`] values.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Schedule {
@@ -2105,6 +2136,20 @@ impl Checkpoint {
         self.node_blobs.get(node)
     }
 
+    /// Returns the canonical-relabeling fingerprint used by symmetry reduction.
+    ///
+    /// Checkpoints with no observed coverage fingerprint, no loadable
+    /// materialized state, no explicit symmetry classes, or ambiguous canonical
+    /// relabeling return `None`, forcing search to explore rather than assume
+    /// equivalence.
+    #[must_use]
+    pub fn symmetry_reduction_key(
+        &self,
+        classes: &SymmetryReductionClasses,
+    ) -> Option<SymmetryReductionKey> {
+        checkpoint_symmetry_reduction_key(self, classes)
+    }
+
     /// Enumerates logical CoW delta refs stored by this checkpoint.
     #[must_use]
     pub fn cow_delta_refs(&self) -> Vec<CowDeltaRef> {
@@ -2842,6 +2887,85 @@ impl TemporalGraph {
         Ok(result)
     }
 
+    /// Enumerates frontier children while applying graph-level reductions.
+    ///
+    /// Partial-order reduction is applied before recording a child only when an
+    /// explicit independence proof covers the frontier's last decision and the
+    /// candidate decision, the canonical representative ordering is already in
+    /// the graph, and the candidate appears in non-canonical order. Symmetry
+    /// reduction uses explicit interchangeable-node classes plus a loadable
+    /// checkpoint's canonicalized materialized state; candidates without such
+    /// proof material are explored.
+    ///
+    /// The reductions never rewrite a child configuration. Explored children
+    /// remain ordinary content-addressed DAG nodes, and covered children carry
+    /// the representative configuration id that justified skipping expansion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::MissingBakedGenesis`] when the scenario has no
+    /// baked root. Returns other [`EngineError`] variants if the frontier or an
+    /// explored child cannot be represented as a valid checkpoint edge.
+    pub fn enumerate_frontier_reduced<I>(
+        &mut self,
+        frontier: &Configuration,
+        decisions: I,
+        policy: FrontierReductionPolicy,
+    ) -> Result<FrontierReductionReport, EngineError>
+    where
+        I: IntoIterator<Item = Decision>,
+    {
+        self.record_checkpoint_closure(frontier)?;
+        let mut children = BTreeMap::new();
+        let mut covered = Vec::new();
+        for decision in decisions {
+            let configuration = step(frontier, decision.clone());
+            if let Some(cover) = partial_order_cover(
+                self,
+                frontier,
+                decision.clone(),
+                configuration.clone(),
+                &policy,
+            ) {
+                covered.push(cover);
+                continue;
+            }
+            children.entry(configuration.id()).or_insert(FrontierChild {
+                decision,
+                configuration,
+                already_recorded: false,
+            });
+        }
+
+        let mut explored = Vec::new();
+        let mut symmetry_representatives = BTreeMap::new();
+        for mut child in children.into_values() {
+            if let Some(key) =
+                self.symmetry_reduction_key(&child.configuration, &policy.symmetry_classes)
+            {
+                match symmetry_representatives.entry(key) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(child.configuration.id());
+                    }
+                    Entry::Occupied(entry) => {
+                        covered.push(FrontierCoveredChild {
+                            decision: child.decision,
+                            configuration: child.configuration,
+                            representative: *entry.get(),
+                            reason: FrontierReductionReason::Symmetry,
+                            reduction_key: key.fingerprint,
+                        });
+                        continue;
+                    }
+                }
+            }
+            child.already_recorded = !self.record_checkpoint_closure(&child.configuration)?;
+            explored.push(child);
+        }
+
+        Ok(FrontierReductionReport { explored, covered })
+    }
+
     /// Records one `step` edge in the checkpoint DAG.
     ///
     /// The graph must already contain the baked genesis checkpoint for the
@@ -2873,6 +2997,25 @@ impl TemporalGraph {
     #[must_use]
     pub fn checkpoint_node(&self, checkpoint: ContentHash) -> Option<&Checkpoint> {
         self.checkpoint_nodes.get(&checkpoint)
+    }
+
+    /// Returns the symmetry-reduction key for a recorded configuration.
+    ///
+    /// Exact cached snapshots are preferred because they carry the richest
+    /// per-node material. If neither a cached snapshot nor a checkpoint node has
+    /// explicit coverage, a loadable materialized state, and an unambiguous
+    /// class-based canonical relabeling, `None` is returned and search must
+    /// explore the candidate.
+    #[must_use]
+    pub fn symmetry_reduction_key(
+        &self,
+        configuration: &Configuration,
+        classes: &SymmetryReductionClasses,
+    ) -> Option<SymmetryReductionKey> {
+        self.cached_snapshots
+            .get(&configuration.id())
+            .or_else(|| self.checkpoint_nodes.get(&configuration.id()))
+            .and_then(|checkpoint| checkpoint.symmetry_reduction_key(classes))
     }
 
     /// Returns the number of deduplicated checkpoint DAG nodes.
@@ -3607,6 +3750,181 @@ pub struct FrontierChild {
     pub already_recorded: bool,
 }
 
+/// Proof-carrying policy for graph-level frontier reductions.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FrontierReductionPolicy {
+    /// Interchangeable node classes used for canonical-relabeling symmetry.
+    pub symmetry_classes: SymmetryReductionClasses,
+    /// Explicit independent decision pairs used for partial-order reduction.
+    pub partial_order: PartialOrderReductionPolicy,
+}
+
+impl FrontierReductionPolicy {
+    /// Builds a policy that explores every candidate.
+    #[must_use]
+    pub fn none() -> Self {
+        Self {
+            symmetry_classes: SymmetryReductionClasses::new(),
+            partial_order: PartialOrderReductionPolicy::new(),
+        }
+    }
+
+    /// Replaces the symmetry classes used for canonical relabeling.
+    #[must_use]
+    pub fn with_symmetry_classes(mut self, classes: SymmetryReductionClasses) -> Self {
+        self.symmetry_classes = classes;
+        self
+    }
+
+    /// Replaces the partial-order independence proof set.
+    #[must_use]
+    pub fn with_partial_order(mut self, partial_order: PartialOrderReductionPolicy) -> Self {
+        self.partial_order = partial_order;
+        self
+    }
+}
+
+/// Why a frontier candidate was covered by a representative.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FrontierReductionReason {
+    /// A prior frontier child had the same canonical-relabeling fingerprint.
+    Symmetry,
+    /// The candidate is the non-canonical ordering of independent decisions.
+    PartialOrder,
+}
+
+/// A frontier child skipped because a representative already covers it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FrontierCoveredChild {
+    /// Decision that would have produced the covered child.
+    pub decision: Decision,
+    /// Covered child configuration produced by `step`.
+    pub configuration: Configuration,
+    /// Configuration id of the representative explored instead.
+    pub representative: ContentHash,
+    /// Reduction that justified the skip.
+    pub reason: FrontierReductionReason,
+    /// Content-addressed proof key for the reduction decision.
+    pub reduction_key: ContentHash,
+}
+
+/// Reduced frontier enumeration result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FrontierReductionReport {
+    /// Children the search should explore.
+    pub explored: Vec<FrontierChild>,
+    /// Children covered by explored representatives.
+    pub covered: Vec<FrontierCoveredChild>,
+}
+
+/// Canonical-relabeling fingerprint for symmetry reduction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SymmetryReductionKey {
+    /// Hash of coverage plus node-local state under canonical node relabeling.
+    pub fingerprint: ContentHash,
+}
+
+/// A caller-provided class of interchangeable nodes.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SymmetryClassId {
+    /// Stable class name within one scenario.
+    pub name: String,
+}
+
+/// Explicit interchangeable-node classes for symmetry reduction.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SymmetryReductionClasses {
+    /// Node-to-class mapping. Nodes absent from this map retain their identity.
+    pub classes: BTreeMap<NodeId, SymmetryClassId>,
+}
+
+impl SymmetryReductionClasses {
+    /// Builds an empty class map, which disables symmetry reduction.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds `node` to an interchangeable class.
+    #[must_use]
+    pub fn with_node_class(mut self, node: NodeId, class: SymmetryClassId) -> Self {
+        self.classes.insert(node, class);
+        self
+    }
+
+    /// Returns whether no interchangeable classes are configured.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.classes.is_empty()
+    }
+}
+
+/// Canonical ordering fingerprint for one independent decision pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PartialOrderReductionKey {
+    /// Hash of the canonical representative interleaving.
+    pub fingerprint: ContentHash,
+}
+
+/// Explicit proof that one unordered pair of decisions is independent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PartialOrderIndependenceProof {
+    /// Lower deterministic decision key.
+    pub first: ContentHash,
+    /// Higher deterministic decision key.
+    pub second: ContentHash,
+}
+
+impl PartialOrderIndependenceProof {
+    /// Builds an unordered independence proof for two decisions.
+    #[must_use]
+    pub fn new(left: &Decision, right: &Decision) -> Self {
+        let left = left.reduction_order_key();
+        let right = right.reduction_order_key();
+        if left <= right {
+            Self {
+                first: left,
+                second: right,
+            }
+        } else {
+            Self {
+                first: right,
+                second: left,
+            }
+        }
+    }
+}
+
+/// Explicit independence proofs for partial-order reduction.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PartialOrderReductionPolicy {
+    /// Proven independent unordered decision pairs.
+    pub independent_pairs: BTreeSet<PartialOrderIndependenceProof>,
+}
+
+impl PartialOrderReductionPolicy {
+    /// Builds an empty proof set, which disables partial-order skips.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds an unordered independent decision pair proof.
+    #[must_use]
+    pub fn with_independent_pair(mut self, left: &Decision, right: &Decision) -> Self {
+        self.independent_pairs
+            .insert(PartialOrderIndependenceProof::new(left, right));
+        self
+    }
+
+    /// Returns whether this policy proves `left` and `right` independent.
+    #[must_use]
+    pub fn proves_independent(&self, left: &Decision, right: &Decision) -> bool {
+        self.independent_pairs
+            .contains(&PartialOrderIndependenceProof::new(left, right))
+    }
+}
+
 /// A live runtime-state handle produced by `instantiate`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RuntimeState {
@@ -4195,6 +4513,401 @@ fn replayed_node_icounts(
             )
         })
         .collect()
+}
+
+fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<NodeId>> {
+    match decision {
+        Decision::Preemption(preemption) => Some(BTreeSet::from([preemption.node.clone()])),
+        Decision::AppRandom(random) => Some(BTreeSet::from([random.node.clone()])),
+        Decision::DeliveryOrder(_)
+        | Decision::FaultFires(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_) => None,
+    }
+}
+
+fn decisions_are_independent(
+    left: &Decision,
+    right: &Decision,
+    policy: &PartialOrderReductionPolicy,
+) -> bool {
+    if !policy.proves_independent(left, right) {
+        return false;
+    }
+    let (Some(left_nodes), Some(right_nodes)) =
+        (decision_touched_nodes(left), decision_touched_nodes(right))
+    else {
+        return false;
+    };
+    if !left_nodes.is_disjoint(&right_nodes) {
+        return false;
+    }
+    decisions_have_commuting_resources(left, right)
+}
+
+fn decisions_have_commuting_resources(left: &Decision, right: &Decision) -> bool {
+    match (left, right) {
+        (Decision::Preemption(_), Decision::Preemption(_))
+        | (Decision::Preemption(_), Decision::AppRandom(_))
+        | (Decision::AppRandom(_), Decision::Preemption(_)) => true,
+        (Decision::AppRandom(left), Decision::AppRandom(right)) => left.stream != right.stream,
+        _ => false,
+    }
+}
+
+fn decision_reduction_order_key(decision: &Decision) -> ContentHash {
+    Schedule::empty().appended(decision.clone()).content_hash()
+}
+
+fn partial_order_cover(
+    graph: &TemporalGraph,
+    frontier: &Configuration,
+    decision: Decision,
+    configuration: Configuration,
+    policy: &FrontierReductionPolicy,
+) -> Option<FrontierCoveredChild> {
+    let last = frontier.schedule.decisions().last()?;
+    if !decision.is_independent_from(last, &policy.partial_order) {
+        return None;
+    }
+    if decision.reduction_order_key() >= last.reduction_order_key() {
+        return None;
+    }
+
+    let prefix = frontier
+        .schedule
+        .prefix(frontier.schedule.len().saturating_sub(1))
+        .ok()?;
+    let representative = Configuration {
+        def: frontier.def.clone(),
+        schedule: prefix.appended(decision.clone()).appended(last.clone()),
+    };
+    if !graph.contains_configuration(&representative) {
+        return None;
+    }
+    let reduction_key = partial_order_reduction_key(&representative, &configuration);
+    Some(FrontierCoveredChild {
+        decision,
+        configuration,
+        representative: representative.id(),
+        reason: FrontierReductionReason::PartialOrder,
+        reduction_key: reduction_key.fingerprint,
+    })
+}
+
+fn partial_order_reduction_key(
+    representative: &Configuration,
+    covered: &Configuration,
+) -> PartialOrderReductionKey {
+    PartialOrderReductionKey {
+        fingerprint: ContentHash::from_canonical_material(
+            "crucible.model.partial-order-reduction.v1",
+            &format!(
+                "representative={}\ncovered={}",
+                content_hash_hex(representative.id()),
+                content_hash_hex(covered.id())
+            ),
+        ),
+    }
+}
+
+fn checkpoint_symmetry_reduction_key(
+    checkpoint: &Checkpoint,
+    classes: &SymmetryReductionClasses,
+) -> Option<SymmetryReductionKey> {
+    if checkpoint.coverage_fingerprint == ContentHash::default() || classes.is_empty() {
+        return None;
+    }
+    let state = checkpoint.state.as_ref()?;
+    let labels = canonical_symmetry_node_labels(checkpoint, state, classes)?;
+
+    let mut lines = vec![
+        format!("scenario_ref={}", content_hash_hex(checkpoint.scenario_ref)),
+        format!(
+            "coverage_fingerprint={}",
+            content_hash_hex(checkpoint.coverage_fingerprint)
+        ),
+        format!("virtual_time_ticks={}", checkpoint.virtual_time.ticks),
+    ];
+    push_symmetry_checkpoint_lines(checkpoint, &labels, &mut lines)?;
+    push_symmetry_materialized_state_lines(state, &labels, &mut lines)?;
+    Some(SymmetryReductionKey {
+        fingerprint: ContentHash::from_canonical_material(
+            "crucible.model.symmetry-reduction.v1",
+            &lines.join("\n"),
+        ),
+    })
+}
+
+fn canonical_symmetry_node_labels(
+    checkpoint: &Checkpoint,
+    state: &MaterializedState,
+    classes: &SymmetryReductionClasses,
+) -> Option<BTreeMap<NodeId, String>> {
+    let mut labels = BTreeMap::new();
+    let mut class_members: BTreeMap<&SymmetryClassId, Vec<(String, NodeId)>> = BTreeMap::new();
+    for node in symmetry_nodes(checkpoint, state) {
+        if let Some(class) = classes.classes.get(&node) {
+            class_members.entry(class).or_default().push((
+                symmetry_node_local_signature(checkpoint, state, &node),
+                node,
+            ));
+        } else {
+            labels.insert(
+                node.clone(),
+                format!("node:{}:{}", node.name.len(), node.name),
+            );
+        }
+    }
+
+    for (class, mut members) in class_members {
+        members.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        for pair in members.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                return None;
+            }
+        }
+        for (index, (_, node)) in members.into_iter().enumerate() {
+            labels.insert(
+                node,
+                format!("class:{}:{}:{index}", class.name.len(), class.name),
+            );
+        }
+    }
+
+    Some(labels)
+}
+
+fn symmetry_nodes(checkpoint: &Checkpoint, state: &MaterializedState) -> BTreeSet<NodeId> {
+    let mut nodes = BTreeSet::new();
+    nodes.extend(checkpoint.node_blobs.keys().cloned());
+    nodes.extend(checkpoint.node_icounts.keys().cloned());
+    nodes.extend(state.vm_snapshots.keys().cloned());
+    nodes.extend(state.scheduler.horizons.keys().cloned());
+    nodes.extend(state.scheduler.pending_frames.keys().cloned());
+    for frames in state.scheduler.pending_frames.values() {
+        nodes.extend(frames.iter().map(|frame| frame.source.clone()));
+    }
+    nodes.extend(
+        state
+            .scheduler
+            .timers
+            .timers
+            .values()
+            .map(|timer| timer.owner.clone()),
+    );
+    nodes
+}
+
+fn symmetry_node_local_signature(
+    checkpoint: &Checkpoint,
+    state: &MaterializedState,
+    node: &NodeId,
+) -> String {
+    let mut lines = Vec::new();
+    match checkpoint.node_icounts.get(node) {
+        Some(icount) => lines.push(format!("checkpoint.icount={}", icount.retired)),
+        None => lines.push(String::from("checkpoint.icount=none")),
+    }
+    match checkpoint.node_blobs.get(node) {
+        Some(blob) => push_node_blob_ref_lines("checkpoint.blob", blob, &mut lines),
+        None => lines.push(String::from("checkpoint.blob=none")),
+    }
+    match state.vm_snapshots.get(node) {
+        Some(snapshot) => {
+            push_node_blob_ref_lines("state.vm.blob", &snapshot.blob, &mut lines);
+            lines.push(format!("state.vm.icount={}", snapshot.icount.retired));
+        }
+        None => lines.push(String::from("state.vm=none")),
+    }
+    lines.join("\n")
+}
+
+fn push_symmetry_checkpoint_lines(
+    checkpoint: &Checkpoint,
+    labels: &BTreeMap<NodeId, String>,
+    lines: &mut Vec<String>,
+) -> Option<()> {
+    let mut icount_lines = Vec::new();
+    for (node, icount) in &checkpoint.node_icounts {
+        icount_lines.push(format!(
+            "checkpoint.icount.node={}\ncheckpoint.icount.retired={}",
+            labels.get(node)?,
+            icount.retired
+        ));
+    }
+    icount_lines.sort();
+    lines.push(format!("checkpoint.icounts={}", icount_lines.len()));
+    lines.extend(icount_lines);
+
+    let mut blob_lines = Vec::new();
+    for (node, blob) in &checkpoint.node_blobs {
+        let mut entry = vec![format!("checkpoint.blob.node={}", labels.get(node)?)];
+        push_node_blob_ref_lines("checkpoint.blob", blob, &mut entry);
+        blob_lines.push(entry.join("\n"));
+    }
+    blob_lines.sort();
+    lines.push(format!("checkpoint.blobs={}", blob_lines.len()));
+    lines.extend(blob_lines);
+    Some(())
+}
+
+fn push_symmetry_materialized_state_lines(
+    state: &MaterializedState,
+    labels: &BTreeMap<NodeId, String>,
+    lines: &mut Vec<String>,
+) -> Option<()> {
+    let mut vm_lines = Vec::new();
+    for (node, snapshot) in &state.vm_snapshots {
+        let mut entry = vec![format!("state.vm.node={}", labels.get(node)?)];
+        push_node_blob_ref_lines("state.vm.blob", &snapshot.blob, &mut entry);
+        entry.push(format!("state.vm.icount={}", snapshot.icount.retired));
+        vm_lines.push(entry.join("\n"));
+    }
+    vm_lines.sort();
+    lines.push(format!("state.vm_snapshots={}", vm_lines.len()));
+    lines.extend(vm_lines);
+
+    let mut overlay_lines = Vec::new();
+    for (device, overlay) in &state.device_overlays {
+        let mut entry = vec![
+            format!("state.overlay.device_len={}", device.name.len()),
+            format!("state.overlay.device={}", device.name),
+            format!("state.overlay.parent={}", content_hash_hex(overlay.parent)),
+            format!("state.overlay.delta={}", content_hash_hex(overlay.delta)),
+            format!(
+                "state.overlay.resolved={}",
+                content_hash_hex(overlay.resolved)
+            ),
+        ];
+        push_symmetry_device_rng_lines("state.overlay.rng", &overlay.rng, &mut entry);
+        overlay_lines.push(entry.join("\n"));
+    }
+    overlay_lines.sort();
+    lines.push(format!("state.device_overlays={}", overlay_lines.len()));
+    lines.extend(overlay_lines);
+
+    push_symmetry_scheduler_lines(&state.scheduler, labels, lines)?;
+    push_symmetry_decision_rng_lines("state.decision_rng", &state.decision_rng, lines);
+    push_symmetry_event_log_lines(state.event_log, lines);
+    Some(())
+}
+
+fn push_symmetry_scheduler_lines(
+    scheduler: &SchedulerState,
+    labels: &BTreeMap<NodeId, String>,
+    lines: &mut Vec<String>,
+) -> Option<()> {
+    let mut horizon_lines = Vec::new();
+    for (node, horizon) in &scheduler.horizons {
+        horizon_lines.push(format!(
+            "scheduler.horizon.node={}\nscheduler.horizon.ticks={}",
+            labels.get(node)?,
+            horizon.ticks
+        ));
+    }
+    horizon_lines.sort();
+    lines.push(format!("scheduler.horizons={}", horizon_lines.len()));
+    lines.extend(horizon_lines);
+
+    let mut pending_lines = Vec::new();
+    for (node, frames) in &scheduler.pending_frames {
+        let mut entry = vec![
+            format!("scheduler.pending.node={}", labels.get(node)?),
+            format!("scheduler.pending.frames={}", frames.len()),
+        ];
+        for frame in frames {
+            entry.push(format!(
+                "scheduler.pending.source={}",
+                labels.get(&frame.source)?
+            ));
+            entry.push(format!("scheduler.pending.sequence={}", frame.sequence));
+            entry.push(format!(
+                "scheduler.pending.delivery_icount={}",
+                frame.delivery_icount.retired
+            ));
+            entry.push(format!(
+                "scheduler.pending.payload={}",
+                content_hash_hex(frame.payload)
+            ));
+        }
+        pending_lines.push(entry.join("\n"));
+    }
+    pending_lines.sort();
+    lines.push(format!("scheduler.pending={}", pending_lines.len()));
+    lines.extend(pending_lines);
+
+    let mut timer_lines = Vec::new();
+    for (timer, state) in &scheduler.timers.timers {
+        timer_lines.push(format!(
+            "scheduler.timer.name_len={}\nscheduler.timer.name={}\nscheduler.timer.owner={}\nscheduler.timer.armed_at={}\nscheduler.timer.fire_at={}\nscheduler.timer.fire_icount={}",
+            timer.name.len(),
+            timer.name,
+            labels.get(&state.owner)?,
+            state.armed_at.ticks,
+            state.fire_at.ticks,
+            state.fire_icount.retired
+        ));
+    }
+    timer_lines.sort();
+    lines.push(format!("scheduler.timers={}", timer_lines.len()));
+    lines.extend(timer_lines);
+
+    let mut fault_lines = Vec::new();
+    for (fault, state) in &scheduler.active_faults {
+        fault_lines.push(format!(
+            "scheduler.fault.name_len={}\nscheduler.fault.name={}\nscheduler.fault.active_since={}\nscheduler.fault.heal_at={}",
+            fault.name.len(),
+            fault.name,
+            state.active_since.ticks,
+            state
+                .heal_at
+                .map(|time| time.ticks.to_string())
+                .unwrap_or_else(|| String::from("none"))
+        ));
+    }
+    fault_lines.sort();
+    lines.push(format!("scheduler.active_faults={}", fault_lines.len()));
+    lines.extend(fault_lines);
+    Some(())
+}
+
+fn push_symmetry_device_rng_lines(prefix: &str, state: &DeviceRngState, lines: &mut Vec<String>) {
+    lines.push(format!("{prefix}.streams={}", state.streams.len()));
+    for (stream, position) in &state.streams {
+        lines.push(format!("{prefix}.stream_len={}", stream.name.len()));
+        lines.push(format!("{prefix}.stream={}", stream.name));
+        lines.push(format!("{prefix}.draws={}", position.draws));
+    }
+}
+
+fn push_symmetry_decision_rng_lines(
+    prefix: &str,
+    state: &DecisionRngState,
+    lines: &mut Vec<String>,
+) {
+    lines.push(format!("{prefix}.positions={}", state.positions.len()));
+    for (stream, position) in &state.positions {
+        lines.push(format!("{prefix}.stream_len={}", stream.name.len()));
+        lines.push(format!("{prefix}.stream={}", stream.name));
+        lines.push(format!("{prefix}.draws={}", position.draws));
+    }
+}
+
+fn push_symmetry_event_log_lines(event_log: EventLogOffset, lines: &mut Vec<String>) {
+    lines.push(format!(
+        "event_log.prefix={}",
+        content_hash_hex(event_log.prefix)
+    ));
+    lines.push(format!(
+        "event_log.appended_segment={}",
+        event_log
+            .appended_segment
+            .map(content_hash_hex)
+            .unwrap_or_else(|| String::from("none"))
+    ));
+    lines.push(format!("event_log.bytes={}", event_log.bytes));
+    lines.push(format!("event_log.events={}", event_log.events));
 }
 
 fn checkpoint_edge(
