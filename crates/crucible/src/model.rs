@@ -978,6 +978,44 @@ pub struct AppRandomDecision {
     pub value: u64,
 }
 
+/// The cached realization carried by a fat checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MaterializedState {
+    /// Content address of the materialized runtime/cache payload.
+    pub id: ContentHash,
+}
+
+impl MaterializedState {
+    /// Builds a materialized-state handle from an existing content address.
+    #[must_use]
+    pub fn from_content_hash(id: ContentHash) -> Self {
+        Self { id }
+    }
+}
+
+/// Identity-irrelevant checkpoint metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct CheckpointMeta {
+    /// Human/debug annotations that must not affect [`Checkpoint::id`].
+    pub labels: BTreeMap<String, String>,
+}
+
+impl CheckpointMeta {
+    /// Builds empty checkpoint metadata.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            labels: BTreeMap::new(),
+        }
+    }
+
+    /// Builds checkpoint metadata from key/value annotations.
+    #[must_use]
+    pub fn from_labels(labels: BTreeMap<String, String>) -> Self {
+        Self { labels }
+    }
+}
+
 /// A checkpoint handle in the temporal graph.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Checkpoint {
@@ -985,6 +1023,22 @@ pub struct Checkpoint {
     pub id: ContentHash,
     /// The configuration this checkpoint materializes.
     pub configuration: ContentHash,
+    /// The scenario definition this checkpoint belongs to.
+    pub scenario_ref: ContentHash,
+    /// The parent checkpoint id, or `None` for genesis.
+    pub parent: Option<ContentHash>,
+    /// The decisions appended after `parent` to reach this checkpoint.
+    pub schedule_delta: Schedule,
+    /// The shared virtual-time coordinate at this checkpoint.
+    pub virtual_time: VirtualTime,
+    /// Per-node instruction counters at this checkpoint.
+    pub node_icounts: BTreeMap<NodeId, Icount>,
+    /// The materialized state, when this is a fat checkpoint.
+    pub state: Option<MaterializedState>,
+    /// Observation-only coverage fingerprint for this checkpoint.
+    pub coverage_fingerprint: ContentHash,
+    /// Identity-irrelevant metadata for humans and cache policy.
+    pub metadata: CheckpointMeta,
     /// Per-node VM-state blob references.
     pub node_blobs: BTreeMap<NodeId, NodeBlobRef>,
     /// Whether this is a fat or thin checkpoint.
@@ -998,6 +1052,44 @@ impl Checkpoint {
         Self::with_node_blobs(id, configuration, kind, BTreeMap::new())
     }
 
+    /// Builds the recorded checkpoint node for `configuration`.
+    ///
+    /// The checkpoint node identity is the recorded [`Configuration::id`].
+    /// `parent` and `schedule_delta` are derived from the supplied parent
+    /// configuration and must reconstruct the same configuration identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointTopologyMismatch`] when a non-genesis
+    /// checkpoint has no parent, a genesis checkpoint has a parent, the parent
+    /// belongs to another scenario, or the parent schedule is not a prefix of
+    /// the checkpoint schedule. Returns [`EngineError::SchedulePrefix`] when
+    /// the schedule prefix/suffix cannot be constructed.
+    pub fn from_recorded_configuration(
+        configuration: &Configuration,
+        parent: Option<&Configuration>,
+        virtual_time: VirtualTime,
+        node_icounts: BTreeMap<NodeId, Icount>,
+        kind: CheckpointKind,
+        node_blobs: BTreeMap<NodeId, NodeBlobRef>,
+    ) -> Result<Self, EngineError> {
+        let (parent, schedule_delta) = checkpoint_edge(configuration, parent)?;
+        Ok(Self {
+            id: configuration.id(),
+            configuration: configuration.id(),
+            scenario_ref: configuration.def.id,
+            parent,
+            schedule_delta,
+            virtual_time,
+            node_icounts,
+            state: materialized_state_for_kind(kind, configuration.id()),
+            coverage_fingerprint: ContentHash::default(),
+            metadata: CheckpointMeta::empty(),
+            node_blobs,
+            kind,
+        })
+    }
+
     /// Builds a checkpoint handle with explicit per-node VM blob references.
     #[must_use]
     pub fn with_node_blobs(
@@ -1009,9 +1101,43 @@ impl Checkpoint {
         Self {
             id,
             configuration,
+            scenario_ref: ContentHash::default(),
+            parent: None,
+            schedule_delta: Schedule::empty(),
+            virtual_time: VirtualTime::default(),
+            node_icounts: BTreeMap::new(),
+            state: materialized_state_for_kind(kind, configuration),
+            coverage_fingerprint: ContentHash::default(),
+            metadata: CheckpointMeta::empty(),
             node_blobs,
             kind,
         }
+    }
+
+    /// Replaces the optional materialized state without changing identity.
+    #[must_use]
+    pub fn with_materialized_state(mut self, state: Option<MaterializedState>) -> Self {
+        self.kind = if state.is_some() {
+            CheckpointKind::Fat
+        } else {
+            CheckpointKind::Thin
+        };
+        self.state = state;
+        self
+    }
+
+    /// Replaces the observation-only coverage fingerprint without changing identity.
+    #[must_use]
+    pub fn with_coverage_fingerprint(mut self, coverage_fingerprint: ContentHash) -> Self {
+        self.coverage_fingerprint = coverage_fingerprint;
+        self
+    }
+
+    /// Replaces identity-irrelevant metadata without changing identity.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: CheckpointMeta) -> Self {
+        self.metadata = metadata;
+        self
     }
 
     /// Returns the VM-state blob reference for `node`, when one is recorded.
@@ -1118,7 +1244,7 @@ impl TemporalGraph {
                 configuration: configuration.id(),
             });
         }
-        validate_loadable_checkpoint(&checkpoint, configuration.id())?;
+        validate_loadable_checkpoint(&checkpoint, configuration)?;
         self.record_configuration(configuration.clone());
         self.cached_snapshots.insert(configuration.id(), checkpoint);
         Ok(())
@@ -1155,7 +1281,7 @@ impl TemporalGraph {
         genesis: GenesisCheckpoint,
     ) -> Result<(), EngineError> {
         let genesis_config = Configuration::genesis(def.clone());
-        validate_loadable_checkpoint(&genesis.checkpoint, genesis_config.id())?;
+        validate_loadable_checkpoint(&genesis.checkpoint, &genesis_config)?;
         self.record_configuration(genesis_config);
         self.baked_genesis.insert(def.id, genesis);
         Ok(())
@@ -1190,7 +1316,7 @@ impl TemporalGraph {
         }
 
         let runtime = instantiate(self, configuration)?;
-        let checkpoint = materialized_checkpoint_for_runtime(configuration, runtime);
+        let checkpoint = materialized_checkpoint_for_runtime(configuration, runtime)?;
         self.cache_snapshot(configuration, checkpoint.clone())?;
         Ok(checkpoint)
     }
@@ -1213,7 +1339,7 @@ impl TemporalGraph {
         configuration: &Configuration,
         checkpoint: &Checkpoint,
     ) -> Result<ReplayOracleCheck, EngineError> {
-        validate_loadable_checkpoint(checkpoint, configuration.id())?;
+        validate_loadable_checkpoint(checkpoint, configuration)?;
         let thin_runtime = instantiate_thin_replay(self, configuration)?;
         let thin_checkpoint = if configuration.is_genesis() {
             self.genesis_snapshot(&configuration.def)
@@ -1223,7 +1349,7 @@ impl TemporalGraph {
                 .checkpoint
                 .clone()
         } else {
-            materialized_checkpoint_for_runtime(configuration, thin_runtime)
+            materialized_checkpoint_for_runtime(configuration, thin_runtime)?
         };
         if checkpoint.id != thin_checkpoint.id {
             return Err(EngineError::ReplayOracleMismatch {
@@ -1458,17 +1584,22 @@ pub fn bake(world: &World) -> Result<GenesisCheckpoint, EngineError> {
         content_hash_hex(genesis.id()),
     );
 
-    Ok(GenesisCheckpoint {
-        checkpoint: Checkpoint::with_node_blobs(
-            ContentHash::from_canonical_material(
-                "crucible.model.baked-genesis-checkpoint.v1",
-                &material,
-            ),
-            genesis.id(),
-            CheckpointKind::Fat,
-            baked_node_blobs(world),
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &genesis,
+        None,
+        VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        baked_node_blobs(world),
+    )?
+    .with_materialized_state(Some(MaterializedState::from_content_hash(
+        ContentHash::from_canonical_material(
+            "crucible.model.baked-genesis-checkpoint.v1",
+            &material,
         ),
-    })
+    )));
+
+    Ok(GenesisCheckpoint { checkpoint })
 }
 
 /// An engine-spine error.
@@ -1494,6 +1625,22 @@ pub enum EngineError {
         expected: ContentHash,
         /// The configuration id recorded by the checkpoint.
         actual: ContentHash,
+    },
+    /// A checkpoint's recorded node id does not match its configuration id.
+    CheckpointIdentityMismatch {
+        /// The checkpoint whose identity was invalid.
+        checkpoint: ContentHash,
+        /// The expected checkpoint id.
+        expected: ContentHash,
+        /// The actual checkpoint id.
+        actual: ContentHash,
+    },
+    /// A checkpoint's parent/delta/scenario fields do not match its configuration.
+    CheckpointTopologyMismatch {
+        /// The checkpoint whose topology was invalid.
+        checkpoint: ContentHash,
+        /// Stable reason for the topology rejection.
+        reason: &'static str,
     },
     /// No baked genesis checkpoint exists for the scenario.
     MissingBakedGenesis {
@@ -1563,6 +1710,12 @@ impl fmt::Display for EngineError {
             Self::CheckpointConfigurationMismatch { .. } => {
                 f.write_str("checkpoint configuration does not match requested configuration")
             }
+            Self::CheckpointIdentityMismatch { .. } => {
+                f.write_str("checkpoint id does not match requested configuration")
+            }
+            Self::CheckpointTopologyMismatch { reason, .. } => {
+                write!(f, "checkpoint topology is invalid: {reason}")
+            }
             Self::MissingBakedGenesis { .. } => {
                 f.write_str("missing baked genesis checkpoint for scenario")
             }
@@ -1593,7 +1746,7 @@ fn load_snapshot(
     configuration: &Configuration,
     checkpoint: &Checkpoint,
 ) -> Result<RuntimeState, EngineError> {
-    validate_loadable_checkpoint(checkpoint, configuration.id())?;
+    validate_loadable_checkpoint(checkpoint, configuration)?;
     runtime_for_configuration(configuration)
 }
 
@@ -1668,8 +1821,17 @@ fn instantiate_thin_replay(
 fn materialized_checkpoint_for_runtime(
     configuration: &Configuration,
     runtime: RuntimeState,
-) -> Checkpoint {
-    Checkpoint::new(
+) -> Result<Checkpoint, EngineError> {
+    let parent = immediate_parent_configuration(configuration)?;
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        configuration,
+        parent.as_ref(),
+        VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )?
+    .with_materialized_state(Some(MaterializedState::from_content_hash(
         ContentHash::from_canonical_material(
             "crucible.model.fat-checkpoint.v1",
             &format!(
@@ -1679,14 +1841,13 @@ fn materialized_checkpoint_for_runtime(
                 content_hash_hex(runtime.id),
             ),
         ),
-        configuration.id(),
-        CheckpointKind::Fat,
-    )
+    )));
+    Ok(checkpoint)
 }
 
 fn validate_loadable_checkpoint(
     checkpoint: &Checkpoint,
-    expected_configuration: ContentHash,
+    configuration: &Configuration,
 ) -> Result<(), EngineError> {
     if checkpoint.kind != CheckpointKind::Fat {
         return Err(EngineError::CheckpointNotLoadable {
@@ -1694,11 +1855,40 @@ fn validate_loadable_checkpoint(
             kind: checkpoint.kind,
         });
     }
-    if checkpoint.configuration != expected_configuration {
+    if checkpoint.configuration != configuration.id() {
         return Err(EngineError::CheckpointConfigurationMismatch {
             checkpoint: checkpoint.id,
-            expected: expected_configuration,
+            expected: configuration.id(),
             actual: checkpoint.configuration,
+        });
+    }
+    if checkpoint.id != configuration.id() {
+        return Err(EngineError::CheckpointIdentityMismatch {
+            checkpoint: checkpoint.id,
+            expected: configuration.id(),
+            actual: checkpoint.id,
+        });
+    }
+    if checkpoint.scenario_ref != configuration.def.id {
+        return Err(EngineError::CheckpointTopologyMismatch {
+            checkpoint: checkpoint.id,
+            reason: "scenario-ref-mismatch",
+        });
+    }
+
+    let expected_parent_config = immediate_parent_configuration(configuration)?;
+    let (expected_parent, expected_delta) =
+        checkpoint_edge(configuration, expected_parent_config.as_ref())?;
+    if checkpoint.parent != expected_parent {
+        return Err(EngineError::CheckpointTopologyMismatch {
+            checkpoint: checkpoint.id,
+            reason: "parent-mismatch",
+        });
+    }
+    if checkpoint.schedule_delta != expected_delta {
+        return Err(EngineError::CheckpointTopologyMismatch {
+            checkpoint: checkpoint.id,
+            reason: "schedule-delta-mismatch",
         });
     }
 
@@ -1709,6 +1899,79 @@ fn checkpoint_kind_label(kind: CheckpointKind) -> &'static str {
     match kind {
         CheckpointKind::Fat => "fat",
         CheckpointKind::Thin => "thin",
+    }
+}
+
+fn materialized_state_for_kind(
+    kind: CheckpointKind,
+    configuration: ContentHash,
+) -> Option<MaterializedState> {
+    match kind {
+        CheckpointKind::Fat => Some(MaterializedState::from_content_hash(configuration)),
+        CheckpointKind::Thin => None,
+    }
+}
+
+fn checkpoint_edge(
+    configuration: &Configuration,
+    parent: Option<&Configuration>,
+) -> Result<(Option<ContentHash>, Schedule), EngineError> {
+    match (configuration.is_genesis(), parent) {
+        (true, None) => Ok((None, Schedule::empty())),
+        (true, Some(_)) => Err(EngineError::CheckpointTopologyMismatch {
+            checkpoint: configuration.id(),
+            reason: "genesis-has-parent",
+        }),
+        (false, None) => Err(EngineError::CheckpointTopologyMismatch {
+            checkpoint: configuration.id(),
+            reason: "descendant-missing-parent",
+        }),
+        (false, Some(parent)) => {
+            if parent.def.id != configuration.def.id {
+                return Err(EngineError::CheckpointTopologyMismatch {
+                    checkpoint: configuration.id(),
+                    reason: "parent-scenario-mismatch",
+                });
+            }
+            let prefix = configuration
+                .schedule
+                .prefix(parent.schedule.len())
+                .map_err(EngineError::SchedulePrefix)?;
+            if prefix != parent.schedule {
+                return Err(EngineError::CheckpointTopologyMismatch {
+                    checkpoint: configuration.id(),
+                    reason: "parent-not-schedule-prefix",
+                });
+            }
+            let delta = configuration
+                .schedule
+                .suffix_from(parent.schedule.len())
+                .map_err(EngineError::SchedulePrefix)?;
+            if delta.is_empty() {
+                return Err(EngineError::CheckpointTopologyMismatch {
+                    checkpoint: configuration.id(),
+                    reason: "empty-descendant-delta",
+                });
+            }
+            Ok((Some(parent.id()), delta))
+        }
+    }
+}
+
+fn immediate_parent_configuration(
+    configuration: &Configuration,
+) -> Result<Option<Configuration>, EngineError> {
+    if configuration.is_genesis() {
+        Ok(None)
+    } else {
+        let schedule = configuration
+            .schedule
+            .prefix(configuration.schedule.len().saturating_sub(1))
+            .map_err(EngineError::SchedulePrefix)?;
+        Ok(Some(Configuration {
+            def: configuration.def.clone(),
+            schedule,
+        }))
     }
 }
 

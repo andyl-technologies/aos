@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.contentAddress",
-  taskIds ? ["T-HARN-11"],
+  taskIds ? ["T-HARN-11" "T-TEMP-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -21,6 +21,7 @@
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  temporalGraph = builtins.readFile ../../docs/rfcs/0010-crucible/07-temporal-graph.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -68,6 +69,62 @@
       {
         label = "schedule content hash";
         needle = "pub fn content_hash(&self) -> ContentHash";
+      }
+      {
+        label = "checkpoint type";
+        needle = "pub struct Checkpoint";
+      }
+      {
+        label = "checkpoint scenario ref";
+        needle = "pub scenario_ref: ContentHash";
+      }
+      {
+        label = "checkpoint parent";
+        needle = "pub parent: Option<ContentHash>";
+      }
+      {
+        label = "checkpoint schedule delta";
+        needle = "pub schedule_delta: Schedule";
+      }
+      {
+        label = "checkpoint virtual time";
+        needle = "pub virtual_time: VirtualTime";
+      }
+      {
+        label = "checkpoint per-node icount";
+        needle = "pub node_icounts: BTreeMap<NodeId, Icount>";
+      }
+      {
+        label = "checkpoint optional state";
+        needle = "pub state: Option<MaterializedState>";
+      }
+      {
+        label = "checkpoint coverage fingerprint";
+        needle = "pub coverage_fingerprint: ContentHash";
+      }
+      {
+        label = "checkpoint metadata";
+        needle = "pub metadata: CheckpointMeta";
+      }
+      {
+        label = "recorded configuration constructor";
+        needle = "pub fn from_recorded_configuration(";
+      }
+      {
+        label = "recorded constructor validates edge";
+        needle = ") -> Result<Self, EngineError>";
+      }
+      {
+        label = "checkpoint topology error";
+        needle = "CheckpointTopologyMismatch";
+      }
+      {
+        label = "checkpoint identity error";
+        needle = "CheckpointIdentityMismatch";
+      }
+      {
+        label = "checkpoint edge validator";
+        needle = "fn checkpoint_edge(";
       }
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
@@ -122,6 +179,46 @@
       {
         label = "materialization cache exclusion";
         needle = "gate_content_address_excludes_materialization_cache_from_identity";
+      }
+      {
+        label = "checkpoint identity corpus";
+        needle = "gate_content_address_checkpoint_identity_matches_configuration_id";
+      }
+      {
+        label = "checkpoint id equals configuration id";
+        needle = "assert_eq!(checkpoint.id, configuration.id());";
+      }
+      {
+        label = "materialized state does not affect checkpoint id";
+        needle = "assert_eq!(materialized.id, checkpoint.id);";
+      }
+      {
+        label = "coverage fingerprint does not affect checkpoint id";
+        needle = "assert_eq!(covered.id, checkpoint.id);";
+      }
+      {
+        label = "metadata does not affect checkpoint id";
+        needle = "assert_eq!(annotated.id, checkpoint.id);";
+      }
+      {
+        label = "malformed parent edge rejection";
+        needle = "gate_content_address_checkpoint_rejects_malformed_parent_edges";
+      }
+      {
+        label = "corrupt checkpoint cache topology rejection";
+        needle = "gate_content_address_rejects_corrupt_checkpoint_cache_topology";
+      }
+      {
+        label = "missing parent reason";
+        needle = "descendant-missing-parent";
+      }
+      {
+        label = "wrong parent reason";
+        needle = "parent-mismatch";
+      }
+      {
+        label = "wrong delta reason";
+        needle = "schedule-delta-mismatch";
       }
       {
         label = "collision corpus";
@@ -227,11 +324,25 @@
         label = "phase1 content-address lists T-HARN-11";
         needle = "\"T-HARN-11\"";
       }
+      {
+        label = "phase1 content-address lists T-TEMP-1";
+        needle = "\"T-TEMP-1\"";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
         label = "T-HARN-11 checklist complete";
         needle = "- [x] **T-HARN-11**";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/07-temporal-graph.md" temporalGraph [
+      {
+        label = "T-TEMP-1 checklist complete";
+        needle = "- [x] **T-TEMP-1**";
+      }
+      {
+        label = "T-TEMP-1 completion names content-address gate";
+        needle = "`checks.crucible.phase1.gates.contentAddress`";
       }
     ];
 in
@@ -312,6 +423,13 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             rust_tests=crucible::gate_content_address,crucible-sim::gate_content_address
             corpus=fixed-vectors-and-collision-sampling
+            checkpoint=Checkpoint
+            checkpoint_identity=Configuration::id
+            checkpoint_delta=schedule_delta
+            checkpoint_state_identity=false
+            checkpoint_coverage_identity=false
+            checkpoint_metadata_identity=false
+            checkpoint_malformed_edges=rejected
             RESULT
           '';
         }

@@ -738,12 +738,22 @@ command.
 > the tasks whose primary area is this file ([PLAN-3]); they are kept in
 > sync with the master plan's order/digest by the doc lint ([`28-engineering-standards.md`](28-engineering-standards.md)).
 
-- [ ] **T-TEMP-1** Define the `Checkpoint` type with `id =
+- [x] **T-TEMP-1** Define the `Checkpoint` type with `id =
   hash(parent_id, schedule_delta)`, `scenario_ref`, `parent`, `schedule_delta`,
   `virtual_time` + per-node `icount`, optional `state`, `coverage_fingerprint`,
   and identity-irrelevant `metadata`; property-test that id equals the
   recorded `Configuration::id()` and is independent of `state`/fingerprint/
   metadata. — satisfies [TEMP-1], [TEMP-2], [TEMP-4], [TEMP-5]; spec §1, §2.
+  - Completed by `crucible::Checkpoint` and
+    `checks.crucible.phase1.gates.contentAddress`: the model now records
+    `scenario_ref`, `parent`, `schedule_delta`, `virtual_time`, per-node
+    `node_icounts`, optional `MaterializedState`, `coverage_fingerprint`, and
+    `CheckpointMeta` while preserving `Checkpoint::id == Configuration::id()`.
+    The content-address gate's checkpoint corpus mutates materialized state,
+    coverage fingerprint, and metadata independently and asserts the checkpoint
+    identity remains byte-identical; it also rejects malformed parent edges
+    (missing descendant parent, genesis-with-parent, wrong-scenario parent, and
+    non-prefix parent) before such checkpoints can enter the temporal graph.
 - [ ] **T-TEMP-2** Implement the temporal graph as the content-addressed closure
   of genesis under `step`, with the baked genesis snapshot as root and DAG
   dedup of configurations reached by different paths; test the `parent`-chain ⇒
