@@ -378,6 +378,10 @@ fn persistent_get_env_force_cache_no_replay_preserves_drv_surfaces() {
         &changed_replay,
         &canaries,
     );
+    assert_persistent_force_cache_sidecars_empty(
+        &persist_root,
+        "configured getEnv derivation no-replay canary",
+    );
 
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
 }

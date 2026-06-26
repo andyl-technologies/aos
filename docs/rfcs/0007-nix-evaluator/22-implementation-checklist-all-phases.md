@@ -1706,16 +1706,16 @@ alone (`M-1`/`Q-A`).
       path and ATerm bytes without reporting force-cache hits or misses, and
       requires the changed-env cache-enabled run to match a cache-disabled
       changed-env surface while differing from the original surface. Each run
-      records the matching `getEnv` fingerprint and scans original/changed
+      records the matching `getEnv` fingerprint, scans original/changed
       derivation surfaces for the exercised `getEnv` trace
-      identity/observation hashes plus any persisted force-cache sidecar hashes
-      in hex, raw bytes, and Nix base32. This samples the current
-      configured-environment no-replay surface inside one derivation input; it
-      does not prove persistent `getEnv` force-value hit selection, dirty
-      propagation beyond direct recomputation, full cached-vs-uncached closure
-      parity, the full leak invariant, derivationStrict-node SHA-256 early
-      cutoff, mmap reads, GC/repack, or future value-memoization safety net
-      (`R-10`/`S-14`).
+      identity/observation hashes in hex, raw bytes, and Nix base32, and
+      asserts that persistent force metadata and trace sidecars remain empty.
+      This samples the current configured-environment no-replay surface inside
+      one derivation input; it does not prove persistent `getEnv` force-value
+      hit selection, dirty propagation beyond direct recomputation, full
+      cached-vs-uncached closure parity, the full leak invariant,
+      derivationStrict-node SHA-256 early cutoff, mmap reads, GC/repack, or
+      future value-memoization safety net (`R-10`/`S-14`).
 - [x] Current stale effectful persistent force-value `.drv` surface parity
       canary: `persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces`
       materializes a trace-verified `builtins.pathExists ./marker`
