@@ -132,6 +132,8 @@ impl TreeWalk {
             impure_input_trace: Vec::new(),
             impure_input_trace_complete: true,
             force_cache_impure_trace_epoch: 0,
+            #[cfg(test)]
+            persist_force_cache_hit_keys: Vec::new(),
             stderr: EvalStderr::default(),
             find_file_cache: BTreeMap::new(),
             find_file_cache_hits: 0,
@@ -1212,6 +1214,8 @@ impl TreeWalk {
         }
         self.record_forced_expression_demand(subject);
         self.increment_eval_cache_hit();
+        #[cfg(test)]
+        self.persist_force_cache_hit_keys.push(key);
         Some(value)
     }
 

@@ -5,7 +5,6 @@ use crate::cache::ImpureInputTraceSource;
 use crate::compile::EffectClass;
 
 /// A tree-walk evaluation result with its owning evaluator heap.
-#[derive(Debug)]
 pub struct EvalOutcome {
     pub(crate) value: Value,
     pub(crate) heap: EvalHeap,
@@ -14,7 +13,28 @@ pub struct EvalOutcome {
     pub(crate) warning_output: Vec<EvalWarningOutput>,
     pub(crate) impure_input_trace: Vec<ImpureInputFingerprint>,
     pub(crate) impure_input_trace_complete: bool,
+    #[cfg(test)]
+    pub(crate) persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
     pub(crate) derivations: Vec<EvalDerivation>,
+}
+
+impl std::fmt::Debug for EvalOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EvalOutcome")
+            .field("value", &self.value)
+            .field("heap", &self.heap)
+            .field("stats", &self.stats)
+            .field("trace_output", &self.trace_output)
+            .field("warning_output", &self.warning_output)
+            .field("impure_input_trace", &self.impure_input_trace)
+            .field(
+                "impure_input_trace_complete",
+                &self.impure_input_trace_complete,
+            )
+            .field("derivations", &self.derivations)
+            .finish()
+    }
 }
 
 impl EvalOutcome {
@@ -51,6 +71,12 @@ impl EvalOutcome {
     /// Returns whether the impure input trace is complete and cache-usable.
     pub const fn impure_input_trace_complete(&self) -> bool {
         self.impure_input_trace_complete
+    }
+
+    /// Returns persistent force-cache metadata keys loaded during evaluation.
+    #[cfg(test)]
+    pub(crate) fn persist_force_cache_hit_keys(&self) -> &[PersistNodeMetadataKey] {
+        &self.persist_force_cache_hit_keys
     }
 
     /// Returns derivations observed while evaluating the root expression.

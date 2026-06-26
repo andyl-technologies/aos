@@ -1717,19 +1717,22 @@ alone (`M-1`/`Q-A`).
       fresh-runtime persistent hit, and finally after mutating the imported
       source. It requires same-source cached runs to match cache-disabled
       `.drv` path, ATerm bytes, and import fingerprint, requires the
-      persistent-hit run to report a force-cache hit, requires the changed-source
-      persistent run to miss and recompute the changed import fingerprint,
-      requires materializing and changed-source persistent runs to persist live
-      trace records linked to materialized value hashes for the exact import
-      traces, and requires the changed `.drv` path and ATerm bytes to match a
-      cache-disabled changed-source surface while differing from the original
-      surface. This samples first-class `import` durable hit selection and
-      stale-input fallback inside one derivation input; dirty propagation beyond
-      direct revalidation fallback, full cached-vs-uncached closure parity, the
-      full leak invariant, derivationStrict-node SHA-256 early cutoff, same-run
-      post-recompute reuse behavior, lazy replay payloads, mmap reads,
-      GC/repack, and future value-memoization safety net remain open
-      (`R-10`/`S-14`).
+      persistent-hit run to report a force-cache hit and load the expected
+      force-cache metadata key, requires the changed-source persistent run to
+      miss and recompute the changed import fingerprint, requires materializing
+      and changed-source persistent runs to persist live trace records for the
+      exact import traces under the same force-cache metadata key with
+      different materialized value hashes, requires same-runtime and
+      fresh-runtime post-recompute changed-source runs to hit without
+      force-cache misses and requires the fresh-runtime run to load the changed
+      force-cache metadata key, and requires the changed `.drv` path and ATerm
+      bytes to match a cache-disabled changed-source surface while differing
+      from the original surface. This samples first-class `import` durable hit
+      selection and stale-input fallback inside one derivation input; dirty
+      propagation beyond direct revalidation fallback, full cached-vs-uncached
+      closure parity, the full leak invariant, derivationStrict-node SHA-256
+      early cutoff, lazy replay payloads, mmap reads, GC/repack, and future
+      value-memoization safety net remain open (`R-10`/`S-14`).
 - [x] Current filesystem impure-leaf persistent force-value `.drv` surface
       parity canaries:
       `persistent_read_file_force_cache_hit_preserves_drv_surfaces`,
@@ -1765,17 +1768,21 @@ alone (`M-1`/`Q-A`).
       They require stale persistent observations not to reuse old filesystem
       payloads, require baseline materialization to persist the exact
       filesystem traces, require recomputation to replay and persist the changed
-      filesystem fingerprints, and require the resulting `.drv` paths and ATerm
-      bytes to match cache-off changed-input runs while differing from the
-      original materialized surfaces. They also scan original/materialized/
-      changed/stale surfaces for the exercised trace identity/observation
-      hashes plus persisted force-cache node/value/trace hashes in hex, raw
-      bytes, and Nix base32. This samples stale filesystem leaf fallback inside
-      derivation input surfaces; it does not cover full cached-vs-uncached closure parity,
-      the full leak invariant, derivationStrict-node SHA-256 early cutoff,
-      dirty propagation beyond fallback, same-run post-recompute reuse behavior,
-      lazy replay payloads, mmap reads, GC/repack, or future value-memoization
-      safety net (`R-10`/`S-14`).
+      filesystem fingerprints under the same force-cache metadata keys with
+      different materialized value hashes, require same-runtime and
+      fresh-runtime post-recompute changed-input runs to hit without
+      force-cache misses and require the fresh-runtime runs to load the changed
+      force-cache metadata keys, and require the resulting `.drv` paths and
+      ATerm bytes to match cache-off changed-input runs while differing from
+      the original materialized surfaces. They also scan original/materialized/
+      changed/stale/post-recompute surfaces for the exercised trace
+      identity/observation hashes plus persisted force-cache node/value/trace
+      hashes in hex, raw bytes, and Nix base32. This samples stale filesystem
+      leaf fallback inside derivation input surfaces; it does not cover full
+      cached-vs-uncached closure parity, the full leak invariant,
+      derivationStrict-node SHA-256 early cutoff, dirty propagation beyond
+      fallback, lazy replay payloads, mmap reads, GC/repack, or future
+      value-memoization safety net (`R-10`/`S-14`).
 - [x] Current `getEnv` configured-environment persistent force-value `.drv`
       surface canary:
       `persistent_get_env_force_cache_hit_and_stale_miss_preserve_drv_surfaces`
