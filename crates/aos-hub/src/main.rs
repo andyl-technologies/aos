@@ -3254,6 +3254,11 @@ async fn open_db(root: &Option<PathBuf>, target: &str) -> Result<Database> {
         let root = resolve_root(root.clone(), false)?;
         return Database::open(&root.join("hub.db")).await;
     }
+    // RFC-0004 ch.14 Phase E follow-up: the worker runtime no longer uses D1
+    // (HubDb colocated SQLite is the system of record), but the CLI's
+    // `--target d1:` admin path (schema migrate + root bootstrap) still drives a
+    // live D1 until a HubDb root-bootstrap endpoint replaces it. Tracked in
+    // docs/rfcs/0004-registry-hub/14-colocated-storage-architecture.md.
     let (name, local) = match (target.strip_prefix("d1:"), target.strip_prefix("d1-local:")) {
         (Some(name), _) => (name, false),
         (_, Some(name)) => (name, true),
