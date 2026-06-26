@@ -749,6 +749,7 @@ alone (`M-1`/`Q-A`).
       global subject-skip canaries, lambda/recursive-attrset nested
       lexical-frame subject-skip canaries, captured lambda/primop value
       subject-skip canaries, synthetic apply/apply2/select thunk subject-skip
+      canaries, captured position/source-order attrset value subject-skip
       canaries, and representative captured unsupported free-variable skips
       (`C-1`/`C-2`).
 - [x] Current node-span force-cache identity precursor: source-backed and
