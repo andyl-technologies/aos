@@ -3602,6 +3602,360 @@ fn cache_indexed_materialization_repairs_wrong_record_pointer_before_compaction(
 }
 
 #[test]
+fn cache_blob_pack_liveness_plan_classifies_value_records() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let duplicate_payload = b"duplicate live payload";
+    let duplicate_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(duplicate_payload));
+    let stale_duplicate_location = cache
+        .append_blob(duplicate_key, duplicate_payload)
+        .expect("stale duplicate appends");
+    let live_duplicate_entry = cache
+        .append_blob_indexed(duplicate_key, duplicate_payload)
+        .expect("live duplicate appends and indexes");
+    let live_payload = b"later live payload";
+    let live_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(live_payload));
+    let live_entry = cache
+        .append_blob_indexed(live_key, live_payload)
+        .expect("later live blob appends and indexes");
+    let tail_payload = b"unrooted tail payload";
+    let tail_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(tail_payload));
+    let tail_location = cache
+        .append_blob(tail_key, tail_payload)
+        .expect("unrooted tail appends");
+    let bytes_before = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata before liveness plan")
+        .len();
+
+    let plan = cache
+        .plan_blob_pack_liveness(PersistBlobStore::Values)
+        .expect("value liveness plan builds");
+
+    assert_eq!(plan.live_roots().len(), 2);
+    assert!(plan.live_roots().iter().all(|root| {
+        root.source() == PersistBlobLiveRootSource::BlobIndex
+            && root.key().store() == PersistBlobStore::Values
+    }));
+    assert!(plan.live_roots().iter().any(|root| {
+        root.key() == duplicate_key && root.location() == live_duplicate_entry.location()
+    }));
+    assert!(
+        plan.live_roots()
+            .iter()
+            .any(|root| root.key() == live_key && root.location() == live_entry.location())
+    );
+    assert_eq!(
+        plan.rooted_records()
+            .iter()
+            .map(|record| record.location())
+            .collect::<Vec<_>>(),
+        vec![live_duplicate_entry.location(), live_entry.location()]
+    );
+    assert_eq!(
+        plan.unrooted_records()
+            .iter()
+            .map(|record| record.location())
+            .collect::<Vec<_>>(),
+        vec![stale_duplicate_location, tail_location]
+    );
+    let duplicate_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + duplicate_payload.len() as u64;
+    let live_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + live_payload.len() as u64;
+    let tail_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + tail_payload.len() as u64;
+    assert_eq!(plan.bytes_before(), bytes_before);
+    assert_eq!(plan.rooted_record_bytes(), duplicate_bytes + live_bytes);
+    assert_eq!(plan.unrooted_record_bytes(), duplicate_bytes + tail_bytes);
+    assert_eq!(plan.tail_reclaimable_bytes(), tail_bytes);
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata after liveness plan")
+            .len(),
+        bytes_before
+    );
+    assert_eq!(
+        cache
+            .read_blob(tail_key, tail_location)
+            .expect("liveness planning does not trim tail")
+            .as_slice(),
+        tail_payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_pack_liveness_plan_includes_file_artifact_roots() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let prefix_payload = b"unrooted file prefix";
+    let prefix_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(prefix_payload));
+    let prefix_location = cache
+        .append_blob(prefix_key, prefix_payload)
+        .expect("unrooted prefix appends");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let file_payload = b"file artifact payload";
+    let file_materialized = cache
+        .materialize_file_artifact(
+            &file_key,
+            parse_key,
+            file_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("file artifact materializes without blob index");
+    let file_entry = file_materialized
+        .index_entry()
+        .expect("file artifact should materialize");
+    cache
+        .record_file_artifact(file_entry)
+        .expect("file artifact mapping records");
+    let parse_payload = b"parse artifact payload";
+    let parse_materialized = cache
+        .materialize_parse_artifact(
+            parse_key,
+            parse_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("parse artifact materializes without blob index");
+    let parse_entry = parse_materialized
+        .index_entry()
+        .expect("parse artifact should materialize");
+    cache
+        .record_parse_artifact(parse_entry)
+        .expect("parse artifact mapping records");
+    let tail_payload = b"unrooted file tail";
+    let tail_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(tail_payload));
+    let tail_location = cache
+        .append_blob(tail_key, tail_payload)
+        .expect("unrooted tail appends");
+    let bytes_before = fs::metadata(cache.file_pack().path())
+        .expect("file pack metadata before liveness plan")
+        .len();
+
+    let plan = cache
+        .plan_blob_pack_liveness(PersistBlobStore::Files)
+        .expect("file liveness plan builds");
+
+    assert_eq!(
+        cache
+            .lookup_blob_location(file_entry.value().blob_key())
+            .expect("blob index lookup succeeds"),
+        None,
+        "artifact-only file roots should not require blob-index entries"
+    );
+    assert_eq!(plan.live_roots().len(), 2);
+    assert!(plan.live_roots().iter().any(|root| {
+        root.source() == PersistBlobLiveRootSource::FileArtifactIndex
+            && root.location() == file_entry.value().location()
+    }));
+    assert!(plan.live_roots().iter().any(|root| {
+        root.source() == PersistBlobLiveRootSource::ParseArtifactIndex
+            && root.location() == parse_entry.value().location()
+    }));
+    assert_eq!(
+        plan.rooted_records()
+            .iter()
+            .map(|record| record.location())
+            .collect::<Vec<_>>(),
+        vec![
+            file_entry.value().location(),
+            parse_entry.value().location()
+        ]
+    );
+    assert_eq!(
+        plan.unrooted_records()
+            .iter()
+            .map(|record| record.location())
+            .collect::<Vec<_>>(),
+        vec![prefix_location, tail_location]
+    );
+    let prefix_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + prefix_payload.len() as u64;
+    let file_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + file_payload.len() as u64;
+    let parse_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + parse_payload.len() as u64;
+    let tail_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + tail_payload.len() as u64;
+    assert_eq!(plan.bytes_before(), bytes_before);
+    assert_eq!(plan.rooted_record_bytes(), file_bytes + parse_bytes);
+    assert_eq!(plan.unrooted_record_bytes(), prefix_bytes + tail_bytes);
+    assert_eq!(plan.tail_reclaimable_bytes(), tail_bytes);
+    assert_eq!(
+        fs::metadata(cache.file_pack().path())
+            .expect("file pack metadata after liveness plan")
+            .len(),
+        bytes_before
+    );
+    assert_eq!(
+        cache
+            .read_file_artifact(file_entry.value())
+            .expect("file artifact remains readable")
+            .as_slice(),
+        file_payload
+    );
+    assert_eq!(
+        cache
+            .read_parse_artifact(parse_entry.value())
+            .expect("parse artifact remains readable")
+            .as_slice(),
+        parse_payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_pack_tail_trim_preserves_pending_file_artifact_root() {
+    let root = temp_root();
+    let writer = PersistCache::open(&root).expect("writer cache opens");
+    let maintainer = PersistCache::open(&root).expect("maintainer cache opens");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let payload = b"pending file artifact payload";
+    let materialized = writer
+        .materialize_file_artifact(
+            &file_key,
+            parse_key,
+            payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("file artifact materializes");
+    let index_entry = materialized
+        .index_entry()
+        .expect("file artifact should materialize");
+    let index_value = index_entry.value();
+    let bytes_before = fs::metadata(writer.file_pack().path())
+        .expect("file pack metadata before pending trim")
+        .len();
+
+    let plan = maintainer
+        .plan_blob_pack_liveness(PersistBlobStore::Files)
+        .expect("pending file-artifact liveness plan builds");
+
+    assert_eq!(plan.live_roots().len(), 1);
+    assert_eq!(
+        plan.live_roots()[0].source(),
+        PersistBlobLiveRootSource::PendingFileArtifact
+    );
+    assert_eq!(plan.live_roots()[0].location(), index_value.location());
+    assert_eq!(
+        plan.rooted_records()
+            .iter()
+            .map(|record| record.location())
+            .collect::<Vec<_>>(),
+        vec![index_value.location()]
+    );
+    assert!(plan.unrooted_records().is_empty());
+    assert_eq!(plan.tail_reclaimable_bytes(), 0);
+
+    let trim = maintainer
+        .trim_blob_pack_tail(PersistBlobStore::Files)
+        .expect("pending file-artifact root blocks tail trim");
+
+    assert_eq!(trim.live_entries(), 1);
+    assert_eq!(trim.bytes_before(), bytes_before);
+    assert_eq!(trim.bytes_after(), bytes_before);
+    assert_eq!(trim.reclaimed_bytes(), 0);
+    writer
+        .record_file_artifact(index_entry)
+        .expect("file artifact mapping records after trim");
+    assert_eq!(
+        writer
+            .read_file_artifact(index_value)
+            .expect("pending file artifact remains readable")
+            .as_slice(),
+        payload
+    );
+    let recorded_plan = maintainer
+        .plan_blob_pack_liveness(PersistBlobStore::Files)
+        .expect("recorded file-artifact liveness plan builds");
+    assert!(recorded_plan.live_roots().iter().any(|root| {
+        root.source() == PersistBlobLiveRootSource::FileArtifactIndex
+            && root.location() == index_value.location()
+    }));
+    assert!(
+        !recorded_plan
+            .live_roots()
+            .iter()
+            .any(|root| root.source() == PersistBlobLiveRootSource::PendingFileArtifact)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_pack_tail_trim_preserves_pending_parse_artifact_root() {
+    let root = temp_root();
+    let writer = PersistCache::open(&root).expect("writer cache opens");
+    let maintainer = PersistCache::open(&root).expect("maintainer cache opens");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let payload = b"pending parse artifact payload";
+    let materialized = writer
+        .materialize_parse_artifact(parse_key, payload, MaterializationDecision::Materialize)
+        .expect("parse artifact materializes");
+    let index_entry = materialized
+        .index_entry()
+        .expect("parse artifact should materialize");
+    let index_value = index_entry.value();
+    let bytes_before = fs::metadata(writer.file_pack().path())
+        .expect("file pack metadata before pending trim")
+        .len();
+
+    let plan = maintainer
+        .plan_blob_pack_liveness(PersistBlobStore::Files)
+        .expect("pending parse-artifact liveness plan builds");
+
+    assert_eq!(plan.live_roots().len(), 1);
+    assert_eq!(
+        plan.live_roots()[0].source(),
+        PersistBlobLiveRootSource::PendingParseArtifact
+    );
+    assert_eq!(plan.live_roots()[0].location(), index_value.location());
+    assert_eq!(
+        plan.rooted_records()
+            .iter()
+            .map(|record| record.location())
+            .collect::<Vec<_>>(),
+        vec![index_value.location()]
+    );
+    assert!(plan.unrooted_records().is_empty());
+    assert_eq!(plan.tail_reclaimable_bytes(), 0);
+
+    let trim = maintainer
+        .trim_blob_pack_tail(PersistBlobStore::Files)
+        .expect("pending parse-artifact root blocks tail trim");
+
+    assert_eq!(trim.live_entries(), 1);
+    assert_eq!(trim.bytes_before(), bytes_before);
+    assert_eq!(trim.bytes_after(), bytes_before);
+    assert_eq!(trim.reclaimed_bytes(), 0);
+    writer
+        .record_parse_artifact(index_entry)
+        .expect("parse artifact mapping records after trim");
+    assert_eq!(
+        writer
+            .read_parse_artifact(index_value)
+            .expect("pending parse artifact remains readable")
+            .as_slice(),
+        payload
+    );
+    let recorded_plan = maintainer
+        .plan_blob_pack_liveness(PersistBlobStore::Files)
+        .expect("recorded parse-artifact liveness plan builds");
+    assert!(recorded_plan.live_roots().iter().any(|root| {
+        root.source() == PersistBlobLiveRootSource::ParseArtifactIndex
+            && root.location() == index_value.location()
+    }));
+    assert!(
+        !recorded_plan
+            .live_roots()
+            .iter()
+            .any(|root| root.source() == PersistBlobLiveRootSource::PendingParseArtifact)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_pack_tail_trim_reclaims_unindexed_tail_record() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

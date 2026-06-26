@@ -26,6 +26,8 @@ struct PersistRootLocks {
     open: Mutex<()>,
     values: Mutex<()>,
     files: Mutex<()>,
+    pending_file_roots:
+        Mutex<BTreeMap<([u8; PERSIST_BLOB_INDEX_KEY_LEN], u64, u64), PersistBlobLiveRoot>>,
     file_artifacts: Mutex<()>,
     parse_artifacts: Mutex<()>,
     node_metadata: Mutex<()>,
@@ -38,6 +40,7 @@ impl PersistRootLocks {
             open: Mutex::new(()),
             values: Mutex::new(()),
             files: Mutex::new(()),
+            pending_file_roots: Mutex::new(BTreeMap::new()),
             file_artifacts: Mutex::new(()),
             parse_artifacts: Mutex::new(()),
             node_metadata: Mutex::new(()),
@@ -83,6 +86,36 @@ impl PersistRootLocks {
             PersistBlobStore::Values => &self.values,
             PersistBlobStore::Files => &self.files,
         }
+    }
+
+    fn insert_pending_file_root(
+        &self,
+        root: PersistBlobLiveRoot,
+    ) -> Result<(), PersistBlobPackError> {
+        self.pending_file_roots
+            .lock()
+            .map_err(|_| PersistBlobPackError::WriteLockPoisoned {
+                store: PersistBlobStore::Files,
+            })?
+            .insert(blob_live_root_identity(root), root);
+        Ok(())
+    }
+
+    fn remove_pending_file_root(&self, root: PersistBlobLiveRoot) {
+        let Ok(mut pending_roots) = self.pending_file_roots.lock() else {
+            return;
+        };
+        pending_roots.remove(&blob_live_root_identity(root));
+    }
+
+    fn pending_file_roots(&self) -> Result<Vec<PersistBlobLiveRoot>, PersistBlobLiveRootError> {
+        Ok(self
+            .pending_file_roots
+            .lock()
+            .map_err(|_| PersistBlobLiveRootError::PendingFileRoots)?
+            .values()
+            .copied()
+            .collect())
     }
 
     fn lock_file_artifacts(&self) -> Result<MutexGuard<'_, ()>, PersistFileArtifactIndexError> {
@@ -239,6 +272,133 @@ impl PersistBlobPackTrim {
     /// Returns the number of unindexed tail bytes reclaimed.
     pub const fn reclaimed_bytes(self) -> u64 {
         self.bytes_before.saturating_sub(self.bytes_after)
+    }
+}
+
+/// The source that keeps a blob-pack record live.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PersistBlobLiveRootSource {
+    /// The selected store's hash-to-offset blob index.
+    BlobIndex,
+    /// The file-artifact mapping index in the `files/` store.
+    FileArtifactIndex,
+    /// The parse-artifact mapping index in the `files/` store.
+    ParseArtifactIndex,
+    /// A same-process file-artifact append whose mapping is not recorded yet.
+    PendingFileArtifact,
+    /// A same-process parse-artifact append whose mapping is not recorded yet.
+    PendingParseArtifact,
+}
+
+/// A latest or in-flight root that keeps a blob-pack record live.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PersistBlobLiveRoot {
+    source: PersistBlobLiveRootSource,
+    key: PersistBlobKey,
+    location: PersistBlobLocation,
+}
+
+impl PersistBlobLiveRoot {
+    const fn new(
+        source: PersistBlobLiveRootSource,
+        key: PersistBlobKey,
+        location: PersistBlobLocation,
+    ) -> Self {
+        Self {
+            source,
+            key,
+            location,
+        }
+    }
+
+    /// Returns the source that published or registered this live root.
+    pub const fn source(self) -> PersistBlobLiveRootSource {
+        self.source
+    }
+
+    /// Returns the typed blob key for the rooted pack record.
+    pub const fn key(self) -> PersistBlobKey {
+        self.key
+    }
+
+    /// Returns the rooted pack location.
+    pub const fn location(self) -> PersistBlobLocation {
+        self.location
+    }
+}
+
+/// Read-only liveness diagnostics for one persistent blob pack.
+///
+/// This is a physical-record classification against current blob sidecars,
+/// file/parse artifact sidecars, and same-process pending artifact roots. It
+/// is not the final RFC garbage-collection live set: node metadata references,
+/// cross-process raw writers, and future metadata engines are outside this
+/// diagnostic plan.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PersistBlobPackLivenessPlan {
+    live_roots: Vec<PersistBlobLiveRoot>,
+    rooted_records: Vec<PersistBlobPackRecord>,
+    unrooted_records: Vec<PersistBlobPackRecord>,
+    bytes_before: u64,
+    rooted_record_bytes: u64,
+    unrooted_record_bytes: u64,
+    tail_reclaimable_bytes: u64,
+}
+
+impl PersistBlobPackLivenessPlan {
+    fn new(
+        live_roots: Vec<PersistBlobLiveRoot>,
+        rooted_records: Vec<PersistBlobPackRecord>,
+        unrooted_records: Vec<PersistBlobPackRecord>,
+        bytes_before: u64,
+        rooted_record_bytes: u64,
+        unrooted_record_bytes: u64,
+        tail_reclaimable_bytes: u64,
+    ) -> Self {
+        Self {
+            live_roots,
+            rooted_records,
+            unrooted_records,
+            bytes_before,
+            rooted_record_bytes,
+            unrooted_record_bytes,
+            tail_reclaimable_bytes,
+        }
+    }
+
+    /// Returns latest sidecar roots and in-flight same-process roots.
+    pub fn live_roots(&self) -> &[PersistBlobLiveRoot] {
+        &self.live_roots
+    }
+
+    /// Returns verified physical records reachable from at least one live root.
+    pub fn rooted_records(&self) -> &[PersistBlobPackRecord] {
+        &self.rooted_records
+    }
+
+    /// Returns physical records unreachable from this plan's current roots.
+    pub fn unrooted_records(&self) -> &[PersistBlobPackRecord] {
+        &self.unrooted_records
+    }
+
+    /// Returns the packfile length observed while planning.
+    pub const fn bytes_before(&self) -> u64 {
+        self.bytes_before
+    }
+
+    /// Returns the total bytes occupied by rooted physical records.
+    pub const fn rooted_record_bytes(&self) -> u64 {
+        self.rooted_record_bytes
+    }
+
+    /// Returns bytes occupied by records unreachable from this plan's roots.
+    pub const fn unrooted_record_bytes(&self) -> u64 {
+        self.unrooted_record_bytes
+    }
+
+    /// Returns unrooted suffix bytes that a tail trim could reclaim.
+    pub const fn tail_reclaimable_bytes(&self) -> u64 {
+        self.tail_reclaimable_bytes
     }
 }
 
@@ -409,22 +569,44 @@ impl PersistBlobIndexRebuild {
 }
 
 fn push_blob_index_roots(
-    roots: &mut Vec<(PersistBlobKey, PersistBlobLocation)>,
+    roots: &mut Vec<PersistBlobLiveRoot>,
     entries: Vec<PersistBlobIndexEntry>,
     expected_store: PersistBlobStore,
-) -> Result<(), PersistBlobPackTrimError> {
+    source: PersistBlobLiveRootSource,
+) -> Result<(), PersistBlobLiveRootError> {
     for entry in entries {
         let key = entry.key();
         let actual_store = key.store();
         if actual_store != expected_store {
-            return Err(PersistBlobPackTrimError::WrongStoreEntry {
+            return Err(PersistBlobLiveRootError::WrongStoreEntry {
                 expected: expected_store,
                 actual: actual_store,
             });
         }
-        roots.push((key, entry.location()));
+        roots.push(PersistBlobLiveRoot::new(source, key, entry.location()));
     }
     Ok(())
+}
+
+fn blob_record_identity(
+    key: PersistBlobKey,
+    location: PersistBlobLocation,
+) -> ([u8; PERSIST_BLOB_INDEX_KEY_LEN], u64, u64) {
+    (
+        key.index_bytes(),
+        location.record_offset(),
+        location.payload_len(),
+    )
+}
+
+fn blob_live_root_identity(
+    root: PersistBlobLiveRoot,
+) -> ([u8; PERSIST_BLOB_INDEX_KEY_LEN], u64, u64) {
+    blob_record_identity(root.key(), root.location())
+}
+
+const fn blob_record_bytes(record: PersistBlobPackRecord) -> u64 {
+    PERSIST_BLOB_RECORD_HEADER_LEN as u64 + record.location().payload_len()
 }
 
 impl PersistCache {
@@ -752,6 +934,19 @@ impl PersistCache {
         self.blob_pack(key.store()).append_blob(key.hash(), payload)
     }
 
+    fn append_pending_file_artifact_blob(
+        &self,
+        key: PersistBlobKey,
+        payload: &[u8],
+        source: PersistBlobLiveRootSource,
+    ) -> Result<PersistBlobLocation, PersistBlobPackError> {
+        let _write_guard = self.root_locks.lock_blob_pack(PersistBlobStore::Files)?;
+        let location = self.append_blob_unlocked(key, payload)?;
+        self.root_locks
+            .insert_pending_file_root(PersistBlobLiveRoot::new(source, key, location))?;
+        Ok(location)
+    }
+
     /// Reads a blob from the packfile selected by `key`.
     ///
     /// # Errors
@@ -779,7 +974,15 @@ impl PersistCache {
         entry: PersistFileArtifactIndexEntry,
     ) -> Result<(), PersistFileArtifactIndexError> {
         let _write_guard = self.root_locks.lock_file_artifacts()?;
-        self.file_artifact_index.append_entry(entry)
+        self.file_artifact_index.append_entry(entry)?;
+        let value = entry.value();
+        self.root_locks
+            .remove_pending_file_root(PersistBlobLiveRoot::new(
+                PersistBlobLiveRootSource::PendingFileArtifact,
+                value.blob_key(),
+                value.location(),
+            ));
+        Ok(())
     }
 
     /// Looks up a durable file-artifact mapping through the sidecar index.
@@ -809,7 +1012,15 @@ impl PersistCache {
         entry: PersistParseArtifactIndexEntry,
     ) -> Result<(), PersistParseArtifactIndexError> {
         let _write_guard = self.root_locks.lock_parse_artifacts()?;
-        self.parse_artifact_index.append_entry(entry)
+        self.parse_artifact_index.append_entry(entry)?;
+        let value = entry.value();
+        self.root_locks
+            .remove_pending_file_root(PersistBlobLiveRoot::new(
+                PersistBlobLiveRootSource::PendingParseArtifact,
+                value.blob_key(),
+                value.location(),
+            ));
+        Ok(())
     }
 
     /// Looks up a durable parse-artifact mapping through the sidecar index.
@@ -1276,23 +1487,68 @@ impl PersistCache {
         self.blob_index(store).compact_latest_entries()
     }
 
+    fn snapshot_blob_live_roots_unlocked(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<Vec<PersistBlobLiveRoot>, PersistBlobLiveRootError> {
+        let blob_entries = self
+            .blob_index(store)
+            .latest_entries()
+            .map_err(|source| PersistBlobLiveRootError::BlobIndex { source })?;
+        let mut roots = Vec::new();
+        push_blob_index_roots(
+            &mut roots,
+            blob_entries,
+            store,
+            PersistBlobLiveRootSource::BlobIndex,
+        )?;
+        if store == PersistBlobStore::Files {
+            roots.extend(self.root_locks.pending_file_roots()?);
+            for entry in self
+                .file_artifact_index
+                .latest_entries()
+                .map_err(|source| PersistBlobLiveRootError::FileArtifactIndex { source })?
+            {
+                let value = entry.value();
+                roots.push(PersistBlobLiveRoot::new(
+                    PersistBlobLiveRootSource::FileArtifactIndex,
+                    value.blob_key(),
+                    value.location(),
+                ));
+            }
+            for entry in self
+                .parse_artifact_index
+                .latest_entries()
+                .map_err(|source| PersistBlobLiveRootError::ParseArtifactIndex { source })?
+            {
+                let value = entry.value();
+                roots.push(PersistBlobLiveRoot::new(
+                    PersistBlobLiveRootSource::ParseArtifactIndex,
+                    value.blob_key(),
+                    value.location(),
+                ));
+            }
+        }
+        Ok(roots)
+    }
+
     /// Trims unindexed tail bytes from the selected blob pack.
     ///
     /// This explicit maintenance operation snapshots the selected store's
     /// latest live roots, verifies each referenced blob against the selected
     /// pack, and truncates only bytes after the highest live record. For
     /// `values/`, the roots are the value blob-index entries. For `files/`, the
-    /// roots also include file-artifact and parse-artifact index entries because
-    /// legacy non-indexed artifact materializers can publish those values
-    /// without adding a blob-index entry. This can reclaim unindexed trailing
-    /// records, including blobs left behind by non-transactional append paths,
-    /// but it does not relocate live records or reclaim unindexed records that
-    /// precede a live record. Same-process writers opened on the same cache
-    /// root share the selected store's blob-index write lock while this method
-    /// snapshots roots and truncates the pack; `files/` trims also share the
-    /// file-artifact and parse-artifact mapping locks. Cross-process writers
-    /// and raw lower-level pack or sidecar users must still be excluded by the
-    /// caller.
+    /// roots also include file-artifact mappings, parse-artifact mappings, and
+    /// same-process pending artifact roots because legacy non-indexed artifact
+    /// materializers can publish those values without adding a blob-index
+    /// entry. This can reclaim unindexed trailing records, including blobs left
+    /// behind by non-transactional append paths, but it does not relocate live
+    /// records or reclaim unindexed records that precede a live record.
+    /// Same-process writers opened on the same cache root share the selected
+    /// store's blob-index write lock while this method snapshots roots and
+    /// truncates the pack; `files/` trims also share the file-artifact and
+    /// parse-artifact mapping locks. Cross-process writers and raw lower-level
+    /// pack or sidecar users must still be excluded by the caller.
     ///
     /// # Errors
     ///
@@ -1326,35 +1582,14 @@ impl PersistCache {
         } else {
             None
         };
-        let blob_entries = self
-            .blob_index(store)
-            .latest_entries()
-            .map_err(|source| PersistBlobPackTrimError::BlobIndex { source })?;
-        let mut roots = Vec::new();
-        push_blob_index_roots(&mut roots, blob_entries, store)?;
-        if store == PersistBlobStore::Files {
-            for entry in self
-                .file_artifact_index
-                .latest_entries()
-                .map_err(|source| PersistBlobPackTrimError::FileArtifactIndex { source })?
-            {
-                let value = entry.value();
-                roots.push((value.blob_key(), value.location()));
-            }
-            for entry in self
-                .parse_artifact_index
-                .latest_entries()
-                .map_err(|source| PersistBlobPackTrimError::ParseArtifactIndex { source })?
-            {
-                let value = entry.value();
-                roots.push((value.blob_key(), value.location()));
-            }
-        }
+        let roots = self
+            .snapshot_blob_live_roots_unlocked(store)
+            .map_err(PersistBlobPackTrimError::from)?;
         let pack = self.blob_pack(store);
         let mut live_end = PERSIST_BLOB_PACK_HEADER_LEN as u64;
-        for (key, location) in &roots {
+        for root in &roots {
             let window = pack
-                .verify_blob(*location, key.hash())
+                .verify_blob(root.location(), root.key().hash())
                 .map_err(|source| PersistBlobPackTrimError::Read { source })?;
             live_end = live_end.max(window.payload_end());
         }
@@ -1370,6 +1605,102 @@ impl PersistCache {
             roots.len(),
             bytes_before,
             bytes_after,
+        ))
+    }
+
+    /// Plans blob-pack liveness for future repack maintenance.
+    ///
+    /// This read-only diagnostic snapshots the selected store's latest live
+    /// roots and same-process pending artifact roots, verifies every rooted
+    /// record without materializing payloads, then scans the selected pack to
+    /// classify verified physical records as rooted or unrooted. For `values`,
+    /// roots come from the value blob index. For `files`, roots also include
+    /// file-artifact and parse-artifact mappings because legacy non-indexed
+    /// artifact materializers can publish those records without a blob-index
+    /// entry. The returned byte counts are sidecar/pending-root diagnostics
+    /// only; node metadata references, cross-process raw writers, and the
+    /// final RFC GC live-root model are outside this plan. The method does not
+    /// write sidecars, truncate packs, relocate records, or coordinate with
+    /// cross-process writers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackLivenessPlanError`] if a same-root root-sidecar
+    /// lock is poisoned, if roots cannot be snapshotted, if a blob-index entry
+    /// targets the wrong store, if any latest live root fails verification, or
+    /// if the selected pack cannot be fully scanned and verified.
+    pub fn plan_blob_pack_liveness(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<PersistBlobPackLivenessPlan, PersistBlobPackLivenessPlanError> {
+        let _blob_guard = self.root_locks.lock_blob_index(store).map_err(|source| {
+            PersistBlobPackLivenessPlanError::Roots {
+                source: PersistBlobLiveRootError::BlobIndex { source },
+            }
+        })?;
+        let _file_artifact_guard = if store == PersistBlobStore::Files {
+            Some(self.root_locks.lock_file_artifacts().map_err(|source| {
+                PersistBlobPackLivenessPlanError::Roots {
+                    source: PersistBlobLiveRootError::FileArtifactIndex { source },
+                }
+            })?)
+        } else {
+            None
+        };
+        let _parse_artifact_guard = if store == PersistBlobStore::Files {
+            Some(self.root_locks.lock_parse_artifacts().map_err(|source| {
+                PersistBlobPackLivenessPlanError::Roots {
+                    source: PersistBlobLiveRootError::ParseArtifactIndex { source },
+                }
+            })?)
+        } else {
+            None
+        };
+        let roots = self
+            .snapshot_blob_live_roots_unlocked(store)
+            .map_err(|source| PersistBlobPackLivenessPlanError::Roots { source })?;
+        let pack = self.blob_pack(store);
+        let mut rooted_identities = std::collections::BTreeSet::new();
+        let mut live_end = PERSIST_BLOB_PACK_HEADER_LEN as u64;
+        for root in &roots {
+            let window = pack
+                .verify_blob(root.location(), root.key().hash())
+                .map_err(|source| PersistBlobPackLivenessPlanError::Read { source })?;
+            live_end = live_end.max(window.payload_end());
+            rooted_identities.insert(blob_record_identity(root.key(), root.location()));
+        }
+
+        let bytes_before = pack
+            .len()
+            .map_err(|source| PersistBlobPackLivenessPlanError::Scan { source })?;
+        let records = pack
+            .records()
+            .map_err(|source| PersistBlobPackLivenessPlanError::Scan { source })?;
+        let mut rooted_records = Vec::new();
+        let mut unrooted_records = Vec::new();
+        let mut rooted_record_bytes = 0u64;
+        let mut unrooted_record_bytes = 0u64;
+        for record in records {
+            let record_bytes = blob_record_bytes(record);
+            if rooted_identities
+                .contains(&blob_record_identity(record.key(store), record.location()))
+            {
+                rooted_record_bytes = rooted_record_bytes.saturating_add(record_bytes);
+                rooted_records.push(record);
+            } else {
+                unrooted_record_bytes = unrooted_record_bytes.saturating_add(record_bytes);
+                unrooted_records.push(record);
+            }
+        }
+        let tail_reclaimable_bytes = bytes_before.saturating_sub(live_end);
+        Ok(PersistBlobPackLivenessPlan::new(
+            roots,
+            rooted_records,
+            unrooted_records,
+            bytes_before,
+            rooted_record_bytes,
+            unrooted_record_bytes,
+            tail_reclaimable_bytes,
         ))
     }
 
@@ -2000,7 +2331,9 @@ impl PersistCache {
     /// [`MaterializationDecision::KeepInMemory`] returns a skipped result
     /// without hashing or writing `payload`. [`MaterializationDecision::Materialize`]
     /// hashes `payload`, appends it to the `files/` pack, and returns the typed
-    /// index value a future durable index would store.
+    /// index value a future durable index would store. The appended record is
+    /// registered as a same-process pending file-artifact root until
+    /// [`Self::record_file_artifact`] publishes the mapping.
     ///
     /// # Errors
     ///
@@ -2022,7 +2355,11 @@ impl PersistCache {
             }
             MaterializationDecision::Materialize => {
                 let blob_hash = DurableBlake3Hash::for_bytes(payload);
-                let location = self.append_blob(PersistBlobKey::for_file(blob_hash), payload)?;
+                let location = self.append_pending_file_artifact_blob(
+                    PersistBlobKey::for_file(blob_hash),
+                    payload,
+                    PersistBlobLiveRootSource::PendingFileArtifact,
+                )?;
                 Ok(PersistFileArtifactMaterialization::Materialized {
                     artifact_key,
                     index_value: PersistFileArtifactIndexValue::new(blob_hash, location),
@@ -2088,7 +2425,9 @@ impl PersistCache {
     /// [`MaterializationDecision::KeepInMemory`] returns a skipped result
     /// without hashing or writing `payload`. [`MaterializationDecision::Materialize`]
     /// hashes `payload`, appends it to the `files/` pack, and returns the typed
-    /// index value a future durable index would store.
+    /// index value a future durable index would store. The appended record is
+    /// registered as a same-process pending parse-artifact root until
+    /// [`Self::record_parse_artifact`] publishes the mapping.
     ///
     /// # Errors
     ///
@@ -2109,7 +2448,11 @@ impl PersistCache {
             }
             MaterializationDecision::Materialize => {
                 let blob_hash = DurableBlake3Hash::for_bytes(payload);
-                let location = self.append_blob(PersistBlobKey::for_file(blob_hash), payload)?;
+                let location = self.append_pending_file_artifact_blob(
+                    PersistBlobKey::for_file(blob_hash),
+                    payload,
+                    PersistBlobLiveRootSource::PendingParseArtifact,
+                )?;
                 Ok(PersistParseArtifactMaterialization::Materialized {
                     artifact_key,
                     index_value: PersistParseArtifactIndexValue::new(blob_hash, location),

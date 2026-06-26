@@ -1294,14 +1294,25 @@ alone (`M-1`/`Q-A`).
 - [x] Current explicit blob-pack tail-GC helper:
       `PersistCache::trim_blob_pack_tail` snapshots the selected store's latest
       live roots (`values/` blob index entries, or `files/`
-      blob/file-artifact/parse-artifact index entries) while holding the
-      selected store's same-process same-root blob lock plus the file/parse
-      mapping locks for `files/` trims, verifies each referenced pack record,
-      and truncates only unindexed bytes after the highest live record,
-      returning `PersistBlobPackTrim` byte/count stats. This is tail-only
-      maintenance for unindexed trailing records; full pack repack/relocation,
+      blob/file-artifact/parse-artifact index entries plus same-process pending
+      file/parse artifact roots) while holding the selected store's
+      same-process same-root blob lock plus the file/parse mapping locks for
+      `files/` trims, verifies each referenced pack record, and truncates only
+      unindexed bytes after the highest live record, returning
+      `PersistBlobPackTrim` byte/count stats. This is tail-only maintenance for
+      unindexed trailing records; full pack repack/relocation,
       cross-process/raw-writer coordination, automatic GC policy, mmap reads,
       Attic transport, and harness proof remain open
+      (`C-13`/`R-14`).
+- [x] Current read-only blob-pack liveness plan:
+      `PersistCache::plan_blob_pack_liveness` snapshots and verifies the same
+      latest live roots used by tail trimming plus same-process pending
+      file/parse artifact roots, scans the selected pack, and classifies
+      verified physical records as rooted or sidecar-unrooted with byte counts
+      for current tail-trim candidates. This is diagnostic planning only, not
+      the final RFC GC root model: node metadata reachability, pack rewriting,
+      live-record relocation, automatic GC policy, cross-process/raw-writer
+      coordination, mmap reads, Attic transport, and harness proof remain open
       (`C-13`/`R-14`).
 - [x] Current blob-pack integrity scan primitive:
       `PersistBlobPack::records` scans a pack in record order, validates every

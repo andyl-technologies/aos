@@ -112,13 +112,14 @@ mod pack;
 
 pub use cache::{
     PersistBlobIndexRebuild, PersistBlobIndexRebuildPlan, PersistBlobIndexStaleEntry,
+    PersistBlobLiveRoot, PersistBlobLiveRootSource, PersistBlobPackLivenessPlan,
     PersistBlobPackTrim, PersistCache, PersistCompaction, PersistStorageMaintenance,
 };
 pub use error::{
     PersistBlobIndexError, PersistBlobIndexRebuildError, PersistBlobIndexRebuildPlanError,
     PersistBlobIndexedReadError, PersistBlobIndexedWriteError, PersistBlobIndexesRebuildError,
-    PersistBlobPackError, PersistBlobPackTrimError,
-    PersistCachedExpressionNodeValueIndexedLoadError,
+    PersistBlobLiveRootError, PersistBlobPackError, PersistBlobPackLivenessPlanError,
+    PersistBlobPackTrimError, PersistCachedExpressionNodeValueIndexedLoadError,
     PersistCachedExpressionNodeValueIndexedWriteError,
     PersistCachedExpressionNodeValueTraceLoadError, PersistCachedExpressionValueIndexedLoadError,
     PersistCachedExpressionValueIndexedWriteError, PersistCompactionError, PersistError,

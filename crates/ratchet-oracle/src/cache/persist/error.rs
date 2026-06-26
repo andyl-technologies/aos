@@ -695,6 +695,40 @@ pub enum PersistCompactionError {
     },
 }
 
+/// Persistent blob live-root collection failed.
+#[derive(Debug, Error)]
+pub enum PersistBlobLiveRootError {
+    /// The selected blob index could not be locked or snapshotted.
+    #[error("failed to lock or snapshot persistent blob index live roots")]
+    BlobIndex {
+        /// The underlying blob-index lock or read error.
+        source: PersistBlobIndexError,
+    },
+    /// The file-artifact index could not be locked or snapshotted.
+    #[error("failed to lock or snapshot persistent file-artifact live roots")]
+    FileArtifactIndex {
+        /// The underlying file-artifact lock or read error.
+        source: PersistFileArtifactIndexError,
+    },
+    /// The parse-artifact index could not be locked or snapshotted.
+    #[error("failed to lock or snapshot persistent parse-artifact live roots")]
+    ParseArtifactIndex {
+        /// The underlying parse-artifact lock or read error.
+        source: PersistParseArtifactIndexError,
+    },
+    /// The same-process pending file-root registry could not be snapshotted.
+    #[error("failed to snapshot pending persistent file roots")]
+    PendingFileRoots,
+    /// The selected blob index contained a key for the wrong blob namespace.
+    #[error("persistent blob index entry targets {actual:?}, expected {expected:?}")]
+    WrongStoreEntry {
+        /// The blob namespace selected by the caller.
+        expected: PersistBlobStore,
+        /// The blob namespace encoded in the index entry.
+        actual: PersistBlobStore,
+    },
+}
+
 /// Persistent blob-pack tail trimming failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobPackTrimError {
@@ -716,6 +750,9 @@ pub enum PersistBlobPackTrimError {
         /// The underlying parse-artifact lock or read error.
         source: PersistParseArtifactIndexError,
     },
+    /// The same-process pending file-root registry could not be snapshotted.
+    #[error("failed to snapshot pending persistent file roots before tail trim")]
+    PendingFileRoots,
     /// The selected blob index contained a key for the wrong blob namespace.
     #[error("persistent blob index entry targets {actual:?}, expected {expected:?}")]
     WrongStoreEntry {
@@ -734,6 +771,47 @@ pub enum PersistBlobPackTrimError {
     #[error("failed to trim persistent blob pack tail")]
     Trim {
         /// The underlying packfile trim error.
+        source: PersistBlobPackError,
+    },
+}
+
+impl From<PersistBlobLiveRootError> for PersistBlobPackTrimError {
+    fn from(source: PersistBlobLiveRootError) -> Self {
+        match source {
+            PersistBlobLiveRootError::BlobIndex { source } => Self::BlobIndex { source },
+            PersistBlobLiveRootError::FileArtifactIndex { source } => {
+                Self::FileArtifactIndex { source }
+            }
+            PersistBlobLiveRootError::ParseArtifactIndex { source } => {
+                Self::ParseArtifactIndex { source }
+            }
+            PersistBlobLiveRootError::PendingFileRoots => Self::PendingFileRoots,
+            PersistBlobLiveRootError::WrongStoreEntry { expected, actual } => {
+                Self::WrongStoreEntry { expected, actual }
+            }
+        }
+    }
+}
+
+/// Persistent blob-pack liveness planning failed.
+#[derive(Debug, Error)]
+pub enum PersistBlobPackLivenessPlanError {
+    /// Live roots could not be locked, snapshotted, or decoded.
+    #[error("failed to collect persistent blob live roots before liveness planning")]
+    Roots {
+        /// The underlying live-root collection error.
+        source: PersistBlobLiveRootError,
+    },
+    /// A latest live root could not be verified before planning.
+    #[error("failed to verify persistent blob root before liveness planning")]
+    Read {
+        /// The underlying packfile read error.
+        source: PersistBlobPackError,
+    },
+    /// The selected blob pack could not be scanned and verified.
+    #[error("failed to scan persistent blob pack before liveness planning")]
+    Scan {
+        /// The underlying packfile scan error.
         source: PersistBlobPackError,
     },
 }
