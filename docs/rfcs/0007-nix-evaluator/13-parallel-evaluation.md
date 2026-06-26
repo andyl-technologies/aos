@@ -767,6 +767,21 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       lock-free append-only/CAS implementation, work-stealing integration, or
       loom/Miri audit (§4.3, [12](12-incremental-evaluation-cache.md) §8.3) —
       **P3.5** precursor, `R-4`.
+- [x] Current same-root persistent blob-store maintenance lock precursor:
+      independently opened `PersistCache` handles in one process now serialize
+      cache-level blob-index compaction, blob-index rebuild, and blob-pack tail
+      trim through the same per-store process-local mutexes used by indexed
+      materialization, keyed by the canonical cache root; file-pack trimming
+      also shares file-artifact and parse-artifact mapping locks while
+      snapshotting those live roots. This keeps same-root maintenance rewrites
+      from racing cache-level `ensure_blob_indexed` writes for the selected
+      `values/` or `files/` store, and poisoned live locks fail before
+      compaction/rebuild writes sidecars or tail trim truncates a pack. This is
+      same-process fixed-record/pack-tail coordination only, not cross-process
+      locking/CAS, raw lower-level pack or sidecar coordination, the final
+      LMDB/redb index tables, work-stealing integration, or loom/Miri audit
+      (§4.3, [12](12-incremental-evaluation-cache.md) §6.5) — **P3.5**
+      precursor, `R-4`/`R-14`.
 - [x] Current same-root persistent node-metadata writer lock precursor:
       independently opened `PersistCache` handles in one process now serialize
       node-metadata read-modify-write operations and metadata compaction through

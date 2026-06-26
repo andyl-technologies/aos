@@ -1279,12 +1279,14 @@ alone (`M-1`/`Q-A`).
 - [x] Current explicit blob-pack tail-GC helper:
       `PersistCache::trim_blob_pack_tail` snapshots the selected store's latest
       live roots (`values/` blob index entries, or `files/`
-      blob/file-artifact/parse-artifact index entries), verifies each referenced
-      pack record, and truncates only unindexed bytes after the highest live
-      record, returning `PersistBlobPackTrim` byte/count stats. This is
-      tail-only maintenance for unindexed trailing records; full pack
-      repack/relocation, concurrent writer coordination, automatic GC policy,
-      mmap reads, Attic transport, and harness proof remain open
+      blob/file-artifact/parse-artifact index entries) while holding the
+      selected store's same-process same-root blob lock plus the file/parse
+      mapping locks for `files/` trims, verifies each referenced pack record,
+      and truncates only unindexed bytes after the highest live record,
+      returning `PersistBlobPackTrim` byte/count stats. This is tail-only
+      maintenance for unindexed trailing records; full pack repack/relocation,
+      cross-process/raw-writer coordination, automatic GC policy, mmap reads,
+      Attic transport, and harness proof remain open
       (`C-13`/`R-14`).
 - [x] Current blob-pack integrity scan primitive:
       `PersistBlobPack::records` scans a pack in record order, validates every
@@ -1326,23 +1328,26 @@ alone (`M-1`/`Q-A`).
       (`C-13`/`R-14`).
 - [x] Current explicit blob-index rebuild helper:
       `PersistCache::rebuild_blob_index_from_pack` builds the verified rebuild
-      plan for one store and replaces only that store's hash-to-offset sidecar
-      with the plan's newest physical pack entries, indexing previously
+      plan for one store while holding that store's same-process same-root
+      blob-index write lock, then replaces only that store's hash-to-offset
+      sidecar with the plan's newest physical pack entries, indexing previously
       unindexed newest records, repairing stale locations, dropping dangling
       entries, and canonicalizing duplicate sidecar history. This is
       caller-driven single-sidecar repair only; live-root selection, blob-pack
-      trimming, full repack/relocation, writer coordination, automatic
-      GC/repair policy, mmap reads, Attic transport, and harness proof remain
-      open (`C-13`/`R-14`).
+      trimming, full repack/relocation, cross-process/raw-writer coordination,
+      automatic GC/repair policy, mmap reads, Attic transport, and harness
+      proof remain open (`C-13`/`R-14`).
 - [x] Current explicit all-blob-index rebuild helper:
       `PersistCache::rebuild_blob_indexes_from_packs` rebuilds the `values/`
       and then `files/` hash-to-offset sidecars from verified pack scans and
-      returns both applied plans. This is sequential and non-transactional: a
-      committed value-index rebuild remains in place if the later file-index
-      rebuild fails. It does not rebuild file-artifact, parse-artifact, or node
-      sidecars, select live roots, trim or repack blobs, coordinate writers, or
-      implement automatic repair/GC policy; mmap reads, Attic transport, and
-      harness proof remain open (`C-13`/`R-14`).
+      returns both applied plans, sharing each selected store's same-process
+      same-root blob-index write lock for its rebuild step. This is sequential
+      and non-transactional: a committed value-index rebuild remains in place
+      if the later file-index rebuild fails. It does not rebuild file-artifact,
+      parse-artifact, or node sidecars, select live roots, trim or repack blobs,
+      coordinate cross-process/raw writers, or implement automatic repair/GC
+      policy; mmap reads, Attic transport, and harness proof remain open
+      (`C-13`/`R-14`).
 - [x] Current idempotent indexed blob materialization substrate:
       `PersistCache::ensure_blob_indexed` reuses an existing sidecar location
       only after the pointed pack record verifies for the requested
@@ -1380,6 +1385,19 @@ alone (`M-1`/`Q-A`).
       two-machine misses, durable filesystem locks/CAS, automatic compaction,
       GC/repack, mmap reads, LMDB/redb indexes, and loom/harness proof remain
       open (`C-13`/`R-4`/`R-14`).
+- [x] Current same-process same-root blob-store maintenance lock precursor:
+      cache-level blob-index compaction, blob-index rebuild, and blob-pack tail
+      trim share the same per-store root-lock registry entries as indexed
+      materialization, so maintenance rewrites for one live canonical cache root
+      serialize with cache-level `ensure_blob_indexed` writes for the selected
+      `values/` or `files/` store. File-pack tail trim also shares the
+      file-artifact and parse-artifact mapping locks while it snapshots those
+      live roots. Poisoned live same-root locks are reported before compaction,
+      rebuild, or trim writes sidecars or truncates a pack. Raw lower-level
+      `PersistBlobIndex`/`append_blob_indexed`/`append_blob` users, different
+      roots, multi-process writers, two-machine races, durable filesystem
+      locks/CAS, LMDB/redb indexes, automatic GC/repack, and loom/harness proof
+      remain open (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process same-root open-initialization lock precursor:
       `PersistCache::open` now creates the caller-supplied root, canonicalizes
       it, acquires a process-local same-root open mutex from the shared weak
@@ -1436,11 +1454,12 @@ alone (`M-1`/`Q-A`).
       `compact_file_artifact_index`, and `compact_parse_artifact_index` expose
       those operations through the opened cache root. Blob-index compaction
       keeps the repaired newest same-key pointer after stale indexed
-      materialization repair while leaving old pack bytes untouched; file/parse
-      artifact compaction shares same-process same-root mapping locks. This is
-      caller-driven maintenance only; automatic compaction/GC policy,
-      cross-process writer coordination, LMDB/redb indexes, pack GC/repack,
-      mmap reads, Attic transport, and harness proof remain open
+      materialization repair while leaving old pack bytes untouched and shares
+      same-process same-root store locks; file/parse artifact compaction shares
+      same-process same-root mapping locks. This is caller-driven maintenance
+      only; automatic compaction/GC policy, cross-process/raw-writer
+      coordination, LMDB/redb indexes, pack GC/repack, mmap reads, Attic
+      transport, and harness proof remain open
       (`C-13`/`R-14`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
@@ -1758,11 +1777,12 @@ alone (`M-1`/`Q-A`).
       counts for the newest entries retained by each sidecar, with
       `PersistCompactionError` preserving the failing sidecar type. This is a
       caller-driven maintenance helper only; it is sequential rather than
-      transactional, requires callers to serialize sidecar writes outside the
-      current artifact/node same-root locks, does not rewrite blob packs or drop
-      unreferenced blobs, and still leaves automatic compaction/GC policy,
-      cross-process writer coordination, LMDB/redb indexes, pack GC/repack,
-      mmap reads, Attic transport, and cached/uncached harness proof open
+      transactional, requires callers to serialize cross-process and raw
+      lower-level sidecar writes that bypass the current same-root locks, does
+      not rewrite blob packs or drop unreferenced blobs, and still leaves
+      automatic compaction/GC policy, cross-process writer coordination,
+      LMDB/redb indexes, pack GC/repack, mmap reads, Attic transport, and
+      cached/uncached harness proof open
       (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the
       all-sidecar compaction cache test.
 - [x] Current explicit storage maintenance sweep:
@@ -1778,9 +1798,10 @@ alone (`M-1`/`Q-A`).
       fails during file-pack trimming, and previously unindexed physical tail
       records become indexed roots before trimming. This is sequential
       caller-driven maintenance only; automatic compaction/GC policy,
-      transactionality across sidecar/rebuild/pack phases, cross-process writer
-      coordination, full pack repack/relocation, LMDB/redb indexes, mmap reads,
-      Attic transport, and cached/uncached harness proof remain open
+      transactionality across sidecar/rebuild/pack phases, cross-process/raw
+      pack or sidecar writer coordination, full pack repack/relocation,
+      LMDB/redb indexes, mmap reads, Attic transport, and cached/uncached
+      harness proof remain open
       (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the storage maintenance cache
       tests.
 - [x] Current force-cache persistent trace writeback:

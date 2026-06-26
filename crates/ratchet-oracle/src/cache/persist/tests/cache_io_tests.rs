@@ -3234,6 +3234,155 @@ fn cache_indexed_materialization_reports_poisoned_same_root_lock() {
 }
 
 #[test]
+fn cache_blob_index_compaction_reports_poisoned_same_root_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = PersistCache::open(&root).expect("second cache opens");
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+            .expect("value blob-index write lock acquires");
+        panic!("poison persistent value blob-index write lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let error = cache
+        .compact_blob_index(PersistBlobStore::Values)
+        .expect_err("poisoned shared value lock should reject blob-index compaction");
+
+    assert!(matches!(
+        error,
+        PersistBlobIndexError::WriteLockPoisoned {
+            store: PersistBlobStore::Values
+        }
+    ));
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_index_rebuild_reports_poisoned_same_root_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = PersistCache::open(&root).expect("second cache opens");
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+            .expect("value blob-index write lock acquires");
+        panic!("poison persistent value blob-index write lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let error = cache
+        .rebuild_blob_index_from_pack(PersistBlobStore::Values)
+        .expect_err("poisoned shared value lock should reject blob-index rebuild");
+
+    assert!(matches!(
+        error,
+        PersistBlobIndexRebuildError::WriteLockPoisoned {
+            store: PersistBlobStore::Values
+        }
+    ));
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_pack_tail_trim_reports_poisoned_same_root_blob_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = PersistCache::open(&root).expect("second cache opens");
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+            .expect("value blob-index write lock acquires");
+        panic!("poison persistent value blob-index write lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let error = cache
+        .trim_blob_pack_tail(PersistBlobStore::Values)
+        .expect_err("poisoned shared value lock should reject value pack trim");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackTrimError::BlobIndex {
+            source: PersistBlobIndexError::WriteLockPoisoned {
+                store: PersistBlobStore::Values
+            }
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_pack_tail_trim_reports_poisoned_same_root_file_artifact_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = PersistCache::open(&root).expect("second cache opens");
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_file_artifacts_for_tests()
+            .expect("file-artifact write lock acquires");
+        panic!("poison persistent file-artifact write lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let error = cache
+        .trim_blob_pack_tail(PersistBlobStore::Files)
+        .expect_err("poisoned shared file-artifact lock should reject file pack trim");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackTrimError::FileArtifactIndex {
+            source: PersistFileArtifactIndexError::WriteLockPoisoned
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_pack_tail_trim_reports_poisoned_same_root_parse_artifact_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = PersistCache::open(&root).expect("second cache opens");
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_parse_artifacts_for_tests()
+            .expect("parse-artifact write lock acquires");
+        panic!("poison persistent parse-artifact write lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let error = cache
+        .trim_blob_pack_tail(PersistBlobStore::Files)
+        .expect_err("poisoned shared parse-artifact lock should reject file pack trim");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackTrimError::ParseArtifactIndex {
+            source: PersistParseArtifactIndexError::WriteLockPoisoned
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_indexed_materialization_replaces_stale_index_location() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

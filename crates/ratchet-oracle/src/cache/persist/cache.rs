@@ -55,12 +55,25 @@ impl PersistRootLocks {
         &self,
         store: PersistBlobStore,
     ) -> Result<MutexGuard<'_, ()>, PersistBlobIndexedWriteError> {
-        let lock = match store {
+        self.blob_store_lock(store)
+            .lock()
+            .map_err(|_| PersistBlobIndexedWriteError::WriteLockPoisoned { store })
+    }
+
+    fn lock_blob_index(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<MutexGuard<'_, ()>, PersistBlobIndexError> {
+        self.blob_store_lock(store)
+            .lock()
+            .map_err(|_| PersistBlobIndexError::WriteLockPoisoned { store })
+    }
+
+    fn blob_store_lock(&self, store: PersistBlobStore) -> &Mutex<()> {
+        match store {
             PersistBlobStore::Values => &self.values,
             PersistBlobStore::Files => &self.files,
-        };
-        lock.lock()
-            .map_err(|_| PersistBlobIndexedWriteError::WriteLockPoisoned { store })
+        }
     }
 
     fn lock_file_artifacts(&self) -> Result<MutexGuard<'_, ()>, PersistFileArtifactIndexError> {
@@ -582,9 +595,8 @@ impl PersistCache {
     /// This explicit maintenance operation rewrites the value and file blob
     /// indexes, file-artifact and parse-artifact indexes, demand-node metadata
     /// index, and node verifying-trace log. It does not rewrite blob packs,
-    /// drop unreferenced blobs, coordinate with other writers, or implement an
-    /// automatic GC policy. Callers must serialize writes to the persistent
-    /// cache while this method runs.
+    /// drop unreferenced blobs, coordinate with cross-process writers or raw
+    /// lower-level sidecar users, or implement an automatic GC policy.
     ///
     /// # Errors
     ///
@@ -630,9 +642,9 @@ impl PersistCache {
     /// previously unindexed tails can become roots instead of reclaimed bytes.
     /// It is sequential and non-transactional: work completed before a later
     /// phase fails remains committed. It does not implement an automatic GC
-    /// policy, relocate live pack records, coordinate with concurrent writers,
-    /// or replace the future LMDB/redb metadata engine. Callers must serialize
-    /// writes to the persistent cache while this method runs.
+    /// policy, relocate live pack records, coordinate with cross-process
+    /// writers or raw lower-level pack or sidecar users, or replace the future
+    /// LMDB/redb metadata engine.
     ///
     /// # Errors
     ///
@@ -1244,19 +1256,21 @@ impl PersistCache {
 
     /// Compacts the selected blob index to the newest entry for every known key.
     ///
-    /// This delegates to [`PersistBlobIndex::compact_latest_entries`]. Callers
-    /// must serialize writes to the selected blob-index sidecar while this
-    /// method runs.
+    /// Same-process writers opened on the same cache root share the selected
+    /// store's blob-index write lock while this method rewrites the sidecar.
+    /// Cross-process writers and raw lower-level sidecar users must still be
+    /// excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobIndexError`] if the selected index cannot be
-    /// created, opened, inspected, read, decoded, written, flushed, or renamed
-    /// into place.
+    /// Returns [`PersistBlobIndexError`] if the same-root blob-index write lock
+    /// is poisoned or if the selected index cannot be created, opened,
+    /// inspected, read, decoded, written, flushed, or renamed into place.
     pub fn compact_blob_index(
         &self,
         store: PersistBlobStore,
     ) -> Result<usize, PersistBlobIndexError> {
+        let _write_guard = self.root_locks.lock_blob_index(store)?;
         self.blob_index(store).compact_latest_entries()
     }
 
@@ -1271,19 +1285,45 @@ impl PersistCache {
     /// without adding a blob-index entry. This can reclaim unindexed trailing
     /// records, including blobs left behind by non-transactional append paths,
     /// but it does not relocate live records or reclaim unindexed records that
-    /// precede a live record. Callers must serialize writes to the selected pack
-    /// and root sidecars while this method runs.
+    /// precede a live record. Same-process writers opened on the same cache
+    /// root share the selected store's blob-index write lock while this method
+    /// snapshots roots and truncates the pack; `files/` trims also share the
+    /// file-artifact and parse-artifact mapping locks. Cross-process writers
+    /// and raw lower-level pack or sidecar users must still be excluded by the
+    /// caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackTrimError`] if a root sidecar cannot be
-    /// snapshotted, if a blob-index entry contains a key for a different store,
-    /// if any latest live blob fails verification, or if the pack cannot be
-    /// inspected or truncated.
+    /// Returns [`PersistBlobPackTrimError`] if a same-root root-sidecar lock is
+    /// poisoned, if a root sidecar cannot be snapshotted, if a blob-index entry
+    /// contains a key for a different store, if any latest live blob fails
+    /// verification, or if the pack cannot be inspected or truncated.
     pub fn trim_blob_pack_tail(
         &self,
         store: PersistBlobStore,
     ) -> Result<PersistBlobPackTrim, PersistBlobPackTrimError> {
+        let _blob_guard = self
+            .root_locks
+            .lock_blob_index(store)
+            .map_err(|source| PersistBlobPackTrimError::BlobIndex { source })?;
+        let _file_artifact_guard = if store == PersistBlobStore::Files {
+            Some(
+                self.root_locks
+                    .lock_file_artifacts()
+                    .map_err(|source| PersistBlobPackTrimError::FileArtifactIndex { source })?,
+            )
+        } else {
+            None
+        };
+        let _parse_artifact_guard = if store == PersistBlobStore::Files {
+            Some(
+                self.root_locks
+                    .lock_parse_artifacts()
+                    .map_err(|source| PersistBlobPackTrimError::ParseArtifactIndex { source })?,
+            )
+        } else {
+            None
+        };
         let blob_entries = self
             .blob_index(store)
             .latest_entries()
@@ -1456,17 +1496,23 @@ impl PersistCache {
     /// previously unindexed, and drops sidecar entries that do not correspond
     /// to a verified physical record in the selected store. It does not choose
     /// live roots, trim pack bytes, relocate records, coordinate with other
-    /// writers, or implement an automatic repair policy. Callers must
-    /// serialize writes to the selected sidecar while this method runs.
+    /// cross-process writers or raw lower-level sidecar users, or implement an
+    /// automatic repair policy.
     ///
     /// # Errors
     ///
     /// Returns [`PersistBlobIndexRebuildError`] if planning fails or if the
-    /// selected sidecar cannot be replaced with the planned entries.
+    /// same-root blob-index write lock is poisoned or the selected sidecar
+    /// cannot be replaced with the planned entries.
     pub fn rebuild_blob_index_from_pack(
         &self,
         store: PersistBlobStore,
     ) -> Result<PersistBlobIndexRebuildPlan, PersistBlobIndexRebuildError> {
+        let _write_guard = self
+            .root_locks
+            .blob_store_lock(store)
+            .lock()
+            .map_err(|_| PersistBlobIndexRebuildError::WriteLockPoisoned { store })?;
         let plan = self
             .plan_blob_index_rebuild(store)
             .map_err(|source| PersistBlobIndexRebuildError::Plan { source })?;
@@ -1483,9 +1529,10 @@ impl PersistCache {
     /// returning the plans that were applied to each sidecar. It is sequential
     /// and non-transactional: if the `files/` rebuild fails, the `values/`
     /// rebuild may already be committed. It does not choose live roots, trim
-    /// pack bytes, relocate records, coordinate with other writers, or
-    /// implement an automatic repair policy. Callers must serialize writes to
-    /// both blob-index sidecars while this method runs.
+    /// pack bytes, relocate records, coordinate with cross-process writers or
+    /// raw lower-level sidecar users, or implement an automatic repair policy.
+    /// Same-process writers opened on the same cache root share each selected
+    /// store's blob-index write lock during its rebuild step.
     ///
     /// # Errors
     ///

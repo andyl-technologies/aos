@@ -427,9 +427,15 @@ pub enum PersistNodeTraceLogError {
     },
 }
 
-/// Fixed-record blob index file IO failed.
+/// Fixed-record blob index operation failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexError {
+    /// The in-process blob-index write lock was poisoned by a prior panic.
+    #[error("persistent blob index write lock for {store:?} is poisoned")]
+    WriteLockPoisoned {
+        /// The blob namespace whose lock could not be acquired.
+        store: PersistBlobStore,
+    },
     /// The index parent directory could not be created.
     #[error("failed to create persistent blob index parent {path:?}")]
     CreateParent {
@@ -692,22 +698,22 @@ pub enum PersistCompactionError {
 /// Persistent blob-pack tail trimming failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobPackTrimError {
-    /// The selected blob index could not be snapshotted.
-    #[error("failed to snapshot persistent blob index before tail trim")]
+    /// The selected blob index could not be locked or snapshotted.
+    #[error("failed to lock or snapshot persistent blob index before tail trim")]
     BlobIndex {
-        /// The underlying blob-index error.
+        /// The underlying blob-index lock or read error.
         source: PersistBlobIndexError,
     },
-    /// The file-artifact index could not be snapshotted.
-    #[error("failed to snapshot persistent file-artifact index before tail trim")]
+    /// The file-artifact index could not be locked or snapshotted.
+    #[error("failed to lock or snapshot persistent file-artifact index before tail trim")]
     FileArtifactIndex {
-        /// The underlying file-artifact index error.
+        /// The underlying file-artifact lock or read error.
         source: PersistFileArtifactIndexError,
     },
-    /// The parse-artifact index could not be snapshotted.
-    #[error("failed to snapshot persistent parse-artifact index before tail trim")]
+    /// The parse-artifact index could not be locked or snapshotted.
+    #[error("failed to lock or snapshot persistent parse-artifact index before tail trim")]
     ParseArtifactIndex {
-        /// The underlying parse-artifact index error.
+        /// The underlying parse-artifact lock or read error.
         source: PersistParseArtifactIndexError,
     },
     /// The selected blob index contained a key for the wrong blob namespace.
@@ -752,6 +758,12 @@ pub enum PersistBlobIndexRebuildPlanError {
 /// Persistent blob-index rebuild failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexRebuildError {
+    /// The same-root blob-index write lock was poisoned.
+    #[error("persistent blob index write lock for {store:?} is poisoned")]
+    WriteLockPoisoned {
+        /// The blob namespace whose lock could not be acquired.
+        store: PersistBlobStore,
+    },
     /// The rebuild plan could not be produced.
     #[error("failed to plan persistent blob index rebuild")]
     Plan {
