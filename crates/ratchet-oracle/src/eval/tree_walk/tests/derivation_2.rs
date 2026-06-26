@@ -630,6 +630,92 @@ fn persistent_static_derivation_output_paths_reuse_preserves_drv_surface() {
 }
 
 #[test]
+fn disabled_eval_cache_option_skips_persistent_derivation_side_records() {
+    let persist_root = unique_temp_dir("derivation-side-records-cache-disabled");
+    let source = r#"derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+    }"#;
+    let ir = lower(source);
+    let uncached = eval_single_derivation_with_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        Arc::new(Mutex::new(EvalCacheRuntime::disabled())),
+    );
+
+    let mut disabled_options = TreeWalkOptions::new();
+    disabled_options.set_persist_cache_root(&persist_root);
+    let disabled = eval_single_derivation_with_cache(
+        &ir,
+        disabled_options,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    assert_eq!(disabled.path, uncached.path);
+    assert_eq!(disabled.aterm, uncached.aterm);
+    assert_eq!(disabled.output_path_reuses, 0);
+    assert_eq!(disabled.path_reuses, 0);
+    let disabled_entries = fs::read_dir(&persist_root)
+        .expect("persistent temp root is readable")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("persistent temp root entries read");
+    assert!(
+        disabled_entries.is_empty(),
+        "eval-cache-disabled derivation side records must not open or write the persistent root"
+    );
+
+    let mut cold_options = enabled_eval_cache_options();
+    cold_options.set_persist_cache_root(&persist_root);
+    let cold = eval_single_derivation_with_cache(
+        &ir,
+        cold_options,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    assert_eq!(cold.path, uncached.path);
+    assert_eq!(cold.aterm, uncached.aterm);
+    assert_eq!(cold.output_path_reuses, 0);
+    assert_eq!(cold.path_reuses, 0);
+    assert!(cold.hash_calculations > 0);
+    assert!(cold.text_path_calculations > 0);
+
+    let mut hit_options = enabled_eval_cache_options();
+    hit_options.set_persist_cache_root(&persist_root);
+    let hit = eval_single_derivation_with_cache(
+        &ir,
+        hit_options,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    assert_eq!(hit.path, uncached.path);
+    assert_eq!(hit.aterm, uncached.aterm);
+    assert_eq!(hit.output_path_reuses, 1);
+    assert_eq!(hit.path_reuses, 1);
+    assert_eq!(hit.hash_calculations, 0);
+    assert_eq!(hit.text_path_calculations, 0);
+
+    let mut disabled_after_seed_options = TreeWalkOptions::new();
+    disabled_after_seed_options.set_persist_cache_root(&persist_root);
+    let disabled_after_seed = eval_single_derivation_with_cache(
+        &ir,
+        disabled_after_seed_options,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    assert_eq!(disabled_after_seed.path, uncached.path);
+    assert_eq!(disabled_after_seed.aterm, uncached.aterm);
+    assert_eq!(disabled_after_seed.output_path_reuses, 0);
+    assert_eq!(disabled_after_seed.path_reuses, 0);
+    assert!(
+        disabled_after_seed.hash_calculations > 0,
+        "eval-cache-disabled derivations must ignore existing persistent static-output records"
+    );
+    assert!(
+        disabled_after_seed.text_path_calculations > 0,
+        "eval-cache-disabled derivations must ignore existing persistent ATerm path records"
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
+#[test]
 fn persistent_static_derivation_output_paths_miss_for_aterm_mismatch_preserves_drv_surface() {
     let persist_root = unique_temp_dir("static-output-path-stale-aterm");
     let source = r#"derivationStrict {

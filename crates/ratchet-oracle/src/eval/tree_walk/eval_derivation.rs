@@ -665,6 +665,9 @@ impl TreeWalk {
         free_var_value_hashes: &[DurableBlake3Hash],
         pre_output_aterm: &[u8],
     ) -> Option<CachedDerivationOutputPaths> {
+        if !self.options.eval_cache_enabled() {
+            return None;
+        }
         self.open_persist_eval_cache();
         let persist_cache = self.persist_cache.as_ref()?;
         let key =
@@ -925,6 +928,9 @@ impl TreeWalk {
         pre_output_aterm: &[u8],
         output_paths: CachedDerivationOutputPaths,
     ) {
+        if !self.options.eval_cache_enabled() {
+            return;
+        }
         self.open_persist_eval_cache();
         let Some(persist_cache) = &self.persist_cache else {
             return;
@@ -1114,6 +1120,9 @@ impl TreeWalk {
         free_var_value_hashes: &[DurableBlake3Hash],
         aterm: &[u8],
     ) -> Option<Vec<u8>> {
+        if !self.options.eval_cache_enabled() {
+            return None;
+        }
         self.open_persist_eval_cache();
         let persist_cache = self.persist_cache.as_ref()?;
         let key =
@@ -1284,6 +1293,9 @@ impl TreeWalk {
         aterm: &[u8],
         drv_path: &[u8],
     ) {
+        if !self.options.eval_cache_enabled() {
+            return;
+        }
         self.open_persist_eval_cache();
         let Some(persist_cache) = &self.persist_cache else {
             return;

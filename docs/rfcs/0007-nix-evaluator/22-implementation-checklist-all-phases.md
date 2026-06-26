@@ -2133,16 +2133,25 @@ alone (`M-1`/`Q-A`).
       file-derived parse artifacts only when `persist_cache_root` is present,
       and `NixNative` keeps `EvalCacheRuntime` disabled when eval-cache
       ingestion is disabled. Forced-expression persistent demand accounting,
-      durable hit selection, value payload writeback, and verifying-trace
-      writeback are gated by `eval_cache_enabled`, so disabled eval-cache
-      observation writes no persistent force metadata even if a test caller
-      configures a persistent root directly; the native expression
+      durable hit selection, value payload writeback, verifying-trace
+      writeback, and derivation ATerm/static-output side-record durable
+      lookup/writeback are gated by `eval_cache_enabled`, so disabled
+      eval-cache observation writes no persistent force or derivation side
+      metadata even if a test caller configures a persistent root directly;
+      the native expression
       disabled-persistent-root canary also proves parse persistence remains
       active while force metadata and trace sidecars stay empty. This covers
       the current parse-cache persistence layer, in-memory impure-trace leaf
-      ingestion, and replayable forced-expression value/trace cache, not full
-      demand/evaluating-node lifecycle, persistent demand graph, generic value
-      memoization, or in-process import result memo
+      ingestion, replayable forced-expression value/trace cache, and
+      derivation side-record persistence, not full demand/evaluating-node
+      lifecycle, persistent demand graph, generic value memoization, or
+      in-process import result memoization. Gates:
+      `eval_config_parses_aos_nix_cache_env_values`,
+      `eval_config_maps_native_cache_root_to_cache_options`,
+      `native_expression_disabled_persistent_root_leaves_force_sidecars_empty`,
+      `disabled_eval_cache_option_skips_persistent_derivation_side_records`,
+      native/tree-walk parse-cache tests, and native/force eval-cache disabled
+      tests.
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [x] Current native raw-instantiation cache-off/cached closure parity canary:
       `native_instantiation_expr_cache_off_on_and_persistent_hit_preserve_drv_closure`
