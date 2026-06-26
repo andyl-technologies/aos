@@ -1372,6 +1372,17 @@ pub enum PersistError {
         /// The underlying filesystem error.
         source: io::Error,
     },
+    /// The cache root could not be canonicalized.
+    #[error("failed to canonicalize persistent cache root {path}")]
+    CanonicalizeRoot {
+        /// The cache root path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The process-local blob write-lock registry was poisoned by a prior panic.
+    #[error("persistent blob write-lock registry is poisoned")]
+    BlobWriteLockRegistryPoisoned,
     /// Existing cache payload could not be discarded after a schema mismatch.
     #[error("failed to discard persistent cache payload {path}")]
     DiscardPayload {

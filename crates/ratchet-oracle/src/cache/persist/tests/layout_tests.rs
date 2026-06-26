@@ -8,7 +8,12 @@ fn open_creates_versioned_layout() {
     let cache = PersistCache::open(&root).expect("cache opens");
     let layout = cache.layout();
 
-    assert_eq!(layout.root(), root.as_path());
+    assert_eq!(
+        layout.root(),
+        fs::canonicalize(&root)
+            .expect("root canonicalizes")
+            .as_path()
+    );
     assert!(layout.nodes_dir().is_dir());
     assert!(layout.values_dir().is_dir());
     assert!(layout.files_dir().is_dir());
@@ -89,6 +94,67 @@ fn open_creates_versioned_layout() {
     assert_eq!(
         fs::read_to_string(layout.schema_path()).expect("schema reads"),
         "format = \"aos-nix-eval-cache\"\nschema_version = 4\n"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn opened_cache_layout_uses_canonical_paths_after_symlink_retarget() {
+    let root = temp_root();
+    let first = root.join("first");
+    let second = root.join("second");
+    let link = root.join("cache-link");
+    fs::create_dir_all(&first).expect("first target creates");
+    fs::create_dir_all(&second).expect("second target creates");
+    std::os::unix::fs::symlink(&first, &link).expect("cache symlink creates");
+
+    let first_cache = PersistCache::open(&link).expect("first symlink cache opens");
+    let first_canonical = fs::canonicalize(&first).expect("first target canonicalizes");
+    assert_eq!(first_cache.layout().root(), first_canonical.as_path());
+    assert!(
+        first_cache
+            .value_pack()
+            .path()
+            .starts_with(&first_canonical)
+    );
+
+    fs::remove_file(&link).expect("cache symlink removes");
+    std::os::unix::fs::symlink(&second, &link).expect("cache symlink retargets");
+    let second_cache = PersistCache::open(&link).expect("second symlink cache opens");
+    let second_canonical = fs::canonicalize(&second).expect("second target canonicalizes");
+    assert_eq!(second_cache.layout().root(), second_canonical.as_path());
+    assert!(
+        second_cache
+            .value_pack()
+            .path()
+            .starts_with(&second_canonical)
+    );
+
+    let payload = b"payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    first_cache
+        .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
+        .expect("first target materializes");
+    second_cache
+        .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
+        .expect("second target materializes");
+
+    assert_eq!(
+        first_cache
+            .value_pack()
+            .records()
+            .expect("first pack records")
+            .len(),
+        1
+    );
+    assert_eq!(
+        second_cache
+            .value_pack()
+            .records()
+            .expect("second pack records")
+            .len(),
+        1
     );
 
     let _ = fs::remove_dir_all(root);

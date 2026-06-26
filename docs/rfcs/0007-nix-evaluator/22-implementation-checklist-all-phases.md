@@ -1350,10 +1350,10 @@ alone (`M-1`/`Q-A`).
       index entry for missing or stale locations, including stale pointers to
       another valid pack record; indexed value payload, file-artifact, and
       parse-artifact materializers use this path so duplicate materialization
-      does not grow `values/` or `files/` packs. This is opened-cache duplicate
-      suppression only; independently opened cache handles, cross-process
-      locking/CAS, automatic compaction, GC/repack, mmap reads, LMDB/redb
-      indexes, and harness proof remain open (`C-13`/`R-14`).
+      does not grow `values/` or `files/` packs. This is same-process duplicate
+      suppression only; cross-process locking/CAS, automatic compaction,
+      GC/repack, mmap reads, LMDB/redb indexes, and harness proof remain open
+      (`C-13`/`R-14`).
 - [x] Current clone-local indexed materialization single-flight precursor:
       cloned `PersistCache` handles now share per-store in-process mutexes
       around the `ensure_blob_indexed` lookup/read/append/index critical
@@ -1362,10 +1362,24 @@ alone (`M-1`/`Q-A`).
       pack record and newest sidecar entry for the selected `values/` or
       `files/` store. This does not compact older append-only sidecar history
       for stale or previously duplicated entries. Raw `append_blob_indexed`
-      calls, separately opened `PersistCache` handles for the same root,
-      multi-process writers, durable filesystem locks/CAS, automatic
+      calls, multi-process writers, durable filesystem locks/CAS, automatic
       compaction, GC/repack, mmap reads, LMDB/redb indexes, and loom/harness
       proof remain open (`C-13`/`R-4`/`R-14`).
+- [x] Current same-process same-root indexed materialization single-flight
+      precursor: independently opened `PersistCache` handles in one process now
+      store canonicalized layout paths and acquire their per-store blob
+      materialization mutexes from a process-local weak registry keyed by the
+      canonical persistent cache root, so simultaneous same-key materialization
+      through separate opens of the same root shares the same
+      `ensure_blob_indexed` critical section. The initially-missing case
+      collapses to one fresh verified pack record and newest sidecar entry for
+      the selected store, a poisoned same-root lock is reported before any
+      append/index write, and an opened symlink-root handle keeps writing the
+      canonical target it opened even if the symlink is retargeted. Schema/open
+      initialization, raw `append_blob_indexed` calls, different roots,
+      multi-process writers, two-machine misses, durable filesystem locks/CAS,
+      automatic compaction, GC/repack, mmap reads, LMDB/redb indexes, and
+      loom/harness proof remain open (`C-13`/`R-4`/`R-14`).
 - [x] Current explicit fixed-record sidecar compaction substrate:
       `PersistBlobIndex`, `PersistFileArtifactIndex`, and
       `PersistParseArtifactIndex` now expose `latest_entries` and

@@ -48,6 +48,30 @@ impl PersistBlobWriteLocks {
     }
 }
 
+static PERSIST_BLOB_WRITE_LOCK_REGISTRY: OnceLock<
+    Mutex<BTreeMap<PathBuf, Weak<PersistBlobWriteLocks>>>,
+> = OnceLock::new();
+
+fn blob_write_locks_for_root(root: &Path) -> Result<Arc<PersistBlobWriteLocks>, PersistError> {
+    let canonical_root =
+        fs::canonicalize(root).map_err(|source| PersistError::CanonicalizeRoot {
+            path: root.to_path_buf(),
+            source,
+        })?;
+    let registry = PERSIST_BLOB_WRITE_LOCK_REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut locks = registry
+        .lock()
+        .map_err(|_| PersistError::BlobWriteLockRegistryPoisoned)?;
+    locks.retain(|_, candidate| candidate.strong_count() > 0);
+    if let Some(existing) = locks.get(&canonical_root).and_then(Weak::upgrade) {
+        return Ok(existing);
+    }
+
+    let created = Arc::new(PersistBlobWriteLocks::new());
+    locks.insert(canonical_root, Arc::downgrade(&created));
+    Ok(created)
+}
+
 /// Entry counts retained by persistent sidecar compaction.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PersistCompaction {
@@ -368,11 +392,23 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistError`] if schema metadata cannot be read, parsed,
-    /// written, if cache directories cannot be created or discarded, or if
-    /// packfiles or sidecar indexes cannot be initialized.
+    /// Returns [`PersistError`] if the cache root cannot be created or
+    /// canonicalized, schema metadata cannot be read, parsed, or written, cache
+    /// payload directories cannot be created or discarded, the process-local
+    /// write-lock registry is poisoned, or packfiles or sidecar indexes cannot
+    /// be initialized.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, PersistError> {
         let layout = PersistLayout::new(root);
+        fs::create_dir_all(layout.root()).map_err(|source| PersistError::CreateDir {
+            path: layout.root().to_path_buf(),
+            source,
+        })?;
+        let layout = PersistLayout::new(fs::canonicalize(layout.root()).map_err(|source| {
+            PersistError::CanonicalizeRoot {
+                path: layout.root().to_path_buf(),
+                source,
+            }
+        })?);
         match read_schema_version(&layout)? {
             Some(PERSIST_CACHE_SCHEMA_VERSION) => {
                 ensure_payload_dirs(&layout)?;
@@ -387,6 +423,7 @@ impl PersistCache {
                 write_schema(&layout)?;
             }
         }
+        let blob_write_locks = blob_write_locks_for_root(layout.root())?;
         let value_pack_path = layout.value_packfile_path();
         let value_pack = PersistBlobPack::open(value_pack_path.clone()).map_err(|source| {
             PersistError::OpenBlobPack {
@@ -453,7 +490,7 @@ impl PersistCache {
             parse_artifact_index,
             node_metadata_index,
             node_trace_log,
-            blob_write_locks: Arc::new(PersistBlobWriteLocks::new()),
+            blob_write_locks,
         })
     }
 
@@ -550,7 +587,7 @@ impl PersistCache {
         ))
     }
 
-    /// Returns this cache's filesystem layout.
+    /// Returns this cache's canonicalized filesystem layout.
     pub const fn layout(&self) -> &PersistLayout {
         &self.layout
     }
