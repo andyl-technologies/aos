@@ -31,6 +31,7 @@ const MAX_CACHED_EXPRESSION_PAYLOAD_NESTING: usize = 64;
 const SOURCE_ORDERED_ATTRS_PAYLOAD_TAG: &[u8] = b"attrs-source-order";
 const POSITIONED_ATTRS_PAYLOAD_TAG: &[u8] = b"attrs-positioned";
 const SOURCE_ORDERED_POSITIONED_ATTRS_PAYLOAD_TAG: &[u8] = b"attrs-source-order-positioned";
+const ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG: &[u8] = b"attrs-position-source-v1";
 const DERIVATION_ATERM_PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] =
     b"aos-nix-derivation-aterm-path-value-hash-v1";
 const STATIC_DERIVATION_OUTPUT_PATHS_VALUE_HASH_DOMAIN_VERSION: &[u8] =
@@ -161,6 +162,7 @@ impl MemoizationObservation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CachedExpressionValue {
     payload: InlineValuePayload,
+    attr_position_source_hash: Option<DurableBlake3Hash>,
 }
 
 /// A cached derivation output store path.
@@ -422,6 +424,7 @@ impl CachedExpressionValue {
     pub fn immediate(value: Value) -> Result<Self, ValueHashError> {
         Ok(Self {
             payload: InlineValuePayload::from_value(value)?,
+            attr_position_source_hash: None,
         })
     }
 
@@ -429,6 +432,7 @@ impl CachedExpressionValue {
     pub fn context_free_string(bytes: Vec<u8>) -> Self {
         Self {
             payload: InlineValuePayload::ContextFreeString(bytes),
+            attr_position_source_hash: None,
         }
     }
 
@@ -441,6 +445,7 @@ impl CachedExpressionValue {
         }
         Self {
             payload: InlineValuePayload::ContextString { bytes, context },
+            attr_position_source_hash: None,
         }
     }
 
@@ -448,6 +453,7 @@ impl CachedExpressionValue {
     pub fn path(bytes: Vec<u8>) -> Self {
         Self {
             payload: InlineValuePayload::Path(bytes),
+            attr_position_source_hash: None,
         }
     }
 
@@ -460,6 +466,7 @@ impl CachedExpressionValue {
         }
         Self {
             payload: InlineValuePayload::ContextPath { bytes, context },
+            attr_position_source_hash: None,
         }
     }
 
@@ -467,6 +474,7 @@ impl CachedExpressionValue {
     pub const fn empty_list() -> Self {
         Self {
             payload: InlineValuePayload::EmptyList,
+            attr_position_source_hash: None,
         }
     }
 
@@ -483,6 +491,7 @@ impl CachedExpressionValue {
             payload: InlineValuePayload::List(
                 elements.into_iter().map(|value| value.payload).collect(),
             ),
+            attr_position_source_hash: None,
         }
     }
 
@@ -522,6 +531,7 @@ impl CachedExpressionValue {
                     })
                     .collect(),
             ),
+            attr_position_source_hash: None,
         })
     }
 
@@ -571,6 +581,7 @@ impl CachedExpressionValue {
                     })
                     .collect(),
             ),
+            attr_position_source_hash: None,
         })
     }
 
@@ -601,6 +612,7 @@ impl CachedExpressionValue {
                     })
                     .collect(),
             ),
+            attr_position_source_hash: None,
         })
     }
 
@@ -642,6 +654,7 @@ impl CachedExpressionValue {
                     })
                     .collect(),
             ),
+            attr_position_source_hash: None,
         })
     }
 
@@ -649,7 +662,19 @@ impl CachedExpressionValue {
     pub const fn empty_attrs() -> Self {
         Self {
             payload: InlineValuePayload::EmptyAttrs,
+            attr_position_source_hash: None,
         }
+    }
+
+    pub(crate) fn with_attr_position_source_hash(mut self, source_hash: DurableBlake3Hash) -> Self {
+        if self.retains_attr_positions() {
+            self.attr_position_source_hash = Some(source_hash);
+        }
+        self
+    }
+
+    pub(crate) const fn attr_position_source_hash(&self) -> Option<DurableBlake3Hash> {
+        self.attr_position_source_hash
     }
 
     /// Returns the durable value hash for this cached payload.
@@ -659,7 +684,18 @@ impl CachedExpressionValue {
     /// Returns [`ValueHashError`] if an immediate scalar payload cannot be
     /// represented as a supported inline value.
     pub fn value_hash(&self) -> Result<ValueHash, ValueHashError> {
-        self.payload.value_hash()
+        if let Some(source_hash) = self.attr_position_source_hash {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG);
+            hasher.update(&source_hash.as_bytes());
+            hasher.update(&self.payload.persistent_payload_len().to_le_bytes());
+            self.payload.update_persistent_payload_preimage(&mut hasher);
+            Ok(ValueHash::from_canonical_value_hash(
+                DurableBlake3Hash::from_hasher(hasher),
+            ))
+        } else {
+            self.payload.value_hash()
+        }
     }
 
     /// Encodes this payload for the persistent `values/` pack.
@@ -675,7 +711,19 @@ impl CachedExpressionValue {
     /// Returns [`CachedExpressionValuePayloadError`] if the encoded payload
     /// cannot reserve enough byte storage.
     pub fn encode_persistent_payload(&self) -> Result<Vec<u8>, CachedExpressionValuePayloadError> {
-        self.payload.encode_persistent_payload()
+        let mut encoded = self.payload.encode_persistent_payload()?;
+        let Some(source_hash) = self.attr_position_source_hash else {
+            return Ok(encoded);
+        };
+        let mut out = Vec::new();
+        append_payload_bytes(&mut out, ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG)?;
+        append_payload_bytes(&mut out, &source_hash.as_bytes())?;
+        append_payload_u128(&mut out, encoded.len() as u128)?;
+        out.try_reserve_exact(encoded.len()).map_err(|_| {
+            CachedExpressionValuePayloadError::PayloadAllocationFailed { len: encoded.len() }
+        })?;
+        out.append(&mut encoded);
+        Ok(out)
     }
 
     /// Decodes a payload produced by [`Self::encode_persistent_payload`].
@@ -687,8 +735,28 @@ impl CachedExpressionValue {
     pub fn decode_persistent_payload(
         bytes: &[u8],
     ) -> Result<Self, CachedExpressionValuePayloadError> {
+        if bytes.starts_with(ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG) {
+            let mut cursor = PayloadCursor::new(bytes);
+            cursor.take_marker(
+                ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG,
+                "attr-position source envelope",
+            )?;
+            let source_hash = DurableBlake3Hash::from_bytes(cursor.take_digest()?);
+            let len = cursor.take_len()?;
+            let payload_bytes = cursor.take_bytes(len)?;
+            let payload = InlineValuePayload::decode_persistent_payload(payload_bytes)?;
+            if !payload.retains_attr_positions() {
+                return Err(CachedExpressionValuePayloadError::PositionSourceWithoutPositions);
+            }
+            cursor.finish()?;
+            return Ok(Self {
+                payload,
+                attr_position_source_hash: Some(source_hash),
+            });
+        }
         Ok(Self {
             payload: InlineValuePayload::decode_persistent_payload(bytes)?,
+            attr_position_source_hash: None,
         })
     }
 
@@ -817,7 +885,10 @@ impl CachedExpressionValue {
                     elements
                         .iter()
                         .cloned()
-                        .map(|payload| CachedExpressionValue { payload }),
+                        .map(|payload| CachedExpressionValue {
+                            payload,
+                            attr_position_source_hash: None,
+                        }),
                 );
                 Some(out)
             }
@@ -879,6 +950,7 @@ impl CachedExpressionValue {
                         entry.name.clone(),
                         CachedExpressionValue {
                             payload: entry.value.clone(),
+                            attr_position_source_hash: None,
                         },
                     )
                 }));
@@ -915,6 +987,7 @@ impl CachedExpressionValue {
                         None,
                         CachedExpressionValue {
                             payload: entry.value.clone(),
+                            attr_position_source_hash: None,
                         },
                     )
                 }));
@@ -930,6 +1003,7 @@ impl CachedExpressionValue {
                         entry.position,
                         CachedExpressionValue {
                             payload: entry.value.clone(),
+                            attr_position_source_hash: None,
                         },
                     )
                 }));
@@ -1066,6 +1140,9 @@ pub enum CachedExpressionValuePayloadError {
     /// A positioned attrset payload used a positioned tag without any positions.
     #[error("cached expression positioned attrset payload has no positioned bindings")]
     PositionlessPositionedAttrsPayload,
+    /// A position-source envelope wrapped a payload with no retained positions.
+    #[error("cached expression attr-position source envelope has no positioned bindings")]
+    PositionSourceWithoutPositions,
     /// Nested payload decoding exceeded the supported recursion depth.
     #[error("cached expression payload nesting exceeded {limit} levels")]
     PayloadNestingLimitExceeded {
@@ -2005,6 +2082,7 @@ impl EvalCache {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct InlineValueRecord {
     payload: InlineValuePayload,
+    attr_position_source_hash: Option<DurableBlake3Hash>,
     value_hash: ValueHash,
     reusable_without_revalidation: bool,
     revalidation_inputs: Option<Vec<CacheableInputFingerprint>>,
@@ -2197,9 +2275,10 @@ impl InlineValueRecord {
         reusable_without_revalidation: bool,
         revalidation_inputs: Option<Vec<CacheableInputFingerprint>>,
     ) -> Result<Self, ValueHashError> {
-        let value_hash = value.payload.value_hash()?;
+        let value_hash = value.value_hash()?;
         Ok(Self {
             payload: value.payload,
+            attr_position_source_hash: value.attr_position_source_hash,
             value_hash,
             reusable_without_revalidation,
             revalidation_inputs,
@@ -2209,6 +2288,7 @@ impl InlineValueRecord {
     fn value(&self) -> CachedExpressionValue {
         CachedExpressionValue {
             payload: self.payload.clone(),
+            attr_position_source_hash: self.attr_position_source_hash,
         }
     }
 
@@ -3251,6 +3331,13 @@ impl<'a> PayloadCursor<'a> {
         let mut out = [0; 16];
         out.copy_from_slice(bytes);
         Ok(u128::from_le_bytes(out))
+    }
+
+    fn take_digest(&mut self) -> Result<[u8; 32], CachedExpressionValuePayloadError> {
+        let bytes = self.take_bytes(32)?;
+        let mut out = [0; 32];
+        out.copy_from_slice(bytes);
+        Ok(out)
     }
 
     fn take_len(&mut self) -> Result<usize, CachedExpressionValuePayloadError> {

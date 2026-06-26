@@ -5017,6 +5017,7 @@ fn rejected_force_observation_clears_persistent_value_link() {
         metadata_identity: Some(identity),
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     evaluator.observe_forced_inline_expression_result(
@@ -5092,6 +5093,7 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
         metadata_identity: Some(identity),
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     PersistCache::open(&persist_root)
@@ -5265,6 +5267,7 @@ fn unsupported_force_payload_clears_persistent_value_link() {
         metadata_identity: Some(identity),
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     evaluator.observe_forced_inline_expression_result(
@@ -6613,6 +6616,7 @@ fn strict_attrset_payloads_rehydrate_after_heap_lookup() {
         metadata_identity: Some(identity),
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
@@ -6675,6 +6679,7 @@ fn strict_attrset_payloads_preserve_position_bearing_attrsets_in_memory() {
         metadata_identity: Some(identity),
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        replay_position_module: Some(EvalModuleId::ROOT),
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
@@ -6942,6 +6947,7 @@ fn source_ordered_attrset_payloads_rehydrate_after_heap_lookup() {
         metadata_identity: Some(identity),
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
@@ -7038,6 +7044,7 @@ fn context_path_payloads_rehydrate_after_heap_lookup() {
         metadata_identity: Some(identity),
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
@@ -9832,22 +9839,26 @@ fn persistent_positioned_attrset_payloads_rehydrate_binding_positions() {
 }
 
 #[test]
-fn imported_positioned_attrsets_skip_persistence_until_module_positions_are_stable() {
+fn imported_module_positioned_attrsets_replay_with_module_position_remap() {
     let persist_root = unique_temp_dir("force-cache-persistent-imported-positioned-attrs");
     let root = fs::canonicalize(unique_temp_dir(
         "force-cache-persistent-imported-positioned-attrs-source",
     ))
     .expect("source root canonicalizes");
-    fs::write(root.join("dep.nix"), b"{ b = 1; }").expect("import source writes");
-    let source = "{ a = import ./dep.nix; }";
+    let dep_source = "{ a = { b = 1; }; }";
+    fs::write(root.join("dep.nix"), dep_source.as_bytes()).expect("import source writes");
+    fs::write(root.join("other.nix"), b"{ z = 0; }").expect("other import source writes");
+    let source = "{ dep = import ./dep.nix; other = import ./other.nix; }";
     let ir = lower(source);
-    let a = symbol_for(&ir, b"a");
+    let dep = symbol_for(&ir, b"dep");
+    let other = symbol_for(&ir, b"other");
     let mut options = TreeWalkOptions::new();
     options.set_eval_cache_enabled(true);
     options.set_persist_cache_root(&persist_root);
     options
         .set_path_literal_base(path_bytes(&root))
         .expect("path base configures");
+    let (expected_line, expected_column) = source_line_column(dep_source, "b = 1");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
 
     let mut first = TreeWalk::with_options_and_source_and_eval_cache(
@@ -9858,25 +9869,37 @@ fn imported_positioned_attrsets_skip_persistence_until_module_positions_are_stab
         cache.clone(),
     );
     let root_value = first.eval_root().expect("attrset evaluates");
-    let thunk_value = {
+    let a = first.symbols.intern(b"a").expect("a interns");
+    let dep_value = {
         let attrs = first
             .heap()
             .get_attrs(root_value)
             .expect("attrset is heap-owned");
-        attrs.get(a).expect("a exists")
+        attrs.get(dep).expect("dep import exists")
+    };
+    let dep_attrs_value = first
+        .force_admitted_value(ir.root, Span::new(0, 0), dep_value)
+        .expect("dep import force succeeds");
+    let misses_before_a = first.stats().cache_misses();
+    let thunk_value = {
+        let attrs = first
+            .heap()
+            .get_attrs(dep_attrs_value)
+            .expect("dep import evaluates to an attrset");
+        attrs.get(a).expect("imported a exists")
     };
     let subject = {
         let thunk = first
             .heap()
             .get_thunk(thunk_value)
-            .expect("a remains a suspended thunk");
+            .expect("a remains a suspended imported thunk");
         first
             .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
-            .expect("import force-cache subject builds")
+            .expect("imported a force-cache subject builds")
     };
     let identity = subject
         .metadata_identity
-        .expect("import force-cache subject has persistent metadata identity");
+        .expect("imported a force-cache subject has persistent metadata identity");
     let key = PersistNodeMetadataKey::for_expression(
         identity,
         subject.free_var_value_hashes.iter().copied(),
@@ -9887,7 +9910,7 @@ fn imported_positioned_attrsets_skip_persistence_until_module_positions_are_stab
         .expect("prior-run demand records");
     let forced = first
         .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
-        .expect("imported attrset force succeeds");
+        .expect("imported a force succeeds");
     let b = first.symbols.intern(b"b").expect("b interns");
     let attrs = first
         .heap()
@@ -9904,34 +9927,34 @@ fn imported_positioned_attrsets_skip_persistence_until_module_positions_are_stab
         "fixture must produce a non-root module binding position"
     );
     assert_eq!(first.stats().cache_hits(), 0);
-    assert_eq!(first.stats().cache_misses(), 1);
+    assert_eq!(first.stats().cache_misses(), misses_before_a + 1);
     drop(first);
-    assert_eq!(
+    assert!(
         cache
             .lock()
             .expect("cache lock is valid")
             .cache()
             .expect("cache is enabled")
-            .len(),
-        0,
-        "imported-module positioned payloads must not populate the shared in-memory force cache"
+            .len()
+            >= 1,
+        "imported-module positioned payloads should populate the shared in-memory force cache"
     );
 
     let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
-    assert_eq!(
+    assert!(
         persist
             .load_cached_expression_node_value_indexed(key)
-            .expect("persistent value lookup succeeds"),
-        None,
-        "imported-module positioned payloads must not materialize until module ids are stable"
+            .expect("persistent value lookup succeeds")
+            .is_some(),
+        "imported-module positioned payloads should materialize with own-module remapping"
     );
     assert!(
         persist
             .lookup_node_trace(key)
             .expect("persistent trace lookup succeeds")
-            .map(|trace| trace.payload().is_tombstone())
-            .unwrap_or(true),
-        "imported-module positioned payloads must leave no live persistent trace"
+            .map(|trace| !trace.payload().is_tombstone())
+            .unwrap_or(false),
+        "imported-module positioned payloads should record a live persistent trace"
     );
     drop(persist);
 
@@ -9940,10 +9963,48 @@ fn imported_positioned_attrsets_skip_persistence_until_module_positions_are_stab
         options,
         "default.nix",
         source,
-        cache,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
     );
-    let forced = force_attr_a(&mut second, &ir, a);
+    let root_value = second.eval_root().expect("second attrset evaluates");
+    let (other_value, dep_value) = {
+        let attrs = second
+            .heap()
+            .get_attrs(root_value)
+            .expect("second root is an attrset");
+        (
+            attrs.get(other).expect("other import exists"),
+            attrs.get(dep).expect("dep import exists"),
+        )
+    };
+    let other_attrs_value = second
+        .force_admitted_value(ir.root, Span::new(0, 0), other_value)
+        .expect("other import force succeeds");
+    let z = second.symbols.intern(b"z").expect("z interns");
+    let other_attrs = second
+        .heap()
+        .get_attrs(other_attrs_value)
+        .expect("other import evaluates to an attrset");
+    assert_eq!(other_attrs.get(z).expect("z exists").as_int(), Ok(0));
+    let dep_attrs_value = second
+        .force_admitted_value(ir.root, Span::new(0, 0), dep_value)
+        .expect("dep import force succeeds");
+    let second_a = second.symbols.intern(b"a").expect("a interns");
+    let thunk_value = {
+        let attrs = second
+            .heap()
+            .get_attrs(dep_attrs_value)
+            .expect("dep import evaluates to an attrset");
+        attrs.get(second_a).expect("imported a exists")
+    };
+    let hits_before_a = second.stats().cache_hits();
+    let misses_before_a = second.stats().cache_misses();
+    let forced = second
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("imported a force succeeds");
     let b = second.symbols.intern(b"b").expect("b interns");
+    let file = second.symbols.intern(b"file").expect("file interns");
+    let line = second.symbols.intern(b"line").expect("line interns");
+    let column = second.symbols.intern(b"column").expect("column interns");
     let attrs = second
         .heap()
         .get_attrs(forced)
@@ -9951,13 +10012,164 @@ fn imported_positioned_attrsets_skip_persistence_until_module_positions_are_stab
     assert_eq!(attrs.get(b).expect("b exists").as_int(), Ok(1));
     assert_eq!(
         second.stats().cache_hits(),
-        0,
-        "fresh runtime must recompute instead of replaying non-root module positions"
+        hits_before_a + 1,
+        "fresh runtime should replay imported-module positions through the persistent cache"
     );
-    assert_eq!(second.stats().cache_misses(), 1);
+    assert_eq!(second.stats().cache_misses(), misses_before_a);
     assert!(
-        second.persist_force_cache_hit_keys.is_empty(),
-        "non-root positioned attrsets must not be durable hits"
+        !second.persist_force_cache_hit_keys.is_empty(),
+        "imported-module positioned attrsets should record durable hits"
+    );
+    let position = second
+        .eval_unsafe_get_attr_pos_attrs_value(
+            ir.root,
+            Span::new(0, 0),
+            b,
+            ir.root,
+            Span::new(0, source.len() as u32),
+            forced,
+        )
+        .expect("unsafeGetAttrPos succeeds after persistent hit");
+    let position_attrs = second
+        .heap()
+        .get_attrs(position)
+        .expect("unsafeGetAttrPos returns an attrset");
+    let file_value = position_attrs.get(file).expect("file exists");
+    let file_string = second
+        .heap()
+        .get_string(file_value)
+        .expect("file is a string");
+    assert_eq!(
+        file_string.bytes(),
+        path_bytes(&root.join("dep.nix")),
+        "remapped cached binding position should point at the current imported source"
+    );
+    assert_eq!(
+        position_attrs.get(line).expect("line exists").as_int(),
+        Ok(expected_line as i64)
+    );
+    assert_eq!(
+        position_attrs.get(column).expect("column exists").as_int(),
+        Ok(expected_column as i64)
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+    fs::remove_dir_all(root).expect("source temp tree removed");
+}
+
+#[test]
+fn stale_unprovenanced_positioned_payloads_miss_and_clear_for_imported_subjects() {
+    let persist_root = unique_temp_dir("force-cache-stale-unprovenanced-positioned-attrs");
+    let root = fs::canonicalize(unique_temp_dir(
+        "force-cache-stale-unprovenanced-positioned-attrs-source",
+    ))
+    .expect("source root canonicalizes");
+    fs::write(root.join("dep.nix"), b"{ a = { b = 1; }; }").expect("import source writes");
+    let source = "import ./dep.nix";
+    let ir = lower(source);
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = evaluator.eval_root().expect("import evaluates");
+    let a = evaluator.symbols.intern(b"a").expect("a interns");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root_value)
+            .expect("import evaluates to an attrset");
+        attrs.get(a).expect("imported a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a suspended imported thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("imported a subject builds")
+    };
+    let identity = subject
+        .metadata_identity
+        .expect("imported a has persistent metadata identity");
+    let key = PersistNodeMetadataKey::for_expression(
+        identity,
+        subject.free_var_value_hashes.iter().copied(),
+    );
+    let stale_payload = CachedExpressionValue::positioned_attrs(vec![(
+        b"b".to_vec(),
+        Some(AttrPosition::new(
+            EvalModuleId::ROOT.as_u32(),
+            Span::new(0, 1),
+        )),
+        CachedExpressionValue::immediate(Value::int(99)).expect("stale int payload builds"),
+    )])
+    .expect("stale positioned attrset payload builds");
+    let stale_value_hash = stale_payload.value_hash().expect("stale payload hashes");
+    {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        runtime
+            .observe_inline_expression_payload(
+                identity,
+                subject.free_var_value_hashes.iter().copied(),
+                stale_payload.clone(),
+            )
+            .expect("stale runtime payload seeds");
+    }
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            key,
+            &stale_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("stale persistent payload materializes");
+    persist
+        .record_node_trace(key, stale_value_hash, &persistent_empty_trace_payload())
+        .expect("stale persistent trace records");
+    drop(persist);
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("imported a force recomputes after stale miss");
+    let b = evaluator.symbols.intern(b"b").expect("b interns");
+    let attrs = evaluator
+        .heap()
+        .get_attrs(forced)
+        .expect("forced a is an attrset");
+    assert_eq!(
+        attrs.get(b).expect("b exists").as_int(),
+        Ok(1),
+        "stale unprovenanced positioned payload must not replay as the imported value"
+    );
+    assert_eq!(evaluator.stats().cache_hits(), 0);
+    assert_eq!(evaluator.stats().cache_misses(), 1);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "stale unprovenanced payloads clear the durable value link"
+    );
+    assert!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds")
+            .map(|trace| trace.payload().is_tombstone())
+            .unwrap_or(false),
+        "stale unprovenanced payloads tombstone the durable trace"
     );
 
     fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
@@ -10062,6 +10274,7 @@ fn materialized_replayable_attrset_capture_hashes_key_runtime_payloads() {
         metadata_identity: Some(identity),
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: vec![hash],
+        replay_position_module: None,
         memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));

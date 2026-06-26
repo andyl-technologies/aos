@@ -481,11 +481,11 @@ impl TreeWalk {
         let Some(identity) = identity else {
             return;
         };
-        if !payload.attr_positions_all_in_module(EvalModuleId::ROOT.as_u32()) {
+        let Some(payload) = self.prepare_observable_payload_for_subject(payload, &subject) else {
             self.invalidate_cached_forced_expression_payload(&subject);
             self.clear_persist_forced_expression_payload(&subject);
             return;
-        }
+        };
 
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
@@ -604,7 +604,10 @@ impl TreeWalk {
         if !self.options.eval_cache_enabled() {
             return None;
         }
-        if !payload.attr_positions_all_in_module(EvalModuleId::ROOT.as_u32()) {
+        if self
+            .payload_position_remap_for_subject(payload, subject)
+            .is_none()
+        {
             self.clear_persist_forced_expression_payload(subject);
             return None;
         }
@@ -1230,7 +1233,10 @@ impl TreeWalk {
             &mut revalidator,
         ) {
             Ok(Some(payload)) => {
-                if !payload.attr_positions_all_in_module(EvalModuleId::ROOT.as_u32()) {
+                if self
+                    .payload_position_remap_for_subject(&payload, &subject)
+                    .is_none()
+                {
                     if let Err(error) = cache.invalidate_inline_expression_payload(
                         identity,
                         subject.free_var_value_hashes.iter().copied(),
@@ -1249,7 +1255,9 @@ impl TreeWalk {
                 }
                 let trace = revalidator.into_revalidated_trace();
                 drop(cache);
-                let Some(value) = self.value_for_cached_expression_payload(payload) else {
+                let Some(value) =
+                    self.value_for_cached_expression_payload_for_subject(payload, &subject)
+                else {
                     self.increment_eval_cache_miss();
                     return None;
                 };
@@ -1312,12 +1320,16 @@ impl TreeWalk {
                 return None;
             }
         };
-        if !payload.attr_positions_all_in_module(EvalModuleId::ROOT.as_u32()) {
+        if self
+            .payload_position_remap_for_subject(&payload, subject)
+            .is_none()
+        {
             self.clear_persist_forced_expression_payload(subject);
             return None;
         }
         let trace = revalidator.into_revalidated_trace();
-        let value = self.value_for_cached_expression_payload(payload.clone())?;
+        let value =
+            self.value_for_cached_expression_payload_for_subject(payload.clone(), subject)?;
         self.observe_persist_forced_expression_runtime_hit(subject, payload, &trace);
         for fingerprint in trace {
             self.record_impure_input(fingerprint);
@@ -1388,17 +1400,77 @@ impl TreeWalk {
         }
     }
 
-    fn value_for_cached_expression_payload(
+    fn value_for_cached_expression_payload_for_subject(
         &mut self,
         payload: CachedExpressionValue,
+        subject: &ForceCacheSubject,
     ) -> Option<Value> {
-        self.value_for_cached_expression_payload_with_depth(payload, 0)
+        let position_remap = self.payload_position_remap_for_subject(&payload, subject)?;
+        self.value_for_cached_expression_payload_with_depth(payload, 0, position_remap)
+    }
+
+    fn prepare_observable_payload_for_subject(
+        &self,
+        payload: CachedExpressionValue,
+        subject: &ForceCacheSubject,
+    ) -> Option<CachedExpressionValue> {
+        if !payload.retains_attr_positions() {
+            return Some(payload);
+        }
+        let module = subject.replay_position_module?;
+        if !payload.attr_positions_all_in_module(module.as_u32()) {
+            return None;
+        }
+        let source_hash = self.cache_module_identity_hash_for_id(module)?;
+        Some(payload.with_attr_position_source_hash(source_hash))
+    }
+
+    fn payload_position_remap_for_subject(
+        &self,
+        payload: &CachedExpressionValue,
+        subject: &ForceCacheSubject,
+    ) -> Option<Option<(u32, u32)>> {
+        if !payload.retains_attr_positions() {
+            return Some(None);
+        }
+        let target_module = subject.replay_position_module?;
+        let source_hash = self.cache_module_identity_hash_for_id(target_module)?;
+        if payload.attr_position_source_hash()? != source_hash {
+            return None;
+        }
+        let target = target_module.as_u32();
+        let mut modules = BTreeSet::new();
+        payload.collect_attr_position_modules(&mut modules);
+        let mut modules = modules.into_iter();
+        let source = modules.next()?;
+        if modules.next().is_some() {
+            return None;
+        }
+        Some(Some((source, target)))
+    }
+
+    fn cache_module_identity_hash_for_id(&self, module: EvalModuleId) -> Option<DurableBlake3Hash> {
+        Self::cache_module_identity_hash(self.modules.get(module.index())?)
+    }
+
+    fn remap_cached_attr_position(
+        position: AttrPosition,
+        position_remap: Option<(u32, u32)>,
+    ) -> Option<AttrPosition> {
+        let Some((source, target)) = position_remap else {
+            return Some(position);
+        };
+        if position.module != source {
+            return None;
+        }
+        Some(AttrPosition::new(target, position.span))
     }
 
     fn value_for_cached_expression_payload_with_depth(
         &mut self,
         payload: CachedExpressionValue,
         depth: usize,
+        position_remap: Option<(u32, u32)>,
     ) -> Option<Value> {
         if depth > FORCE_CACHE_PAYLOAD_MAX_DEPTH {
             return None;
@@ -1430,6 +1502,7 @@ impl TreeWalk {
                 elements.push(self.value_for_cached_expression_payload_with_depth(
                     element,
                     depth.saturating_add(1),
+                    position_remap,
                 )?);
             }
             return self.heap.alloc_list(NixList::new(elements)).ok();
@@ -1445,9 +1518,13 @@ impl TreeWalk {
                 let value = self.value_for_cached_expression_payload_with_depth(
                     value_payload,
                     depth.saturating_add(1),
+                    position_remap,
                 )?;
                 let entry = match position {
-                    Some(position) => AttrEntry::with_position(symbol, value, position),
+                    Some(position) => {
+                        let position = Self::remap_cached_attr_position(position, position_remap)?;
+                        AttrEntry::with_position(symbol, value, position)
+                    }
                     None => AttrEntry::new(symbol, value),
                 };
                 entries.push(entry);
@@ -1543,6 +1620,7 @@ impl TreeWalk {
                     metadata_identity: lookup_identity,
                     persistent_clear_identity: impure_observation_identity,
                     free_var_value_hashes,
+                    replay_position_module: Some(body.module()),
                     memoization_admission,
                 })
             }
@@ -1630,6 +1708,7 @@ impl TreeWalk {
             metadata_identity: lookup_identity,
             persistent_clear_identity: observation_identity,
             free_var_value_hashes: Vec::new(),
+            replay_position_module: None,
             memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
         })
     }
@@ -1660,6 +1739,7 @@ impl TreeWalk {
             metadata_identity: Some(identity),
             persistent_clear_identity: Some(identity),
             free_var_value_hashes,
+            replay_position_module: None,
             memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
         })
     }

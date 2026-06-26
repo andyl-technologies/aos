@@ -543,9 +543,12 @@ alone (`M-1`/`Q-A`).
       whose existing spine elements are non-thunk replayable payloads or
       suspended closed literal thunks with replayable static payloads, or a
       replayable Nix attrset that preserves source-order metadata and
-      root-module binding source positions when present and whose existing
+      root-or-own-module binding source positions when present and whose existing
       bindings are non-thunk replayable payloads or suspended closed literal
-      thunks with replayable static payloads. The
+      thunks with replayable static payloads. Position-bearing observations are
+      admitted only when every retained binding position belongs to the forced
+      expression's own module, and admitted payloads carry that module's
+      source-identity hash as replay provenance. The
       precursor expression identity uses a domain-separated hash of source name,
       source bytes, module path-literal base, evaluator-option salt, and the
       lowered node source span, then pairs that expression-positioned artifact
@@ -563,10 +566,12 @@ alone (`M-1`/`Q-A`).
       thunks, canonical free-variable hashes, general memo lookup,
       remaining suspended non-literal/non-replayable captured thunk-cell free
       variables, arbitrary lazy-element list and lazy-binding attrset payloads,
-      non-root/imported
+      multi-module or non-own-module
       binding-position persistence and module-source remapping, and other
       composite value hashing, persistence, and cached/uncached harness proof remain open
-      (`S-14`/`S-15`). The gate includes positioned attrset force-cache hit and
+      (`S-14`/`S-15`). The gate includes positioned attrset force-cache hit,
+      imported own-module positioned attrset replay/remap, stale unprovenanced
+      positioned payload miss/clear, and
       `unsafeGetAttrPos` provenance canaries.
 - [x] Current pure closed force-cache hit substrate: `EvalCache` keeps per-node
       scalar/string/path/replayable-list/replayable-attrset payload records beside demand-graph value
@@ -576,12 +581,16 @@ alone (`M-1`/`Q-A`).
       evaluating a policy-admitted newly claimed closed source-backed thunk whose
       entire body subtree is both speculable and in the conservative
       self-contained IR-kind whitelist. Hits publish immediate scalars directly and rehydrate
-      context-free string bytes, context-bearing string bytes plus context, path bytes with or without context, replayable Nix lists, or replayable Nix attrsets with source-order metadata and root-module binding source positions into the evaluator-local heap before finishing
-      the thunk cell; closed literal lazy list elements and attrset bindings
+      context-free string bytes, context-bearing string bytes plus context, path bytes with or without context, replayable Nix lists, or replayable Nix attrsets with source-order metadata and root-or-own-module binding source positions into the evaluator-local heap before finishing
+      the thunk cell, remapping retained own-module attr positions to the
+      current body module on replay only when the payload carries matching
+      module-source provenance; closed literal lazy list elements and attrset bindings
       rehydrate as strict static replayable payload values, so thunk identity
       and laziness from the cold run are not preserved across the cached
       payload. Disabled runtimes, unknown nodes, dirty nodes, missing payloads,
-      stale payloads, and non-root positioned payloads are misses. This is a scalar/string/path/replayable-list/replayable-attrset
+      stale payloads, unprovenanced positioned payloads, and incompatible,
+      multi-module, or non-own positioned
+      payloads are misses. This is a scalar/string/path/replayable-list/replayable-attrset
       pure/local hit path only: source-less raw eval outside the
       lowered-IR-backed node-thunk subset, captured dynamic/scoped-global
       thunks, ambient/synthetic builtin values outside the admitted constant subset,
@@ -589,13 +598,16 @@ alone (`M-1`/`Q-A`).
       explicit option and impure-input keys, synthetic apply/select
       thunks, canonical free-variable hashes, remaining suspended
       non-literal/non-replayable captured thunk-cell free variables, arbitrary
-      non-literal lazy-element lists and lazy-binding attrsets, non-root/imported
+      non-literal lazy-element lists and lazy-binding attrsets, broader
+      multi-module/non-own
       binding-position module-source remapping, and other composite payloads,
       transitive dirty scheduling, persistence, `derivationStrict` SHA-256
       short-circuiting, and cached/uncached harness proof remain open
       (`S-14`/`S-15`). The gate includes `cache::runtime` lookup tests,
       source-backed force-cache hit/skip tests, positioned attrset
-      hit/provenance canaries, imported-position skip canary, and closed-literal lazy composite hit canaries.
+      hit/provenance canaries, imported own-module positioned attrset replay/remap
+      canary, stale unprovenanced positioned payload miss/clear canary, and
+      closed-literal lazy composite hit canaries.
 - [x] Current force-time inline impure-edge substrate: tree-walk force slices the
       impure-input trace observed while a closed source-backed thunk body
       evaluates, and
@@ -869,13 +881,17 @@ alone (`M-1`/`Q-A`).
       replayable attrset payloads whose binding names and value payloads are
       length-framed in separate durable BLAKE3 domains, and
       position-bearing attrset payload records whose binding position-presence
-      tags, module ids, and source spans participate in the hash; attrset
+      tags, module ids, and source spans participate in the hash; source-provenanced
+      positioned result payloads additionally include the retained module
+      source-identity hash in the persistent value preimage; attrset
       hashing uses raw-byte-sorted binding order for canonical attrsets and
       distinct source-order tags when construction order is observable.
-      Arbitrary non-literal lazy-element list and lazy-binding attrset cacheability, non-root/imported position-bearing attrset replay, functions/thunks cacheability
+      Arbitrary non-literal lazy-element list and lazy-binding attrset cacheability, multi-module/non-own-module position-bearing attrset replay, functions/thunks cacheability
       policy, generic hash-cons value fields, `force_memoized` integration, and
       harness proof remain open (`S-14`/`S-15`). The gate includes positioned
-      attrset payload lookup/hash/root-position persistence coverage and
+      attrset payload lookup/hash/root-position persistence coverage,
+      own-module imported positioned attrset replay/remap coverage, stale
+      unprovenanced positioned payload miss/clear coverage, and
       source-salted positioned captured attrset hash coverage.
 - [x] Current inline-value early-cutoff adapter:
       `DemandGraph::reconsider_inline_value_node` and
@@ -1530,11 +1546,13 @@ alone (`M-1`/`Q-A`).
       `decode_persistent_payload` round-trip the current replayable force-cache
       payload set (inline scalars, context-free strings, context-bearing
       strings, path payloads with or without context, replayable lists, and
-      replayable attrsets including source-order-tagged and position-bearing attrsets) as the canonical BLAKE3 preimage used by
+      replayable attrsets including source-order-tagged, position-bearing, and
+      source-provenanced position-bearing attrsets) as the canonical BLAKE3 preimage used by
       `ValueHash`, so hashing the encoded bytes yields the payload's durable
       value-hash digest. The decoder rejects malformed and non-canonical
       string-context payloads, malformed/truncated nested list element payloads,
-      malformed attr-position tags, positionless positioned-attrset tags, and
+      malformed attr-position tags, source-provenance envelopes without retained
+      positions, positionless positioned-attrset tags, and
       malformed/non-canonical attrset binding payloads including duplicate source-order binding names. `PersistCache::materialize_cached_expression_value_indexed`,
       `materialize_cached_expression_value_indexed_with_signals`, and
       `load_cached_expression_value_indexed` write and read those payloads
@@ -1703,18 +1721,21 @@ alone (`M-1`/`Q-A`).
       apply-node identity, builtin name, and argument value hash. Hits
       rehydrate replayable payloads into the
       current evaluator heap, preserving source-order attrset metadata and
-      root-module binding source positions when the durable payload carries those attrset
-      tags, seed the caller-owned in-memory runtime with the
+      root-or-own-module binding source positions when the durable payload carries those attrset
+      tags, remapping single-module retained attr positions to the current body
+      module only when the payload's source-provenance hash matches the current
+      body module source, seed the caller-owned in-memory runtime with the
       payload and any revalidated input edges, record fresh revalidated impure
       inputs into the enclosing evaluation trace when present, record
       current-run persistent demand, and count the result as a cache hit.
       Missing/stale/tombstoned traces, value-hash mismatches, unavailable
       persistent roots, persistent read errors, stale impure observations,
-      missing value blobs, unsupported payload rehydration, and non-root
-      positioned payloads all fall back to ordinary forcing and clear stale
+      missing value blobs, unsupported payload rehydration, unprovenanced stale
+      positioned payloads, and incompatible, multi-module, or non-own positioned
+      payloads all fall back to ordinary forcing and clear stale
       durable payload links. This is replayable forced-expression hit selection only:
       no dirty propagation beyond revalidation miss fallback, lazy-element list
-      or lazy-binding attrset values, non-root/imported binding-position
+      or lazy-binding attrset values, broader multi-module/non-own binding-position
       module-source remapping, transactionality with value
       materialization, currentTime taint propagation through persisted
       dependents, automatic compaction/GC, mmap reads, and cached/uncached
