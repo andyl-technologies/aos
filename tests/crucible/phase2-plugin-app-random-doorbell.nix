@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginAppRandomDoorbell",
-  taskIds ? ["T-PLUG-27"],
+  taskIds ? ["T-PLUG-27" "T-DET-31"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -13,6 +13,7 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   ghcSpec = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   execSpec = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
@@ -72,7 +73,21 @@
     forbiddenCallbackApis;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismSpec [
+      {
+        label = "T-DET-31 checklist complete";
+        needle = "- [x] **T-DET-31**";
+      }
+      {
+        label = "T-DET-31 completion note names app-random doorbell check";
+        needle = "`checks.crucible.phase2.qemuPluginAppRandomDoorbell`";
+      }
+      {
+        label = "T-DET-31 completion note distinguishes fw_cfg";
+        needle = "ambient `fw_cfg` entropy";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
         label = "T-PLUG-27 checklist complete";
         needle = "- [x] **T-PLUG-27**";
@@ -350,13 +365,17 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
+            gate=gate:layer0-determinism
             tasks=${taskList}
             doorbell_kind=random_request
+            whitebox_opt_in=required
             decision=Decision::AppRandom
             source=seeded-decision-source-trait
             reply=trap-icount-host-to-guest-injection
             malformed=decode-diagnostic-and-drop
             zero_requests=no-decisions-no-replies
+            zero_requests_byte_identical=true
+            ambient_fw_cfg_entropy=not-app-random-source
             RESULT
           '';
         }

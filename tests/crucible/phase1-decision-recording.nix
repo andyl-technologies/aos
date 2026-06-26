@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.decisionRecording",
-  taskIds ? ["T-DET-16" "T-EXEC-19" "T-EXEC-20"],
+  taskIds ? ["T-DET-16" "T-EXEC-19" "T-EXEC-20" "T-DET-31"],
 }: let
   root = ../..;
   decisionRust = builtins.readFile ../../crates/crucible/src/decision.rs;
@@ -187,6 +187,10 @@
         label = "T-DET-16 checklist complete";
         needle = "- [x] **T-DET-16**";
       }
+      {
+        label = "T-DET-31 checklist complete";
+        needle = "- [x] **T-DET-31**";
+      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -262,15 +266,20 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
+            gate=gate:layer0-determinism
             tasks=${builtins.concatStringsSep "," taskIds}
             crate=crucible
             recorder=DecisionRecorder
             rng_source=crucible-sim::DecisionRng
+            app_random_source=single-seeded-decision-rng
+            app_random_stream_fork=per-node-stream-name
+            app_random_records=RngDraw+Decision::AppRandom
             schedule_records=rng-draw,fault-fires,app-random,preemption-override
             default_preemption=derived-audit-only
             app_random_request_id=caller-supplied
             app_random_override=recorded-value-no-reroll
             engine_ambient_randomness=false
+            ambient_fw_cfg_entropy=separate-launch-entropy
             RESULT
           '';
         }

@@ -9,6 +9,11 @@
   qemuDeterministicGetrandom = import ./phase1-qemu-deterministic-getrandom.nix {inherit pkgs lib;};
   guestEntropyLaunch = import ./phase1-guest-entropy-launch.nix {inherit pkgs lib;};
   kaslrAslrDefault = import ./phase1-kaslr-aslr-default.nix {inherit pkgs lib;};
+  decisionRecording = import ./phase1-decision-recording.nix {
+    inherit pkgs lib;
+    attrPath = "checks.crucible.phase1.decisionRecording";
+    taskIds = ["T-DET-31"];
+  };
   contractAIsolation = import ./phase1-contract-a-isolation.nix {inherit pkgs lib;};
   qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {
     inherit pkgs lib;
@@ -19,6 +24,11 @@
     inherit pkgs lib;
     attrPath = "checks.crucible.phase1.qemuPluginPreemption";
     taskIds = ["T-DET-30"];
+  };
+  qemuPluginAppRandomDoorbell = import ./phase2-plugin-app-random-doorbell.nix {
+    inherit pkgs lib;
+    attrPath = "checks.crucible.phase1.qemuPluginAppRandomDoorbell";
+    taskIds = ["T-DET-31"];
   };
   timeContractADeterminism = import ./phase1-time-contract-a-determinism.nix {inherit pkgs lib;};
   timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix {inherit pkgs lib;};
@@ -213,6 +223,14 @@
         label = "phase1 exposes deterministic IPI evidence";
         needle = "qemuPluginPreemption = import ./phase2-plugin-preemption.nix";
       }
+      {
+        label = "phase1 exposes app-random doorbell evidence";
+        needle = "qemuPluginAppRandomDoorbell = import ./phase2-plugin-app-random-doorbell.nix";
+      }
+      {
+        label = "phase1 exposes decision recording evidence";
+        needle = "decisionRecording = import ./phase1-decision-recording.nix";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
       {
@@ -222,6 +240,10 @@
       {
         label = "T-DET-30 checklist complete";
         needle = "- [x] **T-DET-30**";
+      }
+      {
+        label = "T-DET-31 checklist complete";
+        needle = "- [x] **T-DET-31**";
       }
     ];
 in
@@ -308,6 +330,17 @@ in
               "gate=gate:layer0-determinism" \
               "tasks=T-DET-6" \
               "global_default=nokaslr,norandmaps"
+            require_leaf ${decisionRecording} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-31" \
+              "rng_source=crucible-sim::DecisionRng" \
+              "app_random_source=single-seeded-decision-rng" \
+              "app_random_stream_fork=per-node-stream-name" \
+              "app_random_records=RngDraw+Decision::AppRandom" \
+              "app_random_request_id=caller-supplied" \
+              "app_random_override=recorded-value-no-reroll" \
+              "engine_ambient_randomness=false" \
+              "ambient_fw_cfg_entropy=separate-launch-entropy"
             require_leaf ${contractAIsolation} \
               "gate=gate:layer0-determinism" \
               "tasks=T-DET-7,T-DET-28" \
@@ -346,6 +379,17 @@ in
               "ipi_latency_model=fixed-node-icount" \
               "ipi_delivery_path=preemption-injector-commanded-icount" \
               "ipi_realtime_delivery=false"
+            require_leaf ${qemuPluginAppRandomDoorbell} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-31" \
+              "doorbell_kind=random_request" \
+              "whitebox_opt_in=required" \
+              "decision=Decision::AppRandom" \
+              "source=seeded-decision-source-trait" \
+              "reply=trap-icount-host-to-guest-injection" \
+              "zero_requests=no-decisions-no-replies" \
+              "zero_requests_byte_identical=true" \
+              "ambient_fw_cfg_entropy=not-app-random-source"
             require_leaf ${timeContractADeterminism} \
               "gate=gate:layer0-determinism" \
               "tasks=T-TIME-8" \
@@ -446,7 +490,9 @@ in
             evidence.E22=qemuPluginPreemption.deterministic_ipi_delivery+ipi_delivery_path+ipi_realtime_delivery
             evidence.E23=qemuMultiVcpuLaunch.cpu_model_scope+per_vcpu_tsc_source+per_vcpu_rng_source+per_vcpu_rng_timing_axis+qemuDeterministicEntropy.qemu_seed_option_controls_guest_random+qemuDeterministicGetrandom.qemu_guest_getrandom_sim_unseeded_policy
             evidence.E24=qemuMultiVcpuLaunch.vcpu_topology+runtime_cpu_hotplug+secondary_vcpu_bringup
-            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,qemuDeterministicGetrandom,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,qemuMultiVcpuLaunch,qemuPluginPreemption,timeContractADeterminism,timeMultiVcpuAggregateClock,clockDeadline,noWarpWithPlugin,pluginTimeAdvance,icountNoRealtime,blockRtcRead,singleVmFingerprint
+            evidence.DET44=decisionRecording.app_random_source+app_random_stream_fork+app_random_records+qemuPluginAppRandomDoorbell.whitebox_opt_in+zero_requests_byte_identical+guestEntropyLaunch.firmware_seed_source
+            app_random_ambient_fw_cfg_distinct=true
+            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,qemuDeterministicGetrandom,guestEntropyLaunch,kaslrAslrDefault,decisionRecording,contractAIsolation,qemuMultiVcpuLaunch,qemuPluginPreemption,qemuPluginAppRandomDoorbell,timeContractADeterminism,timeMultiVcpuAggregateClock,clockDeadline,noWarpWithPlugin,pluginTimeAdvance,icountNoRealtime,blockRtcRead,singleVmFingerprint
             RESULT
           '';
         }

@@ -102,6 +102,11 @@ in {
       attrPath = "checks.crucible.phase1.qemuPluginPreemption";
       taskIds = ["T-DET-30"];
     };
+    qemuPluginAppRandomDoorbell = import ./phase2-plugin-app-random-doorbell.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase1.qemuPluginAppRandomDoorbell";
+      taskIds = ["T-DET-31"];
+    };
     qemuNetDeterministic = import ./phase1-qemu-net-deterministic.nix {inherit pkgs lib;};
     qemuNetTxCallback = import ./phase1-qemu-net-tx-callback.nix {inherit pkgs lib;};
     qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix {inherit pkgs lib;};
@@ -150,6 +155,7 @@ in {
           "T-DET-28"
           "T-DET-29"
           "T-DET-30"
+          "T-DET-31"
           "T-DET-8"
           "T-DET-9"
           "T-DET-10"
