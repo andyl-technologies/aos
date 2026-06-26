@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionReadyPoint",
-  taskIds ? ["T-EXEC-9"],
+  taskIds ? ["T-EXEC-9" "T-SPAT-6"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -16,6 +16,7 @@
   qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -50,6 +51,24 @@
       {
         label = "T-EXEC-9 completion note";
         needle = "Completed by `crates/crucible/src/model.rs`: `World::from_nodes` builds";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+      {
+        label = "T-SPAT-6 checked off";
+        needle = "- [x] **T-SPAT-6**";
+      }
+      {
+        label = "T-SPAT-6 completion names ReadyPoint";
+        needle = "the `ReadyPoint` enum includes";
+      }
+      {
+        label = "T-SPAT-6 completion names white-box opt-in";
+        needle = "rejects `AgentSignal` unless";
+      }
+      {
+        label = "T-SPAT-6 completion names ready-point gate";
+        needle = "`checks.crucible.phase1.executionReadyPoint`";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -247,6 +266,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             related_gates=gate:content-address,gate:any-guest
             ready_point_policies=fixed-icount,network-idle,console-marker,agent-signal
+            spatial_graph_task=ready-point-policy-set-white-box-opt-in
             white_box_agent_signal=requires-opt-in
             bake_ready_point_determinism=content-identical-per-policy
             qemu_bake_ready_point_validation=rejects-invalid-agent-signal-before-executor
