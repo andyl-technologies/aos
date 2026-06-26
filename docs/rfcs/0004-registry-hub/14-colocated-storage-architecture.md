@@ -426,12 +426,20 @@ green.
       rewrites `?N`→`?` with appearance-order expansion. Data was migrated D1→
       `HubDb` via a seal-gated `/_admin/sql` replay (FK-ordered, DELETE-then-
       INSERT to clear migration-seeded rows), re-gated behind `cutover-admin`.
-  - **Follow-up (not in the running system):** the native CLI's deploy/seed
-      tooling in `cloudflare.rs` (`render_wrangler_toml`'s D1 block, `provision`'s
-      D1 creation, and `WranglerD1Backend` / the `--target d1:` init/migrate/
-      registry-add commands) still contains D1 code. Removing it means rewiring
-      the CLI's data ops to target `HubDb` through the worker API — tracked as the
-      remaining D1-code-removal task.
+  - **CLI D1 code removed too — DONE.** The blocker was root bootstrap (the old
+      `worker install` wrote the root admin directly to D1). Replaced by a shared
+      [`Database::bootstrap_root`] + a seal-gated `HubDb` `POST
+      /_admin/bootstrap-root` endpoint (runs it over `SqlDoBackend`); `worker
+      install` calls it (auto on `--domain`, else prints `worker bootstrap-root
+      --url …`). Then deleted `WranglerD1Backend` + the D1 row parsing,
+      `resolve_d1_id`/`parse_d1_id`, `d1_create_args`/`d1_list_args`, `D1_BINDING`,
+      the `[[d1_databases]]` render block, `DeployConfig.d1_name/d1_id`,
+      `--d1-name`, and the D1 unit tests; `open_db` is `local`-only; `provision`
+      creates no D1. **No D1 code remains anywhere.** Endpoint validated live
+      (creates a user, 403 without the seal). *Operator notes:* rotate the
+      cutover `HUB_SEAL_KEY`; and a throwaway verification created a test admin
+      `x@y.com` (weak password) that must be deleted (the seal-gated `/_admin/sql`
+      cutover tool can, via a one-off `cutover-admin` build).
 
 ### Cross-cutting gates (every phase)
 
