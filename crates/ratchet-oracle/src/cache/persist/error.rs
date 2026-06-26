@@ -754,6 +754,23 @@ pub enum PersistBlobIndexRebuildError {
     },
 }
 
+/// Rebuilding all persistent blob-index sidecars failed.
+#[derive(Debug, Error)]
+pub enum PersistBlobIndexesRebuildError {
+    /// The `values/` blob index could not be rebuilt.
+    #[error("failed to rebuild persistent value blob index")]
+    ValueBlobIndex {
+        /// The underlying single-index rebuild error.
+        source: PersistBlobIndexRebuildError,
+    },
+    /// The `files/` blob index could not be rebuilt.
+    #[error("failed to rebuild persistent file blob index")]
+    FileBlobIndex {
+        /// The underlying single-index rebuild error.
+        source: PersistBlobIndexRebuildError,
+    },
+}
+
 /// Persistent storage maintenance failed.
 #[derive(Debug, Error)]
 pub enum PersistStorageMaintenanceError {

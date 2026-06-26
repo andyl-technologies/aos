@@ -808,6 +808,122 @@ fn cache_blob_index_rebuild_from_pack_rejects_corrupt_pack_without_rewriting_sid
 }
 
 #[test]
+fn cache_blob_indexes_rebuild_from_packs_repairs_value_and_file_sidecars() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let value_payload = b"all rebuild value payload";
+    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(value_payload));
+    let value_location = cache
+        .append_blob(value_key, value_payload)
+        .expect("value blob appends");
+    let file_payload = b"all rebuild file payload";
+    let file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_payload));
+    let file_location = cache
+        .append_blob(file_key, file_payload)
+        .expect("file blob appends");
+
+    let rebuild = cache
+        .rebuild_blob_indexes_from_packs()
+        .expect("blob indexes rebuild");
+
+    assert!(rebuild.lookup_repair_needed());
+    assert_eq!(
+        rebuild.value_blob_index().missing_entries(),
+        &[PersistBlobIndexEntry::new(value_key, value_location)]
+    );
+    assert_eq!(
+        rebuild.file_blob_index().missing_entries(),
+        &[PersistBlobIndexEntry::new(file_key, file_location)]
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(value_key)
+            .expect("value lookup succeeds"),
+        Some(value_location)
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(file_key)
+            .expect("file lookup succeeds"),
+        Some(file_location)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_indexes_rebuild_from_packs_keeps_value_rebuild_when_file_rebuild_fails() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let value_payload = b"boundary value payload";
+    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(value_payload));
+    let value_location = cache
+        .append_blob(value_key, value_payload)
+        .expect("value blob appends");
+    let file_payload = b"boundary corrupt file payload";
+    let file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_payload));
+    let file_location = cache
+        .append_blob(file_key, file_payload)
+        .expect("file blob appends");
+    let file_sentinel_entry = PersistBlobIndexEntry::new(
+        PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"file sentinel")),
+        PersistBlobLocation::new(888, 6),
+    );
+    cache
+        .file_index()
+        .append_entry(file_sentinel_entry)
+        .expect("file sentinel sidecar entry records");
+    let payload_offset = file_location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(cache.file_pack().path())
+        .expect("file pack opens for mutation");
+    file.seek(SeekFrom::Start(payload_offset))
+        .expect("payload offset seeks");
+    file.write_all(b"X").expect("payload corrupts");
+    file.flush().expect("payload corruption flushes");
+
+    let error = cache
+        .rebuild_blob_indexes_from_packs()
+        .expect_err("file rebuild errors");
+
+    assert!(matches!(
+        error,
+        PersistBlobIndexesRebuildError::FileBlobIndex {
+            source: PersistBlobIndexRebuildError::Plan {
+                source: PersistBlobIndexRebuildPlanError::Pack {
+                    source: PersistBlobPackError::PayloadHashMismatch { .. },
+                },
+            },
+        }
+    ));
+    assert_eq!(
+        cache
+            .lookup_blob_location(value_key)
+            .expect("value lookup succeeds"),
+        Some(value_location),
+        "value sidecar rebuild should remain committed after file rebuild failure"
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(file_key)
+            .expect("file lookup succeeds"),
+        None,
+        "failed file-side planning should not rewrite the file sidecar"
+    );
+    assert_eq!(
+        cache
+            .file_index()
+            .latest_entries()
+            .expect("file sidecar still scans"),
+        vec![file_sentinel_entry],
+        "failed file-side planning should preserve existing file sidecar entries"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

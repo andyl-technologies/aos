@@ -1233,6 +1233,15 @@ alone (`M-1`/`Q-A`).
       trimming, full repack/relocation, writer coordination, automatic
       GC/repair policy, mmap reads, Attic transport, and harness proof remain
       open (`C-13`/`R-14`).
+- [x] Current explicit all-blob-index rebuild helper:
+      `PersistCache::rebuild_blob_indexes_from_packs` rebuilds the `values/`
+      and then `files/` hash-to-offset sidecars from verified pack scans and
+      returns both applied plans. This is sequential and non-transactional: a
+      committed value-index rebuild remains in place if the later file-index
+      rebuild fails. It does not rebuild file-artifact, parse-artifact, or node
+      sidecars, select live roots, trim or repack blobs, coordinate writers, or
+      implement automatic repair/GC policy; mmap reads, Attic transport, and
+      harness proof remain open (`C-13`/`R-14`).
 - [x] Current idempotent indexed blob materialization substrate:
       `PersistCache::ensure_blob_indexed` reuses an existing sidecar location
       only after the pointed pack record verifies for the requested

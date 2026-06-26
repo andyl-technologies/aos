@@ -109,13 +109,14 @@ mod materialization;
 mod pack;
 
 pub use cache::{
-    PersistBlobIndexRebuildPlan, PersistBlobIndexStaleEntry, PersistBlobPackTrim, PersistCache,
-    PersistCompaction, PersistStorageMaintenance,
+    PersistBlobIndexRebuild, PersistBlobIndexRebuildPlan, PersistBlobIndexStaleEntry,
+    PersistBlobPackTrim, PersistCache, PersistCompaction, PersistStorageMaintenance,
 };
 pub use error::{
     PersistBlobIndexError, PersistBlobIndexRebuildError, PersistBlobIndexRebuildPlanError,
-    PersistBlobIndexedReadError, PersistBlobIndexedWriteError, PersistBlobPackError,
-    PersistBlobPackTrimError, PersistCachedExpressionNodeValueIndexedLoadError,
+    PersistBlobIndexedReadError, PersistBlobIndexedWriteError, PersistBlobIndexesRebuildError,
+    PersistBlobPackError, PersistBlobPackTrimError,
+    PersistCachedExpressionNodeValueIndexedLoadError,
     PersistCachedExpressionNodeValueIndexedWriteError,
     PersistCachedExpressionNodeValueTraceLoadError, PersistCachedExpressionValueIndexedLoadError,
     PersistCachedExpressionValueIndexedWriteError, PersistCompactionError, PersistError,

@@ -253,6 +253,40 @@ impl PersistBlobIndexRebuildPlan {
     }
 }
 
+/// Plans returned by rebuilding both blob-index sidecars.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PersistBlobIndexRebuild {
+    value_blob_index: PersistBlobIndexRebuildPlan,
+    file_blob_index: PersistBlobIndexRebuildPlan,
+}
+
+impl PersistBlobIndexRebuild {
+    const fn new(
+        value_blob_index: PersistBlobIndexRebuildPlan,
+        file_blob_index: PersistBlobIndexRebuildPlan,
+    ) -> Self {
+        Self {
+            value_blob_index,
+            file_blob_index,
+        }
+    }
+
+    /// Returns the rebuild plan applied to the `values/` blob index.
+    pub fn value_blob_index(&self) -> &PersistBlobIndexRebuildPlan {
+        &self.value_blob_index
+    }
+
+    /// Returns the rebuild plan applied to the `files/` blob index.
+    pub fn file_blob_index(&self) -> &PersistBlobIndexRebuildPlan {
+        &self.file_blob_index
+    }
+
+    /// Returns whether either applied plan observed pre-rebuild lookup differences.
+    pub fn lookup_repair_needed(&self) -> bool {
+        self.value_blob_index.lookup_repair_needed() || self.file_blob_index.lookup_repair_needed()
+    }
+}
+
 fn blob_record_end(location: PersistBlobLocation) -> Result<u64, PersistBlobPackError> {
     let payload_start = location
         .record_offset()
@@ -1225,6 +1259,36 @@ impl PersistCache {
             .replace_entries(&plan.planned_entries)
             .map_err(|source| PersistBlobIndexRebuildError::Write { source })?;
         Ok(plan)
+    }
+
+    /// Rebuilds both blob-index sidecars from their verified packs.
+    ///
+    /// This explicit maintenance helper runs
+    /// [`Self::rebuild_blob_index_from_pack`] for `values/` and then `files/`,
+    /// returning the plans that were applied to each sidecar. It is sequential
+    /// and non-transactional: if the `files/` rebuild fails, the `values/`
+    /// rebuild may already be committed. It does not choose live roots, trim
+    /// pack bytes, relocate records, coordinate with other writers, or
+    /// implement an automatic repair policy. Callers must serialize writes to
+    /// both blob-index sidecars while this method runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexesRebuildError`] identifying the sidecar whose
+    /// rebuild failed. Earlier sidecars may already have been rewritten.
+    pub fn rebuild_blob_indexes_from_packs(
+        &self,
+    ) -> Result<PersistBlobIndexRebuild, PersistBlobIndexesRebuildError> {
+        let value_blob_index = self
+            .rebuild_blob_index_from_pack(PersistBlobStore::Values)
+            .map_err(|source| PersistBlobIndexesRebuildError::ValueBlobIndex { source })?;
+        let file_blob_index = self
+            .rebuild_blob_index_from_pack(PersistBlobStore::Files)
+            .map_err(|source| PersistBlobIndexesRebuildError::FileBlobIndex { source })?;
+        Ok(PersistBlobIndexRebuild::new(
+            value_blob_index,
+            file_blob_index,
+        ))
     }
 
     /// Appends a blob and records its location in the sidecar index.
