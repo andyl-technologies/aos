@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionLiveSnapshot",
-  taskIds ? ["T-EXEC-15" "T-SESS-2"],
+  taskIds ? ["T-EXEC-15" "T-SESS-2" "T-PAT-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -18,6 +18,7 @@
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   sessionControlPlane = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
+  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -228,6 +229,20 @@
         label = "T-SESS-2 completion names live snapshot gate";
         needle = "`checks.crucible.phase1.executionLiveSnapshot`";
       }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+      {
+        label = "T-PAT-1 checked off";
+        needle = "- [x] **T-PAT-1**";
+      }
+      {
+        label = "T-PAT-1 completion names live snapshot mirror";
+        needle = "publish the `LiveSnapshot` mirror";
+      }
+      {
+        label = "T-PAT-1 completion names live snapshot gate";
+        needle = "`checks.crucible.phase1.executionLiveSnapshot`";
+      }
     ];
 in
   if failures != []
@@ -301,6 +316,7 @@ in
             reads=mailbox-free
             progress=monotone-quanta
             control_responsive_bound=quanta-delta-lte-1
+            pattern_PAT_1=bounded-actor-loop-live-mirror
             RESULT
           '';
         }

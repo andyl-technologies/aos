@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionEngineStateMachine",
-  taskIds ? ["T-EXEC-14" "T-SESS-2"],
+  taskIds ? ["T-EXEC-14" "T-SESS-2" "T-PAT-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -16,6 +16,7 @@
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   sessionControlPlane = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
+  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -191,6 +192,24 @@
         label = "T-SESS-2 completion names engine state-machine gate";
         needle = "`checks.crucible.phase1.executionEngineStateMachine`";
       }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+      {
+        label = "T-PAT-1 checked off";
+        needle = "- [x] **T-PAT-1**";
+      }
+      {
+        label = "T-PAT-1 completion names closed run states";
+        needle = "`EngineState` is the\n    closed Loaded/Running/Paused/Stopped run-state enum";
+      }
+      {
+        label = "T-PAT-1 completion names bounded run_once loop";
+        needle = "`SessionActor::run`\n    delegates to bounded `run_once` iterations";
+      }
+      {
+        label = "T-PAT-1 completion names engine state-machine gate";
+        needle = "`checks.crucible.phase1.executionEngineStateMachine`";
+      }
     ];
 in
   if failures != []
@@ -265,6 +284,7 @@ in
             yield=inter-quantum-cooperative
             command_yield=post-command-cooperative
             session_actor_loop=poll-command-or-step-one-quantum-publish-yield
+            pattern_PAT_1=enum-states-bounded-actor-loop
             RESULT
           '';
         }
