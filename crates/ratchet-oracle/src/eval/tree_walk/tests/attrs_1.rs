@@ -7187,6 +7187,123 @@ fn captured_suspended_computed_thunks_do_not_build_force_cache_subjects() {
 }
 
 #[test]
+fn dynamic_with_scoped_thunks_do_not_build_force_cache_subjects() {
+    let source = "with { x = 1; }; { a = x + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "with-scoped-force-cache.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a node thunk");
+        assert!(
+            !thunk
+                .with_scope_env()
+                .expect("a captures dynamic with scopes")
+                .scopes()
+                .is_empty(),
+            "fixture must exercise a captured dynamic with scope"
+        );
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "dynamic with-scoped thunks must not be hashed into demand keys"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("with-scoped attr force succeeds");
+
+    assert_eq!(forced.as_int(), Ok(3));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "with-scoped thunk subjects should skip expression node allocation"
+    );
+}
+
+#[test]
+fn scoped_import_global_thunks_do_not_build_force_cache_subjects() {
+    let root = fs::canonicalize(unique_temp_dir("force-cache-scoped-import-subject"))
+        .expect("temp directory canonicalizes");
+    fs::write(root.join("scoped.nix"), b"{ a = x + 1; }").expect("scoped import source writes");
+    let source = "builtins.scopedImport { x = 2; } ./scoped.nix";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "scoped-import-force-cache.nix",
+        source,
+        cache.clone(),
+    );
+    let a = evaluator.symbols.intern(b"a").expect("a interns");
+    let imported = evaluator.eval_root().expect("scoped import evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(imported)
+            .expect("import result is an attrset");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a node thunk");
+        assert!(
+            !thunk
+                .scoped_global_env()
+                .expect("a captures scoped-import globals")
+                .scopes()
+                .is_empty(),
+            "fixture must exercise scoped-import globals"
+        );
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "scoped-import global thunks must not be hashed into demand keys"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("scoped-import attr force succeeds");
+
+    assert_eq!(forced.as_int(), Ok(3));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "scoped-import global thunk subjects should skip expression node allocation"
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
 fn captured_empty_lists_use_free_variable_hashes() {
     let source = "let f = x: { a = x == x; }; in { a = (f []).a; }";
     let ir = lower(source);
