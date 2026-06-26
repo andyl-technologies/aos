@@ -7,6 +7,13 @@ exercises every load-bearing decision; P2 changes only discovery efficiency,
 the bounding mechanism, and eval speed — not the registry format, the module
 contract, or the generations.
 
+Each item below is realized by a field-level contract in
+[`build-spec.md`](build-spec.md) and verified by a definition-of-done in
+[`acceptance-criteria.md`](acceptance-criteria.md); the forks/open-questions it
+once depended on are locked in [`decisions.md`](decisions.md). The combination is
+intended to be **goal-mode-executable** — no consequential design choice is left
+to the implementer.
+
 ## T0 — Characterization suite (the FIRST code in the PR; green on master before any refactor)
 
 Pin current behavior so every later phase runs under a regression net. Written
@@ -197,8 +204,9 @@ keep an Ignition-compat fallback (see [`provisioning.md`](provisioning.md) §Pha
 ### Review-driven hardening
 
 Findings folded in from the adversarial review (full log:
-[`known-issues.md`](known-issues.md)). The three **forks (F1/F2/F3)** need a call
-before the items marked ⟂ are implementable.
+[`known-issues.md`](known-issues.md)). The forks (F1/F2/F3) are **resolved** in
+[`decisions.md`](decisions.md); the items marked ⟂ are now unblocked and their
+mechanisms are specified in [`build-spec.md`](build-spec.md).
 
 - [ ] ⟂ **F1 — anchor the evaluator/base-lib root to measured boot**: dm-verity
       on the erofs root with the roothash on the measured kernel cmdline
