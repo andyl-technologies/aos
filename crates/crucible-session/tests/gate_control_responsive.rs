@@ -3,15 +3,15 @@
 #![forbid(unsafe_code)]
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperation, ControlOperationKind,
-    Decision, DeliveryOrderDecision, EventKey, GenesisCheckpoint, NodeId, QuantumLoop,
-    QuantumOutcome, QuantumRequest, ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError,
+    Checkpoint, CheckpointKind, Configuration, ControlOperation, ControlOperationKind, Decision,
+    DeliveryOrderDecision, EventKey, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome,
+    QuantumRequest, ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError,
     SchedulerNodeId, SchedulingNodeKind, TemporalGraph, VirtualTime, step,
 };
 use crucible_session::{Engine, LiveStateKind, SessionActor, SessionCommand};
 use tokio::sync::mpsc;
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip() {
     let scenario = generated_scenario(31);
     let config = Configuration::genesis(scenario.clone());
@@ -44,6 +44,7 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
     assert_eq!(last.state_kind, LiveStateKind::Running);
     assert!(last.event_log_len >= last.quanta_stepped);
     send_command(&sender, SessionCommand::Stop).await;
+    let stop_requested_after = live.read();
 
     let mut stop_acknowledged = false;
     for _ in 0..128 {
@@ -66,6 +67,14 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
     };
 
     assert!(report.quanta >= last.quanta_stepped);
+    assert!(report.quanta >= stop_requested_after.quanta_stepped);
+    let quanta_after_stop_request = report
+        .quanta
+        .saturating_sub(stop_requested_after.quanta_stepped);
+    assert!(
+        quanta_after_stop_request <= 1,
+        "stop command should be acknowledged within one post-request quantum, observed {quanta_after_stop_request}"
+    );
     assert_eq!(report.final_snapshot.quanta, report.quanta);
 }
 
@@ -125,16 +134,16 @@ fn graph_with_baked_genesis(scenario: &ScenarioDef) -> TemporalGraph {
 }
 
 fn genesis_checkpoint(configuration: &Configuration) -> GenesisCheckpoint {
-    GenesisCheckpoint {
-        checkpoint: Checkpoint::new(
-            ContentHash::from_canonical_material(
-                "crucible.session.gate-control-responsive.baked-genesis",
-                &format!("{:?}", configuration.id().bytes),
-            ),
-            configuration.id(),
-            CheckpointKind::Fat,
-        ),
-    }
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        configuration,
+        None,
+        VirtualTime::default(),
+        std::collections::BTreeMap::new(),
+        CheckpointKind::Fat,
+        std::collections::BTreeMap::new(),
+    )
+    .unwrap_or_else(|error| panic!("genesis checkpoint should be recorded-shaped: {error}"));
+    GenesisCheckpoint { checkpoint }
 }
 
 fn generated_scenario(seed: u64) -> ScenarioDef {

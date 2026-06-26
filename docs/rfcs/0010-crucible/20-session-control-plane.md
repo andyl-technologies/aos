@@ -1042,11 +1042,23 @@ pub enum SessionError {
   and event-log writer, mutated only on the task, reached only by message; assert
   (lint + test) no long-held lock guards the engine across a run. — satisfies
   [SESS-1], [SESS-7]; spec §1, §3.
-- [ ] **T-SESS-2** Implement the bounded-quantum actor loop (poll mailbox →
+- [x] **T-SESS-2** Implement the bounded-quantum actor loop (poll mailbox →
   apply one command or step one quantum → publish mirror → yield), with
   inter-quantum mailbox polls and a quanta-measured acknowledgement bound; wire
   `gate:control-responsive`. — satisfies [SESS-2], [SESS-3], [SESS-8], [SESS-9];
   spec §3.
+  - Completed by `crates/crucible-session/src/lib.rs`: `SessionActor::run`
+    delegates to a bounded `run_once` loop that polls deferred commands and
+    `mpsc::Receiver::try_recv` before each running quantum, applies at most one
+    boundary command or calls `Engine::step_quantum` once, publishes the
+    `LiveSnapshot` mirror after command transitions and quanta, and yields with
+    `tokio::task::yield_now` after every applied command or scheduler quantum.
+    Focused tests cover
+    command-before-quantum ordering, one-quantum running iterations,
+    command-driven bounded steps, and monotone live progress; the session-side
+    `gate_control_responsive` target observes mailbox-free live progress and
+    one-quantum stop acknowledgement. `checks.crucible.phase1.executionEngineStateMachine`
+    and `checks.crucible.phase1.executionLiveSnapshot` gate the task.
 - [ ] **T-SESS-3** Implement the lifecycle state machine (closed run-states
   Loaded/Running/Paused/Stopped; `PauseReason` and `Outcome` types) and the
   total (state, command) transition table; build the exhaustive/property model

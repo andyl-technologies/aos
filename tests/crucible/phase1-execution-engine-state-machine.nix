@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionEngineStateMachine",
-  taskIds ? ["T-EXEC-14"],
+  taskIds ? ["T-EXEC-14" "T-SESS-2"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -15,6 +15,7 @@
   sessionManifest = builtins.readFile ../../crates/crucible-session/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  sessionControlPlane = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -115,6 +116,10 @@
         needle = "tokio::task::yield_now().await;";
       }
       {
+        label = "command path cooperative yield";
+        needle = "self.commands_applied = self.commands_applied.saturating_add(1);\n        tokio::task::yield_now().await;";
+      }
+      {
         label = "scheduler quantum boundary";
         needle = "drive_quantum(QuantumRequest";
       }
@@ -163,6 +168,28 @@
       {
         label = "T-EXEC-14 completion note";
         needle = "Completed by `crates/crucible-session/src/lib.rs`: `Engine` now owns";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionControlPlane [
+      {
+        label = "T-SESS-2 checked off";
+        needle = "- [x] **T-SESS-2**";
+      }
+      {
+        label = "T-SESS-2 completion names run_once";
+        needle = "`SessionActor::run`";
+      }
+      {
+        label = "T-SESS-2 completion names live snapshot publication";
+        needle = "`LiveSnapshot` mirror";
+      }
+      {
+        label = "T-SESS-2 completion names command yield";
+        needle = "`tokio::task::yield_now` after every applied command or scheduler quantum";
+      }
+      {
+        label = "T-SESS-2 completion names engine state-machine gate";
+        needle = "`checks.crucible.phase1.executionEngineStateMachine`";
       }
     ];
 in
@@ -236,6 +263,8 @@ in
             loop=poll-then-step
             quantum=bounded-single-scheduler-step
             yield=inter-quantum-cooperative
+            command_yield=post-command-cooperative
+            session_actor_loop=poll-command-or-step-one-quantum-publish-yield
             RESULT
           '';
         }
