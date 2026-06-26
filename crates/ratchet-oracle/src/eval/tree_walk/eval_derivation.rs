@@ -1,6 +1,7 @@
 //! Evaluation of `derivation`/`derivationStrict` and derivation attribute handling.
 
 use super::*;
+use crate::cache::{CachedDerivationAtermPath, PersistBlobKey};
 
 impl TreeWalk {
     pub(super) fn invalid_payload(
@@ -838,7 +839,7 @@ impl TreeWalk {
         }
         let (identity, free_var_value_hashes) =
             self.derivation_aterm_cache_subject_for_current_node(id)?;
-        let path_bytes = {
+        let (path_bytes, persistent_hit) = if let Some(path_bytes) = {
             let Ok(cache) = self.eval_cache.lock() else {
                 tracing::warn!(
                     target: "aos_nix::cache",
@@ -851,17 +852,23 @@ impl TreeWalk {
                 free_var_value_hashes.iter().copied(),
                 aterm,
             ) {
-                Ok(Some(path_bytes)) => path_bytes,
-                Ok(None) => return None,
+                Ok(path_bytes) => path_bytes,
                 Err(error) => {
                     tracing::warn!(
                         target: "aos_nix::cache",
                         error = %error,
                         "tree-walk evaluator derivation ATerm path lookup failed"
                     );
-                    return None;
+                    None
                 }
             }
+        } {
+            (path_bytes, false)
+        } else {
+            (
+                self.lookup_persist_derivation_aterm_path(identity, &free_var_value_hashes, aterm)?,
+                true,
+            )
         };
         let Some(path_in_store) = self.strip_configured_store_dir(&path_bytes) else {
             tracing::warn!(
@@ -896,8 +903,110 @@ impl TreeWalk {
             );
             return None;
         }
+        if persistent_hit {
+            self.observe_persist_derivation_aterm_path_runtime_hit(
+                identity,
+                &free_var_value_hashes,
+                aterm,
+                &path_bytes,
+            );
+        }
         self.increment_derivation_aterm_path_reuses();
         Some(path)
+    }
+
+    fn lookup_persist_derivation_aterm_path(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: &[DurableBlake3Hash],
+        aterm: &[u8],
+    ) -> Option<Vec<u8>> {
+        self.open_persist_eval_cache();
+        let persist_cache = self.persist_cache.as_ref()?;
+        let key =
+            PersistNodeMetadataKey::for_expression(identity, free_var_value_hashes.iter().copied());
+        let value_hash = match persist_cache.lookup_node_materialized_value_hash(key) {
+            Ok(Some(value_hash)) => value_hash,
+            Ok(None) => return None,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent derivation ATerm path metadata lookup failed"
+                );
+                return None;
+            }
+        };
+        let payload_bytes = match persist_cache
+            .read_blob_indexed(PersistBlobKey::for_value(value_hash.as_durable_hash()))
+        {
+            Ok(Some(payload_bytes)) => payload_bytes,
+            Ok(None) => return None,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent derivation ATerm path payload read failed"
+                );
+                return None;
+            }
+        };
+        let payload = match CachedDerivationAtermPath::decode_persistent_payload(&payload_bytes) {
+            Ok(payload) => payload,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent derivation ATerm path payload decode failed"
+                );
+                return None;
+            }
+        };
+        let actual = payload.value_hash();
+        if actual != value_hash {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                expected = ?value_hash,
+                actual = ?actual,
+                "tree-walk evaluator persistent derivation ATerm path payload hash mismatch"
+            );
+            return None;
+        }
+        if payload.aterm_bytes() != aterm {
+            return None;
+        }
+        try_clone_bytes(payload.path_bytes()).ok()
+    }
+
+    fn observe_persist_derivation_aterm_path_runtime_hit(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: &[DurableBlake3Hash],
+        aterm: &[u8],
+        path: &[u8],
+    ) {
+        let Ok(mut cache) = self.eval_cache.lock() else {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                "tree-walk evaluator cache lock was poisoned; skipping persistent derivation ATerm path runtime observation"
+            );
+            return;
+        };
+        if let Err(error) = cache
+            .observe_derivation_aterm_expression_path(
+                identity,
+                free_var_value_hashes.iter().copied(),
+                aterm,
+                path,
+            )
+            .map(|_| ())
+        {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator persistent derivation ATerm path runtime observation failed"
+            );
+        }
     }
 
     fn observe_derivation_aterm_expression(
@@ -934,7 +1043,7 @@ impl TreeWalk {
             }
         };
         let drv_path_bytes = self.store_path_absolute_bytes(drv_path);
-        let early_cutoff = {
+        let (observed, early_cutoff) = {
             let Ok(mut cache) = self.eval_cache.lock() else {
                 tracing::warn!(
                     target: "aos_nix::cache",
@@ -948,20 +1057,99 @@ impl TreeWalk {
                 &aterm,
                 &drv_path_bytes,
             ) {
-                Ok(Some(reconsideration)) => reconsideration.decision() == CutoffDecision::CutOff,
-                Ok(None) => false,
+                Ok(Some(reconsideration)) => {
+                    (true, reconsideration.decision() == CutoffDecision::CutOff)
+                }
+                Ok(None) => (true, false),
                 Err(error) => {
                     tracing::warn!(
                         target: "aos_nix::cache",
                         error = %error,
                         "tree-walk evaluator derivation ATerm cache observation failed"
                     );
-                    false
+                    (false, false)
                 }
             }
         };
+        if observed {
+            self.materialize_persist_derivation_aterm_path(
+                identity,
+                &free_var_value_hashes,
+                &aterm,
+                &drv_path_bytes,
+            );
+        }
         if early_cutoff {
             self.increment_early_cutoffs();
+        }
+    }
+
+    fn materialize_persist_derivation_aterm_path(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: &[DurableBlake3Hash],
+        aterm: &[u8],
+        drv_path: &[u8],
+    ) {
+        self.open_persist_eval_cache();
+        let Some(persist_cache) = &self.persist_cache else {
+            return;
+        };
+        let aterm = match try_clone_bytes(aterm) {
+            Ok(aterm) => aterm,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent derivation ATerm path payload allocation failed"
+                );
+                return;
+            }
+        };
+        let drv_path = match try_clone_bytes(drv_path) {
+            Ok(drv_path) => drv_path,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent derivation ATerm path payload allocation failed"
+                );
+                return;
+            }
+        };
+        let payload = CachedDerivationAtermPath::new(aterm, drv_path);
+        let value_hash = payload.value_hash();
+        let payload_bytes = match payload.encode_persistent_payload() {
+            Ok(payload_bytes) => payload_bytes,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent derivation ATerm path payload encode failed"
+                );
+                return;
+            }
+        };
+        if let Err(error) = persist_cache.materialize_blob_indexed(
+            PersistBlobKey::for_value(value_hash.as_durable_hash()),
+            &payload_bytes,
+            MaterializationDecision::Materialize,
+        ) {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator persistent derivation ATerm path payload write failed"
+            );
+            return;
+        }
+        let key =
+            PersistNodeMetadataKey::for_expression(identity, free_var_value_hashes.iter().copied());
+        if let Err(error) = persist_cache.record_node_materialized_value_hash(key, value_hash) {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator persistent derivation ATerm path metadata write failed"
+            );
         }
     }
 

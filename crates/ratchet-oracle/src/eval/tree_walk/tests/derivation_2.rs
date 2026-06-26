@@ -2,9 +2,10 @@
 
 use super::*;
 use crate::cache::{
-    CachedDerivationOutputPath, CachedDerivationOutputPaths, CutoffDecision, DemandNodeId,
-    DurableBlake3Hash, EarlyCutoff, PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags,
-    ParseCacheKey, ParseFileKey, PersistCache, PersistFileArtifactKey, ValueHash,
+    CachedDerivationAtermPath, CachedDerivationOutputPath, CachedDerivationOutputPaths,
+    CutoffDecision, DemandNodeId, DurableBlake3Hash, EarlyCutoff, MaterializationDecision,
+    PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags, ParseCacheKey, ParseFileKey,
+    PersistBlobKey, PersistCache, PersistFileArtifactKey, PersistNodeMetadataKey, ValueHash,
 };
 use crate::string::NixString;
 
@@ -635,6 +636,205 @@ fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
             assert_eq!(reuse.hash_calculations, 0);
         }
     }
+}
+
+#[test]
+fn persistent_derivation_aterm_path_reuse_preserves_drv_surface() {
+    let persist_root = unique_temp_dir("derivation-aterm-path-persist");
+    let source = r#"derivationStrict {
+        name = "floating";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        __contentAddressed = true;
+        outputHashAlgo = "sha256";
+        outputHashMode = "recursive";
+    }"#;
+    let ir = lower(source);
+    let uncached = eval_single_derivation_with_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        Arc::new(Mutex::new(EvalCacheRuntime::disabled())),
+    );
+
+    let mut first_options = enabled_eval_cache_options();
+    first_options.set_persist_cache_root(&persist_root);
+    let first = eval_single_derivation_with_cache(
+        &ir,
+        first_options,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+
+    let mut hit_options = enabled_eval_cache_options();
+    hit_options.set_persist_cache_root(&persist_root);
+    let hit = eval_single_derivation_with_cache(
+        &ir,
+        hit_options,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+
+    assert_eq!(first.path, uncached.path);
+    assert_eq!(hit.path, uncached.path);
+    assert_eq!(first.aterm, uncached.aterm);
+    assert_eq!(hit.aterm, uncached.aterm);
+    assert_eq!(uncached.path_reuses, 0);
+    assert_eq!(first.path_reuses, 0);
+    assert_eq!(hit.path_reuses, 1);
+    assert_eq!(first.output_path_reuses, 0);
+    assert_eq!(hit.output_path_reuses, 0);
+    assert!(first.text_path_calculations > 0);
+    assert_eq!(hit.text_path_calculations, 0);
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
+#[test]
+fn persistent_derivation_aterm_path_miss_for_aterm_mismatch_preserves_drv_surface() {
+    let persist_root = unique_temp_dir("derivation-aterm-path-stale-aterm");
+    let source = r#"derivationStrict {
+        name = "floating";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        __contentAddressed = true;
+        outputHashAlgo = "sha256";
+        outputHashMode = "recursive";
+    }"#;
+    let ir = lower(source);
+    let uncached = eval_single_derivation_with_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        Arc::new(Mutex::new(EvalCacheRuntime::disabled())),
+    );
+    let (identity, free_var_hashes) = derivation_aterm_cache_subject(
+        &ir,
+        enabled_eval_cache_options(),
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let stale_payload = CachedDerivationAtermPath::new(
+        b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"stale\")])".to_vec(),
+        b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-floating.drv".to_vec(),
+    );
+    let stale_value_hash = stale_payload.value_hash();
+    let stale_payload_bytes = stale_payload
+        .encode_persistent_payload()
+        .expect("stale persistent payload encodes");
+    {
+        let persist_cache = PersistCache::open(&persist_root).expect("persistent cache opens");
+        persist_cache
+            .materialize_blob_indexed(
+                PersistBlobKey::for_value(stale_value_hash.as_durable_hash()),
+                &stale_payload_bytes,
+                MaterializationDecision::Materialize,
+            )
+            .expect("stale persistent payload writes");
+        persist_cache
+            .record_node_materialized_value_hash(
+                PersistNodeMetadataKey::for_expression(identity, free_var_hashes.iter().copied()),
+                stale_value_hash,
+            )
+            .expect("stale persistent metadata writes");
+    }
+
+    let mut stale_options = enabled_eval_cache_options();
+    stale_options.set_persist_cache_root(&persist_root);
+    let stale_miss = eval_single_derivation_with_cache(
+        &ir,
+        stale_options,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+
+    let mut repaired_options = enabled_eval_cache_options();
+    repaired_options.set_persist_cache_root(&persist_root);
+    let repaired_hit = eval_single_derivation_with_cache(
+        &ir,
+        repaired_options,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+
+    assert_eq!(stale_miss.path, uncached.path);
+    assert_eq!(repaired_hit.path, uncached.path);
+    assert_eq!(stale_miss.aterm, uncached.aterm);
+    assert_eq!(repaired_hit.aterm, uncached.aterm);
+    assert_eq!(stale_miss.path_reuses, 0);
+    assert_eq!(repaired_hit.path_reuses, 1);
+    assert!(stale_miss.text_path_calculations > 0);
+    assert_eq!(repaired_hit.text_path_calculations, 0);
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
+#[test]
+fn persistent_derivation_aterm_path_miss_for_invalid_path_preserves_drv_surface() {
+    let persist_root = unique_temp_dir("derivation-aterm-path-invalid-path");
+    let source = r#"derivationStrict {
+        name = "floating";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        __contentAddressed = true;
+        outputHashAlgo = "sha256";
+        outputHashMode = "recursive";
+    }"#;
+    let ir = lower(source);
+    let uncached = eval_single_derivation_with_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        Arc::new(Mutex::new(EvalCacheRuntime::disabled())),
+    );
+    let (identity, free_var_hashes) = derivation_aterm_cache_subject(
+        &ir,
+        enabled_eval_cache_options(),
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let invalid_payload = CachedDerivationAtermPath::new(
+        uncached.aterm.clone(),
+        b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-wrong.drv".to_vec(),
+    );
+    let invalid_value_hash = invalid_payload.value_hash();
+    let invalid_payload_bytes = invalid_payload
+        .encode_persistent_payload()
+        .expect("invalid persistent payload encodes");
+    {
+        let persist_cache = PersistCache::open(&persist_root).expect("persistent cache opens");
+        persist_cache
+            .materialize_blob_indexed(
+                PersistBlobKey::for_value(invalid_value_hash.as_durable_hash()),
+                &invalid_payload_bytes,
+                MaterializationDecision::Materialize,
+            )
+            .expect("invalid persistent payload writes");
+        persist_cache
+            .record_node_materialized_value_hash(
+                PersistNodeMetadataKey::for_expression(identity, free_var_hashes.iter().copied()),
+                invalid_value_hash,
+            )
+            .expect("invalid persistent metadata writes");
+    }
+
+    let mut invalid_options = enabled_eval_cache_options();
+    invalid_options.set_persist_cache_root(&persist_root);
+    let invalid_miss = eval_single_derivation_with_cache(
+        &ir,
+        invalid_options,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+
+    let mut repaired_options = enabled_eval_cache_options();
+    repaired_options.set_persist_cache_root(&persist_root);
+    let repaired_hit = eval_single_derivation_with_cache(
+        &ir,
+        repaired_options,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+
+    assert_eq!(invalid_miss.path, uncached.path);
+    assert_eq!(repaired_hit.path, uncached.path);
+    assert_eq!(invalid_miss.aterm, uncached.aterm);
+    assert_eq!(repaired_hit.aterm, uncached.aterm);
+    assert_eq!(invalid_miss.path_reuses, 0);
+    assert_eq!(repaired_hit.path_reuses, 1);
+    assert!(invalid_miss.text_path_calculations > 0);
+    assert_eq!(repaired_hit.text_path_calculations, 0);
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
 }
 
 #[test]
