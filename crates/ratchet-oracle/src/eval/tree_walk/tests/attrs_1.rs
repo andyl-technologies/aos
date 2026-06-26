@@ -7857,36 +7857,134 @@ fn captured_closed_literal_lazy_element_lists_build_force_cache_subjects_without
 }
 
 #[test]
-fn captured_position_bearing_attrset_values_do_not_build_force_cache_subjects() {
+fn captured_root_position_bearing_attrset_values_use_free_variable_hashes() {
     let source = "let x = { a = 1; }; in builtins.seq x { a = x.a == 1; }";
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "captured-position-attrset-value.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let (captured_x, cached_x) =
+            captured_fulfilled_slot_with_cached_tag(&evaluator, thunk_value, 0, 0, ValueTag::Attrs)
+                .expect("x is a fulfilled attrset capture in the first let slot");
+        let attrs = evaluator
+            .heap()
+            .get_attrs(cached_x)
+            .expect("x cached payload is an attrset");
+        assert!(
+            attrset_has_binding_position(attrs),
+            "fixture must carry attr binding positions"
+        );
+        assert!(
+            attrs.iter_by_symbol().all(|entry| entry
+                .position
+                .map(|position| position.module == EvalModuleId::ROOT.as_u32())
+                .unwrap_or(true)),
+            "fixture positions must belong to the root module"
+        );
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("a is a node thunk");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("captured root positioned attrset subject builds")
+        };
+        assert_eq!(
+            subject.free_var_value_hashes.len(),
+            1,
+            "captured root positioned attrsets should hash into demand keys"
+        );
+        assert!(
+            captured_fulfilled_slot_with_cached_tag(&evaluator, thunk_value, 0, 0, ValueTag::Attrs)
+                .map(|(captured, cached)| captured.raw_eq(captured_x) && cached.raw_eq(cached_x))
+                .unwrap_or(false),
+            "probing the force-cache subject must not rewrite captured attrset thunks or payloads"
+        );
+
+        let hits_before = evaluator.stats().cache_hits();
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("captured position-bearing attrset value force succeeds");
+
+        assert_eq!(forced.as_bool(), Ok(true));
+        assert_eq!(
+            evaluator.stats().cache_hits() > hits_before,
+            expected_hit,
+            "second run should hit through the captured root positioned attrset hash"
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").len() >= 2,
+        "captured root positioned attrset and dependent result should populate force-cache payloads"
+    );
+}
+
+#[test]
+fn captured_imported_position_bearing_attrset_values_do_not_build_force_cache_subjects() {
+    let root = fs::canonicalize(unique_temp_dir(
+        "force-cache-captured-imported-positioned-attrs",
+    ))
+    .expect("source root canonicalizes");
+    fs::write(root.join("dep.nix"), b"{ b = 1; }").expect("import source writes");
+    let source = "let x = import ./dep.nix; in builtins.seq x { a = x.b == 1; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
     let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
         &ir,
-        TreeWalkOptions::new(),
-        "captured-position-attrset-value.nix",
+        options,
+        "default.nix",
         source,
         cache.clone(),
     );
-    let root = evaluator.eval_root().expect("attrset evaluates");
+    let root_value = evaluator.eval_root().expect("attrset evaluates");
     let thunk_value = {
         let attrs = evaluator
             .heap()
-            .get_attrs(root)
+            .get_attrs(root_value)
             .expect("attrset is heap-owned");
         attrs.get(a).expect("a exists")
     };
-    let (captured_x, cached_x) =
+    let (_, cached_x) =
         captured_fulfilled_slot_with_cached_tag(&evaluator, thunk_value, 0, 0, ValueTag::Attrs)
-            .expect("x is a fulfilled attrset capture in the first let slot");
+            .expect("x is a fulfilled imported attrset capture in the first let slot");
+    let b = evaluator.symbols.intern(b"b").expect("b interns");
     let attrs = evaluator
         .heap()
         .get_attrs(cached_x)
         .expect("x cached payload is an attrset");
-    assert!(
-        attrset_has_binding_position(attrs),
-        "fixture must carry attr binding positions"
+    let position = attrs
+        .get_entry(b)
+        .expect("b entry exists")
+        .position
+        .expect("imported binding has a source position");
+    assert_ne!(
+        position.module,
+        EvalModuleId::ROOT.as_u32(),
+        "fixture must carry a non-root binding position"
     );
     let subject = {
         let thunk = evaluator
@@ -7898,26 +7996,91 @@ fn captured_position_bearing_attrset_values_do_not_build_force_cache_subjects() 
     };
     assert!(
         subject.is_none(),
-        "captured position-bearing attrsets must not be hashed into demand keys"
-    );
-    assert!(
-        captured_fulfilled_slot_with_cached_tag(&evaluator, thunk_value, 0, 0, ValueTag::Attrs)
-            .map(|(captured, cached)| captured.raw_eq(captured_x) && cached.raw_eq(cached_x))
-            .unwrap_or(false),
-        "probing the force-cache subject must not rewrite captured attrset thunks or payloads"
+        "captured imported positioned attrsets need module-source remapping before hashing"
     );
 
     let forced = evaluator
         .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
-        .expect("captured position-bearing attrset value force succeeds");
+        .expect("captured imported positioned attrset value force succeeds");
 
     assert_eq!(forced.as_bool(), Ok(true));
-    let runtime = cache.lock().expect("cache lock is valid");
-    assert_eq!(
-        runtime.cache().expect("cache is enabled").len(),
-        1,
-        "forcing the captured position-bearing attrset itself should observe a positioned payload"
+    assert!(
+        cache
+            .lock()
+            .expect("cache lock is valid")
+            .cache()
+            .expect("cache is enabled")
+            .is_empty(),
+        "captured imported positioned attrsets should not populate the force cache"
     );
+
+    fs::remove_dir_all(root).expect("source temp tree removed");
+}
+
+#[test]
+fn captured_root_positioned_attrsets_in_imported_bodies_do_not_build_force_cache_subjects() {
+    let root = fs::canonicalize(unique_temp_dir(
+        "force-cache-imported-body-captured-root-positioned-attrs",
+    ))
+    .expect("source root canonicalizes");
+    fs::write(
+        root.join("dep.nix"),
+        b"x: { a = (builtins.unsafeGetAttrPos \"b\" x).file; }",
+    )
+    .expect("import source writes");
+    let source = "(import ./dep.nix) { b = 1; }";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for source_name in ["root-a.nix", "root-b.nix"] {
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(&root))
+            .expect("path base configures");
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            source_name,
+            source,
+            cache.clone(),
+        );
+        let root_value = evaluator.eval_root().expect("attrset evaluates");
+        let a = evaluator.symbols.intern(b"a").expect("a interns");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root_value)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("a is a node thunk");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+        };
+        assert!(
+            subject.is_none(),
+            "root-positioned captures in imported bodies need source remapping before hashing"
+        );
+
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("captured root positioned attrset in imported body force succeeds");
+
+        let file_string = evaluator
+            .heap()
+            .get_string(forced)
+            .expect("unsafeGetAttrPos file is a string");
+        assert_eq!(
+            file_string.bytes(),
+            source_name.as_bytes(),
+            "fixture must read the captured caller-root binding position"
+        );
+    }
+
+    fs::remove_dir_all(root).expect("source temp tree removed");
 }
 
 #[test]
@@ -9871,7 +10034,7 @@ fn materialized_non_empty_attrsets_are_free_variable_hashable() {
 }
 
 #[test]
-fn materialized_position_bearing_attrsets_are_not_free_variable_hashable_yet() {
+fn materialized_root_position_bearing_attrsets_are_free_variable_hashable() {
     let ir = lower("1");
     let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
     let a = evaluator.symbols.intern(b"a").expect("a interns");
@@ -9879,7 +10042,29 @@ fn materialized_position_bearing_attrsets_are_not_free_variable_hashable_yet() {
         vec![AttrEntry::with_position(
             a,
             Value::int(1),
-            AttrPosition::new(0, Span::new(0, 1)),
+            AttrPosition::new(EvalModuleId::ROOT.as_u32(), Span::new(0, 1)),
+        )],
+        &evaluator.symbols,
+    )
+    .expect("attrs build");
+    let attrs = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("attrset allocates");
+
+    assert!(evaluator.force_cache_free_var_value_hash(attrs).is_some());
+}
+
+#[test]
+fn materialized_non_root_position_bearing_attrsets_are_not_free_variable_hashable_yet() {
+    let ir = lower("1");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let a = evaluator.symbols.intern(b"a").expect("a interns");
+    let attrs = FlatAttrs::new(
+        vec![AttrEntry::with_position(
+            a,
+            Value::int(1),
+            AttrPosition::new(EvalModuleId::ROOT.as_u32() + 1, Span::new(0, 1)),
         )],
         &evaluator.symbols,
     )

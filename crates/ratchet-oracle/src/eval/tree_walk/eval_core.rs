@@ -1651,7 +1651,9 @@ impl TreeWalk {
         let mut free_var_value_hashes = Vec::new();
         free_var_value_hashes.try_reserve_exact(args.len()).ok()?;
         for arg in args {
-            free_var_value_hashes.push(self.force_cache_free_var_value_hash(arg.value())?);
+            free_var_value_hashes.push(
+                self.force_cache_free_var_value_hash_in_module(arg.value(), self.current_module)?,
+            );
         }
         Some(ForceCacheSubject {
             lookup_identity: Some(identity),
@@ -1712,7 +1714,7 @@ impl TreeWalk {
         hashes.try_reserve_exact(slots.len()).ok()?;
         for (frame_index, slot) in slots {
             let value = frames.get(frame_index)?.get(slot).ok()?;
-            let hash = self.force_cache_free_var_value_hash(value)?;
+            let hash = self.force_cache_free_var_value_hash_in_module(value, body.module())?;
             hashes.push(hash);
         }
         Some(hashes)
@@ -1755,9 +1757,18 @@ impl TreeWalk {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn force_cache_free_var_value_hash(
         &self,
         value: Value,
+    ) -> Option<DurableBlake3Hash> {
+        self.force_cache_free_var_value_hash_in_module(value, self.current_module)
+    }
+
+    fn force_cache_free_var_value_hash_in_module(
+        &self,
+        value: Value,
+        module: EvalModuleId,
     ) -> Option<DurableBlake3Hash> {
         if let Ok(hash) = ValueHash::from_inline_value(value) {
             return Some(hash.as_durable_hash());
@@ -1787,7 +1798,9 @@ impl TreeWalk {
             }
             ValueTag::List | ValueTag::Attrs => {
                 let payload = self.force_cache_payload_for_value(value)?;
-                if payload.retains_attr_positions() {
+                if !Self::force_cache_free_var_payload_positions_hashable_in_module(
+                    &payload, module,
+                ) {
                     return None;
                 }
                 let value_hash = payload.value_hash().ok()?;
@@ -1804,14 +1817,14 @@ impl TreeWalk {
                         Some(cached) => cached,
                         None => {
                             let payload = self.force_cache_payload_for_suspended_thunk(thunk, 0)?;
-                            return Self::force_cache_free_var_payload_hash(&payload);
+                            return Self::force_cache_free_var_payload_hash(&payload, module);
                         }
                     }
                 };
                 if cached.is_thunk() {
                     return None;
                 }
-                return self.force_cache_free_var_value_hash(cached);
+                return self.force_cache_free_var_value_hash_in_module(cached, module);
             }
             _ => return None,
         }
@@ -1819,6 +1832,7 @@ impl TreeWalk {
 
     fn force_cache_free_var_payload_hash(
         payload: &CachedExpressionValue,
+        module: EvalModuleId,
     ) -> Option<DurableBlake3Hash> {
         if let Some(value) = payload.immediate_value() {
             return ValueHash::from_inline_value(value)
@@ -1851,13 +1865,22 @@ impl TreeWalk {
             return Some(DurableBlake3Hash::from_hasher(hasher));
         }
 
-        if payload.retains_attr_positions() {
+        if !Self::force_cache_free_var_payload_positions_hashable_in_module(payload, module) {
             return None;
         }
         let value_hash = payload.value_hash().ok()?;
         hasher.update(b"composite");
         hasher.update(&value_hash.as_durable_hash().as_bytes());
         Some(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    fn force_cache_free_var_payload_positions_hashable_in_module(
+        payload: &CachedExpressionValue,
+        module: EvalModuleId,
+    ) -> bool {
+        !payload.retains_attr_positions()
+            || (module == EvalModuleId::ROOT
+                && payload.attr_positions_all_in_module(EvalModuleId::ROOT.as_u32()))
     }
 
     fn update_force_capture_string_context(

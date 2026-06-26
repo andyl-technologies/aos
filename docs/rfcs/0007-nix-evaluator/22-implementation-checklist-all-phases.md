@@ -563,7 +563,7 @@ alone (`M-1`/`Q-A`).
       thunks, canonical free-variable hashes, general memo lookup,
       remaining suspended non-literal/non-replayable captured thunk-cell free
       variables, arbitrary lazy-element list and lazy-binding attrset payloads,
-      captured position-bearing attrset free-variable hashes, non-root/imported
+      non-root/imported position-bearing attrset free-variable hashes, non-root/imported
       binding-position persistence and module-source remapping, and other
       composite value hashing, persistence, and cached/uncached harness proof remain open
       (`S-14`/`S-15`). The gate includes positioned attrset force-cache hit and
@@ -730,9 +730,10 @@ alone (`M-1`/`Q-A`).
       durable hashes for referenced captured lexical slots when every captured
       slot value is either an inline scalar supported by
       `ValueHash::from_inline_value`, a Nix string with or without context, a
-      Nix path with or without context, a replayable Nix list, a
-      position-free replayable Nix attrset with source-order metadata preserved
-      when present, a
+      Nix path with or without context, a replayable Nix list, a replayable Nix
+      attrset whose source-order metadata is preserved when present and whose
+      binding positions are absent or belong to the root module while the hashed
+      expression body is also in the root module, a
       fulfilled thunk cell whose cached value is one of those replayable values,
       or a suspended closed literal thunk whose static payload is one of those
       replayable values.
@@ -747,7 +748,8 @@ alone (`M-1`/`Q-A`).
       those captured values differ. This deliberately skips dynamic `with`
       scopes, scoped-import globals, arbitrary non-literal lazy-element lists,
       arbitrary non-literal lazy-binding attrsets,
-      position-bearing attrsets, lambdas, primops,
+      non-root/imported position-bearing attrsets, root-positioned attrsets
+      captured by imported/non-root bodies, lambdas, primops,
       suspended non-literal/non-replayable thunk-cell captures including computed
       values not already forced in the captured slot, captured bodies with nested lexical-frame introducers, apply/select
       thunks, full strictness/escape free-variable analysis, remaining
@@ -761,8 +763,9 @@ alone (`M-1`/`Q-A`).
       global subject-skip canaries, lambda/recursive-attrset nested
       lexical-frame subject-skip canaries, captured lambda/primop value
       subject-skip canaries, synthetic apply/apply2/select thunk subject-skip
-      canaries, captured position-bearing attrset subject-skip and source-order
-      attrset admission canaries, captured closed-literal lazy-element list and
+      canaries, captured root-body root-positioned attrset admission, imported
+      position-bearing attrset subject-skip, imported-body root-positioned
+      attrset subject-skip, source-order attrset admission canaries, captured closed-literal lazy-element list and
       lazy-binding attrset admission canaries, captured computed lazy-element list
       and lazy-binding attrset subject-skip canaries, and representative captured unsupported free-variable skips
       (`C-1`/`C-2`).
@@ -869,10 +872,12 @@ alone (`M-1`/`Q-A`).
       tags, module ids, and source spans participate in the hash; attrset
       hashing uses raw-byte-sorted binding order for canonical attrsets and
       distinct source-order tags when construction order is observable.
-      Arbitrary non-literal lazy-element list and lazy-binding attrset cacheability, captured position-bearing attrset free-variable hashes, non-root/imported binding-position replay, functions/thunks cacheability
+      Arbitrary non-literal lazy-element list and lazy-binding attrset cacheability, non-root/imported position-bearing attrset free-variable hashes and replay, functions/thunks cacheability
       policy, generic hash-cons value fields, `force_memoized` integration, and
       harness proof remain open (`S-14`/`S-15`). The gate includes positioned
-      attrset payload lookup/hash/root-position persistence coverage.
+      attrset payload lookup/hash/root-position persistence coverage,
+      root-body root-positioned captured attrset hash coverage, and
+      imported-body root-positioned skip coverage.
 - [x] Current inline-value early-cutoff adapter:
       `DemandGraph::reconsider_inline_value_node` and
       `EvalCache::reconsider_inline_value_node` hash a recomputed inline scalar
