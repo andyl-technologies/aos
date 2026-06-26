@@ -19,7 +19,7 @@ pub use cutoff::{CutoffDecision, EarlyCutoff, ValueHash, ValueHashError};
 pub use dcg::{
     BlockedDirtyNode, DemandGraph, DemandGraphError, DemandNode, DemandNodeId, DirtyFrontier,
     ImpureInputObservation, ImpureTraceObservation, ImpureTraceStatus, NodeFreshness,
-    Reconsideration,
+    RecomputeReadyDirty, Reconsideration,
 };
 pub use hashing::{DurableBlake3Hash, HotXxh3Hash};
 pub use input::{

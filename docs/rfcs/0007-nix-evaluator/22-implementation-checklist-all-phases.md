@@ -469,9 +469,19 @@ alone (`M-1`/`Q-A`).
       snapshot through caller-owned evaluator cache state, and
       `EvalCacheRuntime::dirty_frontier` reports `None` when cache observation
       is disabled or the same read-only snapshot when enabled. This is a
-      read-only adapter only; evaluator recomputation, node lifecycle
+      read-only adapter only; evaluator-owned recomputation, node lifecycle
       integration, dynamic dependency tracing, persistence, and cached/uncached
       harness proof remain open (`S-14`/`C-20`).
+- [x] Current EvalCache ready-dirty recomputation adapter:
+      `EvalCache::recompute_ready_dirty_nodes` and
+      `EvalCacheRuntime::recompute_ready_dirty_nodes` expose the graph
+      ready-dirty loop through caller-owned evaluator cache state, while
+      disabled runtimes return `None` without invoking the recompute callback.
+      This is an explicit cache-state adapter only; evaluator-owned node
+      recomputation, dynamic dependency capture, canonical value hashing beyond
+      caller-supplied `ValueHash` results, impure-input leaf integration,
+      persistence, and cached/uncached `.drv` parity proof remain open
+      (`S-14`/`C-20`).
 - [x] Current dynamic dependency replacement substrate:
       `DemandGraph::replace_dependencies` validates a caller-supplied node and
       replacement dependency set before atomically swapping the node's whole

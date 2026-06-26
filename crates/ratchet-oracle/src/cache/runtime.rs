@@ -17,8 +17,8 @@ use super::cutoff::{
 use super::{
     CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey, DemandGraph, DemandGraphError,
     DemandNodeId, DirtyFrontier, DurableBlake3Hash, ImpureInputFingerprint, ImpureInputIdentity,
-    ImpureTraceObservation, ImpureTraceStatus, NodeFreshness, Reconsideration, UncacheableInput,
-    ValueHash, ValueHashError,
+    ImpureTraceObservation, ImpureTraceStatus, NodeFreshness, RecomputeReadyDirty, Reconsideration,
+    UncacheableInput, ValueHash, ValueHashError,
 };
 use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};
 use crate::value::Value;
@@ -626,6 +626,32 @@ impl EvalCache {
     /// does not recompute nodes, mutate freshness, or schedule evaluator work.
     pub fn dirty_frontier(&self) -> DirtyFrontier {
         self.graph.dirty_frontier()
+    }
+
+    /// Recomputes ready dirty graph nodes through a caller-supplied callback.
+    ///
+    /// This is an explicit adapter over
+    /// [`DemandGraph::recompute_ready_dirty_nodes`]. It schedules ready dirty
+    /// demand nodes and applies graph early cutoff, but the caller still owns
+    /// evaluator recomputation, value hashing, dynamic dependency capture, and
+    /// persistence.
+    ///
+    /// # Errors
+    ///
+    /// Returns graph scheduling/reconsideration errors converted through `E`, or
+    /// any caller error returned by `recompute`. If `recompute` fails after
+    /// earlier nodes in the same call were reconsidered, those graph mutations
+    /// are retained and the partial [`RecomputeReadyDirty`] result is not
+    /// returned.
+    pub fn recompute_ready_dirty_nodes<E, F>(
+        &mut self,
+        recompute: F,
+    ) -> Result<RecomputeReadyDirty, E>
+    where
+        E: From<DemandGraphError>,
+        F: FnMut(DemandNodeId) -> Result<ValueHash, E>,
+    {
+        self.graph.recompute_ready_dirty_nodes(recompute)
     }
 
     /// Looks up a clean memoized expression payload.
@@ -2043,6 +2069,34 @@ impl EvalCacheRuntime {
         self.cache().map(EvalCache::dirty_frontier)
     }
 
+    /// Recomputes ready dirty graph nodes when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without invoking `recompute`.
+    /// Enabled runtimes delegate to [`EvalCache::recompute_ready_dirty_nodes`].
+    /// The caller still owns evaluator recomputation, value hashing, dynamic
+    /// dependency capture, and persistence.
+    ///
+    /// # Errors
+    ///
+    /// Returns graph scheduling/reconsideration errors converted through `E`
+    /// from the enabled cache, or any caller error returned by `recompute`. If
+    /// `recompute` fails after earlier nodes in the same call were reconsidered,
+    /// those graph mutations are retained and the partial
+    /// [`RecomputeReadyDirty`] result is not returned.
+    pub fn recompute_ready_dirty_nodes<E, F>(
+        &mut self,
+        recompute: F,
+    ) -> Result<Option<RecomputeReadyDirty>, E>
+    where
+        E: From<DemandGraphError>,
+        F: FnMut(DemandNodeId) -> Result<ValueHash, E>,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache.recompute_ready_dirty_nodes(recompute).map(Some)
+    }
+
     /// Observes evaluator impure-input traces when cache observation is enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without examining `source` or
@@ -2436,6 +2490,18 @@ mod tests {
                     None
                 }
             })
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum RecomputeTestError {
+        Graph(DemandGraphError),
+        Rejected(DemandNodeId),
+    }
+
+    impl From<DemandGraphError> for RecomputeTestError {
+        fn from(error: DemandGraphError) -> Self {
+            Self::Graph(error)
         }
     }
 
@@ -3007,10 +3073,63 @@ mod tests {
     }
 
     #[test]
+    fn eval_cache_delegates_ready_dirty_recompute_loop() {
+        let mut graph = DemandGraph::new();
+        let a = node_with_hash(&mut graph, 1, b"a-old");
+        let b = node_with_hash(&mut graph, 2, b"b-old");
+        let c = node_with_hash(&mut graph, 3, b"c-stable");
+        graph.add_dependency(b, a).expect("b depends on a");
+        graph.add_dependency(c, b).expect("c depends on b");
+        graph.mark_dirty(a).expect("a dirties");
+        let mut cache = EvalCache::from_graph(graph);
+
+        let result = cache
+            .recompute_ready_dirty_nodes::<DemandGraphError, _>(|node| {
+                if node == a {
+                    return Ok(value_hash(b"a-new"));
+                }
+                if node == b {
+                    return Ok(value_hash(b"b-new"));
+                }
+                if node == c {
+                    return Ok(value_hash(b"c-stable"));
+                }
+                panic!("unexpected recomputation for {node:?}");
+            })
+            .expect("runtime cache recomputes");
+
+        let reconsidered: Vec<_> = result
+            .reconsiderations()
+            .iter()
+            .map(Reconsideration::node)
+            .collect();
+        assert_eq!(reconsidered, vec![a, b, c]);
+        assert!(result.remaining_frontier().is_empty());
+        assert_eq!(
+            cache.graph().dirty_nodes().collect::<Vec<_>>(),
+            Vec::<DemandNodeId>::new()
+        );
+    }
+
+    #[test]
     fn eval_cache_runtime_dirty_frontier_is_disabled_noop() {
         let runtime = EvalCacheRuntime::disabled();
 
         assert_eq!(runtime.dirty_frontier(), None);
+    }
+
+    #[test]
+    fn eval_cache_runtime_ready_dirty_recompute_is_disabled_noop() {
+        let mut runtime = EvalCacheRuntime::disabled();
+
+        let result = runtime
+            .recompute_ready_dirty_nodes::<DemandGraphError, _>(|node| {
+                panic!("disabled runtime should not recompute {node:?}");
+            })
+            .expect("disabled recompute succeeds");
+
+        assert_eq!(result, None);
+        assert!(runtime.cache().is_none());
     }
 
     #[test]
@@ -3035,6 +3154,78 @@ mod tests {
         };
         assert_eq!(blocked.node(), c);
         assert_eq!(blocked.blockers(), &[a]);
+    }
+
+    #[test]
+    fn enabled_eval_cache_runtime_delegates_ready_dirty_recompute_loop() {
+        let mut graph = DemandGraph::new();
+        let a = node_with_hash(&mut graph, 1, b"a-old");
+        let b = node_with_hash(&mut graph, 2, b"b-old");
+        graph.add_dependency(b, a).expect("b depends on a");
+        graph.mark_dirty(a).expect("a dirties");
+        let mut runtime = EvalCacheRuntime::Enabled(EvalCache::from_graph(graph));
+
+        let result = runtime
+            .recompute_ready_dirty_nodes::<DemandGraphError, _>(|node| {
+                if node == a {
+                    return Ok(value_hash(b"a-new"));
+                }
+                if node == b {
+                    return Ok(value_hash(b"b-stable"));
+                }
+                panic!("unexpected recomputation for {node:?}");
+            })
+            .expect("enabled runtime recomputes")
+            .expect("enabled runtime returns loop result");
+
+        let reconsidered: Vec<_> = result
+            .reconsiderations()
+            .iter()
+            .map(Reconsideration::node)
+            .collect();
+        assert_eq!(reconsidered, vec![a, b]);
+        assert!(result.remaining_frontier().is_empty());
+        assert_eq!(
+            runtime
+                .cache()
+                .expect("cache is enabled")
+                .graph()
+                .dirty_nodes()
+                .collect::<Vec<_>>(),
+            Vec::<DemandNodeId>::new()
+        );
+    }
+
+    #[test]
+    fn enabled_eval_cache_runtime_keeps_prior_progress_on_later_recompute_error() {
+        let mut graph = DemandGraph::new();
+        let a = node_with_hash(&mut graph, 1, b"a-old");
+        let b = node_with_hash(&mut graph, 2, b"b");
+        let c = node_with_hash(&mut graph, 3, b"c");
+        graph.add_dependency(b, a).expect("b depends on a");
+        graph.mark_dirty(a).expect("a dirties");
+        graph.mark_dirty(c).expect("c dirties");
+        let mut runtime = EvalCacheRuntime::Enabled(EvalCache::from_graph(graph));
+
+        let error = runtime
+            .recompute_ready_dirty_nodes::<RecomputeTestError, _>(|node| {
+                if node == a {
+                    return Ok(value_hash(b"a-new"));
+                }
+                Err(RecomputeTestError::Rejected(node))
+            })
+            .expect_err("later recompute error stops runtime recompute");
+
+        assert_eq!(error, RecomputeTestError::Rejected(c));
+        assert_eq!(
+            runtime
+                .cache()
+                .expect("cache is enabled")
+                .graph()
+                .dirty_nodes()
+                .collect::<Vec<_>>(),
+            vec![b, c]
+        );
     }
 
     #[test]
