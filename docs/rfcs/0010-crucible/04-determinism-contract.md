@@ -837,9 +837,21 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     icount plus fixed modeled IPI latency, rounded to the next fixed RR switch
     boundary, and emits the resulting interrupt through the commanded-icount
     preemption path rather than a realtime callback.
-- [ ] **T-DET-31** Implement app-requested randomness served from the single
+- [x] **T-DET-31** Implement app-requested randomness served from the single
   seeded decision source: white-box opt-in (16), per-`(node, stream-name)`
   name-hash fork, each draw a recorded `Decision` delivered under the injection
   contract; assert the contract holds byte-identically with zero app-random
   requests and distinguish it from opaque ambient `fw_cfg` entropy. — satisfies
   [DET-44]; spec §4.7.
+  - Completed by `checks.crucible.phase1.decisionRecording` and
+    `checks.crucible.phase2.qemuPluginAppRandomDoorbell`, consumed by
+    `checks.crucible.phase1.gates.layer0Determinism`: `DecisionRecorder` owns
+    the single seeded `DecisionRng`, forks streams by the canonical
+    `(node, stream-name)` tag, records the raw `RngDraw` plus
+    `Decision::AppRandom`, and rejects ambient engine entropy APIs. The optional
+    white-box `random_request` doorbell requires white-box opt-in, replies at the
+    trap icount through the host-to-guest injection gate, and its zero-request
+    path records no decisions and writes no replies, preserving byte identity.
+    App-requested randomness is reported separately from ambient `fw_cfg` entropy,
+    which remains launch-time guest CSPRNG seeding rather than an app-random
+    source.
