@@ -1003,6 +1003,33 @@ impl PersistCache {
         ))
     }
 
+    /// Returns verified pack records as typed blob-index entries for `store`.
+    ///
+    /// This read-only adapter scans the selected store's pack, verifies every
+    /// record through [`PersistBlobPack::records`], and maps each record to the
+    /// `PersistBlobIndexEntry` shape used by the hash-to-offset sidecar. It
+    /// returns physical pack records, including stale duplicate records and
+    /// unindexed records. It does not write or repair the sidecar index, select
+    /// live roots, or compact the pack.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the selected pack cannot be opened,
+    /// inspected, seeked, or read, if any record header is malformed or
+    /// truncated, if a record points past the current packfile length, or if a
+    /// payload hash does not match its record header.
+    pub fn blob_pack_index_entries(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<Vec<PersistBlobIndexEntry>, PersistBlobPackError> {
+        self.blob_pack(store).records().map(|records| {
+            records
+                .into_iter()
+                .map(|record| PersistBlobIndexEntry::new(record.key(store), record.location()))
+                .collect()
+        })
+    }
+
     /// Appends a blob and records its location in the sidecar index.
     ///
     /// This helper is explicit and non-transactional: if the pack append

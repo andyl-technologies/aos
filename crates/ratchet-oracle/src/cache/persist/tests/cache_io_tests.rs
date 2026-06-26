@@ -171,6 +171,68 @@ fn cache_blob_io_is_routed_by_key_store() {
 }
 
 #[test]
+fn cache_blob_pack_index_entries_are_store_typed() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let value_payload = b"value payload";
+    let value_hash = DurableBlake3Hash::for_bytes(value_payload);
+    let value_key = PersistBlobKey::for_value(value_hash);
+    let value_location = cache
+        .append_blob(value_key, value_payload)
+        .expect("value blob appends");
+    let file_payload = b"file payload";
+    let file_hash = DurableBlake3Hash::for_bytes(file_payload);
+    let file_key = PersistBlobKey::for_file(file_hash);
+    let file_location = cache
+        .append_blob(file_key, file_payload)
+        .expect("file blob appends");
+
+    assert_eq!(
+        cache
+            .blob_pack_index_entries(PersistBlobStore::Values)
+            .expect("value pack scans"),
+        vec![PersistBlobIndexEntry::new(value_key, value_location)]
+    );
+    assert_eq!(
+        cache
+            .blob_pack_index_entries(PersistBlobStore::Files)
+            .expect("file pack scans"),
+        vec![PersistBlobIndexEntry::new(file_key, file_location)]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_pack_index_entries_rejects_corrupt_pack() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"value payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let location = cache.append_blob(key, payload).expect("value blob appends");
+    let payload_offset = location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(cache.value_pack().path())
+        .expect("value pack opens for mutation");
+    file.seek(SeekFrom::Start(payload_offset))
+        .expect("payload offset seeks");
+    file.write_all(b"X").expect("payload corrupts");
+    file.flush().expect("payload corruption flushes");
+
+    let error = cache
+        .blob_pack_index_entries(PersistBlobStore::Values)
+        .expect_err("corrupt value pack scan errors");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackError::PayloadHashMismatch { .. }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

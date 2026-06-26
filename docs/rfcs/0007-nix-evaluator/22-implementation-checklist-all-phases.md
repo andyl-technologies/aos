@@ -1193,6 +1193,15 @@ alone (`M-1`/`Q-A`).
       scan metadata only; live-root selection, repack/relocation writing,
       concurrent writer coordination, automatic GC policy, mmap reads, Attic
       transport, and harness proof remain open (`C-13`/`R-14`).
+- [x] Current store-typed blob-pack index-entry scan adapter:
+      `PersistCache::blob_pack_index_entries` routes a verified pack scan
+      through the selected `values/` or `files/` store and maps every physical
+      record, including stale duplicates and unindexed tails, to the matching
+      `PersistBlobIndexEntry` key/location shape without writing the sidecar.
+      This is read-only repair/repack input only; index rebuild, live-root
+      selection, repack/relocation writing, concurrent writer coordination,
+      automatic GC policy, mmap reads, Attic transport, and harness proof remain
+      open (`C-13`/`R-14`).
 - [x] Current idempotent indexed blob materialization substrate:
       `PersistCache::ensure_blob_indexed` reuses an existing sidecar location
       only after the pointed pack record verifies for the requested
