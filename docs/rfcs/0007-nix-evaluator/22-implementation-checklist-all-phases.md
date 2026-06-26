@@ -1264,13 +1264,15 @@ alone (`M-1`/`Q-A`).
 - [x] Current key-routed blob IO substrate: `PersistCache::append_blob` and
       `read_blob` route a `PersistBlobKey` to the value or file pack, preserving
       namespace separation for identical payload hashes while reusing pack-level
-      hash and record verification. Automatic durable index lookup/update from
-      these raw helpers, node metadata, mmap reads, writer batching, GC/repack,
-      Attic transport, and harness proof remain open (`C-13`/`R-14`).
+      hash and record verification; `append_blob` holds the selected store's
+      same-process same-root blob write lock before appending. Automatic
+      durable index lookup/update from these raw helpers, node metadata, mmap
+      reads, writer batching, GC/repack, Attic transport, and harness proof
+      remain open (`C-13`/`R-14`).
 - [x] Current explicit indexed blob IO helpers:
       `PersistCache::append_blob_indexed` appends through the key-routed pack
-      while holding the selected store's same-process same-root blob write lock
-      and records the returned location in the selected `PersistBlobIndex`,
+      while holding the selected store's same-process same-root blob-store write
+      lock and records the returned location in the selected `PersistBlobIndex`,
       while `lookup_blob_location`/`read_blob_indexed` scan the sidecar index
       and read/verify the indexed pack record, returning `None` for misses.
       This is explicit non-transactional sidecar integration only; automatic
@@ -1379,10 +1381,11 @@ alone (`M-1`/`Q-A`).
       through separate opens of the same root shares the same
       `ensure_blob_indexed` critical section. The initially-missing case
       collapses to one fresh verified pack record and newest sidecar entry for
-      the selected store, public `append_blob_indexed` uses the same lock for
-      non-idempotent indexed appends, a poisoned same-root lock is reported
-      before any append/index write, and an opened symlink-root handle keeps
-      writing the canonical target it opened even if the symlink is retargeted.
+      the selected store, public `append_blob` and `append_blob_indexed` use the
+      same lock for cache-level non-idempotent appends, a poisoned same-root
+      lock is reported before any cache-level raw append or indexed
+      append/index write, and an opened symlink-root handle keeps writing the
+      canonical target it opened even if the symlink is retargeted.
       Different roots, multi-process writers, two-machine misses, durable
       filesystem locks/CAS, automatic compaction, GC/repack, mmap reads,
       LMDB/redb indexes, and loom/harness proof remain open
@@ -1391,12 +1394,12 @@ alone (`M-1`/`Q-A`).
       cache-level blob-index compaction, blob-index rebuild, and blob-pack tail
       trim share the same per-store root-lock registry entries as indexed
       materialization, so maintenance rewrites for one live canonical cache root
-      serialize with cache-level indexed blob writes for the selected `values/`
-      or `files/` store. File-pack tail trim also shares the file-artifact and
-      parse-artifact mapping locks while it snapshots those live roots.
-      Poisoned live same-root locks are reported before compaction, rebuild, or
-      trim writes sidecars or truncates a pack. Raw lower-level
-      `PersistBlobIndex`/`PersistBlobPack`/`append_blob` users, different roots,
+      serialize with cache-level indexed or raw blob writes for the selected
+      `values/` or `files/` store. File-pack tail trim also shares the
+      file-artifact and parse-artifact mapping locks while it snapshots those
+      live roots. Poisoned live same-root locks are reported before compaction,
+      rebuild, or trim writes sidecars or truncates a pack. Raw lower-level
+      `PersistBlobIndex`/`PersistBlobPack` users, different roots,
       multi-process writers, two-machine races, durable filesystem locks/CAS,
       LMDB/redb indexes, automatic GC/repack, and loom/harness proof remain
       open (`C-13`/`R-4`/`R-14`).

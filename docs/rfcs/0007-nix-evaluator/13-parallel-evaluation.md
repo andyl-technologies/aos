@@ -774,8 +774,8 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       materialization, keyed by the canonical cache root; file-pack trimming
       also shares file-artifact and parse-artifact mapping locks while
       snapshotting those live roots. This keeps same-root maintenance rewrites
-      from racing cache-level indexed blob writes for the selected `values/` or
-      `files/` store, and poisoned live locks fail before
+      from racing cache-level indexed or raw blob writes for the selected
+      `values/` or `files/` store, and poisoned live locks fail before
       compaction/rebuild writes sidecars or tail trim truncates a pack. This is
       same-process fixed-record/pack-tail coordination only, not cross-process
       locking/CAS, raw lower-level pack or sidecar coordination, the final

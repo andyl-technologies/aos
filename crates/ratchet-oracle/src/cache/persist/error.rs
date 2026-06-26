@@ -1025,9 +1025,15 @@ pub enum PersistParseArtifactIndexedWriteError {
     },
 }
 
-/// Immutable blob packfile IO failed.
+/// Immutable blob packfile operation failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobPackError {
+    /// The same-root blob-pack write lock was poisoned by a prior panic.
+    #[error("persistent blob pack write lock for {store:?} is poisoned")]
+    WriteLockPoisoned {
+        /// The selected blob store.
+        store: PersistBlobStore,
+    },
     /// The packfile's parent directory could not be created.
     #[error("failed to create persistent blob pack parent directory {path}")]
     CreateParent {
