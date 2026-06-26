@@ -71,7 +71,7 @@ semver = { workspace = true }
 # binding; the default features carry R2, KV, the Router, and the event macros.
 # This dependency only links into the wasm32 target; on native it resolves but
 # its glue is never referenced (the worker modules are cfg-gated out).
-worker = { version = "0.8", features = ["d1", "queue"] }
+worker = { version = "0.8", features = ["queue"] }
 
 # The worker fold (RFC-0004 Phase 5 step 4e): the Worker serves the *same*
 # shared Connect-JSON axum router as the native hub (aos_hub_core::connect),

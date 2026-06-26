@@ -123,8 +123,6 @@ pub mod coordinatorobj;
 #[cfg(target_arch = "wasm32")]
 pub mod edgeratelimit;
 #[cfg(target_arch = "wasm32")]
-pub mod d1backend;
-#[cfg(target_arch = "wasm32")]
 pub mod handlers;
 #[cfg(target_arch = "wasm32")]
 pub mod indexer;
@@ -161,12 +159,11 @@ mod entry {
     //! consistency bookmark through a cookie. Both are bypassed/excluded for
     //! authenticated, non-cacheable, and write requests.
 
-    use std::rc::Rc;
     use std::sync::Arc;
 
-    use wasm_bindgen::JsCast;
+    use wasm_bindgen::{JsCast, JsValue};
     use worker::{
-        durable_object, Context, DurableObject, Env, Method, Request, Response, Result,
+        durable_object, Context, DurableObject, Env, Method, Request, RequestInit, Response, Result,
         ScheduleContext, ScheduledEvent, State,
     };
 
@@ -191,10 +188,6 @@ mod entry {
     const HUB_SEAL_KEY: &str = "HUB_SEAL_KEY";
     /// The Wrangler `[vars]` entry holding the hub's externally-reachable URL.
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
-    /// Optional `[vars]` flag (`"1"`): route the request through the colocated
-    /// SQLite [`HubDb`](crate::hubdb) Durable Object instead of D1 (RFC-0004
-    /// ch.14 Phase E, "get off D1"). Off → the D1 system of record (default).
-    const HUB_SQLITE_DO: &str = "HUB_SQLITE_DO";
     /// Optional `[vars]` entry: the name of the deployment's default R2 bucket
     /// (the store unbound registries/caches push to). Baked by `worker deploy`
     /// so instance settings can show where the default storage lives; unset on
@@ -438,51 +431,6 @@ mod entry {
         Ok((router, service, console_deps))
     }
 
-    /// The cookie carrying a client's D1 read-replication session bookmark.
-    ///
-    /// Threads each client's consistency floor across requests so a session
-    /// reads data at least as fresh as its previous read or write —
-    /// read-your-writes after a console publish, and monotonic reads while
-    /// browsing. Set only on responses a shared cache will not store (see
-    /// [`is_publicly_cacheable`]), so the cacheable machine facade stays
-    /// cookie-free and edge-cacheable.
-    const D1_BOOKMARK_COOKIE: &str = "aos_d1b";
-
-    /// D1 session seed for a write-bearing request with no prior bookmark: route
-    /// the first query to the primary. Mirrors `D1SessionConstraint::FirstPrimary`.
-    const D1_SEED_PRIMARY: &str = "first-primary";
-
-    /// D1 session seed for a read request with no prior bookmark: the first read
-    /// may be served by any replica. Mirrors
-    /// `D1SessionConstraint::FirstUnconstrained`.
-    const D1_SEED_UNCONSTRAINED: &str = "first-unconstrained";
-
-    /// Extracts the D1 session bookmark from the request's `Cookie` header.
-    fn bookmark_cookie(req: &Request) -> Option<String> {
-        let cookie = req.headers().get("cookie").ok().flatten()?;
-        cookie
-            .split(';')
-            .filter_map(|kv| kv.split_once('='))
-            .find_map(|(name, value)| {
-                (name.trim() == D1_BOOKMARK_COOKIE).then(|| value.trim().to_string())
-            })
-            .filter(|v| !v.is_empty())
-    }
-
-    /// The D1 session seed for `req`: a prior bookmark when the client carries
-    /// one, else a constraint chosen by method — reads (`GET`/`HEAD`: the browse
-    /// UI and the cacheable machine facade) may start at a nearby replica, while
-    /// the write/RPC surface starts at the primary.
-    fn session_seed(req: &Request) -> String {
-        if let Some(bookmark) = bookmark_cookie(req) {
-            return bookmark;
-        }
-        match req.method() {
-            Method::Get | Method::Head => D1_SEED_UNCONSTRAINED.to_string(),
-            _ => D1_SEED_PRIMARY.to_string(),
-        }
-    }
-
     /// Whether `resp` may be stored by a shared (edge) cache — its
     /// `Cache-Control` contains `public`.
     ///
@@ -555,90 +503,19 @@ mod entry {
         }
 
         // The request's own `scheme://host`, the fallback canonical URL when
-        // `HUB_EXTERNAL_URL` is unset (a no-custom-domain deploy).
-        let request_origin = req
-            .url()
-            .ok()
-            .map(|u| {
-                let scheme = u.scheme();
-                match (u.host_str(), u.port()) {
-                    (Some(host), Some(port)) => format!("{scheme}://{host}:{port}"),
-                    (Some(host), None) => format!("{scheme}://{host}"),
-                    (None, _) => String::new(),
-                }
-            })
-            .unwrap_or_default();
-
-        // RFC-0004 ch.14 Phase E ("get off D1"): when the colocated SQLite system
-        // of record is enabled (`HUB_SQLITE_DO = "1"`), forward the whole request
-        // to the `HubDb` Durable Object. Its SQLite runs in the same thread as the
-        // handler, so the per-request D1 session cost (~120 ms) is gone — the
-        // request makes one hop to the DO's region, then all reads are local. The
-        // DO runs the *same* shared router (`router_from` over `SqlDoBackend`).
-        if env
-            .var(HUB_SQLITE_DO)
-            .map(|v| v.to_string() == "1")
-            .unwrap_or(false)
-        {
-            // Pin the single hub DO to the primary region (RFC-0004 ch.14 Phase
-            // E / E4): the location hint places a *fresh* instance in Western
-            // North America (the hub's WNAM home), so the colocated SQLite is
-            // near the concentrated readership. (Cloudflare does not relocate a
-            // DO after creation, and SQLite-in-DO read replicas are not yet a
-            // GA-configurable feature; per-tenant `TenantDb` sharding is the
-            // app-level scale path for a globally-distributed readership.)
-            let stub = env
-                .durable_object(crate::handlers::bindings::HUB_DB)?
-                .id_from_name("hub")
-                .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
-            return stub.fetch_with_request(req).await;
-        }
-
-        // Default (pre-Phase-E) path: the D1 system of record. Open one D1
-        // read-replication session for the whole request, seeded by the client's
-        // prior bookmark (or a method-based constraint), and build the `Database`
-        // over it; a publish's writes advance the same bookmark threaded back below.
-        let session = crate::d1backend::open_session(
-            &env.d1(crate::handlers::bindings::D1)?,
-            &session_seed(&req),
-        )
-        .map_err(|err| worker::Error::RustError(format!("D1 session: {err:#}")))?;
-
-        // RFC-0004 ch.14 Phase A: the per-request query-timing accumulator
-        // (preview-only) wraps the read-path backend; the spans are read back
-        // after dispatch to emit `Server-Timing`.
-        #[cfg(feature = "query-timing")]
-        let timings = aos_hub_core::backend::QueryTimings::new();
-        let backend = crate::d1backend::D1Backend::new(Rc::clone(&session));
-        #[cfg(feature = "query-timing")]
-        let db = Arc::new(Database::attach(Box::new(
-            aos_hub_core::backend::TimingBackend::new(backend, timings.clone()),
-        )));
-        #[cfg(not(feature = "query-timing"))]
-        let db = Arc::new(Database::attach(Box::new(backend)));
-        let (router, service, console_deps) = router_from(&env, &request_origin, db).await?;
-        let mut resp = crate::bridge::dispatch(router, &service, console_deps, req).await?;
-
-        // Surface the per-statement D1 timings as a `Server-Timing` header so
-        // `wrangler tail` / the browser network panel show the per-request D1
-        // session cost (the floor RFC-0004 ch.14 targets). Preview-only.
-        #[cfg(feature = "query-timing")]
-        if let Some(header) = timings.server_timing_header() {
-            resp.headers_mut().append("server-timing", &header)?;
-        }
-
-        // Thread the session's resulting bookmark back so the client's next
-        // request reads at least as fresh — but never on a publicly-cacheable
-        // response, where a `Set-Cookie` would defeat edge caching of the facade.
-        if !is_publicly_cacheable(&resp) {
-            if let Ok(Some(bookmark)) = session.get_bookmark() {
-                let cookie = format!(
-                    "{D1_BOOKMARK_COOKIE}={bookmark}; Path=/; Max-Age=600; \
-                     HttpOnly; Secure; SameSite=Lax"
-                );
-                resp.headers_mut().append("set-cookie", &cookie)?;
-            }
-        }
+        // RFC-0004 ch.14 Phase E ("get off D1"): the **`HubDb` colocated-SQLite
+        // Durable Object is the only system of record** — there is no D1. The
+        // worker is a thin edge: it serves the edge cache, then forwards the whole
+        // request to `HubDb`, whose SQLite runs in the DO's own thread (no
+        // per-request session cost). The DO runs the shared router over
+        // `SqlDoBackend`. Pinned to WNAM (the hub's home) via a location hint so a
+        // fresh instance lands near the readership; the package data plane
+        // (NAR/narinfo on R2/CDN) is globally replicated independently.
+        let stub = env
+            .durable_object(crate::handlers::bindings::HUB_DB)?
+            .id_from_name("hub")
+            .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
+        let mut resp = stub.fetch_with_request(req).await?;
 
         // Edge cache write-through: store a fresh public facade response so the
         // read-through above serves repeat reads from this colo without touching
@@ -670,119 +547,11 @@ mod entry {
     #[worker::event(scheduled)]
     async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         crate::tracinglog::init();
-        let db = match env.d1(crate::handlers::bindings::D1) {
-            Ok(db) => db,
-            Err(err) => {
-                worker::console_error!("scheduled: D1 binding missing: {err}");
-                return;
-            }
-        };
-        let bucket = match env.bucket(crate::handlers::bindings::R2) {
-            Ok(bucket) => bucket,
-            Err(err) => {
-                worker::console_error!("scheduled: R2 binding missing: {err}");
-                return;
-            }
-        };
-        // The AES-GCM sealer (from `HUB_SEAL_KEY`) unseals an external S3/R2
-        // storage binding's credentials, so the Cron indexer/GC can read and
-        // write managed surfaces hosted off the hub R2 bucket — the same sealer
-        // the request path builds.
-        let sealer = match env
-            .secret(HUB_SEAL_KEY)
-            .map_err(|err| format!("{err}"))
-            .and_then(|s| sealer_from_secret(&s.to_string()).map_err(|err| format!("{err:#}")))
-        {
-            Ok(sealer) => sealer,
-            Err(err) => {
-                worker::console_error!("scheduled: {HUB_SEAL_KEY} unavailable: {err}");
-                return;
-            }
-        };
-        // Drive the indexer's D1 access through the shared D1Backend (f64 binds,
-        // NULL-tolerant reads), the same engine the read path uses; the surface
-        // read goes through the R2-backed SurfaceProvider. The Cron path opens a
-        // `first-primary` session: it reads the current index state and writes
-        // back, so it must not be served by a lagging replica.
-        let backend = match crate::d1backend::open_session(&db, D1_SEED_PRIMARY) {
-            Ok(session) => crate::d1backend::D1Backend::new(session),
-            Err(err) => {
-                worker::console_error!("scheduled: D1 session failed: {err:#}");
-                return;
-            }
-        };
-        if let Err(err) =
-            crate::indexer::index_all(backend, bucket, Arc::clone(&sealer)).await
-        {
-            worker::console_error!("scheduled index failed: {err:#}");
-        }
-
-        // Then a cache re-scan over fresh handles: reconcile each cache's D1
-        // index against its surface (the source of truth), healing drift from
-        // direct presigned uploads that bypassed the facade write-through. Cheap
-        // in steady state (one `list` per cache, no object reads).
-        if let (Ok(rs_db), Ok(rs_bucket)) = (
-            env.d1(crate::handlers::bindings::D1),
-            env.bucket(crate::handlers::bindings::R2),
-        ) {
-            match crate::d1backend::open_session(&rs_db, D1_SEED_PRIMARY) {
-                Ok(session) => {
-                    let rs_backend = crate::d1backend::D1Backend::new(session);
-                    if let Err(err) =
-                        crate::indexer::rescan_all(rs_backend, rs_bucket, Arc::clone(&sealer)).await
-                    {
-                        worker::console_error!("scheduled cache rescan failed: {err:#}");
-                    }
-                }
-                Err(err) => {
-                    worker::console_error!("scheduled rescan: D1 session failed: {err:#}")
-                }
-            }
-        } else {
-            worker::console_error!("scheduled rescan: D1/R2 binding missing");
-        }
-
-        // Then a cache-GC pass over the same D1+R2, the Cron counterpart to the
-        // native `aos-hub cache gc`. Fresh binding handles (the D1/Bucket handles
-        // above were moved into the indexer); `Date::now()` is the Cron tick time
-        // in seconds (wasm has no ambient clock, so `sweep_cache` takes it).
-        let (Ok(gc_db), Ok(gc_bucket)) = (
-            env.d1(crate::handlers::bindings::D1),
-            env.bucket(crate::handlers::bindings::R2),
-        ) else {
-            worker::console_error!("scheduled gc: D1/R2 binding missing");
-            return;
-        };
-        let now = (worker::Date::now().as_millis() / 1000) as i64;
-        let gc_backend = match crate::d1backend::open_session(&gc_db, D1_SEED_PRIMARY) {
-            Ok(session) => crate::d1backend::D1Backend::new(session),
-            Err(err) => {
-                worker::console_error!("scheduled gc: D1 session failed: {err:#}");
-                return;
-            }
-        };
-        if let Err(err) = crate::indexer::gc_all(gc_backend, gc_bucket, now, sealer).await {
-            worker::console_error!("scheduled cache gc failed: {err:#}");
-        }
-
-        // Rebuild the KV directory projection (RFC-0004 ch.14 Phase D) so the
-        // anonymous instance home is served from one KV read. Best-effort: a
-        // failure just leaves the home on its live-path fallback until the next
-        // run. (Event-driven rebuild on publish is enqueued via the `JOBS`
-        // queue's `RebuildDirectory`; this Cron pass is the backstop.)
-        if let (Ok(dir_db), Ok(dir_kv)) = (
-            env.d1(crate::handlers::bindings::D1),
-            env.kv(crate::handlers::bindings::KV_SESSIONS),
-        ) {
-            if let Ok(session) = crate::d1backend::open_session(&dir_db, D1_SEED_PRIMARY) {
-                let db = aos_hub_core::db::Database::attach(Box::new(
-                    crate::d1backend::D1Backend::new(session),
-                ));
-                let kv = crate::workerkv::WorkerKv::new(dir_kv);
-                if let Err(err) = aos_hub_core::directory::rebuild(&db, &kv).await {
-                    worker::console_error!("scheduled directory rebuild failed: {err:#}");
-                }
-            }
+        // RFC-0004 ch.14 Phase E: the maintenance pass runs **inside `HubDb`**
+        // over its colocated SQLite (the only system of record — no D1). The
+        // worker forwards the Cron tick to the DO's seal-gated `/_internal/cron`.
+        if let Err(err) = forward_internal(&env, "/_internal/cron", None).await {
+            worker::console_error!("scheduled: forward to HubDb failed: {err:#}");
         }
     }
 
@@ -801,8 +570,10 @@ mod entry {
         env: Env,
         _ctx: Context,
     ) -> Result<()> {
-        use aos_hub_core::jobs::Job;
         crate::tracinglog::init();
+        // RFC-0004 ch.14 Phase E: jobs run **inside `HubDb`** over its colocated
+        // SQLite (no D1). The worker forwards each decoded job to the DO's
+        // seal-gated `/_internal/job`. A decode failure retries the batch.
         let messages = match batch.messages() {
             Ok(messages) => messages,
             Err(err) => {
@@ -812,99 +583,157 @@ mod entry {
             }
         };
         for message in &messages {
-            match message.body() {
-                Job::RebuildDirectory => {
-                    // Rebuild the public-registry directory projection in KV from
-                    // D1, off the request path (the home reads this single value).
-                    let (Ok(d1), Ok(kv_ns)) = (
-                        env.d1(crate::handlers::bindings::D1),
-                        env.kv(crate::handlers::bindings::KV_SESSIONS),
-                    ) else {
-                        worker::console_error!("queue: rebuild_directory: D1/KV binding missing");
-                        continue;
-                    };
-                    match crate::d1backend::open_session(&d1, D1_SEED_PRIMARY) {
-                        Ok(session) => {
-                            let db = aos_hub_core::db::Database::attach(Box::new(
-                                crate::d1backend::D1Backend::new(session),
-                            ));
-                            let kv = crate::workerkv::WorkerKv::new(kv_ns);
-                            if let Err(err) = aos_hub_core::directory::rebuild(&db, &kv).await {
-                                worker::console_error!("queue: rebuild_directory: {err:#}");
-                            }
-                        }
-                        Err(err) => {
-                            worker::console_error!("queue: rebuild_directory session: {err:#}")
-                        }
-                    }
+            let body = match serde_json::to_string(message.body()) {
+                Ok(body) => body,
+                Err(err) => {
+                    worker::console_error!("queue: re-encode job: {err}");
+                    continue;
                 }
-                Job::Reindex { registry_id } => {
-                    // Event-driven re-index of one registry: load it and run the
-                    // shared reindexer (the inline counterpart to the `*/15` Cron).
-                    let (Ok(d1), Ok(bucket)) = (
-                        env.d1(crate::handlers::bindings::D1),
-                        env.bucket(crate::handlers::bindings::R2),
-                    ) else {
-                        worker::console_error!("queue: reindex: D1/R2 binding missing");
-                        continue;
-                    };
-                    let sealer = match env
-                        .secret(HUB_SEAL_KEY)
-                        .map_err(|err| format!("{err}"))
-                        .and_then(|s| {
-                            sealer_from_secret(&s.to_string()).map_err(|err| format!("{err:#}"))
-                        }) {
-                        Ok(sealer) => sealer,
-                        Err(err) => {
-                            worker::console_error!("queue: reindex: {HUB_SEAL_KEY}: {err}");
-                            continue;
-                        }
-                    };
-                    let session = match crate::d1backend::open_session(&d1, D1_SEED_PRIMARY) {
-                        Ok(session) => session,
-                        Err(err) => {
-                            worker::console_error!("queue: reindex session: {err:#}");
-                            continue;
-                        }
-                    };
-                    let db = Arc::new(aos_hub_core::db::Database::attach(Box::new(
-                        crate::d1backend::D1Backend::new(session),
-                    )));
-                    match db.registry_by_id(*registry_id).await {
-                        Ok(Some(registry)) => {
-                            use aos_hub_core::reindex::Reindexer as _;
-                            let reindexer = WorkerReindexer::new(bucket, Arc::clone(&db), sealer);
-                            if let Err(err) = reindexer.reindex(&registry).await {
-                                worker::console_error!("queue: reindex {registry_id}: {err:#}");
-                            }
-                        }
-                        Ok(None) => {
-                            worker::console_log!("queue: reindex {registry_id}: registry gone")
-                        }
-                        Err(err) => worker::console_error!("queue: reindex load {registry_id}: {err:#}"),
-                    }
-                }
-                Job::InvalidateReadModel { keys } => {
-                    // Purge edge-cached read-model entries (RFC-0004 ch.14 Phase
-                    // D/D3) so a write is observed at the next read rather than
-                    // after the cache TTL.
-                    let cache = worker::Cache::default();
-                    for key in keys {
-                        if let Err(err) = cache.delete(key.as_str(), false).await {
-                            worker::console_error!("queue: cache delete {key}: {err}");
-                        }
-                    }
-                }
-                other => {
-                    // RegenerateSurface / DeliverWebhook run against the
-                    // surface/webhook subsystems; their execution is exercised
-                    // under a live queue (deploy-gated).
-                    worker::console_log!("queue: job pending consumer wiring: {other:?}");
-                }
+            };
+            if let Err(err) = forward_internal(&env, "/_internal/job", Some(body)).await {
+                worker::console_error!("queue: forward job to HubDb failed: {err:#}");
             }
         }
         batch.ack_all();
         Ok(())
+    }
+
+    /// Forwards an internal control-plane request (Cron tick or a single queue
+    /// job) to the `HubDb` Durable Object's seal-gated `/_internal/*` endpoint,
+    /// so the work runs over the colocated SQLite system of record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the seal secret or `HUB_DB` binding is unavailable, the
+    /// DO cannot be reached, or it responds non-200.
+    async fn forward_internal(env: &Env, path: &str, body: Option<String>) -> Result<()> {
+        let seal = env.secret(HUB_SEAL_KEY)?.to_string();
+        let stub = env
+            .durable_object(crate::handlers::bindings::HUB_DB)?
+            .id_from_name("hub")
+            .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
+        let mut headers = worker::Headers::new();
+        headers.set("x-hub-seal", &seal)?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_headers(headers);
+        if let Some(body) = body {
+            init.with_body(Some(JsValue::from_str(&body)));
+        }
+        let req = Request::new_with_init(&format!("https://hub{path}"), &init)?;
+        let mut resp = stub.fetch_with_request(req).await?;
+        if resp.status_code() != 200 {
+            let detail = resp.text().await.unwrap_or_default();
+            return Err(worker::Error::RustError(format!(
+                "HubDb {path}: {} {detail}",
+                resp.status_code()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Runs the Cron maintenance pass inside `HubDb` over its colocated SQLite:
+    /// re-index every registry's surface, rescan + GC caches, and rebuild the KV
+    /// directory projection. Each step is best-effort and logged on failure.
+    async fn run_cron(state: &State, env: &Env) {
+        let make = || -> Box<dyn aos_hub_core::backend::Backend> {
+            Box::new(crate::sqldobackend::SqlDoBackend::new(state.storage().sql()))
+        };
+        // The AES-GCM sealer (from `HUB_SEAL_KEY`) unseals an external storage
+        // binding's credentials so the indexer/GC can read off-bucket surfaces.
+        let sealer = match env
+            .secret(HUB_SEAL_KEY)
+            .map_err(|err| format!("{err}"))
+            .and_then(|s| sealer_from_secret(&s.to_string()).map_err(|err| format!("{err:#}")))
+        {
+            Ok(sealer) => sealer,
+            Err(err) => {
+                worker::console_error!("cron: {HUB_SEAL_KEY} unavailable: {err}");
+                return;
+            }
+        };
+        if let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) {
+            if let Err(err) = crate::indexer::index_all(make(), bucket, Arc::clone(&sealer)).await {
+                worker::console_error!("cron index failed: {err:#}");
+            }
+        }
+        if let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) {
+            if let Err(err) = crate::indexer::rescan_all(make(), bucket, Arc::clone(&sealer)).await {
+                worker::console_error!("cron rescan failed: {err:#}");
+            }
+        }
+        if let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) {
+            let now = (worker::Date::now().as_millis() / 1000) as i64;
+            if let Err(err) = crate::indexer::gc_all(make(), bucket, now, Arc::clone(&sealer)).await {
+                worker::console_error!("cron gc failed: {err:#}");
+            }
+        }
+        if let Ok(kv_ns) = env.kv(crate::handlers::bindings::KV_SESSIONS) {
+            let db = aos_hub_core::db::Database::attach(make());
+            let kv = crate::workerkv::WorkerKv::new(kv_ns);
+            if let Err(err) = aos_hub_core::directory::rebuild(&db, &kv).await {
+                worker::console_error!("cron directory rebuild failed: {err:#}");
+            }
+        }
+    }
+
+    /// Runs a single deferred [`Job`](aos_hub_core::jobs::Job) inside `HubDb` over
+    /// its colocated SQLite (the queue consumer's per-job body, Phase E).
+    async fn run_job(job: &aos_hub_core::jobs::Job, state: &State, env: &Env) {
+        use aos_hub_core::jobs::Job;
+        let make = || -> Box<dyn aos_hub_core::backend::Backend> {
+            Box::new(crate::sqldobackend::SqlDoBackend::new(state.storage().sql()))
+        };
+        match job {
+            Job::RebuildDirectory => {
+                if let Ok(kv_ns) = env.kv(crate::handlers::bindings::KV_SESSIONS) {
+                    let db = aos_hub_core::db::Database::attach(make());
+                    let kv = crate::workerkv::WorkerKv::new(kv_ns);
+                    if let Err(err) = aos_hub_core::directory::rebuild(&db, &kv).await {
+                        worker::console_error!("job rebuild_directory: {err:#}");
+                    }
+                }
+            }
+            Job::Reindex { registry_id } => {
+                let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) else {
+                    worker::console_error!("job reindex: R2 binding missing");
+                    return;
+                };
+                let sealer = match env
+                    .secret(HUB_SEAL_KEY)
+                    .map_err(|err| format!("{err}"))
+                    .and_then(|s| sealer_from_secret(&s.to_string()).map_err(|err| format!("{err:#}")))
+                {
+                    Ok(sealer) => sealer,
+                    Err(err) => {
+                        worker::console_error!("job reindex: {HUB_SEAL_KEY}: {err}");
+                        return;
+                    }
+                };
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                match db.registry_by_id(*registry_id).await {
+                    Ok(Some(registry)) => {
+                        use aos_hub_core::reindex::Reindexer as _;
+                        let reindexer = WorkerReindexer::new(bucket, Arc::clone(&db), sealer);
+                        if let Err(err) = reindexer.reindex(&registry).await {
+                            worker::console_error!("job reindex {registry_id}: {err:#}");
+                        }
+                    }
+                    Ok(None) => worker::console_log!("job reindex {registry_id}: registry gone"),
+                    Err(err) => worker::console_error!("job reindex load {registry_id}: {err:#}"),
+                }
+            }
+            Job::InvalidateReadModel { keys } => {
+                let cache = worker::Cache::default();
+                for key in keys {
+                    if let Err(err) = cache.delete(key.as_str(), false).await {
+                        worker::console_error!("job cache delete {key}: {err}");
+                    }
+                }
+            }
+            other => {
+                worker::console_log!("job pending consumer wiring: {other:?}");
+            }
+        }
     }
 
     /// The colocated-SQLite **system of record** Durable Object (RFC-0004 ch.14
@@ -934,9 +763,43 @@ mod entry {
             if let Err(err) = crate::tenantdb::ensure_migrated(&backend).await {
                 return Response::error(format!("hubdb migrate: {err:#}"), 500);
             }
+            // Internal control-plane (RFC-0004 ch.14 Phase E): the worker's
+            // `scheduled`/`queue` handlers forward the Cron tick and each job here
+            // so the maintenance work runs over the colocated SQLite. Seal-gated
+            // (the worker adds `x-hub-seal`); an external caller forwarded through
+            // the worker cannot reach it without the secret.
+            {
+                let path = req.url().ok().map(|u| u.path().to_string()).unwrap_or_default();
+                if req.method() == Method::Post
+                    && (path == "/_internal/cron" || path == "/_internal/job")
+                {
+                    let want = self.env.secret(HUB_SEAL_KEY).map(|s| s.to_string()).unwrap_or_default();
+                    let got = req
+                        .headers()
+                        .get("x-hub-seal")
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    if want.is_empty() || got != want {
+                        return Response::error("forbidden", 403);
+                    }
+                    if path == "/_internal/cron" {
+                        run_cron(&self.state, &self.env).await;
+                        return Response::ok("ok");
+                    }
+                    let job: aos_hub_core::jobs::Job = match req.json().await {
+                        Ok(job) => job,
+                        Err(err) => return Response::error(format!("job decode: {err}"), 400),
+                    };
+                    run_job(&job, &self.state, &self.env).await;
+                    return Response::ok("ok");
+                }
+            }
             // Cutover admin (`POST /_admin/sql`, seal-gated) — the one-time
-            // D1→`HubDb` data-replay tool. TEMPORARILY ungated for the cutover;
-            // re-gate behind `cutover-admin` and redeploy the clean build after.
+            // D1→`HubDb` data-replay tool, gated behind the `cutover-admin`
+            // feature so the production build has no raw-SQL surface. Build with
+            // `--features cutover-admin` only to run a migration.
+            #[cfg(feature = "cutover-admin")]
             {
                 let path = req.url().ok().map(|u| u.path().to_string()).unwrap_or_default();
                 if req.method() == Method::Post && path == "/_admin/sql" {
