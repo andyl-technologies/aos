@@ -108,21 +108,21 @@ mod layout;
 mod materialization;
 mod pack;
 
-pub use cache::PersistCache;
+pub use cache::{PersistCache, PersistCompaction};
 pub use error::{
     PersistBlobIndexError, PersistBlobIndexedReadError, PersistBlobIndexedWriteError,
     PersistBlobPackError, PersistCachedExpressionNodeValueIndexedLoadError,
     PersistCachedExpressionNodeValueIndexedWriteError,
     PersistCachedExpressionNodeValueTraceLoadError, PersistCachedExpressionValueIndexedLoadError,
-    PersistCachedExpressionValueIndexedWriteError, PersistError, PersistFileArtifactHydrationError,
-    PersistFileArtifactIndexError, PersistFileArtifactIndexedHydrationError,
-    PersistFileArtifactIndexedWriteError, PersistNodeMetadataIndexError, PersistNodeTraceLogError,
-    PersistNodeTraceLogFormatError, PersistNodeTracePayloadError, PersistPackFormatError,
-    PersistParseArtifactHydrationError, PersistParseArtifactIndexError,
-    PersistParseArtifactIndexedHydrationError, PersistParseArtifactIndexedWriteError,
-    PersistParseArtifactMaterializationError, PersistParseBytesIndexedLoadError,
-    PersistParseFileIndexedHydrationError, PersistParseFileIndexedLoadError,
-    PersistParseSourceIndexedLoadError,
+    PersistCachedExpressionValueIndexedWriteError, PersistCompactionError, PersistError,
+    PersistFileArtifactHydrationError, PersistFileArtifactIndexError,
+    PersistFileArtifactIndexedHydrationError, PersistFileArtifactIndexedWriteError,
+    PersistNodeMetadataIndexError, PersistNodeTraceLogError, PersistNodeTraceLogFormatError,
+    PersistNodeTracePayloadError, PersistPackFormatError, PersistParseArtifactHydrationError,
+    PersistParseArtifactIndexError, PersistParseArtifactIndexedHydrationError,
+    PersistParseArtifactIndexedWriteError, PersistParseArtifactMaterializationError,
+    PersistParseBytesIndexedLoadError, PersistParseFileIndexedHydrationError,
+    PersistParseFileIndexedLoadError, PersistParseSourceIndexedLoadError,
 };
 pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,

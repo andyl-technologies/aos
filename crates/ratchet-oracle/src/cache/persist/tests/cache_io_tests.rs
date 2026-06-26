@@ -509,6 +509,217 @@ fn cache_fixed_record_indexes_compact_to_latest_entries() {
 }
 
 #[test]
+fn cache_sidecar_compaction_compacts_all_current_sidecars() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+
+    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"value payload"));
+    let value_latest = PersistBlobLocation::new(222, 34);
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(
+            value_key,
+            PersistBlobLocation::new(111, 12),
+        ))
+        .expect("first value blob index entry appends");
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(value_key, value_latest))
+        .expect("latest value blob index entry appends");
+
+    let file_blob_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"file payload"));
+    let file_latest = PersistBlobLocation::new(444, 78);
+    cache
+        .file_index()
+        .append_entry(PersistBlobIndexEntry::new(
+            file_blob_key,
+            PersistBlobLocation::new(333, 56),
+        ))
+        .expect("first file blob index entry appends");
+    cache
+        .file_index()
+        .append_entry(PersistBlobIndexEntry::new(file_blob_key, file_latest))
+        .expect("latest file blob index entry appends");
+
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let file_artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let file_artifact_latest = PersistFileArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"latest file artifact"),
+        PersistBlobLocation::new(666, 12),
+    );
+    cache
+        .record_file_artifact(PersistFileArtifactIndexEntry::new(
+            file_artifact_key,
+            PersistFileArtifactIndexValue::new(
+                DurableBlake3Hash::for_bytes(b"first file artifact"),
+                PersistBlobLocation::new(555, 90),
+            ),
+        ))
+        .expect("first file artifact entry records");
+    cache
+        .record_file_artifact(PersistFileArtifactIndexEntry::new(
+            file_artifact_key,
+            file_artifact_latest,
+        ))
+        .expect("latest file artifact entry records");
+
+    let parse_artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+    let parse_artifact_latest = PersistParseArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"latest parse artifact"),
+        PersistBlobLocation::new(888, 56),
+    );
+    cache
+        .record_parse_artifact(PersistParseArtifactIndexEntry::new(
+            parse_artifact_key,
+            PersistParseArtifactIndexValue::new(
+                DurableBlake3Hash::for_bytes(b"first parse artifact"),
+                PersistBlobLocation::new(777, 34),
+            ),
+        ))
+        .expect("first parse artifact entry records");
+    cache
+        .record_parse_artifact(PersistParseArtifactIndexEntry::new(
+            parse_artifact_key,
+            parse_artifact_latest,
+        ))
+        .expect("latest parse artifact entry records");
+
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let node_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"node value"));
+    let node_metadata_latest = PersistNodeMetadataIndexValue::with_materialized_value_hash(
+        MaterializationReuse::new(3, 4),
+        node_value_hash,
+    );
+    cache
+        .record_node_metadata(PersistNodeMetadataIndexEntry::new(
+            node_key,
+            PersistNodeMetadataIndexValue::new(MaterializationReuse::new(1, 2)),
+        ))
+        .expect("first node metadata records");
+    cache
+        .record_node_metadata(PersistNodeMetadataIndexEntry::new(
+            node_key,
+            node_metadata_latest,
+        ))
+        .expect("latest node metadata records");
+
+    let trace_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"trace value"));
+    let trace_payload = test_node_trace_payload(b"node trace", 1);
+    cache
+        .record_node_trace(
+            node_key,
+            ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"stale trace")),
+            &PersistNodeTracePayload::tombstone(),
+        )
+        .expect("first node trace records");
+    cache
+        .record_node_trace(node_key, trace_value_hash, &trace_payload)
+        .expect("latest node trace records");
+    let trace_log_len_before = fs::metadata(cache.node_trace_log().path())
+        .expect("node trace log metadata before compaction")
+        .len();
+
+    let compaction = cache.compact_sidecars().expect("sidecars compact");
+    assert_eq!(compaction.value_blob_index_entries(), 1);
+    assert_eq!(compaction.file_blob_index_entries(), 1);
+    assert_eq!(compaction.file_artifact_entries(), 1);
+    assert_eq!(compaction.parse_artifact_entries(), 1);
+    assert_eq!(compaction.node_metadata_entries(), 1);
+    assert_eq!(compaction.node_trace_entries(), 1);
+    assert_eq!(compaction.total_entries(), 6);
+
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.file_index().path())
+            .expect("file index metadata")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.file_artifact_index().path())
+            .expect("file artifact index metadata")
+            .len(),
+        PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.parse_artifact_index().path())
+            .expect("parse artifact index metadata")
+            .len(),
+        PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.node_metadata_index().path())
+            .expect("node metadata index metadata")
+            .len(),
+        PERSIST_NODE_METADATA_INDEX_ENTRY_LEN as u64
+    );
+    let trace_log_len_after = fs::metadata(cache.node_trace_log().path())
+        .expect("node trace log metadata after compaction")
+        .len();
+    assert!(
+        trace_log_len_after < trace_log_len_before,
+        "node trace compaction should rewrite only newest records"
+    );
+    assert_eq!(
+        trace_log_len_after,
+        PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN as u64
+            + trace_payload.encode().expect("trace payload encodes").len() as u64
+    );
+
+    assert_eq!(
+        cache
+            .lookup_blob_location(value_key)
+            .expect("value blob lookup succeeds"),
+        Some(value_latest)
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(file_blob_key)
+            .expect("file blob lookup succeeds"),
+        Some(file_latest)
+    );
+    assert_eq!(
+        cache
+            .lookup_file_artifact(file_artifact_key)
+            .expect("file artifact lookup succeeds"),
+        Some(file_artifact_latest)
+    );
+    assert_eq!(
+        cache
+            .lookup_parse_artifact(parse_artifact_key)
+            .expect("parse artifact lookup succeeds"),
+        Some(parse_artifact_latest)
+    );
+    assert_eq!(
+        cache
+            .lookup_node_metadata(node_key)
+            .expect("node metadata lookup succeeds"),
+        Some(node_metadata_latest)
+    );
+    assert_eq!(
+        cache
+            .lookup_node_trace(node_key)
+            .expect("node trace lookup succeeds"),
+        Some(PersistNodeTraceLogEntry::new(
+            node_key,
+            trace_value_hash,
+            trace_payload,
+        ))
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_metadata_index_records_and_looks_up_entries() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

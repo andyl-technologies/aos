@@ -636,6 +636,47 @@ pub enum PersistNodeMetadataIndexError {
     },
 }
 
+/// Persistent sidecar compaction failed.
+#[derive(Debug, Error)]
+pub enum PersistCompactionError {
+    /// The value blob index could not be compacted.
+    #[error("failed to compact persistent value blob index")]
+    ValueBlobIndex {
+        /// The underlying blob index error.
+        source: PersistBlobIndexError,
+    },
+    /// The file blob index could not be compacted.
+    #[error("failed to compact persistent file blob index")]
+    FileBlobIndex {
+        /// The underlying blob index error.
+        source: PersistBlobIndexError,
+    },
+    /// The file-artifact index could not be compacted.
+    #[error("failed to compact persistent file artifact index")]
+    FileArtifactIndex {
+        /// The underlying file-artifact index error.
+        source: PersistFileArtifactIndexError,
+    },
+    /// The parse-artifact index could not be compacted.
+    #[error("failed to compact persistent parse artifact index")]
+    ParseArtifactIndex {
+        /// The underlying parse-artifact index error.
+        source: PersistParseArtifactIndexError,
+    },
+    /// The demand-node metadata index could not be compacted.
+    #[error("failed to compact persistent node metadata index")]
+    NodeMetadataIndex {
+        /// The underlying node metadata index error.
+        source: PersistNodeMetadataIndexError,
+    },
+    /// The node verifying-trace log could not be compacted.
+    #[error("failed to compact persistent node trace log")]
+    NodeTraceLog {
+        /// The underlying node trace log error.
+        source: PersistNodeTraceLogError,
+    },
+}
+
 /// Indexed blob append failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexedWriteError {

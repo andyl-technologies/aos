@@ -1403,6 +1403,19 @@ alone (`M-1`/`Q-A`).
       automatic compaction/GC policy, LMDB/redb node table, transactionality
       with metadata/value blobs, concurrent writer coordination, mmap reads,
       and cached/uncached harness proof remain open (`C-13`/`R-10`/`S-14`).
+- [x] Current explicit all-sidecar compaction adapter:
+      `PersistCache::compact_sidecars` runs the current value/file blob-index,
+      file-artifact, parse-artifact, node-metadata, and node-trace compaction
+      primitives in a deterministic order and returns `PersistCompaction`
+      counts for the newest entries retained by each sidecar, with
+      `PersistCompactionError` preserving the failing sidecar type. This is a
+      caller-driven maintenance helper only; it is sequential rather than
+      transactional, requires callers to serialize writes, does not rewrite blob
+      packs or drop unreferenced blobs, and still leaves automatic
+      compaction/GC policy, cross-process writer coordination, LMDB/redb
+      indexes, pack GC/repack, mmap reads, Attic transport, and cached/uncached
+      harness proof open (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the
+      all-sidecar compaction cache test.
 - [x] Current force-cache persistent trace writeback:
       after tree-walk `force_value` gets an accepted forced-expression
       observation and successfully materializes its value payload, it appends a

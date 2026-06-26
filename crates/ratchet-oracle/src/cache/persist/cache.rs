@@ -20,6 +20,77 @@ pub struct PersistCache {
     node_trace_log: PersistNodeTraceLog,
 }
 
+/// Entry counts retained by persistent sidecar compaction.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PersistCompaction {
+    value_blob_index_entries: usize,
+    file_blob_index_entries: usize,
+    file_artifact_entries: usize,
+    parse_artifact_entries: usize,
+    node_metadata_entries: usize,
+    node_trace_entries: usize,
+}
+
+impl PersistCompaction {
+    const fn new(
+        value_blob_index_entries: usize,
+        file_blob_index_entries: usize,
+        file_artifact_entries: usize,
+        parse_artifact_entries: usize,
+        node_metadata_entries: usize,
+        node_trace_entries: usize,
+    ) -> Self {
+        Self {
+            value_blob_index_entries,
+            file_blob_index_entries,
+            file_artifact_entries,
+            parse_artifact_entries,
+            node_metadata_entries,
+            node_trace_entries,
+        }
+    }
+
+    /// Returns the newest value blob-index entries retained.
+    pub const fn value_blob_index_entries(self) -> usize {
+        self.value_blob_index_entries
+    }
+
+    /// Returns the newest file blob-index entries retained.
+    pub const fn file_blob_index_entries(self) -> usize {
+        self.file_blob_index_entries
+    }
+
+    /// Returns the newest file-artifact index entries retained.
+    pub const fn file_artifact_entries(self) -> usize {
+        self.file_artifact_entries
+    }
+
+    /// Returns the newest parse-artifact index entries retained.
+    pub const fn parse_artifact_entries(self) -> usize {
+        self.parse_artifact_entries
+    }
+
+    /// Returns the newest demand-node metadata entries retained.
+    pub const fn node_metadata_entries(self) -> usize {
+        self.node_metadata_entries
+    }
+
+    /// Returns the newest node verifying-trace entries retained.
+    pub const fn node_trace_entries(self) -> usize {
+        self.node_trace_entries
+    }
+
+    /// Returns the total newest entries retained across all compacted sidecars.
+    pub const fn total_entries(self) -> usize {
+        self.value_blob_index_entries
+            .saturating_add(self.file_blob_index_entries)
+            .saturating_add(self.file_artifact_entries)
+            .saturating_add(self.parse_artifact_entries)
+            .saturating_add(self.node_metadata_entries)
+            .saturating_add(self.node_trace_entries)
+    }
+}
+
 impl PersistCache {
     /// Opens or initializes a persistent eval-cache root.
     ///
@@ -116,6 +187,49 @@ impl PersistCache {
             node_metadata_index,
             node_trace_log,
         })
+    }
+
+    /// Compacts every current append-only sidecar to its newest entries.
+    ///
+    /// This explicit maintenance operation rewrites the value and file blob
+    /// indexes, file-artifact and parse-artifact indexes, demand-node metadata
+    /// index, and node verifying-trace log. It does not rewrite blob packs,
+    /// drop unreferenced blobs, coordinate with other writers, or implement an
+    /// automatic GC policy. Callers must serialize writes to the persistent
+    /// cache while this method runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistCompactionError`] identifying the sidecar whose
+    /// compaction failed. Sidecars compacted before the failure remain
+    /// rewritten; later sidecars are not attempted.
+    pub fn compact_sidecars(&self) -> Result<PersistCompaction, PersistCompactionError> {
+        let value_blob_index_entries = self
+            .compact_blob_index(PersistBlobStore::Values)
+            .map_err(|source| PersistCompactionError::ValueBlobIndex { source })?;
+        let file_blob_index_entries = self
+            .compact_blob_index(PersistBlobStore::Files)
+            .map_err(|source| PersistCompactionError::FileBlobIndex { source })?;
+        let file_artifact_entries = self
+            .compact_file_artifact_index()
+            .map_err(|source| PersistCompactionError::FileArtifactIndex { source })?;
+        let parse_artifact_entries = self
+            .compact_parse_artifact_index()
+            .map_err(|source| PersistCompactionError::ParseArtifactIndex { source })?;
+        let node_metadata_entries = self
+            .compact_node_metadata()
+            .map_err(|source| PersistCompactionError::NodeMetadataIndex { source })?;
+        let node_trace_entries = self
+            .compact_node_traces()
+            .map_err(|source| PersistCompactionError::NodeTraceLog { source })?;
+        Ok(PersistCompaction::new(
+            value_blob_index_entries,
+            file_blob_index_entries,
+            file_artifact_entries,
+            parse_artifact_entries,
+            node_metadata_entries,
+            node_trace_entries,
+        ))
     }
 
     /// Returns this cache's filesystem layout.
