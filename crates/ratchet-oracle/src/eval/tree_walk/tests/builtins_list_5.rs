@@ -137,6 +137,15 @@ fn structural_equality_still_forces_shared_list_elements() {
 }
 
 #[test]
+fn copied_attrsets_do_not_gain_shared_identity_through_list_equality() {
+    assert_eq!(
+        eval(r#"let s = { a = builtins.throw "copied child"; }; in [builtins.removeAttrs s []] == [s]"#)
+            .as_bool(),
+        Ok(false)
+    );
+}
+
+#[test]
 fn list_comparisons_type_check_operands_left_to_right() {
     let rhs_ir = lower("[1] < true");
     let root = rhs_ir.arena.node(rhs_ir.root).expect("root exists");
