@@ -113,9 +113,9 @@ pub use cache::{
     PersistCompaction, PersistStorageMaintenance,
 };
 pub use error::{
-    PersistBlobIndexError, PersistBlobIndexRebuildPlanError, PersistBlobIndexedReadError,
-    PersistBlobIndexedWriteError, PersistBlobPackError, PersistBlobPackTrimError,
-    PersistCachedExpressionNodeValueIndexedLoadError,
+    PersistBlobIndexError, PersistBlobIndexRebuildError, PersistBlobIndexRebuildPlanError,
+    PersistBlobIndexedReadError, PersistBlobIndexedWriteError, PersistBlobPackError,
+    PersistBlobPackTrimError, PersistCachedExpressionNodeValueIndexedLoadError,
     PersistCachedExpressionNodeValueIndexedWriteError,
     PersistCachedExpressionNodeValueTraceLoadError, PersistCachedExpressionValueIndexedLoadError,
     PersistCachedExpressionValueIndexedWriteError, PersistCompactionError, PersistError,

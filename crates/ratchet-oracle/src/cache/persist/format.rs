@@ -495,6 +495,29 @@ impl PersistBlobIndex {
     /// place.
     pub fn compact_latest_entries(&self) -> Result<usize, PersistBlobIndexError> {
         let entries = self.latest_entries()?;
+        self.replace_entries(&entries)
+    }
+
+    /// Rewrites the sidecar to exactly `entries` in caller-supplied order.
+    ///
+    /// Entries are written through a temporary file that is renamed over the
+    /// original index. The returned count is the number of entries written. This
+    /// low-level helper does not validate that entries match any specific blob
+    /// store or packfile; callers that rebuild from pack contents must provide
+    /// already verified entries. Callers must also exclude all concurrent
+    /// sidecar writers across threads and processes while this method runs; an
+    /// append that races between the caller's snapshot and this rename can be
+    /// lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexError`] if the index cannot be created,
+    /// opened, inspected, written, flushed, or renamed into place.
+    pub fn replace_entries(
+        &self,
+        entries: &[PersistBlobIndexEntry],
+    ) -> Result<usize, PersistBlobIndexError> {
+        ensure_blob_index_file(&self.path)?;
         let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
         let tmp_path = self
             .path
@@ -509,7 +532,7 @@ impl PersistBlobIndex {
                     path: tmp_path.clone(),
                     source,
                 })?;
-            for entry in &entries {
+            for entry in entries {
                 file.write_all(&entry.encode_index_entry())
                     .map_err(|source| PersistBlobIndexError::Write {
                         path: tmp_path.clone(),

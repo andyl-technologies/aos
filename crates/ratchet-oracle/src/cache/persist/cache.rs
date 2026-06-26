@@ -1198,6 +1198,35 @@ impl PersistCache {
         ))
     }
 
+    /// Rebuilds the selected blob-index sidecar from its verified pack.
+    ///
+    /// This explicit maintenance operation first builds
+    /// [`Self::plan_blob_index_rebuild`], then replaces the selected sidecar
+    /// with the plan's newest physical pack entries. It indexes every verified
+    /// newest physical record in that pack, including records that were
+    /// previously unindexed, and drops sidecar entries that do not correspond
+    /// to a verified physical record in the selected store. It does not choose
+    /// live roots, trim pack bytes, relocate records, coordinate with other
+    /// writers, or implement an automatic repair policy. Callers must
+    /// serialize writes to the selected sidecar while this method runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexRebuildError`] if planning fails or if the
+    /// selected sidecar cannot be replaced with the planned entries.
+    pub fn rebuild_blob_index_from_pack(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<PersistBlobIndexRebuildPlan, PersistBlobIndexRebuildError> {
+        let plan = self
+            .plan_blob_index_rebuild(store)
+            .map_err(|source| PersistBlobIndexRebuildError::Plan { source })?;
+        self.blob_index(store)
+            .replace_entries(&plan.planned_entries)
+            .map_err(|source| PersistBlobIndexRebuildError::Write { source })?;
+        Ok(plan)
+    }
+
     /// Appends a blob and records its location in the sidecar index.
     ///
     /// This helper is explicit and non-transactional: if the pack append

@@ -737,6 +737,23 @@ pub enum PersistBlobIndexRebuildPlanError {
     },
 }
 
+/// Persistent blob-index rebuild failed.
+#[derive(Debug, Error)]
+pub enum PersistBlobIndexRebuildError {
+    /// The rebuild plan could not be produced.
+    #[error("failed to plan persistent blob index rebuild")]
+    Plan {
+        /// The underlying planning error.
+        source: PersistBlobIndexRebuildPlanError,
+    },
+    /// The sidecar could not be replaced with the planned entries.
+    #[error("failed to replace persistent blob index during rebuild")]
+    Write {
+        /// The underlying blob-index write error.
+        source: PersistBlobIndexError,
+    },
+}
+
 /// Persistent storage maintenance failed.
 #[derive(Debug, Error)]
 pub enum PersistStorageMaintenanceError {

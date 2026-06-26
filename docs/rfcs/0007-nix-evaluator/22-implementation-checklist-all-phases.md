@@ -1223,6 +1223,16 @@ alone (`M-1`/`Q-A`).
       repack/relocation writing, concurrent writer coordination, automatic GC
       policy, mmap reads, Attic transport, and harness proof remain open
       (`C-13`/`R-14`).
+- [x] Current explicit blob-index rebuild helper:
+      `PersistCache::rebuild_blob_index_from_pack` builds the verified rebuild
+      plan for one store and replaces only that store's hash-to-offset sidecar
+      with the plan's newest physical pack entries, indexing previously
+      unindexed newest records, repairing stale locations, dropping dangling
+      entries, and canonicalizing duplicate sidecar history. This is
+      caller-driven single-sidecar repair only; live-root selection, blob-pack
+      trimming, full repack/relocation, writer coordination, automatic
+      GC/repair policy, mmap reads, Attic transport, and harness proof remain
+      open (`C-13`/`R-14`).
 - [x] Current idempotent indexed blob materialization substrate:
       `PersistCache::ensure_blob_indexed` reuses an existing sidecar location
       only after the pointed pack record verifies for the requested
