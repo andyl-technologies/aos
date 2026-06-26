@@ -33,24 +33,26 @@ pub use model::{
     ChoiceTag, ClockDriftRate, Configuration, ContentAddressedBlobRef, ContentHash, CowDeltaKind,
     CowDeltaRef, CowSharingStats, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
     DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
-    EngineError, EventKey, EventLogOffset, FaultDecision, FaultId, FaultState, FaultTag,
-    FrontierChild, FrontierCoveredChild, FrontierReductionPolicy, FrontierReductionReason,
-    FrontierReductionReport, GenesisCheckpoint, Icount, IrqVector, LinkDef, LinkLossProbability,
-    LocalDagStore, MIN_LINK_LATENCY, MarkerId, MaterializationPolicy, MaterializationTrigger,
-    MaterializedState, MembershipFault, MemoryDagStore, NodeBlobRef, NodeClockSkew, NodeCounter,
-    NodeId, NodeTemplate, OverrideDecision, PartialOrderIndependenceProof,
-    PartialOrderReductionKey, PartialOrderReductionPolicy, PartitionDirection, PendingFrame, Plan,
-    PlanEntry, Predicate, PreemptionDecision, PreemptionKind, Properties, Property,
-    ReachabilityExpectation, ReachableDisposition, ReadyPoint, ReplayOracleCheck, RestartPolicy,
-    RngDecision, RngStreamId, RngStreamPosition, RuntimeState, SavevmCompletenessHedge,
-    ScenarioBuilder, ScenarioDef, ScenarioDefForm, Schedule, ScheduleError, SchedulerState,
-    SchedulingPoint, SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
-    SearchReplayOracleSamplingReport, Seed, SeededRngStream, Shift, SimDuration, SimInstant,
-    SimOffset, State, SymmetryClassId, SymmetryReductionClasses, SymmetryReductionKey,
-    TemporalGraph, TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots,
-    TemporalGraphReferenceCounts, TemporalGraphRuntime, TemporalGraphSave, TemporalGraphSearch,
-    TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError, TimerId, TimerRegistry,
-    TimerState, VcpuId, VirtualInstant, VirtualTime, VmSnapshotRef, WhiteBoxPolicy, World,
+    EngineError, EventKey, EventLogOffset, FamilyParams, FamilySpace, FaultDecision, FaultDensity,
+    FaultDensityRange, FaultId, FaultState, FaultTag, FrontierChild, FrontierCoveredChild,
+    FrontierReductionPolicy, FrontierReductionReason, FrontierReductionReport, GenesisCheckpoint,
+    Icount, IrqVector, LinkDef, LinkLossProbability, LocalDagStore, MIN_LINK_LATENCY, MarkerId,
+    MaterializationPolicy, MaterializationTrigger, MaterializedState, MembershipFault,
+    MemoryDagStore, NodeBlobRef, NodeClockSkew, NodeCounter, NodeId, NodeTemplate,
+    OverrideDecision, PartialOrderIndependenceProof, PartialOrderReductionKey,
+    PartialOrderReductionPolicy, PartitionDirection, PendingFrame, PinnedConfiguration,
+    PinnedScenario, Plan, PlanEntry, Predicate, PreemptionDecision, PreemptionKind, Properties,
+    Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, ReplayOracleCheck,
+    RestartPolicy, RngDecision, RngStreamId, RngStreamPosition, RuntimeState,
+    SavevmCompletenessHedge, ScenarioBuilder, ScenarioDef, ScenarioDefForm, ScenarioFamily,
+    Schedule, ScheduleError, SchedulerState, SchedulingPoint, SearchReplayOracleBisectionRequest,
+    SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport, Seed, SeedSpace,
+    SeededRngStream, Shift, SimDuration, SimInstant, SimOffset, State, SymmetryClassId,
+    SymmetryReductionClasses, SymmetryReductionKey, TemporalGraph, TemporalGraphFork,
+    TemporalGraphGcReport, TemporalGraphGcRoots, TemporalGraphReferenceCounts,
+    TemporalGraphRuntime, TemporalGraphSave, TemporalGraphSearch, TemporalGraphStoreError,
+    TemporalGraphStoreKeys, TimeConversionError, TimerId, TimerRegistry, TimerState, TopologyShape,
+    TopologySizeRange, VcpuId, VirtualInstant, VirtualTime, VmSnapshotRef, WhiteBoxPolicy, World,
     WorldLookaheadEdge, WorldNode, WorldStaticTopology, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
@@ -2936,6 +2938,214 @@ mod tests {
             ScenarioDefForm::from_canonical_toml(&host_path_toml),
             Err(EngineError::ScenarioImageReferenceNotContentAddressed { field, .. })
                 if field == "kernel"
+        ));
+    }
+
+    #[test]
+    fn scenario_family_pins_concrete_validated_instances() {
+        let seed_a = Seed::from_u64(0x0010_0017);
+        let seed_b = Seed::from_u64(0x0010_0018);
+        let zero_density = FaultDensity::ZERO;
+        let half_density = FaultDensity::from_millionths(500_000)
+            .unwrap_or_else(|error| panic!("half density should be valid: {error}"));
+        let space = FamilySpace::new(
+            SeedSpace::explicit(vec![seed_b, seed_a])
+                .unwrap_or_else(|error| panic!("explicit seed space should be valid: {error}")),
+            FaultDensityRange::new(zero_density, half_density)
+                .unwrap_or_else(|error| panic!("density range should be valid: {error}")),
+            TopologySizeRange::new(3, 4)
+                .unwrap_or_else(|error| panic!("topology size range should be valid: {error}")),
+            vec![
+                TopologyShape::Star,
+                TopologyShape::Ring,
+                TopologyShape::Mesh,
+                TopologyShape::Random,
+            ],
+        )
+        .unwrap_or_else(|error| panic!("family space should be valid: {error}"));
+        let tiny_space = FamilySpace::new(
+            SeedSpace::explicit(vec![seed_a, seed_b])
+                .unwrap_or_else(|error| panic!("tiny seed space should be valid: {error}")),
+            FaultDensityRange::new(
+                zero_density,
+                FaultDensity::from_millionths(1).unwrap_or_else(|error| {
+                    panic!("one-millionth density should be valid: {error}")
+                }),
+            )
+            .unwrap_or_else(|error| panic!("tiny density range should be valid: {error}")),
+            TopologySizeRange::new(1, 2).unwrap_or_else(|error| {
+                panic!("tiny topology size range should be valid: {error}")
+            }),
+            vec![TopologyShape::Ring, TopologyShape::Star],
+        )
+        .unwrap_or_else(|error| panic!("tiny family space should be valid: {error}"));
+        let generated_seeds = SeedSpace::generated(Seed::from_u64(0xfeed), 2)
+            .unwrap_or_else(|error| panic!("generated seed space should be valid: {error}"));
+        let family = ScenarioFamily::new(space, NodeTemplate::fixed_icount(Icount { retired: 17 }))
+            .property(assertion(
+                "node-zero-live",
+                "first generated node remains addressable",
+                Property::Sometimes {
+                    predicate: named_predicate("node_alive", &["node-0"]),
+                },
+            ));
+        let params = FamilyParams {
+            seed: seed_a,
+            fault_density: half_density,
+            topology_size: 4,
+            topology_shape: TopologyShape::Ring,
+        };
+        let pinned = family
+            .instantiate(params)
+            .unwrap_or_else(|error| panic!("family params should instantiate: {error}"));
+        let repeated = family
+            .instantiate(params)
+            .unwrap_or_else(|error| panic!("same family params should instantiate: {error}"));
+        let zero_faults = family
+            .instantiate(FamilyParams {
+                fault_density: zero_density,
+                ..params
+            })
+            .unwrap_or_else(|error| {
+                panic!("zero-density family params should instantiate: {error}")
+            });
+        let other_seed = family
+            .instantiate(FamilyParams {
+                seed: seed_b,
+                ..params
+            })
+            .unwrap_or_else(|error| panic!("other seed family params should instantiate: {error}"));
+        let smaller_topology = family
+            .instantiate(FamilyParams {
+                topology_size: 3,
+                ..params
+            })
+            .unwrap_or_else(|error| panic!("smaller topology should instantiate: {error}"));
+        let star_topology = family
+            .instantiate(FamilyParams {
+                topology_shape: TopologyShape::Star,
+                ..params
+            })
+            .unwrap_or_else(|error| panic!("star topology should instantiate: {error}"));
+        let mesh_topology = family
+            .instantiate(FamilyParams {
+                topology_shape: TopologyShape::Mesh,
+                ..params
+            })
+            .unwrap_or_else(|error| panic!("mesh topology should instantiate: {error}"));
+        let random_zero_faults = family
+            .instantiate(FamilyParams {
+                fault_density: zero_density,
+                topology_shape: TopologyShape::Random,
+                ..params
+            })
+            .unwrap_or_else(|error| {
+                panic!("random zero-density topology should instantiate: {error}")
+            });
+        let random_half_faults = family
+            .instantiate(FamilyParams {
+                topology_shape: TopologyShape::Random,
+                ..params
+            })
+            .unwrap_or_else(|error| {
+                panic!("random half-density topology should instantiate: {error}")
+            });
+        let sampled = family
+            .instantiate_sample(0)
+            .unwrap_or_else(|error| panic!("sampled family params should instantiate: {error}"));
+        let sampled_again = family
+            .instantiate_sample(0)
+            .unwrap_or_else(|error| panic!("same sample should instantiate: {error}"));
+        let generated_seed_0 = generated_seeds
+            .seed_at(0)
+            .unwrap_or_else(|error| panic!("generated seed 0 should exist: {error}"));
+        let generated_seed_1 = generated_seeds
+            .seed_at(1)
+            .unwrap_or_else(|error| panic!("generated seed 1 should exist: {error}"));
+        let out_of_space = family.instantiate(FamilyParams {
+            topology_size: 5,
+            ..params
+        });
+        let bad_density = FaultDensity::from_millionths(1_000_001);
+        let pinned_form = pinned.clone().into_form();
+        let pinned_genesis = pinned.genesis_configuration();
+        let round_tripped_pinned_form = ScenarioDefForm::from_canonical_toml(
+            &pinned_genesis
+                .scenario_form()
+                .to_canonical_toml()
+                .unwrap_or_else(|error| panic!("pinned form TOML should serialize: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("pinned form TOML should parse: {error}"));
+        let tiny_total = tiny_space
+            .cardinality()
+            .unwrap_or_else(|error| panic!("tiny space cardinality should compute: {error}"));
+        let mut tiny_samples = std::collections::BTreeSet::new();
+        for index in 0..tiny_total {
+            tiny_samples.insert(
+                tiny_space
+                    .sample(index)
+                    .unwrap_or_else(|error| panic!("tiny sample {index} should exist: {error}")),
+            );
+        }
+        let exhausted_tiny_sample = tiny_space.sample(tiny_total);
+
+        assert_eq!(pinned, repeated);
+        assert_eq!(pinned.params(), params);
+        assert_eq!(pinned.form().seed(), params.seed);
+        assert_eq!(pinned.form().world().nodes().len(), 4);
+        assert_eq!(pinned.form().world().links().len(), 4);
+        assert_eq!(pinned.form().properties().assertions().len(), 1);
+        assert_eq!(pinned.form().plan().entries().len(), 8);
+        assert_eq!(
+            pinned
+                .form()
+                .plan()
+                .entries()
+                .iter()
+                .filter(|entry| matches!(entry, PlanEntry::Activate { .. }))
+                .count(),
+            4
+        );
+        assert_eq!(pinned_form, pinned.form().clone());
+        assert_eq!(pinned_genesis.configuration().def, pinned.scenario_def());
+        assert_eq!(pinned_genesis.scenario_form(), pinned.form());
+        assert_eq!(round_tripped_pinned_form, pinned.form().clone());
+        assert!(zero_faults.form().plan().entries().is_empty());
+        assert_ne!(zero_faults.id(), pinned.id());
+        assert_ne!(other_seed.id(), pinned.id());
+        assert_eq!(smaller_topology.form().world().nodes().len(), 3);
+        assert_eq!(smaller_topology.form().world().links().len(), 3);
+        assert_ne!(smaller_topology.id(), pinned.id());
+        assert_eq!(star_topology.form().world().links().len(), 3);
+        assert_ne!(star_topology.id(), pinned.id());
+        assert_eq!(mesh_topology.form().world().links().len(), 6);
+        assert_ne!(mesh_topology.id(), pinned.id());
+        assert_eq!(
+            random_zero_faults.form().world(),
+            random_half_faults.form().world()
+        );
+        assert!(random_zero_faults.form().plan().entries().is_empty());
+        assert!(!random_half_faults.form().plan().entries().is_empty());
+        assert_ne!(random_zero_faults.id(), random_half_faults.id());
+        assert_eq!(sampled, sampled_again);
+        assert!(family.space().contains(sampled.params()));
+        assert_eq!(tiny_total, 16);
+        assert_eq!(tiny_samples.len(), tiny_total as usize);
+        assert!(matches!(
+            exhausted_tiny_sample,
+            Err(EngineError::ScenarioFamilyParameterOutOfSpace { parameter })
+                if parameter == "sample_index"
+        ));
+        assert_ne!(generated_seed_0, generated_seed_1);
+        assert!(matches!(
+            out_of_space,
+            Err(EngineError::ScenarioFamilyParameterOutOfSpace { parameter })
+                if parameter == "topology_size"
+        ));
+        assert!(matches!(
+            bad_density,
+            Err(EngineError::FaultDensityOutOfRange { millionths, maximum })
+                if millionths == 1_000_001 && maximum == 1_000_000
         ));
     }
 
