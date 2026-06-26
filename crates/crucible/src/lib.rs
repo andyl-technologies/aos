@@ -29,27 +29,28 @@ pub use backend::{
 };
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use model::{
-    AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, ChoiceTag, ClockDriftRate,
-    Configuration, ContentHash, CowDeltaKind, CowDeltaRef, CowSharingStats, DagStore,
-    DagStoreError, DagStoreReproductionArtifact, Decision, DecisionRngState, DeliveryOrderDecision,
-    DeviceId, DeviceOverlayDelta, DeviceRngState, EngineError, EventKey, EventLogOffset,
-    FaultDecision, FaultId, FaultState, FaultTag, FrontierChild, FrontierCoveredChild,
-    FrontierReductionPolicy, FrontierReductionReason, FrontierReductionReport, GenesisCheckpoint,
-    Icount, IrqVector, LinkDef, LinkLossProbability, LocalDagStore, MIN_LINK_LATENCY,
-    MaterializationPolicy, MaterializationTrigger, MaterializedState, MembershipFault,
-    MemoryDagStore, NodeBlobRef, NodeClockSkew, NodeCounter, NodeId, OverrideDecision,
-    PartialOrderIndependenceProof, PartialOrderReductionKey, PartialOrderReductionPolicy,
-    PartitionDirection, PendingFrame, Plan, PlanEntry, PreemptionDecision, PreemptionKind,
-    ReadyPoint, ReplayOracleCheck, RestartPolicy, RngDecision, RngStreamId, RngStreamPosition,
-    RuntimeState, SavevmCompletenessHedge, ScenarioDef, Schedule, ScheduleError, SchedulerState,
-    SchedulingPoint, SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
-    SearchReplayOracleSamplingReport, Shift, SimDuration, SimInstant, SimOffset, State,
-    SymmetryClassId, SymmetryReductionClasses, SymmetryReductionKey, TemporalGraph,
-    TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots, TemporalGraphReferenceCounts,
-    TemporalGraphRuntime, TemporalGraphSave, TemporalGraphSearch, TemporalGraphStoreError,
-    TemporalGraphStoreKeys, TimeConversionError, TimerId, TimerRegistry, TimerState, VcpuId,
-    VirtualInstant, VirtualTime, VmSnapshotRef, WhiteBoxPolicy, World, WorldLookaheadEdge,
-    WorldNode, WorldStaticTopology, bake, instantiate, reduce, step,
+    AppRandomDecision, AssertionDef, AssertionId, Checkpoint, CheckpointKind, CheckpointMeta,
+    ChoiceTag, ClockDriftRate, Configuration, ContentHash, CowDeltaKind, CowDeltaRef,
+    CowSharingStats, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
+    DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
+    EngineError, EventKey, EventLogOffset, FaultDecision, FaultId, FaultState, FaultTag,
+    FrontierChild, FrontierCoveredChild, FrontierReductionPolicy, FrontierReductionReason,
+    FrontierReductionReport, GenesisCheckpoint, Icount, IrqVector, LinkDef, LinkLossProbability,
+    LocalDagStore, MIN_LINK_LATENCY, MarkerId, MaterializationPolicy, MaterializationTrigger,
+    MaterializedState, MembershipFault, MemoryDagStore, NodeBlobRef, NodeClockSkew, NodeCounter,
+    NodeId, OverrideDecision, PartialOrderIndependenceProof, PartialOrderReductionKey,
+    PartialOrderReductionPolicy, PartitionDirection, PendingFrame, Plan, PlanEntry, Predicate,
+    PreemptionDecision, PreemptionKind, Properties, Property, ReachabilityExpectation,
+    ReachableDisposition, ReadyPoint, ReplayOracleCheck, RestartPolicy, RngDecision, RngStreamId,
+    RngStreamPosition, RuntimeState, SavevmCompletenessHedge, ScenarioDef, Schedule, ScheduleError,
+    SchedulerState, SchedulingPoint, SearchReplayOracleBisectionRequest,
+    SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport, Shift, SimDuration,
+    SimInstant, SimOffset, State, SymmetryClassId, SymmetryReductionClasses, SymmetryReductionKey,
+    TemporalGraph, TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots,
+    TemporalGraphReferenceCounts, TemporalGraphRuntime, TemporalGraphSave, TemporalGraphSearch,
+    TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError, TimerId, TimerRegistry,
+    TimerState, VcpuId, VirtualInstant, VirtualTime, VmSnapshotRef, WhiteBoxPolicy, World,
+    WorldLookaheadEdge, WorldNode, WorldStaticTopology, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
@@ -2267,6 +2268,264 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn properties_content_address_is_orthogonal_and_validated() {
+        let world = world_from_nodes_and_links(
+            two_ready_nodes(),
+            vec![transport_link("a", "b", 10, 1, 0, None)],
+        );
+        let changed_world = world_from_nodes_and_links(
+            vec![
+                ready_node(
+                    "a",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 11 },
+                    },
+                ),
+                ready_node(
+                    "b",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 12 },
+                    },
+                ),
+            ],
+            vec![transport_link("a", "b", 20, 1, 0, None)],
+        );
+        let incompatible_world = world_from_nodes_and_links(
+            vec![ready_node(
+                "a",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 1 },
+                },
+            )],
+            Vec::new(),
+        );
+        let authored_order = vec![
+            assertion(
+                "settles",
+                "replicas settle to the same state",
+                Property::AfterQuiescence {
+                    predicate: named_predicate("replicas_equal", &["b", "a"]),
+                },
+            ),
+            assertion(
+                "alive",
+                "nodes remain alive",
+                Property::Always {
+                    predicate: Predicate::AllOf {
+                        predicates: vec![
+                            named_predicate("node_alive", &["b"]),
+                            named_predicate("node_alive", &["a"]),
+                        ],
+                    },
+                },
+            ),
+            assertion(
+                "commit-reached",
+                "commit marker was reached",
+                Property::Reachable {
+                    predicate: Predicate::GuestMarker {
+                        marker: marker_id("commit"),
+                    },
+                    expectation: ReachabilityExpectation::Reachable {
+                        on_unreached: ReachableDisposition::Warn,
+                    },
+                },
+            ),
+        ];
+        let canonical_order = vec![
+            assertion(
+                "alive",
+                "nodes remain alive",
+                Property::Always {
+                    predicate: Predicate::AllOf {
+                        predicates: vec![
+                            named_predicate("node_alive", &["a"]),
+                            named_predicate("node_alive", &["b"]),
+                        ],
+                    },
+                },
+            ),
+            assertion(
+                "commit-reached",
+                "commit marker was reached",
+                Property::Reachable {
+                    predicate: Predicate::GuestMarker {
+                        marker: marker_id("commit"),
+                    },
+                    expectation: ReachabilityExpectation::Reachable {
+                        on_unreached: ReachableDisposition::Warn,
+                    },
+                },
+            ),
+            assertion(
+                "settles",
+                "replicas settle to the same state",
+                Property::AfterQuiescence {
+                    predicate: named_predicate("replicas_equal", &["b", "a"]),
+                },
+            ),
+        ];
+
+        let properties = match Properties::from_assertions_for_world(&world, authored_order) {
+            Ok(properties) => properties,
+            Err(error) => panic!("authored-order properties should be valid: {error}"),
+        };
+        let same_properties = match Properties::from_assertions_for_world(&world, canonical_order) {
+            Ok(properties) => properties,
+            Err(error) => panic!("canonical-order properties should be valid: {error}"),
+        };
+        let same_properties_changed_world = match Properties::from_assertions_for_world(
+            &changed_world,
+            same_properties.assertions().to_vec(),
+        ) {
+            Ok(properties) => properties,
+            Err(error) => panic!("same properties should apply to compatible world: {error}"),
+        };
+        let changed_properties = match Properties::from_assertions_for_world(
+            &world,
+            vec![assertion(
+                "alive",
+                "node b remains alive",
+                Property::Always {
+                    predicate: named_predicate("node_alive", &["b"]),
+                },
+            )],
+        ) {
+            Ok(properties) => properties,
+            Err(error) => panic!("changed properties should be valid: {error}"),
+        };
+        let unknown_node = Properties::from_assertions_for_world(
+            &world,
+            vec![assertion(
+                "missing",
+                "missing node is invalid",
+                Property::Always {
+                    predicate: named_predicate("node_alive", &["missing"]),
+                },
+            )],
+        );
+        let duplicate_id = Properties::from_assertions_for_world(
+            &world,
+            vec![
+                assertion(
+                    "dup",
+                    "first",
+                    Property::Always {
+                        predicate: named_predicate("node_alive", &["a"]),
+                    },
+                ),
+                assertion(
+                    "dup",
+                    "second",
+                    Property::Sometimes {
+                        predicate: named_predicate("node_alive", &["b"]),
+                    },
+                ),
+            ],
+        );
+        let empty_compound = Properties::from_assertions_for_world(
+            &world,
+            vec![assertion(
+                "empty",
+                "empty all-of is invalid",
+                Property::Always {
+                    predicate: Predicate::AllOf {
+                        predicates: Vec::new(),
+                    },
+                },
+            )],
+        );
+        let empty_plan = Plan::empty();
+        let empty_properties = Properties::empty();
+        let partition_plan = match Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Activate {
+                at: VirtualTime { ticks: 10 },
+                tag: tag("split"),
+                fault: MembershipFault::Partition {
+                    endpoint_a: node_id("a"),
+                    endpoint_b: node_id("b"),
+                    direction: PartitionDirection::Bidirectional,
+                },
+            }],
+        ) {
+            Ok(plan) => plan,
+            Err(error) => panic!("partition plan should be valid: {error}"),
+        };
+        let no_link_world = world_from_nodes_and_links(two_ready_nodes(), Vec::new());
+
+        assert_eq!(properties.content_hash(), same_properties.content_hash());
+        assert_eq!(properties.assertions(), same_properties.assertions());
+        assert_eq!(
+            properties.content_hash(),
+            same_properties_changed_world.content_hash()
+        );
+        assert_ne!(properties.content_hash(), changed_properties.content_hash());
+        assert_eq!(
+            world.scenario_def(),
+            world
+                .scenario_def_with_plan_and_properties(&empty_plan, &empty_properties)
+                .unwrap_or_else(|error| panic!(
+                    "empty plan and properties should compose: {error}"
+                ))
+        );
+        assert_eq!(
+            world
+                .scenario_def_with_plan(&empty_plan)
+                .unwrap_or_else(|error| panic!("empty plan should compose: {error}")),
+            world
+                .scenario_def_with_plan_and_properties(&empty_plan, &empty_properties)
+                .unwrap_or_else(|error| panic!(
+                    "empty properties should preserve plan-only scenario: {error}"
+                ))
+        );
+        assert_ne!(
+            world
+                .scenario_def_with_plan(&empty_plan)
+                .unwrap_or_else(|error| panic!("empty plan should compose: {error}")),
+            world
+                .scenario_def_with_plan_and_properties(&empty_plan, &properties)
+                .unwrap_or_else(|error| panic!(
+                    "properties should affect scenario identity: {error}"
+                ))
+        );
+        assert_ne!(
+            world
+                .scenario_def_with_plan_and_properties(&empty_plan, &properties)
+                .unwrap_or_else(|error| panic!("properties should compose: {error}")),
+            changed_world
+                .scenario_def_with_plan_and_properties(&empty_plan, &same_properties_changed_world)
+                .unwrap_or_else(|error| panic!(
+                    "same properties should compose with compatible world: {error}"
+                ))
+        );
+        assert!(matches!(
+            incompatible_world.scenario_def_with_plan_and_properties(&empty_plan, &properties),
+            Err(EngineError::PropertyPredicateUnknownNode { node }) if node == node_id("b")
+        ));
+        assert!(matches!(
+            no_link_world.scenario_def_with_plan_and_properties(&partition_plan, &properties),
+            Err(EngineError::PlanFaultUnknownLink {
+                endpoint_a,
+                endpoint_b,
+            }) if endpoint_a == node_id("a") && endpoint_b == node_id("b")
+        ));
+        assert!(matches!(
+            unknown_node,
+            Err(EngineError::PropertyPredicateUnknownNode { node })
+                if node == node_id("missing")
+        ));
+        assert!(matches!(
+            duplicate_id,
+            Err(EngineError::PropertyDuplicateAssertionId { id }) if id == assertion_id("dup")
+        ));
+        assert!(matches!(
+            empty_compound,
+            Err(EngineError::PropertyPredicateEmptyCompound { kind }) if kind == "all-of"
+        ));
+    }
+
     #[cfg(feature = "test-double")]
     #[test]
     fn world_logical_topology_ignores_physical_transport_layout() {
@@ -2995,6 +3254,29 @@ mod tests {
 
     fn tag(name: &str) -> FaultTag {
         FaultTag::from_name(name)
+    }
+
+    fn assertion_id(name: &str) -> AssertionId {
+        AssertionId::from_name(name)
+    }
+
+    fn marker_id(name: &str) -> MarkerId {
+        MarkerId::from_name(name)
+    }
+
+    fn named_predicate(name: &str, nodes: &[&str]) -> Predicate {
+        Predicate::Named {
+            name: name.to_owned(),
+            nodes: nodes.iter().map(|node| node_id(node)).collect(),
+        }
+    }
+
+    fn assertion(name: &str, message: &str, property: Property) -> AssertionDef {
+        AssertionDef {
+            id: assertion_id(name),
+            message: message.to_owned(),
+            property,
+        }
     }
 
     fn device_id(name: &str) -> DeviceId {
