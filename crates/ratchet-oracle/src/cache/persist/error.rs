@@ -803,6 +803,12 @@ pub enum PersistStorageMaintenanceError {
 /// Indexed blob append failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexedWriteError {
+    /// The in-process materialization lock was poisoned by a prior panic.
+    #[error("persistent blob write lock for {store:?} is poisoned")]
+    WriteLockPoisoned {
+        /// The blob namespace whose lock could not be acquired.
+        store: PersistBlobStore,
+    },
     /// The blob could not be appended to its selected packfile.
     #[error("failed to append indexed persistent blob")]
     Append {

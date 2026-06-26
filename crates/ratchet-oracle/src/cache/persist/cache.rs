@@ -18,6 +18,34 @@ pub struct PersistCache {
     parse_artifact_index: PersistParseArtifactIndex,
     node_metadata_index: PersistNodeMetadataIndex,
     node_trace_log: PersistNodeTraceLog,
+    blob_write_locks: Arc<PersistBlobWriteLocks>,
+}
+
+#[derive(Debug)]
+struct PersistBlobWriteLocks {
+    values: Mutex<()>,
+    files: Mutex<()>,
+}
+
+impl PersistBlobWriteLocks {
+    fn new() -> Self {
+        Self {
+            values: Mutex::new(()),
+            files: Mutex::new(()),
+        }
+    }
+
+    fn lock(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<MutexGuard<'_, ()>, PersistBlobIndexedWriteError> {
+        let lock = match store {
+            PersistBlobStore::Values => &self.values,
+            PersistBlobStore::Files => &self.files,
+        };
+        lock.lock()
+            .map_err(|_| PersistBlobIndexedWriteError::WriteLockPoisoned { store })
+    }
 }
 
 /// Entry counts retained by persistent sidecar compaction.
@@ -425,7 +453,16 @@ impl PersistCache {
             parse_artifact_index,
             node_metadata_index,
             node_trace_log,
+            blob_write_locks: Arc::new(PersistBlobWriteLocks::new()),
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn lock_blob_materialization_for_tests(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<MutexGuard<'_, ()>, PersistBlobIndexedWriteError> {
+        self.blob_write_locks.lock(store)
     }
 
     /// Compacts every current append-only sidecar to its newest entries.
@@ -1370,15 +1407,17 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobIndexedWriteError`] if the selected packfile cannot
-    /// append or verify a fresh payload, or if the selected sidecar index cannot
-    /// write a fresh hash-to-offset record. A lookup failure falls back to the
-    /// append path so this helper preserves append-first failure semantics.
+    /// Returns [`PersistBlobIndexedWriteError`] if the selected in-process
+    /// materialization lock is poisoned, if the selected packfile cannot append
+    /// or verify a fresh payload, or if the selected sidecar index cannot write
+    /// a fresh hash-to-offset record. A lookup failure falls back to the append
+    /// path so this helper preserves append-first failure semantics.
     pub fn ensure_blob_indexed(
         &self,
         key: PersistBlobKey,
         payload: &[u8],
     ) -> Result<PersistBlobIndexEntry, PersistBlobIndexedWriteError> {
+        let _write_guard = self.blob_write_locks.lock(key.store())?;
         if let Ok(Some(location)) = self.lookup_blob_location(key) {
             if matches!(self.read_blob(key, location), Ok(existing) if existing == payload) {
                 return Ok(PersistBlobIndexEntry::new(key, location));
@@ -1667,10 +1706,11 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistBlobIndexedWriteError`] when `decision` is
-    /// [`MaterializationDecision::Materialize`] and the selected packfile
-    /// cannot append/verify a fresh payload, or the selected sidecar index
-    /// cannot write a fresh hash-to-offset record. A sidecar lookup failure
-    /// falls back to the append path.
+    /// [`MaterializationDecision::Materialize`] and the selected in-process
+    /// materialization lock is poisoned, the selected packfile cannot
+    /// append/verify a fresh payload, or the selected sidecar index cannot
+    /// write a fresh hash-to-offset record. A sidecar lookup failure falls back
+    /// to the append path.
     pub fn materialize_blob_indexed(
         &self,
         key: PersistBlobKey,
@@ -1713,10 +1753,11 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistBlobIndexedWriteError`] when the signals choose
-    /// [`MaterializationDecision::Materialize`] and the selected packfile
-    /// cannot append/verify a fresh payload, or the selected sidecar index
-    /// cannot write a fresh hash-to-offset record. A sidecar lookup failure
-    /// falls back to the append path.
+    /// [`MaterializationDecision::Materialize`] and the selected in-process
+    /// materialization lock is poisoned, the selected packfile cannot
+    /// append/verify a fresh payload, or the selected sidecar index cannot
+    /// write a fresh hash-to-offset record. A sidecar lookup failure falls back
+    /// to the append path.
     pub fn materialize_blob_indexed_with_signals(
         &self,
         key: PersistBlobKey,

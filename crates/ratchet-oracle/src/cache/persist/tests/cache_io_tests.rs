@@ -11,6 +11,8 @@ use crate::cache::{
 use crate::string::{ContextElement, StringContext};
 use crate::syntax::Span;
 use crate::value::Value;
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 #[derive(Clone, Debug)]
 struct StaticRevalidator {
@@ -2627,6 +2629,119 @@ fn cache_indexed_materialization_reuses_verified_existing_blob() {
             .expect("value index metadata")
             .len(),
         index_len
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_indexed_materialization_single_flights_cloned_cache_handles() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = Arc::new(b"payload".to_vec());
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload.as_slice()));
+    let workers = 16;
+    let barrier = Arc::new(Barrier::new(workers));
+    let mut handles = Vec::new();
+
+    for _ in 0..workers {
+        let worker_cache = cache.clone();
+        let worker_payload = Arc::clone(&payload);
+        let worker_barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            worker_barrier.wait();
+            let result = worker_cache
+                .materialize_blob_indexed(
+                    key,
+                    worker_payload.as_slice(),
+                    MaterializationDecision::Materialize,
+                )
+                .expect("indexed materialization succeeds");
+            let PersistMaterialization::Materialized(location) = result else {
+                panic!("materialization should report a location");
+            };
+            location
+        }));
+    }
+
+    let mut locations = Vec::new();
+    for handle in handles {
+        locations.push(handle.join().expect("worker should not panic"));
+    }
+
+    let first_location = *locations.first().expect("worker locations exist");
+    assert!(locations.iter().all(|location| *location == first_location));
+    assert_eq!(
+        cache
+            .value_pack()
+            .records()
+            .expect("value pack records scan")
+            .len(),
+        1
+    );
+    assert_eq!(
+        cache
+            .value_index()
+            .latest_entries()
+            .expect("value index latest entries"),
+        vec![PersistBlobIndexEntry::new(key, first_location)]
+    );
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        cache
+            .read_blob_indexed(key)
+            .expect("indexed read succeeds")
+            .expect("indexed blob exists")
+            .as_slice(),
+        payload.as_slice()
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_indexed_materialization_reports_poisoned_shared_clone_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = cache.clone();
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+            .expect("value write lock acquires");
+        panic!("poison persistent value write lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let payload = b"payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let error = cache
+        .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
+        .expect_err("poisoned shared value lock should reject materialization");
+
+    assert!(matches!(
+        error,
+        PersistBlobIndexedWriteError::WriteLockPoisoned {
+            store: PersistBlobStore::Values
+        }
+    ));
+    assert_eq!(
+        cache
+            .value_pack()
+            .records()
+            .expect("value pack records scan")
+            .len(),
+        0
+    );
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata")
+            .len(),
+        0
     );
 
     let _ = fs::remove_dir_all(root);
