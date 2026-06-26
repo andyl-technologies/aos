@@ -838,11 +838,24 @@ command.
     harness first-mismatch /
     divergence-bisection path and QEMU snapshot-completeness probes wired into
     the replay-oracle result artifact.
-- [ ] **T-TEMP-8** Implement the content-addressed `DagStore`
+- [x] **T-TEMP-8** Implement the content-addressed `DagStore`
   (`put`/`get`/`exists`, BLAKE3 keys, idempotent dedup, two-level on-disk
   layout) with a backend-agnostic trait for future remote backends and
   store-key reproduction artifacts. — satisfies [TEMP-21], [TEMP-22],
   [TEMP-23]; spec §7.
+  - Completed by `crucible::DagStore`, `crucible::MemoryDagStore`,
+    `crucible::LocalDagStore`, `crucible::TemporalGraphStoreKeys`,
+    `TemporalGraph::persist_checkpoint_closure`,
+    `crucible::DagStoreReproductionArtifact`, and
+    `checks.crucible.phase1.gates.contentAddress`: raw object bytes now produce
+    portable BLAKE3-backed `ContentHash` keys via `ContentHash::from_bytes`;
+    `put`/`get`/`exists` are backend-agnostic and idempotently dedup equal
+    bytes; the default local backend stores objects at
+    `{root}/{first 2 hex chars}/{full hex hash}` and repairs corrupt local paths
+    on `put`; temporal-graph checkpoint closures persist checkpoint nodes, cached
+    fat snapshots, and typed CoW delta descriptors through the store; and
+    reproduction artifacts can name the scenario, genesis snapshot, and schedule
+    deltas purely as deduplicated store-key closures.
 - [ ] **T-TEMP-9** Implement DAG garbage collection: reference counting that
   frees only objects unique to an abandoned branch, periodic mark-and-sweep
   rooted at live tips / pinned checkpoints / genesis, and the cache-not-identity

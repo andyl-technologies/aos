@@ -8,9 +8,16 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
+use std::fs;
+use std::io;
 use std::ops;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 mod canonical;
+
+static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A stable content address used by the execution-model spine.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -20,6 +27,18 @@ pub struct ContentHash {
 }
 
 impl ContentHash {
+    /// Computes the RFC-0010 DAG-store key for raw object bytes.
+    ///
+    /// This is the portable `DagStore` key function: equal bytes produce equal
+    /// BLAKE3-backed keys across every backend.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let digest = blake3::hash(bytes);
+        Self {
+            bytes: *digest.as_bytes(),
+        }
+    }
+
     /// Computes a stable content hash from canonical material.
     ///
     /// `domain` separates independently versioned material streams, and
@@ -28,6 +47,415 @@ impl ContentHash {
     #[must_use]
     pub fn from_canonical_material(domain: &str, material: &str) -> Self {
         canonical::content_hash_from_canonical_material(domain, material)
+    }
+
+    /// Renders this content address as 64 lowercase hexadecimal characters.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut encoded = String::with_capacity(self.bytes.len() * 2);
+        for byte in self.bytes {
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        encoded
+    }
+}
+
+/// Error returned by a [`DagStore`] backend.
+#[derive(Debug)]
+pub enum DagStoreError {
+    /// No object exists at the requested key.
+    NotFound {
+        /// The missing content-addressed key.
+        key: ContentHash,
+    },
+    /// Stored bytes did not hash to the key they were read through.
+    ContentMismatch {
+        /// The key requested by the caller.
+        expected: ContentHash,
+        /// The key computed from the retrieved bytes.
+        actual: ContentHash,
+    },
+    /// A local store lock was poisoned.
+    StorePoisoned {
+        /// The operation that needed the poisoned lock.
+        operation: &'static str,
+    },
+    /// The backend could not complete a filesystem operation.
+    Io {
+        /// The operation being performed.
+        operation: &'static str,
+        /// The path involved in the failed operation.
+        path: PathBuf,
+        /// The underlying I/O error.
+        source: io::Error,
+    },
+}
+
+impl fmt::Display for DagStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound { .. } => f.write_str("DAG store object was not found"),
+            Self::ContentMismatch { .. } => {
+                f.write_str("DAG store object content did not match its key")
+            }
+            Self::StorePoisoned { operation } => {
+                write!(f, "DAG store lock was poisoned during {operation}")
+            }
+            Self::Io {
+                operation, path, ..
+            } => {
+                write!(
+                    f,
+                    "DAG store filesystem operation {operation} failed for {}",
+                    path.display()
+                )
+            }
+        }
+    }
+}
+
+impl Error for DagStoreError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::NotFound { .. } | Self::ContentMismatch { .. } | Self::StorePoisoned { .. } => {
+                None
+            }
+        }
+    }
+}
+
+/// Backend-agnostic content-addressed store for temporal-graph objects.
+///
+/// The store keys raw object bytes with [`ContentHash::from_bytes`]. Equal
+/// bytes therefore produce the same key, and `put` is idempotent across local
+/// and future remote backends.
+pub trait DagStore: Send + Sync {
+    /// Stores `bytes` and returns their content-addressed key.
+    ///
+    /// Re-inserting the same bytes returns the same key without creating a
+    /// duplicate logical object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DagStoreError`] when the backend cannot persist or validate
+    /// the object.
+    fn put(&self, bytes: &[u8]) -> Result<ContentHash, DagStoreError>;
+
+    /// Retrieves the bytes addressed by `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DagStoreError::NotFound`] when the object is absent, or another
+    /// [`DagStoreError`] when the backend cannot read or validate it.
+    fn get(&self, key: &ContentHash) -> Result<Vec<u8>, DagStoreError>;
+
+    /// Returns whether a valid object for `key` is present.
+    ///
+    /// Backends may answer this from metadata when the store guarantees object
+    /// integrity. Backends that can observe local corruption may validate bytes
+    /// and report [`DagStoreError::ContentMismatch`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DagStoreError`] when the backend cannot query the object.
+    fn exists(&self, key: &ContentHash) -> Result<bool, DagStoreError>;
+}
+
+/// In-memory [`DagStore`] implementation used by model tests and adapters.
+#[derive(Debug, Default)]
+pub struct MemoryDagStore {
+    objects: Mutex<BTreeMap<ContentHash, Vec<u8>>>,
+}
+
+impl MemoryDagStore {
+    /// Builds an empty in-memory DAG store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the number of unique objects currently held by the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DagStoreError::StorePoisoned`] if a prior panic poisoned the
+    /// store lock.
+    pub fn object_count(&self) -> Result<usize, DagStoreError> {
+        let objects = self
+            .objects
+            .lock()
+            .map_err(|_| DagStoreError::StorePoisoned {
+                operation: "object-count",
+            })?;
+        Ok(objects.len())
+    }
+}
+
+impl DagStore for MemoryDagStore {
+    fn put(&self, bytes: &[u8]) -> Result<ContentHash, DagStoreError> {
+        let key = ContentHash::from_bytes(bytes);
+        let mut objects = self
+            .objects
+            .lock()
+            .map_err(|_| DagStoreError::StorePoisoned { operation: "put" })?;
+        match objects.entry(key) {
+            Entry::Vacant(entry) => {
+                entry.insert(bytes.to_vec());
+            }
+            Entry::Occupied(_) => {}
+        }
+        Ok(key)
+    }
+
+    fn get(&self, key: &ContentHash) -> Result<Vec<u8>, DagStoreError> {
+        let objects = self
+            .objects
+            .lock()
+            .map_err(|_| DagStoreError::StorePoisoned { operation: "get" })?;
+        objects
+            .get(key)
+            .cloned()
+            .ok_or(DagStoreError::NotFound { key: *key })
+    }
+
+    fn exists(&self, key: &ContentHash) -> Result<bool, DagStoreError> {
+        let objects = self
+            .objects
+            .lock()
+            .map_err(|_| DagStoreError::StorePoisoned {
+                operation: "exists",
+            })?;
+        Ok(objects.contains_key(key))
+    }
+}
+
+/// Filesystem-backed [`DagStore`] using the RFC-0010 two-level layout.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LocalDagStore {
+    root: PathBuf,
+}
+
+impl LocalDagStore {
+    /// Builds a local DAG store rooted at `root`.
+    #[must_use]
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// Returns the store root.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Returns the two-level object path for `key`.
+    ///
+    /// The layout is `{root}/{first 2 hex chars}/{full hex hash}`.
+    #[must_use]
+    pub fn object_path(&self, key: &ContentHash) -> PathBuf {
+        let hex = key.to_hex();
+        self.root.join(&hex[0..2]).join(hex)
+    }
+}
+
+impl DagStore for LocalDagStore {
+    fn put(&self, bytes: &[u8]) -> Result<ContentHash, DagStoreError> {
+        let key = ContentHash::from_bytes(bytes);
+        let path = self.object_path(&key);
+        let replace_existing = match fs::read(&path) {
+            Ok(existing) => {
+                if ContentHash::from_bytes(&existing) == key && existing == bytes {
+                    return Ok(key);
+                }
+                true
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(source) => {
+                return Err(DagStoreError::Io {
+                    operation: "read",
+                    path,
+                    source,
+                });
+            }
+        };
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| DagStoreError::Io {
+                operation: "create-dir",
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let temp_path = local_store_temp_path(&path, &key);
+        fs::write(&temp_path, bytes).map_err(|source| DagStoreError::Io {
+            operation: "write",
+            path: temp_path.clone(),
+            source,
+        })?;
+        if replace_existing {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    let _ = fs::remove_file(&temp_path);
+                    return Err(DagStoreError::Io {
+                        operation: "remove",
+                        path,
+                        source,
+                    });
+                }
+            }
+        }
+        if let Err(source) = fs::rename(&temp_path, &path) {
+            if let Ok(existing) = fs::read(&path) {
+                if ContentHash::from_bytes(&existing) == key && existing == bytes {
+                    let _ = fs::remove_file(&temp_path);
+                    return Ok(key);
+                }
+            }
+            let _ = fs::remove_file(&temp_path);
+            return Err(DagStoreError::Io {
+                operation: "rename",
+                path,
+                source,
+            });
+        }
+        Ok(key)
+    }
+
+    fn get(&self, key: &ContentHash) -> Result<Vec<u8>, DagStoreError> {
+        let path = self.object_path(key);
+        let bytes = fs::read(&path).map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                DagStoreError::NotFound { key: *key }
+            } else {
+                DagStoreError::Io {
+                    operation: "read",
+                    path: path.clone(),
+                    source,
+                }
+            }
+        })?;
+        let actual = ContentHash::from_bytes(&bytes);
+        if actual != *key {
+            return Err(DagStoreError::ContentMismatch {
+                expected: *key,
+                actual,
+            });
+        }
+        Ok(bytes)
+    }
+
+    fn exists(&self, key: &ContentHash) -> Result<bool, DagStoreError> {
+        match self.get(key) {
+            Ok(_) => Ok(true),
+            Err(DagStoreError::NotFound { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// Reproduction artifact expressed only as DAG-store keys.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DagStoreReproductionArtifact {
+    /// Store key for the scenario definition bytes.
+    pub scenario_def: ContentHash,
+    /// Store key for the baked genesis snapshot bytes.
+    pub genesis_snapshot: ContentHash,
+    /// Store keys for the schedule-delta bytes needed to reconstruct the run.
+    pub schedule_deltas: Vec<ContentHash>,
+}
+
+impl DagStoreReproductionArtifact {
+    /// Builds a store-key reproduction artifact.
+    #[must_use]
+    pub fn new(
+        scenario_def: ContentHash,
+        genesis_snapshot: ContentHash,
+        schedule_deltas: Vec<ContentHash>,
+    ) -> Self {
+        Self {
+            scenario_def,
+            genesis_snapshot,
+            schedule_deltas,
+        }
+    }
+
+    /// Returns the deduplicated store-key closure named by the artifact.
+    #[must_use]
+    pub fn store_keys(&self) -> BTreeSet<ContentHash> {
+        let mut keys = BTreeSet::from([self.scenario_def, self.genesis_snapshot]);
+        keys.extend(self.schedule_deltas.iter().copied());
+        keys
+    }
+}
+
+/// Store keys produced when a temporal-graph closure is persisted.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TemporalGraphStoreKeys {
+    /// Mapping from checkpoint graph identity to the stored checkpoint-node bytes.
+    pub checkpoint_nodes: BTreeMap<ContentHash, ContentHash>,
+    /// Mapping from checkpoint graph identity to stored fat cached-snapshot bytes.
+    pub cached_snapshots: BTreeMap<ContentHash, ContentHash>,
+    /// Mapping from typed CoW delta identity to the stored delta descriptor bytes.
+    pub cow_deltas: BTreeMap<CowDeltaRef, ContentHash>,
+    /// Reproduction artifact expressed as portable DAG-store keys.
+    pub reproduction_artifact: DagStoreReproductionArtifact,
+}
+
+impl TemporalGraphStoreKeys {
+    /// Returns the deduplicated store-key closure for this persisted graph slice.
+    #[must_use]
+    pub fn store_keys(&self) -> BTreeSet<ContentHash> {
+        let mut keys = self.reproduction_artifact.store_keys();
+        keys.extend(self.checkpoint_nodes.values().copied());
+        keys.extend(self.cached_snapshots.values().copied());
+        keys.extend(self.cow_deltas.values().copied());
+        keys
+    }
+}
+
+/// Error returned while persisting temporal-graph objects into a [`DagStore`].
+#[derive(Debug)]
+pub enum TemporalGraphStoreError {
+    /// The graph could not derive a valid checkpoint closure.
+    Engine {
+        /// The graph operation being performed.
+        operation: &'static str,
+        /// The engine-spine error.
+        source: EngineError,
+    },
+    /// The DAG store rejected or failed a persistence operation.
+    Store {
+        /// The store operation being performed.
+        operation: &'static str,
+        /// The backend error.
+        source: DagStoreError,
+    },
+}
+
+impl fmt::Display for TemporalGraphStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Engine { operation, .. } => {
+                write!(f, "temporal graph operation {operation} failed")
+            }
+            Self::Store { operation, .. } => {
+                write!(f, "temporal graph store operation {operation} failed")
+            }
+        }
+    }
+}
+
+impl Error for TemporalGraphStoreError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Engine { source, .. } => Some(source),
+            Self::Store { source, .. } => Some(source),
+        }
     }
 }
 
@@ -2369,6 +2797,113 @@ impl TemporalGraph {
         Ok(reversed)
     }
 
+    /// Persists the root-to-frontier checkpoint closure into `store`.
+    ///
+    /// The returned keys include checkpoint-node descriptors, typed CoW delta
+    /// descriptors, and a reproduction artifact whose scenario, genesis, and
+    /// schedule-delta fields are all portable [`DagStore`] keys. VM/device/log
+    /// byte streams are owned by lower layers; the pure model persists their
+    /// typed content references here so the graph records the same closure shape
+    /// that those layers populate with raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemporalGraphStoreError::Engine`] when the graph cannot derive a
+    /// valid baked-genesis-rooted checkpoint closure. Returns
+    /// [`TemporalGraphStoreError::Store`] when `store` cannot persist an object.
+    pub fn persist_checkpoint_closure<S>(
+        &mut self,
+        store: &S,
+        frontier: &Configuration,
+    ) -> Result<TemporalGraphStoreKeys, TemporalGraphStoreError>
+    where
+        S: DagStore + ?Sized,
+    {
+        self.record_checkpoint_closure(frontier).map_err(|source| {
+            TemporalGraphStoreError::Engine {
+                operation: "record-checkpoint-closure",
+                source,
+            }
+        })?;
+        let chain = self
+            .checkpoint_parent_chain(frontier.id())
+            .map_err(|source| TemporalGraphStoreError::Engine {
+                operation: "checkpoint-parent-chain",
+                source,
+            })?;
+        let genesis = self.genesis_snapshot(&frontier.def).ok_or_else(|| {
+            TemporalGraphStoreError::Engine {
+                operation: "load-genesis-snapshot",
+                source: EngineError::MissingBakedGenesis {
+                    scenario: frontier.def.id,
+                },
+            }
+        })?;
+
+        let scenario_def = store
+            .put(&scenario_def_store_bytes(&frontier.def))
+            .map_err(|source| TemporalGraphStoreError::Store {
+                operation: "put-scenario-def",
+                source,
+            })?;
+        let genesis_snapshot = store
+            .put(&checkpoint_store_bytes(&genesis.checkpoint))
+            .map_err(|source| TemporalGraphStoreError::Store {
+                operation: "put-genesis-snapshot",
+                source,
+            })?;
+
+        let mut checkpoint_nodes = BTreeMap::new();
+        let mut cached_snapshots = BTreeMap::new();
+        let mut cow_deltas = BTreeMap::new();
+        let mut schedule_deltas = Vec::new();
+        for checkpoint in &chain {
+            let checkpoint_key =
+                store
+                    .put(&checkpoint_store_bytes(checkpoint))
+                    .map_err(|source| TemporalGraphStoreError::Store {
+                        operation: "put-checkpoint-node",
+                        source,
+                    })?;
+            checkpoint_nodes.insert(checkpoint.id, checkpoint_key);
+
+            persist_checkpoint_cow_deltas(
+                store,
+                checkpoint,
+                &mut cow_deltas,
+                &mut schedule_deltas,
+            )?;
+
+            if let Some(snapshot) = self.cached_snapshots.get(&checkpoint.id) {
+                let snapshot_key =
+                    store
+                        .put(&checkpoint_store_bytes(snapshot))
+                        .map_err(|source| TemporalGraphStoreError::Store {
+                            operation: "put-cached-snapshot",
+                            source,
+                        })?;
+                cached_snapshots.insert(snapshot.id, snapshot_key);
+                persist_checkpoint_cow_deltas(
+                    store,
+                    snapshot,
+                    &mut cow_deltas,
+                    &mut schedule_deltas,
+                )?;
+            }
+        }
+
+        Ok(TemporalGraphStoreKeys {
+            checkpoint_nodes,
+            cached_snapshots,
+            cow_deltas,
+            reproduction_artifact: DagStoreReproductionArtifact::new(
+                scenario_def,
+                genesis_snapshot,
+                schedule_deltas,
+            ),
+        })
+    }
+
     /// Returns whether `configuration` is recorded in the temporal graph.
     #[must_use]
     pub fn contains_configuration(&self, configuration: &Configuration) -> bool {
@@ -3348,6 +3883,249 @@ fn white_box_material(policy: WhiteBoxPolicy) -> &'static str {
         WhiteBoxPolicy::Disabled => "disabled",
         WhiteBoxPolicy::Enabled => "enabled",
     }
+}
+
+fn persist_checkpoint_cow_deltas<S>(
+    store: &S,
+    checkpoint: &Checkpoint,
+    cow_deltas: &mut BTreeMap<CowDeltaRef, ContentHash>,
+    schedule_deltas: &mut Vec<ContentHash>,
+) -> Result<(), TemporalGraphStoreError>
+where
+    S: DagStore + ?Sized,
+{
+    for cow_ref in checkpoint.cow_delta_refs() {
+        if cow_deltas.contains_key(&cow_ref) {
+            continue;
+        }
+        let delta_key =
+            match cow_ref.kind {
+                CowDeltaKind::ScheduleDelta => {
+                    let key = store
+                        .put(&schedule_delta_store_bytes(&checkpoint.schedule_delta))
+                        .map_err(|source| TemporalGraphStoreError::Store {
+                            operation: "put-schedule-delta",
+                            source,
+                        })?;
+                    schedule_deltas.push(key);
+                    key
+                }
+                CowDeltaKind::VmMemory
+                | CowDeltaKind::DeviceOverlay
+                | CowDeltaKind::EventLogSegment => store
+                    .put(&cow_delta_store_bytes(cow_ref))
+                    .map_err(|source| TemporalGraphStoreError::Store {
+                        operation: "put-cow-delta",
+                        source,
+                    })?,
+            };
+        cow_deltas.insert(cow_ref, delta_key);
+    }
+    Ok(())
+}
+
+fn scenario_def_store_bytes(def: &ScenarioDef) -> Vec<u8> {
+    format!(
+        "crucible.dag-store.scenario-def.v1\nscenario_ref={}\n",
+        content_hash_hex(def.id)
+    )
+    .into_bytes()
+}
+
+fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8> {
+    let mut lines = vec![
+        String::from("crucible.dag-store.checkpoint-node.v1"),
+        format!("id={}", content_hash_hex(checkpoint.id)),
+        format!(
+            "configuration={}",
+            content_hash_hex(checkpoint.configuration)
+        ),
+        format!("scenario_ref={}", content_hash_hex(checkpoint.scenario_ref)),
+        format!(
+            "parent={}",
+            checkpoint
+                .parent
+                .map(content_hash_hex)
+                .unwrap_or_else(|| String::from("none"))
+        ),
+        format!(
+            "schedule_delta={}",
+            content_hash_hex(checkpoint.schedule_delta.content_hash())
+        ),
+        format!("kind={}", checkpoint_kind_label(checkpoint.kind)),
+        format!("virtual_time_ticks={}", checkpoint.virtual_time.ticks),
+        format!(
+            "coverage_fingerprint={}",
+            content_hash_hex(checkpoint.coverage_fingerprint)
+        ),
+    ];
+
+    lines.push(format!("node_icounts={}", checkpoint.node_icounts.len()));
+    for (node, icount) in &checkpoint.node_icounts {
+        lines.push(format!("node_icount.node={}", node.name));
+        lines.push(format!("node_icount.retired={}", icount.retired));
+    }
+
+    match &checkpoint.state {
+        Some(state) => {
+            lines.push(format!("state={}", content_hash_hex(state.id)));
+            lines.push(format!("state_cow_refs={}", state.cow_delta_refs().len()));
+            for cow_ref in state.cow_delta_refs() {
+                push_cow_delta_ref_lines("state_cow_ref", cow_ref, &mut lines);
+            }
+        }
+        None => lines.push(String::from("state=none")),
+    }
+
+    lines.push(format!("node_blobs={}", checkpoint.node_blobs.len()));
+    for (node, blob) in &checkpoint.node_blobs {
+        lines.push(format!("node_blob.node={}", node.name));
+        push_node_blob_ref_lines("node_blob", blob, &mut lines);
+    }
+
+    lines.push(format!(
+        "metadata_labels={}",
+        checkpoint.metadata.labels.len()
+    ));
+    for (key, value) in &checkpoint.metadata.labels {
+        lines.push(format!("metadata.key_len={}", key.len()));
+        lines.push(format!("metadata.key={key}"));
+        lines.push(format!("metadata.value_len={}", value.len()));
+        lines.push(format!("metadata.value={value}"));
+    }
+
+    lines.join("\n").into_bytes()
+}
+
+fn schedule_delta_store_bytes(schedule: &Schedule) -> Vec<u8> {
+    let mut lines = vec![
+        String::from("crucible.dag-store.schedule-delta.v1"),
+        format!("id={}", content_hash_hex(schedule.content_hash())),
+        format!("decisions={}", schedule.decisions().len()),
+    ];
+    for (index, decision) in schedule.decisions().iter().enumerate() {
+        push_decision_lines(index, decision, &mut lines);
+    }
+    lines.join("\n").into_bytes()
+}
+
+fn cow_delta_store_bytes(cow_ref: CowDeltaRef) -> Vec<u8> {
+    let mut lines = vec![String::from("crucible.dag-store.cow-delta-ref.v1")];
+    push_cow_delta_ref_lines("cow_delta", cow_ref, &mut lines);
+    lines.join("\n").into_bytes()
+}
+
+fn push_cow_delta_ref_lines(prefix: &str, cow_ref: CowDeltaRef, lines: &mut Vec<String>) {
+    lines.push(format!(
+        "{prefix}.kind={}",
+        cow_delta_kind_label(cow_ref.kind)
+    ));
+    lines.push(format!(
+        "{prefix}.content={}",
+        content_hash_hex(cow_ref.content)
+    ));
+}
+
+fn push_node_blob_ref_lines(prefix: &str, blob: &NodeBlobRef, lines: &mut Vec<String>) {
+    match blob {
+        NodeBlobRef::Baked(blob) => {
+            lines.push(format!("{prefix}.kind=baked"));
+            lines.push(format!("{prefix}.blob={}", content_hash_hex(*blob)));
+        }
+        NodeBlobRef::CowDelta {
+            parent,
+            delta,
+            resolved,
+        } => {
+            lines.push(format!("{prefix}.kind=cow-delta"));
+            lines.push(format!("{prefix}.parent={}", content_hash_hex(*parent)));
+            lines.push(format!("{prefix}.delta={}", content_hash_hex(*delta)));
+            lines.push(format!("{prefix}.resolved={}", content_hash_hex(*resolved)));
+        }
+    }
+}
+
+fn push_decision_lines(index: usize, decision: &Decision, lines: &mut Vec<String>) {
+    let prefix = format!("decision.{index}");
+    match decision {
+        Decision::DeliveryOrder(order) => {
+            lines.push(format!("{prefix}.kind=delivery-order"));
+            lines.push(format!("{prefix}.at_ticks={}", order.at.ticks));
+            lines.push(format!("{prefix}.events={}", order.order.len()));
+            for event in &order.order {
+                lines.push(format!("{prefix}.event.sequence={}", event.sequence));
+            }
+        }
+        Decision::FaultFires(fault) => {
+            lines.push(format!("{prefix}.kind=fault-fires"));
+            lines.push(format!("{prefix}.at_ticks={}", fault.at.ticks));
+            lines.push(format!("{prefix}.fault_len={}", fault.fault.name.len()));
+            lines.push(format!("{prefix}.fault={}", fault.fault.name));
+            lines.push(format!("{prefix}.fired={}", fault.fired));
+        }
+        Decision::RngDraw(draw) => {
+            lines.push(format!("{prefix}.kind=rng-draw"));
+            lines.push(format!("{prefix}.stream_len={}", draw.stream.name.len()));
+            lines.push(format!("{prefix}.stream={}", draw.stream.name));
+            lines.push(format!("{prefix}.value={}", draw.value));
+        }
+        Decision::Override(override_decision) => {
+            lines.push(format!("{prefix}.kind=override"));
+            lines.push(format!(
+                "{prefix}.point_len={}",
+                override_decision.point.key.len()
+            ));
+            lines.push(format!("{prefix}.point={}", override_decision.point.key));
+            lines.push(format!(
+                "{prefix}.choice_len={}",
+                override_decision.choice.name.len()
+            ));
+            lines.push(format!("{prefix}.choice={}", override_decision.choice.name));
+        }
+        Decision::Preemption(preemption) => {
+            lines.push(format!("{prefix}.kind=preemption"));
+            lines.push(format!("{prefix}.node_len={}", preemption.node.name.len()));
+            lines.push(format!("{prefix}.node={}", preemption.node.name));
+            lines.push(format!("{prefix}.at_retired={}", preemption.at.retired));
+            match &preemption.kind {
+                PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
+                    lines.push(format!("{prefix}.preemption_kind=vcpu-switch"));
+                    lines.push(format!("{prefix}.from_vcpu={}", from_vcpu.index));
+                    lines.push(format!("{prefix}.to_vcpu={}", to_vcpu.index));
+                }
+                PreemptionKind::InterruptAt { target_vcpu, irq } => {
+                    lines.push(format!("{prefix}.preemption_kind=interrupt-at"));
+                    lines.push(format!("{prefix}.target_vcpu={}", target_vcpu.index));
+                    lines.push(format!("{prefix}.irq={}", irq.vector));
+                }
+            }
+        }
+        Decision::AppRandom(random) => {
+            lines.push(format!("{prefix}.kind=app-random"));
+            lines.push(format!("{prefix}.node_len={}", random.node.name.len()));
+            lines.push(format!("{prefix}.node={}", random.node.name));
+            lines.push(format!("{prefix}.stream_len={}", random.stream.name.len()));
+            lines.push(format!("{prefix}.stream={}", random.stream.name));
+            lines.push(format!("{prefix}.request_id={}", random.request_id));
+            lines.push(format!("{prefix}.width={}", random.width));
+            lines.push(format!("{prefix}.value={}", random.value));
+        }
+    }
+}
+
+fn cow_delta_kind_label(kind: CowDeltaKind) -> &'static str {
+    match kind {
+        CowDeltaKind::VmMemory => "vm-memory",
+        CowDeltaKind::DeviceOverlay => "device-overlay",
+        CowDeltaKind::ScheduleDelta => "schedule-delta",
+        CowDeltaKind::EventLogSegment => "event-log-segment",
+    }
+}
+
+fn local_store_temp_path(path: &Path, key: &ContentHash) -> PathBuf {
+    let index = LOCAL_DAG_STORE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = format!("{}.tmp.{}.{}", key.to_hex(), std::process::id(), index);
+    path.with_file_name(file_name)
 }
 
 fn content_hash_hex(hash: ContentHash) -> String {
