@@ -897,13 +897,6 @@ fn derivation_strict_aterm_observation_skips_with_scope() {
 
 #[test]
 fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
-    fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-        !needle.is_empty()
-            && haystack
-                .windows(needle.len())
-                .any(|window| window == needle)
-    }
-
     let root = fs::canonicalize(unique_temp_dir("internal-hash-leak-canary-import"))
         .expect("temp directory canonicalizes");
     let parse_root = root.join("parse-cache");
@@ -1005,39 +998,40 @@ fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
     let hot_big_endian_canary = hot_canary.to_be_bytes();
 
     let mut canaries = Vec::new();
-    let mut add_durable_hash_canaries = |label: &str, hash: crate::cache::DurableBlake3Hash| {
-        canaries.push((format!("{label} hex"), hash.to_hex().into_bytes()));
-        canaries.push((format!("{label} raw bytes"), hash.as_bytes().to_vec()));
-        canaries.push((
-            format!("{label} Nix base32"),
-            nix_compat::nixbase32::encode(&hash.as_bytes()).into_bytes(),
-        ));
-    };
-    add_durable_hash_canaries(
+    canaries.extend(durable_hash_surface_canaries(
         "root parse-cache BLAKE3",
-        crate::cache::DurableBlake3Hash::from_bytes(root_parse_key.as_bytes()),
-    );
-    add_durable_hash_canaries(
+        DurableBlake3Hash::from_bytes(root_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
         "import parse-cache BLAKE3",
-        crate::cache::DurableBlake3Hash::from_bytes(imported_parse_key.as_bytes()),
-    );
-    add_durable_hash_canaries("file-content BLAKE3", file_key.content_hash());
+        DurableBlake3Hash::from_bytes(imported_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "file-content BLAKE3",
+        file_key.content_hash(),
+    ));
     for entry in &metadata_entries {
-        add_durable_hash_canaries("force node metadata BLAKE3", entry.key().hash());
+        canaries.extend(durable_hash_surface_canaries(
+            "force node metadata BLAKE3",
+            entry.key().hash(),
+        ));
     }
     for value_hash in &materialized_value_hashes {
-        add_durable_hash_canaries(
+        canaries.extend(durable_hash_surface_canaries(
             "force materialized value BLAKE3",
             value_hash.as_durable_hash(),
-        );
+        ));
     }
     for entry in &trace_entries {
-        add_durable_hash_canaries(
+        canaries.extend(durable_hash_surface_canaries(
             "force trace value BLAKE3",
             entry.value_hash().as_durable_hash(),
-        );
+        ));
         for input in entry.payload().inputs() {
-            add_durable_hash_canaries("force trace observation BLAKE3", input.observation_hash());
+            canaries.extend(durable_hash_surface_canaries(
+                "force trace observation BLAKE3",
+                input.observation_hash(),
+            ));
         }
     }
     canaries.extend([
@@ -1055,20 +1049,12 @@ fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
             hot_big_endian_canary.to_vec(),
         ),
     ]);
-
-    let surfaces = [
-        ("ATerm bytes", aterm),
-        (".drv path", derivation.absolute_path().as_bytes()),
-    ];
-
-    for (surface_name, surface) in surfaces {
-        for (canary_name, canary) in &canaries {
-            assert!(
-                !contains_bytes(surface, canary),
-                "{canary_name} leaked into {surface_name}: {surface:?}"
-            );
-        }
-    }
+    assert_drv_surface_canaries_absent(
+        "internal hash leak canary derivation surface",
+        derivation.absolute_path(),
+        aterm,
+        &canaries,
+    );
 
     fs::remove_dir_all(root).expect("temp directory removes");
 }
