@@ -1379,9 +1379,10 @@ alone (`M-1`/`Q-A`).
       with saturation, and returns `Materialize` only when
       `eval_cost > write_cost` and the caller-supplied reuse signal predicts
       cross-run reuse. This is a pure threshold decision only; persistent
-      reuse-metadata bridges are covered below, while cost measurement,
-      RAM-tier promotion, automatic value writes, GC/repack, and AOS tuning
-      remain open (`C-14`).
+      reuse-metadata bridges and deterministic evaluator cost observations are
+      covered below, while RAM-tier promotion, automatic value writes outside
+      the current force-cache bridge, GC/repack, and AOS tuning remain open
+      (`C-14`).
 - [x] Current materialization reuse-counter signal substrate:
       `MaterializationReuse` carries prior-run and current-run demand counters,
       saturates current-run increments, and converts prior-run demand into the
@@ -1549,10 +1550,13 @@ alone (`M-1`/`Q-A`).
       replayable attrsets including source-order-tagged, position-bearing, and
       source-provenanced position-bearing attrsets) as the canonical BLAKE3 preimage used by
       `ValueHash`, so hashing the encoded bytes yields the payload's durable
-      value-hash digest. The decoder rejects malformed and non-canonical
-      string-context payloads, malformed/truncated nested list element payloads,
-      malformed attr-position tags, source-provenance envelopes without retained
-      positions, positionless positioned-attrset tags, and
+      value-hash digest. `CachedExpressionValue::persistent_payload_len`
+      reports the exact canonical byte length, including source-provenance
+      envelopes, without allocating the encoded bytes. The decoder rejects
+      malformed and non-canonical string-context payloads, malformed/truncated
+      nested list element payloads, malformed attr-position tags,
+      source-provenance envelopes without retained positions, positionless
+      positioned-attrset tags, and
       malformed/non-canonical attrset binding payloads including duplicate source-order binding names. `PersistCache::materialize_cached_expression_value_indexed`,
       `materialize_cached_expression_value_indexed_with_signals`, and
       `load_cached_expression_value_indexed` write and read those payloads
@@ -1561,7 +1565,7 @@ alone (`M-1`/`Q-A`).
       skip-without-hash/encode/write behavior when the materialization threshold
       fails. This is an explicit cache-level payload bridge only; evaluator
       durable hit selection, lazy-element list or lazy-binding attrset values, mmap
-      reads, cost measurement, GC/repack, and cached/uncached harness proof
+      reads, full AOS cost calibration, GC/repack, and cached/uncached harness proof
       remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current cached-expression node-value metadata linkage adapter:
       `PersistCache::record_node_materialized_value_hash`,
@@ -1584,9 +1588,10 @@ alone (`M-1`/`Q-A`).
       payloads through `PersistCache::node_materialization_signals` and
       `materialize_cached_expression_node_value_indexed_with_signals` after the
       in-memory force-cache observation accepts a node payload. The evaluator
-      supplies `TreeWalkOptions::force_cache_materialization_costs`; persisted
-      prior-run demand supplies the cross-run reuse bit, so cold same-run demand
-      records metadata but skips durable value and trace writes until a
+      supplies unit costs from
+      `TreeWalkOptions::force_cache_materialization_costs`; persisted prior-run
+      demand supplies the cross-run reuse bit, so cold same-run demand records
+      metadata but skips durable value and trace writes until a
       run-boundary advance makes that demand prior history. Pure complete
       observations materialize only after successful expression-node
       reconsideration and a positive threshold decision; impure observations do
@@ -1601,11 +1606,30 @@ alone (`M-1`/`Q-A`).
       skips disabled runtimes, unavailable persistent roots, negative threshold
       decisions, and advisory write errors. This is threshold-driven force
       payload writeback/clear only; evaluator-wide durable hit selection,
-      measured cost collection or AOS tuning, lazy-element list or lazy-binding attrset values, mmap
+      full AOS cost calibration, lazy-element list or lazy-binding attrset values, mmap
       reads, GC/repack, and cached/uncached harness proof
       remain open. The gate covers force-cache persistent-demand/value
       writeback, threshold skip/materialize, stale-clear, and observation-only
       currentTime stale-durable tombstone tests (`C-13`/`C-14`/`S-14`).
+- [x] Current deterministic force-cache materialization cost observations:
+      `MaterializationCostObservation` converts observed evaluator work units
+      and canonical persistent payload byte lengths into `MaterializationCosts`
+      by scaling caller-supplied unit costs. Payload bytes are rounded to KiB
+      cost units with a one-unit floor, and zero observed force work also uses a
+      one-unit floor for manual observations. `CachedExpressionValue::persistent_payload_len`
+      supplies the measured write-floor bytes without hashing or allocating the
+      encoded payload. Tree-walk cold thunk forces and cacheable first-class
+      impure primop calls pass the observed `thunks_forced` delta into
+      persistent writeback; observations with non-empty impure traces also use
+      the payload KiB units as a deterministic eval-work floor for non-thunk
+      I/O work. Large replayable
+      payload canaries prove that one-work-unit manual observations stay
+      RAM-only when measured write cost dominates, that higher observed work
+      crosses the same threshold, and that a production large `readFile` with
+      prior demand durably materializes its value and verifying trace. This is
+      deterministic in-evaluator cost collection only; wall-clock sampling, AOS
+      trace calibration, RAM-tier promotion, mmap reads, GC/repack, and
+      cached/uncached harness proof remain open (`C-14`).
 - [x] Current node verifying-trace payload codec:
       `PersistNodeTracePayload` frames complete cacheable impure-input traces
       as versioned little-endian bytes with a magic header, typed input

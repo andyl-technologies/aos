@@ -698,6 +698,19 @@ impl CachedExpressionValue {
         }
     }
 
+    /// Returns the canonical persistent payload byte length.
+    ///
+    /// This is the exact length of [`Self::encode_persistent_payload`] without
+    /// allocating the encoded byte vector.
+    pub fn persistent_payload_len(&self) -> u128 {
+        let payload_len = self.payload.persistent_payload_len();
+        if self.attr_position_source_hash.is_some() {
+            ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG.len() as u128 + 32 + 16 + payload_len
+        } else {
+            payload_len
+        }
+    }
+
     /// Encodes this payload for the persistent `values/` pack.
     ///
     /// For persistent payloads, the encoded bytes are the canonical BLAKE3
@@ -4424,6 +4437,11 @@ mod tests {
                 .encode_persistent_payload()
                 .expect("payload encodes");
             assert_eq!(
+                payload.persistent_payload_len(),
+                encoded.len() as u128,
+                "reported payload length matches canonical encoding"
+            );
+            assert_eq!(
                 DurableBlake3Hash::for_bytes(&encoded),
                 payload
                     .value_hash()
@@ -6503,6 +6521,34 @@ mod tests {
         assert_eq!(entry_names, vec![b"c".as_slice(), b"b".as_slice()]);
         assert_eq!(entries[0].1, Some(first_position));
         assert_eq!(entries[1].1, Some(second_position));
+    }
+
+    #[test]
+    fn attr_position_source_envelope_reports_persistent_payload_length() {
+        let payload = CachedExpressionValue::positioned_attrs(vec![(
+            b"a".to_vec(),
+            Some(AttrPosition::new(0, Span::new(4, 5))),
+            CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
+        )])
+        .expect("positioned attrs payload builds")
+        .with_attr_position_source_hash(DurableBlake3Hash::for_bytes(b"source"));
+        let encoded = payload
+            .encode_persistent_payload()
+            .expect("position-source payload encodes");
+
+        assert_eq!(payload.persistent_payload_len(), encoded.len() as u128);
+        assert_eq!(
+            DurableBlake3Hash::for_bytes(&encoded),
+            payload
+                .value_hash()
+                .expect("position-source payload hashes")
+                .as_durable_hash()
+        );
+        assert_eq!(
+            CachedExpressionValue::decode_persistent_payload(&encoded)
+                .expect("position-source payload decodes"),
+            payload
+        );
     }
 
     #[test]

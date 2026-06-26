@@ -72,9 +72,9 @@ pub use persist::{
     PersistParseSourceIndexedLoadError, PersistStorageMaintenance, PersistStorageMaintenanceError,
 };
 pub use policy::{
-    MaterializationCosts, MaterializationDecision, MaterializationReuse, MaterializationSignals,
-    MemoizationClass, MemoizationDecision, MemoizationDemand, MemoizationSignals,
-    MemoizationSubject,
+    MaterializationCostObservation, MaterializationCosts, MaterializationDecision,
+    MaterializationReuse, MaterializationSignals, MemoizationClass, MemoizationDecision,
+    MemoizationDemand, MemoizationSignals, MemoizationSubject,
 };
 pub(crate) use runtime::{
     CachedDerivationAtermPath, CachedDerivationOutputPath, CachedDerivationOutputPaths,

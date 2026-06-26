@@ -1,7 +1,8 @@
 //! Memoization admission policy for incremental evaluation cache nodes.
 //!
 //! This module names the coarse §3.3 cache-granularity classes and the §3.4
-//! durable materialization threshold. It does not wire policy decisions into
+//! durable materialization threshold. It also provides deterministic cost
+//! observation vocabulary for callers. It does not wire policy decisions into
 //! the evaluator, collect evaluator demand observations, or write persistent
 //! cache records.
 
@@ -235,6 +236,65 @@ impl MaterializationCosts {
         self.hash_cost
             .saturating_add(self.serialize_cost)
             .saturating_add(self.io_cost)
+    }
+}
+
+/// Evaluator observations used to derive durable materialization costs.
+///
+/// The work-unit and payload-size counters are intentionally deterministic:
+/// callers can compare cache-enabled and cache-disabled behavior without
+/// depending on wall-clock timing noise. Runtime tuning still belongs in the
+/// caller-supplied unit costs carried by [`MaterializationCosts`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MaterializationCostObservation {
+    eval_work_units: u64,
+    persistent_payload_bytes: u64,
+}
+
+impl MaterializationCostObservation {
+    const PERSISTENT_PAYLOAD_COST_UNIT_BYTES: u64 = 1024;
+
+    /// Creates a materialization cost observation.
+    pub const fn new(eval_work_units: u64, persistent_payload_bytes: u64) -> Self {
+        Self {
+            eval_work_units,
+            persistent_payload_bytes,
+        }
+    }
+
+    /// Returns the observed evaluator work units.
+    pub const fn eval_work_units(self) -> u64 {
+        self.eval_work_units
+    }
+
+    /// Returns the observed canonical persistent payload byte length.
+    pub const fn persistent_payload_bytes(self) -> u64 {
+        self.persistent_payload_bytes
+    }
+
+    /// Returns KiB-rounded payload cost units, with zero-byte payloads costing one unit.
+    pub const fn persistent_payload_cost_units(self) -> u64 {
+        let whole_units = self.persistent_payload_bytes / Self::PERSISTENT_PAYLOAD_COST_UNIT_BYTES;
+        let has_partial_unit =
+            self.persistent_payload_bytes % Self::PERSISTENT_PAYLOAD_COST_UNIT_BYTES != 0;
+        let units = whole_units.saturating_add(has_partial_unit as u64);
+        if units == 0 { 1 } else { units }
+    }
+
+    /// Converts observations into comparable materialization costs.
+    pub const fn costs(self, unit_costs: MaterializationCosts) -> MaterializationCosts {
+        let eval_work_units = if self.eval_work_units == 0 {
+            1
+        } else {
+            self.eval_work_units
+        };
+        let payload_units = self.persistent_payload_cost_units();
+        MaterializationCosts::new(
+            unit_costs.eval_cost().saturating_mul(eval_work_units),
+            unit_costs.hash_cost().saturating_mul(payload_units),
+            unit_costs.serialize_cost().saturating_mul(payload_units),
+            unit_costs.io_cost().saturating_mul(payload_units),
+        )
     }
 }
 
@@ -485,6 +545,32 @@ mod tests {
         assert_eq!(
             MaterializationSignals::new(costs, true).decide(),
             MaterializationDecision::KeepInMemory
+        );
+    }
+
+    #[test]
+    fn materialization_observation_scales_unit_costs() {
+        let units = MaterializationCosts::new(4, 1, 2, 3);
+        let observation = MaterializationCostObservation::new(3, 2049);
+
+        assert_eq!(observation.eval_work_units(), 3);
+        assert_eq!(observation.persistent_payload_bytes(), 2049);
+        assert_eq!(observation.persistent_payload_cost_units(), 3);
+        assert_eq!(
+            observation.costs(units),
+            MaterializationCosts::new(12, 3, 6, 9)
+        );
+    }
+
+    #[test]
+    fn materialization_observation_has_minimum_units() {
+        let units = MaterializationCosts::new(4, 1, 1, 1);
+        let observation = MaterializationCostObservation::new(0, 0);
+
+        assert_eq!(observation.persistent_payload_cost_units(), 1);
+        assert_eq!(
+            observation.costs(units),
+            MaterializationCosts::new(4, 1, 1, 1)
         );
     }
 }

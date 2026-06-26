@@ -2585,6 +2585,106 @@ fn read_file_string_payload_thunks_hit_after_revalidation() {
 }
 
 #[test]
+fn large_read_file_payload_uses_payload_scaled_materialization_work_floor() {
+    let persist_root = unique_temp_dir("force-cache-persistent-large-read-file");
+    let root = unique_temp_dir("force-cache-large-read-file-source");
+    let contents = vec![b'z'; 4096];
+    fs::write(root.join("target"), &contents).expect("target writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let target_path = path_bytes(&root.join("target"));
+    let source = "{ a = builtins.readFile ./target; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+
+    let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    first_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    first_options.set_persist_cache_root(&persist_root);
+    let mut first = TreeWalk::with_options_and_source(&ir, first_options, "default.nix", source);
+    force_attr_a_string(&mut first, &ir, a, &contents);
+    first.advance_persist_eval_cache_run_boundary();
+    drop(first);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    let initial_payloads = persist
+        .node_metadata_index()
+        .latest_entries()
+        .expect("persistent metadata entries load")
+        .into_iter()
+        .filter_map(|entry| {
+            persist
+                .load_cached_expression_node_value_indexed(entry.key())
+                .expect("persistent payload lookup succeeds")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        initial_payloads.is_empty(),
+        "first-run demand should advance into history without materializing yet"
+    );
+    drop(persist);
+
+    let mut second_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    second_options.set_persist_cache_root(&persist_root);
+    let mut second = TreeWalk::with_options_and_source(&ir, second_options, "default.nix", source);
+    force_attr_a_string(&mut second, &ir, a, &contents);
+    drop(second);
+
+    let expected_payload = CachedExpressionValue::context_free_string(contents.clone());
+    let expected_value_hash = expected_payload
+        .value_hash()
+        .expect("expected readFile payload hashes");
+    let expected_trace = ImpureInputFingerprint::read_file(&target_path, &contents)
+        .expect("readFile fingerprint builds");
+    let expected_trace_payload = PersistNodeTracePayload::from_impure_trace([&expected_trace])
+        .expect("trace payload builds");
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    let metadata_entries = persist
+        .node_metadata_index()
+        .latest_entries()
+        .expect("persistent metadata entries load");
+    let materialized_payloads = metadata_entries
+        .iter()
+        .filter_map(|entry| {
+            persist
+                .load_cached_expression_node_value_indexed(entry.key())
+                .expect("persistent payload lookup succeeds")
+                .map(|payload| (entry, payload))
+        })
+        .collect::<Vec<_>>();
+
+    let [(entry, payload)] = materialized_payloads.as_slice() else {
+        panic!("expected one materialized readFile payload, got {materialized_payloads:?}");
+    };
+    assert_eq!(
+        entry.value().materialized_value_hash(),
+        Some(expected_value_hash),
+        "large readFile payload should be linked from node metadata"
+    );
+    assert_eq!(
+        payload, &expected_payload,
+        "large readFile payload should materialize in the durable value store"
+    );
+    assert_eq!(
+        persist
+            .lookup_node_trace(entry.key())
+            .expect("persistent trace lookup succeeds"),
+        Some(PersistNodeTraceLogEntry::new(
+            entry.key(),
+            expected_value_hash,
+            expected_trace_payload
+        )),
+        "large readFile payload should write its verifying trace"
+    );
+
+    fs::remove_dir_all(root).expect("source temp tree removed");
+    fs::remove_dir_all(persist_root).expect("persist temp tree removed");
+}
+
+#[test]
 fn changed_read_file_string_payload_thunks_miss_after_revalidation() {
     let root = unique_temp_dir("force-cache-read-file-string-payload-changed");
     fs::write(root.join("target"), b"payload").expect("target writes");
@@ -5136,6 +5236,140 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
             expected_trace_payload
         )),
         "cacheable impure observations write the value-associated persistent verifying trace"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn large_force_payload_measurement_skips_unprofitable_persistent_value_link() {
+    let persist_root = unique_temp_dir("force-cache-persistent-large-skip");
+    let ir = lower("1");
+    let identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-force-large-skip"),
+        IrId::new(10),
+    );
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache);
+    let subject = ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
+        free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
+    };
+    PersistCache::open(&persist_root)
+        .expect("persistent cache opens")
+        .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
+        .expect("prior-run demand records");
+    let bytes = vec![b'x'; 4096];
+    let value = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(bytes))
+        .expect("large string allocates");
+
+    evaluator.observe_forced_inline_expression_result(
+        Some(subject),
+        value,
+        ImpureInputTraceSegment {
+            trace: Vec::new(),
+            complete: true,
+        },
+    );
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "large one-work-unit payloads stay in memory when measured write cost dominates"
+    );
+    assert_eq!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds"),
+        None,
+        "unmaterialized large payloads skip persistent traces"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn force_work_measurement_materializes_large_persistent_value_link() {
+    let persist_root = unique_temp_dir("force-cache-persistent-large-work");
+    let ir = lower("1");
+    let identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-force-large-work"),
+        IrId::new(10),
+    );
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache);
+    let subject = ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
+        free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
+    };
+    PersistCache::open(&persist_root)
+        .expect("persistent cache opens")
+        .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
+        .expect("prior-run demand records");
+    let bytes = vec![b'y'; 4096];
+    let value = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(bytes.clone()))
+        .expect("large string allocates");
+
+    evaluator.observe_forced_inline_expression_result_with_eval_work_units(
+        Some(subject),
+        value,
+        ImpureInputTraceSegment {
+            trace: Vec::new(),
+            complete: true,
+        },
+        Some(16),
+        false,
+    );
+
+    let expected_payload = CachedExpressionValue::context_free_string(bytes);
+    let expected_value_hash = expected_payload
+        .value_hash()
+        .expect("expected payload hashes");
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        Some(expected_payload),
+        "enough measured work lets large payloads cross the durable threshold"
+    );
+    assert_eq!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds"),
+        Some(PersistNodeTraceLogEntry::new(
+            key,
+            expected_value_hash,
+            persistent_empty_trace_payload()
+        )),
+        "materialized large pure payloads write a verifying trace"
     );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");

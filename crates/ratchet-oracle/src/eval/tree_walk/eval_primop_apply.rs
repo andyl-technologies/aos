@@ -404,6 +404,7 @@ impl TreeWalk {
 
         self.enter_call(id, span)?;
         let impure_trace_cursor = memoization_admitted.then(|| self.impure_input_trace_cursor());
+        let thunks_forced_before = self.stats.thunks_forced;
         let result = (|| builtin.apply(self, BuiltinCall::new(id, span, primop.symbol()), &args))();
         self.leave_call();
         let value = result?;
@@ -412,7 +413,18 @@ impl TreeWalk {
         }
         if let Some(cursor) = impure_trace_cursor {
             let impure_trace = self.force_cache_impure_input_trace_segment(cursor);
-            self.observe_forced_inline_expression_result(cache_subject, value, impure_trace);
+            let scale_eval_work_by_payload = !impure_trace.trace.is_empty();
+            let eval_work_units = self
+                .stats
+                .thunks_forced
+                .saturating_sub(thunks_forced_before);
+            self.observe_forced_inline_expression_result_with_eval_work_units(
+                cache_subject,
+                value,
+                impure_trace,
+                Some(eval_work_units),
+                scale_eval_work_by_payload,
+            );
         }
         Ok(value)
     }

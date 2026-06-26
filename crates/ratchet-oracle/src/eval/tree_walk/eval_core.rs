@@ -458,11 +458,25 @@ impl TreeWalk {
         Ok(value)
     }
 
+    #[cfg(test)]
     pub(super) fn observe_forced_inline_expression_result(
         &mut self,
         subject: Option<ForceCacheSubject>,
         value: Value,
         trace: ImpureInputTraceSegment,
+    ) {
+        self.observe_forced_inline_expression_result_with_eval_work_units(
+            subject, value, trace, None, false,
+        );
+    }
+
+    pub(super) fn observe_forced_inline_expression_result_with_eval_work_units(
+        &mut self,
+        subject: Option<ForceCacheSubject>,
+        value: Value,
+        trace: ImpureInputTraceSegment,
+        eval_work_units: Option<u64>,
+        scale_eval_work_by_payload: bool,
     ) {
         let Some(subject) = subject else {
             return;
@@ -486,6 +500,11 @@ impl TreeWalk {
             self.clear_persist_forced_expression_payload(&subject);
             return;
         };
+        let materialization_cost_observation = self.materialization_cost_observation_for_payload(
+            &payload,
+            eval_work_units,
+            scale_eval_work_by_payload,
+        );
 
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
@@ -534,9 +553,11 @@ impl TreeWalk {
                 if early_cutoff {
                     self.increment_early_cutoffs();
                 }
-                if let Some(value_hash) =
-                    self.materialize_persist_forced_expression_payload(&subject, &payload)
-                {
+                if let Some(value_hash) = self.materialize_persist_forced_expression_payload(
+                    &subject,
+                    &payload,
+                    materialization_cost_observation,
+                ) {
                     if !self.record_persist_forced_expression_pure_trace(&subject, value_hash) {
                         self.clear_persist_forced_expression_payload(&subject);
                     }
@@ -546,9 +567,11 @@ impl TreeWalk {
                 if early_cutoff {
                     self.increment_early_cutoffs();
                 }
-                if let Some(value_hash) =
-                    self.materialize_persist_forced_expression_payload(&subject, &payload)
-                {
+                if let Some(value_hash) = self.materialize_persist_forced_expression_payload(
+                    &subject,
+                    &payload,
+                    materialization_cost_observation,
+                ) {
                     if !self.record_persist_forced_expression_trace(&subject, value_hash, &trace) {
                         self.clear_persist_forced_expression_payload(&subject);
                     }
@@ -600,6 +623,7 @@ impl TreeWalk {
         &mut self,
         subject: &ForceCacheSubject,
         payload: &CachedExpressionValue,
+        cost_observation: MaterializationCostObservation,
     ) -> Option<ValueHash> {
         if !self.options.eval_cache_enabled() {
             return None;
@@ -622,9 +646,8 @@ impl TreeWalk {
             identity,
             subject.free_var_value_hashes.iter().copied(),
         );
-        let signals = match persist_cache
-            .node_materialization_signals(key, self.options.force_cache_materialization_costs())
-        {
+        let costs = cost_observation.costs(self.options.force_cache_materialization_costs());
+        let signals = match persist_cache.node_materialization_signals(key, costs) {
             Ok(signals) => signals,
             Err(error) => {
                 tracing::warn!(
@@ -662,6 +685,34 @@ impl TreeWalk {
                 );
                 None
             }
+        }
+    }
+
+    fn materialization_cost_observation_for_payload(
+        &self,
+        payload: &CachedExpressionValue,
+        eval_work_units: Option<u64>,
+        scale_eval_work_by_payload: bool,
+    ) -> MaterializationCostObservation {
+        let payload_len = payload.persistent_payload_len();
+        let persistent_payload_bytes = if payload_len > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            payload_len as u64
+        };
+        let observation = MaterializationCostObservation::new(
+            eval_work_units.unwrap_or(1),
+            persistent_payload_bytes,
+        );
+        if scale_eval_work_by_payload {
+            MaterializationCostObservation::new(
+                observation
+                    .eval_work_units()
+                    .max(observation.persistent_payload_cost_units()),
+                observation.persistent_payload_bytes(),
+            )
+        } else {
+            observation
         }
     }
 
