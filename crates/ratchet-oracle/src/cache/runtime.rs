@@ -26,6 +26,8 @@ use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};
 use crate::value::Value;
 
 const MAX_CACHED_EXPRESSION_PAYLOAD_NESTING: usize = 64;
+const DERIVATION_ATERM_PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] =
+    b"aos-nix-derivation-aterm-path-value-hash-v1";
 const STATIC_DERIVATION_OUTPUT_PATHS_VALUE_HASH_DOMAIN_VERSION: &[u8] =
     b"aos-nix-static-derivation-output-paths-value-hash-v1";
 
@@ -216,14 +218,14 @@ impl CachedDerivationOutputPaths {
         let mut hasher = blake3::Hasher::new();
         hasher.update(STATIC_DERIVATION_OUTPUT_PATHS_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"pre-output-aterm");
-        update_static_derivation_output_paths_hash_chunk(&mut hasher, pre_output_aterm);
+        update_derivation_side_payload_hash_chunk(&mut hasher, pre_output_aterm);
         hasher.update(b"hash-derivation-modulo");
         hasher.update(&self.hash_derivation_modulo);
         hasher.update(b"output-paths");
         hasher.update(&(self.output_paths.len() as u128).to_le_bytes());
         for output_path in &self.output_paths {
-            update_static_derivation_output_paths_hash_chunk(&mut hasher, &output_path.name);
-            update_static_derivation_output_paths_hash_chunk(&mut hasher, &output_path.path);
+            update_derivation_side_payload_hash_chunk(&mut hasher, &output_path.name);
+            update_derivation_side_payload_hash_chunk(&mut hasher, &output_path.path);
         }
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))
     }
@@ -721,6 +723,16 @@ impl EvalCache {
         &self.graph
     }
 
+    #[cfg(test)]
+    pub(crate) fn derivation_aterm_path_record_count(&self) -> usize {
+        self.derivation_aterm_paths.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn static_derivation_output_path_record_count(&self) -> usize {
+        self.static_derivation_output_paths.len()
+    }
+
     /// Consumes this cache into its demand graph.
     pub fn into_graph(self) -> DemandGraph {
         self.graph
@@ -884,15 +896,14 @@ impl EvalCache {
     /// This is a path-lookup precursor for future derivationStrict SHA-256
     /// short-circuiting. It returns stored `.drv` path bytes only when the
     /// caller-supplied expression key exists, the demand node is clean, a
-    /// derivation path side record exists, and both the graph node and side
-    /// record still match `aterm` through
-    /// [`ValueHash::from_derivation_aterm_bytes`]. Unknown, dirty, missing, and
-    /// stale records are misses.
+    /// derivation path side record exists, the side record's ATerm hash matches
+    /// `aterm`, and the graph node's value hash still matches the full side
+    /// payload hash. Unknown, dirty, missing, and stale records are misses.
     ///
     /// # Errors
     ///
     /// Returns a [`DemandGraphError`] if cache-key construction fails.
-    pub fn lookup_derivation_aterm_path<I>(
+    pub(crate) fn lookup_derivation_aterm_path<I>(
         &self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
@@ -913,8 +924,10 @@ impl EvalCache {
         let Some(record) = self.derivation_aterm_paths.get(&node) else {
             return Ok(None);
         };
-        let value_hash = ValueHash::from_derivation_aterm_bytes(aterm);
-        if graph_node.value_hash() != Some(value_hash) || record.value_hash != value_hash {
+        let aterm_value_hash = ValueHash::from_derivation_aterm_bytes(aterm);
+        if record.aterm_value_hash != aterm_value_hash
+            || graph_node.value_hash() != Some(record.payload_value_hash)
+        {
             return Ok(None);
         }
         Ok(Some(record.path_bytes()))
@@ -1236,14 +1249,15 @@ impl EvalCache {
     /// This extends [`Self::observe_derivation_aterm_expression`] with a side
     /// record containing caller-supplied `.drv` path bytes. The path record is
     /// usable only through [`Self::lookup_derivation_aterm_path`] when the graph
-    /// node remains clean and the same ATerm hash still matches. This API does
-    /// not compute Nix-observed SHA-256 `.drv` hashes or store paths.
+    /// node remains clean, the same ATerm hash still matches, and the graph
+    /// node still carries the full ATerm/path payload hash. This API does not
+    /// compute Nix-observed SHA-256 `.drv` hashes or store paths.
     ///
     /// # Errors
     ///
     /// Returns a [`DemandGraphError`] if cache-key construction fails, node
     /// insertion fails, or the node cannot be reconsidered.
-    pub fn observe_derivation_aterm_expression_path<I>(
+    pub(crate) fn observe_derivation_aterm_expression_path<I>(
         &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
@@ -1254,8 +1268,10 @@ impl EvalCache {
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
         let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
-        let reconsideration = self.graph.reconsider_derivation_aterm_node(node, aterm)?;
         let record = DerivationAtermPathRecord::new(aterm, drv_path);
+        let reconsideration = self
+            .graph
+            .reconsider_node(node, record.payload_value_hash)?;
         self.derivation_aterm_paths.insert(node, record);
         Ok(reconsideration)
     }
@@ -1558,7 +1574,8 @@ struct InlineValueRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DerivationAtermPathRecord {
-    value_hash: ValueHash,
+    aterm_value_hash: ValueHash,
+    payload_value_hash: ValueHash,
     path: Vec<u8>,
 }
 
@@ -1571,8 +1588,10 @@ struct StaticDerivationOutputPathRecord {
 
 impl DerivationAtermPathRecord {
     fn new(aterm: &[u8], path: &[u8]) -> Self {
+        let payload_value_hash = derivation_aterm_path_payload_value_hash(aterm, path);
         Self {
-            value_hash: ValueHash::from_derivation_aterm_bytes(aterm),
+            aterm_value_hash: ValueHash::from_derivation_aterm_bytes(aterm),
+            payload_value_hash,
             path: path.to_vec(),
         }
     }
@@ -1580,6 +1599,16 @@ impl DerivationAtermPathRecord {
     fn path_bytes(&self) -> Vec<u8> {
         self.path.clone()
     }
+}
+
+fn derivation_aterm_path_payload_value_hash(aterm: &[u8], path: &[u8]) -> ValueHash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DERIVATION_ATERM_PATH_VALUE_HASH_DOMAIN_VERSION);
+    hasher.update(b"aterm");
+    update_derivation_side_payload_hash_chunk(&mut hasher, aterm);
+    hasher.update(b"drv-path");
+    update_derivation_side_payload_hash_chunk(&mut hasher, path);
+    ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))
 }
 
 impl StaticDerivationOutputPathRecord {
@@ -1597,7 +1626,7 @@ impl StaticDerivationOutputPathRecord {
     }
 }
 
-fn update_static_derivation_output_paths_hash_chunk(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+fn update_derivation_side_payload_hash_chunk(hasher: &mut blake3::Hasher, bytes: &[u8]) {
     hasher.update(&(bytes.len() as u128).to_le_bytes());
     hasher.update(bytes);
 }
@@ -2712,7 +2741,7 @@ impl EvalCacheRuntime {
     ///
     /// Returns a [`DemandGraphError`] only when the enabled underlying cache
     /// fails to build the expression cache key.
-    pub fn lookup_derivation_aterm_path<I>(
+    pub(crate) fn lookup_derivation_aterm_path<I>(
         &self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
@@ -2878,7 +2907,7 @@ impl EvalCacheRuntime {
     ///
     /// Returns a [`DemandGraphError`] only when the enabled underlying cache
     /// fails to insert/reconsider the expression node.
-    pub fn observe_derivation_aterm_expression_path<I>(
+    pub(crate) fn observe_derivation_aterm_expression_path<I>(
         &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
@@ -5499,6 +5528,52 @@ mod tests {
             .expect("dirty derivation ATerm lookup succeeds");
 
         assert!(dirty_lookup.is_none());
+    }
+
+    #[test]
+    fn derivation_aterm_path_observation_reconsiders_full_payload() {
+        let mut cache = EvalCache::new();
+        let aterm = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"same\")])";
+
+        let first = cache
+            .observe_derivation_aterm_expression_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
+            )
+            .expect("first derivation ATerm path observes");
+        let changed_path = cache
+            .observe_derivation_aterm_expression_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+                b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-x.drv",
+            )
+            .expect("changed derivation ATerm path observes");
+        let same = cache
+            .observe_derivation_aterm_expression_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+                b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-x.drv",
+            )
+            .expect("same derivation ATerm path observes");
+        let lookup = cache
+            .lookup_derivation_aterm_path(
+                identity(b"derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+            )
+            .expect("derivation ATerm path lookup succeeds");
+
+        assert_eq!(first.decision(), CutoffDecision::Propagate);
+        assert_eq!(changed_path.decision(), CutoffDecision::Propagate);
+        assert_eq!(same.decision(), CutoffDecision::CutOff);
+        assert_eq!(
+            lookup.as_deref(),
+            Some(b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-x.drv".as_slice())
+        );
     }
 
     #[test]

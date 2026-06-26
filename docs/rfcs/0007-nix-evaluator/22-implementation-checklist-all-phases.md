@@ -870,16 +870,18 @@ alone (`M-1`/`Q-A`).
       dependency capture, SHA-256 short-circuiting, persistence, and
       cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
 - [x] Current derivation ATerm path lookup substrate:
-      `EvalCache::observe_derivation_aterm_expression_path`,
+      crate-private `EvalCache::observe_derivation_aterm_expression_path`,
       `EvalCacheRuntime::observe_derivation_aterm_expression_path`, and
       `lookup_derivation_aterm_path` store caller-supplied `.drv` path bytes
-      beside a derivation ATerm value hash and return them only for clean nodes
-      whose current graph hash and side record still match the caller's ATerm
-      bytes. Dirty, changed, missing-key, missing-record, and disabled-runtime
-      cases are misses. This cache-side storage/lookup substrate is now
-      consumed by the later tree-walk cached `.drv` path reuse precursor for
-      eligible derivations; persistence, dependency capture beyond hashable
-      lexical captures, full SHA-256 store-path short-circuiting, and full
+      beside a derivation ATerm value hash and bind the graph node to the full
+      ATerm/path side-payload hash. Lookups return path bytes only for clean
+      nodes whose side record still matches the caller's ATerm bytes and whose
+      current graph hash still matches the recorded ATerm/path payload. Dirty,
+      changed, missing-key, missing-record, and disabled-runtime cases are
+      misses. This cache-side storage/lookup substrate is now consumed by the
+      later tree-walk cached `.drv` path reuse precursor for eligible
+      derivations; persistence, dependency capture beyond hashable lexical
+      captures, full SHA-256 store-path short-circuiting, and full
       cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
 - [x] Current derivationStrict ATerm evaluator observation substrate:
       tree-walk `derivationStrict` observes recorded `.drv` ATerm bytes into
@@ -888,8 +890,8 @@ alone (`M-1`/`Q-A`).
       module identity, source span, and hashable captured lexical free
       variables. Disabled runtimes, `with`/scoped-global environments, and
       unsupported captured values skip observation; repeated unchanged
-      derivation ATerms increment early-cutoff stats without counting cache
-      hits or misses. This is observation-only: no memo lookup, no
+      derivation ATerm/path payloads increment early-cutoff stats without
+      counting cache hits or misses. This is observation-only: no memo lookup, no
       evaluator-owned recomputation scheduling, no dynamic dependency capture
       beyond hashable lexical captures, no SHA-256 short-circuiting, no
       persistence, and no full cached/uncached `.drv` parity proof

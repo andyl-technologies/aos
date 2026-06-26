@@ -721,23 +721,17 @@ fn derivation_strict_aterm_observation_separates_captured_free_vars() {
 
     assert_eq!(outcome.stats().early_cutoffs(), 0);
     let runtime = cache.lock().expect("cache lock is valid");
-    let graph = runtime.cache().expect("runtime is enabled").graph();
-    let node_hashes = (0..graph.len())
-        .filter_map(|index| {
-            graph
-                .node(DemandNodeId::new(
-                    u32::try_from(index).expect("test graph indices fit in u32"),
-                ))
-                .expect("node index exists")
-                .value_hash()
-        })
-        .collect::<Vec<_>>();
-    for hash in derivation_hashes {
-        assert!(
-            node_hashes.contains(&hash),
-            "different captured arguments must allocate separate derivation ATerm nodes"
-        );
-    }
+    let cache = runtime.cache().expect("runtime is enabled");
+    assert_eq!(
+        cache.derivation_aterm_path_record_count(),
+        2,
+        "different captured arguments must allocate separate final path records"
+    );
+    assert_eq!(
+        cache.static_derivation_output_path_record_count(),
+        2,
+        "different captured arguments must allocate separate static output records"
+    );
 }
 
 #[test]
