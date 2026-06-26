@@ -274,15 +274,34 @@ impl TreeWalk {
         name: &str,
         derivation: &nix_compat::derivation::Derivation,
     ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
+        let aterm = self.derivation_aterm_bytes(derivation);
+        self.calculate_derivation_path_from_aterm(id, span, name, derivation, &aterm)
+    }
+
+    pub(super) fn calculate_derivation_path_from_aterm(
+        &self,
+        id: IrId,
+        span: Span,
+        name: &str,
+        derivation: &nix_compat::derivation::Derivation,
+        aterm: &[u8],
+    ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
         let drv_name = format!("{name}.drv");
+        let references = self.derivation_path_references(derivation);
+        self.build_text_path(id, span, &drv_name, aterm, references)
+    }
+
+    pub(super) fn derivation_path_references(
+        &self,
+        derivation: &nix_compat::derivation::Derivation,
+    ) -> BTreeSet<Vec<u8>> {
         let references: BTreeSet<Vec<u8>> = derivation
             .input_sources
             .iter()
             .chain(derivation.input_derivations.keys())
             .map(|path| self.store_path_absolute_bytes(path))
             .collect();
-        let aterm = self.derivation_aterm_bytes(derivation);
-        self.build_text_path(id, span, &drv_name, &aterm, references)
+        references
     }
 
     pub(super) fn calculate_output_paths(
@@ -551,44 +570,6 @@ impl TreeWalk {
 
     pub(super) fn impure_derivation_hash_modulo() -> DerivationHashModulo {
         DerivationHashModulo(Self::sha256_array(b"impure"))
-    }
-
-    pub(super) fn calculate_floating_ca_derivation_path(
-        &self,
-        id: IrId,
-        span: Span,
-        name: &str,
-        derivation: &nix_compat::derivation::Derivation,
-        floating_ca_output: FloatingCaOutput,
-    ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
-        let aterm = self.floating_ca_derivation_aterm_bytes(derivation, floating_ca_output, None);
-        let references: BTreeSet<Vec<u8>> = derivation
-            .input_sources
-            .iter()
-            .chain(derivation.input_derivations.keys())
-            .map(|path| self.store_path_absolute_bytes(path))
-            .collect();
-        let drv_name = format!("{name}.drv");
-        self.build_text_path(id, span, &drv_name, &aterm, references)
-    }
-
-    pub(super) fn calculate_impure_derivation_path(
-        &self,
-        id: IrId,
-        span: Span,
-        name: &str,
-        derivation: &nix_compat::derivation::Derivation,
-        impure_output: FloatingCaOutput,
-    ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
-        let aterm = self.impure_derivation_aterm_bytes(derivation, impure_output, None);
-        let references: BTreeSet<Vec<u8>> = derivation
-            .input_sources
-            .iter()
-            .chain(derivation.input_derivations.keys())
-            .map(|path| self.store_path_absolute_bytes(path))
-            .collect();
-        let drv_name = format!("{name}.drv");
-        self.build_text_path(id, span, &drv_name, &aterm, references)
     }
 
     pub(super) fn floating_ca_derivation_aterm_bytes(

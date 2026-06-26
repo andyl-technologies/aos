@@ -30,6 +30,7 @@ impl TreeWalk {
                 .saturating_add(self.import_parse_cache_misses as u64)
                 .saturating_add(self.find_file_cache_misses as u64),
             early_cutoffs: self.stats.early_cutoffs,
+            derivation_aterm_path_reuses: self.stats.derivation_aterm_path_reuses,
             heap_chunks: arena.chunks as u64,
             heap_reserved_bytes: arena.reserved_bytes as u64,
             heap_used_bytes: arena.used_bytes as u64,
@@ -56,6 +57,7 @@ impl TreeWalk {
             cache_hits = stats.cache_hits(),
             cache_misses = stats.cache_misses(),
             early_cutoffs = stats.early_cutoffs(),
+            derivation_aterm_path_reuses = stats.derivation_aterm_path_reuses(),
             heap_chunks = stats.heap_chunks(),
             heap_reserved_bytes = stats.heap_reserved_bytes(),
             heap_used_bytes = stats.heap_used_bytes(),
@@ -85,5 +87,10 @@ impl TreeWalk {
 
     pub(super) fn increment_early_cutoffs(&mut self) {
         self.stats.early_cutoffs = self.stats.early_cutoffs.saturating_add(1);
+    }
+
+    pub(super) fn increment_derivation_aterm_path_reuses(&mut self) {
+        self.stats.derivation_aterm_path_reuses =
+            self.stats.derivation_aterm_path_reuses.saturating_add(1);
     }
 }

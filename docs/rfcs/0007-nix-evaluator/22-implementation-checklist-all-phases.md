@@ -825,9 +825,10 @@ alone (`M-1`/`Q-A`).
       beside a derivation ATerm value hash and return them only for clean nodes
       whose current graph hash and side record still match the caller's ATerm
       bytes. Dirty, changed, missing-key, missing-record, and disabled-runtime
-      cases are misses. This is cache-side storage/lookup only; tree-walk still
-      computes Nix-observed SHA-256 paths normally, and evaluator lookup wiring,
-      persistence, dependency capture, SHA-256 short-circuiting, and full
+      cases are misses. This cache-side storage/lookup substrate is now
+      consumed by the later tree-walk cached `.drv` path reuse precursor for
+      eligible derivations; persistence, dependency capture beyond hashable
+      lexical captures, full SHA-256 store-path short-circuiting, and full
       cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
 - [x] Current derivationStrict ATerm evaluator observation substrate:
       tree-walk `derivationStrict` observes recorded `.drv` ATerm bytes into
@@ -848,12 +849,28 @@ alone (`M-1`/`Q-A`).
       `EvalCacheRuntime::observe_derivation_aterm_expression_path`, after
       normal Nix-observed path computation has completed, when eval-cache
       observation is enabled and derivation ATerm subject capture, runtime
-      locking, and serialization succeed. The path can be looked up from the
-      shared runtime for the same clean ATerm node, but tree-walk does not
-      consult that lookup before hashing or path construction. Evaluator
-      lookup wiring, persistence, dependency capture beyond hashable lexical
-      captures, SHA-256 short-circuiting, and full cached/uncached `.drv`
-      parity proof remain open (`S-14`/`S-15`).
+      locking, and serialization succeed. The later cached `.drv` path reuse
+      precursor now consults this side record for eligible static, floating-CA,
+      and impure derivations, but output path computation, derivation modulo
+      hashing, and deferred-placeholder `.drv` paths still use normal
+      construction. Persistence, dependency capture beyond hashable lexical
+      captures, full SHA-256 store-path short-circuiting, and full
+      cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
+- [x] Current derivationStrict cached `.drv` path reuse precursor:
+      tree-walk `derivationStrict` recomputes final ATerm bytes for static,
+      floating-CA, and impure derivations, probes the clean derivation ATerm
+      path side record, validates that cached absolute path against the
+      current configured store directory and expected `${name}.drv` basename,
+      and reuses it instead of rebuilding the final `.drv` text path when the
+      record matches. The reuse increments `derivation_aterm_path_reuses` but
+      leaves aggregate `cache_hits`/`cache_misses` and force-cache hit/miss
+      accounting unchanged; misses, stale records, disabled runtimes,
+      unsupported captured values, invalid cached paths, configured-store
+      mismatches, and wrong derivation names fall back to normal path
+      construction. Output path computation, derivation modulo hashing,
+      deferred-placeholder derivations, persistence, dependency capture beyond
+      hashable lexical captures, full SHA-256 store-path short-circuiting, and
+      full cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
 - [x] Current forced-payload early-cutoff stats substrate:
       trace-backed force-cache payload observation now reports its value-hash
       `Reconsideration`, first trace-backed insertion uses no synthetic prior

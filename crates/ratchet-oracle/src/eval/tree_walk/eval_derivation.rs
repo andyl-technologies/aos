@@ -485,12 +485,12 @@ impl TreeWalk {
                             floating_ca_output,
                             &input_hashes.hashes,
                         );
-                        let drv_path = self.calculate_floating_ca_derivation_path(
+                        let drv_path = self.calculate_derivation_path_with_aterm_cache(
                             id,
                             span,
                             &name,
                             &derivation,
-                            floating_ca_output,
+                            DerivationOutputResolution::FloatingCa(floating_ca_output),
                         )?;
                         (
                             known_hash,
@@ -500,12 +500,12 @@ impl TreeWalk {
                     }
                     DerivationOutputResolution::Impure(impure_output) => {
                         let known_hash = Self::impure_derivation_hash_modulo();
-                        let drv_path = self.calculate_impure_derivation_path(
+                        let drv_path = self.calculate_derivation_path_with_aterm_cache(
                             id,
                             span,
                             &name,
                             &derivation,
-                            impure_output,
+                            DerivationOutputResolution::Impure(impure_output),
                         )?;
                         (
                             known_hash,
@@ -545,7 +545,13 @@ impl TreeWalk {
                     &derivation,
                     &input_hashes.hashes,
                 )?;
-                let drv_path = self.calculate_derivation_path(id, span, &name, &derivation)?;
+                let drv_path = self.calculate_derivation_path_with_aterm_cache(
+                    id,
+                    span,
+                    &name,
+                    &derivation,
+                    DerivationOutputResolution::StaticPaths,
+                )?;
                 (
                     known_hash,
                     drv_path,
@@ -568,6 +574,105 @@ impl TreeWalk {
             output_resolution,
         );
         self.alloc_derivation_strict_result(id, span, &derivation, &drv_path, output_resolution)
+    }
+
+    fn calculate_derivation_path_with_aterm_cache(
+        &mut self,
+        id: IrId,
+        span: Span,
+        name: &str,
+        derivation: &nix_compat::derivation::Derivation,
+        output_resolution: DerivationOutputResolution,
+    ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
+        let aterm = match output_resolution {
+            DerivationOutputResolution::StaticPaths => self.derivation_aterm_bytes(derivation),
+            DerivationOutputResolution::FloatingCa(floating_ca_output) => {
+                self.floating_ca_derivation_aterm_bytes(derivation, floating_ca_output, None)
+            }
+            DerivationOutputResolution::Impure(impure_output) => {
+                self.impure_derivation_aterm_bytes(derivation, impure_output, None)
+            }
+            DerivationOutputResolution::DeferredPlaceholders => {
+                return self.calculate_derivation_path(id, span, name, derivation);
+            }
+        };
+        if let Some(path) = self.lookup_derivation_aterm_path_for_current_node(id, name, &aterm) {
+            return Ok(path);
+        }
+        self.calculate_derivation_path_from_aterm(id, span, name, derivation, &aterm)
+    }
+
+    fn lookup_derivation_aterm_path_for_current_node(
+        &mut self,
+        id: IrId,
+        name: &str,
+        aterm: &[u8],
+    ) -> Option<nix_compat::store_path::StorePath<String>> {
+        if !self.eval_cache_runtime_enabled() {
+            return None;
+        }
+        let (identity, free_var_value_hashes) =
+            self.derivation_aterm_cache_subject_for_current_node(id)?;
+        let path_bytes = {
+            let Ok(cache) = self.eval_cache.lock() else {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    "tree-walk evaluator cache lock was poisoned; skipping derivation ATerm path lookup"
+                );
+                return None;
+            };
+            match cache.lookup_derivation_aterm_path(
+                identity,
+                free_var_value_hashes.iter().copied(),
+                aterm,
+            ) {
+                Ok(Some(path_bytes)) => path_bytes,
+                Ok(None) => return None,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "tree-walk evaluator derivation ATerm path lookup failed"
+                    );
+                    return None;
+                }
+            }
+        };
+        let Some(path_in_store) = self.strip_configured_store_dir(&path_bytes) else {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                node = ?id,
+                path = %String::from_utf8_lossy(&path_bytes),
+                "tree-walk evaluator derivation ATerm cached path was outside the configured store dir"
+            );
+            return None;
+        };
+        let path = match nix_compat::store_path::StorePath::<String>::from_bytes(path_in_store) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    node = ?id,
+                    path = %String::from_utf8_lossy(&path_bytes),
+                    error = %error,
+                    "tree-walk evaluator derivation ATerm cached path was invalid"
+                );
+                return None;
+            }
+        };
+        let expected_name = format!("{name}.drv");
+        if path.name().as_str() != expected_name.as_str() {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                node = ?id,
+                expected = %expected_name,
+                actual = %path.name().as_str(),
+                "tree-walk evaluator derivation ATerm cached path had the wrong derivation name"
+            );
+            return None;
+        }
+        self.increment_derivation_aterm_path_reuses();
+        Some(path)
     }
 
     fn observe_derivation_aterm_expression(

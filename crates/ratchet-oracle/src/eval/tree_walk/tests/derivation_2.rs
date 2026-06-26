@@ -2,8 +2,9 @@
 
 use super::*;
 use crate::cache::{
-    CutoffDecision, DemandNodeId, EarlyCutoff, PARSE_CACHE_SCHEMA_VERSION, ParseCache,
-    ParseCacheFlags, ParseCacheKey, ParseFileKey, PersistCache, PersistFileArtifactKey, ValueHash,
+    CutoffDecision, DemandNodeId, DurableBlake3Hash, EarlyCutoff, PARSE_CACHE_SCHEMA_VERSION,
+    ParseCache, ParseCacheFlags, ParseCacheKey, ParseFileKey, PersistCache, PersistFileArtifactKey,
+    ValueHash,
 };
 use crate::string::NixString;
 
@@ -151,31 +152,70 @@ fn derivation_strict_aterm_value_hash_precursor_tracks_recorded_drv_bytes() {
     );
 }
 
+#[derive(Debug)]
+struct DerivationCacheRun {
+    path: String,
+    aterm: Vec<u8>,
+    early_cutoffs: u64,
+    cache_hits: u64,
+    cache_misses: u64,
+    force_hits: u64,
+    force_misses: u64,
+    path_reuses: u64,
+}
+
+fn eval_single_derivation_with_cache(
+    ir: &Ir,
+    options: TreeWalkOptions,
+    cache: Arc<Mutex<EvalCacheRuntime>>,
+) -> DerivationCacheRun {
+    let outcome = eval_whnf_owned_with_options_realizer_and_eval_cache(ir, options, None, cache)
+        .expect("derivation evaluates");
+    let [derivation] = outcome.derivations() else {
+        panic!(
+            "expected one recorded derivation, got {:?}",
+            outcome.derivations()
+        );
+    };
+    DerivationCacheRun {
+        path: derivation.absolute_path().to_owned(),
+        aterm: derivation
+            .aterm_bytes()
+            .expect("derivation has ATerm bytes")
+            .to_vec(),
+        early_cutoffs: outcome.stats().early_cutoffs(),
+        cache_hits: outcome.stats().cache_hits(),
+        cache_misses: outcome.stats().cache_misses(),
+        force_hits: outcome.stats().force_cache_hits(),
+        force_misses: outcome.stats().force_cache_misses(),
+        path_reuses: outcome.stats().derivation_aterm_path_reuses(),
+    }
+}
+
+fn derivation_aterm_cache_subject(
+    ir: &Ir,
+    options: TreeWalkOptions,
+    cache: Arc<Mutex<EvalCacheRuntime>>,
+) -> (CacheExprIdentity, Vec<DurableBlake3Hash>) {
+    TreeWalk::with_options_and_eval_cache(ir, options, cache)
+        .derivation_aterm_cache_subject_for_current_node(ir.root)
+        .expect("root derivation ATerm subject builds")
+}
+
+fn enabled_eval_cache_options() -> TreeWalkOptions {
+    TreeWalkOptions::with_eval_cache_enabled(true)
+}
+
+fn enabled_eval_cache_options_with_store_dir(store_dir: Vec<u8>) -> TreeWalkOptions {
+    let mut options = enabled_eval_cache_options();
+    options
+        .set_store_dir(store_dir)
+        .expect("store directory configures");
+    options
+}
+
 #[test]
 fn derivation_strict_observes_aterm_early_cutoff_in_eval_cache() {
-    fn evaluate(ir: &Ir, cache: Arc<Mutex<EvalCacheRuntime>>) -> (String, Vec<u8>, u64, u64, u64) {
-        let options = TreeWalkOptions::with_eval_cache_enabled(true);
-        let outcome =
-            eval_whnf_owned_with_options_realizer_and_eval_cache(ir, options, None, cache)
-                .expect("derivation evaluates");
-        let [derivation] = outcome.derivations() else {
-            panic!(
-                "expected one recorded derivation, got {:?}",
-                outcome.derivations()
-            );
-        };
-        (
-            derivation.absolute_path().to_owned(),
-            derivation
-                .aterm_bytes()
-                .expect("static derivation has ATerm bytes")
-                .to_vec(),
-            outcome.stats().early_cutoffs(),
-            outcome.stats().force_cache_hits(),
-            outcome.stats().force_cache_misses(),
-        )
-    }
-
     let source = r#"derivationStrict {
         name = "x";
         system = "x86_64-linux";
@@ -184,39 +224,37 @@ fn derivation_strict_observes_aterm_early_cutoff_in_eval_cache() {
     }"#;
     let ir = lower(source);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
-    let (identity, free_var_hashes) = TreeWalk::with_options_and_eval_cache(
-        &ir,
-        TreeWalkOptions::with_eval_cache_enabled(true),
-        cache.clone(),
-    )
-    .derivation_aterm_cache_subject_for_current_node(ir.root)
-    .expect("root derivation ATerm subject builds");
+    let (identity, free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, enabled_eval_cache_options(), cache.clone());
 
-    let (first_path, first_aterm, first_cutoffs, first_hits, first_misses) =
-        evaluate(&ir, cache.clone());
+    let first = eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
     let first_cached_path = cache
         .lock()
         .expect("cache lock is valid")
-        .lookup_derivation_aterm_path(identity, free_var_hashes.iter().copied(), &first_aterm)
+        .lookup_derivation_aterm_path(identity, free_var_hashes.iter().copied(), &first.aterm)
         .expect("derivation ATerm path lookup succeeds")
         .expect("first derivation ATerm path is recorded");
-    let (second_path, second_aterm, second_cutoffs, second_hits, second_misses) =
-        evaluate(&ir, cache.clone());
+    let second =
+        eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
     let second_cached_path = cache
         .lock()
         .expect("cache lock is valid")
-        .lookup_derivation_aterm_path(identity, free_var_hashes.iter().copied(), &second_aterm)
+        .lookup_derivation_aterm_path(identity, free_var_hashes.iter().copied(), &second.aterm)
         .expect("derivation ATerm path lookup succeeds")
         .expect("second derivation ATerm path is recorded");
 
-    assert_eq!(second_path, first_path);
-    assert_eq!(second_aterm, first_aterm);
-    assert_eq!(first_cached_path, first_path.as_bytes());
-    assert_eq!(second_cached_path, second_path.as_bytes());
-    assert_eq!(first_cutoffs, 0);
-    assert_eq!(second_cutoffs, 1);
-    assert_eq!((first_hits, first_misses), (0, 0));
-    assert_eq!((second_hits, second_misses), (0, 0));
+    assert_eq!(second.path, first.path);
+    assert_eq!(second.aterm, first.aterm);
+    assert_eq!(first_cached_path, first.path.as_bytes());
+    assert_eq!(second_cached_path, second.path.as_bytes());
+    assert_eq!(first.early_cutoffs, 0);
+    assert_eq!(second.early_cutoffs, 1);
+    assert_eq!((first.cache_hits, first.cache_misses), (0, 0));
+    assert_eq!((second.cache_hits, second.cache_misses), (0, 0));
+    assert_eq!((first.force_hits, first.force_misses), (0, 0));
+    assert_eq!((second.force_hits, second.force_misses), (0, 0));
+    assert_eq!(first.path_reuses, 0);
+    assert_eq!(second.path_reuses, 1);
     assert_eq!(
         cache
             .lock()
@@ -226,6 +264,192 @@ fn derivation_strict_observes_aterm_early_cutoff_in_eval_cache() {
             .len(),
         1
     );
+}
+
+#[test]
+fn derivation_strict_reuses_aterm_paths_for_floating_and_impure_outputs() {
+    for source in [
+        r#"derivationStrict {
+            name = "floating";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            __contentAddressed = true;
+            outputHashAlgo = "sha256";
+            outputHashMode = "recursive";
+        }"#,
+        r#"derivationStrict {
+            name = "impure";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            __impure = true;
+        }"#,
+    ] {
+        let ir = lower(source);
+        let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+        let first =
+            eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+        let second =
+            eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+
+        assert_eq!(second.path, first.path);
+        assert_eq!(second.aterm, first.aterm);
+        assert_eq!((first.cache_hits, first.cache_misses), (0, 0));
+        assert_eq!((second.cache_hits, second.cache_misses), (0, 0));
+        assert_eq!((first.force_hits, first.force_misses), (0, 0));
+        assert_eq!((second.force_hits, second.force_misses), (0, 0));
+        assert_eq!(first.path_reuses, 0);
+        assert_eq!(second.path_reuses, 1);
+    }
+}
+
+#[test]
+fn derivation_strict_does_not_reuse_deferred_placeholder_drv_paths() {
+    let source = r#"let
+        base = derivationStrict {
+            name = "base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            __contentAddressed = true;
+            outputHashAlgo = "sha256";
+            outputHashMode = "recursive";
+        };
+    in derivationStrict {
+        name = "downstream";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        input = base.out;
+    }"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let first = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        enabled_eval_cache_options(),
+        None,
+        cache.clone(),
+    )
+    .expect("first derivation graph evaluates");
+    let second = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        enabled_eval_cache_options(),
+        None,
+        cache,
+    )
+    .expect("second derivation graph evaluates");
+
+    assert_eq!(first.derivations().len(), 2);
+    assert_eq!(second.derivations().len(), 2);
+    assert_eq!(first.stats().derivation_aterm_path_reuses(), 0);
+    assert_eq!(second.stats().derivation_aterm_path_reuses(), 1);
+    assert_eq!(second.stats().cache_hits(), 0);
+    assert_eq!(second.stats().force_cache_hits(), 0);
+}
+
+#[test]
+fn derivation_strict_cached_aterm_paths_miss_for_store_dir_mismatches() {
+    let source = r#"derivationStrict {
+        name = "floating";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        __contentAddressed = true;
+        outputHashAlgo = "sha256";
+        outputHashMode = "recursive";
+    }"#;
+    let ir = lower(source);
+    let first_store = unique_temp_dir("derivation-aterm-path-first-store");
+    let second_store = unique_temp_dir("derivation-aterm-path-second-store");
+    let first_options =
+        enabled_eval_cache_options_with_store_dir(first_store.as_os_str().as_bytes().to_vec());
+    let second_options =
+        enabled_eval_cache_options_with_store_dir(second_store.as_os_str().as_bytes().to_vec());
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let first = eval_single_derivation_with_cache(&ir, first_options, cache.clone());
+    let second = eval_single_derivation_with_cache(&ir, second_options, cache);
+
+    assert!(first.path.starts_with(&path_source(&first_store)));
+    assert!(second.path.starts_with(&path_source(&second_store)));
+    assert_eq!(first.aterm, second.aterm);
+    assert_eq!(first.path_reuses, 0);
+    assert_eq!(second.path_reuses, 0);
+    fs::remove_dir_all(first_store).expect("first store temp directory removes");
+    fs::remove_dir_all(second_store).expect("second store temp directory removes");
+}
+
+#[test]
+fn derivation_strict_cached_aterm_paths_miss_for_invalid_cached_path_names() {
+    let source = r#"derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        env = "same";
+    }"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let first = eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+    let (identity, free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, enabled_eval_cache_options(), cache.clone());
+    cache
+        .lock()
+        .expect("cache lock is valid")
+        .observe_derivation_aterm_expression_path(
+            identity,
+            free_var_hashes.iter().copied(),
+            &first.aterm,
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-wrong.drv",
+        )
+        .expect("corrupt derivation ATerm path record writes");
+
+    let second =
+        eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+    let repaired_path = cache
+        .lock()
+        .expect("cache lock is valid")
+        .lookup_derivation_aterm_path(identity, free_var_hashes.iter().copied(), &second.aterm)
+        .expect("repaired path lookup succeeds")
+        .expect("repaired path record exists");
+
+    assert_eq!(second.path, first.path);
+    assert_eq!(second.path_reuses, 0);
+    assert_eq!(repaired_path, first.path.as_bytes());
+}
+
+#[test]
+fn derivation_strict_cached_aterm_paths_miss_outside_configured_store() {
+    let source = r#"derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        env = "same";
+    }"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let first = eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+    let (identity, free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, enabled_eval_cache_options(), cache.clone());
+    cache
+        .lock()
+        .expect("cache lock is valid")
+        .observe_derivation_aterm_expression_path(
+            identity,
+            free_var_hashes.iter().copied(),
+            &first.aterm,
+            b"/different/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
+        )
+        .expect("outside-store derivation ATerm path record writes");
+
+    let second =
+        eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+    let repaired_path = cache
+        .lock()
+        .expect("cache lock is valid")
+        .lookup_derivation_aterm_path(identity, free_var_hashes.iter().copied(), &second.aterm)
+        .expect("repaired path lookup succeeds")
+        .expect("repaired path record exists");
+
+    assert_eq!(second.path, first.path);
+    assert_eq!(second.path_reuses, 0);
+    assert_eq!(repaired_path, first.path.as_bytes());
 }
 
 #[test]
@@ -1683,7 +1907,7 @@ fn derivation_strict_deferred_derivation_paths_sort_and_dedupe_references() {
         nix_compat::store_path::build_text_path("mixed.drv", &floating_aterm, references.clone())
             .expect("expected floating path builds");
     let actual = eval
-        .calculate_floating_ca_derivation_path(id, span, "mixed", &derivation, output)
+        .calculate_derivation_path_from_aterm(id, span, "mixed", &derivation, &floating_aterm)
         .expect("floating path builds");
     assert_eq!(actual, expected);
 
@@ -1691,7 +1915,7 @@ fn derivation_strict_deferred_derivation_paths_sort_and_dedupe_references() {
     let expected = nix_compat::store_path::build_text_path("mixed.drv", &impure_aterm, references)
         .expect("expected impure path builds");
     let actual = eval
-        .calculate_impure_derivation_path(id, span, "mixed", &derivation, output)
+        .calculate_derivation_path_from_aterm(id, span, "mixed", &derivation, &impure_aterm)
         .expect("impure path builds");
     assert_eq!(actual, expected);
 }
