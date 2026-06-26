@@ -2119,6 +2119,261 @@ impl RpcService {
         })
     }
 
+    /// `IamService.CreateServiceAccount` — create (or return) an org-owned
+    /// service account, a non-human principal for CI/automation.
+    ///
+    /// Idempotent: returns the existing account when one of that name already
+    /// exists in the org. Requires [`Permission::IamAdmin`] at the org scope (or
+    /// the instance root) — the same authority the console enforces.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::PermissionDenied`] when the caller is not an org/instance
+    /// admin, [`RpcError::InvalidArgument`] for an unknown org, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn create_service_account(
+        &self,
+        auth: Option<&str>,
+        req: pb::CreateServiceAccountRequest,
+    ) -> Result<pb::CreateServiceAccountResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::invalid(format!("no org '{}'", req.org_slug)))?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&req.org_slug))
+            .await?;
+        let id = match self
+            .db
+            .service_account_by_name(org.id, &req.name)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            Some(id) => id,
+            None => self
+                .db
+                .create_service_account(org.id, &req.name)
+                .await
+                .map_err(RpcError::internal)?,
+        };
+        Ok(pb::CreateServiceAccountResponse {
+            service_account: Some(pb::ServiceAccount {
+                id,
+                org_slug: req.org_slug,
+                name: req.name,
+            }),
+        })
+    }
+
+    /// Resolves a principal reference to its numeric id.
+    ///
+    /// A `"user"` ref is an email (created on first reference, matching the
+    /// invite/grant flow); a `"service_account"` ref is `"<org>/<name>"` and must
+    /// already exist.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::InvalidArgument`] for an unknown kind, a malformed
+    /// service-account ref, or an unknown org/service account; [`RpcError::Internal`]
+    /// on database failure.
+    async fn resolve_principal_id(&self, kind: &str, principal_ref: &str) -> Result<i64, RpcError> {
+        match kind {
+            "user" => self
+                .db
+                .find_or_create_user(principal_ref)
+                .await
+                .map_err(RpcError::internal),
+            "service_account" => {
+                let (org_slug, name) = principal_ref
+                    .split_once('/')
+                    .ok_or_else(|| RpcError::invalid("service_account ref must be '<org>/<name>'"))?;
+                let org = self
+                    .db
+                    .org_by_slug(org_slug)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::invalid(format!("no org '{org_slug}'")))?;
+                self.db
+                    .service_account_by_name(org.id, name)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::invalid(format!("no service account '{principal_ref}'")))
+            }
+            other => Err(RpcError::invalid(format!("unknown principal kind '{other}'"))),
+        }
+    }
+
+    /// `IamService.GrantMembership` — grant a role to a principal at a scope.
+    ///
+    /// Requires [`Permission::IamAdmin`] at the target scope.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::Unauthenticated`]/[`RpcError::PermissionDenied`] on auth,
+    /// [`RpcError::InvalidArgument`] for an unknown role/principal, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn grant_membership(
+        &self,
+        auth: Option<&str>,
+        req: pb::GrantMembershipRequest,
+    ) -> Result<pb::GrantMembershipResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let scope = Scope::parse(&req.scope);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let role =
+            Role::parse(&req.role).ok_or_else(|| RpcError::invalid(format!("unknown role '{}'", req.role)))?;
+        let principal_id = self
+            .resolve_principal_id(&req.principal_kind, &req.principal_ref)
+            .await?;
+        self.db
+            .grant_membership(&req.principal_kind, principal_id, scope.as_str(), role.as_str())
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::GrantMembershipResponse {})
+    }
+
+    /// `IamService.RevokeMembership` — revoke a principal's grant at a scope
+    /// (a no-op when none exists). Requires [`Permission::IamAdmin`] at the scope.
+    ///
+    /// # Errors
+    ///
+    /// Auth errors as [`grant_membership`](Self::grant_membership);
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn revoke_membership(
+        &self,
+        auth: Option<&str>,
+        req: pb::RevokeMembershipRequest,
+    ) -> Result<pb::RevokeMembershipResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let scope = Scope::parse(&req.scope);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let principal_id = self
+            .resolve_principal_id(&req.principal_kind, &req.principal_ref)
+            .await?;
+        self.db
+            .revoke_membership(&req.principal_kind, principal_id, scope.as_str())
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::RevokeMembershipResponse {})
+    }
+
+    /// `IamService.MintToken` — mint a registry-scoped bearer token for `owner`.
+    ///
+    /// The token's permissions are intersected with the **owner's** effective
+    /// grants at the scope, so a token can never exceed its owner's authority.
+    /// The secret is returned exactly once. Requires [`Permission::IamAdmin`] at
+    /// the scope.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::Unauthenticated`]/[`RpcError::PermissionDenied`] on auth,
+    /// [`RpcError::InvalidArgument`] for a malformed owner or unknown permission,
+    /// and [`RpcError::Internal`] on database failure.
+    pub async fn mint_token(
+        &self,
+        auth: Option<&str>,
+        req: pb::MintTokenRequest,
+    ) -> Result<pb::MintTokenResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let scope = Scope::parse(&req.scope);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let (kind, principal_ref) = req.owner.split_once(':').ok_or_else(|| {
+            RpcError::invalid("owner must be 'user:<email>' or 'service_account:<org>/<name>'")
+        })?;
+        let owner_id = self.resolve_principal_id(kind, principal_ref).await?;
+        let owner = match kind {
+            "user" => crate::domain::Principal::user(owner_id),
+            "service_account" => crate::domain::Principal::service_account(owner_id),
+            other => return Err(RpcError::invalid(format!("unknown owner kind '{other}'"))),
+        };
+        let mut perms = Vec::new();
+        for verb in &req.permissions {
+            let perm = crate::auth::permission_from_str(verb)
+                .ok_or_else(|| RpcError::invalid(format!("unknown permission '{verb}'")))?;
+            perms.push(perm);
+        }
+        // A token can never exceed its owner's authority.
+        let grants = self
+            .db
+            .effective_scopes(owner)
+            .await
+            .map_err(RpcError::internal)?;
+        perms.retain(|p| iam::allow(&grants, *p, &scope));
+        let (token_id, secret) = self
+            .db
+            .create_token(owner, scope.as_str(), &perms, Some("minted via IamService"), None)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::MintTokenResponse { token_id, secret })
+    }
+
+    /// `IamService.RevokeToken` — revoke a token by id.
+    ///
+    /// Requires [`Permission::IamAdmin`] at the instance root (an instance admin
+    /// may revoke any token); per-owner self-revoke remains the console's path.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::Unauthenticated`]/[`RpcError::PermissionDenied`] on auth;
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn revoke_token(
+        &self,
+        auth: Option<&str>,
+        req: pb::RevokeTokenRequest,
+    ) -> Result<pb::RevokeTokenResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::root())
+            .await?;
+        self.db
+            .revoke_token(&req.token_id)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::RevokeTokenResponse {})
+    }
+
+    /// `IamService.ListTokens` — the caller's own active tokens, filtered to
+    /// `scope` (empty `scope` lists all).
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT;
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_tokens(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListTokensRequest,
+    ) -> Result<pb::ListTokensResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let principal = claims_principal(&claims)
+            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("bearer claims carry no principal")))?;
+        let want = Scope::parse(&req.scope);
+        let rows = self
+            .db
+            .list_tokens_for(principal)
+            .await
+            .map_err(RpcError::internal)?;
+        let owner = format!("{}:{}", principal.kind.as_str(), principal.id);
+        let tokens = rows
+            .into_iter()
+            .filter(|(_, scope, _)| req.scope.is_empty() || Scope::parse(scope) == want)
+            .map(|(token_id, scope, perms)| pb::TokenInfo {
+                token_id,
+                owner: owner.clone(),
+                scope,
+                permissions: perms.iter().map(|p| p.as_str().to_string()).collect(),
+                created_at: 0,
+                expires_at: 0,
+            })
+            .collect();
+        Ok(pb::ListTokensResponse { tokens })
+    }
+
     /// `ConfigService.ListChangesets` — change-sets at a scope, newest first.
     ///
     /// Reads require [`Permission::AuditRead`] on the scope (ConfigService
