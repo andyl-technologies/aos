@@ -1910,7 +1910,7 @@ fn persistent_effectful_force_cache_hit_preserves_drv_surfaces() {
         materialize.force_cache_misses > 0,
         "materializing pathExists run should miss before writing persistent force-cache payloads"
     );
-    assert_persistent_force_cache_trace_log_contains(
+    let expected_trace_entry = assert_persistent_force_cache_trace_log_contains(
         &persist_root,
         &expected_trace,
         "materializing pathExists force-cache surface",
@@ -1937,6 +1937,11 @@ fn persistent_effectful_force_cache_hit_preserves_drv_surfaces() {
     assert!(hit.cache_hits > 0);
     assert!(hit.force_cache_hits > 0);
     assert_eq!(hit.force_cache_misses, 0);
+    assert!(
+        hit.persist_force_cache_hit_keys
+            .contains(&expected_trace_entry.0),
+        "fresh-runtime pathExists hit should load the expected force-cache metadata key"
+    );
 
     let canaries = persistent_force_cache_surface_canaries(&persist_root, &[&expected_trace]);
     assert_drv_surface_canaries_absent(
@@ -2087,13 +2092,14 @@ struct EffectfulDerivationSurface {
     cache_hits: u64,
     force_cache_hits: u64,
     force_cache_misses: u64,
+    persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
 }
 
 fn assert_persistent_force_cache_trace_log_contains(
     persist_root: &std::path::Path,
     expected_trace: &[ImpureInputFingerprint],
     context: &str,
-) {
+) -> (PersistNodeMetadataKey, ValueHash) {
     let expected = expected_trace
         .iter()
         .map(|input| {
@@ -2112,17 +2118,25 @@ fn assert_persistent_force_cache_trace_log_contains(
         .node_trace_log()
         .latest_entries()
         .expect("persistent node trace entries load");
-    assert!(
-        trace_entries.iter().any(|entry| {
-            !entry.payload().is_tombstone()
-                && entry.payload().inputs() == expected.as_slice()
-                && metadata_entries.iter().any(|metadata| {
-                    (*metadata).key() == entry.key()
-                        && (*metadata).value().materialized_value_hash() == Some(entry.value_hash())
-                })
-        }),
-        "{context} should persist the expected live force-cache verifying trace"
+    let live_matches = trace_entries
+        .iter()
+        .filter_map(|entry| {
+            if entry.payload().is_tombstone() || entry.payload().inputs() != expected.as_slice() {
+                return None;
+            }
+            let metadata_links_trace = metadata_entries.iter().any(|metadata| {
+                metadata.key() == entry.key()
+                    && metadata.value().materialized_value_hash() == Some(entry.value_hash())
+            });
+            metadata_links_trace.then_some((entry.key(), entry.value_hash()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        live_matches.len(),
+        1,
+        "{context} should persist exactly one live force-cache verifying trace for the expected inputs"
     );
+    live_matches[0]
 }
 
 fn evaluate_effectful_derivation_surface(
@@ -2130,6 +2144,20 @@ fn evaluate_effectful_derivation_surface(
     source: &str,
     options: TreeWalkOptions,
     eval_cache: EvalCacheRuntime,
+) -> EffectfulDerivationSurface {
+    evaluate_effectful_derivation_surface_with_cache(
+        ir,
+        source,
+        options,
+        Arc::new(Mutex::new(eval_cache)),
+    )
+}
+
+fn evaluate_effectful_derivation_surface_with_cache(
+    ir: &Ir,
+    source: &str,
+    options: TreeWalkOptions,
+    eval_cache: Arc<Mutex<EvalCacheRuntime>>,
 ) -> EffectfulDerivationSurface {
     let attr_path = vec![b"pkg".to_vec()];
     let outcome = eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
@@ -2139,7 +2167,7 @@ fn evaluate_effectful_derivation_surface(
         "force-cache-effectful-drv-surface.nix",
         source,
         None,
-        Arc::new(Mutex::new(eval_cache)),
+        eval_cache,
     )
     .expect("derivation attr-path eval succeeds");
     let [derivation] = outcome.derivations() else {
@@ -2159,6 +2187,7 @@ fn evaluate_effectful_derivation_surface(
         cache_hits: outcome.stats().cache_hits(),
         force_cache_hits: outcome.stats().force_cache_hits(),
         force_cache_misses: outcome.stats().force_cache_misses(),
+        persist_force_cache_hit_keys: outcome.persist_force_cache_hit_keys().to_vec(),
     }
 }
 
@@ -2221,7 +2250,7 @@ fn persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces() {
         materialize.force_cache_misses > 0,
         "materializing pathExists baseline should miss before writing persistent force-cache payloads"
     );
-    assert_persistent_force_cache_trace_log_contains(
+    let present_trace_entry = assert_persistent_force_cache_trace_log_contains(
         &persist_root,
         &present_trace,
         "materializing pathExists baseline surface",
@@ -2246,28 +2275,83 @@ fn persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces() {
     assert_ne!(uncached_missing.path, materialize.path);
     assert_ne!(uncached_missing.aterm, materialize.aterm);
 
+    let stale_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let mut stale_options = TreeWalkOptions::with_eval_cache_enabled(true);
     stale_options
         .set_path_literal_base(path_bytes(&root))
         .expect("path base configures");
     stale_options.set_persist_cache_root(&persist_root);
-    let stale = evaluate_effectful_derivation_surface(
+    let stale = evaluate_effectful_derivation_surface_with_cache(
         &ir,
         source,
         stale_options,
-        EvalCacheRuntime::enabled(),
+        stale_runtime.clone(),
     );
     assert_eq!(stale.path, uncached_missing.path);
     assert_eq!(stale.aterm, uncached_missing.aterm);
     assert_eq!(stale.trace, missing_trace);
     assert!(
+        stale.force_cache_misses > 0,
+        "stale pathExists observations should report at least one force-cache miss"
+    );
+    assert!(
         stale.thunks_forced > 0,
         "stale persistent observations should fall back to ordinary forcing"
     );
-    assert_persistent_force_cache_trace_log_contains(
+    let missing_trace_entry = assert_persistent_force_cache_trace_log_contains(
         &persist_root,
         &missing_trace,
         "stale-miss pathExists surface",
+    );
+    assert_eq!(
+        missing_trace_entry.0, present_trace_entry.0,
+        "stale pathExists recomputation should replace the same force-cache metadata key"
+    );
+    assert_ne!(
+        missing_trace_entry.1, present_trace_entry.1,
+        "stale pathExists recomputation should materialize a changed force-cache value"
+    );
+
+    let mut same_runtime_hit_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    same_runtime_hit_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    same_runtime_hit_options.set_persist_cache_root(&persist_root);
+    let same_runtime_hit = evaluate_effectful_derivation_surface_with_cache(
+        &ir,
+        source,
+        same_runtime_hit_options,
+        stale_runtime,
+    );
+    assert_eq!(same_runtime_hit.path, uncached_missing.path);
+    assert_eq!(same_runtime_hit.aterm, uncached_missing.aterm);
+    assert_eq!(same_runtime_hit.trace, missing_trace);
+    assert!(same_runtime_hit.cache_hits > 0);
+    assert!(same_runtime_hit.force_cache_hits > 0);
+    assert_eq!(same_runtime_hit.force_cache_misses, 0);
+
+    let mut fresh_runtime_hit_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    fresh_runtime_hit_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    fresh_runtime_hit_options.set_persist_cache_root(&persist_root);
+    let fresh_runtime_hit = evaluate_effectful_derivation_surface(
+        &ir,
+        source,
+        fresh_runtime_hit_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(fresh_runtime_hit.path, uncached_missing.path);
+    assert_eq!(fresh_runtime_hit.aterm, uncached_missing.aterm);
+    assert_eq!(fresh_runtime_hit.trace, missing_trace);
+    assert!(fresh_runtime_hit.cache_hits > 0);
+    assert!(fresh_runtime_hit.force_cache_hits > 0);
+    assert_eq!(fresh_runtime_hit.force_cache_misses, 0);
+    assert!(
+        fresh_runtime_hit
+            .persist_force_cache_hit_keys
+            .contains(&missing_trace_entry.0),
+        "fresh-runtime changed pathExists hit should load the changed force-cache metadata key"
     );
 
     let canaries =
@@ -2294,6 +2378,18 @@ fn persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces() {
         "stale-miss pathExists force-cache surface",
         &stale.path,
         &stale.aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "same-runtime post-recompute pathExists force-cache surface",
+        &same_runtime_hit.path,
+        &same_runtime_hit.aterm,
+        &canaries,
+    );
+    assert_drv_surface_canaries_absent(
+        "fresh-runtime post-recompute pathExists force-cache surface",
+        &fresh_runtime_hit.path,
+        &fresh_runtime_hit.aterm,
         &canaries,
     );
 

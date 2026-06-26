@@ -1698,8 +1698,9 @@ alone (`M-1`/`Q-A`).
       and with a fresh-runtime trace-verified persistent forced-value hit for a
       replayed `builtins.pathExists ./marker` branch inside `args`. It requires
       identical `.drv` paths and ATerm bytes across all runs, requires the
-      final run to report a force-cache hit, requires the materializing run to
-      persist the exact path-exists trace, and requires persistent-hit
+      final run to report a force-cache hit and load the expected force-cache
+      metadata key, requires the materializing run to persist the exact
+      path-exists trace, and requires persistent-hit
       revalidation to replay the path-exists fingerprint into the enclosing
       impure-input trace. It also scans those derivation surfaces for the
       exercised path-exists trace identity/observation hashes plus persisted
@@ -1744,8 +1745,9 @@ alone (`M-1`/`Q-A`).
       `builtins.readFile`, `builtins.readDir`, and `builtins.readFileType`
       values used inside derivation `args`. They require identical `.drv` paths
       and ATerm bytes across all runs, require final runs to report force-cache
-      hits, require materializing runs to persist the exact filesystem traces,
-      and require persistent-hit revalidation to replay the matching filesystem
+      hits and load the expected force-cache metadata keys, require
+      materializing runs to persist the exact filesystem traces, and require
+      persistent-hit revalidation to replay the matching filesystem
       fingerprints into the enclosing impure-input trace. They also
       scan those derivation surfaces for the exercised trace
       identity/observation hashes plus persisted force-cache node/value/trace
@@ -1794,21 +1796,25 @@ alone (`M-1`/`Q-A`).
       finally with the configured environment changed through the same
       persistent root. It requires same-env cached runs to match the
       cache-disabled `.drv` path, ATerm bytes, and `getEnv` fingerprint,
-      requires the persistent-hit run to report a force-cache hit, requires
-      the changed-env persistent run to miss and recompute the changed `getEnv`
-      fingerprint, requires materializing and changed-env persistent runs to
-      persist the exact `getEnv` traces, and requires the changed `.drv` path
-      and ATerm bytes to match a cache-disabled changed-env surface while
-      differing from the original surface. It also scans original/materialized/
-      hit/changed/stale derivation surfaces for the exercised `getEnv` trace
-      identity/observation hashes plus persisted force-cache node/value/trace
-      hashes in hex, raw bytes, and Nix base32. This samples persistent `getEnv`
-      hit selection and stale-input fallback inside one derivation input; it
-      does not prove dirty propagation
+      requires the persistent-hit run to report a force-cache hit and load the
+      expected force-cache metadata key, requires the changed-env persistent run
+      to miss and recompute the changed `getEnv` fingerprint, requires
+      materializing and changed-env persistent runs to persist exact `getEnv`
+      traces under the same force-cache metadata key with different materialized
+      value hashes, requires same-runtime and fresh-runtime changed-env
+      post-recompute runs to hit without force-cache misses and requires the
+      fresh-runtime run to load the changed force-cache metadata key, and
+      requires the changed `.drv` path and ATerm bytes to match a cache-disabled
+      changed-env surface while differing from the original surface. It also
+      scans original/materialized/hit/changed/stale/post-recompute derivation
+      surfaces for the exercised `getEnv` trace identity/observation hashes plus
+      persisted force-cache node/value/trace hashes in hex, raw bytes, and Nix
+      base32. This samples persistent `getEnv` hit selection and stale-input
+      fallback inside one derivation input; it does not prove dirty propagation
       beyond direct revalidation fallback, full cached-vs-uncached closure
       parity, the full leak invariant, derivationStrict-node SHA-256 early
-      cutoff, same-run post-recompute reuse behavior, lazy replay payloads, mmap
-      reads, GC/repack, or future value-memoization safety net (`R-10`/`S-14`).
+      cutoff, lazy replay payloads, mmap reads, GC/repack, or future
+      value-memoization safety net (`R-10`/`S-14`).
 - [x] Current stale effectful persistent force-value `.drv` surface parity
       canary: `persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces`
       materializes a trace-verified `builtins.pathExists ./marker`
@@ -1816,18 +1822,21 @@ alone (`M-1`/`Q-A`).
       evaluates through the same persistent cache root. It requires the stale
       persistent observation not to reuse the old marker-present payload,
       requires materializing and stale-miss runs to persist exact path-exists
-      traces, requires recomputation to replay the new path-exists fingerprint,
-      and requires the resulting `.drv` path and ATerm bytes to match a
-      cache-off marker-missing run while differing from the marker-present
-      materialized surface. It also scans original/materialized/missing/stale
+      traces under the same force-cache metadata key with different materialized
+      value hashes, requires recomputation to replay the new path-exists
+      fingerprint, requires same-runtime and fresh-runtime marker-missing
+      post-recompute runs to hit without force-cache misses and requires the
+      fresh-runtime run to load the changed force-cache metadata key, and
+      requires the resulting `.drv` path and ATerm bytes to match a cache-off
+      marker-missing run while differing from the marker-present materialized
+      surface. It also scans original/materialized/missing/stale/post-recompute
       surfaces for the exercised path-exists trace identity/observation hashes
       plus persisted force-cache node/value/trace hashes in hex, raw bytes, and
       Nix base32. This samples the current stale-input fallback inside a
       derivation input surface; full cached-vs-uncached closure parity, the
       full leak invariant, derivationStrict-node SHA-256 early cutoff, dirty
-      propagation beyond fallback, same-run post-recompute reuse behavior, lazy
-      replay payloads, mmap reads, GC/repack, and future value-memoization
-      safety net remain open (`S-14`).
+      propagation beyond fallback, lazy replay payloads, mmap reads, GC/repack,
+      and future value-memoization safety net remain open (`S-14`).
 - [x] Current uncacheable `currentTime` `.drv` surface canary:
       `persistent_current_time_force_cache_no_replay_preserves_drv_surfaces`
       evaluates a derivation attr path whose `args` depend on

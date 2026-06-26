@@ -548,7 +548,7 @@ fn persistent_get_env_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
     assert_eq!(materialize.cache_hits, 0);
     assert_eq!(materialize.force_cache_hits, 0);
     assert_eq!(materialize.force_cache_misses, 1);
-    assert_persistent_force_cache_trace_log_contains(
+    let expected_trace_entry = assert_persistent_force_cache_trace_log_contains(
         &persist_root,
         &expected_trace,
         "materializing getEnv surface",
@@ -565,6 +565,11 @@ fn persistent_get_env_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
     assert_eq!(hit.cache_hits, 1);
     assert_eq!(hit.force_cache_hits, 1);
     assert_eq!(hit.force_cache_misses, 0);
+    assert!(
+        hit.persist_force_cache_hit_keys
+            .contains(&expected_trace_entry.0),
+        "fresh-runtime getEnv hit should load the expected force-cache metadata key"
+    );
 
     let mut uncached_changed_options = TreeWalkOptions::new();
     uncached_changed_options.set_env_var(name.to_vec(), b"changed payload".to_vec());
@@ -581,14 +586,15 @@ fn persistent_get_env_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
     assert_ne!(uncached_changed.path, uncached.path);
     assert_ne!(uncached_changed.aterm, uncached.aterm);
 
+    let changed_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let mut changed_replay_options = TreeWalkOptions::with_eval_cache_enabled(true);
     changed_replay_options.set_env_var(name.to_vec(), b"changed payload".to_vec());
     changed_replay_options.set_persist_cache_root(&persist_root);
-    let changed_replay = evaluate_cached_derivation_surface(
+    let changed_replay = evaluate_cached_derivation_surface_with_cache(
         &ir,
         source,
         changed_replay_options,
-        EvalCacheRuntime::enabled(),
+        changed_runtime.clone(),
     );
     assert_eq!(changed_replay.path, uncached_changed.path);
     assert_eq!(changed_replay.aterm, uncached_changed.aterm);
@@ -600,10 +606,56 @@ fn persistent_get_env_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
         changed_replay.thunks_forced > 0,
         "stale persistent getEnv observations should fall back to ordinary forcing"
     );
-    assert_persistent_force_cache_trace_log_contains(
+    let changed_trace_entry = assert_persistent_force_cache_trace_log_contains(
         &persist_root,
         &changed_trace,
         "changed getEnv replay surface",
+    );
+    assert_eq!(
+        changed_trace_entry.0, expected_trace_entry.0,
+        "changed getEnv recomputation should replace the same force-cache metadata key"
+    );
+    assert_ne!(
+        changed_trace_entry.1, expected_trace_entry.1,
+        "changed getEnv recomputation should materialize a changed force-cache value"
+    );
+
+    let mut same_runtime_changed_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    same_runtime_changed_options.set_env_var(name.to_vec(), b"changed payload".to_vec());
+    same_runtime_changed_options.set_persist_cache_root(&persist_root);
+    let same_runtime_changed = evaluate_cached_derivation_surface_with_cache(
+        &ir,
+        source,
+        same_runtime_changed_options,
+        changed_runtime,
+    );
+    assert_eq!(same_runtime_changed.path, uncached_changed.path);
+    assert_eq!(same_runtime_changed.aterm, uncached_changed.aterm);
+    assert_eq!(same_runtime_changed.trace, changed_trace);
+    assert!(same_runtime_changed.cache_hits > 0);
+    assert!(same_runtime_changed.force_cache_hits > 0);
+    assert_eq!(same_runtime_changed.force_cache_misses, 0);
+
+    let mut fresh_runtime_changed_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    fresh_runtime_changed_options.set_env_var(name.to_vec(), b"changed payload".to_vec());
+    fresh_runtime_changed_options.set_persist_cache_root(&persist_root);
+    let fresh_runtime_changed = evaluate_cached_derivation_surface(
+        &ir,
+        source,
+        fresh_runtime_changed_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(fresh_runtime_changed.path, uncached_changed.path);
+    assert_eq!(fresh_runtime_changed.aterm, uncached_changed.aterm);
+    assert_eq!(fresh_runtime_changed.trace, changed_trace);
+    assert!(fresh_runtime_changed.cache_hits > 0);
+    assert!(fresh_runtime_changed.force_cache_hits > 0);
+    assert_eq!(fresh_runtime_changed.force_cache_misses, 0);
+    assert!(
+        fresh_runtime_changed
+            .persist_force_cache_hit_keys
+            .contains(&changed_trace_entry.0),
+        "fresh-runtime changed getEnv hit should load the changed force-cache metadata key"
     );
 
     let canaries =
@@ -624,6 +676,16 @@ fn persistent_get_env_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
     assert_derivation_surface_canaries_absent(
         "changed getEnv replay surface",
         &changed_replay,
+        &canaries,
+    );
+    assert_derivation_surface_canaries_absent(
+        "same-runtime changed getEnv hit surface",
+        &same_runtime_changed,
+        &canaries,
+    );
+    assert_derivation_surface_canaries_absent(
+        "fresh-runtime changed getEnv hit surface",
+        &fresh_runtime_changed,
         &canaries,
     );
 
