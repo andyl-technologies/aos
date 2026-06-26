@@ -166,7 +166,8 @@ mod entry {
 
     use wasm_bindgen::JsCast;
     use worker::{
-        Context, Env, Method, Request, Response, Result, ScheduleContext, ScheduledEvent,
+        durable_object, Context, DurableObject, Env, Method, Request, Response, Result,
+        ScheduleContext, ScheduledEvent, State,
     };
 
     use aos_hub_core::auth::jwt::JwtKeys;
@@ -190,6 +191,10 @@ mod entry {
     const HUB_SEAL_KEY: &str = "HUB_SEAL_KEY";
     /// The Wrangler `[vars]` entry holding the hub's externally-reachable URL.
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
+    /// Optional `[vars]` flag (`"1"`): route the request through the colocated
+    /// SQLite [`HubDb`](crate::hubdb) Durable Object instead of D1 (RFC-0004
+    /// ch.14 Phase E, "get off D1"). Off → the D1 system of record (default).
+    const HUB_SQLITE_DO: &str = "HUB_SQLITE_DO";
     /// Optional `[vars]` entry: the name of the deployment's default R2 bucket
     /// (the store unbound registries/caches push to). Baked by `worker deploy`
     /// so instance settings can show where the default storage lives; unset on
@@ -245,31 +250,20 @@ mod entry {
     /// Returns an error if a binding is missing, the `HUB_JWT_SECRET` or
     /// `HUB_SEAL_KEY` secret is absent or empty, or the rate-limiter table cannot
     /// be ensured.
+    /// Build the shared router/service/console over a **pre-built** `Database`,
+    /// independent of the backend.
+    ///
+    /// The `db` is constructed by the caller — the D1 [`D1Backend`](crate::d1backend)
+    /// in the `fetch` handler, or the colocated [`SqlDoBackend`](crate::sqldobackend)
+    /// inside the [`HubDb`](crate::hubdb) Durable Object (RFC-0004 ch.14 Phase E,
+    /// "get off D1"). Everything else (JWT, rate-limit bindings, surface, lease,
+    /// reindexer, KV) is built from `env`, so one router-builder serves both the
+    /// D1 read path and the colocated SQLite-in-DO system of record.
     async fn router_from(
         env: &Env,
         request_origin: &str,
-        session: &Rc<worker::D1DatabaseSession>,
-        // RFC-0004 ch.14 Phase A: the per-request span accumulator the read
-        // path's `Backend` records into (preview-only; see the `query-timing`
-        // feature). Threaded in rather than constructed here so the `fetch`
-        // handler can read the spans back after dispatch to emit `Server-Timing`.
-        #[cfg(feature = "query-timing")] timings: &aos_hub_core::backend::QueryTimings,
+        db: Arc<Database>,
     ) -> Result<(Router, Arc<RpcService>, ConsoleDeps)> {
-        // Every D1 backend this request builds — the read path, the rate limiter,
-        // and the publish lease — shares the one per-request session, so the whole
-        // request reads against a single consistency floor (and a publish's
-        // writes advance the same bookmark the response threads back). See the
-        // `fetch` handler and `crate::d1backend::open_session`.
-        let backend = crate::d1backend::D1Backend::new(Rc::clone(session));
-        // Wrap the read-path backend in the timing decorator when the preview's
-        // `query-timing` feature is on; otherwise attach the bare D1 backend.
-        #[cfg(feature = "query-timing")]
-        let db = Arc::new(Database::attach(Box::new(
-            aos_hub_core::backend::TimingBackend::new(backend, timings.clone()),
-        )));
-        #[cfg(not(feature = "query-timing"))]
-        let db = Arc::new(Database::attach(Box::new(backend)));
-
         let secret = env.secret(HUB_JWT_SECRET)?.to_string();
         if secret.is_empty() {
             return Err(worker::Error::RustError(format!(
@@ -575,30 +569,47 @@ mod entry {
             })
             .unwrap_or_default();
 
-        // Open one D1 read-replication session for the whole request, seeded by
-        // the client's prior bookmark (or a method-based constraint). Every D1
-        // backend the request builds shares it (see `router_from`), so the
-        // request reads against a single consistency floor and a publish's writes
-        // advance the same bookmark threaded back below.
+        // RFC-0004 ch.14 Phase E ("get off D1"): when the colocated SQLite system
+        // of record is enabled (`HUB_SQLITE_DO = "1"`), forward the whole request
+        // to the `HubDb` Durable Object. Its SQLite runs in the same thread as the
+        // handler, so the per-request D1 session cost (~120 ms) is gone — the
+        // request makes one hop to the DO's region, then all reads are local. The
+        // DO runs the *same* shared router (`router_from` over `SqlDoBackend`).
+        if env
+            .var(HUB_SQLITE_DO)
+            .map(|v| v.to_string() == "1")
+            .unwrap_or(false)
+        {
+            let stub = env
+                .durable_object(crate::handlers::bindings::HUB_DB)?
+                .id_from_name("hub")
+                .and_then(|id| id.get_stub())?;
+            return stub.fetch_with_request(req).await;
+        }
+
+        // Default (pre-Phase-E) path: the D1 system of record. Open one D1
+        // read-replication session for the whole request, seeded by the client's
+        // prior bookmark (or a method-based constraint), and build the `Database`
+        // over it; a publish's writes advance the same bookmark threaded back below.
         let session = crate::d1backend::open_session(
             &env.d1(crate::handlers::bindings::D1)?,
             &session_seed(&req),
         )
         .map_err(|err| worker::Error::RustError(format!("D1 session: {err:#}")))?;
 
-        // RFC-0004 ch.14 Phase A: open the per-request query-timing accumulator
-        // (preview-only) and hand it to the read-path backend, then read the
-        // spans back after dispatch to emit `Server-Timing`.
+        // RFC-0004 ch.14 Phase A: the per-request query-timing accumulator
+        // (preview-only) wraps the read-path backend; the spans are read back
+        // after dispatch to emit `Server-Timing`.
         #[cfg(feature = "query-timing")]
         let timings = aos_hub_core::backend::QueryTimings::new();
-        let (router, service, console_deps) = router_from(
-            &env,
-            &request_origin,
-            &session,
-            #[cfg(feature = "query-timing")]
-            &timings,
-        )
-        .await?;
+        let backend = crate::d1backend::D1Backend::new(Rc::clone(&session));
+        #[cfg(feature = "query-timing")]
+        let db = Arc::new(Database::attach(Box::new(
+            aos_hub_core::backend::TimingBackend::new(backend, timings.clone()),
+        )));
+        #[cfg(not(feature = "query-timing"))]
+        let db = Arc::new(Database::attach(Box::new(backend)));
+        let (router, service, console_deps) = router_from(&env, &request_origin, db).await?;
         let mut resp = crate::bridge::dispatch(router, &service, console_deps, req).await?;
 
         // Surface the per-statement D1 timings as a `Server-Timing` header so
@@ -887,5 +898,52 @@ mod entry {
         }
         batch.ack_all();
         Ok(())
+    }
+
+    /// The colocated-SQLite **system of record** Durable Object (RFC-0004 ch.14
+    /// Phase E, "get off D1").
+    ///
+    /// When `HUB_SQLITE_DO` is enabled, the `fetch` handler forwards every request
+    /// to this DO (a single global instance, `id_from_name("hub")`). The DO runs
+    /// the **same shared router** ([`router_from`]) over a
+    /// [`SqlDoBackend`](crate::sqldobackend) whose SQLite lives in the DO's own
+    /// thread — so the request makes one hop to the DO's region and then every
+    /// query is **local** (microseconds), eliminating the ~120 ms per-request D1
+    /// session cost that was the real latency floor. The schema is the shared
+    /// `MIGRATIONS`, applied to the DO's SQLite on first use (`ensure_migrated`).
+    #[durable_object]
+    pub struct HubDb {
+        state: State,
+        env: Env,
+    }
+
+    impl DurableObject for HubDb {
+        fn new(state: State, env: Env) -> Self {
+            HubDb { state, env }
+        }
+
+        async fn fetch(&self, req: Request) -> Result<Response> {
+            let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage().sql());
+            if let Err(err) = crate::tenantdb::ensure_migrated(&backend).await {
+                return Response::error(format!("hubdb migrate: {err:#}"), 500);
+            }
+            let db = Arc::new(Database::attach(Box::new(backend)));
+            let request_origin = req
+                .url()
+                .ok()
+                .map(|u| {
+                    let scheme = u.scheme();
+                    match (u.host_str(), u.port()) {
+                        (Some(host), Some(port)) => format!("{scheme}://{host}:{port}"),
+                        (Some(host), None) => format!("{scheme}://{host}"),
+                        (None, _) => String::new(),
+                    }
+                })
+                .unwrap_or_default();
+            // The DO runs the same shared router as the D1 path — single-sourced.
+            let (router, service, console_deps) =
+                router_from(&self.env, &request_origin, db).await?;
+            crate::bridge::dispatch(router, &service, console_deps, req).await
+        }
     }
 }

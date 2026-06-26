@@ -335,10 +335,14 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          name = \"COORDINATOR\"\n\
          class_name = \"CoordinatorObject\"\n\
          \n\
+         [[durable_objects.bindings]]\n\
+         name = \"HUB_DB\"\n\
+         class_name = \"HubDb\"\n\
+         \n\
          [[migrations]]\n\
          tag = \"v1\"\n\
          new_classes = [\"CoordinatorObject\"]\n\
-         new_sqlite_classes = [\"TenantDb\"]\n\
+         new_sqlite_classes = [\"TenantDb\", \"HubDb\"]\n\
          \n\
          [[ratelimits]]\n\
          name = \"RL_BURST5\"\n\

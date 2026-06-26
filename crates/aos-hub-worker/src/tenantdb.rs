@@ -111,7 +111,7 @@ pub struct SqlReply {
 /// A new DO's SQLite starts at `user_version = 0`; this applies every migration
 /// in order and stamps the count, so a recycled DO re-opening the same storage
 /// skips already-applied migrations. Idempotent across DO restarts.
-async fn ensure_migrated(backend: &SqlDoBackend) -> anyhow::Result<()> {
+pub(crate) async fn ensure_migrated(backend: &SqlDoBackend) -> anyhow::Result<()> {
     use aos_hub_core::backend::Backend as _;
     let rows = backend.query("PRAGMA user_version", &[]).await?;
     let applied = rows
