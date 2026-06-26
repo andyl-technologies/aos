@@ -42,7 +42,6 @@ use aos_hub_core::auth::seal::SecretSealer;
 use aos_hub_core::db::Database;
 use aos_hub_core::fetch::SurfaceProvider as _;
 
-use crate::d1backend::D1Backend;
 use crate::surface::{R2SurfaceProvider, R2SurfaceWriteProvider};
 
 /// Index every public registry from R2 into D1 via the shared core indexer.
@@ -62,11 +61,11 @@ use crate::surface::{R2SurfaceProvider, R2SurfaceWriteProvider};
 ///
 /// Returns an error only if the registry list cannot be read from D1.
 pub async fn index_all(
-    backend: D1Backend,
+    backend: Box<dyn aos_hub_core::backend::Backend>,
     bucket: Bucket,
     sealer: Arc<dyn SecretSealer>,
 ) -> Result<()> {
-    let db = Arc::new(Database::attach(Box::new(backend)));
+    let db = Arc::new(Database::attach(backend));
     let provider = R2SurfaceProvider::new(bucket, Arc::clone(&db), sealer);
 
     // The Worker serves only `public` registries (RFC-0004 multi-tenancy): the
@@ -115,11 +114,11 @@ pub async fn index_all(
 ///
 /// Returns an error only if the cache list cannot be read from D1.
 pub async fn rescan_all(
-    backend: D1Backend,
+    backend: Box<dyn aos_hub_core::backend::Backend>,
     bucket: Bucket,
     sealer: Arc<dyn SecretSealer>,
 ) -> Result<()> {
-    let db = Arc::new(Database::attach(Box::new(backend)));
+    let db = Arc::new(Database::attach(backend));
     let provider = R2SurfaceProvider::new(bucket, Arc::clone(&db), sealer);
 
     let caches = db.list_caches().await.context("listing caches")?;
@@ -173,12 +172,12 @@ pub async fn rescan_all(
 ///
 /// Returns an error only if the cache list cannot be read from D1.
 pub async fn gc_all(
-    backend: D1Backend,
+    backend: Box<dyn aos_hub_core::backend::Backend>,
     bucket: Bucket,
     now: i64,
     sealer: Arc<dyn SecretSealer>,
 ) -> Result<()> {
-    let db = Arc::new(Database::attach(Box::new(backend)));
+    let db = Arc::new(Database::attach(backend));
     let writers = R2SurfaceWriteProvider::new(bucket, Arc::clone(&db), sealer);
 
     let caches = db.list_caches().await.context("listing caches")?;
