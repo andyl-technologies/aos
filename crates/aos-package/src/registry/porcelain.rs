@@ -766,11 +766,14 @@ fn diff(dir: &Path, rest: &[&str]) -> Result<Output> {
     Ok(Output::ok_str(out))
 }
 
-/// `git log [--oneline] [-N] [--pretty=format:<fmt>] [-- <path>]`.
+/// `git log [--oneline] [-N] [--pretty=format:<fmt>|--format=<fmt>] [<rev>]
+/// [-- <path>]`.
 ///
-/// Supports the `--oneline` shorthand and the `%H %h %s %ct %x1f %x1e %n %%`
+/// Supports the `--oneline` shorthand and the `%H %h %s %B %ct %x1f %x1e %n %%`
 /// pretty placeholders that `apr` uses; output is the per-commit formatted
-/// records joined verbatim.
+/// records joined verbatim. When one or more `<rev>` arguments are given the
+/// walk is seeded from them instead of `HEAD`, and `--format=` is accepted as
+/// an alias for `--pretty=format:`.
 fn log(dir: &Path, rest: &[&str]) -> Result<Output> {
     let repo = open(dir)?;
     let limit = rest
@@ -781,16 +784,40 @@ fn log(dir: &Path, rest: &[&str]) -> Result<Output> {
         .position(|a| *a == "--")
         .and_then(|i| rest.get(i + 1))
         .copied();
+    // Revisions are the non-flag positionals before any `--` path separator.
+    let revs: Vec<&str> = match rest.iter().position(|a| *a == "--") {
+        Some(separator) => &rest[..separator],
+        None => rest,
+    }
+    .iter()
+    .copied()
+    .filter(|a| !a.starts_with('-'))
+    .collect();
     let format = rest
         .iter()
         .find_map(|a| a.strip_prefix("--pretty=format:"))
+        .or_else(|| rest.iter().find_map(|a| a.strip_prefix("--format=")))
         .map(ToString::to_string)
         // `--oneline` is shorthand for the abbreviated hash plus the subject.
         .unwrap_or_else(|| "%h %s".to_string());
 
     let mut walk = repo.revwalk().context("creating revwalk")?;
-    if walk.push_head().is_err() {
-        return Ok(Output::ok_str(""));
+    if revs.is_empty() {
+        if walk.push_head().is_err() {
+            return Ok(Output::ok_str(""));
+        }
+    } else {
+        for rev in revs {
+            let object = match repo.revparse_single(rev) {
+                Ok(object) => object,
+                Err(e) => return Ok(Output::fail(e.message().to_string())),
+            };
+            let commit = match object.peel_to_commit() {
+                Ok(commit) => commit,
+                Err(e) => return Ok(Output::fail(e.message().to_string())),
+            };
+            walk.push(commit.id()).context("seeding revwalk")?;
+        }
     }
     let mut out = String::new();
     let mut shown = 0;
@@ -828,6 +855,7 @@ fn format_commit(commit: &git2::Commit<'_>, format: &str) -> String {
             continue;
         }
         match chars.next() {
+            Some('B') => out.push_str(commit.message().ok().unwrap_or("")),
             Some('H') => out.push_str(&commit.id().to_string()),
             Some('h') => out.push_str(&short),
             Some('s') => out.push_str(commit.summary().ok().flatten().unwrap_or("")),
@@ -1340,5 +1368,64 @@ mod tests {
         assert!(out.success);
         let text = String::from_utf8(out.stdout).expect("utf8 output");
         assert_eq!(text, format!("{oid}\trefs/heads/stable\n"));
+    }
+
+    /// `git log -1 --format=%B <rev>` returns the *named* revision's full
+    /// message body, not HEAD's — the path `apr change` reads a draft's body
+    /// through. Regression for the libgit2 port, which only understood
+    /// `--pretty=format:` and always walked from HEAD, so an explicit rev plus
+    /// `--format=%B` silently degraded to `%h %s` of the tip commit.
+    #[test]
+    fn log_format_body_reads_named_revision() {
+        let tmp = TempDir::new().expect("tempdir");
+        let repo = git2::Repository::init(tmp.path()).expect("init");
+        let sig = git2::Signature::now("Test", "test@test").expect("signature");
+        let tree = repo
+            .find_tree(
+                repo.treebuilder(None)
+                    .expect("treebuilder")
+                    .write()
+                    .expect("write tree"),
+            )
+            .expect("tree");
+        // The older commit carries a multi-line body and is an ancestor of HEAD.
+        let first = repo
+            .commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                "first subject\n\nfirst body line\n",
+                &tree,
+                &[],
+            )
+            .expect("first commit");
+        let first_commit = repo.find_commit(first).expect("find first");
+        // HEAD advances past it with a different message.
+        repo.commit(
+            Some("refs/heads/main"),
+            &sig,
+            &sig,
+            "second subject\n\nsecond body line\n",
+            &tree,
+            &[&first_commit],
+        )
+        .expect("second commit");
+        repo.set_head("refs/heads/main").expect("set head");
+
+        let out = dispatch(
+            tmp.path(),
+            &["log", "-1", "--format=%B", &first.to_string()],
+        )
+        .expect("dispatch");
+        assert!(out.success);
+        let text = String::from_utf8(out.stdout).expect("utf8 output");
+        // The full raw body of the named commit (which `%s` would truncate to
+        // its subject), plus `log`'s trailing record-separator newline.
+        let body = first_commit.message().expect("message");
+        assert_eq!(text, format!("{body}\n"));
+        assert!(
+            !text.contains("second"),
+            "log must read the named rev, not HEAD: {text:?}"
+        );
     }
 }
