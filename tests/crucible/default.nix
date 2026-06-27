@@ -425,6 +425,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerEmitStep";
       taskIds = ["T-SCHED-19"];
     };
+    schedulerIcountCeiling = import ./phase3-scheduler-icount-ceiling.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerIcountCeiling";
+      taskIds = ["T-SCHED-20"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
