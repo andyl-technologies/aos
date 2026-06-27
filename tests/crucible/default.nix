@@ -125,6 +125,7 @@ in {
     simDouble = import ./phase1-sim-double.nix {inherit pkgs lib;};
     singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {inherit pkgs lib;};
     singleSchedulerBoundary = import ./phase1-single-scheduler-boundary.nix {inherit pkgs lib;};
+    spatialComponentAddressing = import ./phase1-spatial-component-addressing.nix {inherit pkgs lib;};
     spatialLayerOrthogonality = import ./phase1-spatial-layer-orthogonality.nix {inherit pkgs lib;};
     spatialLinkTransport = import ./phase1-spatial-link-transport.nix {inherit pkgs lib;};
     spatialLogicalTopology = import ./phase1-spatial-logical-topology.nix {inherit pkgs lib;};

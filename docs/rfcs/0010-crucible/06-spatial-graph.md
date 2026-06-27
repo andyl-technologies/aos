@@ -1007,10 +1007,21 @@ authority for its shape. The contract those files may rely on:
     `checks.crucible.phase1.spatialLayerOrthogonality` gate cover builder and
     serialized-form layer separation, component identity isolation, wrong-layer
     rejection, and static linting against boot-event/entrypoint folding APIs.
-- [ ] **T-SPAT-3** Implement independent BLAKE3 content-addressing for `World`,
+- [x] **T-SPAT-3** Implement independent BLAKE3 content-addressing for `World`,
   `Plan`, and `Properties`, and cross-reuse tests (one `World` across many defs; one
   `Plan`/`Properties` across many worlds). — satisfies [SPAT-3], [SPAT-5]; spec §2,
   §8.
+  - Completed by `crates/crucible/src/model.rs`: `World`, `Plan`, and
+    `Properties` each expose independent canonical bytes and BLAKE3 content
+    addresses in separate domains (`crucible.model.world.v1`,
+    `crucible.model.plan.v1`, and `crucible.model.properties.v1`). Scenario
+    identity composes those component refs plus seed material instead of folding
+    component material together. The focused
+    `spatial_components_have_independent_content_addresses_and_cross_reuse` test
+    and `checks.crucible.phase1.spatialComponentAddressing` gate cover exact
+    component-domain hashes, one `World` reused across multiple scenario defs,
+    one `Plan` and `Properties` bundle reused across compatible worlds, and
+    scenario identity sensitivity to changing each component.
 - [x] **T-SPAT-4** Implement `World = (nodes[], links[])` with unique `NodeId`s and
   canonical ordering; reject duplicate ids at build time. — satisfies [SPAT-6];
   spec §3.

@@ -672,6 +672,158 @@ mod tests {
     }
 
     #[test]
+    fn spatial_components_have_independent_content_addresses_and_cross_reuse() {
+        let seed = Seed::from_u64(0x0010_0003);
+        let world = world_from_nodes_and_links(
+            two_ready_nodes(),
+            vec![transport_link("a", "b", 10, 1, 0, Some(1_000_000))],
+        );
+        let compatible_world = world_from_nodes_and_links(
+            vec![
+                ready_node(
+                    "a",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 11 },
+                    },
+                ),
+                ready_node(
+                    "b",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 12 },
+                    },
+                ),
+            ],
+            vec![transport_link("a", "b", 20, 2, 0, Some(2_000_000))],
+        );
+        let plan_entry = PlanEntry::Activate {
+            at: VirtualTime { ticks: 3 },
+            tag: tag("split-a-b"),
+            fault: MembershipFault::Partition {
+                endpoint_a: node_id("b"),
+                endpoint_b: node_id("a"),
+                direction: PartitionDirection::Bidirectional,
+            },
+        };
+        let plan = Plan::from_entries_for_world(&world, vec![plan_entry.clone()])
+            .unwrap_or_else(|error| panic!("plan should be valid: {error}"));
+        let plan_reused = Plan::from_entries_for_world(&compatible_world, plan.entries().to_vec())
+            .unwrap_or_else(|error| panic!("plan should reuse across compatible world: {error}"));
+        let properties = Properties::from_assertions_for_world(
+            &world,
+            vec![assertion(
+                "a-alive",
+                "node a remains alive",
+                Property::Always {
+                    predicate: named_predicate("node_alive", &["a"]),
+                },
+            )],
+        )
+        .unwrap_or_else(|error| panic!("properties should be valid: {error}"));
+        let properties_reused = Properties::from_assertions_for_world(
+            &compatible_world,
+            properties.assertions().to_vec(),
+        )
+        .unwrap_or_else(|error| panic!("properties should reuse across compatible world: {error}"));
+
+        let world_material = String::from_utf8(world.canonical_bytes())
+            .unwrap_or_else(|error| panic!("world material should be utf8: {error}"));
+        let plan_material = String::from_utf8(plan.canonical_bytes())
+            .unwrap_or_else(|error| panic!("plan material should be utf8: {error}"));
+        let properties_material = String::from_utf8(properties.canonical_bytes())
+            .unwrap_or_else(|error| panic!("properties material should be utf8: {error}"));
+        assert_eq!(
+            world.id(),
+            ContentHash::from_canonical_material("crucible.model.world.v1", &world_material)
+        );
+        assert_eq!(
+            plan.content_hash(),
+            ContentHash::from_canonical_material("crucible.model.plan.v1", &plan_material)
+        );
+        assert_eq!(
+            properties.content_hash(),
+            ContentHash::from_canonical_material(
+                "crucible.model.properties.v1",
+                &properties_material
+            )
+        );
+        assert_ne!(world.id(), compatible_world.id());
+        assert_eq!(plan.content_hash(), plan_reused.content_hash());
+        assert_eq!(properties.content_hash(), properties_reused.content_hash());
+
+        let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)
+            .unwrap_or_else(|error| panic!("scenario form should be valid: {error}"));
+        let reused_world_form = ScenarioDefForm::from_components(
+            &world,
+            &Plan::empty(),
+            &Properties::empty(),
+            Seed::from_u64(0x0010_0004),
+        )
+        .unwrap_or_else(|error| panic!("same-world scenario should be valid: {error}"));
+        assert_eq!(form.world().id(), reused_world_form.world().id());
+        assert_ne!(form.id(), reused_world_form.id());
+
+        let reused_plan_properties_form = ScenarioDefForm::from_components(
+            &compatible_world,
+            &plan_reused,
+            &properties_reused,
+            seed,
+        )
+        .unwrap_or_else(|error| panic!("reused plan/properties scenario should be valid: {error}"));
+        assert_ne!(form.world().id(), reused_plan_properties_form.world().id());
+        assert_eq!(
+            form.plan().content_hash(),
+            reused_plan_properties_form.plan().content_hash()
+        );
+        assert_eq!(
+            form.properties().content_hash(),
+            reused_plan_properties_form.properties().content_hash()
+        );
+        assert_ne!(form.id(), reused_plan_properties_form.id());
+
+        let changed_plan = Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Activate {
+                at: VirtualTime { ticks: 3 },
+                tag: tag("crash-b"),
+                fault: MembershipFault::Crash {
+                    node: node_id("b"),
+                    restart: RestartPolicy::StayDown,
+                },
+            }],
+        )
+        .unwrap_or_else(|error| panic!("changed plan should be valid: {error}"));
+        let changed_plan_form =
+            ScenarioDefForm::from_components(&world, &changed_plan, &properties, seed)
+                .unwrap_or_else(|error| panic!("changed-plan scenario should be valid: {error}"));
+        assert_eq!(form.world().id(), changed_plan_form.world().id());
+        assert_ne!(form.plan().content_hash(), changed_plan.content_hash());
+        assert_ne!(form.id(), changed_plan_form.id());
+
+        let changed_properties = Properties::from_assertions_for_world(
+            &world,
+            vec![assertion(
+                "b-alive",
+                "node b remains alive",
+                Property::Always {
+                    predicate: named_predicate("node_alive", &["b"]),
+                },
+            )],
+        )
+        .unwrap_or_else(|error| panic!("changed properties should be valid: {error}"));
+        let changed_properties_form =
+            ScenarioDefForm::from_components(&world, &plan, &changed_properties, seed)
+                .unwrap_or_else(|error| {
+                    panic!("changed-properties scenario should be valid: {error}")
+                });
+        assert_eq!(form.world().id(), changed_properties_form.world().id());
+        assert_ne!(
+            form.properties().content_hash(),
+            changed_properties.content_hash()
+        );
+        assert_ne!(form.id(), changed_properties_form.id());
+    }
+
+    #[test]
     fn configuration_id_is_content_addressed_by_def_and_schedule() {
         let scenario =
             ScenarioDef::from_canonical_material("crucible.test.configuration", "node=a\nseed=1");
