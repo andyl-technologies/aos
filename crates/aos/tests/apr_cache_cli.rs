@@ -1365,7 +1365,14 @@ fn nix_command_env(aos_root: &Path) -> Vec<(&'static str, String)> {
 fn nix_store_dir(aos_root: &Path) -> PathBuf {
     aos_root
         .parent()
-        .map(|parent| parent.join("shared-store"))
+        .map(|parent| {
+            // Resolve symlinks in the store's parent: on macOS the temp dir
+            // lives under /var -> /private/var, and `nix-store` refuses a store
+            // whose parent path traverses a symlink.
+            std::fs::canonicalize(parent)
+                .unwrap_or_else(|_| parent.to_path_buf())
+                .join("shared-store")
+        })
         .unwrap_or_else(|| aos_root.join("store"))
 }
 
