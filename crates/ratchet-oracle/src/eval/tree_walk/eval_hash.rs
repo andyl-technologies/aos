@@ -2,6 +2,8 @@
 
 use super::*;
 
+type SplitConvertHashTypedInput<'a> = (HashStringAlgorithm, ConvertHashInputFormat, &'a [u8]);
+
 impl TreeWalk {
     pub(super) fn force_replace_string(
         &mut self,
@@ -669,21 +671,21 @@ impl TreeWalk {
         if let Some((algorithm, input_format, payload)) =
             Self::split_convert_hash_typed_input(argument, argument_span, hash)?
         {
-            if let Some(expected) = expected_algorithm {
-                if algorithm != expected {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::HashAlgorithmMismatch {
-                            id: argument,
-                            hash: Self::copy_bytes_for_node(argument, argument_span, hash)?,
-                            expected: Self::copy_bytes_for_node(
-                                argument,
-                                argument_span,
-                                expected.name(),
-                            )?,
-                        },
-                        argument_span,
-                    ));
-                }
+            if let Some(expected) = expected_algorithm
+                && algorithm != expected
+            {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::HashAlgorithmMismatch {
+                        id: argument,
+                        hash: Self::copy_bytes_for_node(argument, argument_span, hash)?,
+                        expected: Self::copy_bytes_for_node(
+                            argument,
+                            argument_span,
+                            expected.name(),
+                        )?,
+                    },
+                    argument_span,
+                ));
             }
 
             let digest = match input_format {
@@ -714,7 +716,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         hash: &[u8],
-    ) -> Result<Option<(HashStringAlgorithm, ConvertHashInputFormat, &[u8])>, TreeWalkError> {
+    ) -> Result<Option<SplitConvertHashTypedInput<'_>>, TreeWalkError> {
         let sri_separator = hash.iter().position(|byte| *byte == b'-');
         let typed_separator = hash.iter().position(|byte| *byte == b':');
         let Some((separator, input_format)) = (match (sri_separator, typed_separator) {

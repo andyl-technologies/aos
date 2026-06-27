@@ -795,9 +795,7 @@ impl TreeWalk {
         let decimal_at = exponent.saturating_add(1);
         if decimal_at <= 0 {
             out.extend_from_slice(b"0.");
-            for _ in decimal_at..0 {
-                out.push(b'0');
-            }
+            out.resize(out.len() + decimal_at.unsigned_abs() as usize, b'0');
             out.extend_from_slice(&digits);
         } else {
             let decimal_at = usize::try_from(decimal_at).unwrap_or(usize::MAX);

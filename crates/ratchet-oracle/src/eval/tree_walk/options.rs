@@ -962,11 +962,11 @@ pub(crate) fn search_path_suffix<'a>(prefix: &[u8], lookup: &'a [u8]) -> Option<
         .and_then(|suffix| suffix.strip_prefix(b"/"))
 }
 
-pub(crate) fn search_path_literal_lookup<'a>(
+pub(crate) fn search_path_literal_lookup(
     id: IrId,
     span: Span,
-    literal: &'a [u8],
-) -> Result<&'a [u8], TreeWalkError> {
+    literal: &[u8],
+) -> Result<&[u8], TreeWalkError> {
     literal
         .strip_prefix(b"<")
         .and_then(|literal| literal.strip_suffix(b">"))

@@ -640,15 +640,15 @@ impl TreeWalk {
                 Self::default_forge_host(input_type)
                     .is_none_or(|default_host| host != default_host.as_bytes())
             });
-            if let Some(host) = host {
-                if !Self::is_forge_host(host) {
-                    return Err(Self::fetch_tree_error(
-                        id,
-                        span,
-                        host,
-                        "fetchTree forge host is invalid",
-                    ));
-                }
+            if let Some(host) = host
+                && !Self::is_forge_host(host)
+            {
+                return Err(Self::fetch_tree_error(
+                    id,
+                    span,
+                    host,
+                    "fetchTree forge host is invalid",
+                ));
             }
             let rev = self.resolve_fetch_tree_forge_ref(
                 id,
@@ -696,15 +696,15 @@ impl TreeWalk {
             Self::default_forge_host(input_type)
                 .is_none_or(|default_host| host != default_host.as_bytes())
         });
-        if let Some(host) = host {
-            if !Self::is_forge_host(host) {
-                return Err(Self::fetch_tree_error(
-                    id,
-                    span,
-                    host,
-                    "fetchTree forge host is invalid",
-                ));
-            }
+        if let Some(host) = host
+            && !Self::is_forge_host(host)
+        {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                host,
+                "fetchTree forge host is invalid",
+            ));
         }
         let canonical_uri = self.fetch_tree_forge_canonical_uri(id, span, input_type, attrs)?;
         let archive_url =

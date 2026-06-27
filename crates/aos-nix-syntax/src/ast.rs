@@ -227,9 +227,10 @@ pub enum NodeKind {
 }
 
 /// A compact payload for an AST node.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum NodeData {
     /// The node carries no payload.
+    #[default]
     None,
     /// The node carries an integer literal.
     Int(i64),
@@ -355,12 +356,6 @@ pub enum NodeData {
         /// The resolver side-table id of the innermost-first `with` chain.
         chain: u32,
     },
-}
-
-impl Default for NodeData {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// A binary operator in the AST.

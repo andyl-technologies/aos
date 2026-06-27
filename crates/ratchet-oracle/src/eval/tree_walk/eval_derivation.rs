@@ -237,17 +237,13 @@ impl TreeWalk {
             if ignore_nulls && value.tag() == ValueTag::Null {
                 continue;
             }
-            if key == CONTENT_ADDRESSED_ATTR {
-                if self.expect_bool(id, value, span)? {
-                    content_addressed = true;
-                    continue;
-                }
+            if key == CONTENT_ADDRESSED_ATTR && self.expect_bool(id, value, span)? {
+                content_addressed = true;
+                continue;
             }
-            if key == IMPURE_ATTR {
-                if self.expect_bool(id, value, span)? {
-                    impure = true;
-                    continue;
-                }
+            if key == IMPURE_ATTR && self.expect_bool(id, value, span)? {
+                impure = true;
+                continue;
             }
 
             if key == ARGS_ATTR {
@@ -585,20 +581,18 @@ impl TreeWalk {
             self.derivation_aterm_bytes_with_input_hashes(derivation, &input_hashes.hashes);
         if let Some((cached, persistent_hit, identity, free_var_value_hashes)) =
             self.lookup_static_derivation_output_paths_for_current_node(id, &pre_output_aterm)
-        {
-            if let Some(known_hash) =
+            && let Some(known_hash) =
                 self.apply_static_derivation_output_paths_from_cache(id, name, derivation, &cached)
-            {
-                if persistent_hit {
-                    self.observe_persist_static_derivation_output_paths_runtime_hit(
-                        identity,
-                        &free_var_value_hashes,
-                        &pre_output_aterm,
-                        cached,
-                    );
-                }
-                return Ok(known_hash);
+        {
+            if persistent_hit {
+                self.observe_persist_static_derivation_output_paths_runtime_hit(
+                    identity,
+                    &free_var_value_hashes,
+                    &pre_output_aterm,
+                    cached,
+                );
             }
+            return Ok(known_hash);
         }
 
         let hash =
@@ -847,9 +841,7 @@ impl TreeWalk {
 
         for (output_name, path) in output_paths {
             let env_value = self.store_path_absolute_bytes(&path).into();
-            let Some(output) = derivation.outputs.get_mut(&output_name) else {
-                return None;
-            };
+            let output = derivation.outputs.get_mut(&output_name)?;
             if output.path.is_some() {
                 tracing::warn!(
                     target: "aos_nix::cache",

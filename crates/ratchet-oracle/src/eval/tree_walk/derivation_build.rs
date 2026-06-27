@@ -2,6 +2,12 @@
 
 use super::*;
 
+type DerivationOutputsListValue = (
+    BTreeMap<String, nix_compat::derivation::Output>,
+    Vec<String>,
+    StringContext,
+);
+
 impl TreeWalk {
     pub(super) fn derivation_outputs_list_value(
         &mut self,
@@ -10,14 +16,7 @@ impl TreeWalk {
         value_id: IrId,
         value_span: Span,
         value: Value,
-    ) -> Result<
-        (
-            BTreeMap<String, nix_compat::derivation::Output>,
-            Vec<String>,
-            StringContext,
-        ),
-        TreeWalkError,
-    > {
+    ) -> Result<DerivationOutputsListValue, TreeWalkError> {
         if value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {

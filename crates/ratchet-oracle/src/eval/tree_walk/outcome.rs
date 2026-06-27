@@ -4,6 +4,9 @@ use super::*;
 use crate::cache::ImpureInputTraceSource;
 use crate::compile::EffectClass;
 
+type IfdRealizerCallback =
+    dyn for<'a> Fn(IfdRealization<'a>) -> Result<(), IfdRealizationError> + Send + Sync;
+
 /// A tree-walk evaluation result with its owning evaluator heap.
 pub struct EvalOutcome {
     pub(crate) value: Value,
@@ -504,8 +507,7 @@ impl fmt::Display for IfdErrorDetail {
 /// Callback used to realize derivation outputs at IFD boundaries.
 #[derive(Clone)]
 pub struct IfdRealizer {
-    realize:
-        Arc<dyn for<'a> Fn(IfdRealization<'a>) -> Result<(), IfdRealizationError> + Send + Sync>,
+    realize: Arc<IfdRealizerCallback>,
 }
 
 impl IfdRealizer {

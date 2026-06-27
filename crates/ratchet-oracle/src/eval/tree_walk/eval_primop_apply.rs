@@ -405,7 +405,7 @@ impl TreeWalk {
         self.enter_call(id, span)?;
         let impure_trace_cursor = memoization_admitted.then(|| self.impure_input_trace_cursor());
         let thunks_forced_before = self.stats.thunks_forced;
-        let result = (|| builtin.apply(self, BuiltinCall::new(id, span, primop.symbol()), &args))();
+        let result = builtin.apply(self, BuiltinCall::new(id, span, primop.symbol()), &args);
         self.leave_call();
         let value = result?;
         if let Some(subject) = &cache_subject {

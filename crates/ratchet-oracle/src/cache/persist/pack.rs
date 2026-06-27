@@ -6,8 +6,8 @@
 use super::*;
 
 use ratchet_cache::blob_pack::{
-    BlobPackAppendError, BlobPackAppender, BlobPackFormatError, BlobPackHash, BlobPackLocation,
-    BlobPackPayloadWindow, BlobPackReadError, BlobPackReader, BlobPackRecord,
+    BLOB_PACK_HEADER_LEN, BlobPackAppendError, BlobPackAppender, BlobPackFormatError, BlobPackHash,
+    BlobPackLocation, BlobPackPayloadWindow, BlobPackReadError, BlobPackReader, BlobPackRecord,
     BlobPackRecordRelocation, BlobPackRewriteError, BlobPackTrimError,
 };
 
@@ -342,6 +342,16 @@ impl PersistBlobPack {
     pub fn len(&self) -> Result<u64, PersistBlobPackError> {
         let reader = open_engine_blob_pack_reader(&self.path)?;
         reader.len().map_err(engine_read_error_to_persist)
+    }
+
+    /// Returns whether the packfile has no blob records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
+    /// inspected, or if its header is malformed.
+    pub fn is_empty(&self) -> Result<bool, PersistBlobPackError> {
+        Ok(self.len()? == BLOB_PACK_HEADER_LEN as u64)
     }
 
     /// Returns all verified blob records in packfile order.

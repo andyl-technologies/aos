@@ -218,18 +218,18 @@ impl TreeWalk {
         expected: Option<[u8; 32]>,
         actual: &[u8; 32],
     ) -> Result<(), TreeWalkError> {
-        if let Some(expected) = expected {
-            if &expected != actual {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::FetchTreeHashMismatch {
-                        id,
-                        input: input.to_vec(),
-                        expected: expected.to_vec(),
-                        actual: actual.to_vec(),
-                    },
-                    span,
-                ));
-            }
+        if let Some(expected) = expected
+            && &expected != actual
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTreeHashMismatch {
+                    id,
+                    input: input.to_vec(),
+                    expected: expected.to_vec(),
+                    actual: actual.to_vec(),
+                },
+                span,
+            ));
         }
         Ok(())
     }
@@ -241,18 +241,18 @@ impl TreeWalk {
         expected: Option<i64>,
         actual: i64,
     ) -> Result<(), TreeWalkError> {
-        if let Some(expected) = expected {
-            if expected != actual {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::FetchTreeLastModifiedMismatch {
-                        id,
-                        input: input.to_vec(),
-                        expected,
-                        actual,
-                    },
-                    span,
-                ));
-            }
+        if let Some(expected) = expected
+            && expected != actual
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTreeLastModifiedMismatch {
+                    id,
+                    input: input.to_vec(),
+                    expected,
+                    actual,
+                },
+                span,
+            ));
         }
         Ok(())
     }
@@ -848,10 +848,10 @@ impl TreeWalk {
             }
         }
 
-        if let Some(FlakeRefAttrValue::String(reference)) = attrs.get(REF_ATTR) {
-            if Self::is_bad_git_ref(reference) {
-                return Err(Self::flake_ref_error(id, span, input, "invalid Git ref"));
-            }
+        if let Some(FlakeRefAttrValue::String(reference)) = attrs.get(REF_ATTR)
+            && Self::is_bad_git_ref(reference)
+        {
+            return Err(Self::flake_ref_error(id, span, input, "invalid Git ref"));
         }
 
         let url = Self::flake_ref_url_with_scheme_and_query(
@@ -939,22 +939,20 @@ impl TreeWalk {
         if let Some(rev) = url_query.remove(REV_ATTR) {
             attrs.insert(REV_ATTR.to_vec(), FlakeRefAttrValue::String(rev));
         }
-        if let Some(rev_count) = url_query.remove(REV_COUNT_ATTR) {
-            if let Ok(rev_count) =
+        if let Some(rev_count) = url_query.remove(REV_COUNT_ATTR)
+            && let Ok(rev_count) =
                 Self::parse_flake_ref_u64(id, span, input, &rev_count, REV_COUNT_ATTR)
-            {
-                attrs.insert(REV_COUNT_ATTR.to_vec(), FlakeRefAttrValue::Int(rev_count));
-            }
+        {
+            attrs.insert(REV_COUNT_ATTR.to_vec(), FlakeRefAttrValue::Int(rev_count));
         }
-        if let Some(last_modified) = url_query.remove(LAST_MODIFIED_ATTR) {
-            if let Ok(last_modified) =
+        if let Some(last_modified) = url_query.remove(LAST_MODIFIED_ATTR)
+            && let Ok(last_modified) =
                 Self::parse_flake_ref_u64(id, span, input, &last_modified, LAST_MODIFIED_ATTR)
-            {
-                attrs.insert(
-                    LAST_MODIFIED_ATTR.to_vec(),
-                    FlakeRefAttrValue::Int(last_modified),
-                );
-            }
+        {
+            attrs.insert(
+                LAST_MODIFIED_ATTR.to_vec(),
+                FlakeRefAttrValue::Int(last_modified),
+            );
         }
         for attr in [TYPE_ATTR, URL_ATTR, NAME_ATTR, UNPACK_ATTR] {
             url_query.remove(attr);

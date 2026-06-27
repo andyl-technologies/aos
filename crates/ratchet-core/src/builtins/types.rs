@@ -555,6 +555,7 @@ pub struct Builtin {
 
 impl Builtin {
     /// Creates a builtin declaration.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) const fn new(
         kind: BuiltinKind,
         name: &'static [u8],
@@ -739,6 +740,11 @@ impl BuiltinRegistry {
     /// Returns the number of builtin declarations.
     pub const fn len(&self) -> usize {
         self.declarations.len()
+    }
+
+    /// Returns whether the registry has no builtin declarations.
+    pub const fn is_empty(&self) -> bool {
+        self.declarations.is_empty()
     }
 
     /// Returns an iterator over builtin declarations.

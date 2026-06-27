@@ -565,16 +565,16 @@ impl TreeWalk {
             }
             names.push(name);
         }
-        if let Some(alias) = alias {
-            if self.symbols.resolve(alias).is_none() {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::InvalidSymbol {
-                        id: pattern,
-                        symbol: alias,
-                    },
-                    pattern_node.span,
-                ));
-            }
+        if let Some(alias) = alias
+            && self.symbols.resolve(alias).is_none()
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidSymbol {
+                    id: pattern,
+                    symbol: alias,
+                },
+                pattern_node.span,
+            ));
         }
         let alias_slot = alias.filter(|alias| !names.contains(alias));
         let pattern_slots = names.len() + usize::from(alias_slot.is_some());

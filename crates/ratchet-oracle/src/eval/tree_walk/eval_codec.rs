@@ -544,13 +544,13 @@ impl TreeWalk {
         argument_span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        let string = self.to_string_value(id, span, argument, argument_span, value)?;
+        let string = self.coerce_to_string_value(id, span, argument, argument_span, value)?;
         self.heap
             .alloc_string(string)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
-    pub(super) fn to_string_value(
+    pub(super) fn coerce_to_string_value(
         &mut self,
         id: IrId,
         span: Span,

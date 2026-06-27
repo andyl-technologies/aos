@@ -63,14 +63,14 @@ impl TreeWalk {
                 attrs_id,
                 attrs_value,
             )?;
-            return self.to_string_value(id, span, attrs_id, attrs_span, value);
+            return self.coerce_to_string_value(id, span, attrs_id, attrs_span, value);
         }
 
         if let Some(out_path) =
             self.attr_value_by_name(attrs_id, attrs_value, OUT_PATH_ATTR, attrs_span)?
         {
             let value = self.force_value(attrs_id, attrs_span, out_path)?;
-            return self.to_string_value(id, span, attrs_id, attrs_span, value);
+            return self.coerce_to_string_value(id, span, attrs_id, attrs_span, value);
         }
 
         Err(TreeWalkError::new(
@@ -218,18 +218,18 @@ impl TreeWalk {
         } else {
             self.source_path_flat_sha256(id, span, source_path)?
         };
-        if let Some(expected) = expected_sha256 {
-            if expected != digest.as_slice() {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::SourcePathHashMismatch {
-                        id,
-                        path: bytes.to_vec(),
-                        expected: expected.to_vec(),
-                        actual: digest.to_vec(),
-                    },
-                    span,
-                ));
-            }
+        if let Some(expected) = expected_sha256
+            && expected != digest.as_slice()
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::SourcePathHashMismatch {
+                    id,
+                    path: bytes.to_vec(),
+                    expected: expected.to_vec(),
+                    actual: digest.to_vec(),
+                },
+                span,
+            ));
         }
         let store_path = if recursive {
             self.store_path_bytes_from_fingerprint_parts(id, span, bytes, b"source", name, &digest)?

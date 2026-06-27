@@ -337,13 +337,10 @@ impl TreeWalk {
     }
 
     fn error_source_for_current_module(&self) -> Option<EvalErrorSource> {
-        let Some(source) = self
+        let source = self
             .modules
             .get(self.current_module.index())
-            .and_then(|module| module.source.as_ref())
-        else {
-            return None;
-        };
+            .and_then(|module| module.source.as_ref())?;
         Some(EvalErrorSource::new(
             source.name.clone(),
             source.bytes.clone(),
@@ -557,10 +554,9 @@ impl TreeWalk {
                     &subject,
                     &payload,
                     materialization_cost_observation,
-                ) {
-                    if !self.record_persist_forced_expression_pure_trace(&subject, value_hash) {
-                        self.clear_persist_forced_expression_payload(&subject);
-                    }
+                ) && !self.record_persist_forced_expression_pure_trace(&subject, value_hash)
+                {
+                    self.clear_persist_forced_expression_payload(&subject);
                 }
             }
             Ok(ForcePayloadPersistenceAction::MaterializeWithTrace { early_cutoff }) => {
@@ -571,10 +567,9 @@ impl TreeWalk {
                     &subject,
                     &payload,
                     materialization_cost_observation,
-                ) {
-                    if !self.record_persist_forced_expression_trace(&subject, value_hash, &trace) {
-                        self.clear_persist_forced_expression_payload(&subject);
-                    }
+                ) && !self.record_persist_forced_expression_trace(&subject, value_hash, &trace)
+                {
+                    self.clear_persist_forced_expression_payload(&subject);
                 }
             }
             Ok(ForcePayloadPersistenceAction::Clear) => {
@@ -635,9 +630,7 @@ impl TreeWalk {
             self.clear_persist_forced_expression_payload(subject);
             return None;
         }
-        let Some(identity) = subject.metadata_identity else {
-            return None;
-        };
+        let identity = subject.metadata_identity?;
         self.open_persist_eval_cache();
         let Some(persist_cache) = &self.persist_cache else {
             return None;
@@ -777,7 +770,7 @@ impl TreeWalk {
             identity,
             subject.free_var_value_hashes.iter().copied(),
         );
-        match persist_cache.record_node_trace(key, value_hash, &payload) {
+        match persist_cache.record_node_trace(key, value_hash, payload) {
             Ok(()) => true,
             Err(error) => {
                 tracing::warn!(
@@ -1214,10 +1207,9 @@ impl TreeWalk {
         };
         drop(cache);
         let mut decision = observed_decision.unwrap_or(MemoizationDecision::Admit);
-        if subject.memoization_admission.admits_on_first_demand() {
-            decision = MemoizationDecision::Admit;
-        } else if decision == MemoizationDecision::Bypass
-            && self.force_cache_has_prior_persistent_demand(subject)
+        if subject.memoization_admission.admits_on_first_demand()
+            || (decision == MemoizationDecision::Bypass
+                && self.force_cache_has_prior_persistent_demand(subject))
         {
             decision = MemoizationDecision::Admit;
         }
@@ -1260,12 +1252,8 @@ impl TreeWalk {
         &mut self,
         subject: Option<ForceCacheSubject>,
     ) -> Option<Value> {
-        let Some(subject) = subject else {
-            return None;
-        };
-        let Some(identity) = subject.lookup_identity else {
-            return None;
-        };
+        let subject = subject?;
+        let identity = subject.lookup_identity?;
         let mut revalidator = TreeWalkImpureInputRevalidator::new(&self.options);
 
         let Ok(mut cache) = self.eval_cache.lock() else {
@@ -1347,9 +1335,7 @@ impl TreeWalk {
         if !self.options.eval_cache_enabled() {
             return None;
         }
-        let Some(identity) = subject.metadata_identity else {
-            return None;
-        };
+        let identity = subject.metadata_identity?;
         self.open_persist_eval_cache();
         let persist_cache = self.persist_cache.as_ref()?;
         let key = PersistNodeMetadataKey::for_expression(
@@ -1914,7 +1900,7 @@ impl TreeWalk {
                 if string.has_context() {
                     Self::update_force_capture_string_context(&mut hasher, string.context())?;
                 }
-                return Some(DurableBlake3Hash::from_hasher(hasher));
+                Some(DurableBlake3Hash::from_hasher(hasher))
             }
             ValueTag::Path => {
                 let path = self.heap.get_path(value).ok()?;
@@ -1925,14 +1911,14 @@ impl TreeWalk {
                 if path.has_context() {
                     Self::update_force_capture_string_context(&mut hasher, path.context())?;
                 }
-                return Some(DurableBlake3Hash::from_hasher(hasher));
+                Some(DurableBlake3Hash::from_hasher(hasher))
             }
             ValueTag::List | ValueTag::Attrs => {
                 let payload = self.force_cache_payload_for_value(value)?;
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
                 self.update_force_capture_composite_payload_hash(&mut hasher, &payload)?;
-                return Some(DurableBlake3Hash::from_hasher(hasher));
+                Some(DurableBlake3Hash::from_hasher(hasher))
             }
             ValueTag::Thunk => {
                 let cached = {
@@ -1948,9 +1934,9 @@ impl TreeWalk {
                 if cached.is_thunk() {
                     return None;
                 }
-                return self.force_cache_free_var_value_hash(cached);
+                self.force_cache_free_var_value_hash(cached)
             }
-            _ => return None,
+            _ => None,
         }
     }
 
@@ -2060,9 +2046,7 @@ impl TreeWalk {
             if !visited.insert(id.as_u32()) {
                 continue;
             }
-            let Some(node) = ir.arena.node(id) else {
-                return None;
-            };
+            let node = ir.arena.node(id)?;
             match node.data {
                 IrData::Local { slot } => {
                     let frame_index = captured_frame_count.checked_sub(1)?;
@@ -3129,11 +3113,10 @@ impl TreeWalk {
         if name == b"builtins" {
             return self.eval_builtins_attrset(id, node.span);
         }
-        if is_unshadowable_global_name(name) {
-            if let Some(builtin) = lookup_builtin(name).filter(|builtin| builtin.is_available(self))
-            {
-                return self.eval_builtin_attrset_value(id, node.span, symbol, builtin);
-            }
+        if is_unshadowable_global_name(name)
+            && let Some(builtin) = lookup_builtin(name).filter(|builtin| builtin.is_available(self))
+        {
+            return self.eval_builtin_attrset_value(id, node.span, symbol, builtin);
         }
         Err(TreeWalkError::new(
             TreeWalkErrorKind::UnresolvedGlobalVar { id, symbol },

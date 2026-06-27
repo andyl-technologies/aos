@@ -275,8 +275,9 @@ impl MaterializationCostObservation {
     /// Returns KiB-rounded payload cost units, with zero-byte payloads costing one unit.
     pub const fn persistent_payload_cost_units(self) -> u64 {
         let whole_units = self.persistent_payload_bytes / Self::PERSISTENT_PAYLOAD_COST_UNIT_BYTES;
-        let has_partial_unit =
-            self.persistent_payload_bytes % Self::PERSISTENT_PAYLOAD_COST_UNIT_BYTES != 0;
+        let has_partial_unit = !self
+            .persistent_payload_bytes
+            .is_multiple_of(Self::PERSISTENT_PAYLOAD_COST_UNIT_BYTES);
         let units = whole_units.saturating_add(has_partial_unit as u64);
         if units == 0 { 1 } else { units }
     }

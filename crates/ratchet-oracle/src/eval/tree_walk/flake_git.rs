@@ -679,7 +679,7 @@ impl TreeWalk {
         allowed: &[&[u8]],
     ) -> Result<(), TreeWalkError> {
         for key in attrs.keys() {
-            if !allowed.iter().any(|allowed| *allowed == key.as_slice()) {
+            if !allowed.contains(&key.as_slice()) {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::UnsupportedFlakeRefAttr {
                         id,

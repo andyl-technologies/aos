@@ -258,6 +258,7 @@ enum FindFileCacheEntry {
     Miss,
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum FindFileLookupOrigin {
     AmbientSearchPath,
@@ -374,20 +375,15 @@ impl Default for TreeWalkOptions {
 }
 
 /// Filesystem and impurity policy used by the tree-walk evaluator.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EvalMode {
     /// Allows evaluator-time filesystem access without an allow-list.
+    #[default]
     Impure,
     /// Restricts evaluator-time filesystem access to explicitly allowed paths.
     Restricted,
     /// Models pure evaluation by allowing only explicitly allowed paths.
     Pure,
-}
-
-impl Default for EvalMode {
-    fn default() -> Self {
-        Self::Impure
-    }
 }
 
 /// A configured entry in the Nix search path used by `<...>` and `findFile`.
@@ -428,17 +424,12 @@ impl NixSearchPathEntry {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum EvalStderr {
+    #[default]
     Process,
     #[cfg(test)]
     Buffer(Vec<u8>),
-}
-
-impl Default for EvalStderr {
-    fn default() -> Self {
-        Self::Process
-    }
 }
 
 impl EvalStderr {

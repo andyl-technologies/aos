@@ -24,7 +24,7 @@ impl TreeWalk {
                     span,
                 )
             })?;
-            if !allowed.iter().any(|allowed| *allowed == key) {
+            if !allowed.contains(&key) {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::UnsupportedFetchTreeAttr {
                         id,

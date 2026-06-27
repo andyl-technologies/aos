@@ -672,18 +672,18 @@ impl TreeWalk {
 
         let contents = self.fetchurl_bytes(argument, argument_span, &args.url, &parsed)?;
         let digest = Self::sha256_array(&contents);
-        if let Some(expected) = args.expected_sha256 {
-            if expected != digest {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::FetchUrlHashMismatch {
-                        id: argument,
-                        url: args.url,
-                        expected: expected.to_vec(),
-                        actual: digest.to_vec(),
-                    },
-                    argument_span,
-                ));
-            }
+        if let Some(expected) = args.expected_sha256
+            && expected != digest
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchUrlHashMismatch {
+                    id: argument,
+                    url: args.url,
+                    expected: expected.to_vec(),
+                    actual: digest.to_vec(),
+                },
+                argument_span,
+            ));
         }
 
         let path = match expected_path {

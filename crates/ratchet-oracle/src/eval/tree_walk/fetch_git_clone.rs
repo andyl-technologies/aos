@@ -435,10 +435,10 @@ impl TreeWalk {
 
     pub(super) fn fetch_git_local_worktree_path(url: &[u8]) -> Option<PathBuf> {
         let text = std::str::from_utf8(url).ok()?;
-        if let Ok(parsed) = Url::parse(text) {
-            if parsed.scheme() == "file" {
-                return parsed.to_file_path().ok();
-            }
+        if let Ok(parsed) = Url::parse(text)
+            && parsed.scheme() == "file"
+        {
+            return parsed.to_file_path().ok();
         }
         let path = Path::new(text);
         path.is_absolute().then(|| path.to_path_buf())

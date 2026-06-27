@@ -337,6 +337,11 @@ impl IrBindingSlice {
     pub const fn len(self) -> usize {
         self.len as usize
     }
+
+    /// Returns whether the binding slice is empty.
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
+    }
 }
 
 /// An attribute-path side-table id.

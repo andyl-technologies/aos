@@ -701,11 +701,11 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
-    pub(super) fn to_file_store_path_name<'a>(
+    pub(super) fn to_file_store_path_name(
         id: IrId,
         span: Span,
-        name: &'a [u8],
-    ) -> Result<&'a str, TreeWalkError> {
+        name: &[u8],
+    ) -> Result<&str, TreeWalkError> {
         let name_str = nix_compat::store_path::validate_name(name).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::ToFilePath {

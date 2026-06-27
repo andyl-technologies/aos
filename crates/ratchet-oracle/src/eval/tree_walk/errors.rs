@@ -116,9 +116,9 @@ impl TreeWalkError {
 impl fmt::Display for TreeWalkError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         for context in &self.contexts {
-            write!(
+            writeln!(
                 formatter,
-                "while evaluating: {}\n",
+                "while evaluating: {}",
                 String::from_utf8_lossy(context.message())
             )?;
         }

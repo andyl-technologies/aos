@@ -142,7 +142,7 @@ impl Lexer<'_> {
             return false;
         }
 
-        if run % 2 == 0 {
+        if run.is_multiple_of(2) {
             self.cursor += 1;
         } else {
             self.cursor = start + run - 1;

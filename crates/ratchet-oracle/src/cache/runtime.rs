@@ -165,6 +165,9 @@ pub struct CachedExpressionValue {
     attr_position_source_hash: Option<DurableBlake3Hash>,
 }
 
+/// One cached attrset entry with an optional source position.
+pub type CachedAttrEntryWithPosition = (Vec<u8>, Option<AttrPosition>, CachedExpressionValue);
+
 /// A cached derivation output store path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CachedDerivationOutputPath {
@@ -985,9 +988,7 @@ impl CachedExpressionValue {
     }
 
     /// Returns cached attrset entries and optional binding positions, if this payload is an attrset.
-    pub fn attrs_entries_with_positions(
-        &self,
-    ) -> Option<Vec<(Vec<u8>, Option<AttrPosition>, Self)>> {
+    pub fn attrs_entries_with_positions(&self) -> Option<Vec<CachedAttrEntryWithPosition>> {
         match &self.payload {
             InlineValuePayload::EmptyAttrs => Some(Vec::new()),
             InlineValuePayload::Attrs(entries)
@@ -2049,10 +2050,10 @@ impl EvalCache {
         &mut self,
         node: Option<DemandNodeId>,
     ) -> Result<(), DemandGraphError> {
-        if let Some(node) = node {
-            if self.inline_values.contains_key(&node) {
-                self.invalidate_existing_inline_payload(Some(node))?;
-            }
+        if let Some(node) = node
+            && self.inline_values.contains_key(&node)
+        {
+            self.invalidate_existing_inline_payload(Some(node))?;
         }
         Ok(())
     }
@@ -3268,10 +3269,7 @@ fn decode_inline_value_payload(
         cursor.take_marker(b"null", "null payload tag")?;
         return Ok(InlineValuePayload::Null);
     }
-    let tag = match cursor.remaining().first().copied() {
-        Some(tag) => tag,
-        None => 0,
-    };
+    let tag = cursor.remaining().first().copied().unwrap_or_default();
     Err(CachedExpressionValuePayloadError::InvalidTag {
         section: "inline value",
         tag,

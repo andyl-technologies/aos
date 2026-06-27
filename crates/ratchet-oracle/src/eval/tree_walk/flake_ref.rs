@@ -442,19 +442,19 @@ impl TreeWalk {
                     return Err(error);
                 }
             };
-        if let Some(expected) = args.expected_sha256 {
-            if expected != digest {
-                let _ = fs::remove_dir_all(&temp_dir);
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::FetchTarballHashMismatch {
-                        id: argument,
-                        url: args.url,
-                        expected: expected.to_vec(),
-                        actual: digest.to_vec(),
-                    },
-                    argument_span,
-                ));
-            }
+        if let Some(expected) = args.expected_sha256
+            && expected != digest
+        {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTarballHashMismatch {
+                    id: argument,
+                    url: args.url,
+                    expected: expected.to_vec(),
+                    actual: digest.to_vec(),
+                },
+                argument_span,
+            ));
         }
 
         let path = match expected_path {

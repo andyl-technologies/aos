@@ -355,17 +355,17 @@ impl TreeWalk {
         }
         let normalized = normalize_absolute_path_bytes(path);
         if self.options.path_is_allowed(&normalized) {
-            if let Some(resolved) = canonicalize_policy_path(path) {
-                if !self.options.resolved_path_is_allowed(&resolved) {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::PathAccessDenied {
-                            id,
-                            path: resolved,
-                            mode: self.options.eval_mode(),
-                        },
-                        span,
-                    ));
-                }
+            if let Some(resolved) = canonicalize_policy_path(path)
+                && !self.options.resolved_path_is_allowed(&resolved)
+            {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::PathAccessDenied {
+                        id,
+                        path: resolved,
+                        mode: self.options.eval_mode(),
+                    },
+                    span,
+                ));
             }
             return Ok(());
         }
@@ -404,10 +404,10 @@ impl TreeWalk {
 
     pub(super) fn dynamic_attr_expression(&self, dynamic: IrId) -> Result<IrId, TreeWalkError> {
         let node = self.node(dynamic)?;
-        if node.kind == IrKind::Interp {
-            if let IrData::Node(child) = node.data {
-                return Ok(child);
-            }
+        if node.kind == IrKind::Interp
+            && let IrData::Node(child) = node.data
+        {
+            return Ok(child);
         }
         Ok(dynamic)
     }
@@ -758,15 +758,14 @@ impl TreeWalk {
             .map(|subject| self.record_force_cache_memoization_demand(subject))
             .unwrap_or(MemoizationDecision::Admit);
         let memoization_admitted = memoization_decision == MemoizationDecision::Admit;
-        if memoization_admitted {
-            if let Some(value) = self.lookup_forced_inline_expression_result(cache_subject.clone())
-            {
-                let value = guard.finish(value).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
-                })?;
-                self.lazy_identity_thunks.remove(&forced_payload);
-                return Ok(value);
-            }
+        if memoization_admitted
+            && let Some(value) = self.lookup_forced_inline_expression_result(cache_subject.clone())
+        {
+            let value = guard.finish(value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
+            })?;
+            self.lazy_identity_thunks.remove(&forced_payload);
+            return Ok(value);
         }
 
         let thunks_forced_before = self.stats.thunks_forced;

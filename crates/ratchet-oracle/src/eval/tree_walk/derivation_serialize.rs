@@ -552,19 +552,19 @@ impl TreeWalk {
                     })?;
                     let output =
                         Self::derivation_utf8_string(id, span, "input derivation output", output)?;
-                    if let Some(known) = self.known_derivations.get(&store_path) {
-                        if !known.output_names.contains(&output) {
-                            return Err(TreeWalkError::new(
-                                TreeWalkErrorKind::DerivationStrict {
-                                    id,
-                                    message: format!(
-                                        "input derivation {} has no output {output:?}",
-                                        self.store_path_absolute_display(&store_path)
-                                    ),
-                                },
-                                span,
-                            ));
-                        }
+                    if let Some(known) = self.known_derivations.get(&store_path)
+                        && !known.output_names.contains(&output)
+                    {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::DerivationStrict {
+                                id,
+                                message: format!(
+                                    "input derivation {} has no output {output:?}",
+                                    self.store_path_absolute_display(&store_path)
+                                ),
+                            },
+                            span,
+                        ));
                     }
                     derivation
                         .input_derivations
