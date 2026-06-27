@@ -4188,6 +4188,43 @@ fn cache_value_blob_pack_repack_relocates_live_values_and_rewrites_index() {
 }
 
 #[test]
+fn cache_value_blob_pack_repack_rejects_source_path_as_stage_pack() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"source path as repack stage";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let entry = cache
+        .append_blob_indexed(key, payload)
+        .expect("indexed value blob appends");
+    let location = entry.location();
+    let plan = cache
+        .plan_blob_pack_repack(PersistBlobStore::Values)
+        .expect("value repack plan builds");
+    let source_path = cache.value_pack().path().to_path_buf();
+
+    let error = cache
+        .value_pack()
+        .write_relocated_records_to(source_path.clone(), plan.record_relocations())
+        .expect_err("source path as stage pack errors");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackError::SourceEqualsTemp {
+            source_path: actual_source,
+            tmp_path,
+        } if actual_source == source_path && tmp_path == source_path
+    ));
+    assert_eq!(
+        cache
+            .read_blob(key, location)
+            .expect("source pack remains readable"),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_value_blob_pack_repack_reclaims_all_unrooted_values() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

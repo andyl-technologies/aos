@@ -201,57 +201,6 @@ pub(super) fn validate_node_metadata_index_len(
     })
 }
 
-pub(super) fn ensure_blob_pack_file(path: &Path) -> Result<(), PersistBlobPackError> {
-    ensure_blob_pack_parent(path)?;
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|source| PersistBlobPackError::Open {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    let len = file
-        .metadata()
-        .map_err(|source| PersistBlobPackError::Metadata {
-            path: path.to_path_buf(),
-            source,
-        })?
-        .len();
-    match len {
-        0 => file
-            .write_all(&PersistBlobPackHeader::current().encode())
-            .and_then(|()| file.flush())
-            .map_err(|source| PersistBlobPackError::Write {
-                path: path.to_path_buf(),
-                source,
-            }),
-        len if len < PERSIST_BLOB_PACK_HEADER_LEN as u64 => Err(PersistBlobPackError::Format {
-            path: path.to_path_buf(),
-            source: PersistPackFormatError::ShortPackHeader {
-                expected: PERSIST_BLOB_PACK_HEADER_LEN,
-                actual: len as usize,
-            },
-        }),
-        _ => validate_blob_pack_header(path, &mut file),
-    }
-}
-
-pub(super) fn ensure_blob_pack_parent(path: &Path) -> Result<(), PersistBlobPackError> {
-    let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    else {
-        return Ok(());
-    };
-    fs::create_dir_all(parent).map_err(|source| PersistBlobPackError::CreateParent {
-        path: parent.to_path_buf(),
-        source,
-    })
-}
-
 pub(super) fn validate_blob_pack_header(
     path: &Path,
     file: &mut std::fs::File,

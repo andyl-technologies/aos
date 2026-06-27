@@ -8,6 +8,7 @@ use super::*;
 use ratchet_cache::blob_pack::{
     BlobPackAppendError, BlobPackAppender, BlobPackFormatError, BlobPackHash, BlobPackLocation,
     BlobPackPayloadWindow, BlobPackReadError, BlobPackReader, BlobPackRecord,
+    BlobPackRecordRelocation, BlobPackRewriteError,
 };
 
 /// Verified metadata for one immutable blob-pack record.
@@ -74,6 +75,16 @@ fn engine_payload_window_to_persist(window: BlobPackPayloadWindow) -> PersistBlo
         engine_record_to_persist(window.record()),
         window.payload_start(),
         window.payload_end(),
+    )
+}
+
+fn persist_relocation_to_engine(
+    relocation: PersistBlobRecordRelocation,
+) -> BlobPackRecordRelocation {
+    BlobPackRecordRelocation::new(
+        durable_hash_to_engine(relocation.key().hash()),
+        persist_location_to_engine(relocation.old_location()),
+        persist_location_to_engine(relocation.new_location()),
     )
 }
 
@@ -153,6 +164,32 @@ fn engine_read_error_to_persist(error: BlobPackReadError) -> PersistBlobPackErro
             PersistBlobPackError::PayloadHashMismatch {
                 expected: engine_hash_to_durable(expected),
                 actual: engine_hash_to_durable(actual),
+            }
+        }
+    }
+}
+
+fn engine_rewrite_error_to_persist(error: BlobPackRewriteError) -> PersistBlobPackError {
+    match error {
+        BlobPackRewriteError::SourceEqualsTemp {
+            source_path,
+            tmp_path,
+        } => PersistBlobPackError::SourceEqualsTemp {
+            source_path,
+            tmp_path,
+        },
+        BlobPackRewriteError::RemoveTemp { path, source } => {
+            PersistBlobPackError::Write { path, source }
+        }
+        BlobPackRewriteError::OpenTemp { source } | BlobPackRewriteError::AppendTemp { source } => {
+            engine_append_error_to_persist(source)
+        }
+        BlobPackRewriteError::ReadSource { source }
+        | BlobPackRewriteError::ValidateTemp { source } => engine_read_error_to_persist(source),
+        BlobPackRewriteError::RecordLocationMismatch { expected, actual } => {
+            PersistBlobPackError::RecordLocationMismatch {
+                expected: engine_location_to_persist(expected),
+                actual: engine_location_to_persist(actual),
             }
         }
     }
@@ -449,45 +486,28 @@ impl PersistBlobPack {
     ///
     /// Returns [`PersistBlobPackError`] if the current pack cannot be read, a
     /// relocated source record fails verification, the temporary pack cannot be
-    /// created or written, a copied record lands at a different location than
-    /// planned, or the completed temporary pack fails validation.
+    /// created or written, `tmp_path` aliases the source pack, a copied record
+    /// lands at a different location than planned, or the completed temporary
+    /// pack fails validation.
     pub(super) fn write_relocated_records_to(
         &self,
         tmp_path: impl Into<PathBuf>,
         relocations: &[PersistBlobRecordRelocation],
     ) -> Result<PersistBlobPack, PersistBlobPackError> {
-        ensure_blob_pack_file(&self.path)?;
         let tmp_path = tmp_path.into();
-        match fs::remove_file(&tmp_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(PersistBlobPackError::Write {
-                    path: tmp_path,
-                    source,
-                });
-            }
-        }
-        let tmp_pack = PersistBlobPack::open(tmp_path.clone())?;
-        let copy_result = (|| {
-            for relocation in relocations {
-                let payload = self.read_blob(relocation.old_location(), relocation.key().hash())?;
-                let copied = tmp_pack.append_blob(relocation.key().hash(), &payload)?;
-                if copied != relocation.new_location() {
-                    return Err(PersistBlobPackError::RecordLocationMismatch {
-                        expected: relocation.new_location(),
-                        actual: copied,
-                    });
-                }
-            }
-            Ok(())
-        })();
-        if let Err(error) = copy_result {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(error);
-        }
-        tmp_pack.len()?;
-        Ok(tmp_pack)
+        open_engine_blob_pack_appender(&self.path)?;
+        let reader = open_engine_blob_pack_reader(&self.path)?;
+        let engine_relocations = relocations
+            .iter()
+            .copied()
+            .map(persist_relocation_to_engine)
+            .collect::<Vec<_>>();
+        let tmp_reader = reader
+            .write_relocated_records_to(tmp_path, &engine_relocations)
+            .map_err(engine_rewrite_error_to_persist)?;
+        Ok(Self {
+            path: tmp_reader.path().to_path_buf(),
+        })
     }
 
     /// Truncates unneeded bytes after `end_offset`.

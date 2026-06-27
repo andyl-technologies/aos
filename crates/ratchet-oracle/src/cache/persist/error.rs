@@ -1412,6 +1412,14 @@ pub enum PersistBlobPackError {
         /// The underlying filesystem error.
         source: io::Error,
     },
+    /// A staged pack rewrite path aliases the source pack path.
+    #[error("persistent blob pack rewrite temp {tmp_path} aliases source {source_path}")]
+    SourceEqualsTemp {
+        /// The source pack path.
+        source_path: PathBuf,
+        /// The rejected temporary pack path.
+        tmp_path: PathBuf,
+    },
     /// The packfile metadata has an unsupported or malformed format.
     #[error("persistent blob pack {path} has invalid metadata")]
     Format {
