@@ -177,9 +177,9 @@ impl S3Surface {
                         binding.name
                     )
                 })?;
-                let plain = sealer
-                    .unseal(sealed)
-                    .with_context(|| format!("unsealing credentials for binding '{}'", binding.name))?;
+                let plain = sealer.unseal(sealed).with_context(|| {
+                    format!("unsealing credentials for binding '{}'", binding.name)
+                })?;
                 let (access_key, rest) = plain
                     .split_once(':')
                     .context("credential_ref must be access_key:secret_key:region")?;
@@ -383,7 +383,12 @@ mod tests {
     use super::*;
     use crate::auth::seal::AesGcmSealer;
 
-    fn binding(kind: &str, access: &str, cred: Option<&str>, endpoint: Option<&str>) -> StorageBindingRecord {
+    fn binding(
+        kind: &str,
+        access: &str,
+        cred: Option<&str>,
+        endpoint: Option<&str>,
+    ) -> StorageBindingRecord {
         StorageBindingRecord {
             id: 1,
             org_id: Some(1),
@@ -411,7 +416,10 @@ mod tests {
             <NextContinuationToken>tok/123</NextContinuationToken>\
             </ListBucketResult>";
         let (keys, next) = parse_list_objects_v2(xml);
-        assert_eq!(keys, vec!["reg/HEAD".to_string(), "reg/objects/ab&cd".to_string()]);
+        assert_eq!(
+            keys,
+            vec!["reg/HEAD".to_string(), "reg/objects/ab&cd".to_string()]
+        );
         assert_eq!(next.as_deref(), Some("tok/123"));
 
         // Not truncated: no continuation, even if a token tag is present.
@@ -427,19 +435,37 @@ mod tests {
         let s = sealer();
         let sealed = s.seal("AKID:sec:auto").unwrap();
         // root "my-bucket", reg "andyl/demo" -> key_prefix "my-bucket/andyl/demo".
-        let b = binding("s3", "private", Some(&sealed), Some("https://s3.example.com"));
-        let surface = S3Surface::from_binding(&b, "andyl/demo", &s).unwrap().unwrap();
-        assert_eq!(surface.relative_from_key("andyl/demo/HEAD").as_deref(), Some("HEAD"));
+        let b = binding(
+            "s3",
+            "private",
+            Some(&sealed),
+            Some("https://s3.example.com"),
+        );
+        let surface = S3Surface::from_binding(&b, "andyl/demo", &s)
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            surface.relative_from_key("andyl/demo/objects/ab/cd").as_deref(),
+            surface.relative_from_key("andyl/demo/HEAD").as_deref(),
+            Some("HEAD")
+        );
+        assert_eq!(
+            surface
+                .relative_from_key("andyl/demo/objects/ab/cd")
+                .as_deref(),
             Some("objects/ab/cd")
         );
         assert_eq!(surface.relative_from_key("other/x"), None);
         // And a presigned list URL carries the in-bucket prefix + signature.
         let url = surface.list_url(None, 1_700_000_000).unwrap();
-        assert!(url.contains("/my-bucket?") || url.contains("/my-bucket&"), "{url}");
+        assert!(
+            url.contains("/my-bucket?") || url.contains("/my-bucket&"),
+            "{url}"
+        );
         assert!(url.contains("prefix=andyl%2Fdemo%2F"), "{url}");
-        assert!(url.contains("list-type=2") && url.contains("X-Amz-Signature="), "{url}");
+        assert!(
+            url.contains("list-type=2") && url.contains("X-Amz-Signature="),
+            "{url}"
+        );
     }
 
     #[test]
@@ -453,11 +479,22 @@ mod tests {
     fn private_binding_signs_each_method_distinctly() {
         let s = sealer();
         let sealed = s.seal("AKIDEXAMPLE:secretkey:auto").unwrap();
-        let b = binding("r2", "private", Some(&sealed), Some("https://acct.r2.cloudflarestorage.com"));
-        let surface = S3Surface::from_binding(&b, "andyl/demo", &s).unwrap().unwrap();
+        let b = binding(
+            "r2",
+            "private",
+            Some(&sealed),
+            Some("https://acct.r2.cloudflarestorage.com"),
+        );
+        let surface = S3Surface::from_binding(&b, "andyl/demo", &s)
+            .unwrap()
+            .unwrap();
         assert!(surface.is_writable());
-        let get = surface.object_url(Method::Get, "info/refs", 1_700_000_000).unwrap();
-        let put = surface.object_url(Method::Put, "info/refs", 1_700_000_000).unwrap();
+        let get = surface
+            .object_url(Method::Get, "info/refs", 1_700_000_000)
+            .unwrap();
+        let put = surface
+            .object_url(Method::Put, "info/refs", 1_700_000_000)
+            .unwrap();
         // Path-style key includes bucket + resource prefix + logical path.
         assert!(get.contains("/my-bucket/andyl/demo/info/refs?"), "{get}");
         assert!(get.contains("X-Amz-Signature="));
@@ -470,11 +507,20 @@ mod tests {
     fn traversal_paths_are_rejected_before_signing() {
         let s = sealer();
         let sealed = s.seal("AKID:sec:auto").unwrap();
-        let b = binding("s3", "private", Some(&sealed), Some("https://s3.example.com"));
-        let surface = S3Surface::from_binding(&b, "andyl/demo", &s).unwrap().unwrap();
+        let b = binding(
+            "s3",
+            "private",
+            Some(&sealed),
+            Some("https://s3.example.com"),
+        );
+        let surface = S3Surface::from_binding(&b, "andyl/demo", &s)
+            .unwrap()
+            .unwrap();
         // `..` toward another tenant's prefix, an absolute path, and a doubled
         // slash are all refused — never signed.
-        assert!(surface.object_url(Method::Get, "../other/info/refs", 1).is_err());
+        assert!(surface
+            .object_url(Method::Get, "../other/info/refs", 1)
+            .is_err());
         assert!(surface.object_url(Method::Get, "/etc/passwd", 1).is_err());
         assert!(surface.object_url(Method::Put, "a//b", 1).is_err());
     }

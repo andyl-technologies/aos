@@ -85,7 +85,12 @@ pub fn nix_public_key_from_ssh_line(ssh_line: &str) -> Option<String> {
 ///
 /// `references` are the **absolute** store paths of the direct references.
 #[must_use]
-pub fn fingerprint(store_path: &str, nar_hash: &str, nar_size: i64, references: &[String]) -> String {
+pub fn fingerprint(
+    store_path: &str,
+    nar_hash: &str,
+    nar_size: i64,
+    references: &[String],
+) -> String {
     format!(
         "1;{store_path};{nar_hash};{nar_size};{}",
         references.join(",")
@@ -265,7 +270,9 @@ mod tests {
     fn signature_verifies_against_the_public_key() {
         let key = test_key();
         let line = sig_line(NARINFO, "acme-cache", &key).unwrap();
-        let b64 = line.strip_prefix("Sig: acme-cache:").expect("sig line shape");
+        let b64 = line
+            .strip_prefix("Sig: acme-cache:")
+            .expect("sig line shape");
         let sig_bytes = base64::engine::general_purpose::STANDARD
             .decode(b64)
             .unwrap();
@@ -315,7 +322,10 @@ mod tests {
             aos_registry_surface::sshsig::trusted_key_line("acme-cache", &key.verifying_key());
         // ...converts to the Nix cache public-key line for the same raw key.
         let nix_line = nix_public_key_from_ssh_line(&ssh_line).expect("valid ssh line converts");
-        assert_eq!(nix_line, nix_public_key_line("acme-cache", &key.verifying_key()));
+        assert_eq!(
+            nix_line,
+            nix_public_key_line("acme-cache", &key.verifying_key())
+        );
     }
 
     #[test]
@@ -331,7 +341,9 @@ mod tests {
         let line = nix_public_key_line("acme-cache", &key.verifying_key());
         assert!(line.starts_with("acme-cache:"));
         let b64 = line.strip_prefix("acme-cache:").unwrap();
-        let decoded = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
         assert_eq!(decoded.len(), 32, "raw Ed25519 public key is 32 bytes");
     }
 }

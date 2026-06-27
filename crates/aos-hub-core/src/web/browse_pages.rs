@@ -26,9 +26,9 @@
 //! from [`crate::web::render`] and [`crate::web::console_render`] so the browse
 //! surface, the producer console, and the worker render byte-identically.
 
+use crate::clock::Instant;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use crate::clock::Instant;
 
 use crate::db::{
     CacheProbeRow, ChannelSummary, FrontendProbeRow, FrontendRecord, IndexStatus, PackageDetail,
@@ -323,9 +323,7 @@ pub fn registry_home(
             // terminal "indexed, nothing published" state; `pending`/`indexing`
             // are its transient cousins. All read the same to a visitor.
             "empty" | "pending" | "indexing" => {
-                body.push_str(
-                    "<p class=\"dim\">No releases published to this registry yet.</p>\n",
-                );
+                body.push_str("<p class=\"dim\">No releases published to this registry yet.</p>\n");
             }
             _ => {}
         }
@@ -1298,7 +1296,12 @@ pub fn cache_home(
         ],
         vec![
             "Signed".to_string(),
-            if cache.hosted_key_id.is_some() { "yes" } else { "no" }.to_string(),
+            if cache.hosted_key_id.is_some() {
+                "yes"
+            } else {
+                "no"
+            }
+            .to_string(),
         ],
     ];
     body.push_str(&table(&["field", "value"], &info));
@@ -1315,7 +1318,11 @@ pub fn cache_home(
         "<p class=\"dim\">{} linked registries · {} GC roots · GC policy {}</p>\n",
         link_count,
         root_count,
-        if policy.is_some() { "configured" } else { "default (no age sweep)" },
+        if policy.is_some() {
+            "configured"
+        } else {
+            "default (no age sweep)"
+        },
     );
 
     body.push_str("<h2>Use this cache</h2>\n");
@@ -1382,7 +1389,11 @@ pub fn cache_objects(
             ]
         })
         .collect();
-    body.push_str(&live_table(&["store path", "compression", "size"], &rows, "objects"));
+    body.push_str(&live_table(
+        &["store path", "compression", "size"],
+        &rows,
+        "objects",
+    ));
     page_with_session(
         &format!("objects · {slug}"),
         &[
@@ -1416,18 +1427,30 @@ pub fn cache_object(
             "NarHash".to_string(),
             format!("<code>{}</code>", escape(&object.nar_hash)),
         ],
-        vec!["NarSize".to_string(), human_size(object.nar_size.max(0) as u64)],
+        vec![
+            "NarSize".to_string(),
+            human_size(object.nar_size.max(0) as u64),
+        ],
         vec![
             "FileHash".to_string(),
             format!("<code>{}</code>", escape(&object.file_hash)),
         ],
-        vec!["FileSize".to_string(), human_size(object.file_size.max(0) as u64)],
+        vec![
+            "FileSize".to_string(),
+            human_size(object.file_size.max(0) as u64),
+        ],
     ];
     if let Some(d) = &object.deriver {
-        fields.push(vec!["Deriver".to_string(), format!("<code>{}</code>", escape(d))]);
+        fields.push(vec![
+            "Deriver".to_string(),
+            format!("<code>{}</code>", escape(d)),
+        ]);
     }
     if let Some(s) = &object.sig {
-        fields.push(vec!["Sig".to_string(), format!("<code>{}</code>", escape(s))]);
+        fields.push(vec![
+            "Sig".to_string(),
+            format!("<code>{}</code>", escape(s)),
+        ]);
     }
     body.push_str(&table(&["field", "value"], &fields));
 
@@ -1490,7 +1513,11 @@ pub fn cache_closure(
 ) -> String {
     let slug = &cache.slug;
     let mut body = String::new();
-    let _ = write!(body, "<h1>Closure of <code>{}</code></h1>\n", escape(root_hash));
+    let _ = write!(
+        body,
+        "<h1>Closure of <code>{}</code></h1>\n",
+        escape(root_hash)
+    );
     let _ = write!(
         body,
         "<p>{} paths · {} total</p>\n",

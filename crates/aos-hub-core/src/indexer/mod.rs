@@ -48,9 +48,9 @@ use anyhow::{bail, Context, Result};
 use aos_registry_surface::manifest::RegistryRootConfig;
 use aos_registry_surface::object::{Commit, ObjectKind};
 use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
+use aos_registry_surface::sshsig;
 use aos_registry_surface::tag::{parse_signed_tag, verify_signed_tag, SignedTag};
 use aos_registry_surface::tagobject::{verify_name_binding, TagTarget};
-use aos_registry_surface::sshsig;
 use sha2::{Digest, Sha256};
 
 use crate::db::{ChannelSummary, Database, IndexSnapshot, RegistryRecord, ReleaseRow};
@@ -139,9 +139,7 @@ fn empty_outcome() -> IndexOutcome {
 /// crosses the [`SurfaceFetch`] boundary as an opaque `anyhow` error.
 fn is_transient_backend_error(err: &anyhow::Error) -> bool {
     let msg = format!("{err:#}");
-    msg.contains("(10001)")
-        || msg.contains("Please try again")
-        || msg.contains("please try again")
+    msg.contains("(10001)") || msg.contains("Please try again") || msg.contains("please try again")
 }
 
 /// Index one registered registry, recording failure state on error.
@@ -287,9 +285,10 @@ pub async fn index_registry(
             // between a clean "absent" (→ `empty`) and a 10001 (→ here): without
             // this guard it would oscillate empty↔pending pass to pass. Once
             // empty, it stays empty until a surface is actually read.
-            let already_terminal = db.index_status(registry.id).await?.is_some_and(|status| {
-                status.state == "fresh" || status.state == "empty"
-            });
+            let already_terminal = db
+                .index_status(registry.id)
+                .await?
+                .is_some_and(|status| status.state == "fresh" || status.state == "empty");
             if !already_terminal {
                 db.mark_index_pending(registry.id).await?;
             }
@@ -914,7 +913,9 @@ mod tests {
         assert!(!is_transient_backend_error(&anyhow::anyhow!(
             "surface advertises no branches"
         )));
-        assert!(!is_transient_backend_error(&anyhow::anyhow!("info/refs not UTF-8")));
+        assert!(!is_transient_backend_error(&anyhow::anyhow!(
+            "info/refs not UTF-8"
+        )));
     }
 
     /// A [`SurfaceFetch`] whose `info/refs` read fails with a given error, to
@@ -952,9 +953,15 @@ mod tests {
         // terminal `empty` state — R2 throws this same 10001 for a missing key,
         // so an empty registry's read flaps; the guard keeps it empty.
         let outcome = index_and_record(&db, &fetch, &registry).await.unwrap();
-        assert!(outcome.pending, "a transient backend error is a no-content run");
+        assert!(
+            outcome.pending,
+            "a transient backend error is a no-content run"
+        );
         let status = db.index_status(id).await.unwrap().unwrap();
-        assert_eq!(status.state, "empty", "empty must survive a transient error");
+        assert_eq!(
+            status.state, "empty",
+            "empty must survive a transient error"
+        );
         assert!(status.error.is_none());
 
         // From a non-terminal state (here, a prior hard failure), the same

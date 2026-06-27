@@ -131,7 +131,8 @@ pub async fn provision_binding(
             }
             if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
                 return Err(ProvisionError::Invalid(
-                    "endpoint must start with https:// (or http:// for a local test endpoint)".into(),
+                    "endpoint must start with https:// (or http:// for a local test endpoint)"
+                        .into(),
                 ));
             }
             if origin.private {
@@ -181,13 +182,8 @@ pub async fn provision_binding(
         .create_storage_binding(req.org_id, name, req.kind.as_str(), root)
         .await?;
     if access != "public" || endpoint.is_some() || credential_ref.is_some() {
-        db.set_storage_binding_access(
-            id,
-            &access,
-            endpoint.as_deref(),
-            credential_ref.as_deref(),
-        )
-        .await?;
+        db.set_storage_binding_access(id, &access, endpoint.as_deref(), credential_ref.as_deref())
+            .await?;
     }
     Ok(id)
 }
