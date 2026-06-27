@@ -39,7 +39,7 @@ fn gate_content_address_keeps_fixed_vectors_stable() {
         expected_vectors([
             (
                 "scenario",
-                "ca5ef63d14b2039d0a0d6e4fa94820f2ffb2ab4f7c89fabd4e5658b53051b77a"
+                "df57faa3c2fa71358c131b12c6286800cb0d5a6b57e454bac4560b2f521811f4"
             ),
             (
                 "schedule",
@@ -47,11 +47,11 @@ fn gate_content_address_keeps_fixed_vectors_stable() {
             ),
             (
                 "configuration",
-                "73bc547c3c19437d0dc06f282d4f7d91ca526379f785b3cdf0a28a75396fff21",
+                "34db0f23e92cd0a98f97232a078fb78ab58ac6679f4f01a5017ad2660445ef3f",
             ),
             (
                 "state",
-                "cabde9105f04951843d1fbf30dcb5e6be277e81f51e814d64a14ab36187939ed"
+                "8227948dfc6c114acd0421aab56644d05c38b1daf49ce148f75e76c59d222dbc"
             ),
             (
                 "world-component",

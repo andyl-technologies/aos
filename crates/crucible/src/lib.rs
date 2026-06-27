@@ -43,17 +43,18 @@ pub use model::{
     PartialOrderReductionPolicy, PartitionDirection, PendingFrame, PinnedConfiguration,
     PinnedScenario, Plan, PlanEntry, Predicate, PreemptionDecision, PreemptionKind, Properties,
     Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, ReplayOracleCheck,
-    RestartPolicy, RngDecision, RngStreamId, RngStreamPosition, RuntimeState,
-    SavevmCompletenessHedge, ScenarioBuilder, ScenarioDef, ScenarioDefForm, ScenarioFamily,
-    Schedule, ScheduleError, SchedulerState, SchedulingPoint, SearchReplayOracleBisectionRequest,
-    SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport, Seed, SeedSpace,
-    SeededRngStream, Shift, SimDuration, SimInstant, SimOffset, State, SymmetryClassId,
-    SymmetryReductionClasses, SymmetryReductionKey, TemporalGraph, TemporalGraphFork,
-    TemporalGraphGcReport, TemporalGraphGcRoots, TemporalGraphReferenceCounts,
-    TemporalGraphRuntime, TemporalGraphSave, TemporalGraphSearch, TemporalGraphStoreError,
-    TemporalGraphStoreKeys, TimeConversionError, TimerId, TimerRegistry, TimerState, TopologyShape,
-    TopologySizeRange, VcpuId, VirtualInstant, VirtualTime, VmSnapshotRef, WhiteBoxPolicy, World,
-    WorldLookaheadEdge, WorldNode, WorldStaticTopology, bake, instantiate, reduce, step,
+    ReproductionArtifact, ReproductionReplay, RestartPolicy, RngDecision, RngStreamId,
+    RngStreamPosition, RuntimeState, SavevmCompletenessHedge, ScenarioBuilder, ScenarioDef,
+    ScenarioDefForm, ScenarioFamily, Schedule, ScheduleError, SchedulerState, SchedulingPoint,
+    SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
+    SearchReplayOracleSamplingReport, Seed, SeedSpace, SeededRngStream, Shift, SimDuration,
+    SimInstant, SimOffset, State, SymmetryClassId, SymmetryReductionClasses, SymmetryReductionKey,
+    TemporalGraph, TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots,
+    TemporalGraphReferenceCounts, TemporalGraphRuntime, TemporalGraphSave, TemporalGraphSearch,
+    TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError, TimerId, TimerRegistry,
+    TimerState, TopologyShape, TopologySizeRange, VcpuId, VirtualInstant, VirtualTime,
+    VmSnapshotRef, WhiteBoxPolicy, World, WorldLookaheadEdge, WorldNode, WorldStaticTopology, bake,
+    instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
@@ -3146,6 +3147,179 @@ mod tests {
             bad_density,
             Err(EngineError::FaultDensityOutOfRange { millionths, maximum })
                 if millionths == 1_000_001 && maximum == 1_000_000
+        ));
+    }
+
+    #[test]
+    fn reproduction_artifact_is_self_contained_and_replay_checked() {
+        let seed = Seed::from_u64(0x0010_0018);
+        let density = FaultDensity::from_millionths(250_000)
+            .unwrap_or_else(|error| panic!("density should be valid: {error}"));
+        let space = FamilySpace::new(
+            SeedSpace::explicit(vec![seed])
+                .unwrap_or_else(|error| panic!("seed space should be valid: {error}")),
+            FaultDensityRange::new(density, density)
+                .unwrap_or_else(|error| panic!("density range should be valid: {error}")),
+            TopologySizeRange::new(3, 3)
+                .unwrap_or_else(|error| panic!("topology size range should be valid: {error}")),
+            vec![TopologyShape::Ring],
+        )
+        .unwrap_or_else(|error| panic!("family space should be valid: {error}"));
+        let family = ScenarioFamily::new(space, NodeTemplate::fixed_icount(Icount { retired: 24 }));
+        let pinned = family
+            .instantiate_sample(0)
+            .unwrap_or_else(|error| panic!("sample should instantiate: {error}"));
+        let pinned_genesis = pinned.genesis_configuration();
+        let fault_name = pinned
+            .form()
+            .plan()
+            .entries()
+            .iter()
+            .find_map(|entry| match entry {
+                PlanEntry::Activate { tag, .. } => Some(tag.name.clone()),
+                PlanEntry::Heal { .. } => None,
+            })
+            .unwrap_or_else(|| "family-fault-0".to_owned());
+        let schedule = Schedule::empty()
+            .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: vec![EventKey { sequence: 1 }, EventKey { sequence: 2 }],
+            }))
+            .appended(Decision::FaultFires(FaultDecision {
+                at: VirtualTime { ticks: 2 },
+                fault: FaultId { name: fault_name },
+                fired: true,
+            }))
+            .appended(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::for_node("node-0"),
+                value: 0x0010_0018,
+            }))
+            .appended(Decision::Override(OverrideDecision {
+                point: SchedulingPoint {
+                    key: "node-0/fault-choice".to_owned(),
+                },
+                choice: ChoiceTag {
+                    name: "fire".to_owned(),
+                },
+            }))
+            .appended(Decision::Preemption(PreemptionDecision {
+                node: node_id("node-0"),
+                at: Icount { retired: 32 },
+                kind: PreemptionKind::VcpuSwitch {
+                    from_vcpu: VcpuId { index: 0 },
+                    to_vcpu: VcpuId { index: 1 },
+                },
+            }))
+            .appended(Decision::Preemption(PreemptionDecision {
+                node: node_id("node-1"),
+                at: Icount { retired: 48 },
+                kind: PreemptionKind::InterruptAt {
+                    target_vcpu: VcpuId { index: 0 },
+                    irq: IrqVector { vector: 32 },
+                },
+            }))
+            .appended(Decision::AppRandom(AppRandomDecision {
+                node: node_id("node-2"),
+                stream: RngStreamId::for_node("node-2"),
+                request_id: 7,
+                width: 64,
+                value: 0xfeed_beef,
+            }));
+        let schedule_binary = schedule.to_compact_binary();
+        let parsed_schedule = Schedule::from_compact_binary(&schedule_binary)
+            .unwrap_or_else(|error| panic!("schedule binary should parse: {error}"));
+        let artifact = ReproductionArtifact::capture(pinned.form(), &schedule)
+            .unwrap_or_else(|error| panic!("artifact capture should reduce: {error}"));
+        let replay = artifact
+            .replay()
+            .unwrap_or_else(|error| panic!("artifact should replay: {error}"));
+        let expected_state = replay.state;
+        let artifact_bytes = artifact.to_compact_binary();
+        let decoded_artifact = ReproductionArtifact::from_compact_binary(&artifact_bytes)
+            .unwrap_or_else(|error| panic!("artifact binary should parse: {error}"));
+        let reduced_state = reduce(&artifact.scenario_def(), artifact.schedule())
+            .unwrap_or_else(|error| panic!("artifact schedule should reduce: {error}"))
+            .id;
+        let scenario_toml = artifact
+            .scenario_form()
+            .to_canonical_toml()
+            .unwrap_or_else(|error| panic!("scenario TOML should serialize: {error}"));
+        let round_tripped_scenario = ScenarioDefForm::from_canonical_toml(&scenario_toml)
+            .unwrap_or_else(|error| panic!("scenario TOML should parse: {error}"));
+        let offline_replay_artifact =
+            ReproductionArtifact::from_recorded_parts(round_tripped_scenario, parsed_schedule);
+        let pinned_genesis_artifact =
+            ReproductionArtifact::from_pinned_configuration(&pinned_genesis)
+                .unwrap_or_else(|error| panic!("pinned genesis should capture: {error}"));
+        let drifted_schedule = artifact.schedule().appended(Decision::RngDraw(RngDecision {
+            stream: RngStreamId::for_node("node-1"),
+            value: 99,
+        }));
+        let drifted_state = reduce(&artifact.scenario_def(), &drifted_schedule)
+            .unwrap_or_else(|error| panic!("drifted schedule should reduce: {error}"))
+            .id;
+        let schedule_drift_artifact = ReproductionArtifact::from_recorded_parts(
+            artifact.scenario_form().clone(),
+            drifted_schedule,
+        );
+        let wrong_state = ContentHash::from_canonical_material(
+            "crucible.test.reproduction-artifact",
+            "wrong-recorded-state",
+        );
+
+        assert_eq!(artifact.seed(), artifact.scenario_def().seed());
+        assert_eq!(artifact.scenario_form(), pinned.form());
+        assert_eq!(artifact.schedule(), &schedule);
+        assert_eq!(reduced_state, replay.state);
+        assert_eq!(
+            artifact.id(),
+            ContentHash::from_bytes(&artifact.canonical_bytes())
+        );
+        assert_eq!(artifact.to_compact_binary(), artifact.canonical_bytes());
+        assert_eq!(replay.artifact, artifact.id());
+        assert_eq!(replay.scenario, artifact.scenario_def().id());
+        assert_eq!(replay.schedule, artifact.schedule().content_hash());
+        assert_eq!(replay.state, expected_state);
+        assert_eq!(decoded_artifact, artifact);
+        assert_eq!(
+            decoded_artifact
+                .verify_replay(expected_state)
+                .unwrap_or_else(|error| panic!("decoded replay should verify: {error}")),
+            replay
+        );
+        assert_eq!(offline_replay_artifact.id(), artifact.id());
+        assert_eq!(
+            offline_replay_artifact.canonical_bytes(),
+            artifact.canonical_bytes()
+        );
+        assert_eq!(
+            offline_replay_artifact
+                .replay()
+                .unwrap_or_else(|error| panic!("offline replay should verify: {error}")),
+            replay
+        );
+        assert_eq!(pinned_genesis_artifact.scenario_form(), pinned.form());
+        assert!(pinned_genesis_artifact.schedule().is_empty());
+        assert_ne!(schedule_drift_artifact.id(), artifact.id());
+        assert!(matches!(
+            schedule_drift_artifact.verify_replay(expected_state),
+            Err(EngineError::ReproductionArtifactReplayMismatch {
+                artifact: replayed_artifact,
+                expected,
+                actual,
+            }) if replayed_artifact == schedule_drift_artifact.id()
+                && expected == expected_state
+                && actual == drifted_state
+        ));
+        assert!(matches!(
+            artifact.verify_replay(wrong_state),
+            Err(EngineError::ReproductionArtifactReplayMismatch {
+                artifact: replayed_artifact,
+                expected,
+                actual,
+            }) if replayed_artifact == artifact.id()
+                && expected == wrong_state
+                && actual == expected_state
         ));
     }
 
