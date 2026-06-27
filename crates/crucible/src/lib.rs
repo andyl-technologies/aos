@@ -72,6 +72,7 @@ pub use scheduler::{
     SchedulerLivenessError, SchedulerLivenessReport, SchedulerLivenessScenario,
     SchedulerLookaheadEdge, SchedulerLookaheadEdgeEndpoint, SchedulerLookaheadGraph,
     SchedulerNodeActivity, SchedulerQuiescence, SchedulerQuiescenceBlocker, SchedulerRendezvous,
+    SchedulerRendezvousNode, SchedulerRendezvousPurpose, SchedulerRendezvousRecord,
     SchedulerResolveDecisionRecord, SchedulerResolveFaultChoice, SchedulerRunCeilingPublication,
     SchedulerScenarioNode, SchedulerSendAuthorization, SchedulerSendAuthorizer, SchedulerTerminal,
     SchedulerTopologyChange, SchedulerTopologyChangeApplication, SchedulerTopologyChangeEffect,
