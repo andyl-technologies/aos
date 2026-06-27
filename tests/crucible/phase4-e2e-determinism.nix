@@ -190,7 +190,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "updated placeholder count";
-        needle = "placeholder_targets=4";
+        needle = "placeholder_targets=3";
       }
       {
         label = "implemented harness e2e target in Nix lint";

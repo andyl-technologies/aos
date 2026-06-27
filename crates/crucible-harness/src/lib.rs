@@ -206,7 +206,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:adversarial-determinism",
         phase: GatePhase::Phase3,
         owner: "crucible-harness",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:e2e-determinism",

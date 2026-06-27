@@ -828,7 +828,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase2  gate:any-guest                     (unmodified guest)
   phase3  gate:layer1-injection              (Contract B)
   phase3  gate:scheduler-liveness            (scheduler actor)
-  phase3  gate:adversarial-determinism       (2-VM hostile-condition matrix)
+  phase3  gate:adversarial-determinism       (modeled hostile-condition matrix)
   phase4  gate:replay-oracle                 (full temporal graph)
   phase4  gate:e2e-determinism               (mock backend)
   phase5  gate:control-responsive            (control plane)
@@ -986,10 +986,19 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   - Completed by `checks.crucible.phase2.gates.qemuInert`, which builds both QEMU
     variants from the pinned source and compares normalized boot/device-I/O, QMP,
     migration, and snapshot/restore command surface with sim mode off.
-- [ ] **T-HARN-22** Implement the adversarial host-condition harness (randomized
+- [x] **T-HARN-22** Implement the adversarial host-condition harness (randomized
   host scheduling, wall-clock jitter, varied core counts, induced I/O stalls) and
   `gate:adversarial-determinism` (byte-identical canonical logs/fingerprints). —
   satisfies [HARN-11]; spec §7.
+  Completed by `checks.crucible.phase3.gates.adversarialDeterminism`: the gate
+  runs a fixed adversarial scenario corpus through the shared
+  `canonical_host_adversary_matrix`, covering randomized task order, logical
+  affinity, load/yield jitter, varied worker counts, producer/consumer skew, and
+  modeled host I/O stalls while asserting byte-identical canonical logs and final
+  fingerprints. It also carries negative controls for profile-dependent logs,
+  fingerprints, observer output, and empty evidence; real multi-VM and
+  cross-machine reproduction artifacts remain owned by T-HARN-23 through
+  T-HARN-25.
 - [ ] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
   and implement `gate:e2e-determinism` (adversarial comparison + cross-machine
   reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.

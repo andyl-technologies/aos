@@ -199,7 +199,7 @@
       package = "crucible-harness";
       testTarget = "gate_adversarial_determinism";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:e2e-determinism";
@@ -381,7 +381,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=4
+            placeholder_targets=3
             RESULT
           '';
         }

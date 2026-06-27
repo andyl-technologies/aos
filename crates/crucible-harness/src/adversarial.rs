@@ -34,6 +34,101 @@ pub struct AdversarialRun {
     pub final_fingerprint: Vec<u8>,
 }
 
+/// A deterministic scenario in the adversarial determinism corpus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdversarialScenario {
+    /// Stable scenario name included in canonical log material.
+    pub name: String,
+    /// Deterministic scenario seed.
+    pub seed: u64,
+    /// Canonical operation stream for the scenario.
+    pub operations: Vec<AdversarialScenarioOperation>,
+}
+
+/// One canonical operation in an adversarial determinism scenario.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdversarialScenarioOperation {
+    /// A modeled message delivery between two nodes.
+    Deliver {
+        /// Virtual tick at which the message is delivered.
+        at_tick: u64,
+        /// Source node name.
+        from: String,
+        /// Destination node name.
+        to: String,
+        /// Stable message sequence number.
+        sequence: u64,
+    },
+    /// A modeled fault application or heal at a virtual tick.
+    Fault {
+        /// Virtual tick at which the fault changes state.
+        at_tick: u64,
+        /// Fault target name.
+        target: String,
+        /// Whether the fault is active after this operation.
+        active: bool,
+    },
+    /// A modeled host-side I/O operation whose timing must not affect state.
+    HostIo {
+        /// Virtual tick at which the modeled I/O result is observed.
+        at_tick: u64,
+        /// Stable resource name.
+        resource: String,
+        /// Deterministic byte count.
+        bytes: u64,
+    },
+}
+
+/// Successful result of `gate:adversarial-determinism`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdversarialGateReport {
+    /// Number of scenarios in the fixed corpus.
+    pub scenario_count: usize,
+    /// Number of hostile profiles used.
+    pub profile_count: usize,
+    /// Runs compared across the hostile profile matrix.
+    pub runs: Vec<AdversarialRun>,
+}
+
+/// Failure returned by `gate:adversarial-determinism`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdversarialGateError {
+    /// No scenarios were supplied.
+    EmptyScenarioCorpus,
+    /// A scenario has no operations to compare.
+    EmptyScenario {
+        /// Empty scenario name.
+        scenario: String,
+    },
+    /// No hostile host profiles were supplied.
+    EmptyProfileMatrix,
+    /// The hostile host fixture could not run.
+    HostAdversary(HostAdversaryError),
+    /// Runs diverged across hostile host profiles.
+    Comparison(AdversarialComparisonError),
+}
+
+/// One observed operation after running it through a hostile host profile.
+#[derive(Clone, Copy, Debug)]
+pub struct AdversarialObservation<'a> {
+    /// Host profile used for this observation.
+    pub profile: HostAdversaryProfile,
+    /// Scenario that owns the observed operation.
+    pub scenario: &'a AdversarialScenario,
+    /// Canonical operation index inside the scenario.
+    pub operation_index: usize,
+    /// Operation being projected into canonical log material.
+    pub operation: &'a AdversarialScenarioOperation,
+    /// Host task metadata produced by the adversarial fixture.
+    pub task: AdversarialTask,
+    /// Producer/consumer role that ran first under this profile.
+    pub first_role: ProducerConsumerRole,
+    /// Producer-side deterministic observation.
+    pub producer: &'a str,
+    /// Consumer-side deterministic observation.
+    pub consumer: &'a str,
+}
+
 /// A failed adversarial comparison.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AdversarialComparisonError {
@@ -391,6 +486,44 @@ impl fmt::Display for HostAdversaryError {
 
 impl Error for HostAdversaryError {}
 
+impl fmt::Display for AdversarialGateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyScenarioCorpus => {
+                write!(formatter, "adversarial determinism gate requires scenarios")
+            }
+            Self::EmptyScenario { scenario } => {
+                write!(
+                    formatter,
+                    "adversarial scenario `{scenario}` has no operations"
+                )
+            }
+            Self::EmptyProfileMatrix => {
+                write!(
+                    formatter,
+                    "adversarial determinism gate requires host profiles"
+                )
+            }
+            Self::HostAdversary(error) => write!(formatter, "{error}"),
+            Self::Comparison(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl Error for AdversarialGateError {}
+
+impl From<HostAdversaryError> for AdversarialGateError {
+    fn from(error: HostAdversaryError) -> Self {
+        Self::HostAdversary(error)
+    }
+}
+
+impl From<AdversarialComparisonError> for AdversarialGateError {
+    fn from(error: AdversarialComparisonError) -> Self {
+        Self::Comparison(error)
+    }
+}
+
 impl fmt::Display for AdversarialComparisonError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -413,6 +546,141 @@ impl Error for AdversarialComparisonError {}
 #[must_use]
 pub fn canonical_host_adversary_matrix() -> &'static [HostAdversaryProfile] {
     &HOST_ADVERSARY_MATRIX
+}
+
+/// Returns the fixed corpus used by `gate:adversarial-determinism`.
+#[must_use]
+pub fn representative_adversarial_corpus() -> Vec<AdversarialScenario> {
+    vec![
+        AdversarialScenario {
+            name: String::from("two-node-partition-recovery"),
+            seed: 0x0010_ad00_0001,
+            operations: vec![
+                AdversarialScenarioOperation::Deliver {
+                    at_tick: 5,
+                    from: String::from("client"),
+                    to: String::from("server"),
+                    sequence: 1,
+                },
+                AdversarialScenarioOperation::Fault {
+                    at_tick: 13,
+                    target: String::from("client-server-link"),
+                    active: true,
+                },
+                AdversarialScenarioOperation::HostIo {
+                    at_tick: 21,
+                    resource: String::from("checkpoint-segment"),
+                    bytes: 4096,
+                },
+                AdversarialScenarioOperation::Fault {
+                    at_tick: 34,
+                    target: String::from("client-server-link"),
+                    active: false,
+                },
+                AdversarialScenarioOperation::Deliver {
+                    at_tick: 55,
+                    from: String::from("server"),
+                    to: String::from("client"),
+                    sequence: 2,
+                },
+            ],
+        },
+        AdversarialScenario {
+            name: String::from("storage-read-stall"),
+            seed: 0x0010_ad00_0002,
+            operations: vec![
+                AdversarialScenarioOperation::HostIo {
+                    at_tick: 3,
+                    resource: String::from("object-store-read"),
+                    bytes: 8192,
+                },
+                AdversarialScenarioOperation::Deliver {
+                    at_tick: 8,
+                    from: String::from("primary"),
+                    to: String::from("replica"),
+                    sequence: 3,
+                },
+                AdversarialScenarioOperation::Deliver {
+                    at_tick: 21,
+                    from: String::from("replica"),
+                    to: String::from("primary"),
+                    sequence: 4,
+                },
+            ],
+        },
+    ]
+}
+
+/// Runs the adversarial determinism gate over a fixed scenario corpus.
+///
+/// Each scenario is executed under every hostile host profile. The fixture varies
+/// task order, worker count, logical affinity, producer/consumer timing skew,
+/// and injected host load, while the default canonical projection ignores
+/// host-profile metadata that must not affect execution state.
+///
+/// # Errors
+///
+/// Returns [`AdversarialGateError`] if the scenario corpus or profile matrix is
+/// empty, a scenario contains no operations, the host-adversary fixture fails, or
+/// any hostile run produces different canonical log or fingerprint bytes.
+pub fn run_adversarial_determinism_gate(
+    scenarios: &[AdversarialScenario],
+    profiles: &[HostAdversaryProfile],
+) -> Result<AdversarialGateReport, AdversarialGateError> {
+    run_adversarial_determinism_gate_with_observer(
+        scenarios,
+        profiles,
+        canonical_adversarial_observation,
+    )
+}
+
+/// Runs the adversarial determinism gate with a custom observation projection.
+///
+/// This entry point is primarily used by negative controls. A projection that
+/// leaks host-profile metadata into canonical material must make the gate fail,
+/// proving that the gate runner compares evidence produced after hostile-profile
+/// execution instead of only comparing manually assembled [`AdversarialRun`]
+/// values.
+///
+/// # Errors
+///
+/// Returns [`AdversarialGateError`] if the scenario corpus or profile matrix is
+/// empty, a scenario contains no operations, the host-adversary fixture fails, or
+/// the projection produces different canonical log or fingerprint bytes across
+/// hostile profiles.
+pub fn run_adversarial_determinism_gate_with_observer<F>(
+    scenarios: &[AdversarialScenario],
+    profiles: &[HostAdversaryProfile],
+    observe: F,
+) -> Result<AdversarialGateReport, AdversarialGateError>
+where
+    F: Fn(AdversarialObservation<'_>) -> String,
+{
+    if scenarios.is_empty() {
+        return Err(AdversarialGateError::EmptyScenarioCorpus);
+    }
+    if profiles.is_empty() {
+        return Err(AdversarialGateError::EmptyProfileMatrix);
+    }
+    for scenario in scenarios {
+        if scenario.operations.is_empty() {
+            return Err(AdversarialGateError::EmptyScenario {
+                scenario: scenario.name.clone(),
+            });
+        }
+    }
+
+    let mut runs = Vec::with_capacity(profiles.len());
+    for profile in profiles {
+        runs.push(run_adversarial_profile(scenarios, *profile, &observe)?);
+    }
+
+    compare_adversarial_runs(&runs)?;
+    Ok(AdversarialGateReport {
+        scenario_count: scenarios.len(),
+        profile_count: profiles.len(),
+        runs,
+    })
 }
 
 /// Builds a deterministic execution plan for a host-adversary profile.
@@ -655,6 +923,217 @@ pub fn compare_adversarial_runs(runs: &[AdversarialRun]) -> Result<(), Adversari
     }
 
     Ok(())
+}
+
+fn run_adversarial_profile(
+    scenarios: &[AdversarialScenario],
+    profile: HostAdversaryProfile,
+    observe: &impl Fn(AdversarialObservation<'_>) -> String,
+) -> Result<AdversarialRun, HostAdversaryError> {
+    let mut log = AdversarialCanonicalMaterial::new();
+    log.record(
+        "log",
+        &[AdversarialCanonicalField::Str("crucible.adversarial.v1")],
+    );
+
+    for scenario in scenarios {
+        append_profiled_scenario_log(&mut log, scenario, profile, observe)?;
+    }
+
+    let canonical_log = log.finish().into_bytes();
+    let fingerprint_material = String::from_utf8_lossy(&canonical_log);
+    let final_fingerprint =
+        stable_digest("crucible.adversarial.fingerprint.v1", &fingerprint_material);
+
+    Ok(AdversarialRun {
+        profile: HostileProfile {
+            name: profile.name.to_string(),
+        },
+        canonical_log,
+        final_fingerprint,
+    })
+}
+
+fn append_profiled_scenario_log(
+    log: &mut AdversarialCanonicalMaterial,
+    scenario: &AdversarialScenario,
+    profile: HostAdversaryProfile,
+    observe: &impl Fn(AdversarialObservation<'_>) -> String,
+) -> Result<(), HostAdversaryError> {
+    let pairs = run_profiled_producer_consumer_tasks(
+        profile,
+        scenario.operations.len(),
+        |task| format!("producer:{}", task.index),
+        |task| format!("consumer:{}", task.index),
+    )?;
+
+    log.record(
+        "scenario",
+        &[
+            AdversarialCanonicalField::Str(&scenario.name),
+            AdversarialCanonicalField::U64(scenario.seed),
+        ],
+    );
+    for pair in pairs {
+        let operation = &scenario.operations[pair.task.index];
+        let observed = observe(AdversarialObservation {
+            profile,
+            scenario,
+            operation_index: pair.task.index,
+            operation,
+            task: pair.task,
+            first_role: pair.first_role,
+            producer: &pair.producer,
+            consumer: &pair.consumer,
+        });
+        log.record(
+            "event",
+            &[
+                AdversarialCanonicalField::U64(pair.task.index as u64),
+                AdversarialCanonicalField::Str(&pair.producer),
+                AdversarialCanonicalField::Str(&pair.consumer),
+            ],
+        );
+        log.record("observation", &[AdversarialCanonicalField::Str(&observed)]);
+        append_operation_record(log, operation);
+    }
+
+    Ok(())
+}
+
+fn canonical_adversarial_observation(observation: AdversarialObservation<'_>) -> String {
+    match observation.operation {
+        AdversarialScenarioOperation::Deliver {
+            at_tick,
+            from,
+            to,
+            sequence,
+        } => format!(
+            "{}:{}:deliver:{}:{}:{}:{}",
+            observation.scenario.name, observation.operation_index, at_tick, from, to, sequence
+        ),
+        AdversarialScenarioOperation::Fault {
+            at_tick,
+            target,
+            active,
+        } => format!(
+            "{}:{}:fault:{}:{}:{}",
+            observation.scenario.name, observation.operation_index, at_tick, target, active
+        ),
+        AdversarialScenarioOperation::HostIo {
+            at_tick,
+            resource,
+            bytes,
+        } => format!(
+            "{}:{}:host-io:{}:{}:{}",
+            observation.scenario.name, observation.operation_index, at_tick, resource, bytes
+        ),
+    }
+}
+
+fn append_operation_record(
+    log: &mut AdversarialCanonicalMaterial,
+    operation: &AdversarialScenarioOperation,
+) {
+    match operation {
+        AdversarialScenarioOperation::Deliver {
+            at_tick,
+            from,
+            to,
+            sequence,
+        } => log.record(
+            "operation.deliver",
+            &[
+                AdversarialCanonicalField::U64(*at_tick),
+                AdversarialCanonicalField::Str(from),
+                AdversarialCanonicalField::Str(to),
+                AdversarialCanonicalField::U64(*sequence),
+            ],
+        ),
+        AdversarialScenarioOperation::Fault {
+            at_tick,
+            target,
+            active,
+        } => log.record(
+            "operation.fault",
+            &[
+                AdversarialCanonicalField::U64(*at_tick),
+                AdversarialCanonicalField::Str(target),
+                AdversarialCanonicalField::Bool(*active),
+            ],
+        ),
+        AdversarialScenarioOperation::HostIo {
+            at_tick,
+            resource,
+            bytes,
+        } => log.record(
+            "operation.host-io",
+            &[
+                AdversarialCanonicalField::U64(*at_tick),
+                AdversarialCanonicalField::Str(resource),
+                AdversarialCanonicalField::U64(*bytes),
+            ],
+        ),
+    }
+}
+
+struct AdversarialCanonicalMaterial {
+    output: String,
+}
+
+impl AdversarialCanonicalMaterial {
+    fn new() -> Self {
+        Self {
+            output: String::new(),
+        }
+    }
+
+    fn record(&mut self, tag: &str, fields: &[AdversarialCanonicalField<'_>]) {
+        self.length_prefixed(tag);
+        self.output.push(' ');
+        self.output.push_str(&fields.len().to_string());
+        for field in fields {
+            self.output.push(' ');
+            match field {
+                AdversarialCanonicalField::Str(value) => self.length_prefixed(value),
+                AdversarialCanonicalField::U64(value) => self.length_prefixed(&value.to_string()),
+                AdversarialCanonicalField::Bool(value) => {
+                    self.length_prefixed(if *value { "true" } else { "false" });
+                }
+            }
+        }
+        self.output.push('\n');
+    }
+
+    fn finish(self) -> String {
+        self.output
+    }
+
+    fn length_prefixed(&mut self, value: &str) {
+        self.output.push_str(&value.len().to_string());
+        self.output.push(':');
+        self.output.push_str(value);
+    }
+}
+
+enum AdversarialCanonicalField<'a> {
+    Str(&'a str),
+    U64(u64),
+    Bool(bool),
+}
+
+fn stable_digest(domain: &str, material: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(32);
+    for lane in 0..4 {
+        let mut state = 0xcbf2_9ce4_8422_2325u64 ^ lane;
+        for byte in domain.bytes().chain([0xff]).chain(material.bytes()) {
+            state ^= u64::from(byte);
+            state = state.wrapping_mul(0x0000_0100_0000_01b3);
+            state ^= state.rotate_left(17);
+        }
+        bytes.extend_from_slice(&state.to_be_bytes());
+    }
+    bytes
 }
 
 fn strided_task_indexes(task_count: usize, stride: usize) -> Vec<usize> {

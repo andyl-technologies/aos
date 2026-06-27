@@ -16,7 +16,7 @@
   modelFingerprintGate = builtins.readFile ../../crates/crucible/tests/gate_single_vm_fingerprint.rs;
   defaultChecks = builtins.readFile ./default.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  adversarialGatePlaceholder = builtins.readFile ../../crates/crucible-harness/tests/gate_adversarial_determinism.rs;
+  adversarialGateTest = builtins.readFile ../../crates/crucible-harness/tests/gate_adversarial_determinism.rs;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -172,10 +172,28 @@
         needle = "struct HostAdversaryProfile";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_adversarial_determinism.rs" adversarialGatePlaceholder [
+    ++ failuresFor "crates/crucible-harness/tests/gate_adversarial_determinism.rs" adversarialGateTest [
       {
-        label = "phase3 adversarial determinism gate remains placeholder";
-        needle = "#[ignore = \"T-CRATE-8/T-HARN-22 implement gate:adversarial-determinism\"]";
+        label = "phase3 gate consumes shared matrix";
+        needle = "canonical_host_adversary_matrix()";
+      }
+      {
+        label = "phase3 gate consumes representative corpus";
+        needle = "representative_adversarial_corpus()";
+      }
+      {
+        label = "phase3 gate consumes shared runner";
+        needle = "run_adversarial_determinism_gate";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-harness/tests/gate_adversarial_determinism.rs" adversarialGateTest [
+      {
+        label = "ignored phase3 placeholder";
+        needle = "#[ignore";
+      }
+      {
+        label = "pending implementation panic";
+        needle = "implementation is pending";
       }
     ];
 in
