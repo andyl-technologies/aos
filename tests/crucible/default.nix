@@ -490,6 +490,11 @@ in {
       attrPath = "checks.crucible.phase3.blockSubnodeOverlay";
       taskIds = ["T-IO-2"];
     };
+    blockWireAbi = import ./phase3-block-wire-abi.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.blockWireAbi";
+      taskIds = ["T-IO-3"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
