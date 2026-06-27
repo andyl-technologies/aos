@@ -2129,26 +2129,35 @@ fn cache_pins_section(org_slug: &str, csrf: &str, cache: &Cache, pins: &[CachePi
     if pins.is_empty() {
         body.push_str("<p class=\"dim\">No manual pins. Add one below to root a store path.</p>\n");
     } else {
-        // Four columns, not six: the package name and the store hash are the
-        // same store path, so they share one cell (name on the primary line, the
-        // hash on a dim sub-line); the pin's age and expiry likewise stack in one
-        // cell. This keeps every column wide enough to read without squishing.
+        // Four columns. The store name already begins with the hash, so the
+        // package cell shows just the human name on its primary line and the hash
+        // (with the pin's age) once, on a dim sub-line — no duplication. The
+        // expiry column is editable in place: its form re-submits to `pin/add`,
+        // which renews the pin, so a pin's lifetime can be changed without
+        // re-typing its hash (blank = no expiry).
         body.push_str(
             "<table class=\"pins\">\n<thead><tr>\
-             <th>package</th><th>closure</th><th>pinned</th><th></th></tr></thead>\n<tbody>\n",
+             <th>package</th><th>closure</th><th>expiry</th><th></th></tr></thead>\n<tbody>\n",
         );
         for pin in pins {
+            // The store name is "<hash>-<name>"; strip the hash prefix so the
+            // primary line reads as the package name and the hash appears once.
+            let pkg = pin
+                .store_name
+                .strip_prefix(pin.store_hash.as_str())
+                .and_then(|rest| rest.strip_prefix('-'))
+                .unwrap_or(pin.store_name.as_str());
             // A short, scannable prefix of the 32-char hash; the title carries
             // the full value for copy/inspection.
             let short_hash: String = pin.store_hash.chars().take(12).collect();
-            let name = if pin.store_name.is_empty() {
+            let name = if pkg.is_empty() {
                 if pin.present {
                     "<span class=\"dim\">(unnamed)</span>".to_string()
                 } else {
                     "<span class=\"warn\">(not in cache)</span>".to_string()
                 }
             } else {
-                escape(&pin.store_name)
+                escape(pkg)
             };
             let closure = if pin.present {
                 format!(
@@ -2160,17 +2169,22 @@ fn cache_pins_section(org_slug: &str, csrf: &str, cache: &Cache, pins: &[CachePi
             } else {
                 "<span class=\"dim\">unknown</span>".to_string()
             };
-            let expires = match pin.expires_at {
+            let current_expiry = match pin.expires_at {
                 Some(at) => format!("expires <span title=\"{}\">{}</span>", at, ago(at)),
-                None => "<span class=\"chip\">no expiry</span>".to_string(),
+                None => "<span class=\"dim\">no expiry</span>".to_string(),
             };
             let _ = write!(
                 body,
                 "<tr>\
                  <td><div>{name}</div>\
-                   <div class=\"subline\"><code title=\"{full}\">{short}\u{2026}</code></div></td>\
+                   <div class=\"subline\"><code title=\"{full}\">{short}\u{2026}</code> · pinned {created}</div></td>\
                  <td>{closure}</td>\
-                 <td><div>pinned {created}</div><div class=\"subline\">{expires}</div></td>\
+                 <td><form class=\"console\" method=\"post\" \
+                 action=\"/-/org/{org}/caches/{slug}/pin/add\" style=\"display:inline\">{csrf}\
+                 <input type=\"hidden\" name=\"store_hash\" value=\"{full}\">\
+                 <input type=\"number\" name=\"expires_days\" min=\"1\" autocomplete=\"off\" \
+                 placeholder=\"days\"> <button>set</button></form>\
+                 <div class=\"subline\">{current}</div></td>\
                  <td><form class=\"console\" method=\"post\" \
                  action=\"/-/org/{org}/caches/{slug}/pin/remove\" style=\"display:inline\">{csrf}\
                  <input type=\"hidden\" name=\"store_hash\" value=\"{full}\">\
@@ -2180,7 +2194,7 @@ fn cache_pins_section(org_slug: &str, csrf: &str, cache: &Cache, pins: &[CachePi
                 short = escape(&short_hash),
                 closure = closure,
                 created = ago(pin.created_at),
-                expires = expires,
+                current = current_expiry,
                 org = org,
                 slug = slug,
                 csrf = csrf_field(csrf),
@@ -5335,9 +5349,14 @@ mod cache_render_tests {
         assert!(pins_tab.contains("Pins (manual GC roots)"));
         assert!(pins_tab.contains("/-/org/acme/caches/build/pin/add"));
         assert!(pins_tab.contains("/-/org/acme/caches/build/pin/remove"));
-        assert!(pins_tab.contains("hello-2.12"));
+        // The package name is shown without its hash prefix (the hash lives once,
+        // on the sub-line) — no duplicated "<hash>-<name>" / "<hash>…" pair.
+        assert!(pins_tab.contains("<div>hello-2.12</div>"));
+        assert!(!pins_tab.contains("012345-hello-2.12"));
         assert!(pins_tab.contains("3.0 MiB · 4 objects"));
         assert!(pins_tab.contains("no expiry"));
+        // The expiry is editable in place (the per-row form re-submits to pin/add).
+        assert!(pins_tab.contains("name=\"expires_days\""));
         assert!(pins_tab.contains("<table class=\"pins\">"));
         assert!(pins_tab.contains("class=\"subline\""));
         assert!(!pins_tab.contains("class=\"linktable\""));

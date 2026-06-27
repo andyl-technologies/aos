@@ -194,6 +194,9 @@ td button { white-space: nowrap; }
 /* The pins table keeps each cell's primary line on one row (the sub-lines stack
  * beneath it), so columns size to their content rather than wrapping. */
 .pins td { white-space: nowrap; }
+/* The inline "expires in N days" editor is a compact field, not a full-width
+ * console input. */
+.pins input[type="number"] { width: 4.5em; }
 
 .ok { color: var(--ok); }
 .warn { color: var(--warn); }
