@@ -390,6 +390,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerQuantumLoop";
       taskIds = ["T-SCHED-12"];
     };
+    schedulerEffectiveHorizon = import ./phase3-scheduler-effective-horizon.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerEffectiveHorizon";
+      taskIds = ["T-SCHED-13"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
