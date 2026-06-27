@@ -369,6 +369,16 @@ impl PersistCache {
         Ok((advisory_guard, write_guard))
     }
 
+    pub(super) fn lock_node_metadata_read(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistNodeMetadataIndexError> {
+        let path = self.layout.node_metadata_lock_path();
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Shared)
+            .map_err(|source| PersistNodeMetadataIndexError::AdvisoryReadLock { path, source })?;
+        let read_guard = self.root_locks.lock_node_metadata()?;
+        Ok((advisory_guard, read_guard))
+    }
+
     pub(super) fn lock_node_traces_write(
         &self,
     ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistNodeTraceLogError> {

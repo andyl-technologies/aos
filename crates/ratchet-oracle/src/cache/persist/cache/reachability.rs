@@ -12,25 +12,24 @@ impl PersistCache {
     /// resolved pack records without materializing payloads. Metadata records
     /// without a value hash are ignored. Metadata
     /// links whose value hash is missing from the blob index are reported as
-    /// missing roots. The cache-level call holds the shared value-store
-    /// advisory reader lock while inspecting the value index and pack, but it
-    /// does not rewrite sidecars, choose a retention window, delete blobs, or
-    /// relocate records.
+    /// missing roots. The cache-level call holds shared value-store and
+    /// node-metadata advisory reader locks while inspecting the value index,
+    /// value pack, and metadata sidecar, but it does not rewrite sidecars,
+    /// choose a retention window, delete blobs, or relocate records.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeValueRootPlanError`] if the value-store advisory
-    /// read lock cannot be acquired, if the same-root value-index or
-    /// node-metadata lock is poisoned, if either sidecar cannot be snapshotted,
-    /// or if a blob location selected by node metadata cannot be verified
-    /// against the linked value hash.
+    /// Returns [`PersistNodeValueRootPlanError`] if a value-store or
+    /// node-metadata advisory read lock cannot be acquired, if the same-root
+    /// value-index or node-metadata lock is poisoned, if either sidecar cannot
+    /// be snapshotted, or if a blob location selected by node metadata cannot
+    /// be verified against the linked value hash.
     pub fn plan_node_value_roots(
         &self,
     ) -> Result<PersistNodeValueRootPlan, PersistNodeValueRootPlanError> {
         let (_value_advisory_guard, _value_guard) = self.lock_node_value_root_plan_read()?;
-        let _metadata_guard = self
-            .root_locks
-            .lock_node_metadata()
+        let (_metadata_advisory_guard, _metadata_guard) = self
+            .lock_node_metadata_read()
             .map_err(|source| PersistNodeValueRootPlanError::Metadata { source })?;
         let metadata_entries = self
             .node_metadata_index
@@ -71,27 +70,27 @@ impl PersistCache {
     /// node-rooted, indexed without a current node root, or absent from the
     /// latest value index. Missing node value links are reported separately.
     /// The cache-level call holds the shared value-store advisory reader lock
-    /// while inspecting the value index and pack, but it does not choose a
-    /// retention window, prune metadata, rewrite sidecars, delete blobs, or
-    /// relocate records.
+    /// while inspecting the value index and pack, and holds the shared
+    /// node-metadata advisory reader lock while snapshotting the metadata
+    /// sidecar; it does not choose a retention window, prune metadata, rewrite
+    /// sidecars, delete blobs, or relocate records.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistValueBlobReachabilityPlanError`] if the value-store
-    /// advisory read lock cannot be acquired, if the same-root value-index or
-    /// node-metadata lock is poisoned, if either sidecar cannot be snapshotted,
-    /// if the value index contains a non-value key, if an indexed value blob
-    /// cannot be verified, or if the value pack cannot be fully scanned and
-    /// verified.
+    /// Returns [`PersistValueBlobReachabilityPlanError`] if a value-store or
+    /// node-metadata advisory read lock cannot be acquired, if the same-root
+    /// value-index or node-metadata lock is poisoned, if either sidecar cannot
+    /// be snapshotted, if the value index contains a non-value key, if an
+    /// indexed value blob cannot be verified, or if the value pack cannot be
+    /// fully scanned and verified.
     pub fn plan_value_blob_reachability(
         &self,
     ) -> Result<PersistValueBlobReachabilityPlan, PersistValueBlobReachabilityPlanError> {
         let (_value_advisory_guard, _value_guard) =
             self.lock_value_blob_reachability_plan_read()?;
         let metadata_entries = {
-            let _metadata_guard = self
-                .root_locks
-                .lock_node_metadata()
+            let (_metadata_advisory_guard, _metadata_guard) = self
+                .lock_node_metadata_read()
                 .map_err(|source| PersistValueBlobReachabilityPlanError::Metadata { source })?;
             self.node_metadata_index
                 .latest_entries()

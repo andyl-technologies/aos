@@ -229,6 +229,14 @@ pub enum PersistNodeMetadataIndexError {
         /// The underlying advisory lock error.
         source: ratchet_cache::file_lock::AdvisoryFileLockError,
     },
+    /// The advisory node-metadata read lock could not be acquired.
+    #[error("failed to acquire persistent node metadata advisory read lock at {path}")]
+    AdvisoryReadLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The index parent directory could not be created.
     #[error("failed to create persistent node metadata index parent {path:?}")]
     CreateParent {

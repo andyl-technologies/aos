@@ -429,6 +429,42 @@ fn cache_node_value_root_plan_acquires_value_store_advisory_lock() {
 }
 
 #[test]
+fn cache_node_value_root_plan_acquires_node_metadata_advisory_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_node_metadata_for_tests()
+        .expect("node metadata lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .plan_node_value_roots()
+            .map(|plan| plan.resolved_roots().len())
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("node value-root plan result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.node_metadata_lock_path());
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "node value-root planning should wait while the node metadata lock is held"
+    );
+    drop(guard);
+
+    let resolved_roots = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("node value-root plan completes after metadata lock release")
+        .expect("node value-root plan succeeds");
+    handle.join().expect("worker joins");
+    assert_eq!(resolved_roots, 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_value_root_plan_resolves_latest_metadata_links() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

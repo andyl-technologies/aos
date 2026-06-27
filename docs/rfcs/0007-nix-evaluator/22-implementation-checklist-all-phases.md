@@ -1514,11 +1514,12 @@ alone (`M-1`/`Q-A`).
       verifies resolved value-pack records while reporting metadata links whose
       value hash is missing from the blob index. The value-index snapshot and
       value-pack verification run under the shared `values` store advisory lock
-      plus same-root store lock. This is diagnostic node-to-value reachability
-      only; retention windows, metadata pruning, pack rewriting/deletion,
-      live-record relocation, automatic GC policy, raw lower-level writer
-      coordination, mmap reads, Attic transport, and harness proof remain open
-      (`C-13`/`R-14`).
+      plus same-root store lock; the node-metadata snapshot holds the shared
+      node-metadata advisory lock plus same-root metadata lock. This is
+      diagnostic node-to-value reachability only; retention windows, metadata
+      pruning, pack rewriting/deletion, live-record relocation, automatic GC
+      policy, raw lower-level writer coordination, mmap reads, Attic transport,
+      and harness proof remain open (`C-13`/`R-14`).
 - [x] Current read-only value-pack reachability plan:
       `PersistCache::plan_value_blob_reachability` snapshots latest node
       metadata and `values` blob-index entries, verifies node-rooted records,
@@ -1526,7 +1527,9 @@ alone (`M-1`/`Q-A`).
       indexed-without-node-root, or absent from latest index roots while
       reporting missing node metadata links. The value-index snapshot and
       value-pack verification/scan run under the shared `values` store advisory
-      lock plus same-root store lock. This is diagnostic classification only;
+      lock plus same-root store lock; the node-metadata snapshot holds the
+      shared node-metadata advisory lock plus same-root metadata lock only
+      while collecting metadata entries. This is diagnostic classification only;
       retention windows, metadata pruning, sidecar repair, pack
       rewriting/deletion, live-record relocation, automatic GC policy, raw
       lower-level writer coordination, mmap reads, Attic transport, and harness
@@ -1766,20 +1769,25 @@ alone (`M-1`/`Q-A`).
       pack/index writers, different roots, two-machine misses, full
       filesystem-lock/CAS policy, automatic repair/GC policy, LMDB/redb
       transactions, and loom/harness proof remain open (`C-13`/`R-4`/`R-14`).
-- [x] Current same-process plus advisory node-metadata writer lock precursor:
-      independently opened `PersistCache` handles in one process acquire an
-      exclusive `ratchet-cache::file_lock::AdvisoryFileLock` at
-      `.locks/node-metadata.lock` before acquiring their node-metadata write
-      mutex from `ratchet-cache::root_locks`, so cache-level raw metadata
-      appends, typed reuse/value-hash read-modify-appends, current-demand
-      increments, run-boundary advancement, and metadata compaction serialize
-      for a live canonical cache root. Concurrent same-root demand records keep
-      every current-run increment, poisoned live metadata locks are reported
-      before any sidecar write, and cooperating cross-process cache-level
-      metadata writers share the same advisory file. Raw lower-level
-      `PersistNodeMetadataIndex` users, different roots, two-machine races,
-      full CAS-grade coordination, LMDB/redb node tables, automatic GC/repack,
-      and loom/harness proof remain open (`C-13`/`R-4`/`S-14`).
+- [x] Current same-process plus advisory node-metadata access lock precursor:
+      independently opened `PersistCache` handles in one process acquire
+      `ratchet-cache::file_lock::AdvisoryFileLock` at
+      `.locks/node-metadata.lock` before acquiring their node-metadata mutex
+      from `ratchet-cache::root_locks`, so read-only reachability metadata
+      snapshots hold shared advisory locks, while raw metadata appends, typed
+      reuse/value-hash read-modify-appends, current-demand increments,
+      run-boundary advancement, and metadata compaction hold exclusive advisory
+      locks for a live canonical cache root. Concurrent same-root demand records
+      keep every current-run increment, poisoned live metadata locks are reported
+      before any sidecar write or reachability metadata snapshot, and
+      cooperating cross-process cache-level metadata snapshot readers and
+      writers share the same advisory file. Cache-level metadata lookups that
+      can be followed by value-store reads intentionally remain outside this
+      reader lock to preserve the existing metadata-first load order.
+      Raw lower-level `PersistNodeMetadataIndex` users, different roots,
+      two-machine races, full CAS-grade coordination, LMDB/redb node tables,
+      automatic GC/repack, and loom/harness proof remain open
+      (`C-13`/`R-4`/`S-14`).
 - [x] Current same-process plus advisory node-trace writer lock precursor:
       independently opened `PersistCache` handles in one process acquire an
       exclusive `ratchet-cache::file_lock::AdvisoryFileLock` at
@@ -1847,9 +1855,10 @@ alone (`M-1`/`Q-A`).
       artifact raw mapping lookups, liveness/reachability sidecar snapshots,
       mapping writes, indexed artifact hydration reads, and file-pack maintenance
       phases use `.locks/file-artifacts.lock` and `.locks/parse-artifacts.lock`,
-      cache-level node metadata writes plus metadata compaction use
-      `.locks/node-metadata.lock`, and cache-level node trace writes plus trace
-      compaction use `.locks/node-traces.lock`. This is
+      cache-level reachability metadata snapshots, metadata writes, and metadata
+      compaction use `.locks/node-metadata.lock`, and cache-level node trace
+      writes plus trace compaction use
+      `.locks/node-traces.lock`. This is
       filesystem-lock substrate plus open-initialization and selected
       cache-level blob-store reads/writes/planning/maintenance plus
       mapping/metadata/trace writes/maintenance only:
@@ -1911,10 +1920,11 @@ alone (`M-1`/`Q-A`).
       resolves lookups with newest-record-wins semantics, and
       `PersistCache::record_node_metadata`/`lookup_node_metadata` expose the
       sidecar through the opened persistent cache root. This is a simple
-      fixed-record sidecar only; typed counter update helpers and force-cache
-      demand accounting are covered by following rows, while LMDB/redb node
-      tables, process-boundary updates, mmap reads, GC/repack, and AOS tuning
-      remain open (`C-13`/`C-14`/`S-14`).
+      fixed-record sidecar only; typed counter update helpers, force-cache
+      demand accounting, and advisory lock coverage are covered by following
+      rows, while raw lower-level sidecar coordination, LMDB/redb node tables,
+      process-boundary updates, mmap reads, GC/repack, and AOS tuning remain open
+      (`C-13`/`C-14`/`S-14`).
 - [x] Current `ratchet-cache` fixed-record node-metadata substrate:
       `node_metadata::NodeMetadataKey`, `NodeMetadataValue`,
       `NodeMetadataEntry`, and `NodeMetadataIndex` provide the generic

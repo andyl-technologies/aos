@@ -40,6 +40,43 @@ fn cache_value_blob_reachability_plan_acquires_value_store_advisory_lock() {
 }
 
 #[test]
+fn cache_value_blob_reachability_plan_acquires_node_metadata_advisory_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_node_metadata_for_tests()
+        .expect("node metadata lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .plan_value_blob_reachability()
+            .map(|plan| plan.node_roots().len())
+            .map_err(|error| error.to_string());
+        tx.send(result)
+            .expect("value reachability plan result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.node_metadata_lock_path());
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "value reachability planning should wait while the node metadata lock is held"
+    );
+    drop(guard);
+
+    let node_roots = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("value reachability plan completes after metadata lock release")
+        .expect("value reachability plan succeeds");
+    handle.join().expect("worker joins");
+    assert_eq!(node_roots, 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_value_blob_reachability_plan_classifies_value_records() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
