@@ -13,9 +13,9 @@
 //! [`decision`] owns seeded decision recording, [`io_subnode`] owns the
 //! deterministic I/O sub-node lifecycle, [`block_subnode`] owns the block
 //! copy-on-write overlay, [`ninep_subnode`] owns the deterministic 9p served
-//! tree, [`backend`] owns the VM backend boundary, [`scheduler`] owns the
-//! quantum-loop boundary, and `sim_backend` provides the gated in-process test
-//! double.
+//! tree, [`network_link_subnode`] owns the deterministic network-link model,
+//! [`backend`] owns the VM backend boundary, [`scheduler`] owns the quantum-loop
+//! boundary, and `sim_backend` provides the gated in-process test double.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -26,6 +26,7 @@ pub mod block_subnode;
 pub mod decision;
 pub mod io_subnode;
 pub mod model;
+pub mod network_link_subnode;
 pub mod ninep_subnode;
 pub mod scheduler;
 #[cfg(feature = "test-double")]
@@ -74,6 +75,12 @@ pub use model::{
     VmArchitecture, VmSnapshotRef, WhiteBoxPolicy, World, WorldLookaheadEdge, WorldNode,
     WorldStaticTopology, bake, instantiate, reduce, step,
 };
+pub use network_link_subnode::{
+    NETWORK_ROUTER_SLOT_INDEX, NETWORK_ROUTER_SLOT_NAME, NETWORK_ROUTER_SLOT_NODE_NAME,
+    NetworkLinkDelivery, NetworkLinkEffectiveFaults, NetworkLinkEndpointRole, NetworkLinkError,
+    NetworkLinkFrame, NetworkLinkPerturbations, NetworkLinkPlan, NetworkLinkSubNode,
+    network_router_node, sort_network_link_deliveries,
+};
 pub use ninep_subnode::{
     NINEP_BLOCK_COUNT_UNIT, NINEP_DEFAULT_MAXIMUM_MSIZE, NINEP_EINVAL, NINEP_EIO, NINEP_ENOSYS,
     NINEP_EROFS, NINEP_FIXED_BLOCK_SIZE, NINEP_FIXED_EPOCH_SECONDS, NINEP_FIXED_GID,
@@ -112,8 +119,8 @@ pub use scheduler::{
     horizon_from_exact_local_event, horizon_from_network_lookahead, lookahead_for_node,
     network_horizon_from_lookahead, next_exact_local_event, next_scheduled_event_key,
     ordered_scheduled_events, ordered_timeline_keys, rendezvous_cap_for,
-    resolve_due_scheduled_events, resolve_probabilistic_decisions, scheduled_event_delivery_time,
-    scheduled_event_resolve_class, scheduler_rr_run_subdivision,
+    resolve_due_scheduled_events, resolve_network_link_frame, resolve_probabilistic_decisions,
+    scheduled_event_delivery_time, scheduled_event_resolve_class, scheduler_rr_run_subdivision,
     unresolved_cross_node_dependencies,
 };
 #[cfg(feature = "test-double")]

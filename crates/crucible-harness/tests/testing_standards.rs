@@ -89,8 +89,13 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     },
     GateTestingStandard {
         gate: "gate:layer1-injection",
-        owner_packages: &["crucible-device", "crucible-protocol", "crucible-shmem"],
-        layers: &[Layer::L1],
+        owner_packages: &[
+            "crucible-device",
+            "crucible-protocol",
+            "crucible-shmem",
+            "crucible",
+        ],
+        layers: &[Layer::L1, Layer::L3],
         shape: TestShape::ObservedInjectionIcountVectors,
         backend: TestBackend::InProcess,
     },
@@ -232,6 +237,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
         package: "crucible",
         gates: &[
             "gate:layer0-determinism",
+            "gate:layer1-injection",
             "gate:replay-oracle",
             "gate:content-address",
             "gate:scheduler-liveness",

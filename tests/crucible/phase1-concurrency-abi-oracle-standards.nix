@@ -275,6 +275,13 @@
       placeholder = false;
     }
     {
+      gate = "gate:layer1-injection";
+      package = "crucible";
+      testTarget = "network_link_subnode";
+      requiredFeatures = ["test-double"];
+      placeholder = false;
+    }
+    {
       gate = "gate:replay-oracle";
       package = "crucible";
       testTarget = "gate_replay_oracle";

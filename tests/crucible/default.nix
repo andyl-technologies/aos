@@ -520,6 +520,11 @@ in {
       attrPath = "checks.crucible.phase3.ninePWireAbi";
       taskIds = ["T-IO-8"];
     };
+    networkLinkSubnode = import ./phase3-network-link-subnode.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.networkLinkSubnode";
+      taskIds = ["T-IO-9"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

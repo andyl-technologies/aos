@@ -53,3 +53,8 @@ required-features = ["test-double"]
 name = "ninep_wire_abi"
 path = "tests/ninep_wire_abi.rs"
 required-features = ["test-double"]
+
+[[test]]
+name = "network_link_subnode"
+path = "tests/network_link_subnode.rs"
+required-features = ["test-double"]
