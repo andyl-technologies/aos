@@ -1074,6 +1074,124 @@ fn write_repacked_blob_index(
     Ok(())
 }
 
+fn file_relocation_locations(
+    relocations: &[PersistBlobRecordRelocation],
+) -> BTreeMap<([u8; PERSIST_BLOB_INDEX_KEY_LEN], u64, u64), PersistBlobLocation> {
+    relocations
+        .iter()
+        .map(|relocation| {
+            (
+                blob_record_identity(relocation.key(), relocation.old_location()),
+                relocation.new_location(),
+            )
+        })
+        .collect()
+}
+
+fn relocate_file_artifact_entries(
+    entries: Vec<PersistFileArtifactIndexEntry>,
+    relocations: &BTreeMap<([u8; PERSIST_BLOB_INDEX_KEY_LEN], u64, u64), PersistBlobLocation>,
+) -> Result<Vec<PersistFileArtifactIndexEntry>, PersistFileBlobPackRepackError> {
+    entries
+        .into_iter()
+        .map(|entry| {
+            let value = entry.value();
+            let key = value.blob_key();
+            let location = value.location();
+            let Some(new_location) = relocations
+                .get(&blob_record_identity(key, location))
+                .copied()
+            else {
+                return Err(PersistFileBlobPackRepackError::MissingRelocation { key, location });
+            };
+            Ok(PersistFileArtifactIndexEntry::new(
+                entry.key(),
+                PersistFileArtifactIndexValue::new(value.blob_hash(), new_location),
+            ))
+        })
+        .collect()
+}
+
+fn relocate_parse_artifact_entries(
+    entries: Vec<PersistParseArtifactIndexEntry>,
+    relocations: &BTreeMap<([u8; PERSIST_BLOB_INDEX_KEY_LEN], u64, u64), PersistBlobLocation>,
+) -> Result<Vec<PersistParseArtifactIndexEntry>, PersistFileBlobPackRepackError> {
+    entries
+        .into_iter()
+        .map(|entry| {
+            let value = entry.value();
+            let key = value.blob_key();
+            let location = value.location();
+            let Some(new_location) = relocations
+                .get(&blob_record_identity(key, location))
+                .copied()
+            else {
+                return Err(PersistFileBlobPackRepackError::MissingRelocation { key, location });
+            };
+            Ok(PersistParseArtifactIndexEntry::new(
+                entry.key(),
+                PersistParseArtifactIndexValue::new(value.blob_hash(), new_location),
+            ))
+        })
+        .collect()
+}
+
+fn write_repacked_file_artifact_index(
+    tmp_path: &Path,
+    entries: &[PersistFileArtifactIndexEntry],
+) -> Result<(), PersistFileArtifactIndexError> {
+    match fs::remove_file(tmp_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(PersistFileArtifactIndexError::Write {
+                path: tmp_path.to_path_buf(),
+                source,
+            });
+        }
+    }
+    let tmp_index = PersistFileArtifactIndex::open(tmp_path.to_path_buf())?;
+    let write_result = (|| {
+        for entry in entries {
+            tmp_index.append_entry(*entry)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(tmp_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn write_repacked_parse_artifact_index(
+    tmp_path: &Path,
+    entries: &[PersistParseArtifactIndexEntry],
+) -> Result<(), PersistParseArtifactIndexError> {
+    match fs::remove_file(tmp_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(PersistParseArtifactIndexError::Write {
+                path: tmp_path.to_path_buf(),
+                source,
+            });
+        }
+    }
+    let tmp_index = PersistParseArtifactIndex::open(tmp_path.to_path_buf())?;
+    let write_result = (|| {
+        for entry in entries {
+            tmp_index.append_entry(*entry)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(tmp_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn swap_repacked_value_store(
     pack_path: &Path,
     index_path: &Path,
@@ -1153,6 +1271,175 @@ fn swap_repacked_value_store(
     }
     cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
     cleanup_repack_backups(&backup_pack_path, &backup_index_path);
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct FileRepackPaths<'a> {
+    pack: &'a Path,
+    blob_index: &'a Path,
+    file_artifact_index: &'a Path,
+    parse_artifact_index: &'a Path,
+}
+
+#[derive(Clone, Copy)]
+struct FileRepackStagePaths<'a> {
+    pack: &'a Path,
+    blob_index: &'a Path,
+    file_artifact_index: &'a Path,
+    parse_artifact_index: &'a Path,
+}
+
+struct FileRepackBackupPaths {
+    pack: PathBuf,
+    blob_index: PathBuf,
+    file_artifact_index: PathBuf,
+    parse_artifact_index: PathBuf,
+}
+
+fn swap_repacked_file_store(
+    paths: FileRepackPaths<'_>,
+    stage: FileRepackStagePaths<'_>,
+    rewrite_id: u64,
+) -> Result<(), PersistFileBlobPackRepackError> {
+    let backups = FileRepackBackupPaths {
+        pack: paths.pack.with_extension(format!(
+            "repack-backup-pack-{}-{rewrite_id}.tmp",
+            std::process::id()
+        )),
+        blob_index: paths.blob_index.with_extension(format!(
+            "repack-backup-index-{}-{rewrite_id}.tmp",
+            std::process::id()
+        )),
+        file_artifact_index: paths.file_artifact_index.with_extension(format!(
+            "repack-backup-file-artifacts-{}-{rewrite_id}.tmp",
+            std::process::id()
+        )),
+        parse_artifact_index: paths.parse_artifact_index.with_extension(format!(
+            "repack-backup-parse-artifacts-{}-{rewrite_id}.tmp",
+            std::process::id()
+        )),
+    };
+    if let Err(error) = remove_file_repack_pack_temp(&backups.pack) {
+        cleanup_file_repack_stage_temps(stage);
+        return Err(error);
+    }
+    if let Err(error) = remove_file_repack_blob_index_temp(&backups.blob_index) {
+        cleanup_file_repack_stage_temps(stage);
+        return Err(error);
+    }
+    if let Err(error) = remove_file_repack_file_artifact_temp(&backups.file_artifact_index) {
+        cleanup_file_repack_stage_temps(stage);
+        return Err(error);
+    }
+    if let Err(error) = remove_file_repack_parse_artifact_temp(&backups.parse_artifact_index) {
+        cleanup_file_repack_stage_temps(stage);
+        return Err(error);
+    }
+
+    if let Err(source) = fs::rename(paths.pack, &backups.pack) {
+        cleanup_file_repack_stage_temps(stage);
+        return Err(PersistFileBlobPackRepackError::Pack {
+            source: PersistBlobPackError::Write {
+                path: paths.pack.to_path_buf(),
+                source,
+            },
+        });
+    }
+    if let Err(source) = fs::rename(paths.blob_index, &backups.blob_index) {
+        let restore_error = restore_file_repack_pack_backup(paths.pack, &backups.pack).err();
+        cleanup_file_repack_stage_temps(stage);
+        if let Some(error) = restore_error {
+            return Err(error);
+        }
+        return Err(PersistFileBlobPackRepackError::BlobIndex {
+            source: PersistBlobIndexError::Write {
+                path: paths.blob_index.to_path_buf(),
+                source,
+            },
+        });
+    }
+    if let Err(source) = fs::rename(paths.file_artifact_index, &backups.file_artifact_index) {
+        let restore_error = restore_file_repack_pack_and_blob_index_backups(paths, &backups).err();
+        cleanup_file_repack_stage_temps(stage);
+        if let Some(error) = restore_error {
+            return Err(error);
+        }
+        return Err(PersistFileBlobPackRepackError::FileArtifactIndex {
+            source: PersistFileArtifactIndexError::Write {
+                path: paths.file_artifact_index.to_path_buf(),
+                source,
+            },
+        });
+    }
+    if let Err(source) = fs::rename(paths.parse_artifact_index, &backups.parse_artifact_index) {
+        let restore_error =
+            restore_file_repack_pack_blob_and_file_artifact_backups(paths, &backups).err();
+        cleanup_file_repack_stage_temps(stage);
+        if let Some(error) = restore_error {
+            return Err(error);
+        }
+        return Err(PersistFileBlobPackRepackError::ParseArtifactIndex {
+            source: PersistParseArtifactIndexError::Write {
+                path: paths.parse_artifact_index.to_path_buf(),
+                source,
+            },
+        });
+    }
+    if let Err(source) = fs::rename(stage.pack, paths.pack) {
+        let restore_error = restore_file_repack_backups(paths, &backups).err();
+        cleanup_file_repack_stage_temps(stage);
+        if let Some(error) = restore_error {
+            return Err(error);
+        }
+        return Err(PersistFileBlobPackRepackError::Pack {
+            source: PersistBlobPackError::Write {
+                path: paths.pack.to_path_buf(),
+                source,
+            },
+        });
+    }
+    if let Err(source) = fs::rename(stage.blob_index, paths.blob_index) {
+        let restore_error = restore_file_repack_backups(paths, &backups).err();
+        cleanup_file_repack_stage_temps(stage);
+        if let Some(error) = restore_error {
+            return Err(error);
+        }
+        return Err(PersistFileBlobPackRepackError::BlobIndex {
+            source: PersistBlobIndexError::Write {
+                path: paths.blob_index.to_path_buf(),
+                source,
+            },
+        });
+    }
+    if let Err(source) = fs::rename(stage.file_artifact_index, paths.file_artifact_index) {
+        let restore_error = restore_file_repack_backups(paths, &backups).err();
+        cleanup_file_repack_stage_temps(stage);
+        if let Some(error) = restore_error {
+            return Err(error);
+        }
+        return Err(PersistFileBlobPackRepackError::FileArtifactIndex {
+            source: PersistFileArtifactIndexError::Write {
+                path: paths.file_artifact_index.to_path_buf(),
+                source,
+            },
+        });
+    }
+    if let Err(source) = fs::rename(stage.parse_artifact_index, paths.parse_artifact_index) {
+        let restore_error = restore_file_repack_backups(paths, &backups).err();
+        cleanup_file_repack_stage_temps(stage);
+        if let Some(error) = restore_error {
+            return Err(error);
+        }
+        return Err(PersistFileBlobPackRepackError::ParseArtifactIndex {
+            source: PersistParseArtifactIndexError::Write {
+                path: paths.parse_artifact_index.to_path_buf(),
+                source,
+            },
+        });
+    }
+    cleanup_file_repack_stage_temps(stage);
+    cleanup_file_repack_backups(&backups);
     Ok(())
 }
 
@@ -1248,6 +1535,200 @@ fn cleanup_repack_stage_temps(tmp_pack_path: &Path, tmp_index_path: &Path) {
 fn cleanup_repack_backups(backup_pack_path: &Path, backup_index_path: &Path) {
     let _ = fs::remove_file(backup_pack_path);
     let _ = fs::remove_file(backup_index_path);
+}
+
+fn remove_file_repack_pack_temp(path: &Path) -> Result<(), PersistFileBlobPackRepackError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(PersistFileBlobPackRepackError::Pack {
+            source: PersistBlobPackError::Write {
+                path: path.to_path_buf(),
+                source,
+            },
+        }),
+    }
+}
+
+fn remove_file_repack_blob_index_temp(path: &Path) -> Result<(), PersistFileBlobPackRepackError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(PersistFileBlobPackRepackError::BlobIndex {
+            source: PersistBlobIndexError::Write {
+                path: path.to_path_buf(),
+                source,
+            },
+        }),
+    }
+}
+
+fn remove_file_repack_file_artifact_temp(
+    path: &Path,
+) -> Result<(), PersistFileBlobPackRepackError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(PersistFileBlobPackRepackError::FileArtifactIndex {
+            source: PersistFileArtifactIndexError::Write {
+                path: path.to_path_buf(),
+                source,
+            },
+        }),
+    }
+}
+
+fn remove_file_repack_parse_artifact_temp(
+    path: &Path,
+) -> Result<(), PersistFileBlobPackRepackError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(PersistFileBlobPackRepackError::ParseArtifactIndex {
+            source: PersistParseArtifactIndexError::Write {
+                path: path.to_path_buf(),
+                source,
+            },
+        }),
+    }
+}
+
+fn restore_file_repack_pack_backup(
+    pack_path: &Path,
+    backup_pack_path: &Path,
+) -> Result<(), PersistFileBlobPackRepackError> {
+    if let Err(source) = fs::remove_file(pack_path) {
+        if source.kind() != io::ErrorKind::NotFound {
+            return Err(PersistFileBlobPackRepackError::Pack {
+                source: PersistBlobPackError::Write {
+                    path: pack_path.to_path_buf(),
+                    source,
+                },
+            });
+        }
+    }
+    fs::rename(backup_pack_path, pack_path).map_err(|source| PersistFileBlobPackRepackError::Pack {
+        source: PersistBlobPackError::Write {
+            path: pack_path.to_path_buf(),
+            source,
+        },
+    })
+}
+
+fn restore_file_repack_blob_index_backup(
+    index_path: &Path,
+    backup_index_path: &Path,
+) -> Result<(), PersistFileBlobPackRepackError> {
+    if let Err(source) = fs::remove_file(index_path) {
+        if source.kind() != io::ErrorKind::NotFound {
+            return Err(PersistFileBlobPackRepackError::BlobIndex {
+                source: PersistBlobIndexError::Write {
+                    path: index_path.to_path_buf(),
+                    source,
+                },
+            });
+        }
+    }
+    fs::rename(backup_index_path, index_path).map_err(|source| {
+        PersistFileBlobPackRepackError::BlobIndex {
+            source: PersistBlobIndexError::Write {
+                path: index_path.to_path_buf(),
+                source,
+            },
+        }
+    })
+}
+
+fn restore_file_repack_file_artifact_backup(
+    index_path: &Path,
+    backup_index_path: &Path,
+) -> Result<(), PersistFileBlobPackRepackError> {
+    if let Err(source) = fs::remove_file(index_path) {
+        if source.kind() != io::ErrorKind::NotFound {
+            return Err(PersistFileBlobPackRepackError::FileArtifactIndex {
+                source: PersistFileArtifactIndexError::Write {
+                    path: index_path.to_path_buf(),
+                    source,
+                },
+            });
+        }
+    }
+    fs::rename(backup_index_path, index_path).map_err(|source| {
+        PersistFileBlobPackRepackError::FileArtifactIndex {
+            source: PersistFileArtifactIndexError::Write {
+                path: index_path.to_path_buf(),
+                source,
+            },
+        }
+    })
+}
+
+fn restore_file_repack_parse_artifact_backup(
+    index_path: &Path,
+    backup_index_path: &Path,
+) -> Result<(), PersistFileBlobPackRepackError> {
+    if let Err(source) = fs::remove_file(index_path) {
+        if source.kind() != io::ErrorKind::NotFound {
+            return Err(PersistFileBlobPackRepackError::ParseArtifactIndex {
+                source: PersistParseArtifactIndexError::Write {
+                    path: index_path.to_path_buf(),
+                    source,
+                },
+            });
+        }
+    }
+    fs::rename(backup_index_path, index_path).map_err(|source| {
+        PersistFileBlobPackRepackError::ParseArtifactIndex {
+            source: PersistParseArtifactIndexError::Write {
+                path: index_path.to_path_buf(),
+                source,
+            },
+        }
+    })
+}
+
+fn restore_file_repack_pack_and_blob_index_backups(
+    paths: FileRepackPaths<'_>,
+    backups: &FileRepackBackupPaths,
+) -> Result<(), PersistFileBlobPackRepackError> {
+    restore_file_repack_pack_backup(paths.pack, &backups.pack)?;
+    restore_file_repack_blob_index_backup(paths.blob_index, &backups.blob_index)
+}
+
+fn restore_file_repack_pack_blob_and_file_artifact_backups(
+    paths: FileRepackPaths<'_>,
+    backups: &FileRepackBackupPaths,
+) -> Result<(), PersistFileBlobPackRepackError> {
+    restore_file_repack_pack_and_blob_index_backups(paths, backups)?;
+    restore_file_repack_file_artifact_backup(
+        paths.file_artifact_index,
+        &backups.file_artifact_index,
+    )
+}
+
+fn restore_file_repack_backups(
+    paths: FileRepackPaths<'_>,
+    backups: &FileRepackBackupPaths,
+) -> Result<(), PersistFileBlobPackRepackError> {
+    restore_file_repack_pack_blob_and_file_artifact_backups(paths, backups)?;
+    restore_file_repack_parse_artifact_backup(
+        paths.parse_artifact_index,
+        &backups.parse_artifact_index,
+    )
+}
+
+fn cleanup_file_repack_stage_temps(stage: FileRepackStagePaths<'_>) {
+    let _ = fs::remove_file(stage.pack);
+    let _ = fs::remove_file(stage.blob_index);
+    let _ = fs::remove_file(stage.file_artifact_index);
+    let _ = fs::remove_file(stage.parse_artifact_index);
+}
+
+fn cleanup_file_repack_backups(backups: &FileRepackBackupPaths) {
+    let _ = fs::remove_file(&backups.pack);
+    let _ = fs::remove_file(&backups.blob_index);
+    let _ = fs::remove_file(&backups.file_artifact_index);
+    let _ = fs::remove_file(&backups.parse_artifact_index);
 }
 
 impl PersistCache {
@@ -1628,16 +2109,23 @@ impl PersistCache {
 
     /// Looks up a durable file-artifact mapping through the sidecar index.
     ///
-    /// Missing index entries return `Ok(None)`.
+    /// Missing index entries return `Ok(None)`. Same-process file-artifact
+    /// writers and file-pack repacks for the same cache root share the
+    /// file-artifact mapping lock while this sidecar is read. This is still a
+    /// raw mapping lookup: callers that need the returned location to remain
+    /// consistent with a following `files/` pack read must hold the file-store
+    /// lock across both operations or use the higher-level hydration helpers.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistFileArtifactIndexError`] if the sidecar index cannot be
-    /// opened, read, or decoded.
+    /// Returns [`PersistFileArtifactIndexError`] if the same-root
+    /// file-artifact lock is poisoned or if the sidecar index cannot be opened,
+    /// read, or decoded.
     pub fn lookup_file_artifact(
         &self,
         key: PersistFileArtifactKey,
     ) -> Result<Option<PersistFileArtifactIndexValue>, PersistFileArtifactIndexError> {
+        let _read_guard = self.root_locks.lock_file_artifacts()?;
         self.file_artifact_index.lookup(key)
     }
 
@@ -1666,16 +2154,23 @@ impl PersistCache {
 
     /// Looks up a durable parse-artifact mapping through the sidecar index.
     ///
-    /// Missing index entries return `Ok(None)`.
+    /// Missing index entries return `Ok(None)`. Same-process parse-artifact
+    /// writers and file-pack repacks for the same cache root share the
+    /// parse-artifact mapping lock while this sidecar is read. This is still a
+    /// raw mapping lookup: callers that need the returned location to remain
+    /// consistent with a following `files/` pack read must hold the file-store
+    /// lock across both operations or use the higher-level hydration helpers.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistParseArtifactIndexError`] if the sidecar index cannot
-    /// be opened, read, or decoded.
+    /// Returns [`PersistParseArtifactIndexError`] if the same-root
+    /// parse-artifact lock is poisoned or if the sidecar index cannot be
+    /// opened, read, or decoded.
     pub fn lookup_parse_artifact(
         &self,
         key: PersistParseArtifactKey,
     ) -> Result<Option<PersistParseArtifactIndexValue>, PersistParseArtifactIndexError> {
+        let _read_guard = self.root_locks.lock_parse_artifacts()?;
         self.parse_artifact_index.lookup(key)
     }
 
@@ -2810,6 +3305,131 @@ impl PersistCache {
         Ok(plan)
     }
 
+    /// Rewrites the `files/` pack to the current artifact and blob-index roots.
+    ///
+    /// This explicit maintenance operation builds a file-pack repack plan while
+    /// holding the same-root file store, file-artifact, and parse-artifact
+    /// locks, stages a compacted file pack plus relocated file blob,
+    /// file-artifact, and parse-artifact sidecars, then swaps them into place
+    /// with best-effort rollback for ordinary filesystem errors. It refuses to
+    /// run while same-process pending non-indexed artifact roots exist because
+    /// those callers still hold old pack locations that would become invalid
+    /// after relocation. The cache is advisory: this operation is not
+    /// crash-transactional, does not coordinate with cross-process writers or
+    /// raw lower-level users, and does not apply the future full GC retention
+    /// policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileBlobPackRepackError`] if a same-root lock is
+    /// poisoned, if pending artifact roots exist, if repack planning fails, if
+    /// an artifact sidecar root has no planned relocation, if the compacted
+    /// pack image cannot be written or swapped, or if any replacement sidecar
+    /// cannot be written or swapped.
+    pub fn repack_file_blob_pack(
+        &self,
+    ) -> Result<PersistBlobPackRepackPlan, PersistFileBlobPackRepackError> {
+        let _file_guard = self
+            .root_locks
+            .blob_store_lock(PersistBlobStore::Files)
+            .lock()
+            .map_err(|_| PersistFileBlobPackRepackError::WriteLockPoisoned)?;
+        let _file_artifact_guard = self
+            .root_locks
+            .lock_file_artifacts()
+            .map_err(|source| PersistFileBlobPackRepackError::FileArtifactIndex { source })?;
+        let _parse_artifact_guard = self
+            .root_locks
+            .lock_parse_artifacts()
+            .map_err(|source| PersistFileBlobPackRepackError::ParseArtifactIndex { source })?;
+        let pending_roots = self
+            .root_locks
+            .pending_file_roots()
+            .map_err(|source| PersistFileBlobPackRepackError::PendingRoots { source })?;
+        if !pending_roots.is_empty() {
+            return Err(PersistFileBlobPackRepackError::PendingArtifactRoots {
+                roots: pending_roots.len(),
+            });
+        }
+        let plan = self
+            .plan_blob_pack_repack_unlocked(PersistBlobStore::Files)
+            .map_err(|source| PersistFileBlobPackRepackError::Plan { source })?;
+        if plan.reclaimable_bytes() == 0 {
+            return Ok(plan);
+        }
+        let relocation_locations = file_relocation_locations(plan.record_relocations());
+        let file_artifact_entries = relocate_file_artifact_entries(
+            self.file_artifact_index
+                .latest_entries()
+                .map_err(|source| PersistFileBlobPackRepackError::FileArtifactIndex { source })?,
+            &relocation_locations,
+        )?;
+        let parse_artifact_entries = relocate_parse_artifact_entries(
+            self.parse_artifact_index
+                .latest_entries()
+                .map_err(|source| PersistFileBlobPackRepackError::ParseArtifactIndex { source })?,
+            &relocation_locations,
+        )?;
+
+        let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
+        let tmp_pack_path = self.file_pack.path().with_extension(format!(
+            "repack-pack-{}-{rewrite_id}.tmp",
+            std::process::id()
+        ));
+        let tmp_index_path = self.file_index.path().with_extension(format!(
+            "repack-index-{}-{rewrite_id}.tmp",
+            std::process::id()
+        ));
+        let tmp_file_artifact_path = self.file_artifact_index.path().with_extension(format!(
+            "repack-file-artifacts-{}-{rewrite_id}.tmp",
+            std::process::id()
+        ));
+        let tmp_parse_artifact_path = self.parse_artifact_index.path().with_extension(format!(
+            "repack-parse-artifacts-{}-{rewrite_id}.tmp",
+            std::process::id()
+        ));
+        let stage = FileRepackStagePaths {
+            pack: &tmp_pack_path,
+            blob_index: &tmp_index_path,
+            file_artifact_index: &tmp_file_artifact_path,
+            parse_artifact_index: &tmp_parse_artifact_path,
+        };
+        if let Err(source) = self
+            .file_pack
+            .write_relocated_records_to(&tmp_pack_path, plan.record_relocations())
+        {
+            cleanup_file_repack_stage_temps(stage);
+            return Err(PersistFileBlobPackRepackError::Pack { source });
+        }
+        if let Err(source) = write_repacked_blob_index(&tmp_index_path, plan.record_relocations()) {
+            cleanup_file_repack_stage_temps(stage);
+            return Err(PersistFileBlobPackRepackError::BlobIndex { source });
+        }
+        if let Err(source) =
+            write_repacked_file_artifact_index(&tmp_file_artifact_path, &file_artifact_entries)
+        {
+            cleanup_file_repack_stage_temps(stage);
+            return Err(PersistFileBlobPackRepackError::FileArtifactIndex { source });
+        }
+        if let Err(source) =
+            write_repacked_parse_artifact_index(&tmp_parse_artifact_path, &parse_artifact_entries)
+        {
+            cleanup_file_repack_stage_temps(stage);
+            return Err(PersistFileBlobPackRepackError::ParseArtifactIndex { source });
+        }
+        swap_repacked_file_store(
+            FileRepackPaths {
+                pack: self.file_pack.path(),
+                blob_index: self.file_index.path(),
+                file_artifact_index: self.file_artifact_index.path(),
+                parse_artifact_index: self.parse_artifact_index.path(),
+            },
+            stage,
+            rewrite_id,
+        )?;
+        Ok(plan)
+    }
+
     /// Returns verified pack records as typed blob-index entries for `store`.
     ///
     /// This read-only adapter scans the selected store's pack, verifies every
@@ -3711,10 +4331,25 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackError`] if the `files/` pack cannot be opened
-    /// or read, if `index_value` points at an invalid location, or if the record
-    /// or payload hash does not match `index_value`.
+    /// Returns [`PersistBlobPackError`] if the same-root `files/` pack lock is
+    /// poisoned, if the `files/` pack cannot be opened or read, if
+    /// `index_value` points at an invalid location, or if the record or payload
+    /// hash does not match `index_value`.
     pub fn read_file_artifact(
+        &self,
+        index_value: PersistFileArtifactIndexValue,
+    ) -> Result<Vec<u8>, PersistBlobPackError> {
+        let _read_guard = self
+            .root_locks
+            .blob_store_lock(PersistBlobStore::Files)
+            .lock()
+            .map_err(|_| PersistBlobPackError::WriteLockPoisoned {
+                store: PersistBlobStore::Files,
+            })?;
+        self.read_file_artifact_unlocked(index_value)
+    }
+
+    fn read_file_artifact_unlocked(
         &self,
         index_value: PersistFileArtifactIndexValue,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
@@ -3728,10 +4363,25 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackError`] if the `files/` pack cannot be opened
-    /// or read, if `index_value` points at an invalid location, or if the record
-    /// or payload hash does not match `index_value`.
+    /// Returns [`PersistBlobPackError`] if the same-root `files/` pack lock is
+    /// poisoned, if the `files/` pack cannot be opened or read, if
+    /// `index_value` points at an invalid location, or if the record or payload
+    /// hash does not match `index_value`.
     pub fn read_parse_artifact(
+        &self,
+        index_value: PersistParseArtifactIndexValue,
+    ) -> Result<Vec<u8>, PersistBlobPackError> {
+        let _read_guard = self
+            .root_locks
+            .blob_store_lock(PersistBlobStore::Files)
+            .lock()
+            .map_err(|_| PersistBlobPackError::WriteLockPoisoned {
+                store: PersistBlobStore::Files,
+            })?;
+        self.read_parse_artifact_unlocked(index_value)
+    }
+
+    fn read_parse_artifact_unlocked(
         &self,
         index_value: PersistParseArtifactIndexValue,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
@@ -3757,8 +4407,25 @@ impl PersistCache {
         index_value: PersistParseArtifactIndexValue,
         entry: &ParseCacheEntry,
     ) -> Result<(), PersistParseArtifactHydrationError> {
+        let _read_guard = self
+            .root_locks
+            .blob_store_lock(PersistBlobStore::Files)
+            .lock()
+            .map_err(|_| PersistParseArtifactHydrationError::Read {
+                source: PersistBlobPackError::WriteLockPoisoned {
+                    store: PersistBlobStore::Files,
+                },
+            })?;
+        self.hydrate_parse_artifact_bundle_unlocked(index_value, entry)
+    }
+
+    fn hydrate_parse_artifact_bundle_unlocked(
+        &self,
+        index_value: PersistParseArtifactIndexValue,
+        entry: &ParseCacheEntry,
+    ) -> Result<(), PersistParseArtifactHydrationError> {
         let payload = self
-            .read_parse_artifact(index_value)
+            .read_parse_artifact_unlocked(index_value)
             .map_err(|source| PersistParseArtifactHydrationError::Read { source })?;
         let bundle = ParseArtifactBundle::decode(&payload)
             .map_err(|source| PersistParseArtifactHydrationError::Decode { source })?;
@@ -3846,8 +4513,25 @@ impl PersistCache {
         index_value: PersistFileArtifactIndexValue,
         entry: &ParseCacheEntry,
     ) -> Result<(), PersistFileArtifactHydrationError> {
+        let _read_guard = self
+            .root_locks
+            .blob_store_lock(PersistBlobStore::Files)
+            .lock()
+            .map_err(|_| PersistFileArtifactHydrationError::Read {
+                source: PersistBlobPackError::WriteLockPoisoned {
+                    store: PersistBlobStore::Files,
+                },
+            })?;
+        self.hydrate_file_artifact_bundle_unlocked(index_value, entry)
+    }
+
+    fn hydrate_file_artifact_bundle_unlocked(
+        &self,
+        index_value: PersistFileArtifactIndexValue,
+        entry: &ParseCacheEntry,
+    ) -> Result<(), PersistFileArtifactHydrationError> {
         let payload = self
-            .read_file_artifact(index_value)
+            .read_file_artifact_unlocked(index_value)
             .map_err(|source| PersistFileArtifactHydrationError::Read { source })?;
         let bundle = ParseArtifactBundle::decode(&payload)
             .map_err(|source| PersistFileArtifactHydrationError::Decode { source })?;
@@ -3924,7 +4608,10 @@ impl PersistCache {
     /// This is the cache-level hit adapter for the explicit file-artifact
     /// sidecar index. It derives the expected mapping key from `file_key` and
     /// `parse_key`, returns `Ok(None)` when the index has no matching entry,
-    /// and otherwise validates and writes the indexed bundle into `entry`.
+    /// and otherwise validates and writes the indexed bundle into `entry`. The
+    /// same-root file store and file-artifact locks are held across lookup and
+    /// pack read so same-process repacks cannot expose a split sidecar/pack
+    /// view.
     ///
     /// # Errors
     ///
@@ -3940,14 +4627,30 @@ impl PersistCache {
     ) -> Result<Option<PersistFileArtifactIndexEntry>, PersistFileArtifactIndexedHydrationError>
     {
         let artifact_key = PersistFileArtifactKey::from_parse_file_key(file_key, parse_key);
+        let _file_guard = self
+            .root_locks
+            .blob_store_lock(PersistBlobStore::Files)
+            .lock()
+            .map_err(|_| PersistFileArtifactIndexedHydrationError::Hydrate {
+                source: PersistFileArtifactHydrationError::Read {
+                    source: PersistBlobPackError::WriteLockPoisoned {
+                        store: PersistBlobStore::Files,
+                    },
+                },
+            })?;
+        let _file_artifact_guard = self
+            .root_locks
+            .lock_file_artifacts()
+            .map_err(|source| PersistFileArtifactIndexedHydrationError::Lookup { source })?;
         let Some(index_value) = self
-            .lookup_file_artifact(artifact_key)
+            .file_artifact_index
+            .lookup(artifact_key)
             .map_err(|source| PersistFileArtifactIndexedHydrationError::Lookup { source })?
         else {
             return Ok(None);
         };
         let index_entry = PersistFileArtifactIndexEntry::new(artifact_key, index_value);
-        self.hydrate_file_artifact_bundle_from_entry(file_key, parse_key, index_entry, entry)
+        self.hydrate_file_artifact_bundle_unlocked(index_value, entry)
             .map_err(|source| PersistFileArtifactIndexedHydrationError::Hydrate { source })?;
         Ok(Some(index_entry))
     }
@@ -3957,7 +4660,9 @@ impl PersistCache {
     /// This is the cache-level hit adapter for the parse-artifact sidecar
     /// index. It derives the expected mapping key from `parse_key`, returns
     /// `Ok(None)` when the index has no matching entry, and otherwise validates
-    /// and writes the indexed bundle into `entry`.
+    /// and writes the indexed bundle into `entry`. The same-root file store
+    /// and parse-artifact locks are held across lookup and pack read so
+    /// same-process repacks cannot expose a split sidecar/pack view.
     ///
     /// # Errors
     ///
@@ -3972,14 +4677,30 @@ impl PersistCache {
     ) -> Result<Option<PersistParseArtifactIndexEntry>, PersistParseArtifactIndexedHydrationError>
     {
         let artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+        let _file_guard = self
+            .root_locks
+            .blob_store_lock(PersistBlobStore::Files)
+            .lock()
+            .map_err(|_| PersistParseArtifactIndexedHydrationError::Hydrate {
+                source: PersistParseArtifactHydrationError::Read {
+                    source: PersistBlobPackError::WriteLockPoisoned {
+                        store: PersistBlobStore::Files,
+                    },
+                },
+            })?;
+        let _parse_artifact_guard = self
+            .root_locks
+            .lock_parse_artifacts()
+            .map_err(|source| PersistParseArtifactIndexedHydrationError::Lookup { source })?;
         let Some(index_value) = self
-            .lookup_parse_artifact(artifact_key)
+            .parse_artifact_index
+            .lookup(artifact_key)
             .map_err(|source| PersistParseArtifactIndexedHydrationError::Lookup { source })?
         else {
             return Ok(None);
         };
         let index_entry = PersistParseArtifactIndexEntry::new(artifact_key, index_value);
-        self.hydrate_parse_artifact_bundle_from_entry(parse_key, index_entry, entry)
+        self.hydrate_parse_artifact_bundle_unlocked(index_value, entry)
             .map_err(|source| PersistParseArtifactIndexedHydrationError::Hydrate { source })?;
         Ok(Some(index_entry))
     }

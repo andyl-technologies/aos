@@ -863,6 +863,66 @@ pub enum PersistValueBlobPackRepackError {
     },
 }
 
+/// Persistent file blob-pack repack failed.
+#[derive(Debug, Error)]
+pub enum PersistFileBlobPackRepackError {
+    /// The same-root file blob-pack write lock was poisoned.
+    #[error("persistent file blob-pack repack write lock is poisoned")]
+    WriteLockPoisoned,
+    /// In-flight non-indexed file artifacts still point at the current pack.
+    #[error(
+        "persistent file blob-pack repack cannot run while {roots} pending artifact roots exist"
+    )]
+    PendingArtifactRoots {
+        /// The number of same-process pending file-artifact roots.
+        roots: usize,
+    },
+    /// The current pending root set could not be snapshotted.
+    #[error("failed to snapshot pending persistent file roots before file blob-pack repack")]
+    PendingRoots {
+        /// The underlying pending-root error.
+        source: PersistBlobLiveRootError,
+    },
+    /// The file repack plan could not be produced.
+    #[error("failed to plan persistent file blob-pack repack")]
+    Plan {
+        /// The underlying repack planning error.
+        source: PersistBlobPackRepackPlanError,
+    },
+    /// A sidecar root had no planned relocation in the compacted file pack.
+    #[error("persistent file blob-pack repack is missing a relocation for {key:?} at {location:?}")]
+    MissingRelocation {
+        /// The rooted file-blob key.
+        key: PersistBlobKey,
+        /// The rooted file-blob location.
+        location: PersistBlobLocation,
+    },
+    /// The compacted file pack could not be written or swapped.
+    #[error("failed to write or swap persistent file blob pack during repack")]
+    Pack {
+        /// The underlying packfile error.
+        source: PersistBlobPackError,
+    },
+    /// The compacted file blob index could not be written or swapped.
+    #[error("failed to write or swap persistent file blob index during repack")]
+    BlobIndex {
+        /// The underlying blob-index error.
+        source: PersistBlobIndexError,
+    },
+    /// The relocated file-artifact mapping index could not be written or swapped.
+    #[error("failed to write or swap persistent file-artifact index during file blob-pack repack")]
+    FileArtifactIndex {
+        /// The underlying file-artifact index error.
+        source: PersistFileArtifactIndexError,
+    },
+    /// The relocated parse-artifact mapping index could not be written or swapped.
+    #[error("failed to write or swap persistent parse-artifact index during file blob-pack repack")]
+    ParseArtifactIndex {
+        /// The underlying parse-artifact index error.
+        source: PersistParseArtifactIndexError,
+    },
+}
+
 /// Persistent node-metadata value-root planning failed.
 #[derive(Debug, Error)]
 pub enum PersistNodeValueRootPlanError {

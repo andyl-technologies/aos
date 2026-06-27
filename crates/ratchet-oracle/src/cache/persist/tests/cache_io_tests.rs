@@ -1015,6 +1015,58 @@ fn cache_blob_indexed_read_waits_for_store_lock() {
 }
 
 #[test]
+fn cache_file_artifact_read_waits_for_store_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let payload = b"locked file artifact";
+    let materialized = cache
+        .materialize_file_artifact(
+            &file_key,
+            parse_key,
+            payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("file artifact materializes");
+    let index_entry = materialized
+        .index_entry()
+        .expect("file artifact should materialize");
+    let index_value = index_entry.value();
+    cache
+        .record_file_artifact(index_entry)
+        .expect("file artifact mapping records");
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Files)
+        .expect("file store lock acquired");
+    let reader = cache.clone();
+    let (tx, rx) = mpsc::channel();
+    let barrier = Arc::new(Barrier::new(2));
+    let reader_barrier = Arc::clone(&barrier);
+    let handle = thread::spawn(move || {
+        reader_barrier.wait();
+        let result = reader.read_file_artifact(index_value);
+        tx.send(result).expect("read result sends");
+    });
+
+    barrier.wait();
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "file artifact read should wait while the file store lock is held"
+    );
+    drop(guard);
+    let result = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("file artifact read completes after lock release")
+        .expect("file artifact read succeeds");
+    handle.join().expect("reader thread joins");
+    assert_eq!(result.as_slice(), payload);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_indexed_read_returns_none_on_miss() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -3962,6 +4014,195 @@ fn cache_value_blob_pack_repack_reclaims_all_unrooted_values() {
             .expect("value index snapshots")
             .is_empty()
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_pack_repack_relocates_artifacts_and_rewrites_sidecars() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let prefix_payload = b"unrooted file prefix";
+    let prefix_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(prefix_payload));
+    cache
+        .append_blob(prefix_key, prefix_payload)
+        .expect("unrooted file prefix appends");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let file_artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let file_payload = b"durable file artifact";
+    let file_materialized = cache
+        .materialize_file_artifact(
+            &file_key,
+            parse_key,
+            file_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("file artifact materializes");
+    let file_entry = file_materialized
+        .index_entry()
+        .expect("file artifact should materialize");
+    let file_old_value = file_entry.value();
+    cache
+        .record_file_artifact(file_entry)
+        .expect("file artifact mapping records");
+    let parse_payload = b"durable parse artifact";
+    let parse_materialized = cache
+        .materialize_parse_artifact(
+            parse_key,
+            parse_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("parse artifact materializes");
+    let parse_entry = parse_materialized
+        .index_entry()
+        .expect("parse artifact should materialize");
+    let parse_artifact_key = parse_entry.key();
+    let parse_old_value = parse_entry.value();
+    cache
+        .record_parse_artifact(parse_entry)
+        .expect("parse artifact mapping records");
+    let indexed_payload = b"indexed file blob";
+    let indexed_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(indexed_payload));
+    let indexed_old_entry = cache
+        .append_blob_indexed(indexed_key, indexed_payload)
+        .expect("indexed file blob appends");
+    let tail_payload = b"unrooted file tail";
+    let tail_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(tail_payload));
+    let tail_location = cache
+        .append_blob(tail_key, tail_payload)
+        .expect("unrooted file tail appends");
+    let bytes_before = fs::metadata(cache.file_pack().path())
+        .expect("file pack metadata before repack")
+        .len();
+
+    let plan = cache
+        .repack_file_blob_pack()
+        .expect("file blob pack repacks");
+
+    assert!(plan.reclaimable_bytes() > 0);
+    assert_eq!(plan.bytes_before(), bytes_before);
+    assert_eq!(
+        fs::metadata(cache.file_pack().path())
+            .expect("file pack metadata after repack")
+            .len(),
+        plan.bytes_after()
+    );
+    assert_eq!(
+        plan.record_relocations()
+            .iter()
+            .map(|relocation| relocation.old_location())
+            .collect::<Vec<_>>(),
+        vec![
+            file_old_value.location(),
+            parse_old_value.location(),
+            indexed_old_entry.location()
+        ]
+    );
+    let file_new_location = plan.record_relocations()[0].new_location();
+    let parse_new_location = plan.record_relocations()[1].new_location();
+    let indexed_new_location = plan.record_relocations()[2].new_location();
+    assert_eq!(
+        cache
+            .lookup_file_artifact(file_artifact_key)
+            .expect("file artifact lookup succeeds"),
+        Some(PersistFileArtifactIndexValue::new(
+            file_old_value.blob_hash(),
+            file_new_location,
+        ))
+    );
+    assert_eq!(
+        cache
+            .lookup_parse_artifact(parse_artifact_key)
+            .expect("parse artifact lookup succeeds"),
+        Some(PersistParseArtifactIndexValue::new(
+            parse_old_value.blob_hash(),
+            parse_new_location,
+        ))
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(file_old_value.blob_key())
+            .expect("file blob index lookup succeeds"),
+        Some(file_new_location)
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(parse_old_value.blob_key())
+            .expect("parse blob index lookup succeeds"),
+        Some(parse_new_location)
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(indexed_key)
+            .expect("indexed file blob lookup succeeds"),
+        Some(indexed_new_location)
+    );
+    assert_eq!(
+        cache
+            .read_file_artifact(PersistFileArtifactIndexValue::new(
+                file_old_value.blob_hash(),
+                file_new_location,
+            ))
+            .expect("relocated file artifact reads")
+            .as_slice(),
+        file_payload
+    );
+    assert_eq!(
+        cache
+            .read_parse_artifact(PersistParseArtifactIndexValue::new(
+                parse_old_value.blob_hash(),
+                parse_new_location,
+            ))
+            .expect("relocated parse artifact reads")
+            .as_slice(),
+        parse_payload
+    );
+    assert_eq!(
+        cache
+            .read_blob_indexed(indexed_key)
+            .expect("indexed file blob reads")
+            .expect("indexed file blob exists")
+            .as_slice(),
+        indexed_payload
+    );
+    assert!(cache.read_blob(tail_key, tail_location).is_err());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_pack_repack_rejects_pending_artifact_roots() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let materialized = cache
+        .materialize_file_artifact(
+            &file_key,
+            parse_key,
+            b"pending file artifact",
+            MaterializationDecision::Materialize,
+        )
+        .expect("pending file artifact materializes");
+
+    let error = cache
+        .repack_file_blob_pack()
+        .expect_err("pending roots block file repack");
+
+    assert!(matches!(
+        error,
+        PersistFileBlobPackRepackError::PendingArtifactRoots { roots: 1 }
+    ));
+    cache
+        .record_file_artifact(
+            materialized
+                .index_entry()
+                .expect("pending file artifact should materialize"),
+        )
+        .expect("pending file artifact records");
 
     let _ = fs::remove_dir_all(root);
 }
