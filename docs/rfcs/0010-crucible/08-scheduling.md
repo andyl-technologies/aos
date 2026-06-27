@@ -1046,9 +1046,18 @@ application of explorer-supplied preemption decisions
   node-kind independence, saved-state hashing, and runtime allocation from a
   resumed sequence cursor. Full RESOLVE/EMIT materialization remains T-SCHED-15
   through T-SCHED-19.
-- [ ] **T-SCHED-9** Ban unordered-collection iteration and default-hasher use on
+- [x] **T-SCHED-9** Ban unordered-collection iteration and default-hasher use on
   the ordering-significant scheduling path; route through `gate:harness-lint`. —
   satisfies [SCHED-19]; spec §8.6.
+  Completed by `checks.crucible.phase3.schedulerOrderingLint`. The harness-lint
+  surface now rejects `HashMap`/`HashSet`, hash-container iteration, and
+  `DefaultHasher`/`RandomState` default randomized hash state, with focused
+  regressions for direct paths, spaced paths, custom static analysis, and
+  annotated exceptions. The focused phase3 check routes the task through
+  `gate:harness-lint`, statically denies unordered/default-hasher tokens in the
+  scheduler ordering path, and runs those focused harness-lint regressions plus
+  the scheduler event-order regression; the broader phase1 harness-lint gate
+  remains a separate multi-policy gate.
 - [ ] **T-SCHED-10** Enforce the minimum link-latency floor at lowering time,
   include it in the scenario content hash, and reject sub-floor links. —
   satisfies [SCHED-20], [SCHED-21]; spec §8.7.

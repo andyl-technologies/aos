@@ -11,5 +11,6 @@ disallowed-methods = [
 disallowed-types = [
   { path = "std::collections::HashMap", reason = "use ordered containers or an explicitly fixed-seed deterministic hasher" },
   { path = "std::collections::HashSet", reason = "use ordered containers or an explicitly fixed-seed deterministic hasher" },
+  { path = "std::collections::hash_map::DefaultHasher", reason = "default hash seeding is not a stable identity hash" },
   { path = "std::collections::hash_map::RandomState", reason = "default hash seeding is per-process random" },
 ]

@@ -26,6 +26,7 @@ pub(super) const CLIPPY_DISALLOWED_METHODS: &[&str] = &[
 pub(super) const CLIPPY_DISALLOWED_TYPES: &[&str] = &[
     "std::collections::HashMap",
     "std::collections::HashSet",
+    "std::collections::hash_map::DefaultHasher",
     "std::collections::hash_map::RandomState",
 ];
 pub(super) const CLIPPY_DENY_LINTS: &[&str] = &[
@@ -61,6 +62,7 @@ pub(super) const LINT_RULES: &[&str] = &[
     "thread-global-rng",
     "host-rng",
     "unordered-map-set",
+    "default-random-hasher",
     "nondeterministic-select",
     "hash-iteration",
     "unordered-select",
