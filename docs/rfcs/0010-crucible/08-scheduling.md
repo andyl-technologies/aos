@@ -1067,9 +1067,17 @@ application of explorer-supplied preemption decisions
   now records `min_link_latency_ns`, so the scenario `world_ref` changes with
   the configured floor; the focused check runs the scheduler floor regression,
   existing link-transport regressions, and canonicalization hash regression.
-- [ ] **T-SCHED-11** Implement deterministic quiescence detection from
+- [x] **T-SCHED-11** Implement deterministic quiescence detection from
   authoritative scheduler state only (no host timeout); idle nodes do not
   constrain peers. — satisfies [SCHED-22], [SCHED-23]; spec §8.8.
+  Completed by `checks.crucible.phase3.schedulerQuiescence`. `SingleScheduler`
+  now exposes deterministic `SchedulerQuiescence` evidence from scheduler-owned
+  state only: runnable nodes, queued scheduler events, queued control, and exact
+  local wakeups block terminal quiescence. The focused regressions prove that
+  idle nodes do not constrain peers: finite idle wakeups and pending inbound
+  deliveries are effective idle advance candidates, are clamped by the
+  virtual-time limit, and are covered by focused no-deadlock and peer-priority
+  regressions with no host-time API use.
 - [ ] **T-SCHED-12** Implement the quantum loop PICK / RUN / RESOLVE / EMIT /
   STEP as the unit of `step`, ensuring the quantum sequence is a pure function of
   `(ScenarioDef, Seed, Schedule)`. — satisfies [SCHED-24], [SCHED-33]; spec §8.9,

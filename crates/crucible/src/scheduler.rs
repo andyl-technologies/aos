@@ -1482,6 +1482,48 @@ impl From<SchedulerError> for SchedulerLivenessError {
     }
 }
 
+/// Deterministic quiescence evidence computed from scheduler-owned state.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SchedulerQuiescence {
+    /// Authoritative scheduler-state reasons the system is not quiescent.
+    pub blockers: Vec<SchedulerQuiescenceBlocker>,
+}
+
+impl SchedulerQuiescence {
+    /// Returns whether no scheduler-state blocker remains.
+    #[must_use]
+    pub fn is_quiescent(&self) -> bool {
+        self.blockers.is_empty()
+    }
+}
+
+/// One scheduler-owned state component that prevents quiescence.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SchedulerQuiescenceBlocker {
+    /// A node is still runnable and may be selected by PICK.
+    RunnableNode {
+        /// The runnable scheduler graph node.
+        node: SchedulerNodeId,
+    },
+    /// A scheduler-resolved delivery, I/O completion, fault, or control event is queued.
+    PendingEvent {
+        /// The canonical key of the queued event.
+        key: ScheduledEventKey,
+    },
+    /// A control operation is waiting for the next quantum boundary.
+    PendingControl {
+        /// The queued control operation.
+        operation: ControlOperation,
+    },
+    /// A scheduler node still has an exact local wakeup.
+    PendingExactLocalEvent {
+        /// The scheduler graph node with the exact wakeup.
+        node: SchedulerNodeId,
+        /// The exact local event that prevents terminal quiescence.
+        event: ExactLocalEvent,
+    },
+}
+
 /// The single authoritative scheduler used by the liveness gate.
 #[derive(Clone, Debug)]
 pub struct SingleScheduler {
@@ -1558,6 +1600,61 @@ impl SingleScheduler {
         self.quanta
     }
 
+    /// Computes terminal quiescence from authoritative scheduler state only.
+    ///
+    /// The predicate is independent of host wall-clock time. A system is
+    /// quiescent only when no node is runnable, no exact local wakeup remains
+    /// armed, no scheduler event remains queued, and no control operation is
+    /// waiting at the boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when exact local event projection discovers
+    /// inconsistent scheduler state, such as a scheduled I/O completion whose
+    /// key and payload disagree.
+    pub fn quiescence(&self) -> Result<SchedulerQuiescence, SchedulerError> {
+        let mut blockers = Vec::new();
+
+        let mut control = self.control_inbox.clone();
+        control.sort();
+        blockers.extend(
+            control
+                .into_iter()
+                .map(|operation| SchedulerQuiescenceBlocker::PendingControl { operation }),
+        );
+
+        blockers.extend(
+            ordered_scheduled_events(&self.pending_events)
+                .into_iter()
+                .map(|event| SchedulerQuiescenceBlocker::PendingEvent {
+                    key: event.key.clone(),
+                }),
+        );
+
+        for node in &self.nodes {
+            if node.activity == SchedulerNodeActivity::Runnable {
+                blockers.push(SchedulerQuiescenceBlocker::RunnableNode {
+                    node: node.id.clone(),
+                });
+            }
+
+            let exact_local_event = next_exact_local_event(
+                &node.id,
+                node.exact_local_event.clone(),
+                &self.pending_events,
+                self.timeline.shift(),
+            )?;
+            if !matches!(exact_local_event, ExactLocalEvent::NoArmedTimer) {
+                blockers.push(SchedulerQuiescenceBlocker::PendingExactLocalEvent {
+                    node: node.id.clone(),
+                    event: exact_local_event,
+                });
+            }
+        }
+
+        Ok(SchedulerQuiescence { blockers })
+    }
+
     fn queue_control(&mut self, operation: ControlOperation) {
         self.control_inbox.push(operation);
     }
@@ -1581,30 +1678,22 @@ impl SingleScheduler {
         self.nodes.is_empty()
     }
 
-    fn is_quiescent(&self) -> bool {
-        self.pending_events.is_empty()
-            && self
-                .nodes
-                .iter()
-                .all(|node| node.activity == SchedulerNodeActivity::Idle)
-    }
-
-    fn reached_time_limit(&self) -> bool {
-        let mut saw_runnable = false;
+    fn reached_time_limit(&self) -> Result<bool, SchedulerError> {
+        let mut saw_time_limited_state = false;
 
         for node in &self.nodes {
-            if node.activity == SchedulerNodeActivity::Runnable {
-                saw_runnable = true;
-                let Ok(current_time) = node.counter.to_virtual(self.timeline.shift()) else {
-                    return false;
-                };
+            if node.activity == SchedulerNodeActivity::Runnable
+                || self.idle_wake_time(node)?.is_some()
+            {
+                saw_time_limited_state = true;
+                let current_time = node.counter.to_virtual(self.timeline.shift())?;
                 if current_time < self.time_limit {
-                    return false;
+                    return Ok(false);
                 }
             }
         }
 
-        saw_runnable
+        Ok(saw_time_limited_state)
     }
 
     fn exhausted_quantum_budget(&self) -> bool {
@@ -1638,11 +1727,11 @@ impl SingleScheduler {
         node: &RuntimeSchedulerNode,
         rendezvous_cap: Option<SimInstant>,
     ) -> Result<Option<AdvanceCandidate>, SchedulerError> {
+        let current_time = node.counter.to_virtual(self.timeline.shift())?;
         if node.activity == SchedulerNodeActivity::Idle {
-            return Ok(None);
+            return self.idle_advance_candidate(index, node, current_time, rendezvous_cap);
         }
 
-        let current_time = node.counter.to_virtual(self.timeline.shift())?;
         let window = self.advance_window(node, current_time, rendezvous_cap)?;
 
         if current_time >= window.target_time {
@@ -1658,6 +1747,62 @@ impl SingleScheduler {
             quiescent_horizon: window.quiescent_horizon,
             conservative_dependency: window.conservative_dependency,
         }))
+    }
+
+    fn idle_advance_candidate(
+        &self,
+        index: usize,
+        node: &RuntimeSchedulerNode,
+        current_time: SimInstant,
+        rendezvous_cap: Option<SimInstant>,
+    ) -> Result<Option<AdvanceCandidate>, SchedulerError> {
+        let Some(mut wake_time) = self.idle_wake_time(node)? else {
+            return Ok(None);
+        };
+        wake_time = min_instant(wake_time, self.time_limit);
+        if let Some(cap) = rendezvous_cap {
+            wake_time = min_instant(wake_time, cap);
+        }
+        if current_time >= wake_time {
+            return Ok(None);
+        }
+
+        Ok(Some(AdvanceCandidate {
+            index,
+            key: self
+                .timeline
+                .timeline_key(node.id.clone(), node.counter, index as u64)?,
+            target_time: wake_time,
+            quiescent_horizon: Some(wake_time),
+            conservative_dependency: None,
+        }))
+    }
+
+    fn idle_wake_time(
+        &self,
+        node: &RuntimeSchedulerNode,
+    ) -> Result<Option<SimInstant>, SchedulerError> {
+        let exact_local_event = next_exact_local_event(
+            &node.id,
+            node.exact_local_event.clone(),
+            &self.pending_events,
+            self.timeline.shift(),
+        )?;
+        let mut wake_time = exact_local_event.virtual_time();
+
+        for event in &self.pending_events {
+            if event.key.consumer() == &node.id {
+                let event_time = SimInstant {
+                    nanos: event.key.virtual_time().ticks,
+                };
+                wake_time = Some(match wake_time {
+                    Some(current) => min_instant(current, event_time),
+                    None => event_time,
+                });
+            }
+        }
+
+        Ok(wake_time)
     }
 
     fn advance_window(
@@ -1884,6 +2029,13 @@ impl SingleScheduler {
         };
         self.nodes[plan.index].counter = after;
         let after_time = after.to_virtual(self.timeline.shift())?;
+        if self.nodes[plan.index]
+            .exact_local_event
+            .virtual_time()
+            .is_some_and(|virtual_time| after_time >= virtual_time)
+        {
+            self.nodes[plan.index].exact_local_event = ExactLocalEvent::NoArmedTimer;
+        }
         if plan
             .quiescent_horizon
             .is_some_and(|horizon| after_time >= horizon)
@@ -1927,9 +2079,9 @@ pub fn check_scheduler_liveness(
     let mut yielded_between_quanta = true;
 
     loop {
-        if scheduler.reached_time_limit() || scheduler.exhausted_quantum_budget() {
+        if scheduler.quiescence()?.is_quiescent() {
             return Ok(SchedulerLivenessReport {
-                terminal: SchedulerTerminal::TimeLimitReached,
+                terminal: SchedulerTerminal::Quiescent,
                 quanta: scheduler.quanta(),
                 frontier: scheduler.frontier(),
                 advanced_nodes,
@@ -1939,9 +2091,9 @@ pub fn check_scheduler_liveness(
             });
         }
 
-        if scheduler.is_quiescent() {
+        if scheduler.reached_time_limit()? || scheduler.exhausted_quantum_budget() {
             return Ok(SchedulerLivenessReport {
-                terminal: SchedulerTerminal::Quiescent,
+                terminal: SchedulerTerminal::TimeLimitReached,
                 quanta: scheduler.quanta(),
                 frontier: scheduler.frontier(),
                 advanced_nodes,
@@ -2552,6 +2704,294 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_quiescence_detects_all_idle_authoritative_state() {
+        let scheduler = test_scheduler(
+            vec![test_scenario_node(
+                "node-a",
+                0,
+                SchedulerNodeActivity::Idle,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            )],
+            Vec::new(),
+        );
+
+        let quiescence = scheduler
+            .quiescence()
+            .unwrap_or_else(|error| panic!("quiescence should compute: {error}"));
+
+        assert!(quiescence.is_quiescent());
+        assert_eq!(quiescence.blockers, Vec::new());
+    }
+
+    #[test]
+    fn scheduler_quiescence_blocks_on_runnable_node_pending_event_and_control() {
+        let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
+        let producer = scheduler_node("node-b", SchedulingNodeKind::Vm);
+        let mut scheduler = test_scheduler(
+            vec![test_scenario_node(
+                "node-a",
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            )],
+            vec![event(7, &consumer, &producer, 3, b"pending")],
+        );
+        let control = ControlOperation {
+            sequence: 11,
+            kind: ControlOperationKind::Query,
+        };
+        scheduler.queue_control(control.clone());
+
+        let quiescence = scheduler
+            .quiescence()
+            .unwrap_or_else(|error| panic!("quiescence should compute: {error}"));
+
+        assert!(!quiescence.is_quiescent());
+        assert!(
+            quiescence
+                .blockers
+                .contains(&SchedulerQuiescenceBlocker::PendingControl { operation: control })
+        );
+        assert!(
+            quiescence
+                .blockers
+                .contains(&SchedulerQuiescenceBlocker::PendingEvent {
+                    key: event_key(7, &consumer, &producer, 3),
+                })
+        );
+        assert!(
+            quiescence
+                .blockers
+                .contains(&SchedulerQuiescenceBlocker::RunnableNode { node: consumer })
+        );
+    }
+
+    #[test]
+    fn scheduler_quiescence_blocks_idle_nodes_with_exact_local_wakeups() {
+        let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
+        let scheduler = test_scheduler(
+            vec![test_scenario_node(
+                "node-a",
+                0,
+                SchedulerNodeActivity::Idle,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::TimerDeadline {
+                    virtual_time: SimInstant { nanos: 23 },
+                },
+            )],
+            Vec::new(),
+        );
+
+        let quiescence = scheduler
+            .quiescence()
+            .unwrap_or_else(|error| panic!("quiescence should compute: {error}"));
+
+        assert_eq!(
+            quiescence.blockers,
+            vec![SchedulerQuiescenceBlocker::PendingExactLocalEvent {
+                node,
+                event: ExactLocalEvent::TimerDeadline {
+                    virtual_time: SimInstant { nanos: 23 },
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn scheduler_quiescence_fast_forwards_idle_exact_wakeup_without_deadlock() {
+        let scenario = SchedulerLivenessScenario::from_canonical_material(
+            "idle-exact-wakeup",
+            shift(0),
+            8,
+            SimInstant { nanos: 64 },
+            vec![test_scenario_node(
+                "node-a",
+                0,
+                SchedulerNodeActivity::Idle,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::TimerDeadline {
+                    virtual_time: SimInstant { nanos: 23 },
+                },
+            )],
+            Vec::new(),
+        );
+
+        let report = check_scheduler_liveness(scenario)
+            .unwrap_or_else(|error| panic!("idle exact wakeup should not deadlock: {error}"));
+
+        assert_eq!(report.terminal, SchedulerTerminal::Quiescent);
+        assert_eq!(report.frontier, VirtualTime { ticks: 23 });
+        assert_eq!(
+            report.advanced_nodes,
+            vec![scheduler_node("node-a", SchedulingNodeKind::Vm)]
+        );
+    }
+
+    #[test]
+    fn scheduler_quiescence_idle_exact_wakeup_after_time_limit_stops_at_limit() {
+        let scenario = SchedulerLivenessScenario::from_canonical_material(
+            "idle-exact-wakeup-after-limit",
+            shift(0),
+            8,
+            SimInstant { nanos: 64 },
+            vec![test_scenario_node(
+                "node-a",
+                0,
+                SchedulerNodeActivity::Idle,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::TimerDeadline {
+                    virtual_time: SimInstant { nanos: 100 },
+                },
+            )],
+            Vec::new(),
+        );
+
+        let report = check_scheduler_liveness(scenario)
+            .unwrap_or_else(|error| panic!("idle exact wakeup should respect limit: {error}"));
+
+        assert_eq!(report.terminal, SchedulerTerminal::TimeLimitReached);
+        assert_eq!(report.frontier, VirtualTime { ticks: 64 });
+        assert_eq!(
+            report.advanced_nodes,
+            vec![scheduler_node("node-a", SchedulingNodeKind::Vm)]
+        );
+    }
+
+    #[test]
+    fn scheduler_quiescence_fast_forwards_idle_pending_delivery_without_deadlock() {
+        let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
+        let producer = scheduler_node("node-b", SchedulingNodeKind::Vm);
+        let scenario = SchedulerLivenessScenario::from_canonical_material(
+            "idle-pending-delivery",
+            shift(0),
+            8,
+            SimInstant { nanos: 64 },
+            vec![test_scenario_node(
+                "node-a",
+                0,
+                SchedulerNodeActivity::Idle,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            )],
+            vec![event(17, &consumer, &producer, 0, b"wake")],
+        );
+
+        let report = check_scheduler_liveness(scenario)
+            .unwrap_or_else(|error| panic!("idle pending delivery should not deadlock: {error}"));
+
+        assert_eq!(report.terminal, SchedulerTerminal::Quiescent);
+        assert_eq!(report.frontier, VirtualTime { ticks: 17 });
+        assert_eq!(report.resolved_events, 1);
+    }
+
+    #[test]
+    fn scheduler_quiescence_blocks_future_io_and_fault_events() {
+        let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
+        let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
+        let control_plane = scheduler_node("plan", SchedulingNodeKind::ControlPlane);
+        let fault = FaultId {
+            name: String::from("planned-fault"),
+        };
+        let scheduler = test_scheduler(
+            vec![test_scenario_node(
+                "node-a",
+                0,
+                SchedulerNodeActivity::Idle,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            )],
+            vec![
+                io_completion_event(5, &consumer, &disk, 1, b"io"),
+                fault_event(9, &consumer, &control_plane, 2, fault),
+            ],
+        );
+
+        let quiescence = scheduler
+            .quiescence()
+            .unwrap_or_else(|error| panic!("quiescence should compute: {error}"));
+
+        assert!(!quiescence.is_quiescent());
+        assert!(
+            quiescence
+                .blockers
+                .contains(&SchedulerQuiescenceBlocker::PendingEvent {
+                    key: event_key(5, &consumer, &disk, 1),
+                })
+        );
+        assert!(
+            quiescence
+                .blockers
+                .contains(&SchedulerQuiescenceBlocker::PendingEvent {
+                    key: event_key(9, &consumer, &control_plane, 2),
+                })
+        );
+        assert!(quiescence.blockers.contains(
+            &SchedulerQuiescenceBlocker::PendingExactLocalEvent {
+                node: consumer,
+                event: ExactLocalEvent::IoCompletion {
+                    virtual_time: SimInstant { nanos: 5 },
+                    sub_node: disk,
+                },
+            }
+        ));
+    }
+
+    #[test]
+    fn scheduler_quiescence_ignores_idle_nodes_when_peer_can_advance() {
+        let runner = scheduler_node("runner", SchedulingNodeKind::Vm);
+        let mut scheduler = test_scheduler(
+            vec![
+                test_scenario_node(
+                    "idle",
+                    0,
+                    SchedulerNodeActivity::Idle,
+                    NetworkLookahead::Finite(SimDuration { nanos: 1 }),
+                    ExactLocalEvent::TimerDeadline {
+                        virtual_time: SimInstant { nanos: 100 },
+                    },
+                ),
+                test_scenario_node(
+                    "runner",
+                    0,
+                    SchedulerNodeActivity::Runnable,
+                    NetworkLookahead::Finite(SimDuration { nanos: 4 }),
+                    ExactLocalEvent::NoArmedTimer,
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let quiescence = scheduler
+            .quiescence()
+            .unwrap_or_else(|error| panic!("quiescence should compute: {error}"));
+        let request = QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        };
+        let outcome = scheduler
+            .drive_quantum(request)
+            .unwrap_or_else(|error| panic!("runnable peer should advance: {error}"));
+
+        assert_eq!(
+            quiescence.blockers,
+            vec![
+                SchedulerQuiescenceBlocker::PendingExactLocalEvent {
+                    node: scheduler_node("idle", SchedulingNodeKind::Vm),
+                    event: ExactLocalEvent::TimerDeadline {
+                        virtual_time: SimInstant { nanos: 100 },
+                    },
+                },
+                SchedulerQuiescenceBlocker::RunnableNode {
+                    node: runner.clone(),
+                },
+            ]
+        );
+        assert_eq!(outcome.advanced_node, Some(runner));
+    }
+
+    #[test]
     fn scheduler_errors_render_all_variants_deterministically() {
         let backend = SchedulerError::from(BackendError::Rejected {
             message: String::from("backend refused"),
@@ -2654,6 +3094,70 @@ mod tests {
                 node: consumer.node.clone(),
                 payload: payload.to_vec(),
             }),
+        }
+    }
+
+    fn test_scheduler(
+        nodes: Vec<SchedulerScenarioNode>,
+        pending_events: Vec<ScheduledEvent>,
+    ) -> SingleScheduler {
+        SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
+            "test-scheduler-quiescence",
+            shift(0),
+            16,
+            SimInstant { nanos: 64 },
+            nodes,
+            pending_events,
+        ))
+        .unwrap_or_else(|error| panic!("test scheduler should build: {error}"))
+    }
+
+    fn test_scenario_node(
+        name: &str,
+        counter: u64,
+        activity: SchedulerNodeActivity,
+        network_lookahead: NetworkLookahead,
+        exact_local_event: ExactLocalEvent,
+    ) -> SchedulerScenarioNode {
+        SchedulerScenarioNode {
+            id: scheduler_node(name, SchedulingNodeKind::Vm),
+            counter: NodeCounter { ticks: counter },
+            activity,
+            network_lookahead,
+            exact_local_event,
+        }
+    }
+
+    fn io_completion_event(
+        virtual_time: u64,
+        consumer: &SchedulerNodeId,
+        producer: &SchedulerNodeId,
+        sequence: u64,
+        payload: &[u8],
+    ) -> ScheduledEvent {
+        ScheduledEvent {
+            key: event_key(virtual_time, consumer, producer, sequence),
+            payload: ScheduledEventPayload::IoCompletion(IoCompletion {
+                sub_node: producer.clone(),
+                target: consumer.node.clone(),
+                delivery_icount: Icount {
+                    retired: virtual_time,
+                },
+                payload: payload.to_vec(),
+            }),
+        }
+    }
+
+    fn fault_event(
+        virtual_time: u64,
+        consumer: &SchedulerNodeId,
+        producer: &SchedulerNodeId,
+        sequence: u64,
+        fault: FaultId,
+    ) -> ScheduledEvent {
+        ScheduledEvent {
+            key: event_key(virtual_time, consumer, producer, sequence),
+            payload: ScheduledEventPayload::FaultActivation(fault),
         }
     }
 }
