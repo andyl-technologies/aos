@@ -7,8 +7,9 @@
 //! checkpoint deltas.
 
 use crate::{
-    ContentAddressedBlobRef, ContentHash, Icount, IoSubNodeRequest, SchedulerNodeId,
-    SchedulingNodeKind, Shift, SimDuration, TimeConversionError, VirtualInstant,
+    ContentAddressedBlobRef, ContentHash, DeviceRngState, Icount, IoSubNodeCompletion,
+    IoSubNodeRequest, SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, TimeConversionError,
+    VirtualInstant,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -331,6 +332,40 @@ impl BlockOverlayDelta {
     }
 }
 
+/// Restorable block sub-node contribution to a checkpoint's materialized state.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BlockSubNodeSnapshot {
+    /// Dirty-page delta over the parent overlay; the base image is not embedded.
+    pub delta: BlockOverlayDelta,
+    /// Device-local RNG stream positions captured at the checkpoint boundary.
+    pub device_rng: DeviceRngState,
+    /// Computed block responses that have not yet been delivered.
+    pub in_flight: Vec<IoSubNodeCompletion>,
+    /// Device clock at the checkpoint boundary.
+    pub clock_icount: Icount,
+    /// Fixed block-device length in bytes.
+    pub length: u64,
+}
+
+impl BlockSubNodeSnapshot {
+    /// Computes a deterministic content hash for this block snapshot payload.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_bytes(&block_snapshot_bytes(self))
+    }
+}
+
+/// Runtime state recovered alongside the overlay during block snapshot restore.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RestoredBlockSubNodeState {
+    /// Device-local RNG stream positions to re-seed.
+    pub device_rng: DeviceRngState,
+    /// Computed block responses that must be re-armed for delivery.
+    pub in_flight: Vec<IoSubNodeCompletion>,
+    /// Device clock restored for the block sub-node.
+    pub clock_icount: Icount,
+}
+
 /// A block-device copy-on-write overlay over an immutable base image.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockSubNodeOverlay {
@@ -512,6 +547,104 @@ impl BlockSubNodeOverlay {
             .collect()
     }
 
+    /// Captures the checkpoint delta and runtime state for this block sub-node.
+    ///
+    /// The returned snapshot contains only dirty overlay pages over the parent,
+    /// device RNG positions, in-flight responses, device clock, and length. The
+    /// immutable base bytes are referenced by content address and are not copied.
+    #[must_use]
+    pub fn capture_snapshot(
+        &mut self,
+        device_rng: DeviceRngState,
+        mut in_flight: Vec<IoSubNodeCompletion>,
+        clock_icount: Icount,
+    ) -> BlockSubNodeSnapshot {
+        in_flight.sort_by(block_inflight_response_order);
+        BlockSubNodeSnapshot {
+            delta: self.capture_dirty_delta(),
+            device_rng,
+            in_flight,
+            clock_icount,
+            length: self.get_length(),
+        }
+    }
+
+    /// Restores a checkpoint delta over this overlay's current parent state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockSnapshotError`] when the snapshot references a different
+    /// base image, carries the wrong device length, or contains a structurally
+    /// invalid page delta.
+    pub fn restore_snapshot(
+        &mut self,
+        snapshot: &BlockSubNodeSnapshot,
+    ) -> Result<RestoredBlockSubNodeState, BlockSnapshotError> {
+        self.apply_delta(&snapshot.delta, snapshot.length)?;
+        let mut restored_in_flight = snapshot.in_flight.clone();
+        restored_in_flight.sort_by(block_inflight_response_order);
+        Ok(RestoredBlockSubNodeState {
+            device_rng: snapshot.device_rng.clone(),
+            in_flight: restored_in_flight,
+            clock_icount: snapshot.clock_icount,
+        })
+    }
+
+    /// Applies a dirty-page delta over this overlay without marking pages dirty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockSnapshotError`] when the delta does not belong to this base
+    /// image or contains non-canonical or out-of-bounds page data.
+    pub fn apply_delta(
+        &mut self,
+        delta: &BlockOverlayDelta,
+        expected_length: u64,
+    ) -> Result<(), BlockSnapshotError> {
+        if delta.base != self.base.content_ref() {
+            return Err(BlockSnapshotError::BaseImageMismatch {
+                expected: self.base.content_ref(),
+                actual: delta.base,
+            });
+        }
+        if expected_length != self.get_length() {
+            return Err(BlockSnapshotError::LengthMismatch {
+                expected: self.get_length(),
+                actual: expected_length,
+            });
+        }
+
+        let mut restored_pages = Vec::with_capacity(delta.pages.len());
+        let mut previous_page = None;
+        for page in &delta.pages {
+            validate_delta_page(page, self.get_length(), previous_page)?;
+            let page_bytes = page_bytes_from_delta(page)?;
+            restored_pages.push((page.page_base, page_bytes));
+            previous_page = Some(page.page_base);
+        }
+        for (page_base, page_bytes) in restored_pages {
+            self.overlay.insert(page_base, page_bytes);
+        }
+        self.dirty.clear();
+        Ok(())
+    }
+
+    /// Produces a standalone raw disk image by applying live overlay pages over the base.
+    #[must_use]
+    pub fn materialize_image(&self) -> Vec<u8> {
+        let mut image = self.base.bytes().to_vec();
+        for (page_base, page) in &self.overlay {
+            apply_page_to_image(&mut image, *page_base, page);
+        }
+        image
+    }
+
+    /// Returns the content hash of the standalone materialized raw image.
+    #[must_use]
+    pub fn materialized_content_hash(&self) -> ContentHash {
+        ContentHash::from_bytes(&self.materialize_image())
+    }
+
     fn copy_base_range(&self, offset: u64, output: &mut [u8]) {
         let Ok(start) = usize::try_from(offset) else {
             return;
@@ -599,6 +732,100 @@ impl fmt::Display for BlockOverlayError {
 }
 
 impl Error for BlockOverlayError {}
+
+/// An error raised while restoring a block sub-node snapshot.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BlockSnapshotError {
+    /// A snapshot references a different immutable base image.
+    BaseImageMismatch {
+        /// Base image expected by the restoring overlay.
+        expected: ContentAddressedBlobRef,
+        /// Base image recorded by the snapshot delta.
+        actual: ContentAddressedBlobRef,
+    },
+    /// A snapshot length does not match the restoring block device.
+    LengthMismatch {
+        /// Device length of the restoring overlay.
+        expected: u64,
+        /// Device length recorded by the snapshot.
+        actual: u64,
+    },
+    /// A snapshot page offset is not 4 KiB aligned.
+    DeltaPageMisaligned {
+        /// Misaligned page offset.
+        page_base: u64,
+    },
+    /// A snapshot page offset is outside the device length.
+    DeltaPageOutOfBounds {
+        /// Page offset from the snapshot delta.
+        page_base: u64,
+        /// Fixed block-device length.
+        length: u64,
+    },
+    /// Snapshot pages were not strictly ordered by page offset.
+    DeltaPageOutOfOrder {
+        /// Previous page offset, if any.
+        previous: Option<u64>,
+        /// Current page offset that violated canonical order.
+        current: u64,
+    },
+    /// A snapshot page did not contain one whole overlay page.
+    InvalidDeltaPageSize {
+        /// Page offset whose bytes were malformed.
+        page_base: u64,
+        /// Actual byte length.
+        actual: usize,
+        /// Required byte length.
+        expected: usize,
+    },
+}
+
+impl fmt::Display for BlockSnapshotError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BaseImageMismatch { expected, actual } => write!(
+                formatter,
+                "block snapshot base mismatch: expected {}, got {}",
+                expected.hash().to_hex(),
+                actual.hash().to_hex()
+            ),
+            Self::LengthMismatch { expected, actual } => write!(
+                formatter,
+                "block snapshot length mismatch: expected {expected}, got {actual}"
+            ),
+            Self::DeltaPageMisaligned { page_base } => {
+                write!(
+                    formatter,
+                    "block snapshot page offset {page_base} is not 4 KiB aligned"
+                )
+            }
+            Self::DeltaPageOutOfBounds { page_base, length } => write!(
+                formatter,
+                "block snapshot page offset {page_base} is outside device length {length}"
+            ),
+            Self::DeltaPageOutOfOrder { previous, current } => match previous {
+                Some(previous) => write!(
+                    formatter,
+                    "block snapshot page offset {current} is not after previous offset {previous}"
+                ),
+                None => write!(
+                    formatter,
+                    "block snapshot page offset {current} violates canonical page order"
+                ),
+            },
+            Self::InvalidDeltaPageSize {
+                page_base,
+                actual,
+                expected,
+            } => write!(
+                formatter,
+                "block snapshot page {page_base} has {actual} bytes, expected {expected}"
+            ),
+        }
+    }
+}
+
+impl Error for BlockSnapshotError {}
 
 /// An error raised while planning deterministic block completions.
 #[derive(Debug, PartialEq, Eq)]
@@ -710,6 +937,62 @@ fn checked_count_usize(count: u64) -> Result<usize, BlockOverlayError> {
     usize::try_from(count).map_err(|_| BlockOverlayError::RangeTooLarge { count })
 }
 
+fn validate_delta_page(
+    page: &BlockDirtyPage,
+    length: u64,
+    previous_page: Option<u64>,
+) -> Result<(), BlockSnapshotError> {
+    if page.page_base % BLOCK_OVERLAY_PAGE_SIZE_U64 != 0 {
+        return Err(BlockSnapshotError::DeltaPageMisaligned {
+            page_base: page.page_base,
+        });
+    }
+    if previous_page.is_some_and(|previous| page.page_base <= previous) {
+        return Err(BlockSnapshotError::DeltaPageOutOfOrder {
+            previous: previous_page,
+            current: page.page_base,
+        });
+    }
+    if page.page_base >= length {
+        return Err(BlockSnapshotError::DeltaPageOutOfBounds {
+            page_base: page.page_base,
+            length,
+        });
+    }
+    if page.bytes.len() != BLOCK_OVERLAY_PAGE_SIZE {
+        return Err(BlockSnapshotError::InvalidDeltaPageSize {
+            page_base: page.page_base,
+            actual: page.bytes.len(),
+            expected: BLOCK_OVERLAY_PAGE_SIZE,
+        });
+    }
+    Ok(())
+}
+
+fn page_bytes_from_delta(page: &BlockDirtyPage) -> Result<BlockOverlayPage, BlockSnapshotError> {
+    let bytes = page.bytes.clone().try_into().map_err(|bytes: Vec<u8>| {
+        BlockSnapshotError::InvalidDeltaPageSize {
+            page_base: page.page_base,
+            actual: bytes.len(),
+            expected: BLOCK_OVERLAY_PAGE_SIZE,
+        }
+    })?;
+    Ok(Box::new(bytes))
+}
+
+fn apply_page_to_image(image: &mut [u8], page_base: u64, page: &[u8; BLOCK_OVERLAY_PAGE_SIZE]) {
+    let Ok(start) = usize::try_from(page_base) else {
+        return;
+    };
+    if start >= image.len() {
+        return;
+    }
+    let end = start
+        .saturating_add(BLOCK_OVERLAY_PAGE_SIZE)
+        .min(image.len());
+    image[start..end].copy_from_slice(&page[..end - start]);
+}
+
 fn block_delivery_icount(
     shift: Shift,
     request_icount: Icount,
@@ -739,6 +1022,17 @@ fn block_completion_order(
         .then_with(|| left.sequence.cmp(&right.sequence))
 }
 
+fn block_inflight_response_order(
+    left: &IoSubNodeCompletion,
+    right: &IoSubNodeCompletion,
+) -> std::cmp::Ordering {
+    left.delivery_icount
+        .cmp(&right.delivery_icount)
+        .then_with(|| left.sub_node.cmp(&right.sub_node))
+        .then_with(|| left.sequence.cmp(&right.sequence))
+        .then_with(|| left.requester.cmp(&right.requester))
+}
+
 fn block_overlay_delta_bytes(delta: &BlockOverlayDelta) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"crucible.block-overlay-delta.v1\n");
@@ -751,4 +1045,58 @@ fn block_overlay_delta_bytes(delta: &BlockOverlayDelta) -> Vec<u8> {
         bytes.extend_from_slice(&page.bytes);
     }
     bytes
+}
+
+fn block_snapshot_bytes(snapshot: &BlockSubNodeSnapshot) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"crucible.block-subnode-snapshot.v1\n");
+    bytes.extend_from_slice(&snapshot.delta.content_hash().bytes);
+    bytes.extend_from_slice(&snapshot.clock_icount.retired.to_le_bytes());
+    bytes.extend_from_slice(&snapshot.length.to_le_bytes());
+    bytes.extend_from_slice(&(snapshot.device_rng.streams.len() as u64).to_le_bytes());
+    for (stream, position) in &snapshot.device_rng.streams {
+        append_str(&mut bytes, &stream.domain);
+        append_str(&mut bytes, &stream.name);
+        bytes.extend_from_slice(&position.draws.to_le_bytes());
+    }
+    let mut in_flight = snapshot.in_flight.clone();
+    in_flight.sort_by(block_inflight_response_order);
+    bytes.extend_from_slice(&(in_flight.len() as u64).to_le_bytes());
+    for completion in &in_flight {
+        bytes.extend_from_slice(&completion.sequence.to_le_bytes());
+        append_scheduler_node(&mut bytes, &completion.sub_node);
+        append_scheduler_node(&mut bytes, &completion.requester);
+        bytes.extend_from_slice(&completion.request_icount.retired.to_le_bytes());
+        bytes.extend_from_slice(&completion.delivery_icount.retired.to_le_bytes());
+        bytes.extend_from_slice(&completion.modeled_latency.nanos.to_le_bytes());
+        match completion.rng_draw {
+            Some(draw) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&draw.to_le_bytes());
+            }
+            None => bytes.push(0),
+        }
+        append_bytes(&mut bytes, &completion.payload);
+    }
+    bytes
+}
+
+fn append_scheduler_node(bytes: &mut Vec<u8>, node: &SchedulerNodeId) {
+    append_str(bytes, &node.node.name);
+    bytes.push(match node.kind {
+        SchedulingNodeKind::Vm => 0,
+        SchedulingNodeKind::Disk => 1,
+        SchedulingNodeKind::NineP => 2,
+        SchedulingNodeKind::Network => 3,
+        SchedulingNodeKind::ControlPlane => 4,
+    });
+}
+
+fn append_str(bytes: &mut Vec<u8>, value: &str) {
+    append_bytes(bytes, value.as_bytes());
+}
+
+fn append_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
+    bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(value);
 }
