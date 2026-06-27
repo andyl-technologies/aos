@@ -113,15 +113,17 @@ mod pack;
 pub use cache::{
     PersistBlobIndexRebuild, PersistBlobIndexRebuildPlan, PersistBlobIndexStaleEntry,
     PersistBlobLiveRoot, PersistBlobLiveRootSource, PersistBlobPackLivenessPlan,
-    PersistBlobPackTrim, PersistCache, PersistCompaction, PersistFileBlobReachabilityPlan,
-    PersistMissingNodeValueRoot, PersistNodeValueRoot, PersistNodeValueRootPlan,
-    PersistStorageMaintenance, PersistValueBlobReachabilityPlan,
+    PersistBlobPackRepackPlan, PersistBlobPackTrim, PersistBlobRecordRelocation, PersistCache,
+    PersistCompaction, PersistFileBlobReachabilityPlan, PersistMissingNodeValueRoot,
+    PersistNodeValueRoot, PersistNodeValueRootPlan, PersistStorageMaintenance,
+    PersistValueBlobReachabilityPlan,
 };
 pub use error::{
     PersistBlobIndexError, PersistBlobIndexRebuildError, PersistBlobIndexRebuildPlanError,
     PersistBlobIndexedReadError, PersistBlobIndexedWriteError, PersistBlobIndexesRebuildError,
     PersistBlobLiveRootError, PersistBlobPackError, PersistBlobPackLivenessPlanError,
-    PersistBlobPackTrimError, PersistCachedExpressionNodeValueIndexedLoadError,
+    PersistBlobPackRepackPlanError, PersistBlobPackTrimError,
+    PersistCachedExpressionNodeValueIndexedLoadError,
     PersistCachedExpressionNodeValueIndexedWriteError,
     PersistCachedExpressionNodeValueTraceLoadError, PersistCachedExpressionValueIndexedLoadError,
     PersistCachedExpressionValueIndexedWriteError, PersistCompactionError, PersistError,

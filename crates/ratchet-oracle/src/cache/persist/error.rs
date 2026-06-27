@@ -816,6 +816,27 @@ pub enum PersistBlobPackLivenessPlanError {
     },
 }
 
+/// Persistent blob-pack repack planning failed.
+#[derive(Debug, Error)]
+pub enum PersistBlobPackRepackPlanError {
+    /// The selected pack's liveness plan could not be produced.
+    #[error("failed to plan persistent blob-pack liveness before repack planning")]
+    Liveness {
+        /// The underlying liveness planning error.
+        source: PersistBlobPackLivenessPlanError,
+    },
+    /// The planned compacted pack length overflowed.
+    #[error(
+        "persistent blob-pack repack length overflow at record offset {record_offset} with payload length {payload_len}"
+    )]
+    RecordBoundsOverflow {
+        /// The planned record offset that overflowed.
+        record_offset: u64,
+        /// The payload length for the record being placed.
+        payload_len: u64,
+    },
+}
+
 /// Persistent node-metadata value-root planning failed.
 #[derive(Debug, Error)]
 pub enum PersistNodeValueRootPlanError {

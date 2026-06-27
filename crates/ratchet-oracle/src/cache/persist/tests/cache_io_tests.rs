@@ -3683,6 +3683,106 @@ fn cache_blob_pack_liveness_plan_classifies_value_records() {
 }
 
 #[test]
+fn cache_blob_pack_repack_plan_maps_value_live_records_to_compacted_offsets() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let prefix_payload = b"unrooted value prefix";
+    let prefix_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(prefix_payload));
+    let prefix_location = cache
+        .append_blob(prefix_key, prefix_payload)
+        .expect("unrooted prefix appends");
+    let first_payload = b"first live value";
+    let first_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(first_payload));
+    let first_entry = cache
+        .append_blob_indexed(first_key, first_payload)
+        .expect("first live value appends and indexes");
+    let middle_payload = b"unrooted value middle";
+    let middle_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(middle_payload));
+    let middle_location = cache
+        .append_blob(middle_key, middle_payload)
+        .expect("unrooted middle appends");
+    let second_payload = b"second live value";
+    let second_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(second_payload));
+    let second_entry = cache
+        .append_blob_indexed(second_key, second_payload)
+        .expect("second live value appends and indexes");
+    let tail_payload = b"unrooted value tail";
+    let tail_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(tail_payload));
+    let tail_location = cache
+        .append_blob(tail_key, tail_payload)
+        .expect("unrooted tail appends");
+    let bytes_before = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata before repack plan")
+        .len();
+
+    let plan = cache
+        .plan_blob_pack_repack(PersistBlobStore::Values)
+        .expect("value repack plan builds");
+
+    let first_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + first_payload.len() as u64;
+    let second_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + second_payload.len() as u64;
+    let first_new = PersistBlobLocation::new(
+        PERSIST_BLOB_PACK_HEADER_LEN as u64,
+        first_payload.len() as u64,
+    );
+    let second_new = PersistBlobLocation::new(
+        PERSIST_BLOB_PACK_HEADER_LEN as u64 + first_bytes,
+        second_payload.len() as u64,
+    );
+    assert_eq!(plan.live_roots().len(), 2);
+    assert_eq!(
+        plan.record_relocations()
+            .iter()
+            .map(|relocation| {
+                (
+                    relocation.key(),
+                    relocation.old_location(),
+                    relocation.new_location(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (first_key, first_entry.location(), first_new),
+            (second_key, second_entry.location(), second_new),
+        ]
+    );
+    assert_eq!(
+        plan.unrooted_records()
+            .iter()
+            .map(|record| record.location())
+            .collect::<Vec<_>>(),
+        vec![prefix_location, middle_location, tail_location]
+    );
+    assert_eq!(plan.bytes_before(), bytes_before);
+    assert_eq!(
+        plan.bytes_after(),
+        PERSIST_BLOB_PACK_HEADER_LEN as u64 + first_bytes + second_bytes
+    );
+    assert_eq!(plan.rooted_record_bytes(), first_bytes + second_bytes);
+    assert_eq!(
+        plan.unrooted_record_bytes(),
+        PERSIST_BLOB_RECORD_HEADER_LEN as u64
+            + prefix_payload.len() as u64
+            + PERSIST_BLOB_RECORD_HEADER_LEN as u64
+            + middle_payload.len() as u64
+            + PERSIST_BLOB_RECORD_HEADER_LEN as u64
+            + tail_payload.len() as u64
+    );
+    assert_eq!(
+        plan.reclaimable_bytes(),
+        plan.bytes_before().saturating_sub(plan.bytes_after())
+    );
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata after repack plan")
+            .len(),
+        bytes_before
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_pack_liveness_plan_includes_file_artifact_roots() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -3796,6 +3896,135 @@ fn cache_blob_pack_liveness_plan_includes_file_artifact_roots() {
             .expect("parse artifact remains readable")
             .as_slice(),
         parse_payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_pack_repack_plan_includes_file_artifact_and_pending_roots() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let prefix_payload = b"unrooted file prefix";
+    let prefix_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(prefix_payload));
+    let prefix_location = cache
+        .append_blob(prefix_key, prefix_payload)
+        .expect("unrooted prefix appends");
+    let indexed_payload = b"indexed file payload";
+    let indexed_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(indexed_payload));
+    let indexed_entry = cache
+        .append_blob_indexed(indexed_key, indexed_payload)
+        .expect("indexed file appends");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let file_payload = b"file artifact payload";
+    let file_materialized = cache
+        .materialize_file_artifact(
+            &file_key,
+            parse_key,
+            file_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("file artifact materializes without blob index");
+    let file_entry = file_materialized
+        .index_entry()
+        .expect("file artifact should materialize");
+    cache
+        .record_file_artifact(file_entry)
+        .expect("file artifact mapping records");
+    let pending_parse_payload = b"pending parse artifact payload";
+    let pending_parse_materialized = cache
+        .materialize_parse_artifact(
+            parse_key,
+            pending_parse_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("pending parse artifact materializes");
+    let pending_parse_entry = pending_parse_materialized
+        .index_entry()
+        .expect("pending parse artifact should materialize");
+    let bytes_before = fs::metadata(cache.file_pack().path())
+        .expect("file pack metadata before repack plan")
+        .len();
+
+    let plan = cache
+        .plan_blob_pack_repack(PersistBlobStore::Files)
+        .expect("file repack plan builds");
+
+    let indexed_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + indexed_payload.len() as u64;
+    let file_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + file_payload.len() as u64;
+    let pending_parse_bytes =
+        PERSIST_BLOB_RECORD_HEADER_LEN as u64 + pending_parse_payload.len() as u64;
+    let indexed_new = PersistBlobLocation::new(
+        PERSIST_BLOB_PACK_HEADER_LEN as u64,
+        indexed_payload.len() as u64,
+    );
+    let file_new = PersistBlobLocation::new(
+        PERSIST_BLOB_PACK_HEADER_LEN as u64 + indexed_bytes,
+        file_payload.len() as u64,
+    );
+    let pending_parse_new = PersistBlobLocation::new(
+        PERSIST_BLOB_PACK_HEADER_LEN as u64 + indexed_bytes + file_bytes,
+        pending_parse_payload.len() as u64,
+    );
+    assert!(plan.live_roots().iter().any(|root| {
+        root.source() == PersistBlobLiveRootSource::BlobIndex
+            && root.location() == indexed_entry.location()
+    }));
+    assert!(plan.live_roots().iter().any(|root| {
+        root.source() == PersistBlobLiveRootSource::FileArtifactIndex
+            && root.location() == file_entry.value().location()
+    }));
+    assert!(plan.live_roots().iter().any(|root| {
+        root.source() == PersistBlobLiveRootSource::PendingParseArtifact
+            && root.location() == pending_parse_entry.value().location()
+    }));
+    assert_eq!(
+        plan.record_relocations()
+            .iter()
+            .map(|relocation| {
+                (
+                    relocation.key(),
+                    relocation.old_location(),
+                    relocation.new_location(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (indexed_key, indexed_entry.location(), indexed_new),
+            (
+                file_entry.value().blob_key(),
+                file_entry.value().location(),
+                file_new,
+            ),
+            (
+                pending_parse_entry.value().blob_key(),
+                pending_parse_entry.value().location(),
+                pending_parse_new,
+            ),
+        ]
+    );
+    assert_eq!(
+        plan.unrooted_records()
+            .iter()
+            .map(|record| record.location())
+            .collect::<Vec<_>>(),
+        vec![prefix_location]
+    );
+    assert_eq!(plan.bytes_before(), bytes_before);
+    assert_eq!(
+        plan.bytes_after(),
+        PERSIST_BLOB_PACK_HEADER_LEN as u64 + indexed_bytes + file_bytes + pending_parse_bytes
+    );
+    assert_eq!(plan.unrooted_record_bytes(), {
+        PERSIST_BLOB_RECORD_HEADER_LEN as u64 + prefix_payload.len() as u64
+    });
+    assert_eq!(
+        fs::metadata(cache.file_pack().path())
+            .expect("file pack metadata after repack plan")
+            .len(),
+        bytes_before
     );
 
     let _ = fs::remove_dir_all(root);

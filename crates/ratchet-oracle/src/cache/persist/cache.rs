@@ -402,6 +402,123 @@ impl PersistBlobPackLivenessPlan {
     }
 }
 
+/// One verified blob-pack record relocation in a future repack.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PersistBlobRecordRelocation {
+    key: PersistBlobKey,
+    old_location: PersistBlobLocation,
+    new_location: PersistBlobLocation,
+}
+
+impl PersistBlobRecordRelocation {
+    const fn new(
+        key: PersistBlobKey,
+        old_location: PersistBlobLocation,
+        new_location: PersistBlobLocation,
+    ) -> Self {
+        Self {
+            key,
+            old_location,
+            new_location,
+        }
+    }
+
+    /// Returns the typed blob key for the relocated record.
+    pub const fn key(self) -> PersistBlobKey {
+        self.key
+    }
+
+    /// Returns the record location in the current pack.
+    pub const fn old_location(self) -> PersistBlobLocation {
+        self.old_location
+    }
+
+    /// Returns the planned record location in the compacted pack.
+    pub const fn new_location(self) -> PersistBlobLocation {
+        self.new_location
+    }
+}
+
+/// Read-only relocation diagnostics for a future blob-pack repack.
+///
+/// The plan preserves the selected store's verified live records in current
+/// pack order and places them contiguously after a fresh pack header. For
+/// `files/`, pending artifact roots are planned as live but applying such a
+/// relocation still requires a quiescent writer protocol because in-flight
+/// artifact callers hold old locations.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PersistBlobPackRepackPlan {
+    live_roots: Vec<PersistBlobLiveRoot>,
+    record_relocations: Vec<PersistBlobRecordRelocation>,
+    unrooted_records: Vec<PersistBlobPackRecord>,
+    bytes_before: u64,
+    bytes_after: u64,
+    rooted_record_bytes: u64,
+    unrooted_record_bytes: u64,
+}
+
+impl PersistBlobPackRepackPlan {
+    fn new(
+        live_roots: Vec<PersistBlobLiveRoot>,
+        record_relocations: Vec<PersistBlobRecordRelocation>,
+        unrooted_records: Vec<PersistBlobPackRecord>,
+        bytes_before: u64,
+        bytes_after: u64,
+        rooted_record_bytes: u64,
+        unrooted_record_bytes: u64,
+    ) -> Self {
+        Self {
+            live_roots,
+            record_relocations,
+            unrooted_records,
+            bytes_before,
+            bytes_after,
+            rooted_record_bytes,
+            unrooted_record_bytes,
+        }
+    }
+
+    /// Returns latest sidecar roots and in-flight same-process roots.
+    pub fn live_roots(&self) -> &[PersistBlobLiveRoot] {
+        &self.live_roots
+    }
+
+    /// Returns verified live records with their planned compacted locations.
+    pub fn record_relocations(&self) -> &[PersistBlobRecordRelocation] {
+        &self.record_relocations
+    }
+
+    /// Returns verified records that a repack using this plan would omit.
+    pub fn unrooted_records(&self) -> &[PersistBlobPackRecord] {
+        &self.unrooted_records
+    }
+
+    /// Returns the current packfile length observed while planning.
+    pub const fn bytes_before(&self) -> u64 {
+        self.bytes_before
+    }
+
+    /// Returns the planned compacted packfile length.
+    pub const fn bytes_after(&self) -> u64 {
+        self.bytes_after
+    }
+
+    /// Returns bytes occupied by records retained by the planned repack.
+    pub const fn rooted_record_bytes(&self) -> u64 {
+        self.rooted_record_bytes
+    }
+
+    /// Returns bytes occupied by records omitted by the planned repack.
+    pub const fn unrooted_record_bytes(&self) -> u64 {
+        self.unrooted_record_bytes
+    }
+
+    /// Returns the bytes a repack using this plan would reclaim.
+    pub const fn reclaimable_bytes(&self) -> u64 {
+        self.bytes_before.saturating_sub(self.bytes_after)
+    }
+}
+
 /// A latest node-metadata value link resolved to a verified value blob.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PersistNodeValueRoot {
@@ -2332,6 +2449,63 @@ impl PersistCache {
             rooted_record_bytes,
             unrooted_record_bytes,
             tail_reclaimable_bytes,
+        ))
+    }
+
+    /// Plans live-record relocation for a future blob-pack repack.
+    ///
+    /// This read-only diagnostic first builds [`Self::plan_blob_pack_liveness`],
+    /// then assigns each verified rooted record a contiguous location in a
+    /// fresh compacted pack while preserving current pack order. Unrooted
+    /// records are reported as omitted. The method does not write sidecars,
+    /// copy payload bytes, replace packfiles, choose a retention policy, or
+    /// coordinate with cross-process writers. For `files/`, the returned plan
+    /// can include same-process pending artifact roots, but applying such a
+    /// relocation still requires a writer-quiescence protocol because callers
+    /// with in-flight artifact index entries hold old locations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackRepackPlanError`] if liveness planning fails
+    /// or if the planned compacted pack length would overflow `u64`.
+    pub fn plan_blob_pack_repack(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<PersistBlobPackRepackPlan, PersistBlobPackRepackPlanError> {
+        let liveness = self
+            .plan_blob_pack_liveness(store)
+            .map_err(|source| PersistBlobPackRepackPlanError::Liveness { source })?;
+        let mut next_offset = PERSIST_BLOB_PACK_HEADER_LEN as u64;
+        let mut record_relocations = Vec::new();
+        for record in liveness.rooted_records() {
+            let new_location =
+                PersistBlobLocation::new(next_offset, record.location().payload_len());
+            record_relocations.push(PersistBlobRecordRelocation::new(
+                record.key(store),
+                record.location(),
+                new_location,
+            ));
+            let after_header = next_offset
+                .checked_add(PERSIST_BLOB_RECORD_HEADER_LEN as u64)
+                .ok_or(PersistBlobPackRepackPlanError::RecordBoundsOverflow {
+                    record_offset: next_offset,
+                    payload_len: record.location().payload_len(),
+                })?;
+            next_offset = after_header
+                .checked_add(record.location().payload_len())
+                .ok_or(PersistBlobPackRepackPlanError::RecordBoundsOverflow {
+                    record_offset: next_offset,
+                    payload_len: record.location().payload_len(),
+                })?;
+        }
+        Ok(PersistBlobPackRepackPlan::new(
+            liveness.live_roots().to_vec(),
+            record_relocations,
+            liveness.unrooted_records().to_vec(),
+            liveness.bytes_before(),
+            next_offset,
+            liveness.rooted_record_bytes(),
+            liveness.unrooted_record_bytes(),
         ))
     }
 
