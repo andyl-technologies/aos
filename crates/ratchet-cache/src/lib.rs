@@ -5,13 +5,15 @@
 //! `ratchet-oracle` crate, including memory-mapped content-addressed stores,
 //! out-of-core value spill, and future demand-graph storage backends.
 //!
-//! The current crate contains read-only file mapping and content-addressed
-//! blob-pack building blocks used by later persistent packfile adapters.
-//! Higher-level cache formats remain in `ratchet-oracle` until they move
-//! behind this unsafe fence.
+//! The current crate contains read-only file mapping, content-addressed
+//! blob-pack building blocks, hash-to-offset sidecars, and fixed-record node
+//! metadata sidecars used by later persistent cache adapters. Higher-level
+//! cache formats remain in `ratchet-oracle` until they move behind this unsafe
+//! fence.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod blob_index;
 pub mod blob_pack;
+pub mod node_metadata;
 pub mod store;

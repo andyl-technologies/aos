@@ -1666,6 +1666,17 @@ alone (`M-1`/`Q-A`).
       demand accounting are covered by following rows, while LMDB/redb node
       tables, process-boundary updates, mmap reads, GC/repack, and AOS tuning
       remain open (`C-13`/`C-14`/`S-14`).
+- [x] Current `ratchet-cache` fixed-record node-metadata substrate:
+      `node_metadata::NodeMetadataKey`, `NodeMetadataValue`,
+      `NodeMetadataEntry`, and `NodeMetadataIndex` provide the generic
+      engine-band record layout and append/newest/compact/replacement file
+      operations for the current `nodes/metadata.index` sidecar without
+      interpreting oracle-specific metadata semantics. This is a migration
+      target only; `ratchet-oracle` production node metadata still owns the
+      sidecar wrapper, node-trace/value transactionality, same-root locks, and
+      cache policy, while LMDB/redb tables, writer batching, mmap reads,
+      cross-process coordination, and harness proof remain open
+      (`C-13`/`R-14`).
 - [x] Current explicit node reuse counter update adapter:
       `PersistCache::record_node_materialization_reuse` and
       `lookup_node_materialization_reuse` expose typed materialization reuse
