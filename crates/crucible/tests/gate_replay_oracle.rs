@@ -168,6 +168,9 @@ fn gate_replay_oracle_materialized_state_loadvm_branch_captures_resume_component
             icount: Icount { retired: 321 },
         },
         white_box: WhiteBoxPolicy::Disabled,
+        kernel: None,
+        root_image: None,
+        initrd: None,
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
@@ -210,6 +213,9 @@ fn gate_replay_oracle_saved_descendant_fat_checkpoint_carries_vm_snapshot_refs()
             icount: Icount { retired: 987 },
         },
         white_box: WhiteBoxPolicy::Disabled,
+        kernel: None,
+        root_image: None,
+        initrd: None,
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
@@ -261,6 +267,9 @@ fn gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path()
             icount: Icount { retired: 111 },
         },
         white_box: WhiteBoxPolicy::Disabled,
+        kernel: None,
+        root_image: None,
+        initrd: None,
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
@@ -324,6 +333,9 @@ fn gate_replay_oracle_loadvm_rejects_incomplete_materialized_state() -> Result<(
             icount: Icount { retired: 654 },
         },
         white_box: WhiteBoxPolicy::Disabled,
+        kernel: None,
+        root_image: None,
+        initrd: None,
     }])?;
     let scenario = world.scenario_def();
     let baked = bake(&world)?;
@@ -442,6 +454,9 @@ fn gate_replay_oracle_samples_temporal_graph_search_fat_materializations()
             icount: Icount { retired: 222 },
         },
         white_box: WhiteBoxPolicy::Disabled,
+        kernel: None,
+        root_image: None,
+        initrd: None,
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
@@ -501,6 +516,9 @@ fn gate_replay_oracle_search_sampling_rate_can_skip_materializations() -> Result
             icount: Icount { retired: 222 },
         },
         white_box: WhiteBoxPolicy::Disabled,
+        kernel: None,
+        root_image: None,
+        initrd: None,
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
@@ -545,6 +563,9 @@ fn gate_replay_oracle_search_sampling_mismatch_requests_bisection() -> Result<()
             icount: Icount { retired: 222 },
         },
         white_box: WhiteBoxPolicy::Disabled,
+        kernel: None,
+        root_image: None,
+        initrd: None,
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());

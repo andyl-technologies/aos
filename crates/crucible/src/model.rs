@@ -2050,6 +2050,162 @@ impl PinnedConfiguration {
     }
 }
 
+/// A self-contained `(seed, scenario, schedule)` reproduction bundle.
+///
+/// The seed is not stored as a drifting side channel: it is the embedded
+/// [`ScenarioDefForm`]'s own seed. The artifact carries only the complete
+/// validated scenario form and recorded schedule, so its identity is exactly the
+/// RFC tuple `(seed, scenario, schedule)` without a parent family or host path.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReproductionArtifact {
+    id: ContentHash,
+    scenario: ScenarioDefForm,
+    schedule: Schedule,
+}
+
+impl ReproductionArtifact {
+    /// Captures an artifact by reducing `schedule` from `scenario`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if the reduction function rejects the supplied
+    /// scenario/schedule pair.
+    pub fn capture(scenario: &ScenarioDefForm, schedule: &Schedule) -> Result<Self, EngineError> {
+        let artifact = Self::from_recorded_parts(scenario.clone(), schedule.clone());
+        let _ = artifact.replay()?;
+        Ok(artifact)
+    }
+
+    /// Captures an artifact from an executable pinned configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if replaying the pinned configuration's scenario
+    /// and schedule cannot derive a reduced state.
+    pub fn from_pinned_configuration(pinned: &PinnedConfiguration) -> Result<Self, EngineError> {
+        Self::capture(pinned.scenario_form(), &pinned.configuration().schedule)
+    }
+
+    /// Rebuilds an artifact from already-recorded self-contained parts.
+    #[must_use]
+    pub fn from_recorded_parts(scenario: ScenarioDefForm, schedule: Schedule) -> Self {
+        let id =
+            ContentHash::from_bytes(&reproduction_artifact_canonical_bytes(&scenario, &schedule));
+        Self {
+            id,
+            scenario,
+            schedule,
+        }
+    }
+
+    /// Parses a compact canonical artifact representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed artifact,
+    /// scenario, or schedule bytes.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC)?;
+        let scenario_bytes = reader.read_binary_blob("reproduction-artifact.scenario")?;
+        let schedule_bytes = reader.read_binary_blob("reproduction-artifact.schedule")?;
+        reader.finish()?;
+
+        let scenario = ScenarioDefForm::from_compact_binary(scenario_bytes)?;
+        let schedule = Schedule::from_compact_binary(schedule_bytes)?;
+        Ok(Self::from_recorded_parts(scenario, schedule))
+    }
+
+    /// Returns the BLAKE3 content address over this artifact's canonical bytes.
+    #[must_use]
+    pub fn id(&self) -> ContentHash {
+        self.id
+    }
+
+    /// Returns the concrete serialized scenario form carried by this artifact.
+    #[must_use]
+    pub fn scenario_form(&self) -> &ScenarioDefForm {
+        &self.scenario
+    }
+
+    /// Reconstructs the immutable scenario definition carried by this artifact.
+    #[must_use]
+    pub fn scenario_def(&self) -> ScenarioDef {
+        self.scenario.scenario_def()
+    }
+
+    /// Returns the scenario definition's root seed.
+    #[must_use]
+    pub fn seed(&self) -> Seed {
+        self.scenario.seed()
+    }
+
+    /// Returns the recorded schedule carried by this artifact.
+    #[must_use]
+    pub fn schedule(&self) -> &Schedule {
+        &self.schedule
+    }
+
+    /// Returns the canonical byte serialization hashed by [`Self::id`].
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        reproduction_artifact_canonical_bytes(&self.scenario, &self.schedule)
+    }
+
+    /// Serializes this artifact as compact canonical bytes.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        self.canonical_bytes()
+    }
+
+    /// Replays the artifact through the reduction oracle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if the reduction function rejects the embedded
+    /// scenario/schedule pair.
+    pub fn replay(&self) -> Result<ReproductionReplay, EngineError> {
+        let state = reduce(&self.scenario_def(), &self.schedule)?;
+        Ok(ReproductionReplay {
+            artifact: self.id,
+            scenario: self.scenario.id(),
+            schedule: self.schedule.content_hash(),
+            state: state.id,
+        })
+    }
+
+    /// Replays the artifact and compares the result with an external target state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReproductionArtifactReplayMismatch`] when the
+    /// embedded scenario and schedule reduce to a state other than `expected`.
+    /// Returns other [`EngineError`] variants if the reduction itself fails.
+    pub fn verify_replay(&self, expected: ContentHash) -> Result<ReproductionReplay, EngineError> {
+        let replay = self.replay()?;
+        if replay.state != expected {
+            return Err(EngineError::ReproductionArtifactReplayMismatch {
+                artifact: self.id,
+                expected,
+                actual: replay.state,
+            });
+        }
+        Ok(replay)
+    }
+}
+
+/// Successful replay-oracle verification of a reproduction artifact.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReproductionReplay {
+    /// The artifact whose replay was verified.
+    pub artifact: ContentHash,
+    /// The embedded scenario definition id used for replay.
+    pub scenario: ContentHash,
+    /// The embedded recorded-schedule id used for replay.
+    pub schedule: ContentHash,
+    /// The reduced state reached by replay.
+    pub state: ContentHash,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum FamilyFaultCandidate {
     Crash(NodeId),
@@ -2393,6 +2549,27 @@ impl Schedule {
     #[must_use]
     pub fn content_hash(&self) -> ContentHash {
         canonical::schedule_hash(self)
+    }
+
+    /// Serializes this schedule as compact canonical bytes.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC);
+        write_schedule_binary(self, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses and validates a compact binary schedule.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed binary input
+    /// or a schedule id mismatch.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULE_BINARY_MAGIC)?;
+        let schedule = read_schedule_binary(&mut reader)?;
+        reader.finish()?;
+        Ok(schedule)
     }
 }
 
@@ -7052,6 +7229,15 @@ pub enum EngineError {
         /// The supplied fat checkpoint's materialized-state identity.
         actual: ContentHash,
     },
+    /// A self-contained reproduction artifact did not replay to its recorded state.
+    ReproductionArtifactReplayMismatch {
+        /// The artifact whose replay failed.
+        artifact: ContentHash,
+        /// The reduced state recorded in the artifact.
+        expected: ContentHash,
+        /// The reduced state reached by replaying the embedded scenario/schedule.
+        actual: ContentHash,
+    },
     /// Active-search replay-oracle sampling was configured with an invalid rate.
     InvalidSearchReplayOracleSamplingConfig {
         /// Stable reason for the validation failure.
@@ -7183,6 +7369,9 @@ impl fmt::Display for EngineError {
             }
             Self::SearchReplayOracleMismatch { .. } => {
                 f.write_str("sampled search checkpoint does not match thin replay derivation")
+            }
+            Self::ReproductionArtifactReplayMismatch { .. } => {
+                f.write_str("reproduction artifact did not replay to its recorded state")
             }
             Self::InvalidSearchReplayOracleSamplingConfig { reason } => {
                 write!(f, "invalid search replay-oracle sampling config: {reason}")
@@ -8509,12 +8698,15 @@ fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError> {
 }
 
 const SCENARIO_FORM_BINARY_MAGIC: &[u8] = b"crucible.scenario-def-form.v1\0";
+const REPRODUCTION_ARTIFACT_BINARY_MAGIC: &[u8] = b"crucible.reproduction-artifact.v1\0";
+const SCHEDULE_BINARY_MAGIC: &[u8] = b"crucible.schedule.v1\0";
 const WORLD_BINARY_MAGIC: &[u8] = b"crucible.world.v1\0";
 const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v1\0";
 const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v1\0";
 const SEED_BINARY_MAGIC: &[u8] = b"crucible.seed.v1\0";
 const MAX_SCENARIO_BINARY_COLLECTION_ITEMS: usize = 1_000_000;
 const MAX_SCENARIO_BINARY_STRING_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SCENARIO_BINARY_BLOB_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -9248,6 +9440,11 @@ impl ScenarioBinaryWriter {
         self.bytes.extend_from_slice(value.as_bytes());
     }
 
+    fn write_binary_blob(&mut self, value: &[u8]) {
+        self.write_count(value.len());
+        self.bytes.extend_from_slice(value);
+    }
+
     fn write_hash(&mut self, hash: ContentHash) {
         self.bytes.extend_from_slice(&hash.bytes);
     }
@@ -9355,6 +9552,16 @@ impl<'a> ScenarioBinaryReader<'a> {
             .map_err(|source| scenario_serialization_error(format!("invalid UTF-8: {source}")))
     }
 
+    fn read_binary_blob(&mut self, label: &'static str) -> Result<&'a [u8], EngineError> {
+        let len = self.read_count()?;
+        if len > MAX_SCENARIO_BINARY_BLOB_BYTES {
+            return Err(scenario_serialization_error(format!(
+                "{label} exceeds serialized blob limit"
+            )));
+        }
+        self.read_exact(len)
+    }
+
     fn read_hash(&mut self) -> Result<ContentHash, EngineError> {
         let bytes = self.read_exact(32)?;
         let mut fixed = [0; 32];
@@ -9399,6 +9606,197 @@ fn read_scenario_form_binary(
     let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)?;
     validate_serialized_id("scenario", expected, form.id())?;
     Ok(form)
+}
+
+fn write_schedule_binary(schedule: &Schedule, writer: &mut ScenarioBinaryWriter) {
+    writer.write_hash(schedule.content_hash());
+    writer.write_count(schedule.decisions().len());
+    for decision in schedule.decisions() {
+        write_decision_binary(decision, writer);
+    }
+}
+
+fn read_schedule_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Schedule, EngineError> {
+    let expected = reader.read_hash()?;
+    let count = reader.read_collection_count("schedule.decision")?;
+    let mut decisions = Vec::with_capacity(count);
+    for _ in 0..count {
+        decisions.push(read_decision_binary(reader)?);
+    }
+    let schedule = Schedule { decisions };
+    validate_serialized_id("schedule", expected, schedule.content_hash())?;
+    Ok(schedule)
+}
+
+fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBinaryWriter) {
+    match decision {
+        Decision::DeliveryOrder(order) => {
+            writer.write_u8(0);
+            writer.write_u64(order.at.ticks);
+            writer.write_count(order.order.len());
+            for event in &order.order {
+                writer.write_u64(event.sequence);
+            }
+        }
+        Decision::FaultFires(fault) => {
+            writer.write_u8(1);
+            writer.write_u64(fault.at.ticks);
+            writer.write_string(&fault.fault.name);
+            write_binary_bool(writer, fault.fired);
+        }
+        Decision::RngDraw(draw) => {
+            writer.write_u8(2);
+            write_rng_stream_binary(&draw.stream, writer);
+            writer.write_u64(draw.value);
+        }
+        Decision::Override(override_decision) => {
+            writer.write_u8(3);
+            writer.write_string(&override_decision.point.key);
+            writer.write_string(&override_decision.choice.name);
+        }
+        Decision::Preemption(preemption) => {
+            writer.write_u8(4);
+            writer.write_string(&preemption.node.name);
+            writer.write_u64(preemption.at.retired);
+            write_preemption_kind_binary(&preemption.kind, writer);
+        }
+        Decision::AppRandom(random) => {
+            writer.write_u8(5);
+            writer.write_string(&random.node.name);
+            write_rng_stream_binary(&random.stream, writer);
+            writer.write_u64(random.request_id);
+            writer.write_u8(random.width);
+            writer.write_u64(random.value);
+        }
+    }
+}
+
+fn read_decision_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Decision, EngineError> {
+    match reader.read_u8()? {
+        0 => {
+            let at = VirtualTime {
+                ticks: reader.read_u64()?,
+            };
+            let count = reader.read_collection_count("decision.delivery-order.event")?;
+            let mut order = Vec::with_capacity(count);
+            for _ in 0..count {
+                order.push(EventKey {
+                    sequence: reader.read_u64()?,
+                });
+            }
+            Ok(Decision::DeliveryOrder(DeliveryOrderDecision { at, order }))
+        }
+        1 => Ok(Decision::FaultFires(FaultDecision {
+            at: VirtualTime {
+                ticks: reader.read_u64()?,
+            },
+            fault: FaultId {
+                name: reader.read_string()?,
+            },
+            fired: read_binary_bool(reader, "fault decision fired")?,
+        })),
+        2 => Ok(Decision::RngDraw(RngDecision {
+            stream: read_rng_stream_binary(reader)?,
+            value: reader.read_u64()?,
+        })),
+        3 => Ok(Decision::Override(OverrideDecision {
+            point: SchedulingPoint {
+                key: reader.read_string()?,
+            },
+            choice: ChoiceTag {
+                name: reader.read_string()?,
+            },
+        })),
+        4 => Ok(Decision::Preemption(PreemptionDecision {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+            at: Icount {
+                retired: reader.read_u64()?,
+            },
+            kind: read_preemption_kind_binary(reader)?,
+        })),
+        5 => Ok(Decision::AppRandom(AppRandomDecision {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+            stream: read_rng_stream_binary(reader)?,
+            request_id: reader.read_u64()?,
+            width: reader.read_u8()?,
+            value: reader.read_u64()?,
+        })),
+        _ => Err(scenario_serialization_error("invalid decision tag")),
+    }
+}
+
+fn write_rng_stream_binary(stream: &RngStreamId, writer: &mut ScenarioBinaryWriter) {
+    writer.write_string(&stream.domain);
+    writer.write_string(&stream.name);
+}
+
+fn read_rng_stream_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<RngStreamId, EngineError> {
+    Ok(RngStreamId::new(
+        reader.read_string()?,
+        reader.read_string()?,
+    ))
+}
+
+fn write_preemption_kind_binary(kind: &PreemptionKind, writer: &mut ScenarioBinaryWriter) {
+    match kind {
+        PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
+            writer.write_u8(0);
+            writer.write_u32(from_vcpu.index);
+            writer.write_u32(to_vcpu.index);
+        }
+        PreemptionKind::InterruptAt { target_vcpu, irq } => {
+            writer.write_u8(1);
+            writer.write_u32(target_vcpu.index);
+            writer.write_u32(irq.vector);
+        }
+    }
+}
+
+fn read_preemption_kind_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<PreemptionKind, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(PreemptionKind::VcpuSwitch {
+            from_vcpu: VcpuId {
+                index: reader.read_u32()?,
+            },
+            to_vcpu: VcpuId {
+                index: reader.read_u32()?,
+            },
+        }),
+        1 => Ok(PreemptionKind::InterruptAt {
+            target_vcpu: VcpuId {
+                index: reader.read_u32()?,
+            },
+            irq: IrqVector {
+                vector: reader.read_u32()?,
+            },
+        }),
+        _ => Err(scenario_serialization_error("invalid preemption-kind tag")),
+    }
+}
+
+fn write_binary_bool(writer: &mut ScenarioBinaryWriter, value: bool) {
+    writer.write_u8(u8::from(value));
+}
+
+fn read_binary_bool(
+    reader: &mut ScenarioBinaryReader<'_>,
+    label: &'static str,
+) -> Result<bool, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(scenario_serialization_error(format!(
+            "invalid binary bool for {label}"
+        ))),
+    }
 }
 
 fn write_world_binary(world: &World, writer: &mut ScenarioBinaryWriter) {
@@ -10708,6 +11106,16 @@ fn scenario_def_store_bytes(def: &ScenarioDef) -> Vec<u8> {
         seed_material(def.seed)
     )
     .into_bytes()
+}
+
+fn reproduction_artifact_canonical_bytes(
+    scenario: &ScenarioDefForm,
+    schedule: &Schedule,
+) -> Vec<u8> {
+    let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC);
+    writer.write_binary_blob(&scenario.to_compact_binary());
+    writer.write_binary_blob(&schedule.to_compact_binary());
+    writer.finish()
 }
 
 fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8> {

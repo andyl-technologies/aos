@@ -1160,9 +1160,22 @@ authority for its shape. The contract those files may rely on:
     `checks.crucible.phase1.spatialScenarioFamily` gate cover deterministic
     sampling, seed/density/topology identity sensitivity, out-of-space rejection,
     and pinned-instance execution.
-- [ ] **T-SPAT-18** Implement the self-contained `(seed, scenario, schedule)`
+- [x] **T-SPAT-18** Implement the self-contained `(seed, scenario, schedule)`
   reproduction artifact, content-addressed and offline-replayable, verified by the
   replay oracle. — satisfies [SPAT-28], [SPAT-29]; spec §7.1.
+  - Completed in `crates/crucible/src/model.rs`: `ReproductionArtifact` now
+    captures the complete validated `ScenarioDefForm`, derives the seed from that
+    scenario form, embeds the recorded `Schedule`, and content-addresses exactly
+    that tuple with BLAKE3 over compact canonical bytes. `Schedule` and
+    `ReproductionArtifact` both expose compact binary round-trip APIs, so a
+    transported artifact can be decoded and replayed without a family handle.
+    `ReproductionArtifact::replay` reduces the embedded scenario/schedule tuple,
+    and `verify_replay` returns `ReproductionArtifactReplayMismatch` if the
+    spatial replay oracle reaches any state other than an external target. The
+    focused `reproduction_artifact_is_self_contained_and_replay_checked` test and
+    `checks.crucible.phase1.spatialReproductionArtifact` gate cover offline
+    artifact byte decoding, pinned-instance capture, canonical id stability, and
+    schedule/state drift rejection.
 - [ ] **T-SPAT-19** Implement canonicalization (sorted collections, canonical
   endpoint ordering, fixed field/integer/duration encoding, exact probability
   encoding, content-addressed refs) and prove meaning-not-spelling hashing across
