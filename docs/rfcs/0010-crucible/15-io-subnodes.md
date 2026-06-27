@@ -779,10 +779,19 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   bridges the planned completion into the uniform `IoSubNodeRequest` path.
   Coincident block responses are sorted in `(delivery_icount, src_node, seq)` order, and overflow, invalid shifts, non-disk producers, and non-VM requesters
   fail loudly before a completion can be enqueued.
-- [ ] **T-IO-5** Implement block snapshot/restore as a CoW overlay delta over the
+- [x] **T-IO-5** Implement block snapshot/restore as a CoW overlay delta over the
   parent plus device RNG position plus in-flight responses (never the base
   image), and the materialize-to-image hand-off for real-time QEMU. — satisfies
   [IO-11], [IO-12], [IO-23]; spec §15.2.4; cross-ref 07, 22.
+  Completed by `checks.crucible.phase3.blockSnapshotRestore`.
+  `BlockSubNodeSnapshot` captures a `BlockOverlayDelta` of dirty pages over the parent overlay, `DeviceRngState` stream positions, sorted in-flight
+  `IoSubNodeCompletion` responses, `clock_icount`, and device `length`; it
+  references the content-addressed base but never embeds base image bytes.
+  `BlockSubNodeOverlay::restore_snapshot` validates the base reference, length, page alignment, strict page order, page size, and bounds before stacking the
+  delta over the parent overlay and returning the RNG/in-flight/clock runtime
+  state with in-flight responses normalized to deterministic order.
+  `materialize_image` writes base bytes and then every live overlay page into a
+  standalone raw image without mutating the immutable base.
 - [ ] **T-IO-6** Implement the read-only 9P2000.L server with path-hashed QIDs
   (not host inodes), fixed QID version, sorted directory enumeration, and fixed/
   content-derived getattr/statfs attributes; negotiate fixed version +

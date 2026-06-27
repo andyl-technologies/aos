@@ -35,7 +35,8 @@ pub use backend::{
 pub use block_subnode::{
     BLOCK_OVERLAY_PAGE_SIZE, BlockBaseImage, BlockCompletionError, BlockCompletionPlan,
     BlockCompletionRequest, BlockDirtyPage, BlockLatencyParameters, BlockOverlayDelta,
-    BlockOverlayError, BlockSubNodeOperation, BlockSubNodeOverlay, sort_block_completion_plans,
+    BlockOverlayError, BlockSnapshotError, BlockSubNodeOperation, BlockSubNodeOverlay,
+    BlockSubNodeSnapshot, RestoredBlockSubNodeState, sort_block_completion_plans,
 };
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use io_subnode::{
