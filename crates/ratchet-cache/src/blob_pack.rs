@@ -200,6 +200,29 @@ impl BlobPackLocation {
     }
 }
 
+/// Verified metadata for one immutable blob-pack record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BlobPackRecord {
+    hash: BlobPackHash,
+    location: BlobPackLocation,
+}
+
+impl BlobPackRecord {
+    const fn new(hash: BlobPackHash, location: BlobPackLocation) -> Self {
+        Self { hash, location }
+    }
+
+    /// Returns the content address declared and verified for this record.
+    pub const fn hash(self) -> BlobPackHash {
+        self.hash
+    }
+
+    /// Returns this record's byte location in the packfile.
+    pub const fn location(self) -> BlobPackLocation {
+        self.location
+    }
+}
+
 /// A Unix file-identity snapshot for a blob pack descriptor.
 ///
 /// This identity records the device, inode, size, modification time, and
@@ -504,6 +527,20 @@ impl<'lease> LeasedMappedBlobPack<'lease> {
         self.pack.payload(location, expected_hash)
     }
 
+    /// Returns all verified blob records in packfile order.
+    ///
+    /// The scan validates each record header, checks payload bounds, hashes each
+    /// mapped payload, and returns only record metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedBlobPackError`] if any record header is malformed or
+    /// truncated, if any payload window falls outside the mapping, or if any
+    /// payload bytes do not hash to the record's declared content address.
+    pub fn records(&self) -> Result<Vec<BlobPackRecord>, MappedBlobPackError> {
+        self.pack.records()
+    }
+
     /// Returns the underlying mapped pack.
     pub fn as_mapped_pack(&self) -> &MappedBlobPack {
         &self.pack
@@ -642,6 +679,45 @@ impl MappedBlobPack {
             location,
             bytes,
         })
+    }
+
+    /// Returns all verified blob records in packfile order.
+    ///
+    /// The scan validates each record header, checks payload bounds, hashes each
+    /// mapped payload, and returns only record metadata. It is intended for
+    /// read-only index rebuild and maintenance paths that need physical pack
+    /// contents without copying payloads out of the mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedBlobPackError`] if any record header is malformed or
+    /// truncated, if any payload window falls outside the mapping, or if any
+    /// payload bytes do not hash to the record's declared content address.
+    pub fn records(&self) -> Result<Vec<BlobPackRecord>, MappedBlobPackError> {
+        let mut offset = BLOB_PACK_HEADER_LEN as u64;
+        let mut records = Vec::new();
+        while u128::from(offset) < self.map.len() as u128 {
+            let header = self.record_header(BlobPackLocation::new(offset, 0))?;
+            let location = BlobPackLocation::new(offset, header.payload_len());
+            let range = self.payload_range(location, header.payload_len())?;
+            let bytes =
+                self.map
+                    .get(range)
+                    .ok_or_else(|| MappedBlobPackError::RecordExtendsPastEnd {
+                        payload_end: payload_end_for_error(location, header.payload_len()),
+                        pack_len: self.map.len() as u128,
+                    })?;
+            let actual = BlobPackHash::for_bytes(bytes);
+            if actual != header.hash() {
+                return Err(MappedBlobPackError::PayloadHashMismatch {
+                    expected: header.hash(),
+                    actual,
+                });
+            }
+            records.push(BlobPackRecord::new(header.hash(), location));
+            offset = payload_end_for_scan(location, header.payload_len())?;
+        }
+        Ok(records)
     }
 
     fn record_header(
@@ -1054,6 +1130,20 @@ fn payload_end_for_error(location: BlobPackLocation, payload_len: u64) -> u128 {
         + u128::from(payload_len)
 }
 
+fn payload_end_for_scan(
+    location: BlobPackLocation,
+    payload_len: u64,
+) -> Result<u64, MappedBlobPackError> {
+    location
+        .record_offset()
+        .checked_add(BLOB_RECORD_HEADER_LEN as u64)
+        .and_then(|payload_start| payload_start.checked_add(payload_len))
+        .ok_or(MappedBlobPackError::RecordBoundsOverflow {
+            record_offset: location.record_offset(),
+            payload_len,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1275,6 +1365,13 @@ mod tests {
             .expect("leased payload reads");
 
         assert_eq!(pack.len(), pack.as_mapped_pack().len());
+        assert_eq!(
+            pack.records().expect("leased records scan"),
+            [BlobPackRecord::new(
+                BlobPackHash::for_bytes(payload),
+                locations[0]
+            )]
+        );
         assert_eq!(mapped_payload.as_bytes(), payload);
 
         drop(pack);
@@ -1390,6 +1487,42 @@ mod tests {
     }
 
     #[test]
+    fn mapped_blob_pack_scans_verified_records() {
+        let path = temp_path("record-scan");
+        let first = b"first payload".as_slice();
+        let second = b"second payload".as_slice();
+        let locations = write_pack(&path, &[first, second]);
+        let pack = map_pack(&path);
+
+        let records = pack.records().expect("records scan");
+
+        assert_eq!(
+            records,
+            [
+                BlobPackRecord::new(BlobPackHash::for_bytes(first), locations[0]),
+                BlobPackRecord::new(BlobPackHash::for_bytes(second), locations[1]),
+            ]
+        );
+        assert_eq!(records[0].hash(), BlobPackHash::for_bytes(first));
+        assert_eq!(records[1].location(), locations[1]);
+
+        drop(pack);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn mapped_blob_pack_records_returns_empty_for_header_only_pack() {
+        let path = temp_path("record-scan-empty");
+        BlobPackAppender::open(path.clone()).expect("header-only pack initializes");
+        let pack = map_pack(&path);
+
+        assert!(pack.records().expect("empty records scan").is_empty());
+
+        drop(pack);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn mapped_blob_pack_rejects_wrong_lookup_hash() {
         let path = temp_path("wrong-hash");
         let payload = b"payload".as_slice();
@@ -1443,6 +1576,34 @@ mod tests {
     }
 
     #[test]
+    fn mapped_blob_pack_records_rejects_payload_hash_mismatch() {
+        let path = temp_path("record-scan-payload-mismatch");
+        let declared = BlobPackHash::for_bytes(b"declared");
+        let actual = b"actual!!".as_slice();
+        {
+            let mut file = fs::File::create(&path).expect("pack file creates");
+            file.write_all(&BlobPackHeader::current().encode())
+                .expect("pack header writes");
+            file.write_all(&BlobRecordHeader::new(declared, actual.len() as u64).encode())
+                .expect("record header writes");
+            file.write_all(actual).expect("payload writes");
+            file.sync_all().expect("pack file syncs");
+        }
+        let pack = map_pack(&path);
+
+        let error = pack.records().expect_err("payload hash mismatch fails");
+
+        assert!(matches!(
+            error,
+            MappedBlobPackError::PayloadHashMismatch { expected, actual: observed }
+                if expected == declared && observed == BlobPackHash::for_bytes(actual)
+        ));
+
+        drop(pack);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn mapped_blob_pack_rejects_truncated_payload_window() {
         let path = temp_path("truncated");
         let hash = BlobPackHash::for_bytes(b"too short");
@@ -1465,6 +1626,29 @@ mod tests {
         assert!(matches!(
             error,
             MappedBlobPackError::RecordExtendsPastEnd { .. }
+        ));
+
+        drop(pack);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn mapped_blob_pack_records_rejects_truncated_record_tail() {
+        let path = temp_path("record-scan-truncated-tail");
+        {
+            let mut file = fs::File::create(&path).expect("pack file creates");
+            file.write_all(&BlobPackHeader::current().encode())
+                .expect("pack header writes");
+            file.write_all(b"bad").expect("truncated tail writes");
+            file.sync_all().expect("pack file syncs");
+        }
+        let pack = map_pack(&path);
+
+        let error = pack.records().expect_err("truncated record tail fails");
+
+        assert!(matches!(
+            error,
+            MappedBlobPackError::Format(BlobPackFormatError::ShortRecordHeader { actual: 3, .. })
         ));
 
         drop(pack);
