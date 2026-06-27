@@ -168,6 +168,98 @@ impl PersistCache {
         Ok((advisory_guard, write_guard))
     }
 
+    pub(super) fn lock_file_artifact_hydration_read(
+        &self,
+    ) -> Result<
+        (
+            AdvisoryFileLock,
+            AdvisoryFileLock,
+            MutexGuard<'_, ()>,
+            MutexGuard<'_, ()>,
+        ),
+        PersistFileArtifactIndexedHydrationError,
+    > {
+        let files_path = self.layout.blob_store_lock_path(PersistBlobStore::Files);
+        let files_advisory =
+            AdvisoryFileLock::lock(files_path.clone(), AdvisoryFileLockMode::Shared).map_err(
+                |source| PersistFileArtifactIndexedHydrationError::AdvisoryFileStoreReadLock {
+                    path: files_path,
+                    source,
+                },
+            )?;
+        let artifacts_path = self.layout.file_artifact_lock_path();
+        let artifacts_advisory =
+            AdvisoryFileLock::lock(artifacts_path.clone(), AdvisoryFileLockMode::Shared).map_err(
+                |source| PersistFileArtifactIndexedHydrationError::AdvisoryFileArtifactReadLock {
+                    path: artifacts_path,
+                    source,
+                },
+            )?;
+        let file_guard = self
+            .root_locks
+            .lock_blob_pack(PersistBlobStore::Files)
+            .map_err(|source| PersistFileArtifactIndexedHydrationError::Hydrate {
+                source: PersistFileArtifactHydrationError::Read { source },
+            })?;
+        let artifact_guard = self
+            .root_locks
+            .lock_file_artifacts()
+            .map_err(|source| PersistFileArtifactIndexedHydrationError::Lookup { source })?;
+        Ok((
+            files_advisory,
+            artifacts_advisory,
+            file_guard,
+            artifact_guard,
+        ))
+    }
+
+    pub(super) fn lock_parse_artifact_hydration_read(
+        &self,
+    ) -> Result<
+        (
+            AdvisoryFileLock,
+            AdvisoryFileLock,
+            MutexGuard<'_, ()>,
+            MutexGuard<'_, ()>,
+        ),
+        PersistParseArtifactIndexedHydrationError,
+    > {
+        let files_path = self.layout.blob_store_lock_path(PersistBlobStore::Files);
+        let files_advisory =
+            AdvisoryFileLock::lock(files_path.clone(), AdvisoryFileLockMode::Shared).map_err(
+                |source| PersistParseArtifactIndexedHydrationError::AdvisoryFileStoreReadLock {
+                    path: files_path,
+                    source,
+                },
+            )?;
+        let artifacts_path = self.layout.parse_artifact_lock_path();
+        let artifacts_advisory =
+            AdvisoryFileLock::lock(artifacts_path.clone(), AdvisoryFileLockMode::Shared).map_err(
+                |source| PersistParseArtifactIndexedHydrationError::AdvisoryParseArtifactReadLock {
+                    path: artifacts_path,
+                    source,
+                },
+            )?;
+        let file_guard = self
+            .root_locks
+            .lock_blob_pack(PersistBlobStore::Files)
+            .map_err(
+                |source| PersistParseArtifactIndexedHydrationError::Hydrate {
+                    source: PersistParseArtifactHydrationError::Read { source },
+                },
+            )?;
+        let artifact_guard = self
+            .root_locks
+            .lock_parse_artifacts()
+            .map_err(|source| PersistParseArtifactIndexedHydrationError::Lookup { source })?;
+        Ok((
+            files_advisory,
+            artifacts_advisory,
+            file_guard,
+            artifact_guard,
+        ))
+    }
+
     pub(super) fn lock_node_metadata_write(
         &self,
     ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistNodeMetadataIndexError> {

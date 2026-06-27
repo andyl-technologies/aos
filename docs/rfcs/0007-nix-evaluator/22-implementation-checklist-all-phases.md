@@ -1698,16 +1698,20 @@ alone (`M-1`/`Q-A`).
       Cache-level indexed blob reads (`read_blob_indexed`) first acquire a shared
       advisory lock for the selected store, then acquire the same-process store
       mutex while they read the sidecar location and verify the referenced pack
-      record, so cooperating readers can share the advisory lock but serialize
-      against cache-level writers and maintenance.
+      record; indexed artifact hydration reads first acquire shared `files` store
+      and artifact-mapping advisory locks, then acquire the same-process store and
+      mapping mutexes while they read the sidecar mapping and verify the referenced
+      `files/` pack record. Cooperating readers can share advisory locks but
+      serialize against cache-level writers and maintenance.
       Simultaneous same-key materialization through separate opens of the same
       root shares the same `ensure_blob_indexed` critical section, and
-      cooperating cross-process cache-level blob readers, writers, tail trims,
-      and pack repacks share the same advisory file. The initially-missing indexed case
-      collapses to one fresh verified pack record and newest sidecar entry for
-      the selected store, poisoned same-root locks are mapped back into the
-      existing oracle error surface before any cache-level raw append, indexed
-      append/index write, indexed read, blob-index compaction/rebuild, blob-pack
+      cooperating cross-process cache-level blob readers, artifact hydration
+      readers, writers, tail trims, and pack repacks share the same advisory
+      files. The initially-missing indexed case collapses to one fresh verified
+      pack record and newest sidecar entry for the selected store, poisoned
+      same-root locks are mapped back into the existing oracle error surface
+      before any cache-level raw append, indexed append/index write, indexed
+      read, indexed hydration read, blob-index compaction/rebuild, blob-pack
       tail trim, or blob-pack repack, and an opened symlink-root handle keeps
       writing the canonical target it opened even if the symlink is retargeted.
       Raw/lower-level `PersistBlobPack`/`PersistBlobIndex` users,
@@ -1775,17 +1779,22 @@ alone (`M-1`/`Q-A`).
       roots, two-machine races, full CAS-grade coordination, LMDB/redb node
       tables, transactionality with metadata/value blobs, automatic GC/repack,
       and loom/harness proof remain open (`C-13`/`R-4`/`S-14`).
-- [x] Current same-process plus advisory artifact-mapping writer lock precursor:
+- [x] Current same-process plus advisory artifact-mapping access lock precursor:
       independently opened `PersistCache` handles in one process acquire
-      exclusive `ratchet-cache::file_lock::AdvisoryFileLock`s at
+      `ratchet-cache::file_lock::AdvisoryFileLock`s at
       `.locks/file-artifacts.lock` and `.locks/parse-artifacts.lock` before
-      acquiring file-artifact and parse-artifact mapping write mutexes from
+      acquiring file-artifact and parse-artifact mapping mutexes from
       `ratchet-cache::root_locks`, so cache-level mapping appends, mapping
-      compaction, and file-pack tail trim/repack mapping phases serialize for a
-      live canonical cache root. Concurrent same-root appends keep every
-      complete mapping record readable, poisoned live mapping locks are reported
-      before any sidecar write, and cooperating cross-process cache-level
-      mapping writers share the same advisory files. Raw lower-level
+      compaction, indexed hydration reads, and file-pack tail trim/repack mapping
+      phases serialize for a live canonical cache root. Mapping writers and
+      maintenance phases hold exclusive mapping advisory locks; indexed
+      file-artifact and parse-artifact hydration reads hold shared `files` store
+      and mapping advisory locks before the same-root locks while they perform
+      the sidecar lookup and referenced `files/` pack read. Concurrent same-root
+      appends keep every complete mapping record readable, poisoned live mapping
+      locks are reported before any sidecar write or indexed hydration read, and
+      cooperating cross-process cache-level mapping readers and writers share the
+      same advisory files. Raw lower-level
       `PersistFileArtifactIndex`/`PersistParseArtifactIndex` users, different
       roots, cross-process pending artifact publication, two-machine races,
       durable filesystem locks/CAS, LMDB/redb indexes, automatic GC/repack, and
@@ -1814,13 +1823,15 @@ alone (`M-1`/`Q-A`).
       coverage proves lock-file creation, shared/shared compatibility,
       shared/exclusive and exclusive/exclusive nonblocking rejection, and
       drop-time release; oracle root open now uses it for `.locks/open.lock`,
-      cache-level indexed blob reads, raw/indexed blob writes plus blob-index
-      compaction/rebuild, blob-pack tail trim, and blob-pack repack use it for
-      `.locks/values.lock` and `.locks/files.lock`, and cache-level file/parse artifact mapping
-      writes plus file-pack maintenance phases use `.locks/file-artifacts.lock`
-      and `.locks/parse-artifacts.lock`, cache-level node metadata writes plus
-      metadata compaction use `.locks/node-metadata.lock`, and cache-level node
-      trace writes plus trace compaction use `.locks/node-traces.lock`. This is
+      cache-level indexed blob reads and indexed artifact hydration reads,
+      raw/indexed blob writes plus blob-index compaction/rebuild, blob-pack tail
+      trim, and blob-pack repack use it for `.locks/values.lock` and
+      `.locks/files.lock`, and cache-level file/parse artifact mapping writes
+      plus indexed artifact hydration reads and file-pack maintenance phases use
+      `.locks/file-artifacts.lock` and `.locks/parse-artifacts.lock`, cache-level
+      node metadata writes plus metadata compaction use
+      `.locks/node-metadata.lock`, and cache-level node trace writes plus trace
+      compaction use `.locks/node-traces.lock`. This is
       filesystem-lock substrate plus open-initialization and selected
       cache-level blob-store reads/writes/maintenance plus mapping/metadata/trace
       writes/maintenance only:
@@ -2621,11 +2632,14 @@ alone (`M-1`/`Q-A`).
       file-artifact mapping key from `ParseFileKey`/`ParseCacheKey`, performs
       `lookup_file_artifact`, returns `Ok(None)` on misses, and on hits hydrates
       the validated bundle into a caller-supplied `ParseCacheEntry` while
-      returning the matched `PersistFileArtifactIndexEntry`. This is explicit
+      returning the matched `PersistFileArtifactIndexEntry`. The lookup and
+      `files` pack read run under shared `files` store and file-artifact mapping
+      advisory locks plus the same-root locks, so cooperating writers and
+      maintenance cannot expose a split sidecar/pack view. This is explicit
       cache-level lookup hydration only; automatic parse-cache integration,
-      durable hit selection, source/key equality proof, mmap reads, full
-      artifact semantic validation beyond existing decoders, GC/repack, and
-      harness proof remain open (`C-13`).
+      durable hit selection, source/key equality proof, mmap reads, full artifact
+      semantic validation beyond existing decoders, GC/repack, and harness proof
+      remain open (`C-13`).
 - [x] Current source-derived indexed parse-cache hydration adapter:
       `PersistCache::hydrate_parse_cache_entry_from_source_index` derives both
       `ParseFileKey` and `ParseCacheKey` from one caller-supplied realpath/source
@@ -2673,7 +2687,9 @@ alone (`M-1`/`Q-A`).
       Materialization rejects entries whose normal parse-cache directory key
       does not match the supplied `ParseCacheKey`, and hydration validates
       bundled metadata/schema/counts plus `resolved.bin`/`symbols.bin`/`ir.bin`
-      decoder shape before writing the target entry. This is cache API
+      decoder shape before writing the target entry. The parse-artifact lookup
+      and `files` pack read run under shared `files` store and parse-artifact
+      mapping advisory locks plus the same-root locks. This is cache API
       substrate only; evaluator integration is covered by the raw native
       expression row below. Source equality proof beyond the parse-cache entry
       directory key, mmap reads, full artifact semantic validation beyond

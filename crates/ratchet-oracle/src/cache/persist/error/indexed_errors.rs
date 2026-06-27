@@ -308,6 +308,22 @@ pub enum PersistParseArtifactHydrationError {
 /// Indexed persistent file-artifact hydration failed.
 #[derive(Debug, Error)]
 pub enum PersistFileArtifactIndexedHydrationError {
+    /// The advisory files-store read lock could not be acquired.
+    #[error("failed to acquire persistent file artifact hydration files advisory lock at {path}")]
+    AdvisoryFileStoreReadLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
+    /// The advisory file-artifact mapping read lock could not be acquired.
+    #[error("failed to acquire persistent file artifact hydration mapping advisory lock at {path}")]
+    AdvisoryFileArtifactReadLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The file-artifact sidecar index could not be looked up.
     #[error("failed to look up persistent file artifact for hydration")]
     Lookup {
@@ -325,6 +341,24 @@ pub enum PersistFileArtifactIndexedHydrationError {
 /// Indexed persistent parse-artifact hydration failed.
 #[derive(Debug, Error)]
 pub enum PersistParseArtifactIndexedHydrationError {
+    /// The advisory files-store read lock could not be acquired.
+    #[error("failed to acquire persistent parse artifact hydration files advisory lock at {path}")]
+    AdvisoryFileStoreReadLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
+    /// The advisory parse-artifact mapping read lock could not be acquired.
+    #[error(
+        "failed to acquire persistent parse artifact hydration mapping advisory lock at {path}"
+    )]
+    AdvisoryParseArtifactReadLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The parse-artifact sidecar index could not be looked up.
     #[error("failed to look up persistent parse artifact for hydration")]
     Lookup {

@@ -260,22 +260,24 @@ impl PersistCache {
         )
     }
 
-    /// Looks up and hydrates an indexed parse-artifact bundle.
+    /// Looks up and hydrates an indexed file-artifact bundle.
     ///
     /// This is the cache-level hit adapter for the explicit file-artifact
     /// sidecar index. It derives the expected mapping key from `file_key` and
     /// `parse_key`, returns `Ok(None)` when the index has no matching entry,
     /// and otherwise validates and writes the indexed bundle into `entry`. The
-    /// same-root file store and file-artifact locks are held across lookup and
-    /// pack read so same-process repacks cannot expose a split sidecar/pack
-    /// view.
+    /// selected store and file-artifact advisory locks plus same-root file
+    /// store and file-artifact locks are held across lookup and pack read so
+    /// cooperating writers and same-process repacks cannot expose a split
+    /// sidecar/pack view.
     ///
     /// # Errors
     ///
     /// Returns [`PersistFileArtifactIndexedHydrationError`] if the
-    /// file-artifact index cannot be read, or if a matching indexed artifact
-    /// cannot be read from the `files/` pack, decoded, validated, or written
-    /// into `entry`.
+    /// advisory lock cannot be acquired for the `files/` store or
+    /// file-artifact mapping, if the file-artifact index cannot be read, or if
+    /// a matching indexed artifact cannot be read from the `files/` pack,
+    /// decoded, validated, or written into `entry`.
     pub fn hydrate_file_artifact_bundle_from_index(
         &self,
         file_key: &ParseFileKey,
@@ -284,16 +286,12 @@ impl PersistCache {
     ) -> Result<Option<PersistFileArtifactIndexEntry>, PersistFileArtifactIndexedHydrationError>
     {
         let artifact_key = PersistFileArtifactKey::from_parse_file_key(file_key, parse_key);
-        let _file_guard = self
-            .root_locks
-            .lock_blob_pack(PersistBlobStore::Files)
-            .map_err(|source| PersistFileArtifactIndexedHydrationError::Hydrate {
-                source: PersistFileArtifactHydrationError::Read { source },
-            })?;
-        let _file_artifact_guard = self
-            .root_locks
-            .lock_file_artifacts()
-            .map_err(|source| PersistFileArtifactIndexedHydrationError::Lookup { source })?;
+        let (
+            _files_advisory_guard,
+            _file_artifact_advisory_guard,
+            _file_guard,
+            _file_artifact_guard,
+        ) = self.lock_file_artifact_hydration_read()?;
         let Some(index_value) = self
             .file_artifact_index
             .lookup(artifact_key)
@@ -312,16 +310,19 @@ impl PersistCache {
     /// This is the cache-level hit adapter for the parse-artifact sidecar
     /// index. It derives the expected mapping key from `parse_key`, returns
     /// `Ok(None)` when the index has no matching entry, and otherwise validates
-    /// and writes the indexed bundle into `entry`. The same-root file store
-    /// and parse-artifact locks are held across lookup and pack read so
-    /// same-process repacks cannot expose a split sidecar/pack view.
+    /// and writes the indexed bundle into `entry`. The selected store and
+    /// parse-artifact advisory locks plus same-root file store and
+    /// parse-artifact locks are held across lookup and pack read so cooperating
+    /// writers and same-process repacks cannot expose a split sidecar/pack
+    /// view.
     ///
     /// # Errors
     ///
     /// Returns [`PersistParseArtifactIndexedHydrationError`] if the
-    /// parse-artifact index cannot be read, or if a matching indexed artifact
-    /// cannot be read from the `files/` pack, decoded, validated, or written
-    /// into `entry`.
+    /// advisory lock cannot be acquired for the `files/` store or
+    /// parse-artifact mapping, if the parse-artifact index cannot be read, or
+    /// if a matching indexed artifact cannot be read from the `files/` pack,
+    /// decoded, validated, or written into `entry`.
     pub fn hydrate_parse_artifact_bundle_from_index(
         &self,
         parse_key: ParseCacheKey,
@@ -329,18 +330,12 @@ impl PersistCache {
     ) -> Result<Option<PersistParseArtifactIndexEntry>, PersistParseArtifactIndexedHydrationError>
     {
         let artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
-        let _file_guard = self
-            .root_locks
-            .lock_blob_pack(PersistBlobStore::Files)
-            .map_err(
-                |source| PersistParseArtifactIndexedHydrationError::Hydrate {
-                    source: PersistParseArtifactHydrationError::Read { source },
-                },
-            )?;
-        let _parse_artifact_guard = self
-            .root_locks
-            .lock_parse_artifacts()
-            .map_err(|source| PersistParseArtifactIndexedHydrationError::Lookup { source })?;
+        let (
+            _files_advisory_guard,
+            _parse_artifact_advisory_guard,
+            _file_guard,
+            _parse_artifact_guard,
+        ) = self.lock_parse_artifact_hydration_read()?;
         let Some(index_value) = self
             .parse_artifact_index
             .lookup(artifact_key)
