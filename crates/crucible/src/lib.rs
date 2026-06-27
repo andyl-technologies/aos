@@ -57,6 +57,8 @@ pub use model::{
     VmArchitecture, VmSnapshotRef, WhiteBoxPolicy, World, WorldLookaheadEdge, WorldNode,
     WorldStaticTopology, bake, instantiate, reduce, step,
 };
+#[cfg(feature = "test-double")]
+pub use scheduler::SchedulerRunCeilingHandoffError;
 pub use scheduler::{
     ConservativeAdvanceAuthorization, ControlOperation, ControlOperationKind, ExactLocalEvent,
     IoCompletion, NetworkLookahead, NodeTimelineProjection, QuantumLoop, QuantumOutcome,

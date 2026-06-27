@@ -9,7 +9,10 @@ use crucible::{
 };
 
 #[cfg(feature = "test-double")]
-use crucible_shmem::{KIND_VM, NodeSlot};
+use crucible_shmem::{
+    FrameEntry, KIND_VM, NodeSlot, PendingInputPublication, RegionAllocation, RegionConfig,
+    SLOT_NET_ROUTER,
+};
 
 #[test]
 fn run_publishes_one_max_advance_ceiling_for_selected_node() {
@@ -183,6 +186,51 @@ fn published_ceiling_converts_to_and_publishes_through_shmem_abi() {
     assert_eq!(slot.load_node_ceiling(), publication.max_advance_icount);
 }
 
+#[test]
+#[cfg(feature = "test-double")]
+fn published_ceiling_writes_pending_inputs_before_futex_wake() {
+    let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
+        "run-ceiling-shmem-input-before-wake",
+        shift(0),
+        8,
+        SimInstant { nanos: 20 },
+        vec![scenario_node(
+            "runner",
+            0,
+            SchedulerNodeActivity::Runnable,
+            finite_lookahead(6),
+            ExactLocalEvent::NoArmedTimer,
+        )],
+        Vec::new(),
+    ))
+    .expect("scenario should build");
+    let _outcome = drive_one_quantum(&mut scheduler);
+    let publication = &scheduler.run_ceiling_publications()[0];
+    let mut region =
+        RegionAllocation::new_model(RegionConfig::new(1, 2, 0)).expect("region model should build");
+    let dst_slot = 0;
+    let src_slot = SLOT_NET_ROUTER as u32;
+    let input = frame(6, src_slot, 1, b"ready");
+    let pending = [PendingInputPublication::new(src_slot, input.clone())];
+
+    let handoff = publication
+        .publish_to_shmem_after_inputs(&mut region, dst_slot, &pending)
+        .expect("publication should hand off inputs before waking");
+
+    assert_eq!(handoff.pending_input_count, 1);
+    assert_eq!(handoff.max_advance_icount, publication.max_advance_icount);
+    assert_eq!(
+        region.peek_directed_frame(src_slot, dst_slot),
+        Ok(Some(input.clone()))
+    );
+    let snapshot = region
+        .node_slot(dst_slot)
+        .expect("VM slot should exist")
+        .snapshot();
+    assert_eq!(snapshot.max_advance_icount, publication.max_advance_icount);
+    assert_eq!(snapshot.wake_signal, 1);
+}
+
 fn drive_one_quantum(scheduler: &mut SingleScheduler) -> crucible::QuantumOutcome {
     scheduler
         .drive_quantum(QuantumRequest {
@@ -223,4 +271,9 @@ fn finite_lookahead(nanos: u64) -> NetworkLookahead {
 
 fn shift(bits: u8) -> Shift {
     Shift::new(bits).expect("test shift should be valid")
+}
+
+#[cfg(feature = "test-double")]
+fn frame(delivery_icount: u64, src_node: u32, seq: u32, payload: &[u8]) -> FrameEntry {
+    FrameEntry::new(delivery_icount, src_node, seq, payload).expect("test frame should be valid")
 }

@@ -274,7 +274,7 @@ in
             run_ceiling=single-max-advance-publication-per-RUN
             shmem_field=max_advance_icount
             intermediate_ceiling=false
-            wake_ordering=deferred-to-T-SCHED-21
+            wake_ordering=covered-by-checks.crucible.phase3.schedulerWakeOrdering
             RESULT
           '';
         }

@@ -430,6 +430,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerIcountCeiling";
       taskIds = ["T-SCHED-20"];
     };
+    schedulerWakeOrdering = import ./phase3-scheduler-wake-ordering.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerWakeOrdering";
+      taskIds = ["T-SCHED-21"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
