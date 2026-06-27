@@ -1,0 +1,988 @@
+//! Force-cache payload rehydration tests for lists, attrsets, paths, and strings.
+
+use super::*;
+
+#[test]
+fn search_path_forced_inline_thunks_wait_for_impure_input_edges() {
+    let root = unique_temp_dir("force-cache-search-path");
+    let target = root.join("target");
+    fs::create_dir_all(&target).expect("target dir exists");
+    let target = fs::canonicalize(&target).expect("target canonicalizes");
+    let source = "{ a = <pkg> == <pkg>; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::new();
+    options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&target))
+        .expect("search-path entry is valid");
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+
+    assert_eq!(forced.as_bool(), Ok(true));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "search-path literals need search-path/input keys before memoization"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn pipe_forced_inline_thunks_wait_for_application_cache_keys() {
+    let mut symbols = SymbolTable::new();
+    let x = symbols.intern(b"x").expect("symbol interns");
+    let frames = vec![FrameInfo {
+        slot_count: 1,
+        captures: Vec::new().into_boxed_slice(),
+        rec: false,
+        has_with: false,
+    }];
+    let ir = manual_ir_with_symbols_and_frames(
+        IrId::new(5),
+        vec![
+            pure_node(
+                IrKind::Formal,
+                Span::new(0, 1),
+                IrData::Formal {
+                    name: x,
+                    default: None,
+                },
+            ),
+            pure_node(IrKind::Int, Span::new(3, 4), IrData::Int(3)),
+            pure_node(
+                IrKind::Lambda,
+                Span::new(0, 4),
+                IrData::Lambda {
+                    pattern: IrId::new(0),
+                    body: IrId::new(1),
+                    frame: Some(FrameId::new(0)),
+                },
+            ),
+            pure_node(IrKind::Int, Span::new(8, 9), IrData::Int(1)),
+            pure_node(
+                IrKind::BinOp,
+                Span::new(0, 9),
+                IrData::Binary {
+                    op: BinOpKind::PipeRight,
+                    lhs: IrId::new(3),
+                    rhs: IrId::new(2),
+                },
+            ),
+            pure_node(
+                IrKind::ThunkAlloc,
+                Span::new(0, 9),
+                IrData::Node(IrId::new(4)),
+            ),
+        ],
+        symbols,
+        frames,
+    );
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        "{ a = 1 |> f; }",
+        cache.clone(),
+    );
+    let forced = evaluator
+        .eval_root()
+        .expect("thunked pipe root evaluates to weak head normal form");
+
+    assert_eq!(forced.as_int(), Ok(3));
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "pipe operators evaluate as application and need application cache keys"
+    );
+}
+
+#[test]
+fn context_free_string_result_thunks_hit_after_heap_rehydration() {
+    let source = r#"{ a = "cached " + "string"; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "string-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("string thunk force succeeds");
+        let string = evaluator
+            .heap()
+            .get_string(forced)
+            .expect("cached value is rehydrated into this evaluator heap");
+
+        assert_eq!(string.bytes(), b"cached string");
+        assert!(!string.has_context());
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching context-free string results should share one demand node"
+    );
+}
+
+#[test]
+fn context_string_result_thunks_hit_after_heap_rehydration() {
+    let root = unique_temp_dir("force-cache-context-string-result");
+    fs::write(root.join("target"), b"payload").expect("target writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = r#"{ a = "${./target}"; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(&root))
+            .expect("path base is absolute");
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "context-string-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("context string thunk force succeeds");
+        let string = evaluator
+            .heap()
+            .get_string(forced)
+            .expect("cached value is rehydrated into this evaluator heap");
+
+        assert!(string.has_context());
+        assert_eq!(string.context().len(), 1);
+        let element = &string.context().elements()[0];
+        assert_eq!(element.kind(), ContextKind::OpaquePath);
+        assert_eq!(element.path(), string.bytes());
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching context-bearing string results should share one demand node"
+    );
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn path_result_thunks_hit_after_heap_rehydration() {
+    let source = r#"{ a = /tmp + "/cached-path"; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "path-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("path thunk force succeeds");
+        let path = evaluator
+            .heap()
+            .get_path(forced)
+            .expect("cached value is rehydrated into this evaluator heap");
+
+        assert_eq!(path.bytes(), b"/tmp/cached-path");
+        assert!(!path.has_context());
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+        assert_eq!(
+            evaluator.stats().thunks_forced(),
+            if expected_hit { 0 } else { 1 }
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching path results should share one demand node"
+    );
+}
+
+#[test]
+fn empty_list_result_thunks_hit_after_heap_rehydration() {
+    let source = r#"{ a = [ ]; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "empty-list-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("empty list thunk force succeeds");
+        let list = evaluator
+            .heap()
+            .get_list(forced)
+            .expect("cached value is rehydrated into this evaluator heap");
+
+        assert!(list.is_empty());
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+        assert_eq!(
+            evaluator.stats().thunks_forced(),
+            if expected_hit { 0 } else { 1 }
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching empty list results should share one demand node"
+    );
+}
+
+#[test]
+fn strict_list_result_thunks_hit_after_heap_rehydration() {
+    let source = r#"{ a = [ 1 true null ]; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "strict-list-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("strict list thunk force succeeds");
+        let list = evaluator
+            .heap()
+            .get_list(forced)
+            .expect("cached value is rehydrated into this evaluator heap");
+
+        assert_eq!(list.len(), 3);
+        assert_eq!(list.get(0).expect("first element exists").as_int(), Ok(1));
+        assert_eq!(
+            list.get(1).expect("second element exists").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(list.get(2).expect("third element exists").as_null(), Ok(()));
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+        assert_eq!(
+            evaluator.stats().thunks_forced(),
+            if expected_hit { 0 } else { 1 }
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching strict list results should share one demand node"
+    );
+}
+
+#[test]
+fn strict_list_result_thunks_with_heap_elements_hit_after_heap_rehydration() {
+    let source = r#"{ a = [ "x" "y" ]; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "strict-list-heap-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("strict heap-backed list thunk force succeeds");
+        let list = evaluator
+            .heap()
+            .get_list(forced)
+            .expect("cached value is rehydrated into this evaluator heap");
+
+        assert_eq!(list.len(), 2);
+        let string = evaluator
+            .heap()
+            .get_string(list.get(0).expect("first element exists"))
+            .expect("first element is a string");
+        assert_eq!(string.bytes(), b"x");
+        let second = evaluator
+            .heap()
+            .get_string(list.get(1).expect("second element exists"))
+            .expect("second element is a string");
+        assert_eq!(second.bytes(), b"y");
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+        assert_eq!(
+            evaluator.stats().thunks_forced(),
+            if expected_hit { 0 } else { 1 }
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching strict heap-backed list results should share one demand node"
+    );
+}
+
+#[test]
+fn non_empty_list_literals_with_lazy_elements_wait_for_element_payloads() {
+    let source = r#"{ a = [ (1 / 0) ]; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for _ in 0..2 {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "lazy-list-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("lazy list thunk force succeeds");
+        let list = evaluator
+            .heap()
+            .get_list(forced)
+            .expect("list is heap-owned");
+
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.get(0).expect("element exists").tag(), ValueTag::Thunk);
+        assert_eq!(evaluator.stats().cache_hits(), 0);
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "list literals with lazy elements need element payloads before observation"
+    );
+}
+
+#[test]
+fn empty_attrset_result_thunks_hit_after_heap_rehydration() {
+    let source = r#"{ a = { }; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "empty-attrs-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("empty attrset thunk force succeeds");
+        let attrs = evaluator
+            .heap()
+            .get_attrs(forced)
+            .expect("cached value is rehydrated into this evaluator heap");
+
+        assert!(attrs.is_empty());
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+        assert_eq!(
+            evaluator.stats().thunks_forced(),
+            if expected_hit { 0 } else { 1 }
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching empty attrset results should share one demand node"
+    );
+}
+
+#[test]
+fn strict_attrset_payloads_rehydrate_after_heap_lookup() {
+    let ir = lower("1");
+    let identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"force-strict-attrs-result"),
+        IrId::new(14),
+    );
+    let subject = ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
+        free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
+    };
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first =
+        TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache.clone());
+    let b = first.symbols.intern(b"b").expect("b interns");
+    let c = first.symbols.intern(b"c").expect("c interns");
+    let string = first
+        .heap
+        .alloc_string(NixString::from_bytes(b"x".to_vec()))
+        .expect("string allocates");
+    let attrs = FlatAttrs::new(
+        vec![AttrEntry::new(b, Value::int(1)), AttrEntry::new(c, string)],
+        &first.symbols,
+    )
+    .expect("attrs build");
+    let value = first.heap.alloc_attrs(0, attrs).expect("attrs allocate");
+    first.observe_forced_inline_expression_result(
+        Some(subject.clone()),
+        value,
+        ImpureInputTraceSegment {
+            trace: Vec::new(),
+            complete: true,
+        },
+    );
+    drop(first);
+
+    let mut second = TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache);
+    let hit = second
+        .lookup_forced_inline_expression_result(Some(subject))
+        .expect("strict attrset payload hits");
+    let b = second.symbols.intern(b"b").expect("b interns");
+    let c = second.symbols.intern(b"c").expect("c interns");
+    let attrs = second
+        .heap()
+        .get_attrs(hit)
+        .expect("strict attrset rehydrates into this evaluator heap");
+    assert_eq!(attrs.get(b).expect("b exists").as_int(), Ok(1));
+    let string = second
+        .heap()
+        .get_string(attrs.get(c).expect("c exists"))
+        .expect("c is a string");
+    assert_eq!(string.bytes(), b"x");
+    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().cache_misses(), 0);
+}
+
+#[test]
+fn strict_attrset_payloads_preserve_position_bearing_attrsets_in_memory() {
+    let ir = lower("1");
+    let identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"force-position-attrs-result"),
+        IrId::new(15),
+    );
+    let subject = ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
+        free_var_value_hashes: Vec::new(),
+        replay_position_module: Some(EvalModuleId::ROOT),
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
+    };
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator =
+        TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache.clone());
+    let a = evaluator.symbols.intern(b"a").expect("a interns");
+    let expected_position = AttrPosition::new(0, Span::new(0, 1));
+    let attrs = FlatAttrs::new(
+        vec![AttrEntry::with_position(
+            a,
+            Value::int(1),
+            expected_position,
+        )],
+        &evaluator.symbols,
+    )
+    .expect("attrs build");
+    let value = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("attrs allocate");
+
+    evaluator.observe_forced_inline_expression_result(
+        Some(subject.clone()),
+        value,
+        ImpureInputTraceSegment {
+            trace: Vec::new(),
+            complete: true,
+        },
+    );
+
+    {
+        let runtime = cache.lock().expect("cache lock is valid");
+        assert_eq!(
+            runtime.cache().expect("cache is enabled").len(),
+            1,
+            "position-bearing attrsets should populate the in-memory payload cache"
+        );
+    }
+
+    let mut second = TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache);
+    let hit = second
+        .lookup_forced_inline_expression_result(Some(subject))
+        .expect("position-bearing attrset payload hits");
+    let a = second.symbols.intern(b"a").expect("a interns");
+    let attrs = second
+        .heap()
+        .get_attrs(hit)
+        .expect("position-bearing attrset rehydrates into this evaluator heap");
+    assert_eq!(attrs.get(a).expect("a exists").as_int(), Ok(1));
+    assert!(
+        attrset_has_binding_position(attrs),
+        "position-bearing attrset payload hits must retain binding positions"
+    );
+    assert_eq!(
+        attrs.get_entry(a).expect("a entry exists").position,
+        Some(expected_position),
+        "position-bearing attrset payload hits must retain exact binding provenance"
+    );
+}
+
+#[test]
+fn source_backed_position_bearing_attrset_literals_hit_force_cache_payloads() {
+    let source = r#"{ a = { b = 1; }; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "position-bearing-attrs-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("a is a node thunk");
+            let body = thunk.body().expect("a has a lowered attrset body");
+            let node = ir.arena.node(body).expect("attrset body exists");
+            assert_eq!(node.kind, IrKind::AttrSet);
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("position-bearing attrset subject builds")
+        };
+        assert!(subject.lookup_identity.is_some());
+        assert!(subject.pure_observation_identity.is_some());
+        assert!(subject.free_var_value_hashes.is_empty());
+        assert_eq!(
+            subject.memoization_admission,
+            ForceCacheMemoizationAdmission::SelectedSubstrate,
+            "position-bearing attrsets should pre-admit once payloads carry positions"
+        );
+
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("position-bearing attrset thunk force succeeds");
+        let attrs = evaluator
+            .heap()
+            .get_attrs(forced)
+            .expect("forced value is an attrset");
+
+        assert_eq!(attrs.get(b).expect("b exists").as_int(), Ok(1));
+        assert!(
+            attrset_has_binding_position(attrs),
+            "source-backed literal bindings must carry positions"
+        );
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+        assert!(
+            evaluator.stats().force_cache_memoization_admits() > 0,
+            "position-bearing attrset force must reach an admitted cache probe"
+        );
+        assert_eq!(evaluator.stats().force_cache_probes(), 1);
+        if expected_hit {
+            assert_eq!(evaluator.stats().force_cache_hits(), 1);
+            assert_eq!(evaluator.stats().force_cache_misses(), 0);
+        } else {
+            assert_eq!(evaluator.stats().force_cache_hits(), 0);
+            assert_eq!(evaluator.stats().force_cache_misses(), 1);
+        }
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "source-backed position-bearing attrset literals should use one in-memory payload"
+    );
+}
+
+#[test]
+fn unsafe_get_attr_pos_observes_position_bearing_attrsets_from_force_cache_payloads() {
+    let source = r#"{ a = { b = 1; }; }"#;
+    let source_name = "position-bearing-attrs-position.nix";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let (expected_line, expected_column) = source_line_column(source, "b = 1");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            source_name,
+            source,
+            cache.clone(),
+        );
+        let file = evaluator.symbols.intern(b"file").expect("file interns");
+        let line = evaluator.symbols.intern(b"line").expect("line interns");
+        let column = evaluator.symbols.intern(b"column").expect("column interns");
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let a_thunk = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(a_thunk)
+                .expect("a is a node thunk");
+            let body = thunk.body().expect("a has a lowered attrset body");
+            let node = ir.arena.node(body).expect("attrset body exists");
+            assert_eq!(node.kind, IrKind::AttrSet);
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("position-bearing attrset subject builds")
+        };
+        assert!(subject.lookup_identity.is_some());
+        assert!(subject.pure_observation_identity.is_some());
+        assert!(subject.free_var_value_hashes.is_empty());
+        assert_eq!(
+            subject.memoization_admission,
+            ForceCacheMemoizationAdmission::SelectedSubstrate,
+            "position-bearing attrsets should pre-admit once payloads carry positions"
+        );
+
+        let forced_a = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), a_thunk)
+            .expect("position-bearing attrset thunk force succeeds");
+        let attrs = evaluator
+            .heap()
+            .get_attrs(forced_a)
+            .expect("forced value is an attrset");
+        assert_eq!(attrs.get(b).expect("b exists").as_int(), Ok(1));
+        assert!(
+            attrset_has_binding_position(attrs),
+            "source-backed literal bindings must carry positions"
+        );
+        assert_eq!(evaluator.stats().force_cache_probes(), 1);
+        if expected_hit {
+            assert_eq!(evaluator.stats().force_cache_hits(), 1);
+            assert_eq!(evaluator.stats().force_cache_misses(), 0);
+        } else {
+            assert_eq!(evaluator.stats().force_cache_hits(), 0);
+            assert_eq!(evaluator.stats().force_cache_misses(), 1);
+        }
+        assert!(
+            evaluator.stats().force_cache_memoization_admits() > 0,
+            "position-bearing attrset force must reach an admitted cache probe"
+        );
+
+        let position = evaluator
+            .eval_unsafe_get_attr_pos_attrs_value(
+                ir.root,
+                Span::new(0, 0),
+                b,
+                ir.root,
+                Span::new(0, source.len() as u32),
+                forced_a,
+            )
+            .expect("unsafeGetAttrPos succeeds");
+        let position_attrs = evaluator
+            .heap()
+            .get_attrs(position)
+            .expect("unsafeGetAttrPos returns an attrset");
+        let file_value = position_attrs.get(file).expect("file exists");
+        let file_string = evaluator
+            .heap()
+            .get_string(file_value)
+            .expect("file is a string");
+        assert_eq!(file_string.bytes(), source_name.as_bytes());
+        assert_eq!(
+            position_attrs.get(line).expect("line exists").as_int(),
+            Ok(expected_line as i64)
+        );
+        assert_eq!(
+            position_attrs.get(column).expect("column exists").as_int(),
+            Ok(expected_column as i64)
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "observably positioned attrsets should populate in-memory force-cache payloads"
+    );
+}
+
+#[test]
+fn source_ordered_attrset_payloads_rehydrate_after_heap_lookup() {
+    let ir = lower("1");
+    let identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"force-source-order-attrs-result"),
+        IrId::new(16),
+    );
+    let subject = ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
+        free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
+    };
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator =
+        TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache.clone());
+    let b = evaluator.symbols.intern(b"b").expect("b interns");
+    let c = evaluator.symbols.intern(b"c").expect("c interns");
+    let attrs = FlatAttrs::new(
+        vec![
+            AttrEntry::new(c, Value::int(2)),
+            AttrEntry::new(b, Value::int(1)),
+        ],
+        &evaluator.symbols,
+    )
+    .expect("attrs build");
+    assert_ne!(attrs.source_order(), attrs.iteration_order());
+    let value = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("attrs allocate");
+
+    evaluator.observe_forced_inline_expression_result(
+        Some(subject.clone()),
+        value,
+        ImpureInputTraceSegment {
+            trace: Vec::new(),
+            complete: true,
+        },
+    );
+    drop(evaluator);
+
+    let mut second = TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache);
+    let hit = second
+        .lookup_forced_inline_expression_result(Some(subject))
+        .expect("source-order attrset payload hits");
+    assert_source_order_attrset_ints(&second, hit, &[(b"c", 2), (b"b", 1)]);
+    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().cache_misses(), 0);
+}
+
+#[test]
+fn non_empty_attrset_literals_with_lazy_bindings_wait_for_binding_payloads() {
+    let source = r#"{ a = { b = (1 / 0); }; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    for _ in 0..2 {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "lazy-attrs-result.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("lazy attrset thunk force succeeds");
+        let attrs = evaluator
+            .heap()
+            .get_attrs(forced)
+            .expect("attrset is heap-owned");
+
+        assert_eq!(attrs.get(b).expect("b exists").tag(), ValueTag::Thunk);
+        assert_eq!(evaluator.stats().cache_hits(), 0);
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "attrset literals with lazy bindings need binding payloads before observation"
+    );
+}
+
+#[test]
+fn context_path_payloads_rehydrate_after_heap_lookup() {
+    let ir = lower("1");
+    let identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"force-context-path-result"),
+        IrId::new(13),
+    );
+    let subject = ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
+        free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
+    };
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let context = StringContext::singleton(
+        ContextElement::opaque_path(b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source".to_vec())
+            .expect("context path is valid"),
+    )
+    .expect("context allocates");
+
+    let mut first =
+        TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache.clone());
+    let value = first
+        .heap
+        .alloc_path(NixString::new(
+            b"/nix/store/context-path".to_vec(),
+            context.clone(),
+        ))
+        .expect("context path allocates");
+    first.observe_forced_inline_expression_result(
+        Some(subject.clone()),
+        value,
+        ImpureInputTraceSegment {
+            trace: Vec::new(),
+            complete: true,
+        },
+    );
+    drop(first);
+
+    let mut second = TreeWalk::with_options_and_eval_cache(&ir, TreeWalkOptions::new(), cache);
+    let hit = second
+        .lookup_forced_inline_expression_result(Some(subject))
+        .expect("context path payload hits");
+    let path = second
+        .heap()
+        .get_path(hit)
+        .expect("context path rehydrates into this evaluator heap");
+
+    assert_eq!(path.bytes(), b"/nix/store/context-path");
+    assert_eq!(path.context(), &context);
+    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().cache_misses(), 0);
+}
