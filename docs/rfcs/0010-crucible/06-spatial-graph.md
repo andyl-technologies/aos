@@ -1176,10 +1176,22 @@ authority for its shape. The contract those files may rely on:
     `checks.crucible.phase1.spatialReproductionArtifact` gate cover offline
     artifact byte decoding, pinned-instance capture, canonical id stability, and
     schedule/state drift rejection.
-- [ ] **T-SPAT-19** Implement canonicalization (sorted collections, canonical
+- [x] **T-SPAT-19** Implement canonicalization (sorted collections, canonical
   endpoint ordering, fixed field/integer/duration encoding, exact probability
   encoding, content-addressed refs) and prove meaning-not-spelling hashing across
   hosts. — satisfies [SPAT-30]; spec §8.
+  - Completed in `crates/crucible/src/model.rs`: the spatial component
+    constructors canonicalize world nodes/links, symmetric link and partition
+    endpoints, plan entries, property assertions, and compound predicate sets
+    before hashing or serializing. Canonical material uses fixed field order,
+    explicit string lengths where needed, virtual-nanosecond durations,
+    fixed-point link-loss/fault-density millionths, and `blake3:<hash>`
+    kernel/root/initrd references. The focused
+    `canonicalization_hashes_meaning_not_authoring_spelling` test and
+    `checks.crucible.phase1.spatialCanonicalization` gate prove that different
+    authoring order and endpoint spelling produce identical canonical bytes,
+    compact binary, TOML, and content hashes, while changed probability or blob
+    references change identity.
 - [ ] **T-SPAT-20** Implement build-time validation for fault params, heal tags,
   and Plan times with precise localized errors. — satisfies [SPAT-31]; spec §9.
 - [ ] **T-SPAT-21** Implement the full parse/build-time validation pass (the §9

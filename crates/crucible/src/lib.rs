@@ -3324,6 +3324,595 @@ mod tests {
     }
 
     #[test]
+    fn canonicalization_hashes_meaning_not_authoring_spelling() {
+        let kernel = ContentAddressedBlobRef::from_hash(ContentHash::from_canonical_material(
+            "crucible.test.canonicalization.blob",
+            "kernel",
+        ));
+        let root_image = ContentAddressedBlobRef::from_hash(ContentHash::from_canonical_material(
+            "crucible.test.canonicalization.blob",
+            "root-image",
+        ));
+        let initrd = ContentAddressedBlobRef::from_hash(ContentHash::from_canonical_material(
+            "crucible.test.canonicalization.blob",
+            "initrd",
+        ));
+        let changed_kernel =
+            ContentAddressedBlobRef::from_hash(ContentHash::from_canonical_material(
+                "crucible.test.canonicalization.blob",
+                "changed-kernel",
+            ));
+        let node_a = WorldNode {
+            id: node_id("a"),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: Icount { retired: 1 },
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+            kernel: Some(kernel),
+            root_image: Some(root_image),
+            initrd: Some(initrd),
+        };
+        let node_b = WorldNode {
+            id: node_id("b"),
+            ready_point: ReadyPoint::NetworkIdle {
+                window: SimDuration { nanos: 12 },
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+            kernel: None,
+            root_image: Some(root_image),
+            initrd: None,
+        };
+        let node_c = WorldNode {
+            id: node_id("c"),
+            ready_point: ReadyPoint::ConsoleMarker {
+                marker: "ready".to_owned(),
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+            kernel: Some(kernel),
+            root_image: None,
+            initrd: Some(initrd),
+        };
+        let authored_world = world_from_nodes_and_links(
+            vec![node_c.clone(), node_a.clone(), node_b.clone()],
+            vec![
+                transport_link("c", "b", 50, 5, 125_000, Some(1_000_000)),
+                transport_link("b", "a", 10, 1, 0, None),
+            ],
+        );
+        let canonical_world = world_from_nodes_and_links(
+            vec![node_a.clone(), node_b.clone(), node_c.clone()],
+            vec![
+                transport_link("a", "b", 10, 1, 0, None),
+                transport_link("b", "c", 50, 5, 125_000, Some(1_000_000)),
+            ],
+        );
+        let changed_loss_world = world_from_nodes_and_links(
+            vec![node_a.clone(), node_b.clone(), node_c.clone()],
+            vec![
+                transport_link("a", "b", 10, 1, 0, None),
+                transport_link("b", "c", 50, 5, 125_001, Some(1_000_000)),
+            ],
+        );
+        let changed_ref_world = world_from_nodes_and_links(
+            vec![
+                WorldNode {
+                    kernel: Some(changed_kernel),
+                    ..node_a.clone()
+                },
+                node_b.clone(),
+                node_c.clone(),
+            ],
+            canonical_world.links().to_vec(),
+        );
+        let changed_icount_world = world_from_nodes_and_links(
+            vec![
+                WorldNode {
+                    ready_point: ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 2 },
+                    },
+                    ..node_a.clone()
+                },
+                node_b.clone(),
+                node_c.clone(),
+            ],
+            canonical_world.links().to_vec(),
+        );
+        let changed_duration_world = world_from_nodes_and_links(
+            vec![
+                node_a.clone(),
+                WorldNode {
+                    ready_point: ReadyPoint::NetworkIdle {
+                        window: SimDuration { nanos: 13 },
+                    },
+                    ..node_b.clone()
+                },
+                node_c.clone(),
+            ],
+            canonical_world.links().to_vec(),
+        );
+        let changed_bandwidth_world = world_from_nodes_and_links(
+            vec![node_a.clone(), node_b.clone(), node_c.clone()],
+            vec![
+                transport_link("a", "b", 10, 1, 0, None),
+                transport_link("b", "c", 50, 5, 125_000, Some(2_000_000)),
+            ],
+        );
+        let authored_plan = Plan::from_entries_for_world(
+            &authored_world,
+            vec![
+                PlanEntry::Heal {
+                    at: VirtualTime { ticks: 40 },
+                    tag: tag("split"),
+                },
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 20 },
+                    tag: tag("crash-c"),
+                    fault: MembershipFault::Crash {
+                        node: node_id("c"),
+                        restart: RestartPolicy::FromReadyPoint,
+                    },
+                },
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 10 },
+                    tag: tag("split"),
+                    fault: MembershipFault::Partition {
+                        endpoint_a: node_id("c"),
+                        endpoint_b: node_id("b"),
+                        direction: PartitionDirection::EndpointBToEndpointA,
+                    },
+                },
+            ],
+        )
+        .unwrap_or_else(|error| panic!("authored plan should be valid: {error}"));
+        let canonical_plan = Plan::from_entries_for_world(
+            &canonical_world,
+            vec![
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 10 },
+                    tag: tag("split"),
+                    fault: MembershipFault::Partition {
+                        endpoint_a: node_id("b"),
+                        endpoint_b: node_id("c"),
+                        direction: PartitionDirection::EndpointAToEndpointB,
+                    },
+                },
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 20 },
+                    tag: tag("crash-c"),
+                    fault: MembershipFault::Crash {
+                        node: node_id("c"),
+                        restart: RestartPolicy::FromReadyPoint,
+                    },
+                },
+                PlanEntry::Heal {
+                    at: VirtualTime { ticks: 40 },
+                    tag: tag("split"),
+                },
+            ],
+        )
+        .unwrap_or_else(|error| panic!("canonical plan should be valid: {error}"));
+        let changed_time_plan = Plan::from_entries_for_world(
+            &canonical_world,
+            vec![
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 11 },
+                    tag: tag("split"),
+                    fault: MembershipFault::Partition {
+                        endpoint_a: node_id("b"),
+                        endpoint_b: node_id("c"),
+                        direction: PartitionDirection::EndpointAToEndpointB,
+                    },
+                },
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 20 },
+                    tag: tag("crash-c"),
+                    fault: MembershipFault::Crash {
+                        node: node_id("c"),
+                        restart: RestartPolicy::FromReadyPoint,
+                    },
+                },
+                PlanEntry::Heal {
+                    at: VirtualTime { ticks: 40 },
+                    tag: tag("split"),
+                },
+            ],
+        )
+        .unwrap_or_else(|error| panic!("changed-time plan should be valid: {error}"));
+        let changed_tag_plan = Plan::from_entries_for_world(
+            &canonical_world,
+            vec![
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 10 },
+                    tag: tag("split-alt"),
+                    fault: MembershipFault::Partition {
+                        endpoint_a: node_id("b"),
+                        endpoint_b: node_id("c"),
+                        direction: PartitionDirection::EndpointAToEndpointB,
+                    },
+                },
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 20 },
+                    tag: tag("crash-c"),
+                    fault: MembershipFault::Crash {
+                        node: node_id("c"),
+                        restart: RestartPolicy::FromReadyPoint,
+                    },
+                },
+                PlanEntry::Heal {
+                    at: VirtualTime { ticks: 40 },
+                    tag: tag("split-alt"),
+                },
+            ],
+        )
+        .unwrap_or_else(|error| panic!("changed-tag plan should be valid: {error}"));
+        let changed_fault_plan = Plan::from_entries_for_world(
+            &canonical_world,
+            vec![
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 10 },
+                    tag: tag("split"),
+                    fault: MembershipFault::Partition {
+                        endpoint_a: node_id("b"),
+                        endpoint_b: node_id("c"),
+                        direction: PartitionDirection::Bidirectional,
+                    },
+                },
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 20 },
+                    tag: tag("crash-c"),
+                    fault: MembershipFault::Crash {
+                        node: node_id("c"),
+                        restart: RestartPolicy::FromReadyPoint,
+                    },
+                },
+                PlanEntry::Heal {
+                    at: VirtualTime { ticks: 40 },
+                    tag: tag("split"),
+                },
+            ],
+        )
+        .unwrap_or_else(|error| panic!("changed-fault plan should be valid: {error}"));
+        let authored_properties = Properties::from_assertions_for_world(
+            &authored_world,
+            vec![
+                assertion(
+                    "settles",
+                    "replicas settle",
+                    Property::AfterQuiescence {
+                        predicate: named_predicate("replicas_equal", &["b", "c"]),
+                    },
+                ),
+                assertion(
+                    "alive",
+                    "nodes remain alive",
+                    Property::Always {
+                        predicate: Predicate::AllOf {
+                            predicates: vec![
+                                named_predicate("node_alive", &["c"]),
+                                named_predicate("node_alive", &["a"]),
+                            ],
+                        },
+                    },
+                ),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("authored properties should be valid: {error}"));
+        let canonical_properties = Properties::from_assertions_for_world(
+            &canonical_world,
+            vec![
+                assertion(
+                    "alive",
+                    "nodes remain alive",
+                    Property::Always {
+                        predicate: Predicate::AllOf {
+                            predicates: vec![
+                                named_predicate("node_alive", &["a"]),
+                                named_predicate("node_alive", &["c"]),
+                            ],
+                        },
+                    },
+                ),
+                assertion(
+                    "settles",
+                    "replicas settle",
+                    Property::AfterQuiescence {
+                        predicate: named_predicate("replicas_equal", &["b", "c"]),
+                    },
+                ),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("canonical properties should be valid: {error}"));
+        let changed_message_properties = Properties::from_assertions_for_world(
+            &canonical_world,
+            vec![
+                assertion(
+                    "alive",
+                    "nodes stay alive",
+                    Property::Always {
+                        predicate: Predicate::AllOf {
+                            predicates: vec![
+                                named_predicate("node_alive", &["a"]),
+                                named_predicate("node_alive", &["c"]),
+                            ],
+                        },
+                    },
+                ),
+                assertion(
+                    "settles",
+                    "replicas settle",
+                    Property::AfterQuiescence {
+                        predicate: named_predicate("replicas_equal", &["b", "c"]),
+                    },
+                ),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("changed-message properties should be valid: {error}"));
+        let changed_predicate_properties = Properties::from_assertions_for_world(
+            &canonical_world,
+            vec![
+                assertion(
+                    "alive",
+                    "nodes remain alive",
+                    Property::Always {
+                        predicate: named_predicate("node_alive", &["a"]),
+                    },
+                ),
+                assertion(
+                    "settles",
+                    "replicas settle",
+                    Property::AfterQuiescence {
+                        predicate: named_predicate("replicas_equal", &["b", "c"]),
+                    },
+                ),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("changed-predicate properties should be valid: {error}"));
+        let seed = Seed::from_u64(0x0010_0019);
+        let authored_form = ScenarioDefForm::from_components(
+            &authored_world,
+            &authored_plan,
+            &authored_properties,
+            seed,
+        )
+        .unwrap_or_else(|error| panic!("authored form should be valid: {error}"));
+        let canonical_form = ScenarioDefForm::from_components(
+            &canonical_world,
+            &canonical_plan,
+            &canonical_properties,
+            seed,
+        )
+        .unwrap_or_else(|error| panic!("canonical form should be valid: {error}"));
+        let other_seed_form = ScenarioDefForm::from_components(
+            &canonical_world,
+            &canonical_plan,
+            &canonical_properties,
+            Seed::from_u64(0x0010_0020),
+        )
+        .unwrap_or_else(|error| panic!("other-seed form should be valid: {error}"));
+        let loss = LinkLossProbability::from_millionths(125_000)
+            .unwrap_or_else(|error| panic!("fixed loss should be valid: {error}"));
+        let density = FaultDensity::from_millionths(125_000)
+            .unwrap_or_else(|error| panic!("fixed density should be valid: {error}"));
+        let density_family = ScenarioFamily::new(
+            FamilySpace::new(
+                SeedSpace::explicit(vec![seed])
+                    .unwrap_or_else(|error| panic!("density seed space should be valid: {error}")),
+                FaultDensityRange::new(FaultDensity::ZERO, density)
+                    .unwrap_or_else(|error| panic!("density range should be valid: {error}")),
+                TopologySizeRange::new(4, 4).unwrap_or_else(|error| {
+                    panic!("density topology range should be valid: {error}")
+                }),
+                vec![TopologyShape::Ring],
+            )
+            .unwrap_or_else(|error| panic!("density family space should be valid: {error}")),
+            NodeTemplate::fixed_icount(Icount { retired: 8 }),
+        );
+        let zero_density_instance = density_family
+            .instantiate(FamilyParams {
+                seed,
+                fault_density: FaultDensity::ZERO,
+                topology_size: 4,
+                topology_shape: TopologyShape::Ring,
+            })
+            .unwrap_or_else(|error| panic!("zero-density family should instantiate: {error}"));
+        let fixed_density_instance = density_family
+            .instantiate(FamilyParams {
+                seed,
+                fault_density: density,
+                topology_size: 4,
+                topology_shape: TopologyShape::Ring,
+            })
+            .unwrap_or_else(|error| panic!("fixed-density family should instantiate: {error}"));
+
+        assert_eq!(loss.millionths(), 125_000);
+        assert_eq!(density.millionths(), 125_000);
+        assert_eq!(
+            authored_world.id().to_hex(),
+            "6fbfe24e4532a48d1efd0bc7178a96259adcf491ec2733c01482fd5d35766038"
+        );
+        assert_eq!(
+            ContentHash::from_bytes(&authored_world.canonical_bytes()).to_hex(),
+            "a05fee2effa1f8012c5eeed0f95934a9481d72f801ebc9b7a83fac113425c657"
+        );
+        assert_eq!(
+            ContentHash::from_bytes(&authored_world.to_compact_binary()).to_hex(),
+            "8f11b529c24bddf0fdb32082dbac30cf57968e827be2a1105dd541632fd3c9b0"
+        );
+        assert_eq!(
+            authored_plan.content_hash().to_hex(),
+            "f9e1e5c40ecbfce8d62e71476b59f2f207e6457ae947647c1e44ab1ad86f2e3a"
+        );
+        assert_eq!(
+            ContentHash::from_bytes(&authored_plan.canonical_bytes()).to_hex(),
+            "a8c0faf32016e717da4e1cf3e8ac99ce59ca80262a363fbf23b714aa5e604579"
+        );
+        assert_eq!(
+            ContentHash::from_bytes(&authored_plan.to_compact_binary()).to_hex(),
+            "28392e5c96b6e782ade455ceb679c1511d584a41a7b273afdd04a442480ae346"
+        );
+        assert_eq!(
+            authored_properties.content_hash().to_hex(),
+            "b20bc725db83e5943ed694b56a51b3b5d099734c9185a466ac6135f1b9ceff13"
+        );
+        assert_eq!(
+            ContentHash::from_bytes(&authored_properties.canonical_bytes()).to_hex(),
+            "9bc626347b695dea6dc28e300f95a2b7770af8717b681c02185d2bf3fcef6306"
+        );
+        assert_eq!(
+            ContentHash::from_bytes(&authored_properties.to_compact_binary()).to_hex(),
+            "068432cc28bbd3c94320ad87fda5794710c5fecc065ba81a003c2f6c98766e2a"
+        );
+        assert_eq!(
+            authored_form.id().to_hex(),
+            "83ac348fed79549807648ace6de0e844c695d59a618ca2bd93eff61639d276d3"
+        );
+        assert_eq!(
+            ContentHash::from_bytes(&authored_form.canonical_bytes()).to_hex(),
+            "4482343ea3ac9997ae77a9d43c6f18018674e86857ea4bb93d9555f2520253b9"
+        );
+        assert_eq!(
+            ContentHash::from_bytes(&authored_form.to_compact_binary()).to_hex(),
+            "737aadbea915cc5a9ebd6dcbe639941a040e7bd82965b9ad44e2efbd6c4bfe32"
+        );
+        assert_eq!(authored_world.id(), canonical_world.id());
+        assert_eq!(authored_world.nodes(), canonical_world.nodes());
+        assert_eq!(authored_world.links(), canonical_world.links());
+        assert!(
+            authored_world
+                .to_compact_binary()
+                .starts_with(b"crucible.world.v1\0")
+        );
+        assert!(
+            authored_plan
+                .to_compact_binary()
+                .starts_with(b"crucible.plan.v1\0")
+        );
+        assert!(
+            authored_properties
+                .to_compact_binary()
+                .starts_with(b"crucible.properties.v1\0")
+        );
+        assert!(
+            authored_form
+                .to_compact_binary()
+                .starts_with(b"crucible.scenario-def-form.v1\0")
+        );
+        assert_eq!(
+            authored_world.canonical_bytes(),
+            canonical_world.canonical_bytes()
+        );
+        assert_eq!(
+            authored_world.to_compact_binary(),
+            canonical_world.to_compact_binary()
+        );
+        assert_eq!(
+            authored_world
+                .to_canonical_toml()
+                .unwrap_or_else(|error| panic!("world TOML should serialize: {error}")),
+            canonical_world
+                .to_canonical_toml()
+                .unwrap_or_else(|error| panic!("canonical world TOML should serialize: {error}"))
+        );
+        assert_ne!(authored_world.id(), changed_loss_world.id());
+        assert_ne!(authored_world.id(), changed_ref_world.id());
+        assert_ne!(authored_world.id(), changed_icount_world.id());
+        assert_ne!(authored_world.id(), changed_duration_world.id());
+        assert_ne!(authored_world.id(), changed_bandwidth_world.id());
+        assert_eq!(authored_plan.content_hash(), canonical_plan.content_hash());
+        assert_eq!(authored_plan.entries(), canonical_plan.entries());
+        assert_eq!(
+            authored_plan.canonical_bytes(),
+            canonical_plan.canonical_bytes()
+        );
+        assert_eq!(
+            authored_plan.to_compact_binary(),
+            canonical_plan.to_compact_binary()
+        );
+        assert_eq!(
+            authored_plan
+                .to_canonical_toml()
+                .unwrap_or_else(|error| panic!("plan TOML should serialize: {error}")),
+            canonical_plan
+                .to_canonical_toml()
+                .unwrap_or_else(|error| panic!("canonical plan TOML should serialize: {error}"))
+        );
+        assert_ne!(
+            authored_plan.content_hash(),
+            changed_time_plan.content_hash()
+        );
+        assert_ne!(
+            authored_plan.content_hash(),
+            changed_tag_plan.content_hash()
+        );
+        assert_ne!(
+            authored_plan.content_hash(),
+            changed_fault_plan.content_hash()
+        );
+        assert_eq!(
+            authored_properties.content_hash(),
+            canonical_properties.content_hash()
+        );
+        assert_eq!(
+            authored_properties.assertions(),
+            canonical_properties.assertions()
+        );
+        assert_eq!(
+            authored_properties.canonical_bytes(),
+            canonical_properties.canonical_bytes()
+        );
+        assert_eq!(
+            authored_properties.to_compact_binary(),
+            canonical_properties.to_compact_binary()
+        );
+        assert_eq!(
+            authored_properties
+                .to_canonical_toml()
+                .unwrap_or_else(|error| panic!("properties TOML should serialize: {error}")),
+            canonical_properties
+                .to_canonical_toml()
+                .unwrap_or_else(|error| {
+                    panic!("canonical properties TOML should serialize: {error}")
+                })
+        );
+        assert_ne!(
+            authored_properties.content_hash(),
+            changed_message_properties.content_hash()
+        );
+        assert_ne!(
+            authored_properties.content_hash(),
+            changed_predicate_properties.content_hash()
+        );
+        assert_eq!(authored_form.id(), canonical_form.id());
+        assert_eq!(authored_form.scenario_def(), canonical_form.scenario_def());
+        assert_eq!(
+            authored_form.canonical_bytes(),
+            canonical_form.canonical_bytes()
+        );
+        assert_eq!(
+            authored_form.to_compact_binary(),
+            canonical_form.to_compact_binary()
+        );
+        assert_eq!(
+            authored_form
+                .to_canonical_toml()
+                .unwrap_or_else(|error| panic!("scenario TOML should serialize: {error}")),
+            canonical_form.to_canonical_toml().unwrap_or_else(|error| {
+                panic!("canonical scenario TOML should serialize: {error}")
+            })
+        );
+        assert_ne!(authored_form.id(), other_seed_form.id());
+        assert_eq!(
+            zero_density_instance.form().world(),
+            fixed_density_instance.form().world()
+        );
+        assert_ne!(
+            zero_density_instance.form().plan().content_hash(),
+            fixed_density_instance.form().plan().content_hash()
+        );
+        assert_ne!(zero_density_instance.id(), fixed_density_instance.id());
+    }
+
+    #[test]
     fn seed_is_scenario_identity_and_name_hashed_stream_root() {
         let world = world_from_nodes_and_links(
             two_ready_nodes(),
