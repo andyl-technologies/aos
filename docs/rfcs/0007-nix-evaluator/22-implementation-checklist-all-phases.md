@@ -1183,12 +1183,15 @@ alone (`M-1`/`Q-A`).
       `blob_pack::MappedBlobPack` validates the current pack header and record
       format from a `ReadOnlyMmap`, checks lookup hash/length and payload
       bounds, rehashes mapped payload bytes with BLAKE3, and returns
-      `MappedBlobPayload<'_>` as a borrowed zero-copy slice. This covers the
-      current `AOS-NIX-BLOBPACK` compatibility format inside the unsafe engine
-      crate only; construction remains `unsafe`, and safe cache-root leases,
-      `ratchet-oracle` integration, append writing, LMDB/redb offset indexes,
-      automatic mmap-backed indexed hits, out-of-core rematerialization,
-      cross-process writer coordination, and harness proof remain open
+      `MappedBlobPayload<'_>` as a borrowed zero-copy slice. Unit coverage
+      includes generated packs plus a frozen literal `AOS-NIX-BLOBPACK`
+      empty-payload fixture that pins magic/version/header-length, record hash,
+      and little-endian payload length bytes. This covers the current
+      compatibility format inside the unsafe engine crate only; construction
+      remains `unsafe`, and safe cache-root leases, `ratchet-oracle`
+      integration, append writing, LMDB/redb offset indexes, automatic
+      mmap-backed indexed hits, out-of-core rematerialization, cross-process
+      writer coordination, and harness proof remain open
       (`C-13`/`R-14`).
 - [x] Current oracle-writer/mapped-reader compatibility canary:
       `aos-nix-harness` has an integration test that writes blob-pack records
