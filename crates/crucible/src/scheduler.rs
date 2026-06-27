@@ -157,6 +157,94 @@ pub enum SchedulerEffectiveClockSource {
     IdleWake,
 }
 
+/// The scheduler-side cause for a boundary topology recompute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SchedulerTopologyChangeTrigger {
+    /// A fault activation changed the effective topology or latency table.
+    FaultActivation,
+    /// A heal restored effective topology or latency state.
+    Heal,
+    /// A latency mutation changed the conservative lookahead bound.
+    LatencyChange,
+}
+
+/// A boundary-applied replacement for the effective scheduler edge set.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerTopologyChange {
+    /// Session-local sequence number used to order same-boundary changes.
+    pub sequence: u64,
+    /// The reason this change requires a lookahead recompute.
+    pub trigger: SchedulerTopologyChangeTrigger,
+    /// The complete effective edge set after this change is applied.
+    pub effective_edges: Vec<SchedulerLookaheadEdge>,
+}
+
+impl SchedulerTopologyChange {
+    /// Builds a topology change from a complete effective edge set.
+    #[must_use]
+    pub fn new(
+        sequence: u64,
+        trigger: SchedulerTopologyChangeTrigger,
+        effective_edges: Vec<SchedulerLookaheadEdge>,
+    ) -> Self {
+        Self {
+            sequence,
+            trigger,
+            effective_edges,
+        }
+    }
+}
+
+/// One node lookahead value recomputed by a topology change.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerTopologyLookaheadUpdate {
+    /// The scheduler node whose network lookahead was recomputed.
+    pub node: SchedulerNodeId,
+    /// The lookahead value used before the boundary change.
+    pub previous_lookahead: NetworkLookahead,
+    /// The lookahead value derived from the new effective edge set.
+    pub recomputed_lookahead: NetworkLookahead,
+}
+
+/// Evidence that a topology change was applied at a quantum boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerTopologyChangeApplication {
+    /// Monotone scheduler topology epoch after this application.
+    pub topology_epoch: u64,
+    /// Session-local sequence number of the applied topology change.
+    pub sequence: u64,
+    /// The reason this change required a lookahead recompute.
+    pub trigger: SchedulerTopologyChangeTrigger,
+    /// Per-node lookahead updates in canonical scheduler-node order.
+    pub updates: Vec<SchedulerTopologyLookaheadUpdate>,
+}
+
+/// Authorization for emitting one cross-node frame under the current topology.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerSendAuthorization {
+    /// The producer scheduler node.
+    pub producer: SchedulerNodeId,
+    /// The consumer scheduler node.
+    pub consumer: SchedulerNodeId,
+    /// The topology epoch under which this send was authorized.
+    pub topology_epoch: u64,
+}
+
+/// Authorizes cross-node frame emission against scheduler topology state.
+pub trait SchedulerSendAuthorizer {
+    /// Authorizes one producer-to-consumer frame under the current topology.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when sends are frozen by a pending topology
+    /// change or the effective edge set does not contain the requested edge.
+    fn authorize_cross_node_send(
+        &self,
+        producer: &SchedulerNodeId,
+        consumer: &SchedulerNodeId,
+    ) -> Result<SchedulerSendAuthorization, SchedulerError>;
+}
+
 #[cfg(feature = "test-double")]
 impl SchedulerRunCeilingPublication {
     /// Converts this scheduler publication to the shared-memory ABI ceiling.
@@ -254,6 +342,7 @@ pub struct SchedulerActorReply<T> {
 
 enum SchedulerActorMessage {
     QueueControl(ControlOperation),
+    QueueTopologyChange(SchedulerTopologyChange),
     DriveQuantum {
         request: QuantumRequest,
         reply: Sender<Result<QuantumOutcome, SchedulerError>>,
@@ -269,6 +358,10 @@ impl fmt::Debug for SchedulerActorMessage {
             Self::QueueControl(operation) => formatter
                 .debug_tuple("QueueControl")
                 .field(operation)
+                .finish(),
+            Self::QueueTopologyChange(change) => formatter
+                .debug_tuple("QueueTopologyChange")
+                .field(change)
                 .finish(),
             Self::DriveQuantum { request, .. } => formatter
                 .debug_struct("DriveQuantum")
@@ -336,6 +429,10 @@ impl SchedulerActor {
                 self.scheduler.queue_control(operation);
                 Ok(())
             }
+            SchedulerActorMessage::QueueTopologyChange(change) => {
+                self.scheduler.queue_topology_change(change);
+                Ok(())
+            }
             SchedulerActorMessage::DriveQuantum { request, reply } => reply
                 .send(self.scheduler.drive_quantum(request))
                 .map_err(|_| SchedulerActorError::ReplyDropped),
@@ -355,6 +452,23 @@ impl SchedulerActorHandle {
     /// stopped receiving messages.
     pub fn queue_control(&self, operation: ControlOperation) -> Result<(), SchedulerActorError> {
         self.send(SchedulerActorMessage::QueueControl(operation))
+    }
+
+    /// Queues a topology change for the next scheduler quantum boundary.
+    ///
+    /// Fault, heal, and latency-control paths use this message to freeze
+    /// cross-node sends until the actor applies the new effective edge set and
+    /// recomputes lookahead before the next PICK.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerActorError::MailboxClosed`] when the actor has already
+    /// stopped receiving messages.
+    pub fn queue_topology_change(
+        &self,
+        change: SchedulerTopologyChange,
+    ) -> Result<(), SchedulerActorError> {
+        self.send(SchedulerActorMessage::QueueTopologyChange(change))
     }
 
     /// Requests one scheduler quantum through the actor mailbox.
@@ -685,6 +799,14 @@ impl SchedulerLookaheadGraph {
     #[must_use]
     pub fn edges(&self) -> &[SchedulerLookaheadEdge] {
         &self.edges
+    }
+
+    /// Returns whether the current effective edge set allows `from -> to`.
+    #[must_use]
+    pub fn has_edge(&self, from: &SchedulerNodeId, to: &SchedulerNodeId) -> bool {
+        self.edges
+            .iter()
+            .any(|edge| &edge.from == from && &edge.to == to)
     }
 
     /// Computes `lookahead(node)` as the minimum inbound live-link latency.
@@ -1732,12 +1854,16 @@ pub struct SchedulerLivenessScenario {
     pub time_limit: SimInstant,
     /// The exact shared rendezvous cap policy.
     pub rendezvous: SchedulerRendezvous,
+    /// The current effective scheduler edge set, when known to this scenario.
+    pub effective_topology: SchedulerLookaheadGraph,
     /// The generated nodes driven by the authoritative scheduler.
     ///
     /// A runnable generated node becomes [`SchedulerNodeActivity::Idle`] once it
     /// reaches the horizon selected from its exact local event and network
     /// lookahead.
     pub nodes: Vec<SchedulerScenarioNode>,
+    /// Boundary-applied topology changes waiting for the scheduler.
+    pub topology_changes: Vec<SchedulerTopologyChange>,
     /// Cross-node, I/O, fault, and control events waiting for scheduler delivery.
     pub pending_events: Vec<ScheduledEvent>,
     /// Saved per-producer/consumer sequence counters for newly emitted events.
@@ -1766,7 +1892,9 @@ impl SchedulerLivenessScenario {
             quantum_budget,
             time_limit,
             rendezvous: SchedulerRendezvous::disabled(),
+            effective_topology: SchedulerLookaheadGraph::default(),
             nodes,
+            topology_changes: Vec::new(),
             pending_events,
             event_sequences: EventSequenceState::empty(),
         };
@@ -1801,6 +1929,28 @@ impl SchedulerLivenessScenario {
         Ok(self)
     }
 
+    /// Replaces the scenario's effective topology and recomputes node lookahead.
+    #[must_use]
+    pub fn with_effective_topology_edges(mut self, edges: Vec<SchedulerLookaheadEdge>) -> Self {
+        self.effective_topology = SchedulerLookaheadGraph::from_edges(edges);
+        recompute_scenario_node_lookahead(&mut self.nodes, &self.effective_topology);
+        self.refresh_configuration();
+        self
+    }
+
+    /// Queues a topology change for the next quantum boundary.
+    #[must_use]
+    pub fn with_topology_change(mut self, change: SchedulerTopologyChange) -> Self {
+        self.topology_changes.push(change);
+        self.topology_changes.sort_by(|left, right| {
+            left.sequence
+                .cmp(&right.sequence)
+                .then_with(|| left.trigger.cmp(&right.trigger))
+        });
+        self.refresh_configuration();
+        self
+    }
+
     fn refresh_configuration(&mut self) {
         self.configuration = self.canonical_configuration();
     }
@@ -1816,10 +1966,30 @@ fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessScenario) ->
     lines.push(format!("shift_bits={}", scenario.shift.bits));
     lines.push(format!("quantum_budget={}", scenario.quantum_budget));
     lines.push(format!("time_limit_ns={}", scenario.time_limit.nanos));
+    lines.push(format!(
+        "effective_topology_edges={}",
+        scenario.effective_topology.edges().len()
+    ));
+    lines.extend(
+        scenario
+            .effective_topology
+            .edges()
+            .iter()
+            .map(scheduler_lookahead_edge_material),
+    );
     let mut nodes = scenario.nodes.clone();
     nodes.sort_by(|left, right| left.id.cmp(&right.id));
     lines.push(format!("nodes={}", nodes.len()));
     lines.extend(nodes.iter().map(scheduler_scenario_node_material));
+
+    let mut topology_changes = scenario.topology_changes.clone();
+    topology_changes.sort_by(|left, right| {
+        left.sequence
+            .cmp(&right.sequence)
+            .then_with(|| left.trigger.cmp(&right.trigger))
+    });
+    lines.push(format!("topology_changes={}", topology_changes.len()));
+    lines.extend(topology_changes.iter().map(topology_change_material));
 
     let pending = ordered_scheduled_events(&scenario.pending_events);
     lines.push(format!("pending_events={}", pending.len()));
@@ -1840,6 +2010,15 @@ fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessScenario) ->
     lines.join("\n")
 }
 
+fn recompute_scenario_node_lookahead(
+    nodes: &mut [SchedulerScenarioNode],
+    topology: &SchedulerLookaheadGraph,
+) {
+    for node in nodes {
+        node.network_lookahead = topology.lookahead(&node.id);
+    }
+}
+
 fn scheduler_scenario_node_material(node: &SchedulerScenarioNode) -> String {
     format!(
         "node:\n{}\ncounter_ticks={}\nactivity={}\n{}\n{}",
@@ -1849,6 +2028,39 @@ fn scheduler_scenario_node_material(node: &SchedulerScenarioNode) -> String {
         network_lookahead_material(node.network_lookahead),
         exact_local_event_material(&node.exact_local_event),
     )
+}
+
+fn scheduler_lookahead_edge_material(edge: &SchedulerLookaheadEdge) -> String {
+    format!(
+        "edge:\nedge_from:\n{}\nedge_to:\n{}\nedge_minimum_latency_ns={}",
+        scheduler_node_material(&edge.from),
+        scheduler_node_material(&edge.to),
+        edge.minimum_latency.nanos,
+    )
+}
+
+fn topology_change_material(change: &SchedulerTopologyChange) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("topology_change_sequence={}", change.sequence));
+    lines.push(format!(
+        "topology_change_trigger={}",
+        topology_change_trigger_label(change.trigger)
+    ));
+    let graph = SchedulerLookaheadGraph::from_edges(change.effective_edges.clone());
+    lines.push(format!(
+        "topology_change_effective_edges={}",
+        graph.edges().len()
+    ));
+    lines.extend(graph.edges().iter().map(scheduler_lookahead_edge_material));
+    lines.join("\n")
+}
+
+fn topology_change_trigger_label(trigger: SchedulerTopologyChangeTrigger) -> &'static str {
+    match trigger {
+        SchedulerTopologyChangeTrigger::FaultActivation => "fault-activation",
+        SchedulerTopologyChangeTrigger::Heal => "heal",
+        SchedulerTopologyChangeTrigger::LatencyChange => "latency-change",
+    }
 }
 
 fn scheduler_node_material(node: &SchedulerNodeId) -> String {
@@ -2307,6 +2519,13 @@ pub enum SchedulerQuiescenceBlocker {
         /// The queued control operation.
         operation: ControlOperation,
     },
+    /// A topology change is waiting for the next boundary recompute.
+    PendingTopologyChange {
+        /// Session-local sequence number of the queued topology change.
+        sequence: u64,
+        /// The reason this change requires a lookahead recompute.
+        trigger: SchedulerTopologyChangeTrigger,
+    },
     /// A scheduler node still has an exact local wakeup.
     PendingExactLocalEvent {
         /// The scheduler graph node with the exact wakeup.
@@ -2324,7 +2543,9 @@ pub struct SingleScheduler {
     quantum_budget: u64,
     time_limit: SimInstant,
     rendezvous: SchedulerRendezvous,
+    effective_topology: SchedulerLookaheadGraph,
     nodes: Vec<RuntimeSchedulerNode>,
+    topology_changes: Vec<SchedulerTopologyChange>,
     pending_events: Vec<ScheduledEvent>,
     event_sequences: EventSequenceState,
     control_inbox: Vec<ControlOperation>,
@@ -2334,10 +2555,13 @@ pub struct SingleScheduler {
     event_log_events: u64,
     frontier: VirtualTime,
     quanta: u64,
+    topology_epoch: u64,
+    topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
     boundary_yields: u64,
     ceiling_publications: Vec<SchedulerRunCeilingPublication>,
     lock_held: bool,
     last_advance: Option<NodeAdvance>,
+    last_topology_recompute: bool,
 }
 
 impl SingleScheduler {
@@ -2366,7 +2590,9 @@ impl SingleScheduler {
             quantum_budget: scenario.quantum_budget,
             time_limit: scenario.time_limit,
             rendezvous: scenario.rendezvous,
+            effective_topology: scenario.effective_topology,
             nodes,
+            topology_changes: scenario.topology_changes,
             pending_events: scenario.pending_events,
             event_sequences: scenario.event_sequences,
             control_inbox: Vec::new(),
@@ -2376,10 +2602,13 @@ impl SingleScheduler {
             event_log_events: 0,
             frontier,
             quanta: 0,
+            topology_epoch: 0,
+            topology_change_applications: Vec::new(),
             boundary_yields: 0,
             ceiling_publications: Vec::new(),
             lock_held: false,
             last_advance: None,
+            last_topology_recompute: false,
         })
     }
 
@@ -2415,6 +2644,53 @@ impl SingleScheduler {
     #[must_use]
     pub fn run_ceiling_publications(&self) -> &[SchedulerRunCeilingPublication] {
         &self.ceiling_publications
+    }
+
+    /// Returns topology changes applied at completed scheduler boundaries.
+    #[must_use]
+    pub fn topology_change_applications(&self) -> &[SchedulerTopologyChangeApplication] {
+        &self.topology_change_applications
+    }
+
+    /// Authorizes one cross-node frame emission under the current topology.
+    ///
+    /// Backends use this as the scheduler-side send freeze: when a topology
+    /// change is pending, no new cross-node frame may be emitted until the next
+    /// boundary recomputes lookahead. The authorization also proves the
+    /// producer-to-consumer edge is live in the current effective edge set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when a topology change is
+    /// waiting for the boundary recompute, or when the producer-to-consumer edge
+    /// is absent from the current effective topology.
+    pub fn authorize_cross_node_send(
+        &self,
+        producer: &SchedulerNodeId,
+        consumer: &SchedulerNodeId,
+    ) -> Result<SchedulerSendAuthorization, SchedulerError> {
+        if !self.topology_changes.is_empty() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "cross-node sends frozen while topology change is pending: producer={}:{:?} consumer={}:{:?}",
+                    producer.node.name, producer.kind, consumer.node.name, consumer.kind
+                ),
+            });
+        }
+        if !self.effective_topology.has_edge(producer, consumer) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "cross-node send has no effective topology edge: producer={}:{:?} consumer={}:{:?}",
+                    producer.node.name, producer.kind, consumer.node.name, consumer.kind
+                ),
+            });
+        }
+
+        Ok(SchedulerSendAuthorization {
+            producer: producer.clone(),
+            consumer: consumer.clone(),
+            topology_epoch: self.topology_epoch,
+        })
     }
 
     /// Returns per-node effective clocks in canonical scheduler-node order.
@@ -2457,6 +2733,19 @@ impl SingleScheduler {
                 .map(|operation| SchedulerQuiescenceBlocker::PendingControl { operation }),
         );
 
+        let mut topology_changes = self.topology_changes.clone();
+        topology_changes.sort_by(|left, right| {
+            left.sequence
+                .cmp(&right.sequence)
+                .then_with(|| left.trigger.cmp(&right.trigger))
+        });
+        blockers.extend(topology_changes.into_iter().map(|change| {
+            SchedulerQuiescenceBlocker::PendingTopologyChange {
+                sequence: change.sequence,
+                trigger: change.trigger,
+            }
+        }));
+
         blockers.extend(
             ordered_scheduled_events(&self.pending_events)
                 .into_iter()
@@ -2495,6 +2784,60 @@ impl SingleScheduler {
 
     fn queue_control(&mut self, operation: ControlOperation) {
         self.control_inbox.push(operation);
+    }
+
+    /// Queues a topology change for the next quantum boundary.
+    pub fn queue_topology_change(&mut self, change: SchedulerTopologyChange) {
+        self.topology_changes.push(change);
+        self.topology_changes.sort_by(|left, right| {
+            left.sequence
+                .cmp(&right.sequence)
+                .then_with(|| left.trigger.cmp(&right.trigger))
+        });
+    }
+
+    fn apply_topology_changes_at_boundary(&mut self) -> Result<bool, SchedulerError> {
+        if self.topology_changes.is_empty() {
+            return Ok(false);
+        }
+
+        let mut changes = std::mem::take(&mut self.topology_changes);
+        changes.sort_by(|left, right| {
+            left.sequence
+                .cmp(&right.sequence)
+                .then_with(|| left.trigger.cmp(&right.trigger))
+        });
+
+        for change in changes {
+            let graph = SchedulerLookaheadGraph::from_edges(change.effective_edges);
+            let mut updates = Vec::with_capacity(self.nodes.len());
+            for node in &mut self.nodes {
+                let previous_lookahead = node.network_lookahead;
+                let recomputed_lookahead = graph.lookahead(&node.id);
+                node.network_lookahead = recomputed_lookahead;
+                updates.push(SchedulerTopologyLookaheadUpdate {
+                    node: node.id.clone(),
+                    previous_lookahead,
+                    recomputed_lookahead,
+                });
+            }
+
+            self.effective_topology = graph;
+            self.topology_epoch = self.topology_epoch.checked_add(1).ok_or_else(|| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from("scheduler topology epoch overflow"),
+                }
+            })?;
+            self.topology_change_applications
+                .push(SchedulerTopologyChangeApplication {
+                    topology_epoch: self.topology_epoch,
+                    sequence: change.sequence,
+                    trigger: change.trigger,
+                    updates,
+                });
+        }
+
+        Ok(true)
     }
 
     fn actor_state_snapshot(&self) -> SchedulerActorStateSnapshot {
@@ -2851,10 +3194,13 @@ impl SingleScheduler {
         }
 
         self.last_advance = None;
+        self.last_topology_recompute = false;
 
         // Boundary admission phase: accept control exposed by the previous STEP yield.
         self.admit_control_at_boundary(request.control);
         let mut resolved_events = self.drain_control_events()?;
+        let topology_recomputed = self.apply_topology_changes_at_boundary()?;
+        self.last_topology_recompute = topology_recomputed;
         // PICK phase: select the next effective-horizon candidate once.
         let candidate = match self.pick_global_minimum_horizon_node()? {
             Some(candidate) => candidate,
@@ -2878,6 +3224,9 @@ impl SingleScheduler {
                     self.configuration = configuration.clone();
                     self.quanta = self.quanta.saturating_add(1);
                     // STEP yield phase: expose the control inbox before the next PICK.
+                    self.yield_to_control_inbox();
+                } else if topology_recomputed {
+                    self.quanta = self.quanta.saturating_add(1);
                     self.yield_to_control_inbox();
                 }
                 return Ok(QuantumOutcome {
@@ -3167,6 +3516,16 @@ impl SingleScheduler {
     }
 }
 
+impl SchedulerSendAuthorizer for SingleScheduler {
+    fn authorize_cross_node_send(
+        &self,
+        producer: &SchedulerNodeId,
+        consumer: &SchedulerNodeId,
+    ) -> Result<SchedulerSendAuthorization, SchedulerError> {
+        SingleScheduler::authorize_cross_node_send(self, producer, consumer)
+    }
+}
+
 impl QuantumLoop for SingleScheduler {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.drive_authoritative_quantum(request)
@@ -3249,6 +3608,9 @@ pub fn check_scheduler_liveness(
                 advanced_nodes.push(advance.node.clone());
             }
             None => {
+                if scheduler.last_topology_recompute {
+                    continue;
+                }
                 if let Some(node) = scheduler.stalled_active_node() {
                     return Err(SchedulerLivenessError::Livelock {
                         quantum: scheduler.quanta(),

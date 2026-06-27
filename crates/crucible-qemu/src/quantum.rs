@@ -10,7 +10,7 @@
 
 use crucible::{
     AdvanceOutcome, BackendInput, ContentHash, ExecutionFingerprint, ExecutionHorizon, Icount,
-    NodeId,
+    NodeId, SchedulerError, SchedulerNodeId, SchedulerSendAuthorizer, SchedulingNodeKind,
 };
 use crucible_shmem::{
     AdvanceCeiling, FrameDeliveryKey, FrameEntry, FrameEntryError, LookaheadGateError, NodeSlot,
@@ -315,6 +315,7 @@ pub struct QemuQuantumShmemHotPath<'a> {
     view: QemuQuantumShmemView<'a>,
     operation_log: Vec<QemuQuantumOperation>,
     next_router_inbound_sequence: u64,
+    send_authorizer: &'a dyn SchedulerSendAuthorizer,
 }
 
 impl<'a> QemuQuantumShmemHotPath<'a> {
@@ -327,6 +328,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     pub fn new(
         config: QemuQuantumShmemConfig,
         view: QemuQuantumShmemView<'a>,
+        send_authorizer: &'a dyn SchedulerSendAuthorizer,
     ) -> Result<Self, QemuQuantumError> {
         if config.shift_bits >= 64 {
             return Err(QemuQuantumError::InvalidShift {
@@ -338,6 +340,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             view,
             operation_log: Vec::new(),
             next_router_inbound_sequence: 0,
+            send_authorizer,
         })
     }
 
@@ -378,6 +381,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         &mut self,
         frame: QemuOutboundFrame,
     ) -> Result<(), QemuQuantumError> {
+        self.authorize_outbound_send("enqueue outbound frame")?;
         let entry = FrameEntry::new(
             frame.emit_icount.retired,
             self.config.vm_slot,
@@ -616,21 +620,43 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     fn drain_emitted_outbound(&mut self) -> Result<Vec<QemuNodeEmittedFrame>, QemuQuantumError> {
         let mut frames = Vec::new();
         loop {
-            self.record(QemuQuantumOperation::DequeueOutboundFrame);
-            let Some(entry) = self
-                .view
-                .outbound_ring
-                .dequeue(self.view.outbound_entries)
-                .map_err(|source| QemuQuantumError::SpscRing {
-                    operation: "dequeue outbound frame",
-                    source,
-                })?
-            else {
+            let Some(frame) = self.dequeue_authorized_emitted_outbound()? else {
                 break;
             };
-            frames.push(self.emitted_frame_from_entry(entry)?);
+            frames.push(frame);
         }
         Ok(frames)
+    }
+
+    fn dequeue_authorized_emitted_outbound(
+        &mut self,
+    ) -> Result<Option<QemuNodeEmittedFrame>, QemuQuantumError> {
+        let Some(_) = self
+            .view
+            .outbound_ring
+            .peek(self.view.outbound_entries)
+            .map_err(|source| QemuQuantumError::SpscRing {
+                operation: "peek outbound frame",
+                source,
+            })?
+        else {
+            return Ok(None);
+        };
+
+        self.authorize_outbound_send("dequeue outbound frame")?;
+        self.record(QemuQuantumOperation::DequeueOutboundFrame);
+        let Some(entry) = self
+            .view
+            .outbound_ring
+            .dequeue(self.view.outbound_entries)
+            .map_err(|source| QemuQuantumError::SpscRing {
+                operation: "dequeue outbound frame",
+                source,
+            })?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(self.emitted_frame_from_entry(entry)?))
     }
 
     fn due_inbound_frame_from_entry(
@@ -716,6 +742,15 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         Ok(())
     }
 
+    fn authorize_outbound_send(&self, operation: &'static str) -> Result<(), QemuQuantumError> {
+        let producer = qemu_scheduler_node(&self.config.node, SchedulingNodeKind::Vm);
+        let consumer = qemu_scheduler_node(&self.config.router, SchedulingNodeKind::Network);
+        self.send_authorizer
+            .authorize_cross_node_send(&producer, &consumer)
+            .map_err(|source| QemuQuantumError::SchedulerSendAuthorization { operation, source })?;
+        Ok(())
+    }
+
     fn record(&mut self, operation: QemuQuantumOperation) {
         self.operation_log.push(operation);
     }
@@ -786,20 +821,7 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
     }
 
     fn emit_frame(&mut self) -> Result<Option<QemuNodeEmittedFrame>, QemuNodeChannelError> {
-        self.record(QemuQuantumOperation::DequeueOutboundFrame);
-        let frame = self
-            .view
-            .outbound_ring
-            .dequeue(self.view.outbound_entries)
-            .map_err(|source| {
-                QemuNodeChannelError::from(QemuQuantumError::SpscRing {
-                    operation: "dequeue outbound frame",
-                    source,
-                })
-            })?;
-        frame
-            .map(|entry| self.emitted_frame_from_entry(entry))
-            .transpose()
+        self.dequeue_authorized_emitted_outbound()
             .map_err(QemuNodeChannelError::from)
     }
 
@@ -942,6 +964,13 @@ fn device_io_freeze_from_snapshot(snapshot: NodeSlotSnapshot) -> QemuDeviceIoFre
     }
 }
 
+fn qemu_scheduler_node(node: &NodeId, kind: SchedulingNodeKind) -> SchedulerNodeId {
+    SchedulerNodeId {
+        node: node.clone(),
+        kind,
+    }
+}
+
 fn quantum_outcome(
     horizon: Icount,
     final_state: QemuNodeIdleState,
@@ -1049,6 +1078,14 @@ pub enum QemuQuantumError {
         /// Underlying ordered scheduler wake error.
         source: SchedulerWakePublicationError,
     },
+    /// Scheduler topology state rejected a VM-to-router send.
+    #[error("QEMU quantum scheduler send authorization for {operation} failed: {source}")]
+    SchedulerSendAuthorization {
+        /// Operation being attempted.
+        operation: &'static str,
+        /// Underlying scheduler authorization error.
+        source: SchedulerError,
+    },
     /// No later plugin report is visible in the shared-memory node slot yet.
     #[error(
         "QEMU quantum plugin report is not yet visible at icount {current_icount} before ceiling {ceiling}"
@@ -1083,6 +1120,23 @@ mod tests {
     use crucible_shmem::{AdvanceCeiling, FrameEntry, NodeSlot, STATUS_IDLE, STATUS_RUNNING};
 
     const QUANTUM_SOURCE: &str = include_str!("quantum.rs");
+    static ALLOW_ALL_SENDS: AllowAllSchedulerSendAuthorizer = AllowAllSchedulerSendAuthorizer;
+
+    struct AllowAllSchedulerSendAuthorizer;
+
+    impl crucible::SchedulerSendAuthorizer for AllowAllSchedulerSendAuthorizer {
+        fn authorize_cross_node_send(
+            &self,
+            producer: &crucible::SchedulerNodeId,
+            consumer: &crucible::SchedulerNodeId,
+        ) -> Result<crucible::SchedulerSendAuthorization, crucible::SchedulerError> {
+            Ok(crucible::SchedulerSendAuthorization {
+                producer: producer.clone(),
+                consumer: consumer.clone(),
+                topology_epoch: 0,
+            })
+        }
+    }
 
     #[test]
     fn qemu_quantum_binds_external_shmem_and_finishes_after_plugin_report() {
@@ -1663,6 +1717,96 @@ mod tests {
     }
 
     #[test]
+    fn qemu_quantum_outbound_enqueue_uses_scheduler_send_authorizer() {
+        let scheduler = pending_topology_scheduler();
+        let slot = NodeSlot::default();
+        let inbound_ring = RingHeader::new();
+        let outbound_ring = RingHeader::new();
+        let mut inbound_entries = frame_entries(8);
+        let mut outbound_entries = frame_entries(8);
+        let mut hot_path = hot_path_with_send_authorizer(
+            &slot,
+            &inbound_ring,
+            &mut inbound_entries,
+            &outbound_ring,
+            &mut outbound_entries,
+            &scheduler,
+        );
+
+        let result = hot_path.enqueue_outbound_frame_from_plugin(QemuOutboundFrame {
+            emit_icount: icount(3),
+            sequence: 9,
+            payload: vec![8, 9],
+        });
+
+        assert!(matches!(
+            &result,
+            Err(QemuQuantumError::SchedulerSendAuthorization {
+                operation: "enqueue outbound frame",
+                ..
+            })
+        ));
+        assert!(
+            result
+                .expect_err("enqueue should be frozen")
+                .to_string()
+                .contains("cross-node sends frozen")
+        );
+        assert_eq!(
+            hot_path
+                .view
+                .outbound_ring
+                .peek(hot_path.view.outbound_entries),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn qemu_quantum_outbound_dequeue_uses_scheduler_send_authorizer() {
+        let scheduler = pending_topology_scheduler();
+        let slot = NodeSlot::default();
+        let inbound_ring = RingHeader::new();
+        let outbound_ring = RingHeader::new();
+        let mut inbound_entries = frame_entries(8);
+        let mut outbound_entries = frame_entries(8);
+        enqueue_raw(
+            &outbound_ring,
+            &mut outbound_entries,
+            frame(3, 0, 9, b"frozen"),
+        );
+        let mut hot_path = hot_path_with_send_authorizer(
+            &slot,
+            &inbound_ring,
+            &mut inbound_entries,
+            &outbound_ring,
+            &mut outbound_entries,
+            &scheduler,
+        );
+
+        let result = QemuShmemHotPathChannel::emit_frame(&mut hot_path);
+
+        assert!(matches!(
+            &result,
+            Err(QemuNodeChannelError {
+                operation: "qemu_quantum_shmem_hot_path",
+                ..
+            })
+        ));
+        assert!(
+            result
+                .expect_err("dequeue should be frozen")
+                .to_string()
+                .contains("cross-node sends frozen")
+        );
+        assert_eq!(hot_path.view.outbound_ring.read_index(), 0);
+        assert!(
+            !hot_path
+                .operation_log()
+                .contains(&QemuQuantumOperation::DequeueOutboundFrame)
+        );
+    }
+
+    #[test]
     fn qemu_quantum_hot_path_rejects_qmp_or_plugin_ipc_operations() {
         let result = assert_qemu_quantum_hot_path_is_shmem_only(&[
             QemuQuantumOperation::ReadNodeReport,
@@ -1738,6 +1882,24 @@ mod tests {
         outbound_ring: &'a RingHeader,
         outbound_entries: &'a mut [FrameEntry],
     ) -> QemuQuantumShmemHotPath<'a> {
+        hot_path_with_send_authorizer(
+            slot,
+            inbound_ring,
+            inbound_entries,
+            outbound_ring,
+            outbound_entries,
+            &ALLOW_ALL_SENDS,
+        )
+    }
+
+    fn hot_path_with_send_authorizer<'a>(
+        slot: &'a NodeSlot,
+        inbound_ring: &'a RingHeader,
+        inbound_entries: &'a mut [FrameEntry],
+        outbound_ring: &'a RingHeader,
+        outbound_entries: &'a mut [FrameEntry],
+        send_authorizer: &'a dyn crucible::SchedulerSendAuthorizer,
+    ) -> QemuQuantumShmemHotPath<'a> {
         let view = match QemuQuantumShmemView::new(
             slot,
             inbound_ring,
@@ -1750,10 +1912,46 @@ mod tests {
         };
         let config =
             QemuQuantumShmemConfig::new(node_id("vm-a"), 0).with_router(node_id("net-router"), 31);
-        match QemuQuantumShmemHotPath::new(config, view) {
+        match QemuQuantumShmemHotPath::new(config, view, send_authorizer) {
             Ok(hot_path) => hot_path,
             Err(error) => panic!("hot path should construct: {error}"),
         }
+    }
+
+    fn pending_topology_scheduler() -> crucible::SingleScheduler {
+        let vm = qemu_scheduler_node(&node_id("vm-a"), SchedulingNodeKind::Vm);
+        let router = qemu_scheduler_node(&node_id("net-router"), SchedulingNodeKind::Network);
+        let scenario = crucible::SchedulerLivenessScenario::from_canonical_material(
+            "qemu-outbound-send-freeze",
+            crucible::Shift::new(0).expect("test shift should be valid"),
+            8,
+            crucible::SimInstant { nanos: 40 },
+            vec![crucible::SchedulerScenarioNode {
+                id: vm.clone(),
+                counter: crucible::NodeCounter { ticks: 0 },
+                activity: crucible::SchedulerNodeActivity::Runnable,
+                network_lookahead: crucible::NetworkLookahead::Infinite,
+                exact_local_event: crucible::ExactLocalEvent::NoArmedTimer,
+            }],
+            Vec::new(),
+        )
+        .with_effective_topology_edges(vec![crucible::SchedulerLookaheadEdge::new(
+            vm.clone(),
+            router.clone(),
+            crucible::SimDuration { nanos: 20 },
+        )]);
+        let mut scheduler =
+            crucible::SingleScheduler::new(scenario).expect("scenario should build");
+        scheduler.queue_topology_change(crucible::SchedulerTopologyChange::new(
+            1,
+            crucible::SchedulerTopologyChangeTrigger::LatencyChange,
+            vec![crucible::SchedulerLookaheadEdge::new(
+                vm,
+                router,
+                crucible::SimDuration { nanos: 5 },
+            )],
+        ));
+        scheduler
     }
 
     fn frame_entries(count: usize) -> Vec<FrameEntry> {
