@@ -330,7 +330,7 @@ deterministic distortion of guest-visible reads — it does not give nodes
 different shifts or different epochs on the scheduling axis.
 
 - **[TIME-15]** Cross-node ordering MUST use the shared virtual timeline, with
-  the deterministic total order `(virtual_time, node_id, sequence)` of [INV-3]
+  the deterministic total order `(virtual_time, consumer node_id, producer node_id, sequence)` of [INV-3]
   (see [`08-scheduling.md`](08-scheduling.md) §8.6 for the full key; `node_id` here
   is the consumer, with producer and sequence as further tiebreaks)
   resolving simultaneity. The mapping from each node's icount to this shared axis
@@ -342,7 +342,7 @@ different shifts or different epochs on the scheduling axis.
 ```text
    node A icount ──(<<shift)──┐
                               ├──► shared virtual timeline ──► total order
-   node B icount ──(<<shift)──┘        (virtual_time, node_id, sequence)
+   node B icount ──(<<shift)──┘        (virtual_time, consumer node_id, producer node_id, sequence)
                               │
    io sub-node counter ──(<<shift)──┘   (I/O completions, §9.5 / 15)
 ```
@@ -646,7 +646,7 @@ instruction-primary.
   and document a default shift with rationale in the decision register. —
   satisfies [TIME-5], [TIME-6], [TIME-7], [TIME-14]; spec §9.3, §9.5.
 - [x] **T-TIME-3** Implement per-node icount-derived virtual time and the shared
-  virtual timeline projection, with the `(virtual_time, node_id, sequence)` total
+  virtual timeline projection, with the `(virtual_time, consumer node_id, producer node_id, sequence)` total
   order consumed by the scheduler; cover VM nodes and I/O sub-nodes uniformly. —
   satisfies [TIME-1], [TIME-2], [TIME-13], [TIME-15]; spec §9.1, §9.2, §9.5.
 - [x] **T-TIME-4** Implement deterministic clock skew (signed `SimOffset` +

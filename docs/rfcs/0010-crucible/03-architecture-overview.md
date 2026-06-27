@@ -100,7 +100,7 @@ instruction.
    virtual time. Each **quantum** picks the global-minimum-**horizon** node, runs
    it under `-icount` to its next sync point, then processes every due cross-node
    event — frame delivery, I/O completion, fault activation — in the deterministic
-   total order keyed by `(virtual_time, node_id, sequence)` (`INV-3`). See §5 and
+   total order keyed by `(virtual_time, consumer node_id, producer node_id, sequence)` (`INV-3`). See §5 and
    [`08-scheduling.md`](08-scheduling.md).
 
 5. **Observe and check.** Every observable happening is appended to the single
@@ -287,7 +287,7 @@ Full algorithm, horizon/lookahead derivation, and edge cases are in
                 Idle is fast-forwarded to the wake time at zero wall-clock cost.
 
     3. RESOLVE  process every cross-node event now DUE (delivery_time ≤ frontier),
-                in the deterministic total order keyed by (virtual_time, node_id, sequence):
+                in the deterministic total order keyed by (virtual_time, consumer node_id, producer node_id, sequence):
                   · frame delivery        (T_emit + link_latency, fault table applied)
                   · I/O completion        (disk / 9p sub-node deterministic completion)
                   · fault activation      (Plan entry whose virtual time has arrived)
@@ -303,7 +303,7 @@ Full algorithm, horizon/lookahead derivation, and edge cases are in
 ```
 
 Because virtual time is icount-derived (`INV-4`) and the resolution order is the
-fixed key `(virtual_time, node_id, sequence)` (`INV-3`), the sequence of quanta —
+fixed key `(virtual_time, consumer node_id, producer node_id, sequence)` (`INV-3`), the sequence of quanta —
 and therefore the whole run — is a pure function of `(ScenarioDef, Seed,
 Schedule)`. Lookahead is the parallelism budget: nodes whose horizons do not
 constrain each other may execute concurrently up to the lookahead window, but the
@@ -344,7 +344,7 @@ host-timing race. Delivery time is `T_emit + link_latency` (or the sub-node's
 deterministic completion time); the conservative CMB lookahead guarantees no node
 can advance past a delivery point before the producing side has made the input
 visible, so the same inputs land at the same icount every run. Simultaneous events
-break ties by the fixed total order `(virtual_time, node_id, sequence)` (`INV-3`).
+break ties by the fixed total order `(virtual_time, consumer node_id, producer node_id, sequence)` (`INV-3`).
 *Gate:* `gate:layer1-injection`.
 
 ### Per-layer gates and "no silent nondeterminism"

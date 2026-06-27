@@ -341,7 +341,7 @@ genuinely unresolved and is tracked as a spike in
   with no conservative slack — only genuinely unpredictable guest→guest traffic
   pays the lookahead tax. Decoupling sync frequency from exactness lets operators
   tune throughput (rarely rendezvous) without ever risking correctness (ordering
-  is fixed by `(virtual_time, node_id, sequence)` regardless).
+  is fixed by `(virtual_time, consumer node_id, producer node_id, sequence)` regardless).
 - **Alternatives considered:**
   - *Optimistic PDES (Time Warp) with rollback.* Rejected: rolling back VM state
     is prohibitively expensive and a determinism hazard; conservative execution

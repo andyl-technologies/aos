@@ -130,7 +130,7 @@ are likewise canonical.
 - **Runs:** the cross-node injection-determinism suite (§4.4) — drive frames
   through the shmem SPSC queues + protocol (against the in-process QEMU double,
   §3) and assert that the *icount at which each frame is observed by the
-  receiving node* is a pure function of `(virtual_time, node_id, sequence)`,
+  receiving node* is a pure function of `(virtual_time, consumer node_id, producer node_id, sequence)`,
   independent of how the host interleaves producers.
 - **Pass/fail:** identical observed-injection-icount vectors across all tested
   host interleavings.
@@ -291,7 +291,7 @@ content-addressed digest helpers, and the assertion evaluator are driven through
 fixed decision sequences and compared by canonical digest. Property tests cover:
 decision-RNG stability under entity insertion (the per-entity stream is forked by
 name-hash so adding a node does not perturb others — §4.5), total-order stability
-of the cross-node event keying `(virtual_time, node_id, sequence)`, and ordered
+of the cross-node event keying `(virtual_time, consumer node_id, producer node_id, sequence)`, and ordered
 iteration on every ordering-significant collection. **Gate:**
 `gate:layer0-determinism`. Runs in milliseconds.
 
@@ -485,7 +485,7 @@ half of `gate:adversarial-determinism`. Forward ref:
 
 - **[HARN-8]** `gate:layer1-injection` MUST assert Contract B: for a multi-node
   scenario, the **icount at which each external input is delivered to a receiving
-  node** is a pure function of `(virtual_time, node_id, sequence)` and is
+  node** is a pure function of `(virtual_time, consumer node_id, producer node_id, sequence)` and is
   independent of host thread interleaving. The gate drives the scenario against
   the in-process double (§3) under multiple host interleavings (§7) and asserts
   identical **observed-injection-icount vectors** — i.e. for each delivered

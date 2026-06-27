@@ -279,10 +279,11 @@ core capability; black-box observation must suffice without it.
 model surface (the in-engine view of `ScenarioDef`,
 [`06-spatial-graph.md`](06-spatial-graph.md)), the **single authoritative
 scheduler** (the quantum loop, horizon/lookahead, the total order `(virtual_time,
-node_id, sequence)`, [`08-scheduling.md`](08-scheduling.md)), fault injection
-([`17-fault-injection.md`](17-fault-injection.md)), assertion *evaluation* over
-the event log ([`18-assertions-properties.md`](18-assertions-properties.md)),
-the **temporal graph** (checkpoint DAG, CoW, the replay oracle,
+consumer node_id, producer node_id, sequence)`,
+[`08-scheduling.md`](08-scheduling.md)), fault injection
+([`17-fault-injection.md`](17-fault-injection.md)), assertion *evaluation* over the
+event log ([`18-assertions-properties.md`](18-assertions-properties.md)), the
+**temporal graph** (checkpoint DAG, CoW, the replay oracle,
 [`07-temporal-graph.md`](07-temporal-graph.md)), the **event log**
 ([`19-observability-event-log.md`](19-observability-event-log.md)), and the
 `step`/`reduce`/`instantiate`/`bake` functions

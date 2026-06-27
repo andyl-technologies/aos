@@ -131,7 +131,7 @@ system. They are the load-bearing truths the design and its tests defend.
 
 - **[INV-3] Total order of cross-node events.** Every interaction observable
   across nodes (frame delivery, I/O completion, fault activation) has a
-  deterministic total order keyed by `(virtual_time, node_id, sequence)`,
+  deterministic total order keyed by `(virtual_time, consumer node_id, producer node_id, sequence)`,
   independent of wall-clock and host scheduling. *Gate:* `gate:layer1-injection`.
 
 - **[INV-4] Virtual time is instruction-count-derived.** A node's virtual time is
