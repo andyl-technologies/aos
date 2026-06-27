@@ -874,6 +874,53 @@ pub enum PersistValueBlobReachabilityPlanError {
     },
 }
 
+/// Persistent file-pack reachability planning failed.
+#[derive(Debug, Error)]
+pub enum PersistFileBlobReachabilityPlanError {
+    /// The file blob index could not be locked or snapshotted.
+    #[error("failed to lock or snapshot persistent file blob index for reachability")]
+    BlobIndex {
+        /// The underlying file blob-index error.
+        source: PersistBlobIndexError,
+    },
+    /// Pending artifact roots could not be snapshotted.
+    #[error("failed to snapshot pending persistent file artifact roots for reachability")]
+    Roots {
+        /// The underlying live-root collection error.
+        source: PersistBlobLiveRootError,
+    },
+    /// File-artifact roots could not be locked or snapshotted.
+    #[error("failed to lock or snapshot persistent file-artifact roots for reachability")]
+    FileArtifactIndex {
+        /// The underlying file-artifact index error.
+        source: PersistFileArtifactIndexError,
+    },
+    /// Parse-artifact roots could not be locked or snapshotted.
+    #[error("failed to lock or snapshot persistent parse-artifact roots for reachability")]
+    ParseArtifactIndex {
+        /// The underlying parse-artifact index error.
+        source: PersistParseArtifactIndexError,
+    },
+    /// The file blob index contained a key for the wrong blob namespace.
+    #[error("persistent file blob index entry targets {actual:?}, expected Files")]
+    WrongStoreEntry {
+        /// The blob namespace encoded in the file index entry.
+        actual: PersistBlobStore,
+    },
+    /// A file-pack root could not be verified.
+    #[error("failed to verify persistent indexed or artifact file blob")]
+    Read {
+        /// The underlying packfile read error.
+        source: PersistBlobPackError,
+    },
+    /// The file blob pack could not be scanned and verified.
+    #[error("failed to scan persistent file blob pack for reachability")]
+    Pack {
+        /// The underlying packfile scan error.
+        source: PersistBlobPackError,
+    },
+}
+
 /// Persistent blob-index rebuild planning failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexRebuildPlanError {

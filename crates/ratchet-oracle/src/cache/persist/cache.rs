@@ -575,6 +575,111 @@ impl PersistValueBlobReachabilityPlan {
     }
 }
 
+/// Read-only diagnostics for file-pack artifact reachability.
+///
+/// Physical records are assigned to one exclusive class in precedence order:
+/// durable file-artifact roots, durable parse-artifact roots, same-process
+/// pending artifact roots, blob-index-only roots, then records absent from all
+/// captured roots. Root lists still expose every captured root, including blob
+/// index roots whose record is also artifact-rooted. A concurrent same-process
+/// artifact publication can appear in both a pending-root list and a durable
+/// artifact-root list because this is a diagnostic snapshot, not a GC barrier.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PersistFileBlobReachabilityPlan {
+    file_artifact_roots: Vec<PersistBlobLiveRoot>,
+    parse_artifact_roots: Vec<PersistBlobLiveRoot>,
+    pending_artifact_roots: Vec<PersistBlobLiveRoot>,
+    blob_index_roots: Vec<PersistBlobLiveRoot>,
+    file_artifact_rooted_records: Vec<PersistBlobPackRecord>,
+    parse_artifact_rooted_records: Vec<PersistBlobPackRecord>,
+    pending_artifact_rooted_records: Vec<PersistBlobPackRecord>,
+    indexed_unrooted_records: Vec<PersistBlobPackRecord>,
+    unindexed_records: Vec<PersistBlobPackRecord>,
+    bytes_before: u64,
+    file_artifact_rooted_record_bytes: u64,
+    parse_artifact_rooted_record_bytes: u64,
+    pending_artifact_rooted_record_bytes: u64,
+    indexed_unrooted_record_bytes: u64,
+    unindexed_record_bytes: u64,
+}
+
+impl PersistFileBlobReachabilityPlan {
+    /// Returns latest file-artifact sidecar roots resolved to verified blobs.
+    pub fn file_artifact_roots(&self) -> &[PersistBlobLiveRoot] {
+        &self.file_artifact_roots
+    }
+
+    /// Returns latest parse-artifact sidecar roots resolved to verified blobs.
+    pub fn parse_artifact_roots(&self) -> &[PersistBlobLiveRoot] {
+        &self.parse_artifact_roots
+    }
+
+    /// Returns same-process artifact roots that are not durably recorded yet.
+    pub fn pending_artifact_roots(&self) -> &[PersistBlobLiveRoot] {
+        &self.pending_artifact_roots
+    }
+
+    /// Returns latest `files/` blob-index roots resolved to verified blobs.
+    pub fn blob_index_roots(&self) -> &[PersistBlobLiveRoot] {
+        &self.blob_index_roots
+    }
+
+    /// Returns verified physical records rooted by file-artifact mappings.
+    pub fn file_artifact_rooted_records(&self) -> &[PersistBlobPackRecord] {
+        &self.file_artifact_rooted_records
+    }
+
+    /// Returns verified physical records rooted by parse-artifact mappings only.
+    pub fn parse_artifact_rooted_records(&self) -> &[PersistBlobPackRecord] {
+        &self.parse_artifact_rooted_records
+    }
+
+    /// Returns verified physical records rooted only by same-process pending roots.
+    pub fn pending_artifact_rooted_records(&self) -> &[PersistBlobPackRecord] {
+        &self.pending_artifact_rooted_records
+    }
+
+    /// Returns verified indexed file records without current artifact roots.
+    pub fn indexed_unrooted_records(&self) -> &[PersistBlobPackRecord] {
+        &self.indexed_unrooted_records
+    }
+
+    /// Returns verified physical file records absent from all captured roots.
+    pub fn unindexed_records(&self) -> &[PersistBlobPackRecord] {
+        &self.unindexed_records
+    }
+
+    /// Returns the file packfile length observed while planning.
+    pub const fn bytes_before(&self) -> u64 {
+        self.bytes_before
+    }
+
+    /// Returns bytes occupied by file-artifact-rooted records.
+    pub const fn file_artifact_rooted_record_bytes(&self) -> u64 {
+        self.file_artifact_rooted_record_bytes
+    }
+
+    /// Returns bytes occupied by parse-artifact-rooted records.
+    pub const fn parse_artifact_rooted_record_bytes(&self) -> u64 {
+        self.parse_artifact_rooted_record_bytes
+    }
+
+    /// Returns bytes occupied by pending-artifact-rooted records.
+    pub const fn pending_artifact_rooted_record_bytes(&self) -> u64 {
+        self.pending_artifact_rooted_record_bytes
+    }
+
+    /// Returns bytes occupied by indexed records without current artifact roots.
+    pub const fn indexed_unrooted_record_bytes(&self) -> u64 {
+        self.indexed_unrooted_record_bytes
+    }
+
+    /// Returns bytes occupied by records absent from captured roots.
+    pub const fn unindexed_record_bytes(&self) -> u64 {
+        self.unindexed_record_bytes
+    }
+}
+
 /// Results from an explicit persistent storage maintenance sweep.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PersistStorageMaintenance {
@@ -1643,6 +1748,186 @@ impl PersistCache {
             unindexed_records,
             bytes_before,
             node_rooted_record_bytes,
+            indexed_unrooted_record_bytes,
+            unindexed_record_bytes,
+        })
+    }
+
+    /// Plans physical `files/` pack reachability from current artifact/index roots.
+    ///
+    /// This read-only diagnostic snapshots same-process pending artifact roots,
+    /// latest file-artifact mappings, latest parse-artifact mappings, and the
+    /// latest `files/` blob-index entries. It verifies every captured root,
+    /// scans the file pack, and classifies verified physical records by the
+    /// strongest root source: file artifact, parse artifact, pending artifact,
+    /// blob-index-only, or unindexed. The method does not choose a retention
+    /// window, rewrite sidecars, delete blobs, relocate records, or coordinate
+    /// with cross-process writers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileBlobReachabilityPlanError`] if the same-root file
+    /// blob-index, file-artifact, or parse-artifact lock is poisoned, if roots
+    /// cannot be snapshotted, if the file blob index contains a non-file key,
+    /// if any captured root cannot be verified, or if the file pack cannot be
+    /// fully scanned and verified.
+    pub fn plan_file_blob_reachability(
+        &self,
+    ) -> Result<PersistFileBlobReachabilityPlan, PersistFileBlobReachabilityPlanError> {
+        let _file_guard = self
+            .root_locks
+            .lock_blob_index(PersistBlobStore::Files)
+            .map_err(|source| PersistFileBlobReachabilityPlanError::BlobIndex { source })?;
+        let pending_artifact_roots = self
+            .root_locks
+            .pending_file_roots()
+            .map_err(|source| PersistFileBlobReachabilityPlanError::Roots { source })?;
+        let file_artifact_roots = {
+            let _file_artifact_guard = self.root_locks.lock_file_artifacts().map_err(|source| {
+                PersistFileBlobReachabilityPlanError::FileArtifactIndex { source }
+            })?;
+            self.file_artifact_index
+                .latest_entries()
+                .map_err(
+                    |source| PersistFileBlobReachabilityPlanError::FileArtifactIndex { source },
+                )?
+                .into_iter()
+                .map(|entry| {
+                    let value = entry.value();
+                    PersistBlobLiveRoot::new(
+                        PersistBlobLiveRootSource::FileArtifactIndex,
+                        value.blob_key(),
+                        value.location(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let parse_artifact_roots = {
+            let _parse_artifact_guard =
+                self.root_locks.lock_parse_artifacts().map_err(|source| {
+                    PersistFileBlobReachabilityPlanError::ParseArtifactIndex { source }
+                })?;
+            self.parse_artifact_index
+                .latest_entries()
+                .map_err(
+                    |source| PersistFileBlobReachabilityPlanError::ParseArtifactIndex { source },
+                )?
+                .into_iter()
+                .map(|entry| {
+                    let value = entry.value();
+                    PersistBlobLiveRoot::new(
+                        PersistBlobLiveRootSource::ParseArtifactIndex,
+                        value.blob_key(),
+                        value.location(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let file_entries = self
+            .file_index
+            .latest_entries()
+            .map_err(|source| PersistFileBlobReachabilityPlanError::BlobIndex { source })?;
+
+        let mut blob_index_roots = Vec::new();
+        let mut index_identities = BTreeMap::new();
+        for entry in file_entries {
+            let key = entry.key();
+            if key.store() != PersistBlobStore::Files {
+                return Err(PersistFileBlobReachabilityPlanError::WrongStoreEntry {
+                    actual: key.store(),
+                });
+            }
+            self.file_pack
+                .verify_blob(entry.location(), key.hash())
+                .map_err(|source| PersistFileBlobReachabilityPlanError::Read { source })?;
+            blob_index_roots.push(PersistBlobLiveRoot::new(
+                PersistBlobLiveRootSource::BlobIndex,
+                key,
+                entry.location(),
+            ));
+            index_identities.insert(blob_record_identity(key, entry.location()), ());
+        }
+
+        let mut file_artifact_identities = BTreeMap::new();
+        for root in &file_artifact_roots {
+            self.file_pack
+                .verify_blob(root.location(), root.key().hash())
+                .map_err(|source| PersistFileBlobReachabilityPlanError::Read { source })?;
+            file_artifact_identities.insert(blob_live_root_identity(*root), ());
+        }
+        let mut parse_artifact_identities = BTreeMap::new();
+        for root in &parse_artifact_roots {
+            self.file_pack
+                .verify_blob(root.location(), root.key().hash())
+                .map_err(|source| PersistFileBlobReachabilityPlanError::Read { source })?;
+            parse_artifact_identities.insert(blob_live_root_identity(*root), ());
+        }
+        let mut pending_artifact_identities = BTreeMap::new();
+        for root in &pending_artifact_roots {
+            self.file_pack
+                .verify_blob(root.location(), root.key().hash())
+                .map_err(|source| PersistFileBlobReachabilityPlanError::Read { source })?;
+            pending_artifact_identities.insert(blob_live_root_identity(*root), ());
+        }
+
+        let bytes_before = self
+            .file_pack
+            .len()
+            .map_err(|source| PersistFileBlobReachabilityPlanError::Pack { source })?;
+        let records = self
+            .file_pack
+            .records()
+            .map_err(|source| PersistFileBlobReachabilityPlanError::Pack { source })?;
+        let mut file_artifact_rooted_records = Vec::new();
+        let mut parse_artifact_rooted_records = Vec::new();
+        let mut pending_artifact_rooted_records = Vec::new();
+        let mut indexed_unrooted_records = Vec::new();
+        let mut unindexed_records = Vec::new();
+        let mut file_artifact_rooted_record_bytes = 0u64;
+        let mut parse_artifact_rooted_record_bytes = 0u64;
+        let mut pending_artifact_rooted_record_bytes = 0u64;
+        let mut indexed_unrooted_record_bytes = 0u64;
+        let mut unindexed_record_bytes = 0u64;
+        for record in records {
+            let identity =
+                blob_record_identity(record.key(PersistBlobStore::Files), record.location());
+            let record_bytes = blob_record_bytes(record);
+            if file_artifact_identities.contains_key(&identity) {
+                file_artifact_rooted_record_bytes =
+                    file_artifact_rooted_record_bytes.saturating_add(record_bytes);
+                file_artifact_rooted_records.push(record);
+            } else if parse_artifact_identities.contains_key(&identity) {
+                parse_artifact_rooted_record_bytes =
+                    parse_artifact_rooted_record_bytes.saturating_add(record_bytes);
+                parse_artifact_rooted_records.push(record);
+            } else if pending_artifact_identities.contains_key(&identity) {
+                pending_artifact_rooted_record_bytes =
+                    pending_artifact_rooted_record_bytes.saturating_add(record_bytes);
+                pending_artifact_rooted_records.push(record);
+            } else if index_identities.contains_key(&identity) {
+                indexed_unrooted_record_bytes =
+                    indexed_unrooted_record_bytes.saturating_add(record_bytes);
+                indexed_unrooted_records.push(record);
+            } else {
+                unindexed_record_bytes = unindexed_record_bytes.saturating_add(record_bytes);
+                unindexed_records.push(record);
+            }
+        }
+
+        Ok(PersistFileBlobReachabilityPlan {
+            file_artifact_roots,
+            parse_artifact_roots,
+            pending_artifact_roots,
+            blob_index_roots,
+            file_artifact_rooted_records,
+            parse_artifact_rooted_records,
+            pending_artifact_rooted_records,
+            indexed_unrooted_records,
+            unindexed_records,
+            bytes_before,
+            file_artifact_rooted_record_bytes,
+            parse_artifact_rooted_record_bytes,
+            pending_artifact_rooted_record_bytes,
             indexed_unrooted_record_bytes,
             unindexed_record_bytes,
         })
