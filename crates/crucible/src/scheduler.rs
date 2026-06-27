@@ -7,6 +7,7 @@
 //! EMIT output as dense, content-addressed event-log segment bytes before STEP
 //! advances the frontier.
 
+use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -421,6 +422,8 @@ pub struct SchedulerActorStateSnapshot {
     pub pending_control_count: usize,
     /// Decision-RNG cursor positions owned by the scheduler.
     pub decision_rng_cursor: DecisionRngState,
+    /// Boundary-applied control operations in scheduler application order.
+    pub control_applications: Vec<SchedulerControlApplication>,
     /// Number of quantum boundaries at which the scheduler yielded to control.
     pub boundary_yields: u64,
 }
@@ -430,6 +433,7 @@ pub struct SchedulerActorStateSnapshot {
 pub struct SchedulerActor {
     scheduler: SingleScheduler,
     inbox: Receiver<SchedulerActorMessage>,
+    deferred: VecDeque<SchedulerActorMessage>,
 }
 
 /// A clonable sender for scheduler actor messages.
@@ -492,6 +496,7 @@ impl SchedulerActor {
             Self {
                 scheduler: SingleScheduler::new(scenario)?,
                 inbox: receiver,
+                deferred: VecDeque::new(),
             },
         ))
     }
@@ -503,6 +508,11 @@ impl SchedulerActor {
     /// Returns [`SchedulerActorError`] when the actor mailbox is closed or when
     /// a caller drops a reply receiver before the actor sends the result.
     pub fn run_once(&mut self) -> Result<bool, SchedulerActorError> {
+        if let Some(message) = self.deferred.pop_front() {
+            self.apply_message(message)?;
+            return Ok(true);
+        }
+
         match self.inbox.try_recv() {
             Ok(message) => {
                 self.apply_message(message)?;
@@ -537,12 +547,32 @@ impl SchedulerActor {
                 self.scheduler.queue_topology_change(change);
                 Ok(())
             }
-            SchedulerActorMessage::DriveQuantum { request, reply } => reply
-                .send(self.scheduler.drive_quantum(request))
-                .map_err(|_| SchedulerActorError::ReplyDropped),
+            SchedulerActorMessage::DriveQuantum { request, reply } => {
+                self.drain_boundary_messages_before_quantum();
+                reply
+                    .send(self.scheduler.drive_quantum(request))
+                    .map_err(|_| SchedulerActorError::ReplyDropped)
+            }
             SchedulerActorMessage::Snapshot { reply } => reply
                 .send(self.scheduler.actor_state_snapshot())
                 .map_err(|_| SchedulerActorError::ReplyDropped),
+        }
+    }
+
+    fn drain_boundary_messages_before_quantum(&mut self) {
+        loop {
+            match self.inbox.try_recv() {
+                Ok(SchedulerActorMessage::QueueControl(operation)) => {
+                    self.scheduler.queue_control(operation);
+                }
+                Ok(SchedulerActorMessage::QueueTopologyChange(change)) => {
+                    self.scheduler.queue_topology_change(change);
+                }
+                Ok(message) => {
+                    self.deferred.push_back(message);
+                }
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
         }
     }
 }
@@ -649,6 +679,9 @@ impl fmt::Display for SchedulerActorError {
 
 impl Error for SchedulerActorError {}
 
+/// Maximum allowed scheduler-side control application latency in quanta.
+pub const SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA: u64 = 1;
+
 /// A control-plane operation admitted only at a quantum boundary.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ControlOperation {
@@ -675,6 +708,40 @@ pub enum ControlOperationKind {
     Inject,
     /// Query boundary state without mutating the engine.
     Query,
+}
+
+/// Evidence that one scheduler control operation applied at a quantum boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerControlApplication {
+    /// Monotone scheduler-local control application sequence.
+    pub sequence: u64,
+    /// Control operation that was applied by the scheduler boundary.
+    pub operation: ControlOperation,
+    /// Scheduler quantum count visible when the operation was accepted.
+    pub accepted_after_quanta: u64,
+    /// Scheduler quantum count whose boundary applied the operation.
+    pub applied_in_quantum: u64,
+    /// Application latency measured in scheduler quanta.
+    pub application_delta_quanta: u64,
+    /// Boundary yield count visible when the operation was accepted.
+    pub accepted_after_boundary_yield: u64,
+    /// Boundary yield count whose boundary applied the operation.
+    pub applied_at_boundary_yield: u64,
+    /// Scheduler event key emitted for the applied control operation.
+    pub event_key: ScheduledEventKey,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SchedulerControlAdmission {
+    operation: ControlOperation,
+    accepted_after_quanta: u64,
+    accepted_after_boundary_yield: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SchedulerControlDrain {
+    events: Vec<ScheduledEvent>,
+    applications: Vec<SchedulerControlApplication>,
 }
 
 /// One unresolved cross-node dependency that can constrain conservative advance.
@@ -2778,6 +2845,8 @@ pub struct SingleScheduler {
     effective_topology: SchedulerLookaheadGraph,
     nodes: Vec<RuntimeSchedulerNode>,
     topology_changes: Vec<SchedulerTopologyChange>,
+    control_admissions: Vec<SchedulerControlAdmission>,
+    control_applications: Vec<SchedulerControlApplication>,
     pending_events: Vec<ScheduledEvent>,
     event_sequences: EventSequenceState,
     control_inbox: Vec<ControlOperation>,
@@ -2826,6 +2895,8 @@ impl SingleScheduler {
             effective_topology: scenario.effective_topology,
             nodes,
             topology_changes: scenario.topology_changes,
+            control_admissions: Vec::new(),
+            control_applications: Vec::new(),
             pending_events: scenario.pending_events,
             event_sequences: scenario.event_sequences,
             control_inbox: Vec::new(),
@@ -2890,6 +2961,12 @@ impl SingleScheduler {
     #[must_use]
     pub fn rendezvous_records(&self) -> &[SchedulerRendezvousRecord] {
         &self.rendezvous_records
+    }
+
+    /// Returns scheduler-side control applications completed at boundaries.
+    #[must_use]
+    pub fn control_applications(&self) -> &[SchedulerControlApplication] {
+        &self.control_applications
     }
 
     /// Returns the deterministic RUN set eligible for host-level concurrency.
@@ -3039,7 +3116,7 @@ impl SingleScheduler {
     }
 
     fn queue_control(&mut self, operation: ControlOperation) {
-        self.control_inbox.push(operation);
+        self.accept_control_at_boundary(operation);
     }
 
     fn validate_max_host_workers(&self, max_host_workers: usize) -> Result<(), SchedulerError> {
@@ -3183,6 +3260,7 @@ impl SingleScheduler {
             pending_event_count: self.pending_events.len(),
             pending_control_count: self.control_inbox.len(),
             decision_rng_cursor: self.decision_rng_cursor.clone(),
+            control_applications: self.control_applications.clone(),
             boundary_yields: self.boundary_yields,
         }
     }
@@ -3771,7 +3849,10 @@ impl SingleScheduler {
         self.last_topology_recompute = false;
 
         self.admit_control_at_boundary(request.control);
-        let mut boundary_resolved_events = self.drain_control_events()?;
+        let SchedulerControlDrain {
+            events: mut boundary_resolved_events,
+            applications: mut boundary_control_applications,
+        } = self.drain_control_events()?;
         let topology_recomputed = self.apply_topology_changes_at_boundary()?;
         self.last_topology_recompute = topology_recomputed;
 
@@ -3803,6 +3884,7 @@ impl SingleScheduler {
                 self.quanta = self.quanta.saturating_add(1);
                 self.yield_to_control_inbox();
             }
+            self.commit_control_applications(boundary_control_applications);
             let outcome = QuantumOutcome {
                 configuration,
                 frontier: self.frontier,
@@ -3840,6 +3922,11 @@ impl SingleScheduler {
             } else {
                 Vec::new()
             };
+            let control_applications = if outcomes.is_empty() {
+                std::mem::take(&mut boundary_control_applications)
+            } else {
+                Vec::new()
+            };
             let shift = self.timeline.shift();
             resolved_events.extend(resolve_due_scheduled_events(
                 &mut self.pending_events,
@@ -3864,6 +3951,7 @@ impl SingleScheduler {
                 yielded_before_advance,
             });
             self.yield_to_control_inbox();
+            self.commit_control_applications(control_applications);
 
             outcomes.push(QuantumOutcome {
                 configuration,
@@ -3898,7 +3986,10 @@ impl SingleScheduler {
 
         // Boundary admission phase: accept control exposed by the previous STEP yield.
         self.admit_control_at_boundary(request.control);
-        let mut resolved_events = self.drain_control_events()?;
+        let SchedulerControlDrain {
+            events: mut resolved_events,
+            applications: mut control_applications,
+        } = self.drain_control_events()?;
         let topology_recomputed = self.apply_topology_changes_at_boundary()?;
         self.last_topology_recompute = topology_recomputed;
         // PICK phase: select the next effective-horizon candidate once.
@@ -3929,6 +4020,7 @@ impl SingleScheduler {
                     self.quanta = self.quanta.saturating_add(1);
                     self.yield_to_control_inbox();
                 }
+                self.commit_control_applications(std::mem::take(&mut control_applications));
                 return Ok(QuantumOutcome {
                     configuration,
                     frontier: self.frontier,
@@ -3979,6 +4071,7 @@ impl SingleScheduler {
         });
         // STEP yield phase: expose the control inbox before the next PICK.
         self.yield_to_control_inbox();
+        self.commit_control_applications(std::mem::take(&mut control_applications));
 
         Ok(QuantumOutcome {
             configuration,
@@ -4119,14 +4212,50 @@ impl SingleScheduler {
     }
 
     fn admit_control_at_boundary(&mut self, control: Vec<ControlOperation>) {
-        self.control_inbox.extend(control);
+        for operation in control {
+            self.accept_control_at_boundary(operation);
+        }
+    }
+
+    fn accept_control_at_boundary(&mut self, operation: ControlOperation) {
+        self.control_admissions.push(SchedulerControlAdmission {
+            operation: operation.clone(),
+            accepted_after_quanta: self.quanta,
+            accepted_after_boundary_yield: self.boundary_yields,
+        });
+        self.control_inbox.push(operation);
     }
 
     fn yield_to_control_inbox(&mut self) {
         self.boundary_yields = self.boundary_yields.saturating_add(1);
     }
 
-    fn drain_control_events(&mut self) -> Result<Vec<ScheduledEvent>, SchedulerError> {
+    fn take_control_admission(
+        &mut self,
+        operation: &ControlOperation,
+    ) -> Result<SchedulerControlAdmission, SchedulerError> {
+        let Some(index) = self
+            .control_admissions
+            .iter()
+            .position(|admission| &admission.operation == operation)
+        else {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "scheduler control operation missing boundary admission: sequence={} kind={}",
+                    operation.sequence,
+                    control_operation_kind_label(operation.kind)
+                ),
+            });
+        };
+
+        Ok(self.control_admissions.remove(index))
+    }
+
+    fn commit_control_applications(&mut self, mut applications: Vec<SchedulerControlApplication>) {
+        self.control_applications.append(&mut applications);
+    }
+
+    fn drain_control_events(&mut self) -> Result<SchedulerControlDrain, SchedulerError> {
         let mut control = std::mem::take(&mut self.control_inbox);
         control.sort();
         let node = SchedulerNodeId {
@@ -4137,19 +4266,55 @@ impl SingleScheduler {
         };
 
         let mut events = Vec::with_capacity(control.len());
+        let mut applications = Vec::with_capacity(control.len());
         for operation in control {
+            let admission = self.take_control_admission(&operation)?;
             let key = next_scheduled_event_key(
                 &mut self.event_sequences,
                 self.frontier,
                 node.clone(),
                 node.clone(),
             )?;
+            let application_delta_quanta = self
+                .quanta
+                .checked_sub(admission.accepted_after_quanta)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "scheduler control operation applied before admission: sequence={} kind={}",
+                        operation.sequence,
+                        control_operation_kind_label(operation.kind)
+                    ),
+                })?;
+            if application_delta_quanta > SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "scheduler control operation exceeded quantum response bound: sequence={} kind={} delta={} bound={}",
+                        operation.sequence,
+                        control_operation_kind_label(operation.kind),
+                        application_delta_quanta,
+                        SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA
+                    ),
+                });
+            }
+            applications.push(SchedulerControlApplication {
+                sequence: (self.control_applications.len() + applications.len()) as u64,
+                operation: operation.clone(),
+                accepted_after_quanta: admission.accepted_after_quanta,
+                applied_in_quantum: self.quanta,
+                application_delta_quanta,
+                accepted_after_boundary_yield: admission.accepted_after_boundary_yield,
+                applied_at_boundary_yield: self.boundary_yields,
+                event_key: key.clone(),
+            });
             events.push(ScheduledEvent {
                 key,
                 payload: ScheduledEventPayload::Control(operation),
             });
         }
-        Ok(events)
+        Ok(SchedulerControlDrain {
+            events,
+            applications,
+        })
     }
 
     fn advance_decision_rng_cursor(&mut self) {
