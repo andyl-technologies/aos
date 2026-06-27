@@ -1008,12 +1008,22 @@ application of explorer-supplied preemption decisions
   horizon-source tagging for I/O and fault events, and live scheduler quanta that
   stop on pending I/O and fault exact-local horizons. Deterministic total ordering
   and full RESOLVE behavior remain T-SCHED-8 and T-SCHED-15 through T-SCHED-18.
-- [ ] **T-SCHED-7** Enforce the frequency/exactness decoupling: ordering is
+- [x] **T-SCHED-7** Enforce the frequency/exactness decoupling: ordering is
   always exact, the rendezvous frequency is the only knob, and event delivery is
   frequency-independent; add a gate-backed test that two runs at different
   rendezvous frequencies are bit-identical in `S`, `T`, and determinism-relevant
   event-log entries. — satisfies [SCHED-11], [SCHED-12], [SCHED-13], [SCHED-14];
   spec §8.5.
+  Completed by `checks.crucible.phase3.schedulerRendezvous`: the scheduler now
+  models rendezvous as an exact shared horizon cap computed once from the
+  scheduler frontier and applied to every node candidate for that PICK. Empty
+  rendezvous-only quanta advance no canonical schedule decision and do not advance
+  the scheduler decision-RNG cursor, so changing the rendezvous interval changes
+  only how many empty quanta are needed to reach the same exact event. The focused
+  gate compares two runs with different rendezvous intervals and verifies the same
+  final configuration, same frontier, same resolved-event count, and same
+  determinism-relevant delivery-order decision at the event's exact virtual time.
+  Full EMIT/event-log materialization remains T-SCHED-19.
 - [ ] **T-SCHED-8** Implement the deterministic total order
   `(virtual_time, consumer node_id, producer node_id, sequence)` with the fully
   specified tie-break, stable content-addressed node ids, and a per-(producer,
