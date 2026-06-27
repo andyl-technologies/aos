@@ -1544,26 +1544,27 @@ alone (`M-1`/`Q-A`).
       (`C-13`/`R-14`).
 - [x] Current explicit blob-index rebuild helper:
       `PersistCache::rebuild_blob_index_from_pack` builds the verified rebuild
-      plan for one store while holding that store's same-process same-root
-      blob-index write lock, then replaces only that store's hash-to-offset
-      sidecar with the plan's newest physical pack entries, indexing previously
-      unindexed newest records, repairing stale locations, dropping dangling
-      entries, and canonicalizing duplicate sidecar history. This is
-      caller-driven single-sidecar repair only; live-root selection, blob-pack
-      trimming, full repack/relocation, cross-process/raw-writer coordination,
-      automatic GC/repair policy, mmap reads, Attic transport, and harness
-      proof remain open (`C-13`/`R-14`).
+      plan for one store while holding that store's advisory file lock and
+      same-process same-root blob-index write lock, then replaces only that
+      store's hash-to-offset sidecar with the plan's newest physical pack
+      entries, indexing previously unindexed newest records, repairing stale
+      locations, dropping dangling entries, and canonicalizing duplicate sidecar
+      history. This is caller-driven single-sidecar repair only; live-root
+      selection, blob-pack trimming, full repack/relocation, raw lower-level
+      sidecar coordination, unrelated maintenance-writer coordination,
+      automatic GC/repair policy, mmap reads, Attic transport, and harness proof
+      remain open (`C-13`/`R-14`).
 - [x] Current explicit all-blob-index rebuild helper:
       `PersistCache::rebuild_blob_indexes_from_packs` rebuilds the `values/`
       and then `files/` hash-to-offset sidecars from verified pack scans and
-      returns both applied plans, sharing each selected store's same-process
-      same-root blob-index write lock for its rebuild step. This is sequential
-      and non-transactional: a committed value-index rebuild remains in place
-      if the later file-index rebuild fails. It does not rebuild file-artifact,
-      parse-artifact, or node sidecars, select live roots, trim or repack blobs,
-      coordinate cross-process/raw writers, or implement automatic repair/GC
-      policy; mmap reads, Attic transport, and harness proof remain open
-      (`C-13`/`R-14`).
+      returns both applied plans, sharing each selected store's advisory file
+      lock and same-process same-root blob-index write lock for its rebuild step.
+      This is sequential and non-transactional: a committed value-index rebuild
+      remains in place if the later file-index rebuild fails. It does not rebuild
+      file-artifact, parse-artifact, or node sidecars, select live roots, trim or
+      repack blobs, coordinate raw lower-level sidecar users or unrelated
+      maintenance writers, or implement automatic repair/GC policy; mmap reads,
+      Attic transport, and harness proof remain open (`C-13`/`R-14`).
 - [x] Current idempotent indexed blob materialization substrate:
       `PersistCache::ensure_blob_indexed` reuses an existing sidecar location
       only after the pointed pack record verifies for the requested
@@ -1591,40 +1592,43 @@ alone (`M-1`/`Q-A`).
       canonicalized layout paths and acquire their per-store blob mutexes through
       `ratchet-cache::root_locks::CacheRootLocks`, whose process-local weak
       registry is keyed by the canonical persistent cache root. Cache-level blob
-      writes (`append_blob`, `ensure_blob_indexed`, `append_blob_indexed`, and
-      callers such as raw or indexed materialization) first acquire an exclusive
-      `ratchet-cache::file_lock::AdvisoryFileLock` at `.locks/values.lock` or
-      `.locks/files.lock`, then acquire the same-process store mutex while they
-      write the pack and, for indexed writes, the blob-index sidecar.
+      writes and blob-index rewrites (`append_blob`, `ensure_blob_indexed`,
+      `append_blob_indexed`, `compact_blob_index`, `rebuild_blob_index_from_pack`,
+      and callers such as raw or indexed materialization) first acquire an
+      exclusive `ratchet-cache::file_lock::AdvisoryFileLock` at
+      `.locks/values.lock` or `.locks/files.lock`, then acquire the same-process
+      store mutex while they write the pack and/or blob-index sidecar.
       Simultaneous same-key materialization through separate opens of the same
       root shares the same `ensure_blob_indexed` critical section, and
       cooperating cross-process cache-level blob writers share the same advisory
       file. The initially-missing indexed case collapses to one fresh verified
       pack record and newest sidecar entry for the selected store, poisoned
       same-root locks are mapped back into the existing oracle error surface
-      before any cache-level raw append or indexed append/index write, and an
-      opened symlink-root handle keeps writing the canonical target it opened
-      even if the symlink is retargeted. Raw/lower-level
-      `PersistBlobPack`/`PersistBlobIndex` users, maintenance writers, different
-      roots, two-machine misses, full filesystem-lock/CAS policy, automatic
-      compaction, GC/repack, mmap reads, LMDB/redb indexes, and loom/harness
-      proof remain open (`C-13`/`R-4`/`R-14`).
+      before any cache-level raw append, indexed append/index write, blob-index
+      compaction, or blob-index rebuild, and an opened symlink-root handle keeps
+      writing the canonical target it opened even if the symlink is retargeted.
+      Raw/lower-level `PersistBlobPack`/`PersistBlobIndex` users, tail
+      trim/repack maintenance writers, different roots, two-machine misses, full
+      filesystem-lock/CAS policy, automatic compaction, GC/repack, mmap reads,
+      LMDB/redb indexes, and loom/harness proof remain open (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process same-root blob-store maintenance lock precursor:
-      cache-level blob-index compaction, blob-index rebuild, blob-pack tail
-      trim, and value/file blob-pack repack share the same
-      `ratchet-cache::root_locks` per-store slots as indexed materialization, so
-      maintenance rewrites for one live canonical cache root serialize with
-      cache-level indexed or raw blob writes for the selected `values/` or
-      `files/` store. File-pack tail trim and file-pack repack also share the
+      cache-level blob-pack tail trim and value/file blob-pack repack share the
+      same `ratchet-cache::root_locks` per-store slots as indexed
+      materialization, so maintenance rewrites for one live canonical cache root
+      serialize with cache-level indexed or raw blob writes for the selected
+      `values/` or `files/` store inside one process. Blob-index
+      compaction/rebuild additionally use the per-store advisory file lock as
+      covered above. File-pack tail trim and file-pack repack also share the
       file-artifact and parse-artifact mapping slots while they snapshot or
       relocate those live roots; oracle keeps the pending file-root map in a
       canonical-root weak registry because those roots are semantic liveness,
       not generic lock substrate. Poisoned live same-root locks are reported
       before compaction, rebuild, trim, or repack writes sidecars, truncates, or
       replaces a pack. Raw lower-level `PersistBlobIndex`/`PersistBlobPack`
-      users, different roots, multi-process writers, two-machine races, durable
-      filesystem locks/CAS, LMDB/redb indexes, automatic GC policy, and
-      loom/harness proof remain open (`C-13`/`R-4`/`R-14`).
+      users, tail trim/repack cross-process coordination, different roots,
+      two-machine races, full filesystem-lock/CAS policy, LMDB/redb indexes,
+      automatic GC policy, and loom/harness proof remain open
+      (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process plus advisory open-initialization lock precursor:
       `PersistCache::open` now creates the caller-supplied root, canonicalizes
       it through `ratchet-cache::root_locks`, acquires an exclusive
@@ -1684,11 +1688,12 @@ alone (`M-1`/`Q-A`).
       those operations through the opened cache root. Blob-index compaction
       keeps the repaired newest same-key pointer after stale indexed
       materialization repair while leaving old pack bytes untouched and shares
-      same-process same-root store locks; file/parse artifact compaction shares
-      same-process same-root mapping locks. This is caller-driven maintenance
-      only; automatic compaction/GC policy, cross-process/raw-writer
-      coordination, LMDB/redb indexes, pack GC/repack, mmap reads, Attic
-      transport, and harness proof remain open
+      the selected store's advisory file lock plus same-process same-root store
+      lock; file/parse artifact compaction shares only same-process same-root
+      mapping locks. This is caller-driven maintenance only; automatic
+      compaction/GC policy, raw lower-level sidecar coordination, file/parse
+      cross-process writer coordination, LMDB/redb indexes, pack GC/repack,
+      mmap reads, Attic transport, and harness proof remain open
       (`C-13`/`R-14`).
 - [x] Current `ratchet-cache` advisory file-lock substrate:
       `file_lock::AdvisoryFileLock` creates a caller-supplied lock file and
@@ -1697,10 +1702,11 @@ alone (`M-1`/`Q-A`).
       coverage proves lock-file creation, shared/shared compatibility,
       shared/exclusive and exclusive/exclusive nonblocking rejection, and
       drop-time release; oracle root open now uses it for `.locks/open.lock`, and
-      cache-level raw and indexed blob writes use it for `.locks/values.lock` and
-      `.locks/files.lock`. This is filesystem-lock substrate plus
-      open-initialization and cache-level blob-write use only: raw/lower-level
-      pack/index writers, maintenance writers, mmap read leases, CAS protocols,
+      cache-level raw/indexed blob writes plus blob-index compaction/rebuild use
+      it for `.locks/values.lock` and `.locks/files.lock`. This is
+      filesystem-lock substrate plus open-initialization and selected
+      cache-level blob-store writes only: raw/lower-level pack/index writers,
+      tail trim/repack maintenance writers, mmap read leases, CAS protocols,
       mandatory locking, raw-writer enforcement, two-machine races, and
       loom/harness proof remain open (`R-4`/`R-14`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
@@ -2067,10 +2073,11 @@ alone (`M-1`/`Q-A`).
       counts for the newest entries retained by each sidecar, with
       `PersistCompactionError` preserving the failing sidecar type. This is a
       caller-driven maintenance helper only; it is sequential rather than
-      transactional, requires callers to serialize cross-process and raw
-      lower-level sidecar writes that bypass the current same-root locks, does
-      not rewrite blob packs or drop unreferenced blobs, and still leaves
-      automatic compaction/GC policy, cross-process writer coordination,
+      transactional, gives advisory coordination only to the value/file
+      blob-index compaction phases, requires callers to serialize raw
+      lower-level sidecar writes and non-blob-index cross-process writers that
+      bypass the current same-root locks, does not rewrite blob packs or drop
+      unreferenced blobs, and still leaves automatic compaction/GC policy,
       LMDB/redb indexes, pack GC/repack, mmap reads, Attic transport, and
       cached/uncached harness proof open
       (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the
@@ -2087,11 +2094,13 @@ alone (`M-1`/`Q-A`).
       indexes remain committed when a later file-artifact root verification
       fails during file-pack trimming, and previously unindexed physical tail
       records become indexed roots before trimming. This is sequential
-      caller-driven maintenance only; automatic compaction/GC policy,
-      transactionality across sidecar/rebuild/pack phases, cross-process/raw
-      pack or sidecar writer coordination, LMDB/redb indexes, mmap reads,
-      Attic transport, and cached/uncached harness proof remain open, and it
-      does not run the explicit full-pack repack helpers
+      caller-driven maintenance only; it does not run the explicit full-pack
+      repack helpers, gives advisory coordination only to blob-index
+      compaction/rebuild phases, and automatic compaction/GC policy,
+      transactionality across sidecar/rebuild/pack phases, raw lower-level pack
+      or sidecar writer coordination, non-blob-index cross-process writer
+      coordination, tail-trim/repack advisory coverage, LMDB/redb indexes, mmap
+      reads, Attic transport, and cached/uncached harness proof remain open
       (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the storage maintenance cache
       tests.
 - [x] Current explicit storage repack sweep:

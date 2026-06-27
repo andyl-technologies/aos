@@ -1614,9 +1614,11 @@ impl PersistCache {
     ///
     /// This explicit maintenance operation rewrites the value and file blob
     /// indexes, file-artifact and parse-artifact indexes, demand-node metadata
-    /// index, and node verifying-trace log. It does not rewrite blob packs,
-    /// drop unreferenced blobs, coordinate with cross-process writers or raw
-    /// lower-level sidecar users, or implement an automatic GC policy.
+    /// index, and node verifying-trace log. The blob-index compaction phases
+    /// use the per-store advisory lock; the other sidecar compactions remain
+    /// same-process coordinated only. This does not rewrite blob packs, drop
+    /// unreferenced blobs, coordinate raw lower-level sidecar users, or
+    /// implement an automatic GC policy.
     ///
     /// # Errors
     ///
@@ -1662,9 +1664,10 @@ impl PersistCache {
     /// previously unindexed tails can become roots instead of reclaimed bytes.
     /// It is sequential and non-transactional: work completed before a later
     /// phase fails remains committed. It does not implement an automatic GC
-    /// policy, relocate live pack records, coordinate with cross-process
-    /// writers or raw lower-level pack or sidecar users, or replace the future
-    /// LMDB/redb metadata engine.
+    /// policy, relocate live pack records, coordinate raw lower-level pack or
+    /// sidecar users, give advisory coverage to the tail-trim phase, or replace
+    /// the future LMDB/redb metadata engine. Only the blob-index compaction and
+    /// rebuild phases use the per-store advisory lock.
     ///
     /// # Errors
     ///
@@ -1810,6 +1813,39 @@ impl PersistCache {
                 source,
             })?;
         let write_guard = self.root_locks.lock_blob_pack(store)?;
+        Ok((advisory_guard, write_guard))
+    }
+
+    fn lock_blob_index_write(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistBlobIndexError> {
+        let path = self.layout.blob_store_lock_path(store);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Exclusive)
+            .map_err(|source| PersistBlobIndexError::AdvisoryWriteLock {
+                store,
+                path,
+                source,
+            })?;
+        let write_guard = self.root_locks.lock_blob_index(store)?;
+        Ok((advisory_guard, write_guard))
+    }
+
+    fn lock_blob_index_rebuild(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistBlobIndexRebuildError> {
+        let path = self.layout.blob_store_lock_path(store);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Exclusive)
+            .map_err(|source| PersistBlobIndexRebuildError::AdvisoryWriteLock {
+                store,
+                path,
+                source,
+            })?;
+        let write_guard = self
+            .root_locks
+            .lock_blob_store(store)
+            .map_err(|_| PersistBlobIndexRebuildError::WriteLockPoisoned { store })?;
         Ok((advisory_guard, write_guard))
     }
 
@@ -2740,21 +2776,22 @@ impl PersistCache {
 
     /// Compacts the selected blob index to the newest entry for every known key.
     ///
-    /// Same-process writers opened on the same cache root share the selected
-    /// store's blob-index write lock while this method rewrites the sidecar.
-    /// Cross-process writers and raw lower-level sidecar users must still be
-    /// excluded by the caller.
+    /// Cache-level writers opened on the same cache root acquire the selected
+    /// store's advisory lock file and same-process blob-index write lock while
+    /// this method rewrites the sidecar. Raw lower-level sidecar users and
+    /// unrelated maintenance writers must still be excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobIndexError`] if the same-root blob-index write lock
-    /// is poisoned or if the selected index cannot be created, opened,
-    /// inspected, read, decoded, written, flushed, or renamed into place.
+    /// Returns [`PersistBlobIndexError`] if the selected advisory lock cannot
+    /// be acquired, the same-root blob-index write lock is poisoned, or if the
+    /// selected index cannot be created, opened, inspected, read, decoded,
+    /// written, flushed, or renamed into place.
     pub fn compact_blob_index(
         &self,
         store: PersistBlobStore,
     ) -> Result<usize, PersistBlobIndexError> {
-        let _write_guard = self.root_locks.lock_blob_index(store)?;
+        let (_advisory_guard, _write_guard) = self.lock_blob_index_write(store)?;
         self.blob_index(store).compact_latest_entries()
     }
 
@@ -3356,23 +3393,21 @@ impl PersistCache {
     /// newest physical record in that pack, including records that were
     /// previously unindexed, and drops sidecar entries that do not correspond
     /// to a verified physical record in the selected store. It does not choose
-    /// live roots, trim pack bytes, relocate records, coordinate with other
-    /// cross-process writers or raw lower-level sidecar users, or implement an
-    /// automatic repair policy.
+    /// live roots, trim pack bytes, relocate records, coordinate with raw
+    /// lower-level sidecar users or unrelated maintenance writers, or implement
+    /// an automatic repair policy.
     ///
     /// # Errors
     ///
     /// Returns [`PersistBlobIndexRebuildError`] if planning fails or if the
-    /// same-root blob-index write lock is poisoned or the selected sidecar
-    /// cannot be replaced with the planned entries.
+    /// selected advisory lock cannot be acquired, the same-root blob-index write
+    /// lock is poisoned, or the selected sidecar cannot be replaced with the
+    /// planned entries.
     pub fn rebuild_blob_index_from_pack(
         &self,
         store: PersistBlobStore,
     ) -> Result<PersistBlobIndexRebuildPlan, PersistBlobIndexRebuildError> {
-        let _write_guard = self
-            .root_locks
-            .lock_blob_store(store)
-            .map_err(|_| PersistBlobIndexRebuildError::WriteLockPoisoned { store })?;
+        let (_advisory_guard, _write_guard) = self.lock_blob_index_rebuild(store)?;
         let plan = self
             .plan_blob_index_rebuild(store)
             .map_err(|source| PersistBlobIndexRebuildError::Plan { source })?;
@@ -3389,10 +3424,11 @@ impl PersistCache {
     /// returning the plans that were applied to each sidecar. It is sequential
     /// and non-transactional: if the `files/` rebuild fails, the `values/`
     /// rebuild may already be committed. It does not choose live roots, trim
-    /// pack bytes, relocate records, coordinate with cross-process writers or
-    /// raw lower-level sidecar users, or implement an automatic repair policy.
-    /// Same-process writers opened on the same cache root share each selected
-    /// store's blob-index write lock during its rebuild step.
+    /// pack bytes, relocate records, coordinate with raw lower-level sidecar
+    /// users or unrelated maintenance writers, or implement an automatic repair
+    /// policy. Cache-level writers opened on the same cache root share each
+    /// selected store's advisory lock file and same-process blob-index write
+    /// lock during its rebuild step.
     ///
     /// # Errors
     ///

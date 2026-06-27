@@ -3724,6 +3724,37 @@ fn cache_append_blob_reports_poisoned_same_root_lock() {
 }
 
 #[test]
+fn cache_blob_index_compaction_acquires_advisory_store_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+        .expect("value store lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .compact_blob_index(PersistBlobStore::Values)
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("compaction result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(PersistBlobStore::Values));
+    drop(guard);
+
+    let compacted_entries = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("blob-index compaction completes after same-process lock release")
+        .expect("blob-index compaction succeeds");
+    assert_eq!(compacted_entries, 0);
+    handle.join().expect("worker joins");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_index_compaction_reports_poisoned_same_root_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -3752,6 +3783,38 @@ fn cache_blob_index_compaction_reports_poisoned_same_root_lock() {
             .len(),
         0
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_index_rebuild_acquires_advisory_store_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+        .expect("value store lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .rebuild_blob_index_from_pack(PersistBlobStore::Values)
+            .map(|plan| plan.planned_entries().len())
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("rebuild result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(PersistBlobStore::Values));
+    drop(guard);
+
+    let planned_entries = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("blob-index rebuild completes after same-process lock release")
+        .expect("blob-index rebuild succeeds");
+    assert_eq!(planned_entries, 0);
+    handle.join().expect("worker joins");
 
     let _ = fs::remove_dir_all(root);
 }

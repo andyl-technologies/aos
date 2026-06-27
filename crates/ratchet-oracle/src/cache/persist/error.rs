@@ -436,6 +436,16 @@ pub enum PersistBlobIndexError {
         /// The blob namespace whose lock could not be acquired.
         store: PersistBlobStore,
     },
+    /// The advisory blob-index write lock could not be acquired.
+    #[error("failed to acquire persistent blob index advisory write lock for {store:?} at {path}")]
+    AdvisoryWriteLock {
+        /// The selected blob store.
+        store: PersistBlobStore,
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The index parent directory could not be created.
     #[error("failed to create persistent blob index parent {path:?}")]
     CreateParent {
@@ -1053,6 +1063,18 @@ pub enum PersistBlobIndexRebuildError {
     WriteLockPoisoned {
         /// The blob namespace whose lock could not be acquired.
         store: PersistBlobStore,
+    },
+    /// The advisory blob-index write lock could not be acquired.
+    #[error(
+        "failed to acquire persistent blob index rebuild advisory write lock for {store:?} at {path}"
+    )]
+    AdvisoryWriteLock {
+        /// The selected blob store.
+        store: PersistBlobStore,
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
     },
     /// The rebuild plan could not be produced.
     #[error("failed to plan persistent blob index rebuild")]
