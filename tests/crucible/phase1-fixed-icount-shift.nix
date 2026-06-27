@@ -83,7 +83,7 @@
       }
       {
         label = "QEMU launch argument pins fixed shift";
-        needle = "format!(\"shift={},sleep=off,align=off\", self.icount_shift),";
+        needle = "\"shift={},sleep=off,align=off,rr_switch_quantum={}\",";
       }
       {
         label = "scenario hash records shift";

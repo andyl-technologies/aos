@@ -132,7 +132,7 @@
       }
       {
         label = "test fixes world golden vector";
-        needle = "6fbfe24e4532a48d1efd0bc7178a96259adcf491ec2733c01482fd5d35766038";
+        needle = "6b608a5f359126d4f982e63457be7b98fba6d9dbdbcd08648caded20acd06ad6";
       }
       {
         label = "test fixes plan golden vector";
@@ -144,11 +144,11 @@
       }
       {
         label = "test fixes scenario golden vector";
-        needle = "83ac348fed79549807648ace6de0e844c695d59a618ca2bd93eff61639d276d3";
+        needle = "4127da3550c97ed8fbcccca2963ff73114001001bd0644009ed42b3a825ced09";
       }
       {
         label = "test fixes compact binary vector";
-        needle = "737aadbea915cc5a9ebd6dcbe639941a040e7bd82965b9ad44e2efbd6c4bfe32";
+        needle = "098479af7127a4272235783d0f7c1a6d2a21dac963cb5ce54cc10ac0bc60ed9c";
       }
       {
         label = "test covers compact binary magic";
