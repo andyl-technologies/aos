@@ -9,15 +9,17 @@
 //! blob-pack building blocks, hash-to-offset sidecars, fixed-record frontend
 //! artifact sidecars, fixed-record node metadata sidecars, and variable-length
 //! node trace logs plus schema-version sidecars and owned-path lifecycle
-//! helpers, staged file-replacement helpers, and process-local cache-root lock
-//! slots used by later persistent cache adapters. Higher-level cache formats
-//! remain in `ratchet-oracle` until they move behind this unsafe fence.
+//! helpers, staged file-replacement helpers, advisory filesystem lock helpers,
+//! and process-local cache-root lock slots used by later persistent cache
+//! adapters. Higher-level cache formats remain in `ratchet-oracle` until they
+//! move behind this unsafe fence.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod artifact_index;
 pub mod blob_index;
 pub mod blob_pack;
+pub mod file_lock;
 pub mod file_replace;
 pub mod node_metadata;
 pub mod node_trace_log;

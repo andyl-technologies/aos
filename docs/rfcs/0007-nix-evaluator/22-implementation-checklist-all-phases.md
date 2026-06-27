@@ -1682,6 +1682,16 @@ alone (`M-1`/`Q-A`).
       coordination, LMDB/redb indexes, pack GC/repack, mmap reads, Attic
       transport, and harness proof remain open
       (`C-13`/`R-14`).
+- [x] Current `ratchet-cache` advisory file-lock substrate:
+      `file_lock::AdvisoryFileLock` creates a caller-supplied lock file and
+      parent directories, acquires blocking or nonblocking Unix `flock`
+      shared/exclusive locks, and releases the advisory lock when dropped. Unit
+      coverage proves lock-file creation, shared/shared compatibility,
+      shared/exclusive and exclusive/exclusive nonblocking rejection, and
+      drop-time release. This is filesystem-lock substrate only: pack/index
+      writers, same-root lock ordering, mmap read leases, CAS protocols,
+      mandatory locking, raw-writer enforcement, two-machine races, and
+      loom/harness proof remain open (`R-4`/`R-14`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and
