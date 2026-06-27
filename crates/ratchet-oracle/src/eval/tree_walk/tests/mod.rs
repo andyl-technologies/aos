@@ -253,6 +253,7 @@ mod path_store;
 mod properties;
 mod regex;
 mod search_path;
+mod source_path_surfaces;
 mod stats;
 mod strings_1;
 mod strings_2;
