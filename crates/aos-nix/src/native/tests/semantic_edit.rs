@@ -239,3 +239,301 @@ fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure
 
     Ok(())
 }
+
+#[test]
+fn native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure() -> Result<()> {
+    let root = unique_temp_dir("aos-nix-native-instantiate-semantic-edit");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let store = root.join("store");
+    let first_parse_root = root.join("first-parse");
+    let second_parse_root = root.join("second-parse");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join("default.nix");
+    let leaf = dir.join("leaf.nix");
+    fs::write(
+        &file,
+        r#"let
+          leaf = import ./leaf.nix;
+          base = derivationStrict {
+            name = "semantic-edit-base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            env = leaf;
+          };
+        in {
+          pkgs.hello = derivationStrict {
+            name = "semantic-edit-consumer";
+            system = "x86_64-linux";
+            builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+            input = "${base.out}";
+          };
+        }"#,
+    )?;
+    let first_leaf_source = b"# first comment\n\"leaf-value\"\n";
+    let second_leaf_source = b"\n# changed comment with extra whitespace\n\n\"leaf-value\"\n";
+    fs::write(&leaf, first_leaf_source)?;
+    let leaf_realpath = fs::canonicalize(&leaf)?;
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+
+    let uncached_first_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+    let uncached_first = NixNative::with_options(0, uncached_first_options)?
+        .instantiate_closure(&file, "pkgs.hello")?;
+    assert_eq!(uncached_first.drvs().len(), 2);
+
+    let mut cached_first_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+    cached_first_options.set_parse_cache_root(&first_parse_root);
+    cached_first_options.set_persist_cache_root(&persist_root);
+    cached_first_options.set_eval_cache_enabled(true);
+    let cached_first = NixNative::with_options(0, cached_first_options)?
+        .instantiate_closure(&file, "pkgs.hello")?;
+    assert_eq!(cached_first, uncached_first);
+    let first_parse_cache = ParseCache::new(&first_parse_root);
+    let first_parse_key = first_parse_cache.key_for_source(first_leaf_source);
+    assert!(
+        first_parse_cache
+            .entry_for_source(first_leaf_source)
+            .is_complete(),
+        "initial leaf should be parsed into the first cache root"
+    );
+
+    fs::write(&leaf, second_leaf_source)?;
+
+    let uncached_second_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+    let uncached_second = NixNative::with_options(0, uncached_second_options)?
+        .instantiate_closure(&file, "pkgs.hello")?;
+    assert_eq!(uncached_second, uncached_first);
+
+    let observed_hits = Arc::new(Mutex::new(Vec::new()));
+    let observed_hits_for_hook = Arc::clone(&observed_hits);
+    let mut cached_second_options = TreeWalkOptions::with_store_dir(store_bytes)?;
+    cached_second_options.set_parse_cache_root(&second_parse_root);
+    cached_second_options.set_persist_cache_root(&persist_root);
+    cached_second_options.set_eval_cache_enabled(true);
+    let mut cached_second_native = NixNative::with_options(0, cached_second_options)?;
+    cached_second_native.set_persistent_parse_hit_hook(move |hit| {
+        observed_hits_for_hook
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .push(hit);
+    });
+    let cached_second = cached_second_native.instantiate_closure(&file, "pkgs.hello")?;
+
+    assert_eq!(cached_second, uncached_first);
+    assert_eq!(
+        observed_hits
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .clone(),
+        vec![NativePersistentParseHit::Source]
+    );
+    let second_parse_cache = ParseCache::new(&second_parse_root);
+    let second_parse_key = second_parse_cache.key_for_source(second_leaf_source);
+    assert!(
+        second_parse_cache
+            .entry_for_source(second_leaf_source)
+            .is_complete(),
+        "changed leaf should be reparsed into the fresh cache root"
+    );
+
+    let first_leaf_key = ParseFileKey::for_source(&leaf_realpath, first_leaf_source);
+    let second_leaf_key = ParseFileKey::for_source(&leaf_realpath, second_leaf_source);
+    let mut canaries = durable_hash_surface_canaries(
+        "initial comment leaf parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(first_parse_key.as_bytes()),
+    );
+    canaries.extend(durable_hash_surface_canaries(
+        "changed comment leaf parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(second_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "initial comment leaf content BLAKE3",
+        first_leaf_key.content_hash(),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "changed comment leaf content BLAKE3",
+        second_leaf_key.content_hash(),
+    ));
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached initial semantic-edit closure",
+        &uncached_first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cached initial semantic-edit closure",
+        &cached_first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached changed semantic-edit closure",
+        &uncached_second,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cached changed semantic-edit closure",
+        &cached_second,
+        &canaries,
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_file_instantiation_unused_leaf_package_edit_preserves_drv_closure() -> Result<()> {
+    let root = unique_temp_dir("aos-nix-native-instantiate-unused-leaf-edit");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let store = root.join("store");
+    let first_parse_root = root.join("first-parse");
+    let second_parse_root = root.join("second-parse");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join("default.nix");
+    let leaf = dir.join("leaf.nix");
+    fs::write(
+        &file,
+        r#"let
+          leaf = import ./leaf.nix;
+          base = derivationStrict {
+            name = "unused-leaf-edit-base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            env = leaf.used;
+          };
+        in {
+          pkgs.hello = derivationStrict {
+            name = "unused-leaf-edit-consumer";
+            system = "x86_64-linux";
+            builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+            input = "${base.out}";
+          };
+        }"#,
+    )?;
+    let first_leaf_source = br#"{
+  used = "leaf-value";
+  unused = derivationStrict {
+    name = "unused-one";
+    system = "x86_64-linux";
+    builder = "/nix/store/cccccccccccccccccccccccccccccccc-builder";
+  };
+}
+"#;
+    let second_leaf_source = br#"{
+  used = "leaf-value";
+  unused = derivationStrict {
+    name = "unused-two";
+    system = "x86_64-linux";
+    builder = "/nix/store/dddddddddddddddddddddddddddddddd-builder";
+  };
+}
+"#;
+    fs::write(&leaf, first_leaf_source)?;
+    let leaf_realpath = fs::canonicalize(&leaf)?;
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+
+    let uncached_first_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+    let uncached_first = NixNative::with_options(0, uncached_first_options)?
+        .instantiate_closure(&file, "pkgs.hello")?;
+    assert_eq!(uncached_first.drvs().len(), 2);
+
+    let mut cached_first_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+    cached_first_options.set_parse_cache_root(&first_parse_root);
+    cached_first_options.set_persist_cache_root(&persist_root);
+    cached_first_options.set_eval_cache_enabled(true);
+    let cached_first = NixNative::with_options(0, cached_first_options)?
+        .instantiate_closure(&file, "pkgs.hello")?;
+    assert_eq!(cached_first, uncached_first);
+    let first_parse_cache = ParseCache::new(&first_parse_root);
+    let first_parse_key = first_parse_cache.key_for_source(first_leaf_source);
+    assert!(
+        first_parse_cache
+            .entry_for_source(first_leaf_source)
+            .is_complete(),
+        "initial leaf package should be parsed into the first cache root"
+    );
+
+    fs::write(&leaf, second_leaf_source)?;
+
+    let uncached_second_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+    let uncached_second = NixNative::with_options(0, uncached_second_options)?
+        .instantiate_closure(&file, "pkgs.hello")?;
+    assert_eq!(uncached_second, uncached_first);
+
+    let observed_hits = Arc::new(Mutex::new(Vec::new()));
+    let observed_hits_for_hook = Arc::clone(&observed_hits);
+    let mut cached_second_options = TreeWalkOptions::with_store_dir(store_bytes)?;
+    cached_second_options.set_parse_cache_root(&second_parse_root);
+    cached_second_options.set_persist_cache_root(&persist_root);
+    cached_second_options.set_eval_cache_enabled(true);
+    let mut cached_second_native = NixNative::with_options(0, cached_second_options)?;
+    cached_second_native.set_persistent_parse_hit_hook(move |hit| {
+        observed_hits_for_hook
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .push(hit);
+    });
+    let cached_second = cached_second_native.instantiate_closure(&file, "pkgs.hello")?;
+
+    assert_eq!(cached_second, uncached_first);
+    assert_eq!(
+        observed_hits
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .clone(),
+        vec![NativePersistentParseHit::Source]
+    );
+    let second_parse_cache = ParseCache::new(&second_parse_root);
+    let second_parse_key = second_parse_cache.key_for_source(second_leaf_source);
+    assert!(
+        second_parse_cache
+            .entry_for_source(second_leaf_source)
+            .is_complete(),
+        "changed leaf package should be reparsed into the fresh cache root"
+    );
+
+    let first_leaf_key = ParseFileKey::for_source(&leaf_realpath, first_leaf_source);
+    let second_leaf_key = ParseFileKey::for_source(&leaf_realpath, second_leaf_source);
+    let mut canaries = durable_hash_surface_canaries(
+        "initial unused leaf parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(first_parse_key.as_bytes()),
+    );
+    canaries.extend(durable_hash_surface_canaries(
+        "changed unused leaf parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(second_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "initial unused leaf content BLAKE3",
+        first_leaf_key.content_hash(),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "changed unused leaf content BLAKE3",
+        second_leaf_key.content_hash(),
+    ));
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached initial unused-leaf closure",
+        &uncached_first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cached initial unused-leaf closure",
+        &cached_first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached changed unused-leaf closure",
+        &uncached_second,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cached changed unused-leaf closure",
+        &cached_second,
+        &canaries,
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}

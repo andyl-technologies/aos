@@ -17,6 +17,7 @@ mod fallback;
 mod ifd;
 mod instantiate_expr;
 mod semantic_edit;
+mod source_errors;
 
 fn native_with_temp_store(prefix: &str) -> Result<(NixNative, PathBuf, PathBuf)> {
     let root = unique_temp_dir(prefix);
