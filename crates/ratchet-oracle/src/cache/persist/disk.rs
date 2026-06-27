@@ -10,6 +10,7 @@
 //! ```text
 //! <root>/
 //!   schema.toml   format marker and schema version
+//!   .locks/       advisory lock files
 //!   nodes/        mutable metadata and frontend artifact indexes
 //!   values/       value blob pack and hash-to-offset index
 //!   files/        file/frontend blob pack and hash-to-offset index

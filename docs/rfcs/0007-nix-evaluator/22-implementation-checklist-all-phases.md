@@ -1619,18 +1619,20 @@ alone (`M-1`/`Q-A`).
       users, different roots, multi-process writers, two-machine races, durable
       filesystem locks/CAS, LMDB/redb indexes, automatic GC policy, and
       loom/harness proof remain open (`C-13`/`R-4`/`R-14`).
-- [x] Current same-process same-root open-initialization lock precursor:
+- [x] Current same-process plus advisory open-initialization lock precursor:
       `PersistCache::open` now creates the caller-supplied root, canonicalizes
-      it through `ratchet-cache::root_locks`, acquires that root's process-local
-      open slot, and only then performs schema validation/rewrites plus
-      pack/index initialization through the canonical layout. If a panic
+      it through `ratchet-cache::root_locks`, acquires an exclusive
+      `ratchet-cache::file_lock::AdvisoryFileLock` at `.locks/open.lock`, then
+      acquires that root's process-local open slot before schema
+      validation/rewrites plus pack/index initialization through the canonical
+      layout. If a panic
       poisons a live same-root open lock while another cache handle or waiter
       keeps that root's lock object alive, later same-root opens report the
       poison before touching schema or sidecars; first-open/no-survivor sticky
       poison remains intentionally outside the weak-registry guarantee. This is
-      same-process initialization serialization only; raw lower-level sidecar
-      helpers, different roots, multi-process writers, two-machine misses,
-      durable filesystem locks/CAS, automatic repair/GC policy, LMDB/redb
+      open-initialization serialization only; raw lower-level sidecar helpers,
+      pack/index writers, different roots, two-machine misses, full
+      filesystem-lock/CAS policy, automatic repair/GC policy, LMDB/redb
       transactions, and loom/harness proof remain open (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process same-root node-metadata writer lock precursor:
       independently opened `PersistCache` handles in one process acquire their
@@ -1688,10 +1690,11 @@ alone (`M-1`/`Q-A`).
       shared/exclusive locks, and releases the advisory lock when dropped. Unit
       coverage proves lock-file creation, shared/shared compatibility,
       shared/exclusive and exclusive/exclusive nonblocking rejection, and
-      drop-time release. This is filesystem-lock substrate only: pack/index
-      writers, same-root lock ordering, mmap read leases, CAS protocols,
-      mandatory locking, raw-writer enforcement, two-machine races, and
-      loom/harness proof remain open (`R-4`/`R-14`).
+      drop-time release; oracle root open now uses it for `.locks/open.lock`.
+      This is filesystem-lock substrate plus open-initialization use only:
+      pack/index writers, broader same-root lock ordering, mmap read leases, CAS
+      protocols, mandatory locking, raw-writer enforcement, two-machine races,
+      and loom/harness proof remain open (`R-4`/`R-14`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and

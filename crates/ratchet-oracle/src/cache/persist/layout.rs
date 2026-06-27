@@ -27,6 +27,16 @@ impl PersistLayout {
         self.root.join("schema.toml")
     }
 
+    /// Returns the directory for advisory lock files.
+    pub fn locks_dir(&self) -> PathBuf {
+        self.root.join(".locks")
+    }
+
+    /// Returns the advisory lock path for root initialization.
+    pub fn open_lock_path(&self) -> PathBuf {
+        self.locks_dir().join("open.lock")
+    }
+
     /// Returns the mutable node metadata directory.
     pub fn nodes_dir(&self) -> PathBuf {
         self.root.join("nodes")

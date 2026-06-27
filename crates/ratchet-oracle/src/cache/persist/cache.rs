@@ -6,6 +6,7 @@
 
 use super::*;
 
+use ratchet_cache::file_lock::{AdvisoryFileLock, AdvisoryFileLockMode};
 use ratchet_cache::file_replace::{FileReplacement, FileReplacementError, FileReplacementSet};
 use ratchet_cache::root_locks::{
     self as engine_root_locks, CacheRootLockError, CacheRootLockSlot,
@@ -1462,9 +1463,9 @@ impl PersistCache {
     /// Returns [`PersistError`] if the cache root cannot be created or
     /// canonicalized, schema metadata cannot be read, parsed, or written, cache
     /// payload directories cannot be created or discarded, the process-local
-    /// root-lock registry is poisoned, the same-root open lock is poisoned, or
-    /// packfiles or sidecar indexes cannot
-    /// be initialized.
+    /// root-lock registry is poisoned, the cross-process advisory open lock
+    /// cannot be acquired, the same-root open lock is poisoned, or packfiles or
+    /// sidecar indexes cannot be initialized.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, PersistError> {
         let layout = PersistLayout::new(root);
         ensure_root_dir(layout.root())?;
@@ -1475,6 +1476,13 @@ impl PersistCache {
             }
         })?);
         let root_locks = root_locks_for_root(layout.root())?;
+        let open_lock_path = layout.open_lock_path();
+        let _open_advisory_guard =
+            AdvisoryFileLock::lock(open_lock_path.clone(), AdvisoryFileLockMode::Exclusive)
+                .map_err(|source| PersistError::OpenAdvisoryLock {
+                    path: open_lock_path,
+                    source,
+                })?;
         let open_guard = root_locks.lock_open()?;
         match read_schema_version(&layout)? {
             Some(PERSIST_CACHE_SCHEMA_VERSION) => {

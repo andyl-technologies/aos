@@ -1759,6 +1759,14 @@ pub enum PersistError {
     /// The process-local root-lock registry was poisoned by a prior panic.
     #[error("persistent cache root-lock registry is poisoned")]
     RootLockRegistryPoisoned,
+    /// The cross-process open initialization advisory lock could not be acquired.
+    #[error("failed to acquire persistent cache open advisory lock {path}")]
+    OpenAdvisoryLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The same-root open initialization lock was poisoned by a prior panic.
     #[error("persistent cache root open lock is poisoned")]
     RootOpenLockPoisoned,

@@ -1,6 +1,11 @@
 //! Tests for cache-root layout creation and corruption handling.
 
 use super::*;
+use ratchet_cache::file_lock::{AdvisoryFileLock, AdvisoryFileLockError, AdvisoryFileLockMode};
+use std::io::ErrorKind;
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[test]
 fn open_creates_versioned_layout() {
@@ -17,6 +22,11 @@ fn open_creates_versioned_layout() {
     assert!(layout.nodes_dir().is_dir());
     assert!(layout.values_dir().is_dir());
     assert!(layout.files_dir().is_dir());
+    assert_eq!(
+        layout.open_lock_path(),
+        layout.locks_dir().join("open.lock")
+    );
+    assert!(layout.open_lock_path().is_file());
     assert_eq!(cache.value_pack().path(), layout.value_packfile_path());
     assert_eq!(cache.file_pack().path(), layout.file_packfile_path());
     assert_eq!(cache.value_index().path(), layout.value_index_path());
@@ -156,6 +166,61 @@ fn opened_cache_layout_uses_canonical_paths_after_symlink_retarget() {
             .len(),
         1
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+fn wait_until_advisory_open_try_lock_blocks(path: &std::path::Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match AdvisoryFileLock::try_lock(path, AdvisoryFileLockMode::Exclusive) {
+            Ok(lock) => drop(lock),
+            Err(AdvisoryFileLockError::Lock { source, .. })
+                if source.kind() == ErrorKind::WouldBlock =>
+            {
+                return;
+            }
+            Err(error) => panic!("advisory open lock probe failed: {error}"),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "opener did not acquire advisory open lock before the deadline"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn open_acquires_advisory_open_lock_before_same_process_open_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let same_process_open_guard = cache
+        .lock_open_for_tests()
+        .expect("same-process open lock acquires");
+    let (tx, rx) = mpsc::channel();
+    let open_root = root.clone();
+
+    let opener = thread::spawn(move || {
+        let result = PersistCache::open(&open_root)
+            .map(|cache| cache.layout().open_lock_path().is_file())
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("open result sends");
+    });
+
+    wait_until_advisory_open_try_lock_blocks(&layout.open_lock_path());
+    drop(same_process_open_guard);
+
+    let opened = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("open completes after same-process lock release")
+        .expect("cache opens");
+    assert!(opened);
+    opener.join().expect("opener joins");
+    let released_lock =
+        AdvisoryFileLock::try_lock(layout.open_lock_path(), AdvisoryFileLockMode::Exclusive)
+            .expect("advisory open lock releases after open");
+    drop(released_lock);
 
     let _ = fs::remove_dir_all(root);
 }
