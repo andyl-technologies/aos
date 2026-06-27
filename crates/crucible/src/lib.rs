@@ -75,11 +75,13 @@ pub use model::{
     WorldStaticTopology, bake, instantiate, reduce, step,
 };
 pub use ninep_subnode::{
-    NINEP_BLOCK_COUNT_UNIT, NINEP_DEFAULT_MAXIMUM_MSIZE, NINEP_FIXED_BLOCK_SIZE,
-    NINEP_FIXED_EPOCH_SECONDS, NINEP_FIXED_GID, NINEP_FIXED_NAME_MAX, NINEP_FIXED_QID_VERSION,
-    NINEP_FIXED_UID, NINEP_PROTOCOL_VERSION, NinePAttributes, NinePDirectoryEntry,
-    NinePEntryContent, NinePEntryKind, NinePQid, NinePServedEntry, NinePServedTree,
-    NinePServerError, NinePStatFs, NinePVersionNegotiation,
+    NINEP_BLOCK_COUNT_UNIT, NINEP_DEFAULT_MAXIMUM_MSIZE, NINEP_EINVAL, NINEP_EIO, NINEP_ENOSYS,
+    NINEP_EROFS, NINEP_FIXED_BLOCK_SIZE, NINEP_FIXED_EPOCH_SECONDS, NINEP_FIXED_GID,
+    NINEP_FIXED_NAME_MAX, NINEP_FIXED_QID_VERSION, NINEP_FIXED_UID, NINEP_HEADER_SIZE,
+    NINEP_PROTOCOL_VERSION, NinePAttributes, NinePDirectoryEntry, NinePEntryContent,
+    NinePEntryKind, NinePFidSnapshot, NinePMutatingMessage, NinePQid, NinePRequest,
+    NinePRequestKind, NinePResponse, NinePResponseKind, NinePServedEntry, NinePServedTree,
+    NinePServerError, NinePSession, NinePSessionSnapshot, NinePStatFs, NinePVersionNegotiation,
 };
 #[cfg(feature = "test-double")]
 pub use scheduler::SchedulerRunCeilingHandoffError;

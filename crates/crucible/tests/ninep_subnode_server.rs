@@ -5,7 +5,7 @@
 use crucible::{
     NINEP_BLOCK_COUNT_UNIT, NINEP_DEFAULT_MAXIMUM_MSIZE, NINEP_FIXED_BLOCK_SIZE,
     NINEP_FIXED_EPOCH_SECONDS, NINEP_FIXED_GID, NINEP_FIXED_QID_VERSION, NINEP_FIXED_UID,
-    NINEP_PROTOCOL_VERSION, NinePServedEntry, NinePServedTree, NinePServerError,
+    NINEP_HEADER_SIZE, NINEP_PROTOCOL_VERSION, NinePServedEntry, NinePServedTree, NinePServerError,
 };
 
 #[test]
@@ -143,6 +143,10 @@ fn version_negotiation_uses_fixed_protocol_and_deterministic_msize() {
     assert!(matches!(
         tree.negotiate_version(NINEP_PROTOCOL_VERSION, 0),
         Err(NinePServerError::InvalidMsize { requested: 0 })
+    ));
+    assert!(matches!(
+        tree.negotiate_version(NINEP_PROTOCOL_VERSION, NINEP_HEADER_SIZE - 1),
+        Err(NinePServerError::InvalidMsize { requested }) if requested == NINEP_HEADER_SIZE - 1
     ));
 }
 

@@ -804,10 +804,13 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   byte-identical. `getattr` and `statfs` return fixed or content-derived
   attributes, including fixed epoch/root uid/root gid/block size, no advertised write permission bits, and 512-byte size-derived block counts. `statfs.fsid` derives from served-tree content and ignores negotiation msize. Version negotiation accepts only `9P2000.L` and deterministically
   chooses `msize = min(client_msize, server_maximum_msize)`.
-- [ ] **T-IO-7** Implement the 9p read/traverse message set, the EROFS boundary
+- [x] **T-IO-7** Implement the 9p read/traverse message set, the EROFS boundary
   for all mutating messages, ENOSYS/EINVAL handling, msize enforcement, and
   deterministic fid-state management with snapshot/restore. — satisfies [IO-17],
   [IO-19]; spec §15.3.2.
+  Completed by `checks.crucible.phase3.ninePSessionLifecycle`.
+  `NinePSession` handles the high-level Tversion/Tattach/Twalk/Tlopen/Tread/Treaddir/Tgetattr/Treadlink/Tclunk/Tstatfs/Tflush/Txattrwalk request set over `NinePServedTree`, derives modeled request sizes including minimum 9P2000.L fixed fields before the negotiated `msize` guard, rejects undersized negotiated/restored msize values, enforces negotiated `msize` before mutating fid state, clamps `Tread` payloads and `Treaddir` byte-budgeted entries to the negotiated message budget, rejects every `NinePMutatingMessage` with `NINEP_EROFS`, maps unknown requests to `NINEP_ENOSYS`, and maps malformed request bodies to `NINEP_EINVAL` or `NINEP_EIO`.
+  `Tversion` deterministically resets the fid table. The fid table stores fid-to-path bindings plus open kind, keeps xattr fids as distinct empty file-like targets, caches sorted directory entries on `Tlopen`, and `NinePSessionSnapshot` persists negotiated msize plus fid snapshots while restore reconstructs file handles and directory caches from the read-only tree.
 - [ ] **T-IO-8** Add 9p wire-format golden vectors and a fuzzer (arbitrary bytes
   in: never panic, never OOB, always well-formed response or 9p error) feeding
   `gate:abi-conformance`. — satisfies [IO-18]; spec §15.3.2; forward-ref 24.

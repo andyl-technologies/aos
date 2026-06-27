@@ -47,6 +47,7 @@ const NINEP_MODE_DIRECTORY: u32 = 0o040000;
 const NINEP_MODE_FILE: u32 = 0o100000;
 const NINEP_MODE_SYMLINK: u32 = 0o120000;
 const NINEP_QID_PATH_DOMAIN: &str = "crucible.9p.qid-path.v1";
+const NINEP_XATTR_QID_PATH_DOMAIN: &str = "crucible.9p.xattr-qid-path.v1";
 
 /// Kind of content served by one 9p tree entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -279,7 +280,7 @@ impl NinePServedTree {
         entries: Vec<NinePServedEntry>,
         maximum_msize: u32,
     ) -> Result<Self, NinePServerError> {
-        if maximum_msize == 0 {
+        if maximum_msize < NINEP_HEADER_SIZE {
             return Err(NinePServerError::InvalidMsize {
                 requested: maximum_msize,
             });
@@ -356,7 +357,7 @@ impl NinePServedTree {
                 requested: client_version.to_owned(),
             });
         }
-        if client_msize == 0 {
+        if client_msize < NINEP_HEADER_SIZE {
             return Err(NinePServerError::InvalidMsize {
                 requested: client_msize,
             });
@@ -491,6 +492,733 @@ impl NinePServedTree {
     }
 }
 
+impl NinePServedTree {
+    fn entry(&self, path: &str) -> Result<&NinePServedEntry, NinePServerError> {
+        let path = normalize_served_path(path)?;
+        self.entries
+            .get(&path)
+            .ok_or(NinePServerError::NotFound { path })
+    }
+
+    fn entry_kind(&self, path: &str) -> Result<NinePEntryKind, NinePServerError> {
+        Ok(self.entry(path)?.kind())
+    }
+
+    fn read_file(&self, path: &str, offset: u64, count: u32) -> Result<Vec<u8>, NinePServerError> {
+        match &self.entry(path)?.content {
+            NinePEntryContent::File { bytes } => Ok(read_slice(bytes, offset, count)),
+            _ => Err(NinePServerError::NotFile {
+                path: path.to_owned(),
+            }),
+        }
+    }
+
+    fn readlink(&self, path: &str) -> Result<String, NinePServerError> {
+        match &self.entry(path)?.content {
+            NinePEntryContent::Symlink { target } => Ok(target.clone()),
+            _ => Err(NinePServerError::NotSymlink {
+                path: path.to_owned(),
+            }),
+        }
+    }
+}
+
+/// 9p header size used by msize checks.
+pub const NINEP_HEADER_SIZE: u32 = 7;
+
+const NINEP_U16_SIZE: u32 = 2;
+const NINEP_U32_SIZE: u32 = 4;
+const NINEP_U64_SIZE: u32 = 8;
+const NINEP_QID_SIZE: u32 = 13;
+const NINEP_READ_RESPONSE_OVERHEAD: u32 = NINEP_HEADER_SIZE + NINEP_U32_SIZE;
+const NINEP_READDIR_RESPONSE_OVERHEAD: u32 = NINEP_HEADER_SIZE + NINEP_U32_SIZE;
+const NINEP_DIRECTORY_ENTRY_BASE_SIZE: u32 = NINEP_QID_SIZE + NINEP_U64_SIZE + 1 + NINEP_U16_SIZE;
+
+/// POSIX errno returned for malformed 9p request bodies.
+pub const NINEP_EINVAL: u32 = 22;
+
+/// POSIX errno returned for malformed 9p bodies that cannot be trusted.
+pub const NINEP_EIO: u32 = 5;
+
+/// POSIX errno returned for mutating requests against the read-only export.
+pub const NINEP_EROFS: u32 = 30;
+
+/// POSIX errno returned for unknown 9p message types.
+pub const NINEP_ENOSYS: u32 = 38;
+
+/// A mutating 9p request that is always rejected by the read-only sub-node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NinePMutatingMessage {
+    /// `Tlcreate`.
+    Lcreate,
+    /// `Twrite`.
+    Write,
+    /// `Tmkdir`.
+    Mkdir,
+    /// `Tunlinkat`.
+    Unlinkat,
+    /// `Trenameat`.
+    Renameat,
+    /// `Tsetattr`.
+    Setattr,
+}
+
+/// A high-level 9p request handled by [`NinePSession`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NinePRequest {
+    /// 9p request tag.
+    pub tag: u16,
+    /// Deterministic encoded message size used for msize enforcement.
+    pub encoded_size: u32,
+    /// Request payload.
+    pub kind: NinePRequestKind,
+}
+
+impl NinePRequest {
+    /// Builds a request with a deterministic modeled 9p encoded size.
+    #[must_use]
+    pub fn new(tag: u16, kind: NinePRequestKind) -> Self {
+        let encoded_size = encoded_request_size(&kind);
+        Self {
+            tag,
+            encoded_size,
+            kind,
+        }
+    }
+
+    /// Overrides the encoded message size used for deterministic msize checks.
+    #[must_use]
+    pub fn with_encoded_size(mut self, encoded_size: u32) -> Self {
+        self.encoded_size = encoded_size.max(encoded_request_size(&self.kind));
+        self
+    }
+}
+
+/// The high-level 9p request set implemented by T-IO-7.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum NinePRequestKind {
+    /// `Tversion`.
+    Version {
+        /// Client-requested msize.
+        msize: u32,
+        /// Client-requested protocol version.
+        version: String,
+    },
+    /// `Tattach`.
+    Attach {
+        /// Fid bound to the root of the served tree.
+        fid: u32,
+    },
+    /// `Twalk`.
+    Walk {
+        /// Existing source fid.
+        fid: u32,
+        /// New destination fid.
+        newfid: u32,
+        /// Path components to walk.
+        names: Vec<String>,
+    },
+    /// `Tlopen`.
+    Lopen {
+        /// Fid to open.
+        fid: u32,
+    },
+    /// `Tread`.
+    Read {
+        /// Fid to read.
+        fid: u32,
+        /// Byte offset.
+        offset: u64,
+        /// Maximum bytes to return.
+        count: u32,
+    },
+    /// `Treaddir`.
+    Readdir {
+        /// Directory fid to enumerate.
+        fid: u32,
+        /// Last returned directory offset.
+        offset: u64,
+        /// Maximum encoded directory-entry payload bytes to return.
+        count: u32,
+    },
+    /// `Tgetattr`.
+    GetAttr {
+        /// Fid to inspect.
+        fid: u32,
+    },
+    /// `Treadlink`.
+    ReadLink {
+        /// Symlink fid.
+        fid: u32,
+    },
+    /// `Tclunk`.
+    Clunk {
+        /// Fid to release.
+        fid: u32,
+    },
+    /// `Tstatfs`.
+    StatFs {
+        /// Fid within the served tree.
+        fid: u32,
+    },
+    /// `Tflush`.
+    Flush,
+    /// `Txattrwalk`.
+    XattrWalk {
+        /// Existing fid.
+        fid: u32,
+        /// New xattr fid.
+        newfid: u32,
+        /// Attribute name.
+        name: String,
+    },
+    /// Mutating request rejected with `EROFS`.
+    Mutating(NinePMutatingMessage),
+    /// Unknown request type rejected with `ENOSYS`.
+    Unknown {
+        /// Numeric 9p message type.
+        message_type: u8,
+    },
+    /// Malformed request body rejected with a 9p error.
+    Malformed {
+        /// Whether the malformed body should map to `EIO` instead of `EINVAL`.
+        io_error: bool,
+    },
+}
+
+/// A high-level 9p response emitted by [`NinePSession`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NinePResponse {
+    /// 9p response tag.
+    pub tag: u16,
+    /// Response payload.
+    pub kind: NinePResponseKind,
+}
+
+/// The high-level 9p response set implemented by T-IO-7.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum NinePResponseKind {
+    /// `Rversion`.
+    Version(NinePVersionNegotiation),
+    /// `Rattach`.
+    Attach {
+        /// Root QID.
+        qid: NinePQid,
+    },
+    /// `Rwalk`.
+    Walk {
+        /// QIDs reached by the walk.
+        qids: Vec<NinePQid>,
+    },
+    /// `Rlopen`.
+    Lopen {
+        /// Opened fid QID.
+        qid: NinePQid,
+    },
+    /// `Rread`.
+    Read {
+        /// File data.
+        data: Vec<u8>,
+    },
+    /// `Rreaddir`.
+    Readdir {
+        /// Deterministically sorted directory entries.
+        entries: Vec<NinePDirectoryEntry>,
+    },
+    /// `Rgetattr`.
+    GetAttr(NinePAttributes),
+    /// `Rreadlink`.
+    ReadLink {
+        /// Symlink target.
+        target: String,
+    },
+    /// `Rclunk`.
+    Clunk,
+    /// `Rstatfs`.
+    StatFs(NinePStatFs),
+    /// `Rflush`.
+    Flush,
+    /// `Rxattrwalk`.
+    XattrWalk {
+        /// Reported xattr size.
+        size: u64,
+    },
+    /// `Rlerror`.
+    Error {
+        /// Linux errno value.
+        errno: u32,
+    },
+}
+
+/// Restorable snapshot of deterministic 9p fid state.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NinePSessionSnapshot {
+    /// Negotiated msize at the checkpoint boundary.
+    pub negotiated_msize: u32,
+    /// Fid bindings in ascending fid order.
+    pub fids: Vec<NinePFidSnapshot>,
+}
+
+/// Restorable snapshot of one 9p fid.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NinePFidSnapshot {
+    /// Fid number.
+    pub fid: u32,
+    /// Absolute path within the served tree, or the source path for an xattr fid.
+    pub path: String,
+    /// Extended-attribute name when this snapshot represents an xattr fid.
+    pub xattr_name: Option<String>,
+    /// Open kind, if the fid was opened.
+    pub open_kind: Option<NinePEntryKind>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NinePFidState {
+    target: NinePFidTarget,
+    open: Option<NinePOpenHandle>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NinePFidTarget {
+    Entry { path: String },
+    Xattr { source_path: String, name: String },
+}
+
+impl NinePFidTarget {
+    fn snapshot_path(&self) -> String {
+        match self {
+            Self::Entry { path } => path.clone(),
+            Self::Xattr { source_path, .. } => source_path.clone(),
+        }
+    }
+
+    fn snapshot_xattr_name(&self) -> Option<String> {
+        match self {
+            Self::Entry { .. } => None,
+            Self::Xattr { name, .. } => Some(name.clone()),
+        }
+    }
+
+    fn diagnostic_path(&self) -> String {
+        match self {
+            Self::Entry { path } => path.clone(),
+            Self::Xattr { source_path, name } => format!("{source_path}:xattr:{name}"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NinePOpenHandle {
+    File,
+    Symlink,
+    Directory { entries: Vec<NinePDirectoryEntry> },
+    Xattr,
+}
+
+impl NinePOpenHandle {
+    fn kind(&self) -> NinePEntryKind {
+        match self {
+            Self::File => NinePEntryKind::File,
+            Self::Symlink => NinePEntryKind::Symlink,
+            Self::Directory { .. } => NinePEntryKind::Directory,
+            Self::Xattr => NinePEntryKind::File,
+        }
+    }
+}
+
+/// Deterministic 9p request/session state over a read-only served tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NinePSession {
+    tree: NinePServedTree,
+    negotiated_msize: u32,
+    fids: BTreeMap<u32, NinePFidState>,
+}
+
+impl NinePSession {
+    /// Builds a deterministic 9p session.
+    #[must_use]
+    pub fn new(tree: NinePServedTree) -> Self {
+        let negotiated_msize = tree.maximum_msize();
+        Self {
+            tree,
+            negotiated_msize,
+            fids: BTreeMap::new(),
+        }
+    }
+
+    /// Returns the negotiated msize currently enforced for requests.
+    #[must_use]
+    pub const fn negotiated_msize(&self) -> u32 {
+        self.negotiated_msize
+    }
+
+    /// Handles one high-level 9p request.
+    #[must_use]
+    pub fn handle_request(&mut self, request: NinePRequest) -> NinePResponse {
+        if request.encoded_size > self.negotiated_msize {
+            return ninep_error(request.tag, NINEP_EINVAL);
+        }
+
+        let result = match request.kind {
+            NinePRequestKind::Version { msize, version } => self.handle_version(msize, &version),
+            NinePRequestKind::Attach { fid } => self.handle_attach(fid),
+            NinePRequestKind::Walk { fid, newfid, names } => self.handle_walk(fid, newfid, &names),
+            NinePRequestKind::Lopen { fid } => self.handle_lopen(fid),
+            NinePRequestKind::Read { fid, offset, count } => self.handle_read(fid, offset, count),
+            NinePRequestKind::Readdir { fid, offset, count } => {
+                self.handle_readdir(fid, offset, count)
+            }
+            NinePRequestKind::GetAttr { fid } => self.handle_getattr(fid),
+            NinePRequestKind::ReadLink { fid } => self.handle_readlink(fid),
+            NinePRequestKind::Clunk { fid } => self.handle_clunk(fid),
+            NinePRequestKind::StatFs { fid } => self.handle_statfs(fid),
+            NinePRequestKind::Flush => Ok(NinePResponseKind::Flush),
+            NinePRequestKind::XattrWalk { fid, newfid, name } => {
+                self.handle_xattrwalk(fid, newfid, &name)
+            }
+            NinePRequestKind::Mutating(_) => return ninep_error(request.tag, NINEP_EROFS),
+            NinePRequestKind::Unknown { .. } => return ninep_error(request.tag, NINEP_ENOSYS),
+            NinePRequestKind::Malformed { io_error } => {
+                return ninep_error(request.tag, if io_error { NINEP_EIO } else { NINEP_EINVAL });
+            }
+        };
+
+        match result {
+            Ok(kind) => NinePResponse {
+                tag: request.tag,
+                kind,
+            },
+            Err(error) => ninep_error(request.tag, errno_for_error(&error)),
+        }
+    }
+
+    /// Captures the deterministic fid table and negotiated msize.
+    #[must_use]
+    pub fn snapshot(&self) -> NinePSessionSnapshot {
+        NinePSessionSnapshot {
+            negotiated_msize: self.negotiated_msize,
+            fids: self
+                .fids
+                .iter()
+                .map(|(fid, state)| NinePFidSnapshot {
+                    fid: *fid,
+                    path: state.target.snapshot_path(),
+                    xattr_name: state.target.snapshot_xattr_name(),
+                    open_kind: state.open.as_ref().map(NinePOpenHandle::kind),
+                })
+                .collect(),
+        }
+    }
+
+    /// Restores a deterministic fid table and negotiated msize.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NinePServerError`] when the snapshot is structurally invalid,
+    /// references paths absent from this served tree, or carries an impossible
+    /// open kind for a restored path.
+    pub fn restore_snapshot(
+        &mut self,
+        snapshot: NinePSessionSnapshot,
+    ) -> Result<(), NinePServerError> {
+        if snapshot.negotiated_msize < NINEP_HEADER_SIZE
+            || snapshot.negotiated_msize > self.tree.maximum_msize()
+        {
+            return Err(NinePServerError::InvalidMsize {
+                requested: snapshot.negotiated_msize,
+            });
+        }
+
+        let mut restored = BTreeMap::new();
+        for fid_snapshot in snapshot.fids {
+            if restored.contains_key(&fid_snapshot.fid) {
+                return Err(NinePServerError::DuplicateFid {
+                    fid: fid_snapshot.fid,
+                });
+            }
+            let path = normalize_served_path(&fid_snapshot.path)?;
+            let (target, open) = match fid_snapshot.xattr_name {
+                Some(name) => {
+                    self.tree.entry(&path)?;
+                    if name.contains('\0') || name.contains('/') {
+                        return Err(NinePServerError::InvalidFidSnapshot {
+                            fid: fid_snapshot.fid,
+                        });
+                    }
+                    let open = match fid_snapshot.open_kind {
+                        Some(NinePEntryKind::File) => Some(NinePOpenHandle::Xattr),
+                        Some(_) => {
+                            return Err(NinePServerError::InvalidFidSnapshot {
+                                fid: fid_snapshot.fid,
+                            });
+                        }
+                        None => None,
+                    };
+                    (
+                        NinePFidTarget::Xattr {
+                            source_path: path,
+                            name,
+                        },
+                        open,
+                    )
+                }
+                None => {
+                    let entry_kind = self.tree.entry_kind(&path)?;
+                    let open = match fid_snapshot.open_kind {
+                        Some(open_kind) if open_kind != entry_kind => {
+                            return Err(NinePServerError::InvalidFidSnapshot {
+                                fid: fid_snapshot.fid,
+                            });
+                        }
+                        Some(open_kind) => Some(self.open_handle_for(&path, open_kind)?),
+                        None => None,
+                    };
+                    (NinePFidTarget::Entry { path }, open)
+                }
+            };
+            restored.insert(fid_snapshot.fid, NinePFidState { target, open });
+        }
+
+        self.negotiated_msize = snapshot.negotiated_msize;
+        self.fids = restored;
+        Ok(())
+    }
+
+    fn handle_version(
+        &mut self,
+        msize: u32,
+        version: &str,
+    ) -> Result<NinePResponseKind, NinePServerError> {
+        let negotiation = self.tree.negotiate_version(version, msize)?;
+        self.negotiated_msize = negotiation.msize;
+        self.fids.clear();
+        Ok(NinePResponseKind::Version(negotiation))
+    }
+
+    fn handle_attach(&mut self, fid: u32) -> Result<NinePResponseKind, NinePServerError> {
+        if self.fids.contains_key(&fid) {
+            return Err(NinePServerError::FidAlreadyExists { fid });
+        }
+        self.fids.insert(
+            fid,
+            NinePFidState {
+                target: NinePFidTarget::Entry {
+                    path: String::from("/"),
+                },
+                open: None,
+            },
+        );
+        Ok(NinePResponseKind::Attach {
+            qid: self.tree.qid("/")?,
+        })
+    }
+
+    fn handle_walk(
+        &mut self,
+        fid: u32,
+        newfid: u32,
+        names: &[String],
+    ) -> Result<NinePResponseKind, NinePServerError> {
+        let state = self.fid(fid)?;
+        if state.open.is_some() {
+            return Err(NinePServerError::FidAlreadyOpen { fid });
+        }
+        let mut path = self.entry_path_for_fid(fid)?.to_owned();
+        if newfid != fid && self.fids.contains_key(&newfid) {
+            return Err(NinePServerError::FidAlreadyExists { fid: newfid });
+        }
+        let mut qids = Vec::with_capacity(names.len());
+        for name in names {
+            if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+                return Err(NinePServerError::InvalidPath { path: name.clone() });
+            }
+            if self.tree.entry_kind(&path)? != NinePEntryKind::Directory {
+                return Err(NinePServerError::NotDirectory { path });
+            }
+            path = child_path(&path, name);
+            qids.push(self.tree.qid(&path)?);
+        }
+        self.fids.insert(
+            newfid,
+            NinePFidState {
+                target: NinePFidTarget::Entry { path },
+                open: None,
+            },
+        );
+        Ok(NinePResponseKind::Walk { qids })
+    }
+
+    fn handle_lopen(&mut self, fid: u32) -> Result<NinePResponseKind, NinePServerError> {
+        let target = self.fid(fid)?.target.clone();
+        let (open, qid) = match target {
+            NinePFidTarget::Entry { path } => {
+                let kind = self.tree.entry_kind(&path)?;
+                (self.open_handle_for(&path, kind)?, self.tree.qid(&path)?)
+            }
+            NinePFidTarget::Xattr { source_path, name } => {
+                (NinePOpenHandle::Xattr, xattr_qid(&source_path, &name))
+            }
+        };
+        self.fid_mut(fid)?.open = Some(open);
+        Ok(NinePResponseKind::Lopen { qid })
+    }
+
+    fn handle_read(
+        &self,
+        fid: u32,
+        offset: u64,
+        count: u32,
+    ) -> Result<NinePResponseKind, NinePServerError> {
+        let state = self.fid(fid)?;
+        let count = count.min(self.read_payload_limit());
+        match (&state.target, &state.open) {
+            (NinePFidTarget::Entry { path }, Some(NinePOpenHandle::File)) => {
+                Ok(NinePResponseKind::Read {
+                    data: self.tree.read_file(path, offset, count)?,
+                })
+            }
+            (NinePFidTarget::Xattr { .. }, Some(NinePOpenHandle::Xattr)) => {
+                Ok(NinePResponseKind::Read {
+                    data: read_slice(&[], offset, count),
+                })
+            }
+            _ => Err(NinePServerError::NotFile {
+                path: state.target.diagnostic_path(),
+            }),
+        }
+    }
+
+    fn handle_readdir(
+        &self,
+        fid: u32,
+        offset: u64,
+        count: u32,
+    ) -> Result<NinePResponseKind, NinePServerError> {
+        let state = self.fid(fid)?;
+        let Some(NinePOpenHandle::Directory { entries }) = &state.open else {
+            return Err(NinePServerError::NotDirectory {
+                path: state.target.diagnostic_path(),
+            });
+        };
+        let budget = count.min(self.readdir_payload_limit());
+        let mut used = 0u32;
+        let mut output = Vec::new();
+        for entry in entries.iter().filter(|entry| entry.offset > offset) {
+            let entry_size = encoded_directory_entry_size(entry);
+            let Some(next_used) = used.checked_add(entry_size) else {
+                break;
+            };
+            if next_used > budget {
+                break;
+            }
+            used = next_used;
+            output.push(entry.clone());
+        }
+        Ok(NinePResponseKind::Readdir { entries: output })
+    }
+
+    fn handle_getattr(&self, fid: u32) -> Result<NinePResponseKind, NinePServerError> {
+        match &self.fid(fid)?.target {
+            NinePFidTarget::Entry { path } => {
+                Ok(NinePResponseKind::GetAttr(self.tree.getattr(path)?))
+            }
+            NinePFidTarget::Xattr { source_path, name } => Ok(NinePResponseKind::GetAttr(
+                xattr_attributes(source_path, name),
+            )),
+        }
+    }
+
+    fn handle_readlink(&self, fid: u32) -> Result<NinePResponseKind, NinePServerError> {
+        let path = self.entry_path_for_fid(fid)?;
+        Ok(NinePResponseKind::ReadLink {
+            target: self.tree.readlink(path)?,
+        })
+    }
+
+    fn handle_clunk(&mut self, fid: u32) -> Result<NinePResponseKind, NinePServerError> {
+        self.fids
+            .remove(&fid)
+            .ok_or(NinePServerError::FidNotFound { fid })?;
+        Ok(NinePResponseKind::Clunk)
+    }
+
+    fn handle_statfs(&self, fid: u32) -> Result<NinePResponseKind, NinePServerError> {
+        self.entry_path_for_fid(fid)?;
+        Ok(NinePResponseKind::StatFs(self.tree.statfs()?))
+    }
+
+    fn handle_xattrwalk(
+        &mut self,
+        fid: u32,
+        newfid: u32,
+        name: &str,
+    ) -> Result<NinePResponseKind, NinePServerError> {
+        if self.fids.contains_key(&newfid) {
+            return Err(NinePServerError::FidAlreadyExists { fid: newfid });
+        }
+        if name.contains('\0') || name.contains('/') {
+            return Err(NinePServerError::InvalidPath {
+                path: name.to_owned(),
+            });
+        }
+        let source_path = self.entry_path_for_fid(fid)?.to_owned();
+        self.fids.insert(
+            newfid,
+            NinePFidState {
+                target: NinePFidTarget::Xattr {
+                    source_path,
+                    name: name.to_owned(),
+                },
+                open: None,
+            },
+        );
+        Ok(NinePResponseKind::XattrWalk { size: 0 })
+    }
+
+    fn fid(&self, fid: u32) -> Result<&NinePFidState, NinePServerError> {
+        self.fids
+            .get(&fid)
+            .ok_or(NinePServerError::FidNotFound { fid })
+    }
+
+    fn fid_mut(&mut self, fid: u32) -> Result<&mut NinePFidState, NinePServerError> {
+        self.fids
+            .get_mut(&fid)
+            .ok_or(NinePServerError::FidNotFound { fid })
+    }
+
+    fn entry_path_for_fid(&self, fid: u32) -> Result<&str, NinePServerError> {
+        match &self.fid(fid)?.target {
+            NinePFidTarget::Entry { path } => Ok(path),
+            NinePFidTarget::Xattr { .. } => Err(NinePServerError::FidNotEntry { fid }),
+        }
+    }
+
+    fn open_handle_for(
+        &self,
+        path: &str,
+        kind: NinePEntryKind,
+    ) -> Result<NinePOpenHandle, NinePServerError> {
+        match kind {
+            NinePEntryKind::Directory => Ok(NinePOpenHandle::Directory {
+                entries: self.tree.readdir(path)?,
+            }),
+            NinePEntryKind::File => Ok(NinePOpenHandle::File),
+            NinePEntryKind::Symlink => Ok(NinePOpenHandle::Symlink),
+        }
+    }
+
+    fn read_payload_limit(&self) -> u32 {
+        self.negotiated_msize
+            .saturating_sub(NINEP_READ_RESPONSE_OVERHEAD)
+    }
+
+    fn readdir_payload_limit(&self) -> u32 {
+        self.negotiated_msize
+            .saturating_sub(NINEP_READDIR_RESPONSE_OVERHEAD)
+    }
+}
+
 /// An error raised by the deterministic 9p served-tree model.
 #[derive(Debug, PartialEq, Eq)]
 pub enum NinePServerError {
@@ -529,6 +1257,46 @@ pub enum NinePServerError {
     NotDirectory {
         /// Non-directory path.
         path: String,
+    },
+    /// A requested path is not a regular file.
+    NotFile {
+        /// Non-file path.
+        path: String,
+    },
+    /// A requested path is not a symbolic link.
+    NotSymlink {
+        /// Non-symlink path.
+        path: String,
+    },
+    /// A fid was not present in the deterministic fid table.
+    FidNotFound {
+        /// Missing fid.
+        fid: u32,
+    },
+    /// A fid already existed in the deterministic fid table.
+    FidAlreadyExists {
+        /// Duplicate fid.
+        fid: u32,
+    },
+    /// A fid was already opened and cannot be walked.
+    FidAlreadyOpen {
+        /// Open fid.
+        fid: u32,
+    },
+    /// A fid does not name a served-tree entry.
+    FidNotEntry {
+        /// Non-entry fid.
+        fid: u32,
+    },
+    /// A session snapshot repeated a fid.
+    DuplicateFid {
+        /// Duplicate fid.
+        fid: u32,
+    },
+    /// A session snapshot carried an impossible fid/open-state pairing.
+    InvalidFidSnapshot {
+        /// Invalid fid.
+        fid: u32,
     },
     /// A requested 9p protocol version is unsupported.
     UnsupportedVersion {
@@ -573,6 +1341,23 @@ impl fmt::Display for NinePServerError {
             Self::NotFound { path } => write!(formatter, "9p served path `{path}` was not found"),
             Self::NotDirectory { path } => {
                 write!(formatter, "9p served path `{path}` is not a directory")
+            }
+            Self::NotFile { path } => write!(formatter, "9p served path `{path}` is not a file"),
+            Self::NotSymlink { path } => {
+                write!(formatter, "9p served path `{path}` is not a symlink")
+            }
+            Self::FidNotFound { fid } => write!(formatter, "9p fid {fid} was not found"),
+            Self::FidAlreadyExists { fid } => write!(formatter, "9p fid {fid} already exists"),
+            Self::FidAlreadyOpen { fid } => write!(formatter, "9p fid {fid} is already open"),
+            Self::FidNotEntry { fid } => {
+                write!(formatter, "9p fid {fid} does not name a served-tree entry")
+            }
+            Self::DuplicateFid { fid } => write!(formatter, "9p snapshot repeats fid {fid}"),
+            Self::InvalidFidSnapshot { fid } => {
+                write!(
+                    formatter,
+                    "9p snapshot has invalid open state for fid {fid}"
+                )
             }
             Self::UnsupportedVersion { requested } => {
                 write!(formatter, "unsupported 9p version `{requested}`")
@@ -629,7 +1414,150 @@ fn parent_path(path: &str) -> Option<String> {
 }
 
 fn entry_name(path: &str) -> String {
-    path.rsplit('/').next().unwrap_or(path).to_owned()
+    match path.rsplit('/').next() {
+        Some(name) => name.to_owned(),
+        None => path.to_owned(),
+    }
+}
+
+fn child_path(parent: &str, name: &str) -> String {
+    if parent == "/" {
+        format!("/{name}")
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
+fn read_slice(bytes: &[u8], offset: u64, count: u32) -> Vec<u8> {
+    let Ok(start) = usize::try_from(offset) else {
+        return Vec::new();
+    };
+    if start >= bytes.len() {
+        return Vec::new();
+    }
+    let count = match usize::try_from(count) {
+        Ok(count) => count,
+        Err(_) => usize::MAX,
+    };
+    let end = start.saturating_add(count).min(bytes.len());
+    bytes[start..end].to_vec()
+}
+
+fn encoded_request_size(kind: &NinePRequestKind) -> u32 {
+    match kind {
+        NinePRequestKind::Version { version, .. } => NINEP_HEADER_SIZE
+            .saturating_add(NINEP_U32_SIZE)
+            .saturating_add(encoded_string_size(version)),
+        NinePRequestKind::Attach { .. } => NINEP_HEADER_SIZE
+            .saturating_add(NINEP_U32_SIZE)
+            .saturating_add(NINEP_U32_SIZE)
+            .saturating_add(encoded_string_size(""))
+            .saturating_add(encoded_string_size(""))
+            .saturating_add(NINEP_U32_SIZE),
+        NinePRequestKind::Walk { names, .. } => NINEP_HEADER_SIZE
+            .saturating_add(NINEP_U32_SIZE)
+            .saturating_add(NINEP_U32_SIZE)
+            .saturating_add(NINEP_U16_SIZE)
+            .saturating_add(encoded_string_list_size(names)),
+        NinePRequestKind::Lopen { .. } => NINEP_HEADER_SIZE
+            .saturating_add(NINEP_U32_SIZE)
+            .saturating_add(NINEP_U32_SIZE),
+        NinePRequestKind::Read { .. } | NinePRequestKind::Readdir { .. } => NINEP_HEADER_SIZE
+            .saturating_add(NINEP_U32_SIZE)
+            .saturating_add(NINEP_U64_SIZE)
+            .saturating_add(NINEP_U32_SIZE),
+        NinePRequestKind::GetAttr { .. } => NINEP_HEADER_SIZE
+            .saturating_add(NINEP_U32_SIZE)
+            .saturating_add(NINEP_U64_SIZE),
+        NinePRequestKind::ReadLink { .. }
+        | NinePRequestKind::Clunk { .. }
+        | NinePRequestKind::StatFs { .. } => NINEP_HEADER_SIZE.saturating_add(NINEP_U32_SIZE),
+        NinePRequestKind::Flush => NINEP_HEADER_SIZE.saturating_add(NINEP_U16_SIZE),
+        NinePRequestKind::XattrWalk { name, .. } => NINEP_HEADER_SIZE
+            .saturating_add(NINEP_U32_SIZE)
+            .saturating_add(NINEP_U32_SIZE)
+            .saturating_add(encoded_string_size(name)),
+        NinePRequestKind::Mutating(_)
+        | NinePRequestKind::Unknown { .. }
+        | NinePRequestKind::Malformed { .. } => NINEP_HEADER_SIZE,
+    }
+}
+
+fn encoded_string_list_size(values: &[String]) -> u32 {
+    values.iter().fold(0u32, |total, value| {
+        total.saturating_add(encoded_string_size(value))
+    })
+}
+
+fn encoded_string_size(value: &str) -> u32 {
+    let byte_len = match u32::try_from(value.len()) {
+        Ok(byte_len) => byte_len,
+        Err(_) => u32::MAX,
+    };
+    NINEP_U16_SIZE.saturating_add(byte_len)
+}
+
+fn encoded_directory_entry_size(entry: &NinePDirectoryEntry) -> u32 {
+    NINEP_DIRECTORY_ENTRY_BASE_SIZE.saturating_add(match u32::try_from(entry.name.len()) {
+        Ok(byte_len) => byte_len,
+        Err(_) => u32::MAX,
+    })
+}
+
+fn xattr_qid(source_path: &str, name: &str) -> NinePQid {
+    NinePQid {
+        qtype: NinePEntryKind::File.qid_type(),
+        version: NINEP_FIXED_QID_VERSION,
+        path: xattr_qid_path_hash(source_path, name),
+    }
+}
+
+fn xattr_attributes(source_path: &str, name: &str) -> NinePAttributes {
+    NinePAttributes {
+        qid: xattr_qid(source_path, name),
+        mode: NinePEntryKind::File.mode_type() | 0o444,
+        uid: NINEP_FIXED_UID,
+        gid: NINEP_FIXED_GID,
+        size: 0,
+        block_size: NINEP_FIXED_BLOCK_SIZE,
+        blocks: 0,
+        atime_sec: NINEP_FIXED_EPOCH_SECONDS,
+        mtime_sec: NINEP_FIXED_EPOCH_SECONDS,
+        ctime_sec: NINEP_FIXED_EPOCH_SECONDS,
+    }
+}
+
+fn ninep_error(tag: u16, errno: u32) -> NinePResponse {
+    NinePResponse {
+        tag,
+        kind: NinePResponseKind::Error { errno },
+    }
+}
+
+fn errno_for_error(error: &NinePServerError) -> u32 {
+    match error {
+        NinePServerError::UnsupportedVersion { .. }
+        | NinePServerError::InvalidMsize { .. }
+        | NinePServerError::InvalidPath { .. }
+        | NinePServerError::DuplicatePath { .. }
+        | NinePServerError::RootMustBeDirectory
+        | NinePServerError::MissingParent { .. }
+        | NinePServerError::ParentNotDirectory { .. }
+        | NinePServerError::NotFound { .. }
+        | NinePServerError::NotDirectory { .. }
+        | NinePServerError::NotFile { .. }
+        | NinePServerError::NotSymlink { .. }
+        | NinePServerError::FidNotFound { .. }
+        | NinePServerError::FidAlreadyExists { .. }
+        | NinePServerError::FidAlreadyOpen { .. }
+        | NinePServerError::FidNotEntry { .. }
+        | NinePServerError::DuplicateFid { .. }
+        | NinePServerError::InvalidFidSnapshot { .. }
+        | NinePServerError::DirectoryTooLarge { .. } => NINEP_EINVAL,
+        NinePServerError::ContentTooLarge { .. } | NinePServerError::ContentSizeOverflow => {
+            NINEP_EIO
+        }
+    }
 }
 
 fn qid_for_entry(path: &str, entry: &NinePServedEntry) -> NinePQid {
@@ -642,6 +1570,14 @@ fn qid_for_entry(path: &str, entry: &NinePServedEntry) -> NinePQid {
 
 fn qid_path_hash(path: &str) -> u64 {
     let hash = ContentHash::from_canonical_material(NINEP_QID_PATH_DOMAIN, path);
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&hash.bytes[..8]);
+    u64::from_le_bytes(bytes)
+}
+
+fn xattr_qid_path_hash(source_path: &str, name: &str) -> u64 {
+    let material = format!("{source_path}\0{name}");
+    let hash = ContentHash::from_canonical_material(NINEP_XATTR_QID_PATH_DOMAIN, &material);
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&hash.bytes[..8]);
     u64::from_le_bytes(bytes)

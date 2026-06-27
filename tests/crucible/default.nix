@@ -510,6 +510,11 @@ in {
       attrPath = "checks.crucible.phase3.ninePSubnodeServer";
       taskIds = ["T-IO-6"];
     };
+    ninePSessionLifecycle = import ./phase3-ninep-session-lifecycle.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.ninePSessionLifecycle";
+      taskIds = ["T-IO-7"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
