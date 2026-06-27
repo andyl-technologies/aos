@@ -1,6 +1,11 @@
 //! Tree-walk evaluator tests: fetch tree (part 1).
 
 use super::*;
+use crate::cache::{
+    DurableBlake3Hash, PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags, ParseCacheKey,
+    ParseFileKey, PersistCache, PersistFileArtifactKey,
+};
+use crate::string::NixString;
 
 #[test]
 fn fetch_tree_path_input_returns_locked_tree_metadata() {
@@ -109,6 +114,209 @@ fn fetch_tree_path_input_returns_locked_tree_metadata() {
 
     fs::remove_dir_all(dir).expect("source temp directory removes");
     fs::remove_dir_all(store_dir).expect("store temp directory removes");
+}
+
+#[test]
+fn configured_import_cache_preserves_fetch_tree_path_store_path_surface() {
+    fn evaluate_fetch_tree_surface(
+        source: &str,
+        options: TreeWalkOptions,
+    ) -> (Vec<u8>, (usize, usize)) {
+        let ir = lower(source);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        let value = evaluator
+            .eval_root()
+            .expect("fetchTree expression evaluates");
+        let import_stats = evaluator.import_parse_cache_stats();
+        let output = evaluator
+            .heap()
+            .get_string(value)
+            .expect("fetchTree outPath is a string")
+            .bytes()
+            .to_vec();
+        (output, import_stats)
+    }
+
+    fn checked_store_path(output: &[u8], store_dir: &Path) -> PathBuf {
+        let path = PathBuf::from(std::str::from_utf8(output).expect("store path is UTF-8"));
+        assert!(
+            path.starts_with(store_dir),
+            "fetchTree store path {path:?} should stay under configured store dir {store_dir:?}"
+        );
+        path
+    }
+
+    fn assert_materialized_fetch_tree_file(output: &[u8], store_dir: &Path) {
+        let path = checked_store_path(output, store_dir);
+        assert_eq!(
+            fs::read(path.join("file.txt")).expect("fetchTree materializes fixture file"),
+            b"path-data"
+        );
+        assert_eq!(
+            fs::read(path.join("sub").join("nested.txt"))
+                .expect("fetchTree materializes nested fixture file"),
+            b"nested"
+        );
+    }
+
+    fn remove_store_path(output: &[u8], store_dir: &Path) {
+        fs::remove_dir_all(checked_store_path(output, store_dir))
+            .expect("materialized store path removes");
+    }
+
+    fn hot_string_surface_canaries(label: &str, bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let hot_canary = NixString::from_bytes(bytes.to_vec())
+            .structural_hash_xxh3()
+            .raw_for_tests();
+        vec![
+            (
+                format!("{label} hot xxh3 decimal"),
+                hot_canary.to_string().into_bytes(),
+            ),
+            (
+                format!("{label} hot xxh3 hex"),
+                format!("{hot_canary:016x}").into_bytes(),
+            ),
+            (
+                format!("{label} hot xxh3 little-endian bytes"),
+                hot_canary.to_le_bytes().to_vec(),
+            ),
+            (
+                format!("{label} hot xxh3 big-endian bytes"),
+                hot_canary.to_be_bytes().to_vec(),
+            ),
+        ]
+    }
+
+    let root = fs::canonicalize(unique_temp_dir(
+        "import-cache-fetch-tree-path-surface-parity",
+    ))
+    .expect("temp directory canonicalizes");
+    let source_dir = root.join("source");
+    fs::create_dir(&source_dir).expect("source directory creates");
+    fs::write(source_dir.join("file.txt"), b"path-data").expect("source file writes");
+    fs::create_dir(source_dir.join("sub")).expect("source subdirectory creates");
+    fs::write(source_dir.join("sub").join("nested.txt"), b"nested")
+        .expect("source nested file writes");
+    let first_parse_root = root.join("first-parse-cache");
+    let second_parse_root = root.join("second-parse-cache");
+    let persist_root = root.join("persist-cache");
+    let store_dir = root.join("store");
+    fs::create_dir(&store_dir).expect("store directory creates");
+    let import_path = root.join("fetch-tree-path.nix");
+    let source_path = path_source(&source_dir);
+    let imported_source = nix_string_literal(&source_path).into_bytes();
+    fs::write(&import_path, &imported_source).expect("fetchTree path import writes");
+    let import_realpath = fs::canonicalize(&import_path).expect("import path canonicalizes");
+    let source = format!(
+        r#"let x = builtins.fetchTree {{ type = "path"; path = import {}; }}; in x.outPath"#,
+        import_path.display()
+    );
+
+    let mut uncached_options = TreeWalkOptions::with_store_dir(path_bytes(&store_dir))
+        .expect("store directory configures");
+    uncached_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    let (uncached_output, uncached_stats) = evaluate_fetch_tree_surface(&source, uncached_options);
+    assert_eq!(uncached_stats, (0, 0));
+    assert!(
+        uncached_output.ends_with(b"-source"),
+        "fetchTree path surface should expose the default source name: {uncached_output:?}"
+    );
+    assert_materialized_fetch_tree_file(&uncached_output, &store_dir);
+    remove_store_path(&uncached_output, &store_dir);
+
+    let mut miss_options = TreeWalkOptions::with_store_dir(path_bytes(&store_dir))
+        .expect("store directory configures");
+    miss_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    miss_options.set_parse_cache_root(&first_parse_root);
+    miss_options.set_persist_cache_root(&persist_root);
+    let (miss_output, miss_stats) = evaluate_fetch_tree_surface(&source, miss_options);
+    assert_eq!(miss_stats, (0, 1));
+    assert_eq!(miss_output, uncached_output);
+    assert_materialized_fetch_tree_file(&miss_output, &store_dir);
+    remove_store_path(&miss_output, &store_dir);
+
+    let mut hit_options = TreeWalkOptions::with_store_dir(path_bytes(&store_dir))
+        .expect("store directory configures");
+    hit_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    hit_options.set_parse_cache_root(&second_parse_root);
+    hit_options.set_persist_cache_root(&persist_root);
+    let (hit_output, hit_stats) = evaluate_fetch_tree_surface(&source, hit_options);
+    assert_eq!(hit_stats, (1, 0));
+    assert_eq!(hit_output, uncached_output);
+    assert_materialized_fetch_tree_file(&hit_output, &store_dir);
+    assert!(
+        ParseCache::new(&second_parse_root)
+            .entry_for_source(&imported_source)
+            .is_complete(),
+        "persistent hit should hydrate the runtime parse-cache entry"
+    );
+
+    let root_parse_key = ParseCacheKey::for_source(
+        source.as_bytes(),
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let imported_parse_key = ParseCacheKey::for_source(
+        &imported_source,
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let file_key = ParseFileKey::for_source(&import_realpath, &imported_source);
+    let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, imported_parse_key);
+    assert!(
+        PersistCache::open(&persist_root)
+            .expect("persistent cache opens")
+            .lookup_file_artifact(artifact_key)
+            .expect("persistent file-artifact lookup succeeds")
+            .is_some(),
+        "fetchTree canary import should materialize a persistent file-artifact mapping"
+    );
+
+    let mut canaries = durable_hash_surface_canaries(
+        "root parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(root_parse_key.as_bytes()),
+    );
+    canaries.extend(durable_hash_surface_canaries(
+        "import parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(imported_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "import file-content BLAKE3",
+        file_key.content_hash(),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "fetchTree file payload BLAKE3 sentinel",
+        DurableBlake3Hash::for_bytes(b"path-data"),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "fetchTree nested payload BLAKE3 sentinel",
+        DurableBlake3Hash::for_bytes(b"nested"),
+    ));
+    canaries.extend(hot_string_surface_canaries(
+        "fetchTree source path",
+        source_path.as_bytes(),
+    ));
+    canaries.extend(hot_string_surface_canaries(
+        "fetchTree source name",
+        b"source",
+    ));
+
+    for (surface_name, output) in [
+        ("cache-disabled fetchTree path surface", &uncached_output),
+        ("persistent miss fetchTree path surface", &miss_output),
+        ("persistent hit fetchTree path surface", &hit_output),
+    ] {
+        assert_surface_canaries_absent(surface_name, "store path", output, &canaries);
+    }
+
+    fs::remove_dir_all(root).expect("temp directory removes");
 }
 
 #[test]

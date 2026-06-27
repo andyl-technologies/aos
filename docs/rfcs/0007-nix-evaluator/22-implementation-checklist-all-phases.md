@@ -1165,6 +1165,14 @@ alone (`M-1`/`Q-A`).
       runs, checks the checkout materializes, and scans those fetchGit surfaces
       for root/import parse-cache BLAKE3, imported-file content BLAKE3, a
       worktree-payload BLAKE3 sentinel, and hot xxh3 canaries.
+      `configured_import_cache_preserves_fetch_tree_path_store_path_surface`
+      evaluates path-form `builtins.fetchTree` over a local tree path imported
+      from a file with import caching disabled, with configured parse/persist
+      roots on a miss/write path, and with a later persistent-hit path, requires
+      identical returned `outPath` strings across all three runs, checks the
+      store tree materializes, and scans those fetchTree path surfaces for
+      root/import parse-cache BLAKE3, imported-file content BLAKE3,
+      tree-payload BLAKE3 sentinels, and hot xxh3 canaries.
       `configured_import_cache_preserves_path_store_path_surface` evaluates
       `builtins.path (import file)` over a local flat fixed-output path with
       import caching disabled, with configured parse/persist roots on a
@@ -1181,7 +1189,7 @@ alone (`M-1`/`Q-A`).
       those filterSource surfaces for root/import parse-cache BLAKE3,
       imported-file content BLAKE3, included/excluded file-content BLAKE3
       sentinels, and hot xxh3 canaries. These sample selected
-      `hashString`/`hashFile`/`fetchurl`/`fetchTarball`/`fetchGit`/
+      `hashString`/`hashFile`/`fetchurl`/`fetchTarball`/`fetchGit`/`fetchTree`/
       `builtins.path`/`filterSource` output surfaces only; they do not prove the
       full hash/fetch/source-path leak-invariant gate (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3

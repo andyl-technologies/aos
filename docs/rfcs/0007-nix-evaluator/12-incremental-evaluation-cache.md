@@ -1022,6 +1022,14 @@ harness, never cut for scope.
       checkout materializes, and scans those fetchGit surfaces for root/import
       parse-cache BLAKE3, imported-file content BLAKE3, a worktree-payload
       BLAKE3 sentinel, and hot xxh3 canaries.
+      `configured_import_cache_preserves_fetch_tree_path_store_path_surface`
+      evaluates path-form `builtins.fetchTree` over a local tree path imported
+      from a file with import caching disabled, with configured parse/persist
+      roots on a miss/write path, and with a later persistent-hit path, requires
+      identical returned `outPath` strings across all three runs, checks the
+      store tree materializes, and scans those fetchTree path surfaces for
+      root/import parse-cache BLAKE3, imported-file content BLAKE3,
+      tree-payload BLAKE3 sentinels, and hot xxh3 canaries.
       `configured_import_cache_preserves_path_store_path_surface` evaluates
       `builtins.path (import file)` over a local flat fixed-output path with
       import caching disabled, with configured parse/persist roots on a
@@ -1038,7 +1046,7 @@ harness, never cut for scope.
       those filterSource surfaces for root/import parse-cache BLAKE3,
       imported-file content BLAKE3, included/excluded file-content BLAKE3
       sentinels, and hot xxh3 canaries. These sample selected
-      `hashString`/`hashFile`/`fetchurl`/`fetchTarball`/`fetchGit`/
+      `hashString`/`hashFile`/`fetchurl`/`fetchTarball`/`fetchGit`/`fetchTree`/
       `builtins.path`/`filterSource` output surfaces only; they do not prove
       every hash/fetch/source-path builtin or the full type-enforced
       leak-invariant path ([§5.2](#52-the-leak-invariant),
