@@ -1132,13 +1132,15 @@ alone (`M-1`/`Q-A`).
       `builtins.pathExists ./marker` guard with eval-cache disabled, with
       configured persistent force-cache demand/writeback on cold and
       materializing paths, and with a fresh-runtime persistent force-cache hit
-      for the guarded hashFile trace,
-      then requires identical SHA-256 file-hash output across all runs and scans
-      that output for synthetic root parse-cache-key and payload-content BLAKE3
-      sentinels, actual guard/hashFile persistent force-cache trace/value
-      canaries, and hot xxh3 canaries. These sample selected
-      `hashString`/`hashFile` output surfaces only; they do not prove the full
-      hash/fetch builtin leak-invariant gate (`S-15`).
+      for the guarded hashFile trace, then mutates the hashed payload and
+      requires stale persistent fallback to produce the changed cache-disabled
+      SHA-256 file-hash output before a fresh-runtime post-recompute hit. It
+      scans both original and changed outputs for synthetic root
+      parse-cache-key and payload-content BLAKE3 sentinels, actual
+      guard/hashFile persistent force-cache trace/value canaries, and hot xxh3
+      canaries. These sample selected `hashString`/`hashFile` output surfaces
+      only; they do not prove the full hash/fetch builtin leak-invariant gate
+      (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
