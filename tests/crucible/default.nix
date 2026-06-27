@@ -445,6 +445,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerPartitionHeal";
       taskIds = ["T-SCHED-23"];
     };
+    schedulerTopologyRendezvous = import ./phase3-scheduler-topology-rendezvous.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerTopologyRendezvous";
+      taskIds = ["T-SCHED-24"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

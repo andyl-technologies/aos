@@ -1261,10 +1261,27 @@ application of explorer-supplied preemption decisions
   next-minimum recompute after partial partition, last-inbound removal,
   sequential partition-then-heal over the current graph, and send authorization
   blocking/restoration across partition/heal.
-- [ ] **T-SCHED-24** Apply topology swaps atomically at a rendezvous (all nodes
+- [x] **T-SCHED-24** Apply topology swaps atomically at a rendezvous (all nodes
   brought to the fault's exact activation virtual time), never mid-RUN and never
   shifted to the next arbitrary rendezvous tick. — satisfies [SCHED-39],
   [SCHED-14]; spec §8.11, §8.5.
+  Completed by `checks.crucible.phase3.schedulerTopologyRendezvous`.
+  `SchedulerTopologyChange::with_activation_time` lets fault and latency
+  handlers attach the exact activation virtual time to a queued topology
+  mutation. Pending timed changes contribute that activation time to the shared
+  rendezvous cap, so a fault at time `t` brings every non-terminal scheduler node
+  to `t` and is not shifted to the next fixed rendezvous tick. The scheduler
+  defers the change until that activation rendezvous is ready, then applies it at
+  the following quantum boundary before the next PICK, records the activation
+  time on `SchedulerTopologyChangeApplication`, and never applies the topology mutation mid-RUN.
+  Nodes that reach an older lookahead horizon before activation remain eligible
+  for the activation rendezvous, and idle nodes without a wake can still advance
+  to that pending topology rendezvous. Focused regressions cover exact
+  activation caps with a later fixed rendezvous interval, deferred application
+  until after activation, waiting for all runnable nodes to reach activation,
+  old-horizon continuation, idle/no-wake rendezvous advancement, and
+  sequence-ordered application when a ready timed change shares a boundary with
+  an immediate change.
 - [ ] **T-SCHED-25** Implement bounded host-level concurrency up to the lookahead
   window while serializing RESOLVE/EMIT through the single scheduler; prove
   serial and concurrent runs are bit-identical via `gate:e2e-determinism`. —
