@@ -19,7 +19,8 @@ use thiserror::Error;
 
 use crate::{
     AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, CheckpointKind, ContentHash,
-    ExecutionFingerprint, ExecutionHorizon, Icount, NodeBlobRef, NodeId,
+    ExecutionFingerprint, ExecutionHorizon, Icount, NodeBlobRef, NodeId, SchedulerError,
+    SchedulerNodeId, SchedulerSendAuthorizer, SchedulingNodeKind,
 };
 
 /// A deterministic in-process backend implementing [`Backend`].
@@ -606,15 +607,26 @@ impl SimDouble {
     /// The method consumes one deterministic script step, publishes the same
     /// shared-memory clock/ceiling fields a plugin would touch, drains
     /// deliverable inbound frames through the real SPSC dequeue path, and emits
-    /// any scripted outbound frames through the real SPSC enqueue path.
+    /// any scripted outbound frames through the real SPSC enqueue path after
+    /// scheduler topology authorization.
     ///
     /// # Errors
     ///
     /// Returns [`SimDoubleError`] when backend advancement, shared-memory clock
-    /// publication, frame delivery, or scripted frame enqueue fails.
+    /// publication, frame delivery, scheduler send authorization, or scripted
+    /// frame enqueue fails.
     pub fn advance_scripted_quantum(
         &mut self,
         horizon: ExecutionHorizon,
+        send_authorizer: &dyn SchedulerSendAuthorizer,
+    ) -> Result<AdvanceOutcome, SimDoubleError> {
+        self.advance_scripted_quantum_inner(horizon, send_authorizer)
+    }
+
+    fn advance_scripted_quantum_inner(
+        &mut self,
+        horizon: ExecutionHorizon,
+        send_authorizer: &dyn SchedulerSendAuthorizer,
     ) -> Result<AdvanceOutcome, SimDoubleError> {
         self.control_lifecycle
             .observe(ControlLifecycleEvent::RunViaSharedMemory)?;
@@ -664,7 +676,7 @@ impl SimDouble {
         if reached_script_target {
             self.script.consume_candidate();
             for outbound in step.outbound_frames {
-                self.enqueue_outbound_frame(outbound)?;
+                self.enqueue_outbound_frame(outbound, send_authorizer)?;
             }
         }
         Ok(outcome)
@@ -825,16 +837,24 @@ impl SimDouble {
         Ok(next.map(|(src_slot, _key)| src_slot))
     }
 
-    fn enqueue_outbound_frame(&mut self, outbound: SimOutboundFrame) -> Result<(), SimDoubleError> {
-        let sequence = self.next_outbound_sequence;
-        let next_sequence = sequence
-            .checked_add(1)
-            .ok_or(SimDoubleError::OutboundSequenceOverflow { sequence })?;
+    fn enqueue_outbound_frame(
+        &mut self,
+        outbound: SimOutboundFrame,
+        send_authorizer: &dyn SchedulerSendAuthorizer,
+    ) -> Result<(), SimDoubleError> {
         let SimOutboundFrame {
             dst_slot,
             delivery_icount,
             payload,
         } = outbound;
+        let producer = sim_scheduler_node_for_slot(self.slot_index);
+        let consumer = sim_scheduler_node_for_slot(dst_slot);
+        send_authorizer.authorize_cross_node_send(&producer, &consumer)?;
+
+        let sequence = self.next_outbound_sequence;
+        let next_sequence = sequence
+            .checked_add(1)
+            .ok_or(SimDoubleError::OutboundSequenceOverflow { sequence })?;
         let frame = FrameEntry::new(delivery_icount, self.slot_index, sequence, &payload)?;
         self.shmem
             .enqueue_directed_frame(self.slot_index, dst_slot, &frame)?;
@@ -946,6 +966,13 @@ pub enum SimDoubleError {
         #[from]
         source: crucible_shmem::LookaheadGateError,
     },
+    /// The scheduler rejected a cross-node send under the current topology.
+    #[error("sim double scheduler send authorization failed: {source}")]
+    SchedulerSendAuthorization {
+        /// Underlying scheduler authorization error.
+        #[from]
+        source: SchedulerError,
+    },
     /// The backend rejected an operation.
     #[error("sim double backend operation failed")]
     Backend {
@@ -953,6 +980,15 @@ pub enum SimDoubleError {
         #[from]
         source: BackendError,
     },
+}
+
+fn sim_scheduler_node_for_slot(slot: u32) -> SchedulerNodeId {
+    SchedulerNodeId {
+        node: NodeId {
+            name: format!("slot-{slot}"),
+        },
+        kind: SchedulingNodeKind::Vm,
+    }
 }
 
 struct SimDoubleShmem {
@@ -1067,6 +1103,24 @@ fn authorize_sim_double_delivery_ceiling(
 mod tests {
     use super::*;
     use crate::NodeId;
+
+    static ALLOW_ALL_SENDS: AllowAllSchedulerSendAuthorizer = AllowAllSchedulerSendAuthorizer;
+
+    struct AllowAllSchedulerSendAuthorizer;
+
+    impl SchedulerSendAuthorizer for AllowAllSchedulerSendAuthorizer {
+        fn authorize_cross_node_send(
+            &self,
+            producer: &SchedulerNodeId,
+            consumer: &SchedulerNodeId,
+        ) -> Result<crate::SchedulerSendAuthorization, SchedulerError> {
+            Ok(crate::SchedulerSendAuthorization {
+                producer: producer.clone(),
+                consumer: consumer.clone(),
+                topology_epoch: 0,
+            })
+        }
+    }
 
     #[test]
     fn sim_backend_advances_and_fingerprints_deterministically() {
@@ -1263,9 +1317,12 @@ mod tests {
                 panic!("inbound frame should enqueue: {error}");
             }
             assert_eq!(
-                double.advance_scripted_quantum(ExecutionHorizon {
-                    icount: Icount { retired: 10 },
-                }),
+                double.advance_scripted_quantum(
+                    ExecutionHorizon {
+                        icount: Icount { retired: 10 },
+                    },
+                    &ALLOW_ALL_SENDS
+                ),
                 Ok(AdvanceOutcome::Paused {
                     at: Icount { retired: 5 },
                 })
@@ -1366,9 +1423,12 @@ mod tests {
         }
 
         assert_eq!(
-            double.advance_scripted_quantum(ExecutionHorizon {
-                icount: Icount { retired: 10 },
-            }),
+            double.advance_scripted_quantum(
+                ExecutionHorizon {
+                    icount: Icount { retired: 10 },
+                },
+                &ALLOW_ALL_SENDS
+            ),
             Ok(AdvanceOutcome::Paused {
                 at: Icount { retired: 4 },
             })
@@ -1400,9 +1460,12 @@ mod tests {
         }
 
         assert_eq!(
-            double.advance_scripted_quantum(ExecutionHorizon {
-                icount: Icount { retired: 5 },
-            }),
+            double.advance_scripted_quantum(
+                ExecutionHorizon {
+                    icount: Icount { retired: 5 },
+                },
+                &ALLOW_ALL_SENDS
+            ),
             Ok(AdvanceOutcome::ReachedHorizon)
         );
         let payloads = double
@@ -1436,9 +1499,12 @@ mod tests {
         double.next_outbound_sequence = u32::MAX;
 
         assert_eq!(
-            double.advance_scripted_quantum(ExecutionHorizon {
-                icount: Icount { retired: 1 },
-            }),
+            double.advance_scripted_quantum(
+                ExecutionHorizon {
+                    icount: Icount { retired: 1 },
+                },
+                &ALLOW_ALL_SENDS
+            ),
             Err(SimDoubleError::OutboundSequenceOverflow { sequence: u32::MAX })
         );
         assert_eq!(double.next_outbound_sequence, u32::MAX);
@@ -1448,6 +1514,86 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, SimDoubleHostScheduleEvent::FrameEmission { .. }))
         );
+    }
+
+    #[test]
+    fn sim_double_outbound_enqueue_uses_scheduler_send_authorizer() {
+        let mut double = match SimDouble::new(SimDoubleConfig {
+            script: SimInstructionScript::new(vec![SimInstructionStep {
+                instruction_budget: 1,
+                outbound_frames: vec![SimOutboundFrame {
+                    dst_slot: crucible_shmem::SLOT_NET_ROUTER as u32,
+                    delivery_icount: 1,
+                    payload: b"frozen".to_vec(),
+                }],
+            }]),
+            ..SimDoubleConfig::default()
+        }) {
+            Ok(double) => double,
+            Err(error) => panic!("sim double should construct: {error}"),
+        };
+        complete_sim_double_setup(&mut double);
+        let scheduler = pending_sim_topology_scheduler();
+
+        let result = double.advance_scripted_quantum(
+            ExecutionHorizon {
+                icount: Icount { retired: 1 },
+            },
+            &scheduler,
+        );
+
+        assert!(matches!(
+            &result,
+            Err(SimDoubleError::SchedulerSendAuthorization { .. })
+        ));
+        assert!(
+            result
+                .expect_err("send should be frozen")
+                .to_string()
+                .contains("cross-node sends frozen")
+        );
+        assert_eq!(double.next_outbound_sequence, 0);
+        assert!(
+            !double
+                .host_observable_schedule()
+                .iter()
+                .any(|event| matches!(event, SimDoubleHostScheduleEvent::FrameEmission { .. }))
+        );
+    }
+
+    fn pending_sim_topology_scheduler() -> crate::SingleScheduler {
+        let producer = sim_scheduler_node_for_slot(0);
+        let consumer = sim_scheduler_node_for_slot(crucible_shmem::SLOT_NET_ROUTER as u32);
+        let scenario = crate::SchedulerLivenessScenario::from_canonical_material(
+            "sim-double-send-freeze",
+            crate::Shift::new(0).expect("test shift should be valid"),
+            8,
+            crate::SimInstant { nanos: 40 },
+            vec![crate::SchedulerScenarioNode {
+                id: producer.clone(),
+                counter: crate::NodeCounter { ticks: 0 },
+                activity: crate::SchedulerNodeActivity::Runnable,
+                network_lookahead: crate::NetworkLookahead::Infinite,
+                exact_local_event: crate::ExactLocalEvent::NoArmedTimer,
+            }],
+            Vec::new(),
+        )
+        .with_effective_topology_edges(vec![crate::SchedulerLookaheadEdge::new(
+            producer.clone(),
+            consumer.clone(),
+            crate::SimDuration { nanos: 20 },
+        )]);
+        let mut scheduler = crate::SingleScheduler::new(scenario).expect("scenario should build");
+        scheduler.queue_topology_change(crate::SchedulerTopologyChange::new(
+            1,
+            crate::SchedulerTopologyChangeTrigger::LatencyChange,
+            vec![crate::SchedulerLookaheadEdge::new(
+                producer,
+                consumer,
+                crate::SimDuration { nanos: 5 },
+            )],
+        ));
+        scheduler
     }
 
     fn complete_sim_double_setup(double: &mut SimDouble) {

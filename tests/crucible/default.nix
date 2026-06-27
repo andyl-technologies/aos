@@ -435,6 +435,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerWakeOrdering";
       taskIds = ["T-SCHED-21"];
     };
+    schedulerTopologyChange = import ./phase3-scheduler-topology-change.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerTopologyChange";
+      taskIds = ["T-SCHED-22"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

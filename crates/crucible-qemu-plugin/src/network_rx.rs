@@ -510,7 +510,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crucible::{
-        AdvanceOutcome, ExecutionHorizon, Icount, SimDouble, SimDoubleConfig,
+        AdvanceOutcome, ExecutionHorizon, Icount, SchedulerError, SchedulerNodeId,
+        SchedulerSendAuthorization, SchedulerSendAuthorizer, SimDouble, SimDoubleConfig,
         SimDoubleHostScheduleEvent, SimInstructionScript, SimInstructionStep, SimOutboundFrame,
     };
     use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
@@ -528,6 +529,23 @@ mod tests {
     static QEMU_NET_SEND_COUNT: AtomicUsize = AtomicUsize::new(0);
     static QEMU_NET_SEND_LAST_LEN: AtomicUsize = AtomicUsize::new(0);
     static QEMU_NET_FLUSH_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static ALLOW_ALL_SENDS: AllowAllSchedulerSendAuthorizer = AllowAllSchedulerSendAuthorizer;
+
+    struct AllowAllSchedulerSendAuthorizer;
+
+    impl SchedulerSendAuthorizer for AllowAllSchedulerSendAuthorizer {
+        fn authorize_cross_node_send(
+            &self,
+            producer: &SchedulerNodeId,
+            consumer: &SchedulerNodeId,
+        ) -> Result<SchedulerSendAuthorization, SchedulerError> {
+            Ok(SchedulerSendAuthorization {
+                producer: producer.clone(),
+                consumer: consumer.clone(),
+                topology_epoch: 0,
+            })
+        }
+    }
 
     #[test]
     fn host_observable_schedule_cross_checks_sim_double_against_real_plugin_path() {
@@ -543,19 +561,19 @@ mod tests {
             },
         };
         assert_eq!(
-            double.advance_scripted_quantum(horizon),
+            double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS),
             Ok(AdvanceOutcome::Paused {
                 at: Icount { retired: 12 },
             })
         );
         assert_eq!(
-            double.advance_scripted_quantum(horizon),
+            double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS),
             Ok(AdvanceOutcome::Paused {
                 at: Icount { retired: 15 },
             })
         );
         assert_eq!(
-            double.advance_scripted_quantum(horizon),
+            double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS),
             Ok(AdvanceOutcome::ReachedHorizon)
         );
 

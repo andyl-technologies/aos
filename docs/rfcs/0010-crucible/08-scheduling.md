@@ -1227,10 +1227,26 @@ application of explorer-supplied preemption decisions
   mismatch rejection, full-inbox and stale-ceiling no-wake failures, and
   source-order checks for
   inbox-before-ceiling-before-futex-wake.
-- [ ] **T-SCHED-22** Implement topology-change handling: recompute lookahead at
+- [x] **T-SCHED-22** Implement topology-change handling: recompute lookahead at
   the quantum boundary when faults alter the effective edge set or a latency;
   apply lowered lookahead before the node is next PICKed past the new bound. —
   satisfies [SCHED-37]; spec §8.11.
+  Completed by `checks.crucible.phase3.schedulerTopologyChange`.
+  `SchedulerTopologyChange` now carries a complete effective edge-set
+  replacement ordered by boundary sequence and trigger. `SingleScheduler`
+  applies queued topology changes at the quantum boundary before the next PICK,
+  recomputes every runtime node's `NetworkLookahead` from the new
+  `SchedulerLookaheadGraph`, records per-node `SchedulerTopologyLookaheadUpdate`
+  evidence, and treats topology-only recomputes as scheduler progress.
+  The runtime `queue_topology_change` APIs on `SingleScheduler` and
+  `SchedulerActorHandle` let fault/heal/latency handlers enqueue those changes
+  after construction. `SingleScheduler::authorize_cross_node_send` freezes
+  cross-node sends while a topology change is pending, then authorizes sends only
+  against the current effective edge set and topology epoch; SimDouble and QEMU outbound emission paths require an explicit scheduler send authorizer
+  before writing or draining VM-to-router frames. Focused regressions cover lowered latency before PICK,
+  runtime and actor queueing, pending-change send freeze/unfreeze, no delivery
+  of an in-flight frame under a stale horizon, topology-only liveness progress,
+  and sim/QEMU outbound authorization.
 - [ ] **T-SCHED-23** Model partition/heal as effective-edge removal/restoration
   with `min`-inbound-latency lookahead recompute over the current edge set
   (last-inbound-removed ⇒ `+∞`). — satisfies [SCHED-38]; spec §8.11.

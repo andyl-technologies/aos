@@ -140,7 +140,7 @@
       }
       {
         label = "double quantum driver";
-        needle = "double.advance_scripted_quantum(horizon)";
+        needle = "double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS)";
       }
       {
         label = "real plugin schedule projection";
