@@ -1023,6 +1023,88 @@ pub enum SchedulerHorizonSource {
     ExactLocalFault,
 }
 
+/// The scheduler rendezvous frequency knob.
+///
+/// A rendezvous is a common exact cap used for global bookkeeping work. It may
+/// split node advancement into more quanta, but it is not an event-delivery clock
+/// and must not add canonical schedule material by itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SchedulerRendezvous {
+    interval: Option<SimDuration>,
+}
+
+impl SchedulerRendezvous {
+    /// Builds a disabled rendezvous policy.
+    #[must_use]
+    pub fn disabled() -> Self {
+        Self { interval: None }
+    }
+
+    /// Builds a fixed-interval rendezvous policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `interval` is zero,
+    /// because a zero-width rendezvous cannot advance the shared timeline.
+    pub fn every(interval: SimDuration) -> Result<Self, SchedulerError> {
+        if interval.nanos == 0 {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("scheduler rendezvous interval must be nonzero"),
+            });
+        }
+        Ok(Self {
+            interval: Some(interval),
+        })
+    }
+
+    /// Returns the configured fixed interval, if rendezvous is enabled.
+    #[must_use]
+    pub fn interval(self) -> Option<SimDuration> {
+        self.interval
+    }
+
+    /// Returns the next rendezvous boundary after `current_time`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] if the next fixed interval
+    /// boundary cannot be represented as a `u64` virtual-time point.
+    pub fn next_after(
+        self,
+        current_time: SimInstant,
+    ) -> Result<Option<SimInstant>, SchedulerError> {
+        rendezvous_cap_for(current_time, self)
+    }
+}
+
+/// Computes the exact rendezvous cap after `current_time`.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::BoundaryViolation`] if the next fixed interval
+/// boundary cannot be represented as a `u64` virtual-time point.
+pub fn rendezvous_cap_for(
+    current_time: SimInstant,
+    rendezvous: SchedulerRendezvous,
+) -> Result<Option<SimInstant>, SchedulerError> {
+    let Some(interval) = rendezvous.interval() else {
+        return Ok(None);
+    };
+    let tick = current_time.nanos / interval.nanos;
+    let next_tick = tick
+        .checked_add(1)
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("scheduler rendezvous tick overflow"),
+        })?;
+    let nanos =
+        next_tick
+            .checked_mul(interval.nanos)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("scheduler rendezvous virtual-time overflow"),
+            })?;
+    Ok(Some(SimInstant { nanos }))
+}
+
 /// A scheduler horizon and its matching icount ceiling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerHorizon {
@@ -1241,6 +1323,8 @@ pub struct SchedulerLivenessScenario {
     pub quantum_budget: u64,
     /// The virtual-time limit that also terminates the scenario.
     pub time_limit: SimInstant,
+    /// The exact shared rendezvous cap policy.
+    pub rendezvous: SchedulerRendezvous,
     /// The generated nodes driven by the authoritative scheduler.
     ///
     /// A runnable generated node becomes [`SchedulerNodeActivity::Idle`] once it
@@ -1270,9 +1354,23 @@ impl SchedulerLivenessScenario {
             shift,
             quantum_budget,
             time_limit,
+            rendezvous: SchedulerRendezvous::disabled(),
             nodes,
             pending_events,
         }
+    }
+
+    /// Enables fixed-interval rendezvous caps for this scenario.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `interval` is zero.
+    pub fn with_rendezvous_interval(
+        mut self,
+        interval: SimDuration,
+    ) -> Result<Self, SchedulerError> {
+        self.rendezvous = SchedulerRendezvous::every(interval)?;
+        Ok(self)
     }
 }
 
@@ -1382,6 +1480,7 @@ pub struct SingleScheduler {
     timeline: SharedTimeline,
     quantum_budget: u64,
     time_limit: SimInstant,
+    rendezvous: SchedulerRendezvous,
     nodes: Vec<RuntimeSchedulerNode>,
     pending_events: Vec<ScheduledEvent>,
     control_inbox: Vec<ControlOperation>,
@@ -1417,6 +1516,7 @@ impl SingleScheduler {
             timeline,
             quantum_budget: scenario.quantum_budget,
             time_limit: scenario.time_limit,
+            rendezvous: scenario.rendezvous,
             nodes,
             pending_events: scenario.pending_events,
             control_inbox: Vec::new(),
@@ -1502,9 +1602,10 @@ impl SingleScheduler {
 
     fn pick_global_minimum_horizon_node(&self) -> Result<Option<AdvanceCandidate>, SchedulerError> {
         let mut candidates = Vec::new();
+        let rendezvous_cap = self.shared_rendezvous_cap()?;
 
         for (index, node) in self.nodes.iter().enumerate() {
-            if let Some(candidate) = self.advance_candidate(index, node)? {
+            if let Some(candidate) = self.advance_candidate(index, node, rendezvous_cap)? {
                 candidates.push(candidate);
             }
         }
@@ -1524,13 +1625,14 @@ impl SingleScheduler {
         &self,
         index: usize,
         node: &RuntimeSchedulerNode,
+        rendezvous_cap: Option<SimInstant>,
     ) -> Result<Option<AdvanceCandidate>, SchedulerError> {
         if node.activity == SchedulerNodeActivity::Idle {
             return Ok(None);
         }
 
         let current_time = node.counter.to_virtual(self.timeline.shift())?;
-        let window = self.advance_window(node, current_time)?;
+        let window = self.advance_window(node, current_time, rendezvous_cap)?;
 
         if current_time >= window.target_time {
             return Ok(None);
@@ -1551,6 +1653,7 @@ impl SingleScheduler {
         &self,
         node: &RuntimeSchedulerNode,
         current_time: SimInstant,
+        rendezvous_cap: Option<SimInstant>,
     ) -> Result<AdvanceWindow, SchedulerError> {
         let exact_local_event = next_exact_local_event(
             &node.id,
@@ -1565,7 +1668,10 @@ impl SingleScheduler {
             self.timeline.shift(),
         )?;
         let finite_horizon = horizon.virtual_time().unwrap_or(self.time_limit);
-        let requested_target = min_instant(finite_horizon, self.time_limit);
+        let mut requested_target = min_instant(finite_horizon, self.time_limit);
+        if let Some(cap) = rendezvous_cap {
+            requested_target = min_instant(requested_target, cap);
+        }
         let authorization = authorize_conservative_advance(
             &node.id,
             current_time,
@@ -1591,6 +1697,15 @@ impl SingleScheduler {
             quiescent_horizon: horizon.virtual_time(),
             conservative_dependency,
         })
+    }
+
+    fn shared_rendezvous_cap(&self) -> Result<Option<SimInstant>, SchedulerError> {
+        rendezvous_cap_for(
+            SimInstant {
+                nanos: self.frontier.ticks,
+            },
+            self.rendezvous,
+        )
     }
 
     fn drive_authoritative_quantum(
@@ -1632,19 +1747,27 @@ impl SingleScheduler {
         let (after, after_time, yielded_before_advance) = self.advance_node_after_yield(&plan)?;
         resolved_events.extend(self.resolve_events_for(&selected_node, after_time));
 
-        let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
-            at: VirtualTime {
-                ticks: after_time.nanos,
-            },
-            order: resolved_events
-                .iter()
-                .map(|event| EventKey {
-                    sequence: event.key.sequence(),
-                })
-                .collect(),
-        });
-        self.advance_decision_rng_cursor();
-        let configuration = step(&self.configuration, decision.clone());
+        let decisions = if resolved_events.is_empty() {
+            Vec::new()
+        } else {
+            let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
+                at: VirtualTime {
+                    ticks: after_time.nanos,
+                },
+                order: resolved_events
+                    .iter()
+                    .map(|event| EventKey {
+                        sequence: event.key.sequence(),
+                    })
+                    .collect(),
+            });
+            self.advance_decision_rng_cursor();
+            vec![decision]
+        };
+        let mut configuration = self.configuration.clone();
+        for decision in &decisions {
+            configuration = step(&configuration, decision.clone());
+        }
 
         self.configuration = configuration.clone();
         self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
@@ -1661,7 +1784,7 @@ impl SingleScheduler {
             frontier: self.frontier,
             advanced_node: Some(selected_node),
             resolved_events,
-            decisions: vec![decision],
+            decisions,
         })
     }
 

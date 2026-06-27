@@ -61,7 +61,7 @@ fn scheduler_actor_owns_decision_rng_cursor_behind_mailbox() {
     let reply = handle
         .drive_quantum(QuantumRequest {
             configuration: before.configuration,
-            control: Vec::new(),
+            control: vec![control(1, ControlOperationKind::Query)],
         })
         .expect("drive message should enqueue");
     actor.run_once().expect("actor should drive quantum");
