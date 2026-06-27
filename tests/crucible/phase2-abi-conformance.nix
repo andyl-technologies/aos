@@ -22,6 +22,7 @@
   apiGateTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
   qemuPluginGateTest = builtins.readFile ../../crates/crucible-qemu-plugin/tests/gate_abi_conformance.rs;
   qemuPluginIoWireFuzz = builtins.readFile ../../crates/crucible-qemu-plugin/src/io_wire_fuzz.rs;
+  crucibleNinePWireAbiTest = builtins.readFile ../../crates/crucible/tests/ninep_wire_abi.rs;
   harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   apiSpec = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -98,6 +99,15 @@
                   package: "crucible-qemu-plugin",
                   test_target: "gate_abi_conformance",
                   required_features: &[],
+                  placeholder: false,'';
+      }
+      {
+        label = "crucible 9p wire ABI target implemented";
+        needle = ''
+          gate: "gate:abi-conformance",
+                  package: "crucible",
+                  test_target: "ninep_wire_abi",
+                  required_features: &["test-double"],
                   placeholder: false,'';
       }
     ]
@@ -269,6 +279,20 @@
         needle = "phase2-protocol-codec-fuzz.nix";
       }
     ]
+    ++ failuresFor "crates/crucible/tests/ninep_wire_abi.rs" crucibleNinePWireAbiTest [
+      {
+        label = "9p wire golden vectors";
+        needle = "wire_golden_vectors_cover_read_traverse_and_error_responses";
+      }
+      {
+        label = "9p wire fuzz coverage";
+        needle = "wire_fuzzer_never_panics_and_returns_structurally_valid_response";
+      }
+      {
+        label = "9p response size guard";
+        needle = "wire_response_msize_and_string_failures_return_well_formed_errors";
+      }
+    ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/io_wire_fuzz.rs" qemuPluginIoWireFuzz [
       {
         label = "I/O wire fuzz corpus";
@@ -427,6 +451,15 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu-plugin \
               --test gate_abi_conformance \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --features test-double \
+              --test ninep_wire_abi \
               -- --test-threads=1
             cargo test \
               --frozen \

@@ -280,7 +280,7 @@ impl NinePServedTree {
         entries: Vec<NinePServedEntry>,
         maximum_msize: u32,
     ) -> Result<Self, NinePServerError> {
-        if maximum_msize < NINEP_HEADER_SIZE {
+        if maximum_msize < NINEP_MINIMUM_MSIZE {
             return Err(NinePServerError::InvalidMsize {
                 requested: maximum_msize,
             });
@@ -357,7 +357,7 @@ impl NinePServedTree {
                 requested: client_version.to_owned(),
             });
         }
-        if client_msize < NINEP_HEADER_SIZE {
+        if client_msize < NINEP_MINIMUM_MSIZE {
             return Err(NinePServerError::InvalidMsize {
                 requested: client_msize,
             });
@@ -530,9 +530,54 @@ const NINEP_U16_SIZE: u32 = 2;
 const NINEP_U32_SIZE: u32 = 4;
 const NINEP_U64_SIZE: u32 = 8;
 const NINEP_QID_SIZE: u32 = 13;
+const NINEP_MINIMUM_MSIZE: u32 =
+    NINEP_HEADER_SIZE + NINEP_U32_SIZE + NINEP_U16_SIZE + NINEP_PROTOCOL_VERSION.len() as u32;
 const NINEP_READ_RESPONSE_OVERHEAD: u32 = NINEP_HEADER_SIZE + NINEP_U32_SIZE;
 const NINEP_READDIR_RESPONSE_OVERHEAD: u32 = NINEP_HEADER_SIZE + NINEP_U32_SIZE;
 const NINEP_DIRECTORY_ENTRY_BASE_SIZE: u32 = NINEP_QID_SIZE + NINEP_U64_SIZE + 1 + NINEP_U16_SIZE;
+const NINEP_NOTAG: u16 = u16::MAX;
+const NINEP_RLERROR: u8 = 7;
+const NINEP_TSTATFS: u8 = 8;
+const NINEP_RSTATFS: u8 = 9;
+const NINEP_TLOPEN: u8 = 12;
+const NINEP_RLOPEN: u8 = 13;
+const NINEP_TLCREATE: u8 = 14;
+const NINEP_TREADLINK: u8 = 22;
+const NINEP_RREADLINK: u8 = 23;
+const NINEP_TGETATTR: u8 = 24;
+const NINEP_RGETATTR: u8 = 25;
+const NINEP_TSETATTR: u8 = 26;
+const NINEP_TXATTRWALK: u8 = 30;
+const NINEP_RXATTRWALK: u8 = 31;
+const NINEP_TREADDIR: u8 = 40;
+const NINEP_RREADDIR: u8 = 41;
+const NINEP_TMKDIR: u8 = 72;
+const NINEP_TRENAMEAT: u8 = 74;
+const NINEP_TUNLINKAT: u8 = 76;
+const NINEP_TVERSION: u8 = 100;
+const NINEP_RVERSION: u8 = 101;
+const NINEP_TATTACH: u8 = 104;
+const NINEP_RATTACH: u8 = 105;
+const NINEP_TFLUSH: u8 = 108;
+const NINEP_RFLUSH: u8 = 109;
+const NINEP_TWALK: u8 = 110;
+const NINEP_RWALK: u8 = 111;
+const NINEP_TREAD: u8 = 116;
+const NINEP_RREAD: u8 = 117;
+const NINEP_TWRITE: u8 = 118;
+const NINEP_TCLUNK: u8 = 120;
+const NINEP_RCLUNK: u8 = 121;
+const NINEP_DT_UNKNOWN: u8 = 0;
+const NINEP_DT_DIR: u8 = 4;
+const NINEP_DT_REG: u8 = 8;
+const NINEP_DT_LNK: u8 = 10;
+const NINEP_STATFS_MAGIC: u32 = 0x0102_1997;
+const NINEP_GETATTR_VALID_MASK: u64 = 0x0000_3fff;
+const NINEP_OPEN_ACCMODE: u32 = 0o3;
+const NINEP_OPEN_WRONLY: u32 = 0o1;
+const NINEP_OPEN_RDWR: u32 = 0o2;
+const NINEP_OPEN_TRUNC: u32 = 0o1000;
+const NINEP_OPEN_APPEND: u32 = 0o2000;
 
 /// POSIX errno returned for malformed 9p request bodies.
 pub const NINEP_EINVAL: u32 = 22;
@@ -892,6 +937,32 @@ impl NinePSession {
         }
     }
 
+    /// Handles one raw 9P2000.L request message and returns a raw response.
+    #[must_use]
+    pub fn handle_wire_request(&mut self, message: &[u8]) -> Vec<u8> {
+        let request = match decode_wire_request(message, self.negotiated_msize) {
+            Ok(request) => request,
+            Err(error) => {
+                return encode_wire_response_limited(
+                    &ninep_error(error.tag, error.errno),
+                    self.negotiated_msize,
+                );
+            }
+        };
+
+        let mut trial = self.clone();
+        let response = trial.handle_request(request);
+        let encoded = match try_encode_wire_response_limited(&response, trial.negotiated_msize) {
+            Ok(encoded) => encoded,
+            Err(errno) => return encode_wire_error(response.tag, errno),
+        };
+
+        if success_wire_response_type(&response.kind).is_some() {
+            *self = trial;
+        }
+        encoded
+    }
+
     /// Captures the deterministic fid table and negotiated msize.
     #[must_use]
     pub fn snapshot(&self) -> NinePSessionSnapshot {
@@ -921,7 +992,7 @@ impl NinePSession {
         &mut self,
         snapshot: NinePSessionSnapshot,
     ) -> Result<(), NinePServerError> {
-        if snapshot.negotiated_msize < NINEP_HEADER_SIZE
+        if snapshot.negotiated_msize < NINEP_MINIMUM_MSIZE
             || snapshot.negotiated_msize > self.tree.maximum_msize()
         {
             return Err(NinePServerError::InvalidMsize {
@@ -1441,6 +1512,447 @@ fn read_slice(bytes: &[u8], offset: u64, count: u32) -> Vec<u8> {
     };
     let end = start.saturating_add(count).min(bytes.len());
     bytes[start..end].to_vec()
+}
+
+struct NinePWireDecodeError {
+    tag: u16,
+    errno: u32,
+}
+
+struct NinePWireCursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+    tag: u16,
+}
+
+impl<'a> NinePWireCursor<'a> {
+    fn new(bytes: &'a [u8], tag: u16) -> Self {
+        Self {
+            bytes,
+            offset: 0,
+            tag,
+        }
+    }
+
+    fn read_u16(&mut self) -> Result<u16, NinePWireDecodeError> {
+        let bytes = self.take(2)?;
+        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn read_u32(&mut self) -> Result<u32, NinePWireDecodeError> {
+        let bytes = self.take(4)?;
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, NinePWireDecodeError> {
+        let bytes = self.take(8)?;
+        Ok(u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
+    }
+
+    fn read_string(&mut self) -> Result<String, NinePWireDecodeError> {
+        let length = usize::from(self.read_u16()?);
+        let bytes = self.take(length)?;
+        std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|_| wire_decode_error(self.tag, NINEP_EINVAL))
+    }
+
+    fn finish(&self) -> Result<(), NinePWireDecodeError> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(wire_decode_error(self.tag, NINEP_EINVAL))
+        }
+    }
+
+    fn take(&mut self, length: usize) -> Result<&'a [u8], NinePWireDecodeError> {
+        let Some(end) = self.offset.checked_add(length) else {
+            return Err(wire_decode_error(self.tag, NINEP_EINVAL));
+        };
+        if end > self.bytes.len() {
+            return Err(wire_decode_error(self.tag, NINEP_EINVAL));
+        }
+        let bytes = &self.bytes[self.offset..end];
+        self.offset = end;
+        Ok(bytes)
+    }
+}
+
+fn decode_wire_request(
+    message: &[u8],
+    negotiated_msize: u32,
+) -> Result<NinePRequest, NinePWireDecodeError> {
+    if message.len() < NINEP_HEADER_SIZE as usize {
+        return Err(wire_decode_error(NINEP_NOTAG, NINEP_EINVAL));
+    }
+
+    let declared_size = u32::from_le_bytes([message[0], message[1], message[2], message[3]]);
+    let message_type = message[4];
+    let tag = u16::from_le_bytes([message[5], message[6]]);
+    let actual_size = match u32::try_from(message.len()) {
+        Ok(actual_size) => actual_size,
+        Err(_) => return Err(wire_decode_error(tag, NINEP_EINVAL)),
+    };
+    if declared_size != actual_size {
+        return Err(wire_decode_error(tag, NINEP_EINVAL));
+    }
+    if declared_size > negotiated_msize {
+        return Err(wire_decode_error(tag, NINEP_EINVAL));
+    }
+
+    let mut cursor = NinePWireCursor::new(&message[NINEP_HEADER_SIZE as usize..], tag);
+    let kind = match message_type {
+        NINEP_TVERSION => {
+            if tag != NINEP_NOTAG {
+                return Err(wire_decode_error(tag, NINEP_EINVAL));
+            }
+            let msize = cursor.read_u32()?;
+            let version = cursor.read_string()?;
+            cursor.finish()?;
+            NinePRequestKind::Version { msize, version }
+        }
+        NINEP_TATTACH => {
+            let fid = cursor.read_u32()?;
+            let _afid = cursor.read_u32()?;
+            let _uname = cursor.read_string()?;
+            let _aname = cursor.read_string()?;
+            let _n_uname = cursor.read_u32()?;
+            cursor.finish()?;
+            NinePRequestKind::Attach { fid }
+        }
+        NINEP_TWALK => {
+            let fid = cursor.read_u32()?;
+            let newfid = cursor.read_u32()?;
+            let name_count = cursor.read_u16()?;
+            let mut names = Vec::with_capacity(usize::from(name_count));
+            for _ in 0..name_count {
+                names.push(cursor.read_string()?);
+            }
+            cursor.finish()?;
+            NinePRequestKind::Walk { fid, newfid, names }
+        }
+        NINEP_TLOPEN => {
+            let fid = cursor.read_u32()?;
+            let flags = cursor.read_u32()?;
+            cursor.finish()?;
+            if open_flags_request_write(flags) {
+                return Ok(NinePRequest::new(
+                    tag,
+                    NinePRequestKind::Mutating(NinePMutatingMessage::Write),
+                )
+                .with_encoded_size(declared_size));
+            }
+            NinePRequestKind::Lopen { fid }
+        }
+        NINEP_TREAD => {
+            let fid = cursor.read_u32()?;
+            let offset = cursor.read_u64()?;
+            let count = cursor.read_u32()?;
+            cursor.finish()?;
+            NinePRequestKind::Read { fid, offset, count }
+        }
+        NINEP_TREADDIR => {
+            let fid = cursor.read_u32()?;
+            let offset = cursor.read_u64()?;
+            let count = cursor.read_u32()?;
+            cursor.finish()?;
+            NinePRequestKind::Readdir { fid, offset, count }
+        }
+        NINEP_TGETATTR => {
+            let fid = cursor.read_u32()?;
+            let _request_mask = cursor.read_u64()?;
+            cursor.finish()?;
+            NinePRequestKind::GetAttr { fid }
+        }
+        NINEP_TREADLINK => {
+            let fid = cursor.read_u32()?;
+            cursor.finish()?;
+            NinePRequestKind::ReadLink { fid }
+        }
+        NINEP_TCLUNK => {
+            let fid = cursor.read_u32()?;
+            cursor.finish()?;
+            NinePRequestKind::Clunk { fid }
+        }
+        NINEP_TSTATFS => {
+            let fid = cursor.read_u32()?;
+            cursor.finish()?;
+            NinePRequestKind::StatFs { fid }
+        }
+        NINEP_TFLUSH => {
+            let _oldtag = cursor.read_u16()?;
+            cursor.finish()?;
+            NinePRequestKind::Flush
+        }
+        NINEP_TXATTRWALK => {
+            let fid = cursor.read_u32()?;
+            let newfid = cursor.read_u32()?;
+            let name = cursor.read_string()?;
+            cursor.finish()?;
+            NinePRequestKind::XattrWalk { fid, newfid, name }
+        }
+        NINEP_TLCREATE => NinePRequestKind::Mutating(NinePMutatingMessage::Lcreate),
+        NINEP_TWRITE => NinePRequestKind::Mutating(NinePMutatingMessage::Write),
+        NINEP_TMKDIR => NinePRequestKind::Mutating(NinePMutatingMessage::Mkdir),
+        NINEP_TUNLINKAT => NinePRequestKind::Mutating(NinePMutatingMessage::Unlinkat),
+        NINEP_TRENAMEAT => NinePRequestKind::Mutating(NinePMutatingMessage::Renameat),
+        NINEP_TSETATTR => NinePRequestKind::Mutating(NinePMutatingMessage::Setattr),
+        unknown => NinePRequestKind::Unknown {
+            message_type: unknown,
+        },
+    };
+
+    Ok(NinePRequest::new(tag, kind).with_encoded_size(declared_size))
+}
+
+fn wire_decode_error(tag: u16, errno: u32) -> NinePWireDecodeError {
+    NinePWireDecodeError { tag, errno }
+}
+
+fn encode_wire_response_limited(response: &NinePResponse, negotiated_msize: u32) -> Vec<u8> {
+    match try_encode_wire_response_limited(response, negotiated_msize) {
+        Ok(encoded) => encoded,
+        Err(errno) => encode_wire_error(response.tag, errno),
+    }
+}
+
+fn try_encode_wire_response_limited(
+    response: &NinePResponse,
+    negotiated_msize: u32,
+) -> Result<Vec<u8>, u32> {
+    let encoded = encode_wire_response(response);
+    if let Some(message_type) = success_wire_response_type(&response.kind) {
+        if encoded.get(4).copied() != Some(message_type) {
+            return Err(NINEP_EIO);
+        }
+    }
+    if encoded.len() <= capacity_for_u32(negotiated_msize) {
+        Ok(encoded)
+    } else {
+        Err(NINEP_EINVAL)
+    }
+}
+
+fn success_wire_response_type(kind: &NinePResponseKind) -> Option<u8> {
+    Some(match kind {
+        NinePResponseKind::Version(_) => NINEP_RVERSION,
+        NinePResponseKind::Attach { .. } => NINEP_RATTACH,
+        NinePResponseKind::Walk { .. } => NINEP_RWALK,
+        NinePResponseKind::Lopen { .. } => NINEP_RLOPEN,
+        NinePResponseKind::Read { .. } => NINEP_RREAD,
+        NinePResponseKind::Readdir { .. } => NINEP_RREADDIR,
+        NinePResponseKind::GetAttr(_) => NINEP_RGETATTR,
+        NinePResponseKind::ReadLink { .. } => NINEP_RREADLINK,
+        NinePResponseKind::Clunk => NINEP_RCLUNK,
+        NinePResponseKind::StatFs(_) => NINEP_RSTATFS,
+        NinePResponseKind::Flush => NINEP_RFLUSH,
+        NinePResponseKind::XattrWalk { .. } => NINEP_RXATTRWALK,
+        NinePResponseKind::Error { .. } => return None,
+    })
+}
+
+fn encode_wire_response(response: &NinePResponse) -> Vec<u8> {
+    match &response.kind {
+        NinePResponseKind::Version(version) => {
+            let mut body = Vec::new();
+            append_wire_u32(&mut body, version.msize);
+            if append_wire_string(&mut body, &version.version).is_err() {
+                return encode_wire_error(response.tag, NINEP_EIO);
+            }
+            wire_message(NINEP_RVERSION, response.tag, body)
+        }
+        NinePResponseKind::Attach { qid } => {
+            let mut body = Vec::new();
+            append_wire_qid(&mut body, qid);
+            wire_message(NINEP_RATTACH, response.tag, body)
+        }
+        NinePResponseKind::Walk { qids } => {
+            let mut body = Vec::new();
+            append_wire_u16(&mut body, saturating_u16(qids.len()));
+            for qid in qids {
+                append_wire_qid(&mut body, qid);
+            }
+            wire_message(NINEP_RWALK, response.tag, body)
+        }
+        NinePResponseKind::Lopen { qid } => {
+            let mut body = Vec::new();
+            append_wire_qid(&mut body, qid);
+            append_wire_u32(&mut body, 0);
+            wire_message(NINEP_RLOPEN, response.tag, body)
+        }
+        NinePResponseKind::Read { data } => {
+            let mut body = Vec::new();
+            append_wire_u32(&mut body, saturating_u32(data.len()));
+            body.extend_from_slice(data);
+            wire_message(NINEP_RREAD, response.tag, body)
+        }
+        NinePResponseKind::Readdir { entries } => {
+            let mut entries_body = Vec::new();
+            for entry in entries {
+                append_wire_qid(&mut entries_body, &entry.qid);
+                append_wire_u64(&mut entries_body, entry.offset);
+                entries_body.push(directory_entry_type(entry.qid.qtype));
+                if append_wire_string(&mut entries_body, &entry.name).is_err() {
+                    return encode_wire_error(response.tag, NINEP_EIO);
+                }
+            }
+            let mut body = Vec::new();
+            append_wire_u32(&mut body, saturating_u32(entries_body.len()));
+            body.extend_from_slice(&entries_body);
+            wire_message(NINEP_RREADDIR, response.tag, body)
+        }
+        NinePResponseKind::GetAttr(attrs) => {
+            let mut body = Vec::new();
+            append_wire_u64(&mut body, NINEP_GETATTR_VALID_MASK);
+            append_wire_qid(&mut body, &attrs.qid);
+            append_wire_u32(&mut body, attrs.mode);
+            append_wire_u32(&mut body, attrs.uid);
+            append_wire_u32(&mut body, attrs.gid);
+            append_wire_u64(&mut body, 1);
+            append_wire_u64(&mut body, 0);
+            append_wire_u64(&mut body, attrs.size);
+            append_wire_u64(&mut body, attrs.block_size);
+            append_wire_u64(&mut body, attrs.blocks);
+            append_wire_u64(&mut body, attrs.atime_sec);
+            append_wire_u64(&mut body, 0);
+            append_wire_u64(&mut body, attrs.mtime_sec);
+            append_wire_u64(&mut body, 0);
+            append_wire_u64(&mut body, attrs.ctime_sec);
+            append_wire_u64(&mut body, 0);
+            append_wire_u64(&mut body, 0);
+            append_wire_u64(&mut body, 0);
+            append_wire_u64(&mut body, 0);
+            append_wire_u64(&mut body, 0);
+            wire_message(NINEP_RGETATTR, response.tag, body)
+        }
+        NinePResponseKind::ReadLink { target } => {
+            let mut body = Vec::new();
+            if append_wire_string(&mut body, target).is_err() {
+                return encode_wire_error(response.tag, NINEP_EIO);
+            }
+            wire_message(NINEP_RREADLINK, response.tag, body)
+        }
+        NinePResponseKind::Clunk => wire_message(NINEP_RCLUNK, response.tag, Vec::new()),
+        NinePResponseKind::StatFs(statfs) => {
+            let mut body = Vec::new();
+            append_wire_u32(&mut body, NINEP_STATFS_MAGIC);
+            append_wire_u32(&mut body, saturating_u32_from_u64(statfs.block_size));
+            append_wire_u64(&mut body, statfs.blocks);
+            append_wire_u64(&mut body, 0);
+            append_wire_u64(&mut body, 0);
+            append_wire_u64(&mut body, statfs.files);
+            append_wire_u64(&mut body, 0);
+            append_wire_u64(&mut body, statfs.fsid);
+            append_wire_u32(&mut body, statfs.name_max);
+            wire_message(NINEP_RSTATFS, response.tag, body)
+        }
+        NinePResponseKind::Flush => wire_message(NINEP_RFLUSH, response.tag, Vec::new()),
+        NinePResponseKind::XattrWalk { size } => {
+            let mut body = Vec::new();
+            append_wire_u64(&mut body, *size);
+            wire_message(NINEP_RXATTRWALK, response.tag, body)
+        }
+        NinePResponseKind::Error { errno } => encode_wire_error(response.tag, *errno),
+    }
+}
+
+fn wire_message(message_type: u8, tag: u16, body: Vec<u8>) -> Vec<u8> {
+    let body_len = match u32::try_from(body.len()) {
+        Ok(body_len) => body_len,
+        Err(_) => return encode_wire_error(tag, NINEP_EIO),
+    };
+    let Some(size) = NINEP_HEADER_SIZE.checked_add(body_len) else {
+        return encode_wire_error(tag, NINEP_EIO);
+    };
+    let mut message = Vec::with_capacity(capacity_for_u32(size));
+    append_wire_u32(&mut message, size);
+    message.push(message_type);
+    append_wire_u16(&mut message, tag);
+    message.extend_from_slice(&body);
+    message
+}
+
+fn encode_wire_error(tag: u16, errno: u32) -> Vec<u8> {
+    let mut message = Vec::with_capacity(capacity_for_u32(NINEP_READ_RESPONSE_OVERHEAD));
+    append_wire_u32(&mut message, NINEP_READ_RESPONSE_OVERHEAD);
+    message.push(NINEP_RLERROR);
+    append_wire_u16(&mut message, tag);
+    append_wire_u32(&mut message, errno);
+    message
+}
+
+fn append_wire_qid(bytes: &mut Vec<u8>, qid: &NinePQid) {
+    bytes.push(qid.qtype);
+    append_wire_u32(bytes, qid.version);
+    append_wire_u64(bytes, qid.path);
+}
+
+fn append_wire_string(bytes: &mut Vec<u8>, value: &str) -> Result<(), ()> {
+    let length = match u16::try_from(value.len()) {
+        Ok(length) => length,
+        Err(_) => return Err(()),
+    };
+    append_wire_u16(bytes, length);
+    bytes.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn append_wire_u16(bytes: &mut Vec<u8>, value: u16) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn append_wire_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn append_wire_u64(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn saturating_u16(value: usize) -> u16 {
+    match u16::try_from(value) {
+        Ok(value) => value,
+        Err(_) => u16::MAX,
+    }
+}
+
+fn saturating_u32(value: usize) -> u32 {
+    match u32::try_from(value) {
+        Ok(value) => value,
+        Err(_) => u32::MAX,
+    }
+}
+
+fn saturating_u32_from_u64(value: u64) -> u32 {
+    match u32::try_from(value) {
+        Ok(value) => value,
+        Err(_) => u32::MAX,
+    }
+}
+
+fn directory_entry_type(qid_type: u8) -> u8 {
+    match qid_type {
+        NINEP_QID_TYPE_DIRECTORY => NINEP_DT_DIR,
+        NINEP_QID_TYPE_FILE => NINEP_DT_REG,
+        NINEP_QID_TYPE_SYMLINK => NINEP_DT_LNK,
+        _ => NINEP_DT_UNKNOWN,
+    }
+}
+
+fn open_flags_request_write(flags: u32) -> bool {
+    matches!(
+        flags & NINEP_OPEN_ACCMODE,
+        NINEP_OPEN_WRONLY | NINEP_OPEN_RDWR
+    ) || flags & (NINEP_OPEN_TRUNC | NINEP_OPEN_APPEND) != 0
+}
+
+fn capacity_for_u32(value: u32) -> usize {
+    match usize::try_from(value) {
+        Ok(value) => value,
+        Err(_) => usize::MAX,
+    }
 }
 
 fn encoded_request_size(kind: &NinePRequestKind) -> u32 {

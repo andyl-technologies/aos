@@ -237,6 +237,12 @@
       requiredFeatures = [];
     }
     {
+      gate = "gate:abi-conformance";
+      package = "crucible";
+      testTarget = "ninep_wire_abi";
+      requiredFeatures = ["test-double"];
+    }
+    {
       gate = "gate:replay-oracle";
       package = "crucible";
       testTarget = "gate_replay_oracle";
@@ -359,8 +365,8 @@
     }
     {
       gate = "gate:abi-conformance";
-      ownerPackages = ["crucible-harness" "crucible-shmem" "crucible-protocol" "crucible-api" "crucible-qemu-plugin"];
-      layers = ["L1" "L2" "L4" "CrossCutting"];
+      ownerPackages = ["crucible-harness" "crucible-shmem" "crucible-protocol" "crucible-api" "crucible-qemu-plugin" "crucible"];
+      layers = ["L1" "L2" "L3" "L4" "CrossCutting"];
       shape = "abi-golden-vectors";
       backend = "in-process";
     }
