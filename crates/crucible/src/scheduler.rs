@@ -845,6 +845,19 @@ pub struct ScheduledEvent {
     pub payload: ScheduledEventPayload,
 }
 
+/// The RESOLVE payload class for a scheduled event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ScheduledEventResolveClass {
+    /// A deterministic frame or backend input delivery.
+    FrameDelivery,
+    /// A deterministic I/O completion from a scheduler sub-node.
+    IoCompletion,
+    /// A planned fault activation.
+    FaultActivation,
+    /// A control-plane operation admitted at the boundary.
+    Control,
+}
+
 /// Returns scheduled events in the canonical deterministic resolution order.
 #[must_use]
 pub fn ordered_scheduled_events(events: &[ScheduledEvent]) -> Vec<&ScheduledEvent> {
@@ -853,6 +866,17 @@ pub fn ordered_scheduled_events(events: &[ScheduledEvent]) -> Vec<&ScheduledEven
     ordered.sort_by(|left, right| left.key.cmp(&right.key));
 
     ordered
+}
+
+/// Returns the RESOLVE payload class for `event`.
+#[must_use]
+pub fn scheduled_event_resolve_class(event: &ScheduledEvent) -> ScheduledEventResolveClass {
+    match event.payload {
+        ScheduledEventPayload::BackendInput(_) => ScheduledEventResolveClass::FrameDelivery,
+        ScheduledEventPayload::IoCompletion(_) => ScheduledEventResolveClass::IoCompletion,
+        ScheduledEventPayload::FaultActivation(_) => ScheduledEventResolveClass::FaultActivation,
+        ScheduledEventPayload::Control(_) => ScheduledEventResolveClass::Control,
+    }
 }
 
 /// Payload carried by a scheduler-resolved event.
@@ -1013,6 +1037,99 @@ pub fn exact_local_event_from_scheduled_event(
         }
         ScheduledEventPayload::BackendInput(_) | ScheduledEventPayload::Control(_) => Ok(None),
     }
+}
+
+/// Returns the exact virtual time at which a scheduled event becomes visible.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::TimeConversion`] when an I/O completion delivery
+/// icount cannot be converted under `shift`, or
+/// [`SchedulerError::BoundaryViolation`] when the event key and payload disagree
+/// about the consumer or exact delivery point.
+pub fn scheduled_event_delivery_time(
+    event: &ScheduledEvent,
+    shift: Shift,
+) -> Result<SimInstant, SchedulerError> {
+    match &event.payload {
+        ScheduledEventPayload::BackendInput(input) => {
+            if input.node != event.key.consumer().node {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "backend input key consumer {} does not match payload target {}",
+                        event.key.consumer().node.name,
+                        input.node.name
+                    ),
+                });
+            }
+            Ok(SimInstant {
+                nanos: event.key.virtual_time().ticks,
+            })
+        }
+        ScheduledEventPayload::IoCompletion(_) => {
+            let exact = exact_local_event_from_scheduled_event(event.key.consumer(), event, shift)?
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "I/O completion did not produce a RESOLVE visibility time",
+                    ),
+                })?;
+            exact
+                .virtual_time()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("I/O completion visibility time was empty"),
+                })
+        }
+        ScheduledEventPayload::FaultActivation(_) | ScheduledEventPayload::Control(_) => {
+            Ok(SimInstant {
+                nanos: event.key.virtual_time().ticks,
+            })
+        }
+    }
+}
+
+/// Drains every event due for `consumer` and returns it in RESOLVE order.
+///
+/// Events are due when their exact delivery time is at or before
+/// `advanced_to`. Returned events are ordered by the canonical key
+/// `(virtual_time, consumer node, producer node, sequence)` and removed from
+/// `pending_events`; all other events remain queued.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError`] when a due event cannot prove the exact virtual
+/// time at which it becomes visible to its consumer.
+pub fn resolve_due_scheduled_events(
+    pending_events: &mut Vec<ScheduledEvent>,
+    consumer: &SchedulerNodeId,
+    advanced_to: SimInstant,
+    shift: Shift,
+) -> Result<Vec<ScheduledEvent>, SchedulerError> {
+    let mut resolved = Vec::new();
+    let mut pending = Vec::with_capacity(pending_events.len());
+
+    for event in pending_events.iter() {
+        if event.key.consumer() == consumer {
+            let key_time = SimInstant {
+                nanos: event.key.virtual_time().ticks,
+            };
+            if key_time <= advanced_to {
+                let delivery_time = scheduled_event_delivery_time(event, shift)?;
+                if delivery_time <= advanced_to {
+                    resolved.push(event.clone());
+                    continue;
+                }
+            }
+        }
+        pending.push(event.clone());
+    }
+
+    let ordered = ordered_scheduled_events(&resolved)
+        .into_iter()
+        .cloned()
+        .collect();
+    *pending_events = pending;
+
+    Ok(ordered)
 }
 
 /// Selects the earliest exact local event for `node`.
@@ -2290,7 +2407,13 @@ impl SingleScheduler {
         let before = plan.before;
         let (after, after_time, yielded_before_advance) = self.advance_node_after_yield(&plan)?;
         // RESOLVE phase: collect due events for the node that just advanced.
-        resolved_events.extend(self.resolve_events_for(&selected_node, after_time));
+        let shift = self.timeline.shift();
+        resolved_events.extend(resolve_due_scheduled_events(
+            &mut self.pending_events,
+            &selected_node,
+            after_time,
+            shift,
+        )?);
 
         // Decision EMIT phase: convert resolved happenings into recorded decisions.
         let decisions = self.emit_quantum_decisions(&resolved_events, after_time);
@@ -2389,32 +2512,6 @@ impl SingleScheduler {
             .entry(stream)
             .or_insert_with(|| RngStreamPosition::new(0));
         position.draws = position.draws.saturating_add(1);
-    }
-
-    fn resolve_events_for(
-        &mut self,
-        node: &SchedulerNodeId,
-        advanced_to: SimInstant,
-    ) -> Vec<ScheduledEvent> {
-        let mut resolved = Vec::new();
-        let mut pending = Vec::new();
-
-        for event in self.pending_events.drain(..) {
-            let due = SimInstant {
-                nanos: event.key.virtual_time().ticks,
-            };
-            if event.key.consumer() == node && due <= advanced_to {
-                resolved.push(event);
-            } else {
-                pending.push(event);
-            }
-        }
-
-        self.pending_events = pending;
-        ordered_scheduled_events(&resolved)
-            .into_iter()
-            .cloned()
-            .collect()
     }
 
     fn advance_node_after_yield(
