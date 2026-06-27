@@ -974,10 +974,23 @@ authority for its shape. The contract those files may rely on:
 > the tasks whose primary area is this file ([PLAN-3]); they are kept in
 > sync with the master plan's order/digest by the doc lint ([`28-engineering-standards.md`](28-engineering-standards.md)).
 
-- [ ] **T-SPAT-1** Define `ScenarioDef = (World, Plan, Properties, Seed)` as an
+- [x] **T-SPAT-1** Define `ScenarioDef = (World, Plan, Properties, Seed)` as an
   immutable pure value with no live handles, host paths, or wall-clock; property-test
   immutability and that equal content ⇒ equal `id`. — satisfies [SPAT-1], [SPAT-4];
   spec §1, §2.
+  - Completed by `crates/crucible/src/model.rs`: `ScenarioDefForm` is the
+    materialized pure `(World, Plan, Properties, Seed)` tuple, clones validated
+    components at construction, exposes only immutable component accessors, and
+    reconstructs the executable `ScenarioDef` handle from the tuple's component
+    hashes plus seed. `ScenarioDef` keeps its `id` and `Seed` private, carries no
+    live handles, and remains equal by content address. Image inputs are limited
+    to `blake3:<hash>` references, host-path image refs are rejected before
+    scenario construction, and the scenario model is gated against direct
+    wall-clock APIs. The focused
+    `scenario_def_form_is_immutable_pure_four_tuple_value` test and
+    `checks.crucible.phase1.spatialScenarioDefValue` gate cover clone semantics,
+    no-live-handle behavior, equal-content/equal-id cases, tuple-component
+    identity sensitivity, host-path rejection, and wall-clock exclusion.
 - [ ] **T-SPAT-2** Enforce the four-layer orthogonality structurally (links in
   `World`, faults in `Plan`, assertions in `Properties`, entropy in `Seed`); add a
   lint/test that no layer is folded into another. — satisfies [SPAT-2], [SPAT-33];
