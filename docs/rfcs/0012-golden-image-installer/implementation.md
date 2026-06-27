@@ -22,12 +22,14 @@ and recovery access).
 |---|------|--------|
 | 1 | `lib/build/rootfs.nix` | **emit dm-verity**: append a verity hash tree to `root.img`, write the root hash + final size (change #9a) |
 | 1b | `pkgs/boot/aos-uki.nix` | **bake** the signed verity root hash into the `.cmdline` (change #9b); **build** the emergency/recovery profile — a second `.profile`/`.cmdline`, PCR-11 excluded from `.pcrsig` (change #10) |
+| 1c | `modules/base/secure-boot.nix` | **add PCR 12 to the pinned `/var` seal set** (`pinnedPcrs` "7" → "7,12") so any appended-cmdline injection (`roothash=`, `SYSTEMD_SULOGIN_FORCE=1`, `rd.systemd.unit=`) changes the measured value and the unseal fails closed (change #10d) |
 | 2 | `modules/image/_builder.nix` | **single-ESP image**: place `rootfs.bin` (with appended verity tree) in the ESP, fixed `espSizeMiB` (512) with a fit assertion, drop the `root-a` partition, rewrite `image-info.json`; pass `verityRootHashFile` to `aos-uki` under Secure Boot |
-| 3 | `modules/services/ignition.nix` | **new** `aos-install-root.service` (dd **+ `veritysetup open`** from the signed root hash, change #9c); **drop-in** `Requires=aos-install-root` on `sysroot.mount` (fail-closed, §3a); **rework** `aos-gpt-relocate` to resolve the disk from the ESP partlabel |
+| 3 | `modules/services/ignition.nix` | **new** `aos-install-root.service` (dd **+ `veritysetup open`** from the signed root hash, change #9c); set **`requiredBy = ["sysroot.mount"]`** on `aos-install-root` (fail-closed, §3a); **rework** `aos-gpt-relocate` to resolve the disk from the ESP partlabel |
 | 4 | `modules/base/boot.nix` | **none required** — `vfat` is builtin (`CONFIG_VFAT_FS=y`); the manifest entry is optional documentation |
-| 5 | `modules/base/_initrd-builder.nix` | add `erofs-utils` to the initrd closure (for `fsck.erofs`); `cryptsetup`/`veritysetup` is already present for the verity open + `/var` recovery slot |
+| 5 | `modules/base/_initrd-builder.nix` | add `erofs-utils` to the initrd closure (for `fsck.erofs`); `cryptsetup`/`veritysetup` is already present for the verity open + `/var` recovery slot; **lock the initrd root account** (`root:::` → `root:!*::` at `:526`, §10c) so `sulogin` fails closed on a normal-profile (@0) emergency drop |
 | 6 | `modules/base/filesystems.nix` | make `rootDevice`/`espDevice` partlabel-based and point root at `/dev/mapper/root` when verity is active; keep `/boot` = ESP (note the future `/efi` split) |
-| 7 | `tests/fleet/install-from-image.nix` | new Ignition config (XBOOTLDR + unformatted `root-a` + `root-b` + `swap` + `var`); assert the verity-mapped EROFS root and (under SB) that the emergency profile does not auto-unseal `/var` |
+| 7 | `tests/fleet/install-from-image.nix` | new Ignition config (XBOOTLDR + unformatted `root-a` + `root-b` + `swap` + `var`); assert the dd'd EROFS root on `root-a` + that `aos-install-root` ran. This target is **unsigned** (no verity mapper), so the verity-mapped-root and emergency-profile-no-unseal assertions live in `checks.fleet.secure-boot` / `measured-boot` (see §Testing), not here. |
+| 7b | `modules/tests/security.nix` + SB fleet suites | strengthen the no-op `root-no-password` check (today only `test -f /etc/shadow`) to assert root's shadow field is locked (`!`/`*`); add SB-suite assertions that a normal-profile (@0) emergency drop yields no shell while the @1 profile grants one with `/var` sealed (change #7) |
 | 8 | `docs/boot/qemu-uefi.md` | update the example Ignition config to the new contract |
 
 ---
@@ -205,6 +207,7 @@ power-fail-safe.
 "aos-install-root" = {
   description = "Install root filesystem image to root-a on first boot";
   wantedBy = ["initrd-root-fs.target"];
+  requiredBy = ["sysroot.mount"];
   before = [
     "sysroot.mount"
     "aos-growfs.service"
@@ -284,18 +287,24 @@ Notes:
 - `ConditionPathExists` as a **list** ANDs the two conditions (both endpoints
   must exist); on a kernel-boot test disk (ext4 root, no ESP) the service is a
   clean no-op.
-- **`sysroot.mount` gets a hard `Requires=aos-install-root.service`** (via a
-  drop-in over the `systemd-fstab-generator` unit, the same `overrideStrategy =
-  "asDropin"` pattern used elsewhere in this module). Ordering alone
-  (`Before=sysroot.mount`) does not stop the mount if the install fails; the
-  `Requires=` makes the boot **fail closed uniformly** — under Secure Boot the
-  verity mapper is already the backstop (no `/dev/mapper/root` → no mount, §9c),
-  but on the unsigned dev image (raw `root-a`, no verity) this is what prevents a
-  partial-but-mountable EROFS from booting. Use `Requires=`, not `BindsTo=`: the
-  `RemainAfterExit` oneshot stays active after success, and `BindsTo=` would risk
-  tearing down a live root mount on any later inactive transition. The
-  `ConditionPathExists`-skipped no-op (kernel-boot test) counts as success, so
-  `Requires=` is satisfied and that test is unaffected.
+- **`sysroot.mount` gets a hard `Requires=aos-install-root.service`** via
+  `requiredBy = ["sysroot.mount"]` on the service (above), which renders
+  `sysroot.mount.requires/aos-install-root.service` — equivalent to a hard
+  `Requires=` on the mount, and the correct way to reach a
+  generator-synthesized `.mount`. The initrd fstab is empty, so `sysroot.mount`
+  is created at runtime by `systemd-fstab-generator`; there is no static unit
+  for an `overrideStrategy = "asDropin"` drop-in to attach to, and a
+  `boot.initrd.systemd.mounts` drop-in would have to restate the `[Mount]`
+  What/Where/Type and track the raw-`root-a`-vs-verity-mapper split. Ordering
+  alone (`Before=sysroot.mount`) does not stop the mount if the install fails;
+  the generated `Requires=` makes the boot **fail closed uniformly** — under
+  Secure Boot the verity mapper is already the backstop (no `/dev/mapper/root` →
+  no mount, §9c), but on the unsigned dev image (raw `root-a`, no verity) this is
+  what prevents a partial-but-mountable EROFS from booting. `requiredBy` emits
+  `Requires=`, not `BindsTo=`: the `RemainAfterExit` oneshot stays active after
+  success, and `BindsTo=` would risk tearing down a live root mount on any later
+  inactive transition. The `ConditionPathExists`-skipped no-op (kernel-boot test)
+  counts as success, so the requirement is satisfied and that test is unaffected.
 
 ### 3b. Rework `aos-gpt-relocate` to key off the ESP
 
@@ -627,7 +636,10 @@ build dep of this file. The repo already formats verity images in
 **separate** `root.verity` file; this RFC appends the tree into the same `root.img`
 via `--hash-offset` instead, because `rootfs.bin` must be a single `dd`-able blob
 (one file on the ESP, one partition on `root-a`). Note the cryptsetup build carries
-`cryptsetup-patches/0001-fail-closed-on-signed-verity-activation.patch`.
+`cryptsetup-patches/0001-fail-closed-on-signed-verity-activation.patch`. The
+verity-tree append is applied to the **EROFS branch only** (`lib/build/rootfs.nix`
+lines ~275-327), not the ext4 dev-test branch (~328-373), so the ext4
+`checks.vm.boot` root does not grow a trailing tree.
 
 ### 9b. Bake the signed root hash + hash-offset into the cmdline (`pkgs/boot/aos-uki.nix`)
 
@@ -662,27 +674,53 @@ image (no `verityRootHashFile`) keeps `root=root-a` and mounts the raw partition
 ### 9c. Assemble the verity device in stage-1 (`modules/services/ignition.nix`)
 
 Extend `aos-install-root.service`: after the `dd` + `fsck.erofs`, open the verity
-device from the **signed** root hash (read from `/proc/cmdline`, never from disk)
-and the appended tree, then let the root mount consume the mapper:
+device from the **signed** root hash and the appended tree, then let the root mount
+consume the mapper. **The root hash must be anchored to the signed `.cmdline`, not to
+a naive scan of `/proc/cmdline`.** Under Secure Boot sd-stub drops the menu/LoadOptions
+cmdline (`stub.c:1184-1200`) but still **appends** unsigned SMBIOS/addon cmdline
+*after* the signed `.cmdline` (`stub.c:1273-1274`), measured only into PCR 12. A
+greedy `roothash=` match would take the **last** occurrence, so a hypervisor-injected
+`…kernel-cmdline-extra=roothash=<attacker>` (plus a matching malicious EROFS on
+`root-a`) would open the attacker's image with Secure Boot still enforcing. The signed
+`.cmdline` carries exactly one `roothash=`, so reject the boot if a second appears and
+take the first:
 
 ```sh
-# Both the root hash and the hash-offset (where the appended verity tree begins)
-# come from the SIGNED cmdline — never read off the disk.
-roothash=$(sed -n 's/.*\broothash=\([0-9a-f]\+\).*/\1/p' /proc/cmdline)
-offset=$(sed -n 's/.*\baos\.verity\.hash_offset=\([0-9]\+\).*/\1/p' /proc/cmdline)
-veritysetup open /dev/disk/by-partlabel/root-a root \
-  /dev/disk/by-partlabel/root-a "$roothash" --hash-offset=$offset
+# Anchor verity to the SIGNED .cmdline. sd-stub appends unsigned SMBIOS/addon
+# cmdline after the signed section (stub.c:1273-1274), so a duplicate roothash=/
+# hash_offset= means injection — fail closed. The signed cmdline has exactly one.
+if [ "$(grep -oE '(^| )roothash=' /proc/cmdline | wc -l)" -gt 1 ] \
+   || [ "$(grep -oE '(^| )aos\.verity\.hash_offset=' /proc/cmdline | wc -l)" -gt 1 ]; then
+  echo "aos-install-root: duplicate roothash=/hash_offset= in cmdline (injection); failing closed" >&2
+  exit 1
+fi
+roothash=$(sed -n 's/.*[[:space:]]roothash=\([0-9a-f]\+\).*/\1/p' /proc/cmdline)
+offset=$(sed -n 's/.*[[:space:]]aos\.verity\.hash_offset=\([0-9]\+\).*/\1/p' /proc/cmdline)
+# Unsigned dev image: no roothash= in the signed cmdline → skip the open and let
+# the raw root-a partition mount as today (matches the prose below).
+if [ -n "$roothash" ]; then
+  veritysetup open /dev/disk/by-partlabel/root-a root \
+    /dev/disk/by-partlabel/root-a "$roothash" --hash-offset=$offset
+else
+  echo "aos-install-root: no roothash= (unsigned dev image); raw root-a mount"
+fi
 ```
+
+(The stronger anchor is to read `roothash=` out of the booted UKI's `.cmdline` PE
+section directly; the duplicate-rejection guard above is the pragmatic equivalent
+under Secure Boot, where the signed section always contributes exactly one `roothash=`.)
 
 `sysroot.mount` then mounts `/dev/mapper/root` — which it does because §9b
 repointed the signed cmdline's `root=` at the mapper, and this service creates that
 mapper before `sysroot.mount` runs (`Before=sysroot.mount`). If the `veritysetup
-open` fails (or the image was a partial/tampered `dd`), `/dev/mapper/root` never
-appears, so `sysroot.mount` fails and the boot drops to emergency rather than
-mounting an unverified root — the install path is **fail-closed** under verity.
-Drive the open from the cmdline's `roothash=` only, so the anchor is the signature,
-not the medium. When the cmdline carries no `roothash=` (the unsigned dev image),
-skip the open; `root=` is still `root-a` and the raw partition mounts as today.
+open` fails — a partial `dd` leaves no readable superblock at `--hash-offset` —
+`/dev/mapper/root` never appears, so `sysroot.mount` fails and the boot drops to
+emergency rather than mounting an unverified root. (For a structurally-valid but
+*content*-tampered image dm-verity is lazy: `veritysetup open` succeeds and the
+mapper appears; corruption surfaces as `EIO` when `sysroot.mount` reads a bad block —
+still fail-closed, just on read rather than on open.) When the cmdline carries no
+`roothash=` (the unsigned dev image), skip the open; `root=` is still `root-a` and
+the raw partition mounts as today.
 
 ### 9d. Point the root device at the mapper (`modules/base/filesystems.nix`)
 
@@ -717,7 +755,7 @@ sd-boot renders one menu entry per profile (`src/boot/boot.c:2177-2263`) and the
 `ukify build --profile='ID=emergency\n…' --cmdline='… rd.systemd.unit=emergency.target' --output=profile-emergency.efi`,
 then the main `ukify build … --profile='ID=main\n…' --join-profile=profile-emergency.efi …`.
 `--profile`/`--join-profile` landed in v257 and `--sign-profile` in v258
-(`man/ukify.xml:255,269,280`); the join is implemented at `ukify.py:1483-1512`.
+(`man/ukify.xml:504,269,280`); the join is implemented at `ukify.py:1483-1512`.
 
 ### 10b. Exclude the emergency profile from the signed PCR policy
 
@@ -730,24 +768,88 @@ emergency profile (`ID=emergency`) gets **no** signed prediction. At boot the st
 overrides `sections[]` with the selected profile's `.cmdline`/`.profile`
 (`stub.c:1148-1158`) and measures them into PCR 11 (`stub.c:751-791`,
 `tpm2-pcr.h:28`), so selecting the emergency profile yields a PCR-11 value with no
-matching signature in `.pcrsig` → the `--tpm2-public-key-pcrs=11` unseal
-(`secure-boot.nix:382-396`) fails closed and the recovery key is required. PCR 7 is
+matching signature in `.pcrsig` → the unseal at the runtime TPM2 attach
+(`secure-boot.nix:382-396`), bound by the `--tpm2-public-key-pcrs=11` enrollment
+(`secure-boot.nix:438`), fails closed and the recovery key is required. PCR 7 is
 unchanged (firmware-measured SB state). **Build constraint:** the emergency
 profile's `--profile='ID=…'` MUST use an ID distinct from any `--sign-profile=`
 value, or the exclusion does not happen (`ukify.py:1518` gates by ID string). A CI
-assertion (change #7) proves the emergency profile reaches the shell and leaves
-`/var` sealed.
+assertion in `checks.fleet.secure-boot` / `measured-boot` (see §Testing) proves the
+emergency profile reaches the shell and leaves `/var` sealed.
 
-### 10c. Recovery tooling + authentication
+### 10c. Root account, emergency authentication, and the @0/@1 split
 
-The initrd already carries `cryptsetup`/`veritysetup`, `dd`, `blkid`, and (change
-#5) `erofs-utils` — enough to re-pave `root-a` and `cryptsetup open` the `/var`
-recovery slot (`secure-boot.nix:447-449`). The emergency target runs `sulogin`:
-bake an emergency root-password hash for the **non-SB** image (or the constrained
-recovery program from the RFC). Under SB the shell is password-less by design —
-verity (§9) denies persistence, the excluded PCR (§10b) denies `/var` exposure,
-and lockdown (`secure-boot.nix:280-283`, when enabled) denies the usual root
-escalations.
+The recovery shell must be reachable **only** via the dedicated @1 emergency profile
+(PCR-11 excluded, §10b), never via a *normal*-profile (@0) boot that merely *falls*
+into `emergency.target` — because @0 carries the **blessed** PCR-11, so a shell there
+can manually unseal `/var`. Two parts:
+
+- **Lock the root account.** The initrd root is currently **empty**
+  (`_initrd-builder.nix:526` = `root:::0:99999:7:::`), so any emergency drop yields a
+  passwordless `sulogin`. Change it to **locked** (`root:!*::0:99999:7:::`); with a
+  locked root and no `--force`, `sulogin` (run by `emergency.service`/`rescue.service`
+  via `systemd-sulogin-shell`) **refuses**, so the @0 fallback fails closed. Stage-2
+  root is **already** locked by default (`users.nix:31` emits `root:!*::…`; the comment
+  at `:28` "empty password hash" is stale — correct it to "locked").
+- **@1 grants its shell via a baked recovery path, not a cmdline knob.** The @1
+  profile's signed `.cmdline` boots a baked initrd recovery target (e.g.
+  `rd.systemd.unit=aos-recovery.target` running `agetty --autologin root`). Do **not**
+  use `SYSTEMD_SULOGIN_FORCE=1`: `systemd-sulogin-shell` reads it from both the
+  environment and **directly from `/proc/cmdline`** (`sulogin-shell.c:104,:111`), and
+  `systemd.setenv=SYSTEMD_SULOGIN_FORCE=1` is honored by PID 1 (`main.c:405-416`), so
+  the appended SMBIOS cmdline could force a passwordless shell on @0. **The security
+  boundary is the PCR binding** (PCR-11 exclusion for @1, the PCR-12 pin for @0 — §10b,
+  §10d), *not* the choice of shell mechanism, because @0's cmdline is appendable. A
+  baked recovery target is merely the cleaner way for @1 to obtain a shell once the PCR
+  binding has already decided whether `/var` is reachable.
+
+The initrd carries `cryptsetup`/`veritysetup`, `dd`, `blkid`, and (change #5)
+`erofs-utils` — enough to re-pave `root-a` and `cryptsetup open` the `/var` recovery
+slot (`secure-boot.nix:447-449`).
+
+**Conditional — this guarantee requires the locked-root posture.** It holds only when
+`aos.profiles.debug.autologin` (and the debug security level) is **off**. With
+autologin (e.g. `systems/server.nix:16` today), `modules/profiles/debug.nix`
+force-unlocks stage-2 root (`debug.nix:122-128`), adds `--autologin root` gettys, and
+**masks the initrd `emergency.service`/`rescue.service`** (`debug.nix:86-89`) — a
+legitimate, informed opt-out where the sealed-`/var` guarantee does not apply, exactly
+parallel to the non-SB case. On the **non-SB** image the emergency profile is
+`sulogin`-protected (bake an emergency root-password hash), since neither verity nor
+the PCR exclusion carries a guarantee without the signature.
+
+### 10d. Bind PCR 12 into the `/var` seal (close the appended-cmdline class)
+
+The seal today is signature-flexible on PCR 11 + pinned by value on PCR 7
+(`secure-boot.nix:438-439`). Add **PCR 12** to the pinned set (`pinnedPcrs` "7" →
+"7,12"). PCR 12 (`TPM2_PCR_KERNEL_CONFIG`) measures the *override/appended* kernel
+cmdline (not the embedded base, which is PCR 11 — `man/systemd-cryptenroll.xml:179`),
+loaded credentials, sysext/confext, and the selected-profile event — i.e.
+**everything an attacker can append** (the SMBIOS cmdline lands here at `stub.c:814`,
+addons at `:389`, measured via `measure.c:333-334` — not in the PCR-11 signature
+policy). Pinning it means any injected
+`roothash=`, `SYSTEMD_SULOGIN_FORCE=1`, or `rd.systemd.unit=` changes the measured
+value, so the TPM refuses to release `/var` — closing the injection→`/var` path that
+locked-root alone does not (the `--force` knob is itself cmdline-readable).
+
+Caveats, both load-bearing:
+
+- **PCR 12 can only be *pinned by value*, not signed.** `systemd-measure` models PCR
+  11 only (`measure-tool.c`), so there is no signed PCR-12 prediction; the pin is
+  captured at first-boot enrollment, as brittle as PCR 7. This is sound **today**
+  because AOS extends *nothing* into PCR 12 on a clean @0 boot (no addons, no SMBIOS
+  extra, no credentials, no sysext — verified by grep), so the value is the constant
+  reset state. It becomes a regression the moment any AOS feature or platform
+  legitimately touches PCR 12 (a credential, a sysext, a cmdline addon) — document this
+  as a standing constraint, and re-seal if it changes.
+- **PCR-12 pinning does not fix verity.** It stops an injected boot from *unsealing
+  `/var`*, but the injected `roothash=` still anchors the verity device unless §9c's
+  duplicate-rejection guard is in place — so §9c and §10d are both required.
+
+Bonus: the @1 emergency profile extends PCR 12 with its profile event
+(`stub.c:1203-1217`), so @1's PCR 12 differs from @0's — pinning to @0's value also
+denies @1, reinforcing the PCR-11 exclusion. The stronger (more invasive) alternative
+is to suppress the SMBIOS/addon cmdline append at the stub level so the vector never
+exists; the PCR-12 pin is the config-only mitigation.
 
 ---
 
@@ -762,13 +864,20 @@ escalations.
    profile (change #10).
 4. **`boot.nix`** — none required (VFAT builtin); optional documentation-only
    `"vfat"` manifest entry (change #4).
-5. **`_initrd-builder.nix`** — `erofs-utils` in the initrd (change #5).
+5. **`_initrd-builder.nix`** — `erofs-utils` in the initrd (change #5); **lock the
+   initrd root account** (`:526`, change #10c).
 6. **`ignition.nix`** — `aos-install-root.service` (dd + `veritysetup open`) +
    `aos-gpt-relocate` rework + `ignitionTools` (changes #3, #9c).
 7. **`filesystems.nix`** — partlabel devices + verity mapper root (changes #6, #9d).
-8. **`install-from-image.nix`** — new config + assertions incl. verity root +
-   emergency-profile no-unseal (change #7).
+8. **`install-from-image.nix`** — new config + assertions for the dd'd EROFS
+   root on `root-a` and that `aos-install-root` ran (change #7); the
+   verity-root and emergency-profile-no-unseal assertions live in
+   `checks.fleet.secure-boot` / `measured-boot` (see §Testing), not here.
 9. **`qemu-uefi.md`** — operator example (change #8).
+10. **`secure-boot.nix`** — add PCR 12 to the pinned `/var` seal set (change #10d);
+    correct the stale "empty password hash" comment in `users.nix:28` (change #10c).
+11. **`security.nix` + SB fleet suites** — strengthen the root-locked assertion and
+    add the @0-fails-closed / @1-grants-shell checks (change #7).
 
 ## Testing / validation
 
@@ -785,9 +894,13 @@ escalations.
   change.
 - **`checks.fleet.secure-boot` / `checks.fleet.measured-boot`** — extend to prove
   (a) the verity-mapped root mounts and a corrupted `root-a` fails the boot closed
-  (verity catches it), and (b) selecting the emergency profile reaches the initrd
-  emergency shell and does **not** auto-unseal `/var` (the recovery key is
-  required).
+  (verity catches it); (b) selecting the @1 emergency profile reaches the initrd
+  recovery shell and does **not** auto-unseal `/var` (the recovery key is required);
+  and (c) a *normal*-profile (@0) drop into `emergency.target` yields **no** shell
+  (locked root → `sulogin` refuses), i.e. the @0 fallback fails closed. Also
+  strengthen `modules/tests/security.nix` — the `root-no-password` check is today a
+  no-op (`test -f /etc/shadow` only) and must assert root's shadow field is locked
+  (`!`/`*`) on the SB posture.
 - Inspect the built image (`mdir -i esp.img ::`) to confirm `rootfs.bin` (with its
   appended verity tree) is present and the partition table has exactly one
   partition.

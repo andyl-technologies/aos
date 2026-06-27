@@ -166,8 +166,9 @@ config **must** honor them.
 - **`root-a`** — a partition with `PARTLABEL=root-a` and the Linux-data type
   GUID, **left unformatted** (no `storage.filesystems` entry, or `format`
   unset). AOS writes the EROFS image onto it with `dd` at first boot; an
-  Ignition-created filesystem here would be clobbered and breaks the
-  idempotency gate (§First boot, step 5). It must be **at least as large as
+  Ignition-created filesystem here is overwritten by the install — its UUID
+  mismatches `rootfs.bin`'s EROFS UUID, so the gate correctly re-`dd`s it
+  (§First boot, step 6). It must be **at least as large as
   `rootfs.bin`** (the builder records the exact size in `image-info.json` and
   in `${rootfs}/rootfs-size-bytes`); 4 GiB is the recommended slot size for
   headroom and A/B symmetry.
@@ -191,9 +192,14 @@ config **must** honor them.
 
 ### Global
 
-- `storage.disks[].wipeTable` **must be `false`**. The ESP we booted from is on
-  this disk and mounted; Ignition refuses `wipeTable: true` on a disk with any
-  mounted partition, and wiping the table would destroy the ESP. New partitions
+- `storage.disks[].wipeTable` **must be `false`** because the operator's config
+  does not re-declare the ESP, so a table wipe would delete the partition we
+  booted from and brick the system. Ignition's own `refusing to wipe active
+  disk` guard does **not** protect against this here — it only fires when a
+  partition on the target disk is mounted or held
+  (`internal/exec/stages/disks/partitions.go:457-459`, `blockDevInUse:403-425`),
+  and at `ignition-disks` time the ESP is not yet mounted (the initrd ships an
+  empty fstab; `aos-install-root` mounts the ESP only afterwards). New partitions
   are created in the trailing free space with `wipePartitionEntry` defaulting
   off.
 
@@ -335,13 +341,17 @@ baked root password, is the authorization factor.
 
 ### A signed emergency profile, not a runtime karg
 
-Secure Boot makes the obvious lever a no-op: when the UKI carries a baked
-`.cmdline`, sd-stub discards any runtime-supplied command line and uses only the
-signed one (systemd v259.1 `src/boot/stub.c:1184-1200`), and `editor no`
+Secure Boot makes the obvious lever mostly a no-op: when the UKI carries a baked
+`.cmdline`, sd-stub drops the **menu/LoadOptions** command line and uses the signed
+one (systemd v259.1 `src/boot/stub.c:1184-1200`), and `editor no`
 (`modules/image/_builder.nix:182`) blocks editing at the menu. So
 `rd.systemd.unit=emergency.target` / `systemd.debug_shell` / `systemd.setenv=…`
-typed at boot never reach PID 1. The emergency entry is therefore a second
-**signed** boot path:
+*typed at the menu* never reach PID 1. (One gap remains: sd-stub still **appends**
+unsigned SMBIOS/addon cmdline *after* the signed section — `stub.c:1273-1274`,
+measured only into PCR 12 — so a hostile hypervisor can inject kargs even under
+Secure Boot. That vector is closed separately by the PCR-12 pin and the locked root
+account, §"The root account"; it is *not* closed by the cmdline-drop alone.) The
+emergency entry is therefore a second **signed** boot path:
 
 - **Multi-profile UKI (preferred).** The install UKI carries a second `.profile`
   whose baked, signed `.cmdline` boots the emergency target. The `@N` profile
@@ -357,43 +367,92 @@ The shell runs in the **initrd** (`rd.systemd.unit=emergency.target`).
 `aos-var-crypt` is itself an initrd service wanted by `initrd-fs.target`
 (`modules/base/secure-boot.nix:311-314`); isolating to `emergency.target` means
 `initrd-fs.target`'s wants — `aos-var-crypt` among them — are never pulled in, so
-the recovery path never auto-unseals `/var`. Even a *manual* unseal attempt from the
-shell fails: the emergency profile measures a PCR-11 the signed `.pcrsig` does not
-bless (precondition 2 below), so the TPM policy rejects it.
+the recovery path never auto-unseals `/var`. Even a *manual* unseal attempt fails on
+the dedicated **@1** emergency profile: it measures a PCR-11 the signed `.pcrsig`
+does not bless (precondition 2 below), so the TPM policy rejects it. This holds for
+the **@1** profile only — a *normal* **@0** boot that merely *falls* into
+`emergency.target` (e.g. the fail-closed `aos-install-root` drop) carries the
+**blessed** PCR-11 and *can* unseal `/var`; that path is fenced off by the locked
+root account and the PCR-12 pin (§"The root account", precondition 3 below), not by
+this isolation.
 
 ### Why a password-less shell is sound
 
-This RFC delivers both of the properties a password-less emergency shell depends
+This RFC delivers the three properties a password-less emergency shell depends
 on. (Outside Secure Boot — the unsigned dev image — the emergency profile is
-password-protected via `sulogin`, since neither property carries a guarantee
+password-protected via `sulogin`, since none of them carries a guarantee
 without the signature.)
 
 1. **dm-verity on the root, root hash in the signed cmdline.** The signed cmdline
-   pins the root *device* (`root=/dev/disk/by-partlabel/root-a`, repointed to
-   `/dev/mapper/root` when verity is active — `modules/base/boot.nix:165`,
-   implementation.md §9b) and, with this RFC, its *content*: `rootfs.bin`
-   carries an appended verity hash tree and the root hash is baked into the signed
-   UKI cmdline, so a root shell that `dd`s a tampered EROFS onto `root-a` fails the
-   roothash check at the next boot and the system fails closed instead of running
-   the backdoor with Secure Boot intact. EROFS pairs naturally with dm-verity (a
-   fixed read-only image over a verity device); the kernel pieces are builtin
-   (`pkgs/kernel/config/storage.config:26-27`) and the wiring lands in
-   `lib/build/rootfs.nix` / `pkgs/boot/aos-uki.nix` / stage-1 (implementation.md
-   §9). (`modules/security/verity.nix` provides an `aos.security.verity` option
-   surface, but it assumes a *separate* hash device — `verity.data=`/`verity.hash=`,
-   defaulting to `/dev/vda2`/`/dev/vda3` — so this RFC's appended-`--hash-offset`
-   EROFS model extends or supersedes that device model rather than reusing it as-is.)
-2. **The emergency path breaks the `/var` TPM auto-unseal.** The seal is
+   pins the root *device* (the base `root=/dev/disk/by-partlabel/root-a` at
+   `modules/base/boot.nix:165` is repointed to `/dev/mapper/root` by `aos-uki` when
+   verity is active — implementation.md §9b, *not* by boot.nix) and, with this RFC,
+   its *content*: `rootfs.bin` carries an appended verity hash tree and the root hash
+   is baked into the signed UKI cmdline, so a root shell that `dd`s a tampered EROFS
+   onto `root-a` fails verity (the mapper opens but reads return `EIO`) and the system
+   fails closed instead of running the backdoor with Secure Boot intact. The root hash
+   must be anchored to the *signed* `.cmdline`, not a greedy `/proc/cmdline` scan —
+   sd-stub appends unsigned SMBIOS/addon cmdline afterwards, so stage-1 rejects a
+   duplicate `roothash=` (implementation.md §9c). EROFS pairs naturally with dm-verity;
+   the kernel pieces are builtin (`pkgs/kernel/config/storage.config:26-27`) and the
+   wiring lands in `lib/build/rootfs.nix` / `pkgs/boot/aos-uki.nix` / stage-1
+   (implementation.md §9). (`modules/security/verity.nix` provides an
+   `aos.security.verity` option surface, but it assumes a *separate* hash device —
+   `verity.data=`/`verity.hash=`, defaulting to `/dev/vda2`/`/dev/vda3` — so this RFC's
+   appended-`--hash-offset` EROFS model extends or supersedes it.)
+2. **The @1 emergency *profile* breaks the `/var` TPM auto-unseal.** The seal is
    signature-flexible on PCR 11 (the UKI/cmdline measurement) and pinned by value
    on PCR 7 (`modules/base/secure-boot.nix:208-228`;
-   [measured-boot.md](../0006-secure-boot/measured-boot.md)). The emergency profile
-   is built so its PCR-11 prediction is **excluded** from the signed `.pcrsig` set,
-   so reaching the shell forces the recovery-key path; a CI assertion proves the
-   emergency profile cannot auto-unseal `/var` (implementation.md §10).
+   [measured-boot.md](../0006-secure-boot/measured-boot.md)). The @1 profile is built
+   so its PCR-11 prediction is **excluded** from the signed `.pcrsig` set, so reaching
+   *that* shell forces the recovery-key path; a CI assertion proves it cannot
+   auto-unseal `/var` (implementation.md §10). This covers the @1 profile **only** —
+   not a normal @0 boot that falls into `emergency.target` (precondition 3).
+3. **A locked root account, and PCR 12 pinned into the seal, fence off the @0
+   path.** Because a *normal* @0 boot carries the blessed PCR-11, the @1 exclusion
+   does not protect it; two further controls do. (a) **Locked root:** the root account
+   is locked (`!`/`*`), so `sulogin` on an @0 drop into `emergency.target` refuses a
+   shell — closing the offline-corruption path that induces such a drop (the initrd
+   root must change from empty to locked; stage-2 is already locked —
+   implementation.md §10c). (b) **PCR-12 pin:** the seal also pins PCR 12, which
+   measures the appended (override/SMBIOS) cmdline, so an injected
+   `SYSTEMD_SULOGIN_FORCE=1` /
+   `roothash=` / `rd.systemd.unit=` (via the unsigned SMBIOS append, the one karg
+   vector left under Secure Boot) changes the measurement and the TPM refuses `/var`
+   (implementation.md §10d). The security boundary is thus the **PCR binding**, not the
+   shell mechanism — see §"The root account".
+
+### The root account: locked, conditional on the boot posture
+
+The password-less @1 recovery shell is sound only when no *other* path on the
+blessed @0 profile offers an unauthenticated root with `/var` access. That reduces
+to a single requirement: **the root account is locked** (no valid password hash, not
+an empty one) in **both** stages.
+
+- The **initrd** root is currently *empty* (`_initrd-builder.nix:526` =
+  `root:::…`), which today already yields a passwordless `sulogin` on any emergency
+  drop. It must become *locked* (`root:!*::…`).
+- The **stage-2** root is **already** locked by default (`users.nix:31` emits
+  `root:!*::…`; the inline comment at `:28` saying "empty password hash" is stale).
+- The @1 recovery shell is granted by @1's *signed* cmdline (a baked
+  `agetty --autologin` recovery target), **not** by `SYSTEMD_SULOGIN_FORCE` — that
+  knob is readable straight from the cmdline, so the SMBIOS append could force it on
+  @0. The robust @0/@1 boundary is the PCR binding (preconditions 2 + 3), never a
+  cmdline token, because @0's cmdline is appendable.
+
+This is a **conditional** guarantee, not a blanket mandate. It applies only when
+`aos.profiles.debug.autologin` (and the debug security level) is off. A deployment
+may legitimately choose root autologin — that is what `systems/server.nix:16` does
+today — which force-unlocks root, adds autologin gettys, and masks the initrd
+`sulogin` recovery units (`modules/profiles/debug.nix:86-89,:122-128`). That is an
+informed opt-out of the sealed-`/var` guarantee, exactly parallel to running outside
+Secure Boot, and is appropriate for VM testing and trusted-network use (the option
+is already documented "NEVER enable this on a system exposed to an untrusted
+network").
 
 ### Authorization model
 
-With both preconditions met, the recovery key is the only thing that changes
+With all three preconditions met, the recovery key is the only thing that changes
 persistent state or exposes `/var`:
 
 - **Reinstall** re-`dd`s `rootfs.bin` from the ESP onto `root-a`
@@ -403,13 +462,17 @@ persistent state or exposes `/var`:
   never wipes (`modules/base/secure-boot.nix:447-449`, `:454`); only an operator
   holding the escrowed recovery passphrase can open it.
 
-Lockdown (`modules/base/secure-boot.nix:280-283`, when enabled) already denies a
-console root the usual escalation paths (unsigned modules, unsigned kexec,
-`/dev/mem`); verity and the sealed `/var` deny persistence and exfiltration. The
-residual power of console root is then **destructive only** (e.g. erasing the
-LUKS header or corrupting `root-a`, forcing a re-pave) — acceptable where
-physical access already implies denial of service; deployments that must deny
-even that keep a root password.
+Lockdown (engaged via `modules/base/secure-boot.nix:280-283`, with unsigned-kexec
+denial enforced by `CONFIG_KEXEC_SIG_FORCE` at `:49-52`, when enabled) already denies
+a console root the usual escalation paths (unsigned modules, unsigned kexec,
+`/dev/mem`); verity and the sealed `/var` deny persistence and exfiltration. Once the
+root account is locked and PCR 12 is pinned (§"The root account"), the residual power
+of console root is then **destructive only** (e.g. erasing the LUKS header or
+corrupting `root-a`, forcing a re-pave) — acceptable where physical access already
+implies denial of service. **Without** those two controls a console root reached on
+the blessed @0 profile (an induced fail-closed drop, or an injected
+`SYSTEMD_SULOGIN_FORCE=1`) can unseal `/var`, so they are load-bearing, not optional;
+deployments that also want a credentialed shell keep a root password.
 
 ## Security considerations
 
@@ -418,8 +481,11 @@ even that keep a root password.
   extends that coverage to the root: `rootfs.bin` ships as EROFS data plus an
   appended dm-verity hash tree, and the verity **root hash is baked into the
   signed UKI cmdline** (`pkgs/boot/aos-uki.nix`), so a tampered `rootfs.bin` or
-  `root-a` fails the roothash check at mount time and the system fails closed
-  instead of running a backdoor with Secure Boot intact. The kernel pieces are
+  `root-a` fails verity and the system fails closed instead of running a backdoor
+  with Secure Boot intact. The anchor is the **signed `.cmdline` section**, not
+  `/proc/cmdline` (sd-stub appends unsigned SMBIOS/addon cmdline afterwards), so
+  stage-1 rejects a duplicate `roothash=` to defeat injection (implementation.md
+  §9c). The kernel pieces are
   builtin — `CONFIG_DM_VERITY=y` and `CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG=y`
   (`pkgs/kernel/config/storage.config:26-27`); the work is the rootfs builder
   emitting the hash tree + root hash, `aos-uki` baking the signed roothash, and a
@@ -450,20 +516,24 @@ even that keep a root password.
   `ConditionPathExists`-skipped no-op on the kernel-boot test counts as success, so
   that test is unaffected.
 - **Cmdline pinning.** Two distinct protections, often conflated: (1) at *runtime*,
-  the UKI's baked `.cmdline` is signed and, under Secure Boot, a menu-supplied
+  the UKI's baked `.cmdline` is signed and, under Secure Boot, a **menu/LoadOptions**
   command line is dropped by sd-stub (`src/boot/stub.c:1184-1200`), with `editor no`
-  (`modules/image/_builder.nix:182`) as a second layer — so kargs cannot be edited at
-  boot; (2) at *build time*, an assertion (`modules/base/boot.nix:127-141`) rejects
-  `ignition.config.url=` in `aos.boot.kernelParams`, so a config URL cannot be baked
-  into the signed cmdline in the first place. Under verity the baked `root=`
-  additionally points at the verified mapper (§Emergency and recovery access,
-  precondition 1).
+  (`modules/image/_builder.nix:182`) as a second layer — so kargs cannot be *edited at
+  the menu*; (2) at *build time*, an assertion (`modules/base/boot.nix:127-141`)
+  rejects `ignition.config.url=` in `aos.boot.kernelParams`. Note the residual gap:
+  sd-stub still **appends** unsigned SMBIOS/addon cmdline after the signed section
+  (`stub.c:1273-1274`, measured into PCR 12 only), so a hostile hypervisor can inject
+  kargs even under SB — defeated not by the drop but by the verity duplicate-`roothash`
+  guard (§9c) and the PCR-12 pin (§10d). Under verity the baked `root=` additionally
+  points at the verified mapper (§Emergency and recovery access, precondition 1).
 - **Emergency / recovery access.** The install UKI doubles as the recovery entry
-  via a signed emergency profile, never a runtime karg (Secure Boot drops those).
-  The off-machine LUKS recovery key — not a baked root password — authorizes any
-  change to persistent state. A password-less shell is sound only once the root is
-  dm-verity-protected and the emergency path provably breaks the `/var` TPM
-  unseal. See §Emergency and recovery access.
+  via the signed **@1** emergency profile, never a runtime karg. The off-machine LUKS
+  recovery key — not a baked root password — authorizes any change to persistent
+  state. A password-less shell is sound only once (1) the root is dm-verity-protected,
+  (2) the @1 profile's PCR-11 is excluded from the seal, and (3) the root account is
+  locked and PCR 12 is pinned so a *normal*-profile (@0) drop or an injected karg
+  cannot reach an unauthenticated shell with `/var` unsealable. See §Emergency and
+  recovery access (preconditions 1–3) and §"The root account".
 
 ## Alternatives considered
 
