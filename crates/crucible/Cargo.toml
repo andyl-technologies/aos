@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 blake3 = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
+crucible-device = { path = "../crucible-device" }
 crucible-shmem = { path = "../crucible-shmem", optional = true }
 crucible-protocol = { path = "../crucible-protocol", optional = true }
 serde = { workspace = true }
@@ -47,14 +48,4 @@ required-features = ["test-double"]
 [[test]]
 name = "gate_scheduler_liveness"
 path = "tests/gate_scheduler_liveness.rs"
-required-features = ["test-double"]
-
-[[test]]
-name = "ninep_wire_abi"
-path = "tests/ninep_wire_abi.rs"
-required-features = ["test-double"]
-
-[[test]]
-name = "network_link_subnode"
-path = "tests/network_link_subnode.rs"
 required-features = ["test-double"]

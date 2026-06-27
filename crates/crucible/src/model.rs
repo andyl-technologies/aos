@@ -24,6 +24,15 @@ use serde::{Deserialize, Serialize};
 mod canonical;
 
 static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// The stable domain used for device-scoped decision streams ([IO-21]).
+///
+/// A device (block / 9p / network sub-node) draws its probabilistic faults from a
+/// stream forked by name-hash in this fixed domain, so a device named `"disk"` and
+/// a node named `"disk"` never collide and adding or renaming an unrelated device
+/// never perturbs another device's draws ([DET-25]).
+pub const DECISION_RNG_DEVICE_STREAM_DOMAIN: &str = "crucible.decision-rng.device-stream.v1";
+
 /// Minimum one-way logical link latency in virtual nanoseconds.
 pub const MIN_LINK_LATENCY: SimDuration = SimDuration { nanos: 1 };
 const MAX_WORLD_ICOUNT_SHIFT: u8 = 62;
@@ -2796,6 +2805,9 @@ impl VirtualInstant {
     /// The fixed virtual-time epoch.
     pub const EPOCH: Self = Self { nanos: 0 };
 
+    /// The maximum representable virtual-time point.
+    pub const MAX: Self = Self { nanos: u64::MAX };
+
     /// Converts this virtual-time point to the containing instruction count.
     ///
     /// # Errors
@@ -4169,6 +4181,16 @@ impl RngStreamId {
     #[must_use]
     pub fn for_link(name: impl Into<String>) -> Self {
         Self::new(DECISION_RNG_LINK_STREAM_DOMAIN, name)
+    }
+
+    /// Builds a device-scoped stream id ([IO-21]).
+    ///
+    /// Devices (block / 9p / network sub-nodes) fork their probabilistic-fault
+    /// RNG from this domain by name-hash, keeping device streams independent of
+    /// same-named node and link streams ([DET-25]).
+    #[must_use]
+    pub fn for_device(name: impl Into<String>) -> Self {
+        Self::new(DECISION_RNG_DEVICE_STREAM_DOMAIN, name)
     }
 
     /// Builds a stream id in a caller-supplied stable domain.

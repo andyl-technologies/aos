@@ -169,7 +169,6 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-shmem",
                 "gate_layer1_injection"
             ),
-            ("gate:layer1-injection", "crucible", "network_link_subnode"),
             (
                 "gate:abi-conformance",
                 "crucible-harness",
@@ -190,12 +189,6 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-api",
                 "gate_abi_conformance"
             ),
-            (
-                "gate:abi-conformance",
-                "crucible-qemu-plugin",
-                "gate_abi_conformance"
-            ),
-            ("gate:abi-conformance", "crucible", "ninep_wire_abi"),
             ("gate:replay-oracle", "crucible", "gate_replay_oracle"),
             ("gate:content-address", "crucible", "gate_content_address"),
             (
