@@ -335,6 +335,11 @@ in {
     };
   };
   phase3 = {
+    schedulerActor = import ./phase3-scheduler-actor.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerActor";
+      taskIds = ["T-SCHED-1"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
