@@ -1192,8 +1192,23 @@ authority for its shape. The contract those files may rely on:
     authoring order and endpoint spelling produce identical canonical bytes,
     compact binary, TOML, and content hashes, while changed probability or blob
     references change identity.
-- [ ] **T-SPAT-20** Implement build-time validation for fault params, heal tags,
+- [x] **T-SPAT-20** Implement build-time validation for fault params, heal tags,
   and Plan times with precise localized errors. — satisfies [SPAT-31]; spec §9.
+  - Completed in `crates/crucible/src/model.rs`: `Plan::from_entries_for_world`
+    rejects invalid membership fault targets, undeclared partition links,
+    unknown heal tags, heal-before-activate times, and non-zero-time
+    `NotYetJoined` activations before hashing/running. Fault params and plan
+    times are typed (`MembershipFault`, `PartitionDirection`, unsigned
+    `VirtualTime`), while serialized TOML parsing for plan components and full
+    scenario forms rejects negative `at_ticks`, unknown partition directions, and
+    unsupported fault-parameter fields before serde can collapse them into generic parse
+    failures. Failures carry localized `EngineError` payloads naming the
+    offending node, link endpoints, heal tag, activation time, heal time, plan
+    entry index, invalid direction, and unsupported field.
+    The focused `plan_validation_reports_precise_fault_heal_and_time_errors`
+    test and `checks.crucible.phase1.spatialPlanValidation` gate lock down the
+    exact build-time and parse-time error payloads plus canonical
+    partition-parameter spelling.
 - [ ] **T-SPAT-21** Implement the full parse/build-time validation pass (the §9
   table) rejecting ill-formed scenarios before hashing/running; assert no
   well-formedness check is deferred to runtime. — satisfies [SPAT-32]; spec §9.
