@@ -3,10 +3,11 @@
 #![forbid(unsafe_code)]
 
 use crucible::{
-    Configuration, ControlOperation, ControlOperationKind, ExactLocalEvent, NodeCounter, NodeId,
-    QuantumRequest, RngStreamId, ScheduledEventPayload, SchedulerActor, SchedulerActorHandle,
-    SchedulerActorStateSnapshot, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulingNodeKind, Shift, SimInstant,
+    Configuration, ControlOperation, ControlOperationKind, ExactLocalEvent, NetworkLookahead,
+    NodeCounter, NodeId, QuantumRequest, RngStreamId, ScheduledEventPayload, SchedulerActor,
+    SchedulerActorHandle, SchedulerActorStateSnapshot, SchedulerLivenessScenario,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Shift,
+    SimDuration, SimInstant,
 };
 
 #[test]
@@ -129,7 +130,7 @@ fn scheduler_actor() -> (SchedulerActorHandle, SchedulerActor) {
             id: scheduler_node("node-a"),
             counter: NodeCounter { ticks: 0 },
             activity: SchedulerNodeActivity::Runnable,
-            network_horizon: SimInstant { nanos: 4 },
+            network_lookahead: finite_lookahead(4),
             exact_local_event: ExactLocalEvent::NoArmedTimer,
         }],
         Vec::new(),
@@ -171,4 +172,8 @@ fn control_kinds(events: &[crucible::ScheduledEvent]) -> Vec<ControlOperationKin
 
 fn shift(bits: u8) -> Shift {
     Shift::new(bits).expect("test shift should be valid")
+}
+
+fn finite_lookahead(nanos: u64) -> NetworkLookahead {
+    NetworkLookahead::Finite(SimDuration { nanos })
 }

@@ -855,12 +855,150 @@ pub enum SchedulerHorizonSource {
 /// A scheduler horizon and its matching icount ceiling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerHorizon {
-    /// The selected virtual-time horizon.
-    pub virtual_time: SimInstant,
-    /// The icount ceiling computed with the fixed-shift `ceil` conversion.
-    pub ceiling: Icount,
+    /// The selected horizon limit.
+    pub limit: SchedulerHorizonLimit,
     /// The input that selected the horizon.
     pub source: SchedulerHorizonSource,
+}
+
+impl SchedulerHorizon {
+    /// Builds a finite horizon and its matching icount ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::TimeConversion`] when `virtual_time` cannot be
+    /// converted under `shift`.
+    pub fn finite(
+        virtual_time: SimInstant,
+        source: SchedulerHorizonSource,
+        shift: Shift,
+    ) -> Result<Self, SchedulerError> {
+        Ok(Self {
+            limit: SchedulerHorizonLimit::Finite {
+                virtual_time,
+                ceiling: virtual_time.to_icount_ceil(shift)?,
+            },
+            source,
+        })
+    }
+
+    /// Builds an unbounded horizon selected by the network-lookahead term.
+    #[must_use]
+    pub fn infinite_network() -> Self {
+        Self {
+            limit: SchedulerHorizonLimit::Infinite,
+            source: SchedulerHorizonSource::NetworkLookahead,
+        }
+    }
+
+    /// Returns the finite virtual-time horizon, if one exists.
+    #[must_use]
+    pub fn virtual_time(self) -> Option<SimInstant> {
+        match self.limit {
+            SchedulerHorizonLimit::Finite { virtual_time, .. } => Some(virtual_time),
+            SchedulerHorizonLimit::Infinite => None,
+        }
+    }
+
+    /// Returns the finite icount ceiling, if one exists.
+    #[must_use]
+    pub fn ceiling(self) -> Option<Icount> {
+        match self.limit {
+            SchedulerHorizonLimit::Finite { ceiling, .. } => Some(ceiling),
+            SchedulerHorizonLimit::Infinite => None,
+        }
+    }
+}
+
+/// A finite or unbounded scheduler horizon limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SchedulerHorizonLimit {
+    /// The node must synchronize at a finite virtual-time point.
+    Finite {
+        /// The selected virtual-time horizon.
+        virtual_time: SimInstant,
+        /// The icount ceiling computed with the fixed-shift `ceil` conversion.
+        ceiling: Icount,
+    },
+    /// The network term is unbounded because no inbound live link exists.
+    Infinite,
+}
+
+/// Computes the network horizon limit from current virtual time and lookahead.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::TimeConversion`] when the finite network horizon
+/// cannot be converted under `shift`.
+pub fn network_horizon_from_lookahead(
+    current_time: SimInstant,
+    network_lookahead: NetworkLookahead,
+    shift: Shift,
+) -> Result<SchedulerHorizonLimit, SchedulerError> {
+    match network_lookahead {
+        NetworkLookahead::Finite(duration) => {
+            let virtual_time = current_time + duration;
+            Ok(SchedulerHorizonLimit::Finite {
+                virtual_time,
+                ceiling: virtual_time.to_icount_ceil(shift)?,
+            })
+        }
+        NetworkLookahead::Infinite => Ok(SchedulerHorizonLimit::Infinite),
+    }
+}
+
+/// Computes `horizon(n) = min(next_exact_local_event(n), vt(n) + lookahead(n))`.
+///
+/// The exact-local term is used as an absolute virtual-time point with no
+/// conservative slack. The network term is derived only from the conservative
+/// guest-to-guest [`NetworkLookahead`].
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::TimeConversion`] when the selected finite horizon
+/// cannot be converted under `shift`.
+pub fn horizon_from_network_lookahead(
+    current_time: SimInstant,
+    network_lookahead: NetworkLookahead,
+    exact_local_event: ExactLocalEvent,
+    shift: Shift,
+) -> Result<SchedulerHorizon, SchedulerError> {
+    let network_limit = network_horizon_from_lookahead(current_time, network_lookahead, shift)?;
+    match (exact_local_event, network_limit) {
+        (ExactLocalEvent::NoArmedTimer, SchedulerHorizonLimit::Infinite) => {
+            Ok(SchedulerHorizon::infinite_network())
+        }
+        (ExactLocalEvent::NoArmedTimer, SchedulerHorizonLimit::Finite { virtual_time, .. }) => {
+            SchedulerHorizon::finite(
+                virtual_time,
+                SchedulerHorizonSource::NetworkLookahead,
+                shift,
+            )
+        }
+        (ExactLocalEvent::TimerDeadline { virtual_time }, SchedulerHorizonLimit::Infinite) => {
+            SchedulerHorizon::finite(virtual_time, SchedulerHorizonSource::ExactLocalTimer, shift)
+        }
+        (
+            ExactLocalEvent::TimerDeadline { virtual_time },
+            SchedulerHorizonLimit::Finite {
+                virtual_time: network_time,
+                ..
+            },
+        ) if virtual_time <= network_time => {
+            SchedulerHorizon::finite(virtual_time, SchedulerHorizonSource::ExactLocalTimer, shift)
+        }
+        (
+            ExactLocalEvent::TimerDeadline { .. },
+            SchedulerHorizonLimit::Finite {
+                virtual_time: network_time,
+                ..
+            },
+        ) => SchedulerHorizon::finite(
+            network_time,
+            SchedulerHorizonSource::NetworkLookahead,
+            shift,
+        ),
+    }
 }
 
 /// Computes the scheduler horizon from network lookahead and the exact local event.
@@ -879,22 +1017,12 @@ pub fn horizon_from_exact_local_event(
     exact_local_event: ExactLocalEvent,
     shift: Shift,
 ) -> Result<SchedulerHorizon, SchedulerError> {
-    let (virtual_time, source) = match exact_local_event {
-        ExactLocalEvent::NoArmedTimer => {
-            (network_horizon, SchedulerHorizonSource::NetworkLookahead)
-        }
-        ExactLocalEvent::TimerDeadline { virtual_time } if virtual_time <= network_horizon => {
-            (virtual_time, SchedulerHorizonSource::ExactLocalTimer)
-        }
-        ExactLocalEvent::TimerDeadline { .. } => {
-            (network_horizon, SchedulerHorizonSource::NetworkLookahead)
-        }
-    };
-    Ok(SchedulerHorizon {
-        virtual_time,
-        ceiling: virtual_time.to_icount_ceil(shift)?,
-        source,
-    })
+    horizon_from_network_lookahead(
+        SimInstant::EPOCH,
+        NetworkLookahead::Finite(network_horizon.duration_since(SimInstant::EPOCH)),
+        exact_local_event,
+        shift,
+    )
 }
 
 /// One generated node consumed by the scheduler liveness gate.
@@ -906,8 +1034,8 @@ pub struct SchedulerScenarioNode {
     pub counter: NodeCounter,
     /// Whether the node starts runnable or already idle.
     pub activity: SchedulerNodeActivity,
-    /// The conservative cross-node lookahead horizon for this node.
-    pub network_horizon: SimInstant,
+    /// The conservative cross-node lookahead for this node.
+    pub network_lookahead: NetworkLookahead,
     /// The exact local timer or idle report for this node.
     pub exact_local_event: ExactLocalEvent,
 }
@@ -1243,12 +1371,14 @@ impl SingleScheduler {
         node: &RuntimeSchedulerNode,
         current_time: SimInstant,
     ) -> Result<AdvanceWindow, SchedulerError> {
-        let horizon = horizon_from_exact_local_event(
-            node.network_horizon,
+        let horizon = horizon_from_network_lookahead(
+            current_time,
+            node.network_lookahead,
             node.exact_local_event,
             self.timeline.shift(),
         )?;
-        let requested_target = min_instant(horizon.virtual_time, self.time_limit);
+        let finite_horizon = horizon.virtual_time().unwrap_or(self.time_limit);
+        let requested_target = min_instant(finite_horizon, self.time_limit);
         let authorization = authorize_conservative_advance(
             &node.id,
             current_time,
@@ -1271,7 +1401,7 @@ impl SingleScheduler {
 
         Ok(AdvanceWindow {
             target_time,
-            quiescent_horizon: horizon.virtual_time,
+            quiescent_horizon: horizon.virtual_time(),
             conservative_dependency,
         })
     }
@@ -1428,7 +1558,10 @@ impl SingleScheduler {
         };
         self.nodes[plan.index].counter = after;
         let after_time = after.to_virtual(self.timeline.shift())?;
-        if after_time >= plan.quiescent_horizon {
+        if plan
+            .quiescent_horizon
+            .is_some_and(|horizon| after_time >= horizon)
+        {
             self.nodes[plan.index].activity = SchedulerNodeActivity::Idle;
         }
 
@@ -1541,7 +1674,7 @@ struct RuntimeSchedulerNode {
     id: SchedulerNodeId,
     counter: NodeCounter,
     activity: SchedulerNodeActivity,
-    network_horizon: SimInstant,
+    network_lookahead: NetworkLookahead,
     exact_local_event: ExactLocalEvent,
 }
 
@@ -1551,7 +1684,7 @@ impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
             id: node.id,
             counter: node.counter,
             activity: node.activity,
-            network_horizon: node.network_horizon,
+            network_lookahead: node.network_lookahead,
             exact_local_event: node.exact_local_event,
         }
     }
@@ -1562,14 +1695,14 @@ struct AdvanceCandidate {
     index: usize,
     key: SharedTimelineKey,
     target_time: SimInstant,
-    quiescent_horizon: SimInstant,
+    quiescent_horizon: Option<SimInstant>,
     conservative_dependency: Option<UnresolvedCrossNodeDependency>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AdvanceWindow {
     target_time: SimInstant,
-    quiescent_horizon: SimInstant,
+    quiescent_horizon: Option<SimInstant>,
     conservative_dependency: Option<UnresolvedCrossNodeDependency>,
 }
 
@@ -1579,7 +1712,7 @@ struct AdvancePlan {
     node: SchedulerNodeId,
     before: NodeCounter,
     target_counter: u64,
-    quiescent_horizon: SimInstant,
+    quiescent_horizon: Option<SimInstant>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1971,8 +2104,10 @@ mod tests {
         assert_eq!(
             horizon,
             Ok(SchedulerHorizon {
-                virtual_time: SimInstant { nanos: 41 },
-                ceiling: Icount { retired: 6 },
+                limit: SchedulerHorizonLimit::Finite {
+                    virtual_time: SimInstant { nanos: 41 },
+                    ceiling: Icount { retired: 6 },
+                },
                 source: SchedulerHorizonSource::ExactLocalTimer,
             })
         );
@@ -1989,8 +2124,10 @@ mod tests {
         assert_eq!(
             horizon,
             Ok(SchedulerHorizon {
-                virtual_time: SimInstant { nanos: 64 },
-                ceiling: Icount { retired: 8 },
+                limit: SchedulerHorizonLimit::Finite {
+                    virtual_time: SimInstant { nanos: 64 },
+                    ceiling: Icount { retired: 8 },
+                },
                 source: SchedulerHorizonSource::NetworkLookahead,
             })
         );
@@ -2009,9 +2146,67 @@ mod tests {
         assert_eq!(
             horizon,
             Ok(SchedulerHorizon {
-                virtual_time: SimInstant { nanos: 50 },
-                ceiling: Icount { retired: 13 },
+                limit: SchedulerHorizonLimit::Finite {
+                    virtual_time: SimInstant { nanos: 50 },
+                    ceiling: Icount { retired: 13 },
+                },
                 source: SchedulerHorizonSource::NetworkLookahead,
+            })
+        );
+    }
+
+    #[test]
+    fn finite_lookahead_is_added_to_current_virtual_time() {
+        let horizon = horizon_from_network_lookahead(
+            SimInstant { nanos: 20 },
+            NetworkLookahead::Finite(SimDuration { nanos: 7 }),
+            ExactLocalEvent::NoArmedTimer,
+            shift(0),
+        );
+
+        assert_eq!(
+            horizon,
+            Ok(SchedulerHorizon {
+                limit: SchedulerHorizonLimit::Finite {
+                    virtual_time: SimInstant { nanos: 27 },
+                    ceiling: Icount { retired: 27 },
+                },
+                source: SchedulerHorizonSource::NetworkLookahead,
+            })
+        );
+    }
+
+    #[test]
+    fn infinite_network_lookahead_without_local_event_is_unbounded() {
+        let horizon = horizon_from_network_lookahead(
+            SimInstant { nanos: 20 },
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::NoArmedTimer,
+            shift(0),
+        );
+
+        assert_eq!(horizon, Ok(SchedulerHorizon::infinite_network()));
+    }
+
+    #[test]
+    fn exact_local_event_bounds_infinite_network_lookahead() {
+        let horizon = horizon_from_network_lookahead(
+            SimInstant { nanos: 20 },
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::TimerDeadline {
+                virtual_time: SimInstant { nanos: 23 },
+            },
+            shift(0),
+        );
+
+        assert_eq!(
+            horizon,
+            Ok(SchedulerHorizon {
+                limit: SchedulerHorizonLimit::Finite {
+                    virtual_time: SimInstant { nanos: 23 },
+                    ceiling: Icount { retired: 23 },
+                },
+                source: SchedulerHorizonSource::ExactLocalTimer,
             })
         );
     }

@@ -942,9 +942,9 @@ application of explorer-supplied preemption decisions
   minimum inbound live-link latency or positive infinity when no inbound edge
   targets the node. The focused tests cover min-inbound selection, directionality,
   no-inbound infinity, canonical duplicate-stable edges, and the world-derived
-  jitter-reduced minimum latency. Horizon composition, topology-change recompute,
-  partition/heal edge swaps, and RESOLVE delivery assertions remain the later
-  unchecked T-SCHED-5 and T-SCHED-18 through T-SCHED-24 tasks.
+  jitter-reduced minimum latency. Topology-change recompute, partition/heal edge
+  swaps, and RESOLVE delivery assertions remain the later unchecked T-SCHED-18
+  through T-SCHED-24 tasks.
 - [x] **T-SCHED-3** Implement the conservative-PDES advance rule (no node crosses
   an unresolved cross-node dependency; no rollback; no speculation). — satisfies
   [SCHED-5]; spec §8.3.
@@ -973,14 +973,27 @@ application of explorer-supplied preemption decisions
   quiescence or the configured time/quantum limit and includes fail-loud negative
   controls for pending-event/no-runnable deadlock and runnable/no-progress
   livelock. The focused gate tests also cover a case where the minimum-horizon
-  node is not the lowest-current-time node and a same-horizon node-id tie. Full
-  horizon composition remains T-SCHED-5; the full PICK projection over RUNNING,
-  IDLE, HALTED, and DONE nodes remains T-SCHED-13; RESOLVE delivery and
-  late-delivery localization remain T-SCHED-15 through T-SCHED-18.
-- [ ] **T-SCHED-5** Implement `horizon(n) = min(next_exact_local_event(n),
+  node is not the lowest-current-time node and a same-horizon node-id tie. The
+  full PICK projection over RUNNING, IDLE, HALTED, and DONE nodes remains
+  T-SCHED-13; RESOLVE delivery and late-delivery localization remain T-SCHED-15
+  through T-SCHED-18.
+- [x] **T-SCHED-5** Implement `horizon(n) = min(next_exact_local_event(n),
   vt(n) + lookahead(n))`, with the exact-local term applying no conservative
   bound and the lookahead term applying only to guest→guest network. — satisfies
   [SCHED-9], [SCHED-10]; spec §8.4.
+  Completed by `checks.crucible.phase3.schedulerHorizon`: the scheduler now
+  computes the network horizon as `current_vt + NetworkLookahead`, represents
+  nodes with no inbound live network edge as an infinite horizon term, and
+  composes that term with the current `ExactLocalEvent` abstraction so exact local
+  timers select their precise virtual-time deadline without conservative slack.
+  `SingleScheduler` consumes this composed horizon, caps an infinite network-only
+  horizon at the configured finite run limit without marking the node idle, and
+  keeps the conservative-PDES dependency guard downstream of the composed target.
+  The focused tests cover finite `vt + lookahead`, exact-local precedence,
+  infinite network lookahead with and without an exact local event, and live
+  scheduler runs for finite and unbounded network terms. Full multi-source
+  `next_exact_local_event` discovery remains T-SCHED-6, and the full PICK
+  projection over RUNNING, IDLE, HALTED, and DONE nodes remains T-SCHED-13.
 - [ ] **T-SCHED-6** Implement `next_exact_local_event(n)` as the earliest of the
   node's next guest timer, earliest in-flight I/O completion (15), and next
   locally-scheduled fault (17). — satisfies [SCHED-9], [SCHED-10]; spec §8.4.1,
