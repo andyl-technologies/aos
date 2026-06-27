@@ -475,6 +475,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerPreemptionResolve";
       taskIds = ["T-SCHED-29"];
     };
+    schedulerAllVcpusIdle = import ./phase3-scheduler-all-vcpus-idle.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerAllVcpusIdle";
+      taskIds = ["T-SCHED-30"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

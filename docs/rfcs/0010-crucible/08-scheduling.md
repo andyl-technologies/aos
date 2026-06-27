@@ -1373,8 +1373,23 @@ application of explorer-supplied preemption decisions
   interleaving the plugin cannot execute. It never clamps or defers a preemption
   past the node ceiling; pending preemptions remain scheduler-owned quiescence
   blockers until applied.
-- [ ] **T-SCHED-30** Implement all-vCPUs-idle quiescence for N-vCPU nodes: a node
+- [x] **T-SCHED-30** Implement all-vCPUs-idle quiescence for N-vCPU nodes: a node
   is idle only when every vCPU is halted with no armed timer and no pending input;
   node `idle_wake` = `min` over vCPUs of next deadline; apply the
   `effective_horizon` projection at the node level. — satisfies [SCHED-47];
   spec §8.16.
+  Completed by `checks.crucible.phase3.schedulerAllVcpusIdle`.
+  `SchedulerNodeVcpuIdleSnapshot` carries the declared vCPU count plus per-vCPU
+  halted/deadline/input state in scenario identity, and validation requires
+  exact contiguous coverage of every vCPU in `0..N` before the scheduler starts.
+  Quiescence now requires that all vCPUs are halted, timer-free, and input-free;
+  otherwise the scheduler reports vCPU-specific blockers for active vCPUs,
+  armed timers, or pending input. The node
+  `idle_wake` is the minimum per-vCPU deadline folded into the existing
+  exact-local wake calculation, and the resulting wake is emitted as one
+  scheduler node candidate with one node-level ceiling publication rather than a
+  per-vCPU PICK surface. Due per-vCPU deadlines clear when the node advances to
+  the wake, so liveness drains the full vCPU deadline set before terminal
+  quiescence.
+  Summary: all vCPUs are halted, timer-free, and input-free before terminal
+  quiescence; one scheduler node candidate carries the minimum per-vCPU wake.

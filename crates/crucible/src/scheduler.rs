@@ -262,6 +262,52 @@ pub struct SchedulerPreemptionApplication {
     pub ceiling: SchedulerRunCeilingPublication,
 }
 
+/// One vCPU's scheduler-visible idle snapshot inside an N-vCPU VM node.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SchedulerVcpuIdleState {
+    /// The vCPU described by this snapshot.
+    pub vcpu: VcpuId,
+    /// Whether the vCPU is halted at the scheduler boundary.
+    pub halted: bool,
+    /// The vCPU's next exact timer deadline, when one is armed.
+    pub next_deadline: Option<SimInstant>,
+    /// Whether input is already pending for this vCPU.
+    pub pending_input: bool,
+}
+
+/// Per-vCPU idle evidence for one scheduler VM node.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SchedulerNodeVcpuIdleSnapshot {
+    /// Scheduler node whose vCPU idle state is reported.
+    pub node: SchedulerNodeId,
+    /// Total number of vCPUs hosted by the node.
+    pub vcpu_count: u32,
+    /// Per-vCPU states in canonical vCPU-index order.
+    pub vcpus: Vec<SchedulerVcpuIdleState>,
+}
+
+impl SchedulerNodeVcpuIdleSnapshot {
+    /// Builds a validated per-node vCPU idle snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the snapshot declares
+    /// zero vCPUs, does not cover every vCPU exactly once, or targets a non-VM
+    /// scheduler node.
+    pub fn new(
+        node: SchedulerNodeId,
+        vcpu_count: u32,
+        mut vcpus: Vec<SchedulerVcpuIdleState>,
+    ) -> Result<Self, SchedulerError> {
+        validate_vcpu_idle_snapshot(&node, vcpu_count, &mut vcpus)?;
+        Ok(Self {
+            node,
+            vcpu_count,
+            vcpus,
+        })
+    }
+}
+
 /// The virtual-time clock value used for scheduler lookahead decisions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchedulerEffectiveClock {
@@ -2020,6 +2066,54 @@ fn validate_scheduler_rr_policy(
     Ok(())
 }
 
+fn validate_vcpu_idle_snapshot(
+    node: &SchedulerNodeId,
+    vcpu_count: u32,
+    vcpus: &mut Vec<SchedulerVcpuIdleState>,
+) -> Result<(), SchedulerError> {
+    if node.kind != SchedulingNodeKind::Vm {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "scheduler vCPU idle snapshot targets non-VM node: {}:{:?}",
+                node.node.name, node.kind
+            ),
+        });
+    }
+    if vcpu_count == 0 {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "scheduler vCPU idle snapshot for {}:{:?} must declare at least one vCPU",
+                node.node.name, node.kind
+            ),
+        });
+    }
+    if vcpus.len() != vcpu_count as usize {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "scheduler vCPU idle snapshot for {}:{:?} must cover all {} vCPUs: saw {}",
+                node.node.name,
+                node.kind,
+                vcpu_count,
+                vcpus.len()
+            ),
+        });
+    }
+
+    vcpus.sort();
+    for (expected, state) in (0..vcpu_count).zip(vcpus.iter()) {
+        if state.vcpu.index != expected {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "scheduler vCPU idle snapshot for {}:{:?} must cover contiguous vCPUs 0..{}: saw vCPU {} at slot {}",
+                    node.node.name, node.kind, vcpu_count, state.vcpu.index, expected
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 /// A scheduler horizon and its matching icount ceiling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerHorizon {
@@ -2285,6 +2379,8 @@ pub struct SchedulerLivenessScenario {
     pub run_subdivision_policies: Vec<SchedulerRunSubdivisionPolicy>,
     /// Explorer-supplied preemption decisions waiting for the owning node RUN.
     pub preemption_requests: Vec<PreemptionDecision>,
+    /// Per-vCPU idle snapshots keyed by scheduler VM node.
+    pub vcpu_idle_snapshots: Vec<SchedulerNodeVcpuIdleSnapshot>,
     /// Cross-node, I/O, fault, and control events waiting for scheduler delivery.
     pub pending_events: Vec<ScheduledEvent>,
     /// Saved per-producer/consumer sequence counters for newly emitted events.
@@ -2318,6 +2414,7 @@ impl SchedulerLivenessScenario {
             topology_changes: Vec::new(),
             run_subdivision_policies: Vec::new(),
             preemption_requests: Vec::new(),
+            vcpu_idle_snapshots: Vec::new(),
             pending_events,
             event_sequences: EventSequenceState::empty(),
         };
@@ -2390,6 +2487,25 @@ impl SchedulerLivenessScenario {
         self
     }
 
+    /// Sets per-vCPU idle evidence for one scheduler VM node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the snapshot is
+    /// internally invalid.
+    pub fn with_vcpu_idle_snapshot(
+        mut self,
+        mut snapshot: SchedulerNodeVcpuIdleSnapshot,
+    ) -> Result<Self, SchedulerError> {
+        validate_vcpu_idle_snapshot(&snapshot.node, snapshot.vcpu_count, &mut snapshot.vcpus)?;
+        self.vcpu_idle_snapshots
+            .retain(|existing| existing.node != snapshot.node);
+        self.vcpu_idle_snapshots.push(snapshot);
+        self.vcpu_idle_snapshots.sort();
+        self.refresh_configuration();
+        Ok(self)
+    }
+
     fn refresh_configuration(&mut self) {
         self.configuration = self.canonical_configuration();
     }
@@ -2442,6 +2558,11 @@ fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessScenario) ->
     preemption_requests.sort_by(preemption_decision_order);
     lines.push(format!("preemption_requests={}", preemption_requests.len()));
     lines.extend(preemption_requests.iter().map(preemption_decision_material));
+
+    let mut vcpu_idle_snapshots = scenario.vcpu_idle_snapshots.clone();
+    vcpu_idle_snapshots.sort();
+    lines.push(format!("vcpu_idle_snapshots={}", vcpu_idle_snapshots.len()));
+    lines.extend(vcpu_idle_snapshots.iter().map(vcpu_idle_snapshot_material));
 
     let pending = ordered_scheduled_events(&scenario.pending_events);
     lines.push(format!("pending_events={}", pending.len()));
@@ -2525,6 +2646,26 @@ fn preemption_decision_material(preemption: &PreemptionDecision) -> String {
             lines.push(format!("target_vcpu={}", target_vcpu.index));
             lines.push(format!("irq={}", irq.vector));
         }
+    }
+    lines.join("\n")
+}
+
+fn vcpu_idle_snapshot_material(snapshot: &SchedulerNodeVcpuIdleSnapshot) -> String {
+    let mut vcpus = snapshot.vcpus.clone();
+    vcpus.sort();
+    let mut lines = Vec::new();
+    lines.push(String::from("vcpu_idle_snapshot:"));
+    lines.push(scheduler_node_material(&snapshot.node));
+    lines.push(format!("vcpu_count={}", snapshot.vcpu_count));
+    lines.push(format!("vcpu_idle_states={}", vcpus.len()));
+    for state in vcpus {
+        lines.push(format!("vcpu={}", state.vcpu.index));
+        lines.push(format!("halted={}", state.halted));
+        match state.next_deadline {
+            Some(deadline) => lines.push(format!("next_deadline_ns={}", deadline.nanos)),
+            None => lines.push(String::from("next_deadline_ns=none")),
+        }
+        lines.push(format!("pending_input={}", state.pending_input));
     }
     lines.join("\n")
 }
@@ -3097,6 +3238,29 @@ pub enum SchedulerQuiescenceBlocker {
         /// The queued preemption decision.
         decision: PreemptionDecision,
     },
+    /// A vCPU inside an N-vCPU node is still running.
+    ActiveVcpu {
+        /// The owning scheduler VM node.
+        node: SchedulerNodeId,
+        /// The vCPU that is not halted.
+        vcpu: VcpuId,
+    },
+    /// A vCPU inside an N-vCPU node has an armed timer.
+    PendingVcpuTimer {
+        /// The owning scheduler VM node.
+        node: SchedulerNodeId,
+        /// The vCPU whose timer is armed.
+        vcpu: VcpuId,
+        /// The exact virtual-time timer deadline.
+        deadline: SimInstant,
+    },
+    /// A vCPU inside an N-vCPU node has pending input.
+    PendingVcpuInput {
+        /// The owning scheduler VM node.
+        node: SchedulerNodeId,
+        /// The vCPU with pending input.
+        vcpu: VcpuId,
+    },
     /// A topology change is waiting for the next boundary recompute.
     PendingTopologyChange {
         /// Session-local sequence number of the queued topology change.
@@ -3172,6 +3336,12 @@ impl SingleScheduler {
         run_subdivision_policies.sort();
         let mut preemption_requests = scenario.preemption_requests;
         preemption_requests.sort_by(preemption_decision_order);
+        let mut vcpu_idle_snapshots = scenario.vcpu_idle_snapshots;
+        assign_vcpu_idle_snapshots(
+            &mut nodes,
+            &mut vcpu_idle_snapshots,
+            &run_subdivision_policies,
+        )?;
 
         let frontier = frontier_for(&nodes, scenario.shift)?;
 
@@ -3401,7 +3571,9 @@ impl SingleScheduler {
         );
 
         for node in &self.nodes {
-            match node.activity {
+            blockers.extend(self.vcpu_quiescence_blockers(node));
+
+            match self.effective_node_activity(node) {
                 SchedulerNodeActivity::Runnable => {
                     blockers.push(SchedulerQuiescenceBlocker::RunnableNode {
                         node: node.id.clone(),
@@ -3411,12 +3583,7 @@ impl SingleScheduler {
                 SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done => continue,
             }
 
-            let exact_local_event = next_exact_local_event(
-                &node.id,
-                node.exact_local_event.clone(),
-                &self.pending_events,
-                self.timeline.shift(),
-            )?;
+            let exact_local_event = self.effective_exact_local_event(node)?;
             if !matches!(exact_local_event, ExactLocalEvent::NoArmedTimer) {
                 blockers.push(SchedulerQuiescenceBlocker::PendingExactLocalEvent {
                     node: node.id.clone(),
@@ -3439,6 +3606,50 @@ impl SingleScheduler {
             });
         }
         Ok(())
+    }
+
+    fn effective_node_activity(&self, node: &RuntimeSchedulerNode) -> SchedulerNodeActivity {
+        if node.activity == SchedulerNodeActivity::Idle
+            && node
+                .vcpu_idle_states
+                .iter()
+                .any(|state| !state.halted || state.pending_input)
+        {
+            SchedulerNodeActivity::Runnable
+        } else {
+            node.activity
+        }
+    }
+
+    fn vcpu_quiescence_blockers(
+        &self,
+        node: &RuntimeSchedulerNode,
+    ) -> Vec<SchedulerQuiescenceBlocker> {
+        let mut states = node.vcpu_idle_states.clone();
+        states.sort();
+        let mut blockers = Vec::new();
+        for state in states {
+            if !state.halted {
+                blockers.push(SchedulerQuiescenceBlocker::ActiveVcpu {
+                    node: node.id.clone(),
+                    vcpu: state.vcpu,
+                });
+            }
+            if let Some(deadline) = state.next_deadline {
+                blockers.push(SchedulerQuiescenceBlocker::PendingVcpuTimer {
+                    node: node.id.clone(),
+                    vcpu: state.vcpu,
+                    deadline,
+                });
+            }
+            if state.pending_input {
+                blockers.push(SchedulerQuiescenceBlocker::PendingVcpuInput {
+                    node: node.id.clone(),
+                    vcpu: state.vcpu,
+                });
+            }
+        }
+        blockers
     }
 
     /// Queues a topology change for the next quantum boundary.
@@ -3587,7 +3798,7 @@ impl SingleScheduler {
         let mut saw_time_limited_state = false;
 
         for node in &self.nodes {
-            let has_finite_projection = match node.activity {
+            let has_finite_projection = match self.effective_node_activity(node) {
                 SchedulerNodeActivity::Runnable => true,
                 SchedulerNodeActivity::Idle => self.idle_wake_time(node)?.is_some(),
                 SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done => false,
@@ -3821,7 +4032,7 @@ impl SingleScheduler {
         rendezvous_cap: Option<SimInstant>,
         topology_activation_cap: Option<SimInstant>,
     ) -> Result<EffectiveHorizonProjection, SchedulerError> {
-        match node.activity {
+        match self.effective_node_activity(node) {
             SchedulerNodeActivity::Runnable => {
                 let window = self.advance_window(
                     node,
@@ -3896,7 +4107,7 @@ impl SingleScheduler {
         node: &RuntimeSchedulerNode,
     ) -> Result<SchedulerEffectiveClock, SchedulerError> {
         let current_time = node.counter.to_virtual(self.timeline.shift())?;
-        let (effective_time, source) = match node.activity {
+        let (effective_time, source) = match self.effective_node_activity(node) {
             SchedulerNodeActivity::Idle => match self.idle_wake_time(node)? {
                 Some(wake_time) if wake_time > current_time => {
                     (wake_time, SchedulerEffectiveClockSource::IdleWake)
@@ -3923,16 +4134,34 @@ impl SingleScheduler {
         Ok(self.idle_wake_target(node)?.map(|target| target.wake_time))
     }
 
-    fn idle_wake_target(
+    fn effective_exact_local_event(
         &self,
         node: &RuntimeSchedulerNode,
-    ) -> Result<Option<IdleWakeTarget>, SchedulerError> {
-        let exact_local_event = next_exact_local_event(
+    ) -> Result<ExactLocalEvent, SchedulerError> {
+        let mut exact_local_event = next_exact_local_event(
             &node.id,
             node.exact_local_event.clone(),
             &self.pending_events,
             self.timeline.shift(),
         )?;
+        if let Some(vcpu_deadline) = self.earliest_vcpu_deadline(node) {
+            match exact_local_event.virtual_time() {
+                Some(current) if current <= vcpu_deadline => {}
+                _ => {
+                    exact_local_event = ExactLocalEvent::TimerDeadline {
+                        virtual_time: vcpu_deadline,
+                    };
+                }
+            }
+        }
+        Ok(exact_local_event)
+    }
+
+    fn idle_wake_target(
+        &self,
+        node: &RuntimeSchedulerNode,
+    ) -> Result<Option<IdleWakeTarget>, SchedulerError> {
+        let exact_local_event = self.effective_exact_local_event(node)?;
         let mut target = exact_local_event
             .virtual_time()
             .map(|wake_time| IdleWakeTarget {
@@ -3947,25 +4176,18 @@ impl SingleScheduler {
                 let event_time = SimInstant {
                     nanos: event.key.virtual_time().ticks,
                 };
-                match target {
-                    Some(current) if current.wake_time < event_time => {}
-                    Some(current) if current.wake_time == event_time => {
-                        target = Some(IdleWakeTarget {
-                            wake_time: current.wake_time,
-                            allow_ceil_past_target: false,
-                        });
-                    }
-                    _ => {
-                        target = Some(IdleWakeTarget {
-                            wake_time: event_time,
-                            allow_ceil_past_target: false,
-                        });
-                    }
-                }
+                merge_idle_wake_target(&mut target, event_time, false);
             }
         }
 
         Ok(target)
+    }
+
+    fn earliest_vcpu_deadline(&self, node: &RuntimeSchedulerNode) -> Option<SimInstant> {
+        node.vcpu_idle_states
+            .iter()
+            .filter_map(|state| state.next_deadline)
+            .min()
     }
 
     fn advance_window(
@@ -3975,12 +4197,7 @@ impl SingleScheduler {
         rendezvous_cap: Option<SimInstant>,
         topology_activation_cap: Option<SimInstant>,
     ) -> Result<AdvanceWindow, SchedulerError> {
-        let exact_local_event = next_exact_local_event(
-            &node.id,
-            node.exact_local_event.clone(),
-            &self.pending_events,
-            self.timeline.shift(),
-        )?;
+        let exact_local_event = self.effective_exact_local_event(node)?;
         let horizon = horizon_from_network_lookahead(
             current_time,
             node.network_lookahead,
@@ -4842,6 +5059,14 @@ impl SingleScheduler {
         {
             self.nodes[plan.index].exact_local_event = ExactLocalEvent::NoArmedTimer;
         }
+        for state in &mut self.nodes[plan.index].vcpu_idle_states {
+            if state
+                .next_deadline
+                .is_some_and(|deadline| after_time >= deadline)
+            {
+                state.next_deadline = None;
+            }
+        }
         if plan
             .quiescent_horizon
             .is_some_and(|horizon| after_time >= horizon)
@@ -4855,7 +5080,7 @@ impl SingleScheduler {
     fn stalled_active_node(&self) -> Option<&RuntimeSchedulerNode> {
         self.nodes
             .iter()
-            .find(|node| node.activity == SchedulerNodeActivity::Runnable)
+            .find(|node| self.effective_node_activity(node) == SchedulerNodeActivity::Runnable)
     }
 }
 
@@ -4996,6 +5221,7 @@ struct RuntimeSchedulerNode {
     activity: SchedulerNodeActivity,
     network_lookahead: NetworkLookahead,
     exact_local_event: ExactLocalEvent,
+    vcpu_idle_states: Vec<SchedulerVcpuIdleState>,
 }
 
 impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
@@ -5006,8 +5232,58 @@ impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
             activity: node.activity,
             network_lookahead: node.network_lookahead,
             exact_local_event: node.exact_local_event,
+            vcpu_idle_states: Vec::new(),
         }
     }
+}
+
+fn assign_vcpu_idle_snapshots(
+    nodes: &mut [RuntimeSchedulerNode],
+    snapshots: &mut Vec<SchedulerNodeVcpuIdleSnapshot>,
+    run_subdivision_policies: &[SchedulerRunSubdivisionPolicy],
+) -> Result<(), SchedulerError> {
+    snapshots.sort();
+    for pair in snapshots.windows(2) {
+        if pair[0].node == pair[1].node {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "scheduler vCPU idle snapshot repeated for {}:{:?}",
+                    pair[0].node.node.name, pair[0].node.kind
+                ),
+            });
+        }
+    }
+
+    for snapshot in snapshots {
+        validate_vcpu_idle_snapshot(&snapshot.node, snapshot.vcpu_count, &mut snapshot.vcpus)?;
+        if let Some(policy) = run_subdivision_policies
+            .iter()
+            .find(|policy| policy.node == snapshot.node)
+        {
+            if policy.vcpu_count != snapshot.vcpu_count {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "scheduler vCPU idle snapshot count for {}:{:?} does not match RR policy: snapshot={} policy={}",
+                        snapshot.node.node.name,
+                        snapshot.node.kind,
+                        snapshot.vcpu_count,
+                        policy.vcpu_count
+                    ),
+                });
+            }
+        }
+        let Some(node) = nodes.iter_mut().find(|node| node.id == snapshot.node) else {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "scheduler vCPU idle snapshot references missing node: {}:{:?}",
+                    snapshot.node.node.name, snapshot.node.kind
+                ),
+            });
+        };
+        node.vcpu_idle_states = snapshot.vcpus.clone();
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5043,6 +5319,25 @@ struct AdvanceWindow {
 struct IdleWakeTarget {
     wake_time: SimInstant,
     allow_ceil_past_target: bool,
+}
+
+fn merge_idle_wake_target(
+    target: &mut Option<IdleWakeTarget>,
+    wake_time: SimInstant,
+    allow_ceil_past_target: bool,
+) {
+    match target {
+        Some(current) if current.wake_time < wake_time => {}
+        Some(current) if current.wake_time == wake_time => {
+            current.allow_ceil_past_target &= allow_ceil_past_target;
+        }
+        _ => {
+            *target = Some(IdleWakeTarget {
+                wake_time,
+                allow_ceil_past_target,
+            });
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
