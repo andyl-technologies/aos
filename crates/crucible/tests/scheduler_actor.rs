@@ -49,6 +49,14 @@ fn scheduler_actor_drains_message_control_inbox_at_quantum_boundary() {
             ControlOperationKind::Snapshot,
         ]
     );
+    assert_eq!(
+        outcome
+            .resolved_events
+            .iter()
+            .map(|event| event.key.sequence())
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
     assert!(outcome.advanced_node.is_some());
 }
 

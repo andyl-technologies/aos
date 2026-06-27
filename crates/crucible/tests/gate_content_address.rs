@@ -12,14 +12,14 @@ use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash,
     CowDeltaKind, CowDeltaRef, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
     DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
-    EngineError, EventKey, EventLogOffset, FaultDecision, FaultId, FaultState,
+    EngineError, EventKey, EventLogOffset, EventSequenceState, FaultDecision, FaultId, FaultState,
     FrontierReductionPolicy, FrontierReductionReason, Icount, IrqVector, LocalDagStore,
     MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore, NodeBlobRef,
     NodeId, PartialOrderReductionPolicy, PendingFrame, PreemptionDecision, PreemptionKind,
-    RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerState, State,
-    SymmetryClassId, SymmetryReductionClasses, TemporalGraph, TemporalGraphGcRoots,
-    TemporalGraphStoreError, TimerId, TimerRegistry, TimerState, VcpuId, VirtualTime,
-    VmSnapshotRef, World, bake, instantiate, reduce, step,
+    RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerNodeId,
+    SchedulerState, SchedulingNodeKind, State, SymmetryClassId, SymmetryReductionClasses,
+    TemporalGraph, TemporalGraphGcRoots, TemporalGraphStoreError, TimerId, TimerRegistry,
+    TimerState, VcpuId, VirtualTime, VmSnapshotRef, World, bake, instantiate, reduce, step,
 };
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -43,15 +43,15 @@ fn gate_content_address_keeps_fixed_vectors_stable() {
             ),
             (
                 "schedule",
-                "1297d71f37a009c71edb6c69ca577f18a03339bacbdb2aae6566903c73918b26"
+                "c2b68e7b541ae33c09353c9ea1c1d6279528210f38a58b691660656e4b184892"
             ),
             (
                 "configuration",
-                "34db0f23e92cd0a98f97232a078fb78ab58ac6679f4f01a5017ad2660445ef3f",
+                "6667e00670552b00007df3e17327c05e31bf74768abe8c1e61b9661f00967635",
             ),
             (
                 "state",
-                "8227948dfc6c114acd0421aab56644d05c38b1daf49ce148f75e76c59d222dbc"
+                "92242671a1571eba8b3ee2dd1844789ed63232e86ffe7f29a08e5b0c78ac9fcf"
             ),
             (
                 "world-component",
@@ -153,7 +153,7 @@ fn gate_content_address_is_sensitive_to_schedule_order() {
     });
     let delivery = Decision::DeliveryOrder(DeliveryOrderDecision {
         at: VirtualTime { ticks: 3 },
-        order: vec![EventKey { sequence: 1 }],
+        order: vec![event_key(3, 1)],
     });
     let first = Schedule::empty()
         .appended(draw.clone())
@@ -340,6 +340,7 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
                 payload,
             }],
         )]),
+        event_sequences: EventSequenceState::empty(),
         timers: TimerRegistry {
             timers: BTreeMap::from([(
                 timer,
@@ -1834,11 +1835,31 @@ fn scenario(material: &str) -> ScenarioDef {
     ScenarioDef::from_canonical_material("crucible.test.content-address.scenario", material)
 }
 
+fn event_key(virtual_time: u64, sequence: u64) -> EventKey {
+    EventKey::new(
+        VirtualTime {
+            ticks: virtual_time,
+        },
+        scheduler_node("consumer"),
+        scheduler_node("producer"),
+        sequence,
+    )
+}
+
+fn scheduler_node(name: &str) -> SchedulerNodeId {
+    SchedulerNodeId {
+        node: NodeId {
+            name: name.to_owned(),
+        },
+        kind: SchedulingNodeKind::Vm,
+    }
+}
+
 fn fixed_schedule() -> Schedule {
     Schedule::empty()
         .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
             at: VirtualTime { ticks: 1 },
-            order: vec![EventKey { sequence: 2 }, EventKey { sequence: 3 }],
+            order: vec![event_key(1, 2), event_key(1, 3)],
         }))
         .appended(Decision::FaultFires(FaultDecision {
             at: VirtualTime { ticks: 4 },
@@ -1872,7 +1893,7 @@ fn generated_decision(seed: u64, index: u64) -> Decision {
             at: VirtualTime {
                 ticks: seed + index,
             },
-            order: vec![EventKey { sequence: index }],
+            order: vec![event_key(seed + index, index)],
         }),
         1 => Decision::FaultFires(FaultDecision {
             at: VirtualTime {

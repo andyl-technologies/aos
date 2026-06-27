@@ -2,9 +2,9 @@
 
 use super::{
     Configuration, ContentHash, Decision, DecisionRngState, DeviceOverlayDelta, DeviceRngState,
-    EventLogOffset, FaultState, Icount, NodeBlobRef, NodeId, PendingFrame, PreemptionKind,
-    RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerState, TimerRegistry,
-    TimerState, VirtualTime, VmSnapshotRef,
+    EventLogOffset, EventSequenceState, FaultState, Icount, NodeBlobRef, NodeId, PendingFrame,
+    PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerNodeId,
+    SchedulerState, SchedulingNodeKind, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef,
 };
 use std::collections::BTreeMap;
 
@@ -82,6 +82,9 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
             write_virtual_time(hasher, order.at);
             hasher.write_u64(order.order.len() as u64);
             for key in &order.order {
+                write_virtual_time(hasher, key.virtual_time);
+                write_scheduler_node_id(hasher, &key.consumer);
+                write_scheduler_node_id(hasher, &key.producer);
                 hasher.write_u64(key.sequence);
             }
         }
@@ -178,6 +181,7 @@ fn write_scheduler_state(hasher: &mut MaterialHasher, state: &SchedulerState) {
             write_pending_frame(hasher, frame);
         }
     }
+    write_event_sequence_state(hasher, &state.event_sequences);
     write_timer_registry(hasher, &state.timers);
     hasher.write_u64(state.active_faults.len() as u64);
     for (fault, state) in &state.active_faults {
@@ -191,6 +195,15 @@ fn write_pending_frame(hasher: &mut MaterialHasher, frame: &PendingFrame) {
     hasher.write_u64(frame.sequence);
     write_icount(hasher, frame.delivery_icount);
     write_content_hash(hasher, &frame.payload);
+}
+
+fn write_event_sequence_state(hasher: &mut MaterialHasher, state: &EventSequenceState) {
+    hasher.write_u64(state.next.len() as u64);
+    for (key, next) in &state.next {
+        write_scheduler_node_id(hasher, &key.producer);
+        write_scheduler_node_id(hasher, &key.consumer);
+        hasher.write_u64(*next);
+    }
 }
 
 fn write_timer_registry(hasher: &mut MaterialHasher, registry: &TimerRegistry) {
@@ -270,6 +283,22 @@ fn write_node_blob_ref(hasher: &mut MaterialHasher, blob: &NodeBlobRef) {
 
 fn write_node_id(hasher: &mut MaterialHasher, node: &NodeId) {
     hasher.write_bytes(node.name.as_bytes());
+}
+
+fn write_scheduler_node_id(hasher: &mut MaterialHasher, node: &SchedulerNodeId) {
+    write_node_id(hasher, &node.node);
+    write_scheduling_node_kind(hasher, node.kind);
+}
+
+fn write_scheduling_node_kind(hasher: &mut MaterialHasher, kind: SchedulingNodeKind) {
+    let tag = match kind {
+        SchedulingNodeKind::Vm => 0,
+        SchedulingNodeKind::Disk => 1,
+        SchedulingNodeKind::NineP => 2,
+        SchedulingNodeKind::Network => 3,
+        SchedulingNodeKind::ControlPlane => 4,
+    };
+    hasher.write_u64(tag);
 }
 
 fn write_content_hash(hasher: &mut MaterialHasher, hash: &ContentHash) {

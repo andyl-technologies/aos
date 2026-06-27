@@ -12,8 +12,9 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use crate::{
     BackendError, BackendInput, Configuration, Decision, DecisionRngState, DeliveryOrderDecision,
-    EventKey, FaultId, Icount, NodeCounter, NodeId, RngStreamId, RngStreamPosition, ScenarioDef,
-    Shift, SimDuration, SimInstant, TimeConversionError, VirtualTime, WorldLookaheadEdge, step,
+    EventKey, EventSequenceState, FaultId, Icount, NodeCounter, NodeId, RngStreamId,
+    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration,
+    SimInstant, TimeConversionError, VirtualTime, WorldLookaheadEdge, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -300,30 +301,6 @@ pub enum ControlOperationKind {
     Inject,
     /// Query boundary state without mutating the engine.
     Query,
-}
-
-/// A scheduler graph node, including VM nodes and deterministic I/O sub-nodes.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SchedulerNodeId {
-    /// The scenario node that owns this scheduler node.
-    pub node: NodeId,
-    /// The kind of scheduler node.
-    pub kind: SchedulingNodeKind,
-}
-
-/// The kind of node participating in the scheduler graph.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SchedulingNodeKind {
-    /// A VM backend node.
-    Vm,
-    /// A deterministic disk sub-node.
-    Disk,
-    /// A deterministic 9p sub-node.
-    NineP,
-    /// A deterministic network-link sub-node.
-    Network,
-    /// The session actor boundary.
-    ControlPlane,
 }
 
 /// One unresolved cross-node dependency that can constrain conservative advance.
@@ -690,8 +667,7 @@ pub fn ordered_timeline_keys(keys: &[SharedTimelineKey]) -> Vec<&SharedTimelineK
 /// The key consumes the shared timeline projection first, then refines
 /// simultaneity with the producer node before the sequence number. This preserves
 /// the same-icount producer tie-break while making the scheduler event order
-/// explicitly depend on `(virtual_time, consumer node, sequence)` from the
-/// shared timeline.
+/// explicitly depend on `(virtual_time, consumer node, producer node, sequence)`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScheduledEventKey {
     /// The shared-timeline consumer ordering key.
@@ -769,6 +745,36 @@ impl PartialOrd for ScheduledEventKey {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
+}
+
+/// Allocates a scheduled-event key from saved producer/consumer sequence state.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::BoundaryViolation`] when the next sequence number
+/// for the producer/consumer pair cannot be incremented.
+pub fn next_scheduled_event_key(
+    sequences: &mut EventSequenceState,
+    virtual_time: VirtualTime,
+    consumer: SchedulerNodeId,
+    producer: SchedulerNodeId,
+) -> Result<ScheduledEventKey, SchedulerError> {
+    let sequence = sequences.next_sequence(&producer, &consumer);
+    let next = sequence
+        .checked_add(1)
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: format!(
+                "scheduled event sequence overflow for producer {} consumer {}",
+                producer.node.name, consumer.node.name
+            ),
+        })?;
+    sequences.set_next_sequence(producer.clone(), consumer.clone(), next);
+    Ok(ScheduledEventKey::from_parts(
+        virtual_time,
+        consumer,
+        producer,
+        sequence,
+    ))
 }
 
 /// A due event resolved by the scheduler.
@@ -1333,6 +1339,8 @@ pub struct SchedulerLivenessScenario {
     pub nodes: Vec<SchedulerScenarioNode>,
     /// Cross-node, I/O, fault, and control events waiting for scheduler delivery.
     pub pending_events: Vec<ScheduledEvent>,
+    /// Saved per-producer/consumer sequence counters for newly emitted events.
+    pub event_sequences: EventSequenceState,
 }
 
 impl SchedulerLivenessScenario {
@@ -1357,6 +1365,7 @@ impl SchedulerLivenessScenario {
             rendezvous: SchedulerRendezvous::disabled(),
             nodes,
             pending_events,
+            event_sequences: EventSequenceState::empty(),
         }
     }
 
@@ -1483,6 +1492,7 @@ pub struct SingleScheduler {
     rendezvous: SchedulerRendezvous,
     nodes: Vec<RuntimeSchedulerNode>,
     pending_events: Vec<ScheduledEvent>,
+    event_sequences: EventSequenceState,
     control_inbox: Vec<ControlOperation>,
     decision_rng_cursor: DecisionRngState,
     frontier: VirtualTime,
@@ -1519,6 +1529,7 @@ impl SingleScheduler {
             rendezvous: scenario.rendezvous,
             nodes,
             pending_events: scenario.pending_events,
+            event_sequences: scenario.event_sequences,
             control_inbox: Vec::new(),
             decision_rng_cursor: DecisionRngState::empty(),
             frontier,
@@ -1723,7 +1734,7 @@ impl SingleScheduler {
         self.last_advance = None;
 
         self.yield_to_control_inbox(request.control);
-        let mut resolved_events = self.drain_control_events();
+        let mut resolved_events = self.drain_control_events()?;
         let candidate = match self.pick_global_minimum_horizon_node()? {
             Some(candidate) => candidate,
             None => {
@@ -1757,6 +1768,9 @@ impl SingleScheduler {
                 order: resolved_events
                     .iter()
                     .map(|event| EventKey {
+                        virtual_time: event.key.virtual_time(),
+                        consumer: event.key.consumer().clone(),
+                        producer: event.key.producer().clone(),
                         sequence: event.key.sequence(),
                     })
                     .collect(),
@@ -1793,7 +1807,7 @@ impl SingleScheduler {
         self.boundary_yields = self.boundary_yields.saturating_add(1);
     }
 
-    fn drain_control_events(&mut self) -> Vec<ScheduledEvent> {
+    fn drain_control_events(&mut self) -> Result<Vec<ScheduledEvent>, SchedulerError> {
         let mut control = std::mem::take(&mut self.control_inbox);
         control.sort();
         let node = SchedulerNodeId {
@@ -1803,18 +1817,20 @@ impl SingleScheduler {
             kind: SchedulingNodeKind::ControlPlane,
         };
 
-        control
-            .into_iter()
-            .map(|operation| ScheduledEvent {
-                key: ScheduledEventKey::from_parts(
-                    self.frontier,
-                    node.clone(),
-                    node.clone(),
-                    operation.sequence,
-                ),
+        let mut events = Vec::with_capacity(control.len());
+        for operation in control {
+            let key = next_scheduled_event_key(
+                &mut self.event_sequences,
+                self.frontier,
+                node.clone(),
+                node.clone(),
+            )?;
+            events.push(ScheduledEvent {
+                key,
                 payload: ScheduledEventPayload::Control(operation),
-            })
-            .collect()
+            });
+        }
+        Ok(events)
     }
 
     fn advance_decision_rng_cursor(&mut self) {

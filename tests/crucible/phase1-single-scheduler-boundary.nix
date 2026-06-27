@@ -4,6 +4,7 @@
 }: let
   cratesDir = ../../crates;
   engineLib = builtins.readFile (cratesDir + "/crucible/src/lib.rs");
+  model = builtins.readFile (cratesDir + "/crucible/src/model.rs");
   scheduler = builtins.readFile (cratesDir + "/crucible/src/scheduler.rs");
   sessionLib = builtins.readFile (cratesDir + "/crucible-session/src/lib.rs");
   sessionManifest = builtins.fromTOML (builtins.readFile (cratesDir + "/crucible-session/Cargo.toml"));
@@ -94,8 +95,8 @@
     ++ lib.optionals (!(hasInfix "pub struct ScheduledEventKey" scheduler)) [
       "crucible: scheduler module must define ScheduledEventKey"
     ]
-    ++ lib.optionals (!(hasInfix "pub enum SchedulingNodeKind" scheduler)) [
-      "crucible: scheduler module must model scheduler node kinds"
+    ++ lib.optionals (!(hasInfix "pub enum SchedulingNodeKind" model)) [
+      "crucible: model module must define scheduler node kinds"
     ]
     ++ lib.optionals (!(hasInfix "pub struct SessionDriver" sessionLib)) [
       "crucible-session: must expose SessionDriver"

@@ -259,7 +259,7 @@ Contract B reduces to one precise requirement about *how an input is timed*.
 
 - **[DET-14]** When multiple inputs target the same VM at the same delivery
   icount, their visibility order MUST be the deterministic total order
-  `(virtual_time, node_id, sequence)` of [INV-3] (see [`08-scheduling.md`](08-scheduling.md)
+  `(virtual_time, consumer node_id, producer node_id, sequence)` of [INV-3] (see [`08-scheduling.md`](08-scheduling.md)
   §8.6 for the full key; `node_id` here is the consumer, with producer and sequence
   as further tiebreaks), resolved by the single
   authoritative scheduler, identical across runs. *Gate:* `gate:layer1-injection`.
@@ -691,7 +691,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   input's possible delivery icount; a node that ran past a delivery icount fails
   loudly. — satisfies [DET-12]; spec §4.4.
 - [x] **T-DET-13** Implement the deterministic tie-break for same-icount inputs
-  using `(virtual_time, node_id, sequence)`. — satisfies [DET-14], routes
+  using `(virtual_time, consumer node_id, producer node_id, sequence)`. — satisfies [DET-14], routes
   [INV-3]; spec §4.4.
 - [x] **T-DET-14** Implement `gate:layer1-injection`: two-VM run-twice-and-diff
   asserting each delivery's consumer icount is identical under artificially

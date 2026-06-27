@@ -355,12 +355,13 @@ swap). Frequency tunes the latter; it cannot touch the former.
 
 - **[SCHED-15]** Every cross-node event (frame delivery, I/O completion, fault
   activation, white-box channel write) MUST carry a total-order key
-  `(virtual_time, node_id, sequence)` and MUST be resolved in ascending key
+  `(virtual_time, consumer node_id, producer node_id, sequence)` and MUST be
+  resolved in ascending key
   order. This order MUST be wall-clock-independent and host-scheduling-independent:
-  it is a pure function of the three key fields. *Gate:* `gate:layer1-injection`.
+  it is a pure function of the four key fields. *Gate:* `gate:layer1-injection`.
   *Spec:* §8.6; routes [INV-3], [DET-14].
 
-The three key fields, precisely:
+The four key fields, precisely:
 
 - **[SCHED-16]** `virtual_time` MUST be the event's **delivery** virtual time
   (when it becomes visible to its consumer), not its emit time: a frame's key
@@ -368,20 +369,22 @@ The three key fields, precisely:
   completion time; a fault uses the Plan's activation virtual time. *Gate:*
   `gate:layer1-injection`. *Spec:* §8.6; routes [INV-3], [DET-11].
 
-- **[SCHED-17]** `node_id` MUST be the **consumer** node's stable identity (the
-  node at which the event becomes visible), assigned deterministically from the
-  ScenarioDef's content-addressed node ordering
+- **[SCHED-17]** `consumer node_id` MUST be the **consumer** node's stable
+  identity (the node at which the event becomes visible), assigned
+  deterministically from the ScenarioDef's content-addressed node ordering
   ([`06-spatial-graph.md`](06-spatial-graph.md)), never from launch order or a
   host pointer. *Gate:* `gate:layer1-injection`. *Spec:* §8.6; routes [INV-3],
   [INV-6].
 
-- **[SCHED-18]** `sequence` MUST be a per-`(producer, consumer)` monotonic
-  counter assigned by the producer at emit time, breaking ties between events
-  that share `virtual_time` and `node_id`. The counter MUST be part of saved
-  state so a resumed run continues the same sequence. The tie-break MUST be fully
-  specified with no residual ambiguity: for two events with equal
-  `(virtual_time, node_id)`, order is by ascending producer `node_id` first, then
-  ascending `sequence`. *Gate:* `gate:layer1-injection`, `gate:replay-oracle`.
+- **[SCHED-18]** `producer node_id` MUST be the producer's stable
+  content-addressed node identity, and `sequence` MUST be a per-`(producer,
+  consumer)` monotonic counter assigned by the producer at emit time, breaking
+  ties between events that share `virtual_time`, `consumer node_id`, and
+  `producer node_id`. The counter MUST be part of saved state so a resumed run
+  continues the same sequence. The tie-break MUST be fully specified with no
+  residual ambiguity: for two events with equal `(virtual_time, consumer
+  node_id)`, order is by ascending `producer node_id` first, then ascending
+  `sequence`. *Gate:* `gate:layer1-injection`, `gate:replay-oracle`.
   *Spec:* §8.6; routes [INV-3], [DET-14].
 
 - **[SCHED-19]** The scheduler MUST NOT rely on any iteration order of an
@@ -561,10 +564,11 @@ while every wakeup still lands at its exact icount.
 - **[SCHED-29]** **RESOLVE** MUST process every cross-node event that is now
   **due** (delivery `virtual_time <=` the advanced frontier of the affected
   consumer) in the deterministic total order of §8.6
-  `(virtual_time, node_id, sequence)`. Each resolved event MUST be made visible
-  to its consumer at exactly the icount corresponding to its delivery virtual
-  time ([DET-11]); the moment the payload became *present* on the transport is
-  irrelevant ([DET-13]). The classes RESOLVE handles are:
+  `(virtual_time, consumer node_id, producer node_id, sequence)`. Each resolved
+  event MUST be made visible to its consumer at exactly the icount corresponding
+  to its delivery virtual time ([DET-11]); the moment the payload became
+  *present* on the transport is irrelevant ([DET-13]). The classes RESOLVE
+  handles are:
   - **frame delivery** — `delivery_vt = T_emit + link_latency`, with the
     effective fault table applied ([`17-fault-injection.md`](17-fault-injection.md)):
     partition/loss may drop it, latency/jitter faults may shift `delivery_vt`,
@@ -637,7 +641,8 @@ fn quantum(state, decision_rng) -> StepResult:
         Reached          => {}                                  # hit ceiling exactly
 
     # ---- RESOLVE ----------------------------------------------------------
-    # All cross-node events now due, in (virtual_time, node_id, sequence) order.
+    # All cross-node events now due, in
+    # (virtual_time, consumer_node_id, producer_node_id, sequence) order.
     let due = collect_due_events(state)                   # delivery_vt <= frontier
     sort due by (virtual_time, consumer_node_id, producer_node_id, sequence)  # SCHED-15..18
     let decisions = []
@@ -864,9 +869,10 @@ ONE scheduler (INV-8), an actor that yields between quanta (SCHED-1..4)
 ```
 
 If the horizon is exact for local events and conservative only for the network,
-and the total order is a pure function of `(virtual_time, node_id, sequence)`,
-then the icount at which any input reaches any node is a pure function of virtual
-time — which is exactly Contract B ([DET-6]). The scheduler is the component that
+and the total order is a pure function of `(virtual_time, consumer node_id,
+producer node_id, sequence)`, then the icount at which any input reaches any
+node is a pure function of virtual time — which is exactly Contract B ([DET-6]).
+The scheduler is the component that
 makes `reduce` ([INV-1]) pure across nodes.
 
 ## 8.16 Multi-vCPU nodes: RR sub-division and applied preemptions
@@ -1024,11 +1030,22 @@ application of explorer-supplied preemption decisions
   final configuration, same frontier, same resolved-event count, and same
   determinism-relevant delivery-order decision at the event's exact virtual time.
   Full EMIT/event-log materialization remains T-SCHED-19.
-- [ ] **T-SCHED-8** Implement the deterministic total order
+- [x] **T-SCHED-8** Implement the deterministic total order
   `(virtual_time, consumer node_id, producer node_id, sequence)` with the fully
   specified tie-break, stable content-addressed node ids, and a per-(producer,
   consumer) sequence counter carried in saved state. — satisfies [SCHED-15],
   [SCHED-16], [SCHED-17], [SCHED-18]; spec §8.6.
+  Completed by `checks.crucible.phase3.schedulerEventOrder`. The implementation
+  makes `ScheduledEventKey` order by virtual time, consumer scheduler node,
+  producer scheduler node, and sequence; promotes scheduler-node identity into
+  the model layer so saved sequence counters, delivery-order decisions, canonical
+  hashes, binary serialization, and symmetry rendering all carry the same stable
+  endpoint identity; and wires `SingleScheduler` control-event emission through
+  saved per-`(producer, consumer)` `EventSequenceState` allocation with overflow
+  rejection. Focused tests cover tuple ordering, per-pair allocation, scheduler
+  node-kind independence, saved-state hashing, and runtime allocation from a
+  resumed sequence cursor. Full RESOLVE/EMIT materialization remains T-SCHED-15
+  through T-SCHED-19.
 - [ ] **T-SCHED-9** Ban unordered-collection iteration and default-hasher use on
   the ordering-significant scheduling path; route through `gate:harness-lint`. —
   satisfies [SCHED-19]; spec §8.6.

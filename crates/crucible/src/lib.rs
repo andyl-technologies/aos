@@ -33,19 +33,20 @@ pub use model::{
     ChoiceTag, ClockDriftRate, Configuration, ContentAddressedBlobRef, ContentHash, CowDeltaKind,
     CowDeltaRef, CowSharingStats, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
     DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
-    EngineError, EventKey, EventLogOffset, FamilyParams, FamilySpace, FaultDecision, FaultDensity,
-    FaultDensityRange, FaultId, FaultState, FaultTag, FrontierChild, FrontierCoveredChild,
-    FrontierReductionPolicy, FrontierReductionReason, FrontierReductionReport, GenesisCheckpoint,
-    Icount, IrqVector, LinkDef, LinkLossProbability, LocalDagStore, MIN_LINK_LATENCY, MarkerId,
-    MaterializationPolicy, MaterializationTrigger, MaterializedState, MembershipFault,
-    MemoryDagStore, NodeBlobRef, NodeClockSkew, NodeCounter, NodeId, NodeTemplate,
-    OverrideDecision, PartialOrderIndependenceProof, PartialOrderReductionKey,
-    PartialOrderReductionPolicy, PartitionDirection, PendingFrame, PinnedConfiguration,
-    PinnedScenario, Plan, PlanEntry, Predicate, PreemptionDecision, PreemptionKind, Properties,
-    Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, ReplayOracleCheck,
-    ReproductionArtifact, ReproductionReplay, RestartPolicy, RngDecision, RngStreamId,
-    RngStreamPosition, RuntimeState, SavevmCompletenessHedge, ScenarioBuilder, ScenarioDef,
-    ScenarioDefForm, ScenarioFamily, Schedule, ScheduleError, SchedulerState, SchedulingPoint,
+    EngineError, EventKey, EventLogOffset, EventSequenceKey, EventSequenceState, FamilyParams,
+    FamilySpace, FaultDecision, FaultDensity, FaultDensityRange, FaultId, FaultState, FaultTag,
+    FrontierChild, FrontierCoveredChild, FrontierReductionPolicy, FrontierReductionReason,
+    FrontierReductionReport, GenesisCheckpoint, Icount, IrqVector, LinkDef, LinkLossProbability,
+    LocalDagStore, MIN_LINK_LATENCY, MarkerId, MaterializationPolicy, MaterializationTrigger,
+    MaterializedState, MembershipFault, MemoryDagStore, NodeBlobRef, NodeClockSkew, NodeCounter,
+    NodeId, NodeTemplate, OverrideDecision, PartialOrderIndependenceProof,
+    PartialOrderReductionKey, PartialOrderReductionPolicy, PartitionDirection, PendingFrame,
+    PinnedConfiguration, PinnedScenario, Plan, PlanEntry, Predicate, PreemptionDecision,
+    PreemptionKind, Properties, Property, ReachabilityExpectation, ReachableDisposition,
+    ReadyPoint, ReplayOracleCheck, ReproductionArtifact, ReproductionReplay, RestartPolicy,
+    RngDecision, RngStreamId, RngStreamPosition, RuntimeState, SavevmCompletenessHedge,
+    ScenarioBuilder, ScenarioDef, ScenarioDefForm, ScenarioFamily, Schedule, ScheduleError,
+    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint,
     SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
     SearchReplayOracleSamplingReport, Seed, SeedSpace, SeededRngStream, Shift, SimDuration,
     SimInstant, SimOffset, State, SymmetryClassId, SymmetryReductionClasses, SymmetryReductionKey,
@@ -63,13 +64,13 @@ pub use scheduler::{
     SchedulerActorError, SchedulerActorHandle, SchedulerActorReply, SchedulerActorStateSnapshot,
     SchedulerError, SchedulerHorizon, SchedulerHorizonLimit, SchedulerHorizonSource,
     SchedulerLivenessError, SchedulerLivenessReport, SchedulerLivenessScenario,
-    SchedulerLookaheadEdge, SchedulerLookaheadGraph, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerRendezvous, SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind,
-    SharedTimeline, SharedTimelineKey, SingleScheduler, UnresolvedCrossNodeDependency,
-    authorize_conservative_advance, check_scheduler_liveness, exact_local_event_from_io_completion,
-    exact_local_event_from_scheduled_event, exact_local_event_from_timer_deadline_ns,
-    horizon_from_exact_local_event, horizon_from_network_lookahead, lookahead_for_node,
-    network_horizon_from_lookahead, next_exact_local_event, ordered_scheduled_events,
+    SchedulerLookaheadEdge, SchedulerLookaheadGraph, SchedulerNodeActivity, SchedulerRendezvous,
+    SchedulerScenarioNode, SchedulerTerminal, SharedTimeline, SharedTimelineKey, SingleScheduler,
+    UnresolvedCrossNodeDependency, authorize_conservative_advance, check_scheduler_liveness,
+    exact_local_event_from_io_completion, exact_local_event_from_scheduled_event,
+    exact_local_event_from_timer_deadline_ns, horizon_from_exact_local_event,
+    horizon_from_network_lookahead, lookahead_for_node, network_horizon_from_lookahead,
+    next_exact_local_event, next_scheduled_event_key, ordered_scheduled_events,
     ordered_timeline_keys, rendezvous_cap_for, unresolved_cross_node_dependencies,
 };
 #[cfg(feature = "test-double")]
@@ -1149,7 +1150,7 @@ mod tests {
             &root,
             Decision::DeliveryOrder(DeliveryOrderDecision {
                 at: VirtualTime { ticks: 4 },
-                order: vec![EventKey { sequence: 1 }, EventKey { sequence: 2 }],
+                order: vec![event_key(4, 1), event_key(4, 2)],
             }),
         );
         let grandchild = step(
@@ -4522,7 +4523,7 @@ tag = "negative-time"
         let schedule = Schedule::empty()
             .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
                 at: VirtualTime { ticks: 1 },
-                order: vec![EventKey { sequence: 1 }, EventKey { sequence: 2 }],
+                order: vec![event_key(1, 1), event_key(1, 2)],
             }))
             .appended(Decision::FaultFires(FaultDecision {
                 at: VirtualTime { ticks: 2 },
@@ -6445,6 +6446,26 @@ tag = "negative-time"
         }
     }
 
+    fn event_key(virtual_time: u64, sequence: u64) -> EventKey {
+        EventKey::new(
+            VirtualTime {
+                ticks: virtual_time,
+            },
+            scheduler_node("consumer"),
+            scheduler_node("producer"),
+            sequence,
+        )
+    }
+
+    fn scheduler_node(name: &str) -> SchedulerNodeId {
+        SchedulerNodeId {
+            node: NodeId {
+                name: name.to_owned(),
+            },
+            kind: SchedulingNodeKind::Vm,
+        }
+    }
+
     fn generated_decision(seed: u64, index: u64) -> Decision {
         match (seed + index) % 6 {
             0 => Decision::DeliveryOrder(DeliveryOrderDecision {
@@ -6452,10 +6473,8 @@ tag = "negative-time"
                     ticks: seed + index,
                 },
                 order: vec![
-                    EventKey { sequence: index },
-                    EventKey {
-                        sequence: index + 1,
-                    },
+                    event_key(seed + index, index),
+                    event_key(seed + index, index + 1),
                 ],
             }),
             1 => Decision::FaultFires(FaultDecision {

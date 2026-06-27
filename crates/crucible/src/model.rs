@@ -3151,6 +3151,30 @@ pub struct NodeId {
     pub name: String,
 }
 
+/// A scheduler graph node, including VM nodes and deterministic I/O sub-nodes.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SchedulerNodeId {
+    /// The scenario node that owns this scheduler node.
+    pub node: NodeId,
+    /// The kind of scheduler node.
+    pub kind: SchedulingNodeKind,
+}
+
+/// The kind of node participating in the scheduler graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SchedulingNodeKind {
+    /// A VM backend node.
+    Vm,
+    /// A deterministic disk sub-node.
+    Disk,
+    /// A deterministic 9p sub-node.
+    NineP,
+    /// A deterministic network-link sub-node.
+    Network,
+    /// The session actor boundary.
+    ControlPlane,
+}
+
 /// A supported virtual-machine architecture for a spatial world node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VmArchitecture {
@@ -3460,11 +3484,35 @@ pub struct IrqVector {
     pub vector: u32,
 }
 
-/// A deterministic event-key placeholder for delivery-order decisions.
+/// A deterministic event key recorded by delivery-order decisions.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventKey {
-    /// The event sequence key.
+    /// The virtual time at which the event was delivered.
+    pub virtual_time: VirtualTime,
+    /// The scheduler node that consumed the event.
+    pub consumer: SchedulerNodeId,
+    /// The scheduler node that produced the event.
+    pub producer: SchedulerNodeId,
+    /// The per-producer/consumer event sequence.
     pub sequence: u64,
+}
+
+impl EventKey {
+    /// Builds a delivery-order event key from the fully ordered scheduler fields.
+    #[must_use]
+    pub fn new(
+        virtual_time: VirtualTime,
+        consumer: SchedulerNodeId,
+        producer: SchedulerNodeId,
+        sequence: u64,
+    ) -> Self {
+        Self {
+            virtual_time,
+            consumer,
+            producer,
+            sequence,
+        }
+    }
 }
 
 /// A fault identifier inside a scenario plan.
@@ -4336,6 +4384,60 @@ pub struct PendingFrame {
     pub payload: ContentHash,
 }
 
+/// The saved sequence-counter key for one event producer/consumer pair.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EventSequenceKey {
+    /// The scheduler node that emits the event.
+    pub producer: SchedulerNodeId,
+    /// The scheduler node that consumes the event.
+    pub consumer: SchedulerNodeId,
+}
+
+impl EventSequenceKey {
+    /// Builds a producer/consumer sequence-counter key.
+    #[must_use]
+    pub fn new(producer: SchedulerNodeId, consumer: SchedulerNodeId) -> Self {
+        Self { producer, consumer }
+    }
+}
+
+/// Saved per-`(producer, consumer)` event sequence counters.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct EventSequenceState {
+    /// The next sequence number to assign for each producer/consumer pair.
+    pub next: BTreeMap<EventSequenceKey, u64>,
+}
+
+impl EventSequenceState {
+    /// Builds an empty event sequence state.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            next: BTreeMap::new(),
+        }
+    }
+
+    /// Returns the next sequence number for `producer` and `consumer`.
+    #[must_use]
+    pub fn next_sequence(&self, producer: &SchedulerNodeId, consumer: &SchedulerNodeId) -> u64 {
+        self.next
+            .get(&EventSequenceKey::new(producer.clone(), consumer.clone()))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Records the next sequence number for `producer` and `consumer`.
+    pub fn set_next_sequence(
+        &mut self,
+        producer: SchedulerNodeId,
+        consumer: SchedulerNodeId,
+        next: u64,
+    ) {
+        self.next
+            .insert(EventSequenceKey::new(producer, consumer), next);
+    }
+}
+
 /// A timer identifier inside the scheduler state.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TimerId {
@@ -4389,6 +4491,8 @@ pub struct SchedulerState {
     pub horizons: BTreeMap<NodeId, VirtualTime>,
     /// Pending frame queues with deterministic delivery counts.
     pub pending_frames: BTreeMap<NodeId, Vec<PendingFrame>>,
+    /// Per-`(producer, consumer)` sequence counters for future emitted events.
+    pub event_sequences: EventSequenceState,
     /// Armed timer registry.
     pub timers: TimerRegistry,
     /// Faults currently active in the scheduler.
@@ -4402,6 +4506,7 @@ impl SchedulerState {
         Self {
             horizons: BTreeMap::new(),
             pending_frames: BTreeMap::new(),
+            event_sequences: EventSequenceState::empty(),
             timers: TimerRegistry::empty(),
             active_faults: BTreeMap::new(),
         }
@@ -8139,6 +8244,10 @@ fn symmetry_nodes(checkpoint: &Checkpoint, state: &MaterializedState) -> BTreeSe
     for frames in state.scheduler.pending_frames.values() {
         nodes.extend(frames.iter().map(|frame| frame.source.clone()));
     }
+    for sequence in state.scheduler.event_sequences.next.keys() {
+        nodes.insert(sequence.producer.node.clone());
+        nodes.insert(sequence.consumer.node.clone());
+    }
     nodes.extend(
         state
             .scheduler
@@ -8244,6 +8353,16 @@ fn push_symmetry_materialized_state_lines(
     Some(())
 }
 
+fn scheduling_node_kind_label(kind: SchedulingNodeKind) -> &'static str {
+    match kind {
+        SchedulingNodeKind::Vm => "vm",
+        SchedulingNodeKind::Disk => "disk",
+        SchedulingNodeKind::NineP => "ninep",
+        SchedulingNodeKind::Network => "network",
+        SchedulingNodeKind::ControlPlane => "control-plane",
+    }
+}
+
 fn push_symmetry_scheduler_lines(
     scheduler: &SchedulerState,
     labels: &BTreeMap<NodeId, String>,
@@ -8287,6 +8406,24 @@ fn push_symmetry_scheduler_lines(
     pending_lines.sort();
     lines.push(format!("scheduler.pending={}", pending_lines.len()));
     lines.extend(pending_lines);
+
+    let mut sequence_lines = Vec::new();
+    for (key, next) in &scheduler.event_sequences.next {
+        sequence_lines.push(format!(
+            "scheduler.sequence.producer={}:{}\nscheduler.sequence.consumer={}:{}\nscheduler.sequence.next={}",
+            labels.get(&key.producer.node)?,
+            scheduling_node_kind_label(key.producer.kind),
+            labels.get(&key.consumer.node)?,
+            scheduling_node_kind_label(key.consumer.kind),
+            next
+        ));
+    }
+    sequence_lines.sort();
+    lines.push(format!(
+        "scheduler.event_sequences={}",
+        sequence_lines.len()
+    ));
+    lines.extend(sequence_lines);
 
     let mut timer_lines = Vec::new();
     for (timer, state) in &scheduler.timers.timers {
@@ -9881,6 +10018,9 @@ fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBinaryWriter)
             writer.write_u64(order.at.ticks);
             writer.write_count(order.order.len());
             for event in &order.order {
+                writer.write_u64(event.virtual_time.ticks);
+                write_scheduler_node_id_binary(&event.consumer, writer);
+                write_scheduler_node_id_binary(&event.producer, writer);
                 writer.write_u64(event.sequence);
             }
         }
@@ -9927,6 +10067,11 @@ fn read_decision_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Decisio
             let mut order = Vec::with_capacity(count);
             for _ in 0..count {
                 order.push(EventKey {
+                    virtual_time: VirtualTime {
+                        ticks: reader.read_u64()?,
+                    },
+                    consumer: read_scheduler_node_id_binary(reader)?,
+                    producer: read_scheduler_node_id_binary(reader)?,
                     sequence: reader.read_u64()?,
                 });
             }
@@ -9987,6 +10132,48 @@ fn read_rng_stream_binary(
         reader.read_string()?,
         reader.read_string()?,
     ))
+}
+
+fn write_scheduler_node_id_binary(node: &SchedulerNodeId, writer: &mut ScenarioBinaryWriter) {
+    writer.write_string(&node.node.name);
+    write_scheduling_node_kind_binary(node.kind, writer);
+}
+
+fn read_scheduler_node_id_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<SchedulerNodeId, EngineError> {
+    Ok(SchedulerNodeId {
+        node: NodeId {
+            name: reader.read_string()?,
+        },
+        kind: read_scheduling_node_kind_binary(reader)?,
+    })
+}
+
+fn write_scheduling_node_kind_binary(kind: SchedulingNodeKind, writer: &mut ScenarioBinaryWriter) {
+    let tag = match kind {
+        SchedulingNodeKind::Vm => 0,
+        SchedulingNodeKind::Disk => 1,
+        SchedulingNodeKind::NineP => 2,
+        SchedulingNodeKind::Network => 3,
+        SchedulingNodeKind::ControlPlane => 4,
+    };
+    writer.write_u8(tag);
+}
+
+fn read_scheduling_node_kind_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<SchedulingNodeKind, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(SchedulingNodeKind::Vm),
+        1 => Ok(SchedulingNodeKind::Disk),
+        2 => Ok(SchedulingNodeKind::NineP),
+        3 => Ok(SchedulingNodeKind::Network),
+        4 => Ok(SchedulingNodeKind::ControlPlane),
+        _ => Err(scenario_serialization_error(
+            "invalid scheduling-node-kind tag",
+        )),
+    }
 }
 
 fn write_preemption_kind_binary(kind: &PreemptionKind, writer: &mut ScenarioBinaryWriter) {
@@ -11634,6 +11821,26 @@ fn push_decision_lines(index: usize, decision: &Decision, lines: &mut Vec<String
             lines.push(format!("{prefix}.at_ticks={}", order.at.ticks));
             lines.push(format!("{prefix}.events={}", order.order.len()));
             for event in &order.order {
+                lines.push(format!(
+                    "{prefix}.event.virtual_time={}",
+                    event.virtual_time.ticks
+                ));
+                lines.push(format!(
+                    "{prefix}.event.consumer={}",
+                    event.consumer.node.name
+                ));
+                lines.push(format!(
+                    "{prefix}.event.consumer_kind={}",
+                    scheduling_node_kind_label(event.consumer.kind)
+                ));
+                lines.push(format!(
+                    "{prefix}.event.producer={}",
+                    event.producer.node.name
+                ));
+                lines.push(format!(
+                    "{prefix}.event.producer_kind={}",
+                    scheduling_node_kind_label(event.producer.kind)
+                ));
                 lines.push(format!("{prefix}.event.sequence={}", event.sequence));
             }
         }

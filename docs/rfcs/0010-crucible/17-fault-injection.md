@@ -15,7 +15,7 @@ Requirement IDs in this file use the `FAULT` prefix (see
 [`00-conventions.md`](00-conventions.md)). The fault model upholds [INV-1]
 (purity of reduction — a fault's effect is a pure function of virtual time and
 the seeded RNG), [INV-3] (total order — fault activation is a cross-node event
-keyed by `(virtual_time, node_id, sequence)`), and [INV-10] (no silent
+keyed by `(virtual_time, consumer node_id, producer node_id, sequence)`), and [INV-10] (no silent
 nondeterminism — every probabilistic fault routes through the decision RNG or
 fails loudly). It feeds the `Plan` component of the `ScenarioDef`
 ([`06-spatial-graph.md`](06-spatial-graph.md)), is activated by the scheduler at

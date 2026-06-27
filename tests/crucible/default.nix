@@ -365,6 +365,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerRendezvous";
       taskIds = ["T-SCHED-7"];
     };
+    schedulerEventOrder = import ./phase3-scheduler-event-order.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerEventOrder";
+      taskIds = ["T-SCHED-8"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

@@ -10,8 +10,9 @@ use crucible::{
     DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, FrontierReductionPolicy,
     GenesisCheckpoint, Icount, MaterializationPolicy, MaterializationTrigger, MaterializedState,
     MemoryDagStore, NodeBlobRef, NodeId, NodeTemplate, ReadyPoint, RngDecision, RngStreamId,
-    ScenarioDef, Schedule, SchedulerState, SearchReplayOracleSamplingConfig, State, TemporalGraph,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, instantiate, reduce, step,
+    ScenarioDef, Schedule, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
+    SearchReplayOracleSamplingConfig, State, TemporalGraph, VirtualTime, WhiteBoxPolicy, World,
+    WorldNode, bake, instantiate, reduce, step,
 };
 use crucible_harness::replay_oracle::{
     ReplayOracleArtifactRun, ReplayOracleBuildIdentity, ReplayOracleCheckpointKind,
@@ -827,7 +828,7 @@ fn assert_replay_oracle_fixed_checkpoint_corpus()
         &genesis,
         Decision::DeliveryOrder(DeliveryOrderDecision {
             at: VirtualTime { ticks: 5 },
-            order: vec![EventKey { sequence: 1 }, EventKey { sequence: 2 }],
+            order: vec![event_key(5, 1), event_key(5, 2)],
         }),
     );
     let second = step(
@@ -885,7 +886,7 @@ fn representative_replay_oracle_reproduction_artifact()
     let schedule = Schedule::empty()
         .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
             at: VirtualTime { ticks: 3 },
-            order: vec![EventKey { sequence: 10 }, EventKey { sequence: 11 }],
+            order: vec![event_key(3, 10), event_key(3, 11)],
         }))
         .appended(Decision::FaultFires(FaultDecision {
             at: VirtualTime { ticks: 8 },
@@ -1161,6 +1162,26 @@ fn oracle_node_id() -> NodeId {
     }
 }
 
+fn event_key(virtual_time: u64, sequence: u64) -> EventKey {
+    EventKey::new(
+        VirtualTime {
+            ticks: virtual_time,
+        },
+        scheduler_node("consumer"),
+        scheduler_node("producer"),
+        sequence,
+    )
+}
+
+fn scheduler_node(name: &str) -> SchedulerNodeId {
+    SchedulerNodeId {
+        node: NodeId {
+            name: name.to_owned(),
+        },
+        kind: SchedulingNodeKind::Vm,
+    }
+}
+
 fn test_double_checkpoint_hash(
     checkpoint_id: &str,
     configuration: &Configuration,
@@ -1209,7 +1230,7 @@ fn gate_replay_oracle_is_sensitive_to_schedule_order() -> Result<(), Box<dyn Err
     });
     let delivery = Decision::DeliveryOrder(DeliveryOrderDecision {
         at: VirtualTime { ticks: 1 },
-        order: vec![EventKey { sequence: 7 }],
+        order: vec![event_key(1, 7)],
     });
     let first_order = Schedule::empty()
         .appended(draw.clone())

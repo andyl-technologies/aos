@@ -248,7 +248,7 @@ impl Schedule {
   scheduling ([INV-1]). *Gate:* `gate:replay-oracle`. *Spec:* §3.
 
 - **[EXEC-8]** `Decision` values that are *resolved by content* (a delivery order
-  fully determined by [INV-3]'s `(virtual_time, node_id, sequence)` total order,
+  fully determined by [INV-3]'s `(virtual_time, consumer node_id, producer node_id, sequence)` total order,
   with no genuine tie) MAY be recorded for audit but MUST be reproducible from the
   `ScenarioDef` and the preceding schedule alone. Only *genuine* choices
   (true ties broken by RNG, probabilistic fault outcomes, draws, overrides) carry
