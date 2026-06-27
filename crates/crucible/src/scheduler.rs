@@ -3,19 +3,20 @@
 //! The module owns the L3 interface that all virtual-time advancement and
 //! cross-node event resolution must pass through. It intentionally defines the
 //! boundary and ordering vocabulary, implements the authoritative
-//! PICK/RUN/RESOLVE/EMIT/STEP quantum boundary, and leaves backend transport and
-//! event-log materialization details to the scheduler tasks that build on this
-//! API.
+//! PICK/RUN/RESOLVE/EMIT/STEP quantum boundary, and materializes scheduler
+//! EMIT output as dense, content-addressed event-log segment bytes before STEP
+//! advances the frontier.
 
 use std::error::Error;
 use std::fmt;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use crate::{
-    BackendError, BackendInput, Configuration, Decision, DecisionRecorder, DecisionRngState,
-    DeliveryOrderDecision, EventKey, EventSequenceState, FaultId, Icount, NodeCounter, NodeId,
-    RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant, TimeConversionError, VirtualTime, WorldLookaheadEdge, step,
+    BackendError, BackendInput, Configuration, ContentHash, Decision, DecisionRecorder,
+    DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset, EventSequenceState, FaultId,
+    Icount, NodeCounter, NodeId, PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef,
+    SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError,
+    VirtualTime, WorldLookaheadEdge, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -59,6 +60,60 @@ pub struct QuantumOutcome {
     pub resolved_events: Vec<ScheduledEvent>,
     /// Decisions appended by STEP in canonical order.
     pub decisions: Vec<Decision>,
+    /// Event-log entries appended by EMIT in deterministic order.
+    pub event_log_entries: Vec<SchedulerEventLogEntry>,
+    /// Canonical bytes of the event-log segment appended by this quantum.
+    pub event_log_segment_bytes: Vec<u8>,
+    /// Content address of `event_log_segment_bytes`, when this quantum emitted a segment.
+    pub event_log_segment_hash: Option<ContentHash>,
+    /// Event-log offset after this quantum's EMIT segment.
+    pub event_log_offset: EventLogOffset,
+}
+
+/// One scheduler-emitted entry in the unified event log.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerEventLogEntry {
+    /// Dense per-run sequence number assigned by the scheduler append path.
+    pub sequence: u64,
+    /// Virtual-time coordinate at which the entry occurred.
+    pub at: VirtualTime,
+    /// Causal-vs-observational class recorded by the typed append path.
+    pub class: SchedulerEventLogClass,
+    /// Typed payload carried by the event-log entry.
+    pub payload: SchedulerEventLogPayload,
+    /// Content address of this entry's canonical material.
+    pub content_hash: ContentHash,
+}
+
+/// Determinism class for a scheduler event-log entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SchedulerEventLogClass {
+    /// Causal entries participate in deterministic replay comparison.
+    Causal,
+    /// Observational entries are descriptive and excluded from causal comparison.
+    Observational,
+}
+
+/// Payload variants emitted by the scheduler EMIT phase.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SchedulerEventLogPayload {
+    /// A resolved scheduler happening made visible this quantum.
+    ResolvedHappening(ScheduledEvent),
+    /// A decision taken and appended to the schedule this quantum.
+    Decision(Decision),
+}
+
+/// Result of appending one scheduler quantum to the event log.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerEventLogAppend {
+    /// Entries appended for this quantum.
+    pub entries: Vec<SchedulerEventLogEntry>,
+    /// Canonical bytes appended for this quantum's event-log segment.
+    pub segment_bytes: Vec<u8>,
+    /// Content address of `segment_bytes`, when a segment was appended.
+    pub segment_hash: Option<ContentHash>,
+    /// Offset reached after appending this quantum's segment.
+    pub offset: EventLogOffset,
 }
 
 /// The single max-advance ceiling published for one RUN phase.
@@ -1860,6 +1915,176 @@ fn hex_bytes(bytes: &[u8]) -> String {
     encoded
 }
 
+fn scheduler_event_log_empty_prefix() -> ContentHash {
+    ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v1", "empty=true")
+}
+
+fn scheduler_event_log_sequence(base: u64, offset: usize) -> Result<u64, SchedulerError> {
+    let offset = u64::try_from(offset).map_err(|_| SchedulerError::BoundaryViolation {
+        message: String::from("scheduler event-log entry offset exceeds u64"),
+    })?;
+    base.checked_add(offset)
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("scheduler event-log sequence overflow"),
+        })
+}
+
+fn scheduler_event_log_entry(
+    sequence: u64,
+    at: VirtualTime,
+    payload: SchedulerEventLogPayload,
+) -> SchedulerEventLogEntry {
+    let content_hash = ContentHash::from_canonical_material(
+        "crucible.scheduler.event-log.entry.v1",
+        &scheduler_event_log_entry_material(sequence, at, &payload),
+    );
+    SchedulerEventLogEntry {
+        sequence,
+        at,
+        class: SchedulerEventLogClass::Causal,
+        payload,
+        content_hash,
+    }
+}
+
+fn scheduler_event_log_entry_material(
+    sequence: u64,
+    at: VirtualTime,
+    payload: &SchedulerEventLogPayload,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("sequence={sequence}"));
+    lines.push(format!("at_ticks={}", at.ticks));
+    lines.push(String::from("class=causal"));
+    match payload {
+        SchedulerEventLogPayload::ResolvedHappening(event) => {
+            lines.push(String::from("payload=resolved-happening"));
+            lines.push(scheduled_event_material(event));
+        }
+        SchedulerEventLogPayload::Decision(decision) => {
+            lines.push(String::from("payload=decision"));
+            lines.push(scheduler_decision_material(decision));
+        }
+    }
+    lines.join("\n")
+}
+
+fn scheduler_event_log_segment_bytes(
+    previous_prefix: ContentHash,
+    entries: &[SchedulerEventLogEntry],
+) -> Vec<u8> {
+    let mut lines = Vec::new();
+    lines.push(String::from(
+        "format=crucible.scheduler.event-log.segment.v1",
+    ));
+    lines.push(format!("previous_prefix={}", previous_prefix.to_hex()));
+    lines.push(format!("entries={}", entries.len()));
+    for entry in entries {
+        let entry_material =
+            scheduler_event_log_entry_material(entry.sequence, entry.at, &entry.payload);
+        lines.push(format!("entry.sequence={}", entry.sequence));
+        lines.push(format!("entry.at_ticks={}", entry.at.ticks));
+        lines.push(format!("entry.hash={}", entry.content_hash.to_hex()));
+        lines.push(format!("entry.bytes={}", entry_material.len()));
+        lines.push(String::from("entry.material_begin"));
+        lines.push(entry_material);
+        lines.push(String::from("entry.material_end"));
+    }
+    lines.join("\n").into_bytes()
+}
+
+fn scheduler_decision_event_log_time(decision: &Decision, fallback: SimInstant) -> VirtualTime {
+    match decision {
+        Decision::DeliveryOrder(order) => order.at,
+        Decision::FaultFires(fault) => fault.at,
+        Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::Preemption(_)
+        | Decision::AppRandom(_) => VirtualTime {
+            ticks: fallback.nanos,
+        },
+    }
+}
+
+fn scheduler_decision_material(decision: &Decision) -> String {
+    let mut lines = Vec::new();
+    match decision {
+        Decision::DeliveryOrder(order) => {
+            lines.push(String::from("decision=delivery-order"));
+            lines.push(format!("decision_at={}", order.at.ticks));
+            lines.push(format!("decision_events={}", order.order.len()));
+            for event in &order.order {
+                lines.push(format!("event_time={}", event.virtual_time.ticks));
+                lines.push(format!(
+                    "event_consumer:\n{}",
+                    scheduler_node_material(&event.consumer)
+                ));
+                lines.push(format!(
+                    "event_producer:\n{}",
+                    scheduler_node_material(&event.producer)
+                ));
+                lines.push(format!("event_sequence={}", event.sequence));
+            }
+        }
+        Decision::FaultFires(fault) => {
+            lines.push(String::from("decision=fault-fires"));
+            lines.push(format!("decision_at={}", fault.at.ticks));
+            lines.push(format!("fault_name_len={}", fault.fault.name.len()));
+            lines.push(format!("fault_name={}", fault.fault.name));
+            lines.push(format!("fired={}", fault.fired));
+        }
+        Decision::RngDraw(draw) => {
+            lines.push(String::from("decision=rng-draw"));
+            lines.push(format!("stream_domain_len={}", draw.stream.domain.len()));
+            lines.push(format!("stream_domain={}", draw.stream.domain));
+            lines.push(format!("stream_name_len={}", draw.stream.name.len()));
+            lines.push(format!("stream_name={}", draw.stream.name));
+            lines.push(format!("value={}", draw.value));
+        }
+        Decision::Override(override_decision) => {
+            lines.push(String::from("decision=override"));
+            lines.push(format!("point_len={}", override_decision.point.key.len()));
+            lines.push(format!("point={}", override_decision.point.key));
+            lines.push(format!(
+                "choice_len={}",
+                override_decision.choice.name.len()
+            ));
+            lines.push(format!("choice={}", override_decision.choice.name));
+        }
+        Decision::Preemption(preemption) => {
+            lines.push(String::from("decision=preemption"));
+            lines.push(format!("node_len={}", preemption.node.name.len()));
+            lines.push(format!("node={}", preemption.node.name));
+            lines.push(format!("at_retired={}", preemption.at.retired));
+            match &preemption.kind {
+                PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
+                    lines.push(String::from("preemption_kind=vcpu-switch"));
+                    lines.push(format!("from_vcpu={}", from_vcpu.index));
+                    lines.push(format!("to_vcpu={}", to_vcpu.index));
+                }
+                PreemptionKind::InterruptAt { target_vcpu, irq } => {
+                    lines.push(String::from("preemption_kind=interrupt-at"));
+                    lines.push(format!("target_vcpu={}", target_vcpu.index));
+                    lines.push(format!("irq={}", irq.vector));
+                }
+            }
+        }
+        Decision::AppRandom(random) => {
+            lines.push(String::from("decision=app-random"));
+            lines.push(format!("node_len={}", random.node.name.len()));
+            lines.push(format!("node={}", random.node.name));
+            lines.push(format!("stream_domain_len={}", random.stream.domain.len()));
+            lines.push(format!("stream_domain={}", random.stream.domain));
+            lines.push(format!("stream_name_len={}", random.stream.name.len()));
+            lines.push(format!("stream_name={}", random.stream.name));
+            lines.push(format!("request_id={}", random.request_id));
+            lines.push(format!("width={}", random.width));
+            lines.push(format!("value={}", random.value));
+        }
+    }
+    lines.join("\n")
+}
+
 /// The terminal scheduler condition reached by a liveness run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchedulerTerminal {
@@ -1882,6 +2107,12 @@ pub struct SchedulerLivenessReport {
     pub advanced_nodes: Vec<SchedulerNodeId>,
     /// The number of events resolved by the scheduler.
     pub resolved_events: usize,
+    /// The number of event-log entries emitted by the scheduler.
+    pub event_log_entries: usize,
+    /// The final event-log offset reached by the scheduler.
+    pub event_log_offset: EventLogOffset,
+    /// Content hashes of emitted entries in append order.
+    pub event_log_entry_hashes: Vec<ContentHash>,
     /// Whether every node advance happened after yielding the scheduler lock.
     pub yielded_between_quanta: bool,
     /// The final configuration with scheduler decisions appended.
@@ -2014,6 +2245,9 @@ pub struct SingleScheduler {
     event_sequences: EventSequenceState,
     control_inbox: Vec<ControlOperation>,
     decision_rng_cursor: DecisionRngState,
+    event_log_prefix: ContentHash,
+    event_log_bytes: u64,
+    event_log_events: u64,
     frontier: VirtualTime,
     quanta: u64,
     boundary_yields: u64,
@@ -2053,6 +2287,9 @@ impl SingleScheduler {
             event_sequences: scenario.event_sequences,
             control_inbox: Vec::new(),
             decision_rng_cursor: DecisionRngState::empty(),
+            event_log_prefix: scheduler_event_log_empty_prefix(),
+            event_log_bytes: 0,
+            event_log_events: 0,
             frontier,
             quanta: 0,
             boundary_yields: 0,
@@ -2078,6 +2315,16 @@ impl SingleScheduler {
     #[must_use]
     pub fn quanta(&self) -> u64 {
         self.quanta
+    }
+
+    /// Returns the event-log offset reached by completed scheduler EMIT phases.
+    #[must_use]
+    pub fn event_log_offset(&self) -> EventLogOffset {
+        EventLogOffset::new(
+            self.event_log_prefix,
+            self.event_log_bytes,
+            self.event_log_events,
+        )
     }
 
     /// Returns the RUN max-advance ceilings published by this scheduler.
@@ -2459,23 +2706,33 @@ impl SingleScheduler {
 
         self.last_advance = None;
 
-        self.yield_to_control_inbox(request.control);
+        // Boundary admission phase: accept control exposed by the previous STEP yield.
+        self.admit_control_at_boundary(request.control);
         let mut resolved_events = self.drain_control_events()?;
         // PICK phase: select the next effective-horizon candidate once.
         let candidate = match self.pick_global_minimum_horizon_node()? {
             Some(candidate) => candidate,
             None => {
-                // Control-only decision EMIT/STEP: no node RUN occurs.
+                // Control-only EMIT/STEP: no node RUN occurs.
                 let decisions = self.emit_quantum_decisions(
                     &resolved_events,
                     SimInstant {
                         nanos: self.frontier.ticks,
                     },
                 );
+                let event_log = self.emit_quantum_event_log(
+                    &resolved_events,
+                    &decisions,
+                    SimInstant {
+                        nanos: self.frontier.ticks,
+                    },
+                )?;
                 let configuration = self.step_quantum(&decisions);
                 if !decisions.is_empty() {
                     self.configuration = configuration.clone();
                     self.quanta = self.quanta.saturating_add(1);
+                    // STEP yield phase: expose the control inbox before the next PICK.
+                    self.yield_to_control_inbox();
                 }
                 return Ok(QuantumOutcome {
                     configuration,
@@ -2483,6 +2740,10 @@ impl SingleScheduler {
                     advanced_node: None,
                     resolved_events,
                     decisions,
+                    event_log_entries: event_log.entries,
+                    event_log_segment_bytes: event_log.segment_bytes,
+                    event_log_segment_hash: event_log.segment_hash,
+                    event_log_offset: event_log.offset,
                 });
             }
         };
@@ -2505,8 +2766,9 @@ impl SingleScheduler {
             shift,
         )?);
 
-        // Decision EMIT phase: convert resolved happenings into recorded decisions.
+        // EMIT phase: convert happenings into decisions and append event-log entries.
         let decisions = self.emit_quantum_decisions(&resolved_events, after_time);
+        let event_log = self.emit_quantum_event_log(&resolved_events, &decisions, after_time)?;
         // STEP phase: apply the emitted decisions to the frontier configuration.
         let configuration = self.step_quantum(&decisions);
 
@@ -2520,6 +2782,8 @@ impl SingleScheduler {
             ceiling: plan.ceiling.clone(),
             yielded_before_advance,
         });
+        // STEP yield phase: expose the control inbox before the next PICK.
+        self.yield_to_control_inbox();
 
         Ok(QuantumOutcome {
             configuration,
@@ -2527,6 +2791,10 @@ impl SingleScheduler {
             advanced_node: Some(selected_node),
             resolved_events,
             decisions,
+            event_log_entries: event_log.entries,
+            event_log_segment_bytes: event_log.segment_bytes,
+            event_log_segment_hash: event_log.segment_hash,
+            event_log_offset: event_log.offset,
         })
     }
 
@@ -2564,6 +2832,89 @@ impl SingleScheduler {
         decisions
     }
 
+    fn emit_quantum_event_log(
+        &mut self,
+        resolved_events: &[ScheduledEvent],
+        decisions: &[Decision],
+        at: SimInstant,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let mut entries = Vec::with_capacity(resolved_events.len() + decisions.len());
+
+        for event in ordered_scheduled_events(resolved_events) {
+            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
+            entries.push(scheduler_event_log_entry(
+                sequence,
+                event.key.virtual_time(),
+                SchedulerEventLogPayload::ResolvedHappening(event.clone()),
+            ));
+        }
+        for decision in decisions {
+            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
+            entries.push(scheduler_event_log_entry(
+                sequence,
+                scheduler_decision_event_log_time(decision, at),
+                SchedulerEventLogPayload::Decision(decision.clone()),
+            ));
+        }
+
+        if entries.is_empty() {
+            return Ok(SchedulerEventLogAppend {
+                entries,
+                segment_bytes: Vec::new(),
+                segment_hash: None,
+                offset: self.event_log_offset(),
+            });
+        }
+
+        let segment_bytes = scheduler_event_log_segment_bytes(self.event_log_prefix, &entries);
+        let segment_hash = ContentHash::from_bytes(&segment_bytes);
+        let appended_bytes =
+            u64::try_from(segment_bytes.len()).map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("scheduler event-log segment length exceeds u64"),
+            })?;
+        let appended_events =
+            u64::try_from(entries.len()).map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("scheduler event-log entry count exceeds u64"),
+            })?;
+        let bytes = self
+            .event_log_bytes
+            .checked_add(appended_bytes)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("scheduler event-log byte offset overflow"),
+            })?;
+        let events = self
+            .event_log_events
+            .checked_add(appended_events)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("scheduler event-log sequence overflow"),
+            })?;
+
+        let offset = EventLogOffset::with_appended_segment(
+            self.event_log_prefix,
+            bytes,
+            events,
+            segment_hash,
+        );
+        let prefix_material = format!(
+            "previous_prefix={}\nappended_segment={}\nbytes={bytes}\nevents={events}",
+            self.event_log_prefix.to_hex(),
+            segment_hash.to_hex(),
+        );
+        self.event_log_prefix = ContentHash::from_canonical_material(
+            "crucible.scheduler.event-log.prefix.v1",
+            &prefix_material,
+        );
+        self.event_log_bytes = bytes;
+        self.event_log_events = events;
+
+        Ok(SchedulerEventLogAppend {
+            entries,
+            segment_bytes,
+            segment_hash: Some(segment_hash),
+            offset,
+        })
+    }
+
     fn step_quantum(&self, decisions: &[Decision]) -> Configuration {
         let mut configuration = self.configuration.clone();
         for decision in decisions {
@@ -2572,8 +2923,11 @@ impl SingleScheduler {
         configuration
     }
 
-    fn yield_to_control_inbox(&mut self, control: Vec<ControlOperation>) {
+    fn admit_control_at_boundary(&mut self, control: Vec<ControlOperation>) {
         self.control_inbox.extend(control);
+    }
+
+    fn yield_to_control_inbox(&mut self) {
         self.boundary_yields = self.boundary_yields.saturating_add(1);
     }
 
@@ -2690,6 +3044,7 @@ pub fn check_scheduler_liveness(
 
     let mut advanced_nodes = Vec::new();
     let mut resolved_events = 0usize;
+    let mut event_log_entry_hashes = Vec::new();
     let mut yielded_between_quanta = true;
 
     loop {
@@ -2700,6 +3055,9 @@ pub fn check_scheduler_liveness(
                 frontier: scheduler.frontier(),
                 advanced_nodes,
                 resolved_events,
+                event_log_entries: event_log_entry_hashes.len(),
+                event_log_offset: scheduler.event_log_offset(),
+                event_log_entry_hashes,
                 yielded_between_quanta,
                 final_configuration: scheduler.configuration().clone(),
             });
@@ -2712,6 +3070,9 @@ pub fn check_scheduler_liveness(
                 frontier: scheduler.frontier(),
                 advanced_nodes,
                 resolved_events,
+                event_log_entries: event_log_entry_hashes.len(),
+                event_log_offset: scheduler.event_log_offset(),
+                event_log_entry_hashes,
                 yielded_between_quanta,
                 final_configuration: scheduler.configuration().clone(),
             });
@@ -2758,6 +3119,12 @@ pub fn check_scheduler_liveness(
         }
 
         resolved_events += outcome.resolved_events.len();
+        event_log_entry_hashes.extend(
+            outcome
+                .event_log_entries
+                .iter()
+                .map(|entry| entry.content_hash),
+        );
     }
 }
 
@@ -2977,6 +3344,10 @@ mod tests {
                     advanced_node: None,
                     resolved_events: Vec::new(),
                     decisions: Vec::new(),
+                    event_log_entries: Vec::new(),
+                    event_log_segment_bytes: Vec::new(),
+                    event_log_segment_hash: None,
+                    event_log_offset: EventLogOffset::default(),
                 })
             }
         }
@@ -3197,6 +3568,10 @@ mod tests {
             advanced_node: Some(scheduler_node("node-a", SchedulingNodeKind::Vm)),
             resolved_events: Vec::new(),
             decisions: vec![decision.clone()],
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_hash: None,
+            event_log_offset: EventLogOffset::default(),
         };
 
         assert_eq!(outcome.configuration.schedule.decisions(), &[decision]);

@@ -1029,7 +1029,7 @@ application of explorer-supplied preemption decisions
   gate compares two runs with different rendezvous intervals and verifies the same
   final configuration, same frontier, same resolved-event count, and same
   determinism-relevant delivery-order decision at the event's exact virtual time.
-  Full EMIT/event-log materialization remains T-SCHED-19.
+  Full EMIT/event-log materialization is covered by T-SCHED-19.
 - [x] **T-SCHED-8** Implement the deterministic total order
   `(virtual_time, consumer node_id, producer node_id, sequence)` with the fully
   specified tie-break, stable content-addressed node ids, and a per-(producer,
@@ -1044,8 +1044,8 @@ application of explorer-supplied preemption decisions
   saved per-`(producer, consumer)` `EventSequenceState` allocation with overflow
   rejection. Focused tests cover tuple ordering, per-pair allocation, scheduler
   node-kind independence, saved-state hashing, and runtime allocation from a
-  resumed sequence cursor. Full RESOLVE/EMIT materialization remains T-SCHED-15
-  through T-SCHED-19.
+  resumed sequence cursor. Full RESOLVE/EMIT materialization is covered by
+  T-SCHED-15 through T-SCHED-19.
 - [x] **T-SCHED-9** Ban unordered-collection iteration and default-hasher use on
   the ordering-significant scheduling path; route through `gate:harness-lint`. —
   satisfies [SCHED-19]; spec §8.6.
@@ -1095,7 +1095,7 @@ application of explorer-supplied preemption decisions
   PICK/RUN/RESOLVE/decision-EMIT/STEP behavior, identical-input replay purity,
   scheduler-state contribution to scenario identity, control-only EMIT/STEP with
   no runnable node, and fail-loud rejection of stale configuration input. Full
-  event-log EMIT materialization remains T-SCHED-19.
+  event-log EMIT materialization is covered by T-SCHED-19.
 - [x] **T-SCHED-13** Implement PICK (global-minimum horizon, ties by node_id) and
   RUN (advance under `-icount` to horizon; never past it), taking the argmin over a
   single unified `effective_horizon(node)` projection (DONE/Halted → +∞, IDLE →
@@ -1151,7 +1151,7 @@ application of explorer-supplied preemption decisions
   after RUN, so mixed due frame/I/O/fault events become visible at their delivery
   icount before EMIT/STEP. Focused regressions cover mixed-class due sets,
   pending-order independence, backend target mismatch rejection, and I/O
-  delivery-icount mismatch rejection. Event-log materialization remains
+  delivery-icount mismatch rejection. Event-log materialization is covered by
   T-SCHED-19.
 - [x] **T-SCHED-17** Route every probabilistic RESOLVE choice through the seeded
   decision RNG in total order and record each as a `Decision` in the `Schedule`.
@@ -1180,10 +1180,20 @@ application of explorer-supplied preemption decisions
   Focused regressions cover the pure resolver error path and a live scheduler
   self-delivery case that previously was not covered by conservative cross-node
   dependency rejection.
-- [ ] **T-SCHED-19** Implement EMIT (append ordered, content-addressed event-log
+- [x] **T-SCHED-19** Implement EMIT (append ordered, content-addressed event-log
   entries for every resolved happening and Decision) and STEP (advance frontier,
   yield to control inbox). — satisfies [SCHED-32], [SCHED-33]; spec §8.9.5,
   §8.9.6.
+  Completed by `checks.crucible.phase3.schedulerEmitStep`.
+  `QuantumOutcome` now carries the EMIT delta: dense scheduler event-log entries
+  for resolved happenings followed by entries for each Decision, per-entry
+  content hashes, and the `EventLogOffset` reached by the quantum segment.
+  `SingleScheduler` advances a cumulative event-log prefix across quanta, then
+  applies STEP with the existing pure `step(config, decision)` fold. Session
+  progress mirrors now consume the emitted event-log offset instead of using the
+  resolved-event count as a placeholder. Focused regressions cover happening
+  before-decision ordering, stable content hashes across replay, prefix/sequence
+  advancement across quanta, and liveness-report determinism.
 - [ ] **T-SCHED-20** Convert horizon virtual times to per-node icount ceilings
   via the fixed shift and integrate with the virtual-time/icount module. —
   satisfies [SCHED-34]; spec §8.10.

@@ -420,6 +420,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerLateDelivery";
       taskIds = ["T-SCHED-18"];
     };
+    schedulerEmitStep = import ./phase3-scheduler-emit-step.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerEmitStep";
+      taskIds = ["T-SCHED-19"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

@@ -277,6 +277,10 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: vec![decision],
+            event_log_entries: vec![test_event_log_entry(self.quanta - 1)],
+            event_log_segment_bytes: vec![b'x'],
+            event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
+            event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
         })
     }
 }
@@ -321,6 +325,20 @@ fn generated_decision(seed: u64) -> Decision {
             seed,
         )],
     })
+}
+
+fn test_event_log_entry(sequence: u64) -> crucible::SchedulerEventLogEntry {
+    let material = format!("sequence={sequence}");
+    crucible::SchedulerEventLogEntry {
+        sequence,
+        at: VirtualTime { ticks: sequence },
+        class: crucible::SchedulerEventLogClass::Causal,
+        payload: crucible::SchedulerEventLogPayload::Decision(generated_decision(sequence)),
+        content_hash: crucible::ContentHash::from_canonical_material(
+            "crucible.api.gate-control-responsive.event-log-entry",
+            &material,
+        ),
+    }
 }
 
 fn control_node() -> SchedulerNodeId {

@@ -337,6 +337,13 @@ fn usize_to_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
+fn u64_to_usize(value: u64) -> usize {
+    match usize::try_from(value) {
+        Ok(value) => value,
+        Err(_) => usize::MAX,
+    }
+}
+
 /// Host-side engine state machine owned by the session actor.
 ///
 /// The engine owns the source-of-truth [`Configuration`], a rebuildable runtime
@@ -634,8 +641,11 @@ impl<L: QuantumLoop> Engine<L> {
     ///
     /// Returns [`SessionError::InvalidEngineState`] if the engine is not
     /// running. Returns [`SessionError::Scheduler`] if the quantum loop rejects
-    /// the boundary request. Returns [`SessionError::Engine`] if the resulting
-    /// configuration cannot be re-instantiated.
+    /// the boundary request. Returns [`SessionError::EventLogOffsetRegression`]
+    /// or [`SessionError::EventLogOffsetMismatch`] if the scheduler's emitted
+    /// entries do not match its returned event-log offset. Returns
+    /// [`SessionError::Engine`] if the resulting configuration cannot be
+    /// re-instantiated.
     pub fn step_quantum(&mut self) -> Result<QuantumOutcome, SessionError> {
         if !matches!(self.state, EngineState::Running) {
             return Err(self.invalid_engine_state("step_quantum"));
@@ -645,15 +655,35 @@ impl<L: QuantumLoop> Engine<L> {
             configuration: self.configuration.clone(),
             control: std::mem::take(&mut self.pending_control),
         })?;
+        let current_event_log_len = usize_to_u64(self.event_log_len);
+        let emitted_event_log_entries = usize_to_u64(outcome.event_log_entries.len());
+        let expected_event_log_len = current_event_log_len
+            .checked_add(emitted_event_log_entries)
+            .ok_or(SessionError::EventLogOffsetMismatch {
+                current: current_event_log_len,
+                emitted: emitted_event_log_entries,
+                next: outcome.event_log_offset.events,
+            })?;
+        if outcome.event_log_offset.events < current_event_log_len {
+            return Err(SessionError::EventLogOffsetRegression {
+                current: current_event_log_len,
+                next: outcome.event_log_offset.events,
+            });
+        }
+        if outcome.event_log_offset.events != expected_event_log_len {
+            return Err(SessionError::EventLogOffsetMismatch {
+                current: current_event_log_len,
+                emitted: emitted_event_log_entries,
+                next: outcome.event_log_offset.events,
+            });
+        }
         let runtime = instantiate(&self.graph, &outcome.configuration)?;
 
         self.configuration = outcome.configuration.clone();
         self.runtime = Some(runtime);
         self.runtime_instantiated = true;
         self.frontier = outcome.frontier;
-        self.event_log_len = self
-            .event_log_len
-            .saturating_add(outcome.resolved_events.len());
+        self.event_log_len = u64_to_usize(outcome.event_log_offset.events);
         self.quanta = self.quanta.saturating_add(1);
 
         Ok(outcome)
@@ -688,6 +718,24 @@ pub enum SessionError {
     /// The scheduler boundary failed while driving a bounded quantum.
     #[error("scheduler failed under session control: {0}")]
     Scheduler(#[from] SchedulerError),
+    /// The scheduler returned an event-log offset older than the current session mirror.
+    #[error("scheduler event-log offset regressed from {current} to {next}")]
+    EventLogOffsetRegression {
+        /// Current session event-log entry count.
+        current: u64,
+        /// Event-log entry count returned by the scheduler.
+        next: u64,
+    },
+    /// The scheduler returned an event-log offset that does not match its emitted entries.
+    #[error("scheduler event-log offset mismatch: current={current} emitted={emitted} next={next}")]
+    EventLogOffsetMismatch {
+        /// Current session event-log entry count.
+        current: u64,
+        /// Number of entries emitted by the scheduler outcome.
+        emitted: u64,
+        /// Event-log entry count returned by the scheduler.
+        next: u64,
+    },
 }
 
 /// Evidence returned when a session actor exits.
@@ -1317,6 +1365,62 @@ mod tests {
         assert!(after.virtual_time >= before.virtual_time);
     }
 
+    #[test]
+    fn engine_rejects_event_log_offset_mismatch() {
+        let scenario = generated_scenario(19);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, InvalidEventLogLoop);
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("continue should enter running state: {error}");
+        }
+
+        let error = engine
+            .step_quantum()
+            .expect_err("invalid event-log offset must be rejected");
+
+        assert!(matches!(
+            error,
+            SessionError::EventLogOffsetMismatch {
+                current: 0,
+                emitted: 0,
+                next: 1,
+            }
+        ));
+    }
+
+    #[test]
+    fn engine_rejects_event_log_offset_regression() {
+        let scenario = generated_scenario(20);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, RegressingEventLogLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("continue should enter running state: {error}");
+        }
+
+        engine
+            .step_quantum()
+            .expect("first event-log offset should be accepted");
+        let error = engine
+            .step_quantum()
+            .expect_err("regressed event-log offset must be rejected");
+
+        assert!(matches!(
+            error,
+            SessionError::EventLogOffsetRegression {
+                current: 1,
+                next: 0,
+            }
+        ));
+    }
+
     struct StubLoop;
 
     impl QuantumLoop for StubLoop {
@@ -1330,6 +1434,10 @@ mod tests {
                 advanced_node: None,
                 resolved_events: Vec::new(),
                 decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_hash: None,
+                event_log_offset: Default::default(),
             })
         }
     }
@@ -1351,6 +1459,10 @@ mod tests {
                 advanced_node: None,
                 resolved_events: Vec::new(),
                 decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_hash: None,
+                event_log_offset: Default::default(),
             })
         }
     }
@@ -1358,6 +1470,60 @@ mod tests {
     #[derive(Default)]
     struct AppendingLoop {
         quanta: u64,
+    }
+
+    struct InvalidEventLogLoop;
+
+    impl QuantumLoop for InvalidEventLogLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: 1 },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_hash: None,
+                event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 1),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct RegressingEventLogLoop {
+        quanta: u64,
+    }
+
+    impl QuantumLoop for RegressingEventLogLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            self.quanta = self.quanta.saturating_add(1);
+            let (entries, offset) = if self.quanta == 1 {
+                (
+                    vec![test_event_log_entry(0)],
+                    crucible::EventLogOffset::new(Default::default(), 0, 1),
+                )
+            } else {
+                (Vec::new(), crucible::EventLogOffset::default())
+            };
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: self.quanta },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                event_log_entries: entries,
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_hash: None,
+                event_log_offset: offset,
+            })
+        }
     }
 
     impl QuantumLoop for AppendingLoop {
@@ -1374,6 +1540,10 @@ mod tests {
                 advanced_node: None,
                 resolved_events: Vec::new(),
                 decisions: vec![decision],
+                event_log_entries: vec![test_event_log_entry(self.quanta - 1)],
+                event_log_segment_bytes: vec![b'x'],
+                event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
+                event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
             })
         }
     }
@@ -1405,6 +1575,20 @@ mod tests {
             &format!("seed={seed}"),
             Seed::from_u64(seed),
         )
+    }
+
+    fn test_event_log_entry(sequence: u64) -> crucible::SchedulerEventLogEntry {
+        let material = format!("sequence={sequence}");
+        crucible::SchedulerEventLogEntry {
+            sequence,
+            at: VirtualTime { ticks: sequence },
+            class: crucible::SchedulerEventLogClass::Causal,
+            payload: crucible::SchedulerEventLogPayload::Decision(generated_decision(sequence)),
+            content_hash: crucible::ContentHash::from_canonical_material(
+                "crucible.session.test.event-log-entry",
+                &material,
+            ),
+        }
     }
 
     fn generated_decision(seed: u64) -> Decision {
