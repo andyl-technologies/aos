@@ -8,4 +8,9 @@ publish = false
 workspace = true
 
 [dependencies]
+crucible-session = { path = "../crucible-session" }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+crucible = { path = "../crucible" }

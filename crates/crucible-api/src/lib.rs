@@ -7,15 +7,24 @@
 //! safe boundary over versioned data and dispatch shapes.
 //!
 //! Module map: [`rpc_abi`] owns the versioned RPC boundary constants and frozen
-//! golden vectors. Later modules will split by lifecycle, query, and
-//! temporal-graph surfaces as those APIs land.
+//! golden vectors; [`control_responsive`] owns the quantum-counted
+//! acknowledgement contract used by `gate:control-responsive`. Later modules
+//! will split by lifecycle, query, and temporal-graph surfaces as those APIs
+//! land.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+pub mod control_responsive;
 pub mod rpc_abi;
 
+pub use control_responsive::{
+    CONTROL_RESPONSIVE_QUANTUM_BOUND, CONTROL_RESPONSIVE_REQUIRED_OPERATIONS,
+    ControlAcknowledgementStatus, ControlOperationAcknowledgement, ControlOperationKind,
+    ControlResponsiveReport, ControlResponsiveSessionProbe, ControlResponsivenessError,
+    ControlSessionState, validate_control_responsiveness,
+};
 pub use rpc_abi::{
     GOLDEN_RPC_VECTORS, GOLDEN_VECTOR_RPC_PROTOCOL_VERSION, GOLDEN_VECTOR_RPC_REGENERATION_RULE,
     ProtocolVersion, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR,

@@ -935,9 +935,21 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [x] **T-HARN-14** Implement `gate:scheduler-liveness` (every generated scenario
   reaches Quiescent/TimeLimitReached within a quantum budget; no held lock spans a
   node advance). — satisfies [HARN-18]; spec §1.2.
-- [ ] **T-HARN-15** Implement `gate:control-responsive` (control ops acked within
+- [x] **T-HARN-15** Implement `gate:control-responsive` (control ops acked within
   a bounded number of quanta against a running session, measured in quanta not
   wall-clock). — satisfies [HARN-19]; spec §1.2.
+  Completed by `checks.crucible.phase5.gates.controlResponsive`: the session
+  target drives a live running actor and observes snapshot, fork, inject, query,
+  and pause acknowledgements within one post-request quantum; the test also
+  verifies that snapshot, fork, inject, and query reach `QuantumRequest.control`
+  before their acknowledgements are published, while pause is acknowledged as an
+  actor boundary state transition. `crucible-api::control_responsive` exposes
+  the wall-clock-free
+  `ControlResponsiveSessionProbe` route and rejects non-running, missing,
+  rejected, backward, or over-bound evidence. The daemon target issues through
+  `DaemonControlResponsiveRoute` and validates the same API contract; the
+  canonical gate catalog plus gate-target map now mark the session, API, and
+  daemon `gate_control_responsive` targets implemented.
 - [x] **T-HARN-16** Implement the initial `gate:any-guest` executable matrix (one
   unmodified generic AOS Linux fixture across diskless and guest-visible
   CoW-block launch profiles; diskless boot fingerprints deterministic; CoW base

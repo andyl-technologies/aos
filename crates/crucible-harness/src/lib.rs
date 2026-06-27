@@ -176,7 +176,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:control-responsive",
         phase: GatePhase::Phase5,
         owner: "crucible-session",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:any-guest",

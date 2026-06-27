@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::sync::{Arc, Mutex};
+
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ControlOperation, ControlOperationKind, Decision,
     DeliveryOrderDecision, EventKey, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome,
@@ -16,7 +18,12 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
     let scenario = generated_scenario(31);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
-    let engine = Engine::new(config, graph, AppendingLoop::default());
+    let observed_control = Arc::new(Mutex::new(Vec::new()));
+    let engine = Engine::new(
+        config,
+        graph,
+        SimDoubleQuantumLoop::new(Arc::clone(&observed_control)),
+    );
     let (sender, receiver) = mpsc::channel(8);
     let actor = SessionActor::new(engine, receiver);
     let live = actor.live_snapshot();
@@ -43,6 +50,33 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
     assert!(observed_progress);
     assert_eq!(last.state_kind, LiveStateKind::Running);
     assert!(last.event_log_len >= last.quanta_stepped);
+
+    let snapshot_acknowledged =
+        acknowledge_operation(&sender, &live, SessionCommand::Snapshot, "snapshot").await;
+    assert_eq!(snapshot_acknowledged.state_kind, LiveStateKind::Running);
+    let fork_acknowledged =
+        acknowledge_operation(&sender, &live, SessionCommand::Fork, "fork").await;
+    assert_eq!(fork_acknowledged.state_kind, LiveStateKind::Running);
+    let inject_acknowledged =
+        acknowledge_operation(&sender, &live, SessionCommand::Inject, "inject").await;
+    assert_eq!(inject_acknowledged.state_kind, LiveStateKind::Running);
+    let query_acknowledged =
+        acknowledge_operation(&sender, &live, SessionCommand::Query, "query").await;
+    assert_eq!(query_acknowledged.state_kind, LiveStateKind::Running);
+    assert_eq!(
+        observed_control_operations(&observed_control),
+        vec![
+            ControlOperationKind::Snapshot,
+            ControlOperationKind::Fork,
+            ControlOperationKind::Inject,
+            ControlOperationKind::Query,
+        ]
+    );
+
+    let paused = acknowledge_operation(&sender, &live, SessionCommand::Pause, "pause").await;
+    assert_eq!(paused.state_kind, LiveStateKind::Paused);
+
+    send_command(&sender, SessionCommand::Continue).await;
     send_command(&sender, SessionCommand::Stop).await;
     let stop_requested_after = live.read();
 
@@ -84,33 +118,107 @@ async fn send_command(sender: &mpsc::Sender<SessionCommand>, command: SessionCom
     }
 }
 
-#[derive(Default)]
-struct AppendingLoop {
-    quanta: u64,
+async fn acknowledge_operation(
+    sender: &mpsc::Sender<SessionCommand>,
+    live: &crucible_session::LiveSnapshot,
+    command: SessionCommand,
+    operation: &'static str,
+) -> crucible_session::LiveSnapshotView {
+    let requested_after = live.read();
+    assert_eq!(requested_after.state_kind, LiveStateKind::Running);
+    let acknowledgements_before = requested_after.control_acknowledgements;
+
+    send_command(sender, command).await;
+
+    for _ in 0..128 {
+        let current = live.read();
+        if current.control_acknowledgements > acknowledgements_before {
+            let quanta_after_request = current
+                .quanta_stepped
+                .saturating_sub(requested_after.quanta_stepped);
+            assert!(
+                quanta_after_request <= 1,
+                "{operation} command should be acknowledged within one post-request quantum, observed {quanta_after_request}"
+            );
+            return current;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    panic!("{operation} command should be acknowledged within bounded actor yields");
 }
 
-impl QuantumLoop for AppendingLoop {
+#[derive(Default)]
+struct SimDoubleQuantumLoop {
+    quanta: u64,
+    observed_control: Arc<Mutex<Vec<ControlOperationKind>>>,
+}
+
+impl SimDoubleQuantumLoop {
+    fn new(observed_control: Arc<Mutex<Vec<ControlOperationKind>>>) -> Self {
+        Self {
+            quanta: 0,
+            observed_control,
+        }
+    }
+}
+
+impl QuantumLoop for SimDoubleQuantumLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.quanta = self.quanta.saturating_add(1);
         let decision = generated_decision(self.quanta);
         let configuration = step(&request.configuration, decision.clone());
+        let control = request.control;
+        record_control_operations(&self.observed_control, &control);
+        let mut resolved_events: Vec<_> = control
+            .into_iter()
+            .map(|operation| resolved_control_operation(self.quanta, operation))
+            .collect();
+        resolved_events.push(resolved_control_event(self.quanta));
         Ok(QuantumOutcome {
             configuration,
             frontier: VirtualTime { ticks: self.quanta },
             advanced_node: None,
-            resolved_events: vec![resolved_control_event(self.quanta)],
+            resolved_events,
             decisions: vec![decision],
         })
     }
 }
 
+fn record_control_operations(
+    observed_control: &Arc<Mutex<Vec<ControlOperationKind>>>,
+    operations: &[ControlOperation],
+) {
+    let mut observed = observed_control
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    observed.extend(operations.iter().map(|operation| operation.kind));
+}
+
+fn observed_control_operations(
+    observed_control: &Arc<Mutex<Vec<ControlOperationKind>>>,
+) -> Vec<ControlOperationKind> {
+    observed_control
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+fn resolved_control_operation(sequence: u64, operation: ControlOperation) -> ScheduledEvent {
+    let node = control_node();
+    ScheduledEvent {
+        key: ScheduledEventKey::from_parts(
+            VirtualTime { ticks: sequence },
+            node.clone(),
+            node,
+            operation.sequence,
+        ),
+        payload: crucible::ScheduledEventPayload::Control(operation),
+    }
+}
+
 fn resolved_control_event(sequence: u64) -> ScheduledEvent {
-    let node = SchedulerNodeId {
-        node: NodeId {
-            name: String::from("control-plane"),
-        },
-        kind: SchedulingNodeKind::ControlPlane,
-    };
+    let node = control_node();
     ScheduledEvent {
         key: ScheduledEventKey::from_parts(
             VirtualTime { ticks: sequence },
@@ -123,6 +231,16 @@ fn resolved_control_event(sequence: u64) -> ScheduledEvent {
             kind: ControlOperationKind::Query,
         }),
     }
+}
+
+fn control_node() -> SchedulerNodeId {
+    let node = SchedulerNodeId {
+        node: NodeId {
+            name: String::from("control-plane"),
+        },
+        kind: SchedulingNodeKind::ControlPlane,
+    };
+    node
 }
 
 fn graph_with_baked_genesis(scenario: &ScenarioDef) -> TemporalGraph {

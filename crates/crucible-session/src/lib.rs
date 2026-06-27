@@ -19,8 +19,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use crucible::{
-    Configuration, EngineError, QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState,
-    SchedulerError, TemporalGraph, VirtualTime, instantiate,
+    Configuration, ControlOperation, ControlOperationKind, EngineError, QuantumLoop,
+    QuantumOutcome, QuantumRequest, RuntimeState, SchedulerError, TemporalGraph, VirtualTime,
+    instantiate,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -181,6 +182,12 @@ pub enum SessionCommand {
         /// The requested bounded step mode.
         mode: StepMode,
     },
+    /// Capture a boundary snapshot.
+    Snapshot,
+    /// Fork from the current boundary configuration.
+    Fork,
+    /// Inject a deterministic control-plane fault at the next boundary.
+    Inject,
     /// Transition to a terminal operator-stopped state.
     Stop,
     /// Read the current boundary state without mutation.
@@ -191,7 +198,21 @@ impl SessionCommand {
     /// Returns whether the command is observation-only.
     #[must_use]
     pub const fn is_read_only(self) -> bool {
-        matches!(self, Self::Query)
+        matches!(self, Self::Query | Self::Snapshot)
+    }
+
+    const fn is_control_acknowledged(self) -> bool {
+        matches!(
+            self,
+            Self::Pause | Self::Snapshot | Self::Fork | Self::Inject | Self::Query
+        )
+    }
+
+    const fn requires_running_quantum_ack(self) -> bool {
+        matches!(
+            self,
+            Self::Snapshot | Self::Fork | Self::Inject | Self::Query
+        )
     }
 }
 
@@ -222,6 +243,7 @@ pub struct LiveSnapshot {
     virtual_time_ticks: AtomicU64,
     event_log_len: AtomicU64,
     quanta_stepped: AtomicU64,
+    control_acknowledgements: AtomicU64,
 }
 
 /// Copy-out view of [`LiveSnapshot`].
@@ -235,6 +257,8 @@ pub struct LiveSnapshotView {
     pub event_log_len: u64,
     /// Monotone count of scheduler quanta stepped by the session actor.
     pub quanta_stepped: u64,
+    /// Monotone count of actor-acknowledged control commands.
+    pub control_acknowledgements: u64,
 }
 
 impl LiveSnapshot {
@@ -247,8 +271,9 @@ impl LiveSnapshot {
             virtual_time_ticks: AtomicU64::new(0),
             event_log_len: AtomicU64::new(0),
             quanta_stepped: AtomicU64::new(0),
+            control_acknowledgements: AtomicU64::new(0),
         };
-        snapshot.publish(initial);
+        snapshot.publish(initial, 0);
         snapshot
     }
 
@@ -269,6 +294,7 @@ impl LiveSnapshot {
             let virtual_time_ticks = self.virtual_time_ticks.load(Ordering::Acquire);
             let event_log_len = self.event_log_len.load(Ordering::Acquire);
             let quanta_stepped = self.quanta_stepped.load(Ordering::Acquire);
+            let control_acknowledgements = self.control_acknowledgements.load(Ordering::Acquire);
             let end_epoch = self.epoch.load(Ordering::Acquire);
 
             if start_epoch == end_epoch && end_epoch.is_multiple_of(2) {
@@ -279,6 +305,7 @@ impl LiveSnapshot {
                     },
                     event_log_len,
                     quanta_stepped,
+                    control_acknowledgements,
                 };
             }
 
@@ -286,7 +313,7 @@ impl LiveSnapshot {
         }
     }
 
-    fn publish(&self, snapshot: &EngineSnapshot) {
+    fn publish(&self, snapshot: &EngineSnapshot, control_acknowledgements: u64) {
         let write_epoch = self.epoch.load(Ordering::Relaxed).wrapping_add(1) | 1;
         self.epoch.store(write_epoch, Ordering::Release);
         self.state_kind.store(
@@ -299,6 +326,8 @@ impl LiveSnapshot {
             .store(usize_to_u64(snapshot.event_log_len), Ordering::Release);
         self.quanta_stepped
             .store(snapshot.quanta, Ordering::Release);
+        self.control_acknowledgements
+            .store(control_acknowledgements, Ordering::Release);
         self.epoch
             .store(write_epoch.wrapping_add(1), Ordering::Release);
     }
@@ -323,6 +352,8 @@ pub struct Engine<L> {
     frontier: VirtualTime,
     event_log_len: usize,
     quanta: u64,
+    pending_control: Vec<ControlOperation>,
+    next_control_sequence: u64,
 }
 
 impl<L> Engine<L> {
@@ -339,6 +370,8 @@ impl<L> Engine<L> {
             frontier: VirtualTime::default(),
             event_log_len: 0,
             quanta: 0,
+            pending_control: Vec::new(),
+            next_control_sequence: 0,
         }
     }
 
@@ -408,6 +441,18 @@ impl<L> Engine<L> {
             state: self.state.clone(),
             operation,
         }
+    }
+
+    fn admit_control_operation(&mut self, kind: ControlOperationKind) {
+        self.next_control_sequence = self.next_control_sequence.saturating_add(1);
+        self.pending_control.push(ControlOperation {
+            sequence: self.next_control_sequence,
+            kind,
+        });
+    }
+
+    fn pending_control_len(&self) -> usize {
+        self.pending_control.len()
     }
 }
 
@@ -538,6 +583,32 @@ impl<L: QuantumLoop> Engine<L> {
                     Err(self.invalid_transition(command))
                 }
             }
+            SessionCommand::Snapshot => {
+                if matches!(self.state, EngineState::Running) {
+                    self.admit_control_operation(ControlOperationKind::Snapshot);
+                }
+                Ok(self.snapshot())
+            }
+            SessionCommand::Fork => match self.state {
+                EngineState::Running | EngineState::Paused { .. } | EngineState::Stopped { .. } => {
+                    if matches!(self.state, EngineState::Running) {
+                        self.admit_control_operation(ControlOperationKind::Fork);
+                    }
+                    Ok(self.snapshot())
+                }
+                EngineState::Loaded => Err(self.invalid_transition(command)),
+            },
+            SessionCommand::Inject => match self.state {
+                EngineState::Running | EngineState::Paused { .. } => {
+                    if matches!(self.state, EngineState::Running) {
+                        self.admit_control_operation(ControlOperationKind::Inject);
+                    }
+                    Ok(self.snapshot())
+                }
+                EngineState::Loaded | EngineState::Stopped { .. } => {
+                    Err(self.invalid_transition(command))
+                }
+            },
             SessionCommand::Stop => {
                 if matches!(self.state, EngineState::Stopped { .. }) {
                     Err(self.invalid_transition(command))
@@ -548,7 +619,12 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
             }
-            SessionCommand::Query => Ok(self.snapshot()),
+            SessionCommand::Query => {
+                if matches!(self.state, EngineState::Running) {
+                    self.admit_control_operation(ControlOperationKind::Query);
+                }
+                Ok(self.snapshot())
+            }
         }
     }
 
@@ -567,7 +643,7 @@ impl<L: QuantumLoop> Engine<L> {
 
         let outcome = self.quantum_loop.drive_quantum(QuantumRequest {
             configuration: self.configuration.clone(),
-            control: Vec::new(),
+            control: std::mem::take(&mut self.pending_control),
         })?;
         let runtime = instantiate(&self.graph, &outcome.configuration)?;
 
@@ -639,6 +715,7 @@ pub struct SessionActor<L> {
     live: Arc<LiveSnapshot>,
     commands_applied: u64,
     yielded_after_quanta: u64,
+    control_acknowledgements: u64,
 }
 
 impl<L> SessionActor<L> {
@@ -653,6 +730,7 @@ impl<L> SessionActor<L> {
             live,
             commands_applied: 0,
             yielded_after_quanta: 0,
+            control_acknowledgements: 0,
         }
     }
 
@@ -685,6 +763,12 @@ impl<L> SessionActor<L> {
         self.yielded_after_quanta
     }
 
+    /// Returns the number of control commands acknowledged by the actor.
+    #[must_use]
+    pub fn control_acknowledgements(&self) -> u64 {
+        self.control_acknowledgements
+    }
+
     fn report(&self) -> SessionRunReport {
         SessionRunReport {
             final_snapshot: self.engine.snapshot(),
@@ -695,7 +779,8 @@ impl<L> SessionActor<L> {
     }
 
     fn publish_live_snapshot(&self) {
-        self.live.publish(&self.engine.snapshot());
+        self.live
+            .publish(&self.engine.snapshot(), self.control_acknowledgements);
     }
 }
 
@@ -724,7 +809,11 @@ impl<L: QuantumLoop> SessionActor<L> {
                     return Ok(());
                 }
 
+                let pending_control = self.engine.pending_control_len() as u64;
                 self.engine.step_quantum()?;
+                self.control_acknowledgements = self
+                    .control_acknowledgements
+                    .saturating_add(pending_control);
                 self.publish_live_snapshot();
                 self.yielded_after_quanta = self.yielded_after_quanta.saturating_add(1);
                 tokio::task::yield_now().await;
@@ -759,7 +848,12 @@ impl<L: QuantumLoop> SessionActor<L> {
 
     async fn apply_command(&mut self, command: SessionCommand) -> Result<(), SessionError> {
         let quanta_before = self.engine.quanta();
+        let quantum_ack = matches!(self.engine.state(), EngineState::Running)
+            && command.requires_running_quantum_ack();
         self.engine.apply_command(command)?;
+        if command.is_control_acknowledged() && !quantum_ack {
+            self.control_acknowledgements = self.control_acknowledgements.saturating_add(1);
+        }
         self.publish_live_snapshot();
         if self.engine.quanta() > quanta_before {
             self.yielded_after_quanta = self
