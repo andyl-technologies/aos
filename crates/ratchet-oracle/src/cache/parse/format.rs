@@ -18,8 +18,8 @@
 //! ```
 //!
 //! Per-element encoders and the [`BinaryReader`] live in the sibling
-//! [`codec`](super::codec) module; structural validation of decoded artifacts
-//! lives in [`validate`](super::validate).
+//! [`mod@codec`] module; structural validation of decoded artifacts lives in
+//! [`mod@validate`].
 
 use super::*;
 

@@ -7,6 +7,13 @@
 
 use super::*;
 
+use ratchet_cache::blob_index::{
+    BlobIndex as EngineBlobIndex, BlobIndexEntry as EngineBlobIndexEntry,
+    BlobIndexError as EngineBlobIndexError, BlobIndexFormatError as EngineBlobIndexFormatError,
+    BlobIndexKey as EngineBlobIndexKey, BlobIndexNamespace,
+};
+use ratchet_cache::blob_pack::{BlobPackHash, BlobPackLocation};
+
 /// A content-addressed immutable blob namespace in the persistent cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistBlobStore {
@@ -301,9 +308,9 @@ impl PersistBlobIndexEntry {
 
     /// Encodes this record as stable hash-to-offset index bytes.
     pub fn encode_index_entry(self) -> [u8; PERSIST_BLOB_INDEX_ENTRY_LEN] {
+        let encoded = persist_blob_index_entry_to_engine(self).encode();
         let mut bytes = [0; PERSIST_BLOB_INDEX_ENTRY_LEN];
-        bytes[..PERSIST_BLOB_INDEX_KEY_LEN].copy_from_slice(&self.key.index_bytes());
-        bytes[PERSIST_BLOB_INDEX_KEY_LEN..].copy_from_slice(&self.location.encode_index_value());
+        bytes.copy_from_slice(&encoded);
         bytes
     }
 
@@ -315,17 +322,82 @@ impl PersistBlobIndexEntry {
     /// [`PERSIST_BLOB_INDEX_ENTRY_LEN`] or if the embedded key/value codecs
     /// reject their prefixes.
     pub fn decode_index_entry(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
-        if bytes.len() < PERSIST_BLOB_INDEX_ENTRY_LEN {
-            return Err(PersistPackFormatError::ShortBlobIndexEntry {
-                expected: PERSIST_BLOB_INDEX_ENTRY_LEN,
-                actual: bytes.len(),
-            });
+        let entry = EngineBlobIndexEntry::decode(bytes).map_err(engine_blob_index_format_error)?;
+        engine_blob_index_entry_to_persist(entry)
+    }
+}
+
+fn persist_blob_key_to_engine(key: PersistBlobKey) -> EngineBlobIndexKey {
+    EngineBlobIndexKey::new(
+        BlobIndexNamespace::from_tag(key.store().index_tag()),
+        BlobPackHash::from_bytes(key.hash().as_bytes()),
+    )
+}
+
+fn engine_blob_index_key_to_persist(
+    key: EngineBlobIndexKey,
+) -> Result<PersistBlobKey, PersistPackFormatError> {
+    Ok(PersistBlobKey::new(
+        PersistBlobStore::from_index_tag(key.namespace().tag())?,
+        DurableBlake3Hash::from_bytes(key.hash().as_bytes()),
+    ))
+}
+
+fn persist_blob_location_to_engine(location: PersistBlobLocation) -> BlobPackLocation {
+    BlobPackLocation::new(location.record_offset(), location.payload_len())
+}
+
+fn engine_blob_location_to_persist(location: BlobPackLocation) -> PersistBlobLocation {
+    PersistBlobLocation::new(location.record_offset(), location.payload_len())
+}
+
+fn persist_blob_index_entry_to_engine(entry: PersistBlobIndexEntry) -> EngineBlobIndexEntry {
+    EngineBlobIndexEntry::new(
+        persist_blob_key_to_engine(entry.key()),
+        persist_blob_location_to_engine(entry.location()),
+    )
+}
+
+fn engine_blob_index_entry_to_persist(
+    entry: EngineBlobIndexEntry,
+) -> Result<PersistBlobIndexEntry, PersistPackFormatError> {
+    Ok(PersistBlobIndexEntry::new(
+        engine_blob_index_key_to_persist(entry.key())?,
+        engine_blob_location_to_persist(entry.location()),
+    ))
+}
+
+fn engine_blob_index_error(error: EngineBlobIndexError) -> PersistBlobIndexError {
+    match error {
+        EngineBlobIndexError::CreateParent { path, source } => {
+            PersistBlobIndexError::CreateParent { path, source }
         }
-        let key = PersistBlobKey::decode_index_bytes(&bytes[..PERSIST_BLOB_INDEX_KEY_LEN])?;
-        let location = PersistBlobLocation::decode_index_value(
-            &bytes[PERSIST_BLOB_INDEX_KEY_LEN..PERSIST_BLOB_INDEX_ENTRY_LEN],
-        )?;
-        Ok(Self::new(key, location))
+        EngineBlobIndexError::Open { path, source } => PersistBlobIndexError::Open { path, source },
+        EngineBlobIndexError::Metadata { path, source } => {
+            PersistBlobIndexError::Metadata { path, source }
+        }
+        EngineBlobIndexError::Read { path, source } => PersistBlobIndexError::Read { path, source },
+        EngineBlobIndexError::Write { path, source } => {
+            PersistBlobIndexError::Write { path, source }
+        }
+        EngineBlobIndexError::Format { path, source } => PersistBlobIndexError::Format {
+            path,
+            source: engine_blob_index_format_error(source),
+        },
+    }
+}
+
+fn engine_blob_index_format_error(error: EngineBlobIndexFormatError) -> PersistPackFormatError {
+    match error {
+        EngineBlobIndexFormatError::ShortKey { expected, actual } => {
+            PersistPackFormatError::ShortBlobIndexKey { expected, actual }
+        }
+        EngineBlobIndexFormatError::ShortValue { expected, actual } => {
+            PersistPackFormatError::ShortIndexValue { expected, actual }
+        }
+        EngineBlobIndexFormatError::ShortEntry { expected, actual } => {
+            PersistPackFormatError::ShortBlobIndexEntry { expected, actual }
+        }
     }
 }
 
@@ -337,7 +409,7 @@ impl PersistBlobIndexEntry {
 /// matching entry.
 #[derive(Clone, Debug)]
 pub struct PersistBlobIndex {
-    path: PathBuf,
+    engine: EngineBlobIndex,
 }
 
 impl PersistBlobIndex {
@@ -349,14 +421,13 @@ impl PersistBlobIndex {
     /// file cannot be created/opened, or if the existing file ends with a
     /// partial fixed-width record.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistBlobIndexError> {
-        let path = path.into();
-        ensure_blob_index_file(&path)?;
-        Ok(Self { path })
+        let engine = EngineBlobIndex::open(path.into()).map_err(engine_blob_index_error)?;
+        Ok(Self { engine })
     }
 
     /// Returns this index file's filesystem path.
     pub fn path(&self) -> &Path {
-        &self.path
+        self.engine.path()
     }
 
     /// Appends one hash-to-offset index entry.
@@ -366,20 +437,9 @@ impl PersistBlobIndex {
     /// Returns [`PersistBlobIndexError`] if the index cannot be opened,
     /// validated, written, or flushed.
     pub fn append_entry(&self, entry: PersistBlobIndexEntry) -> Result<(), PersistBlobIndexError> {
-        ensure_blob_index_file(&self.path)?;
-        let mut file = OpenOptions::new()
-            .append(true)
-            .open(&self.path)
-            .map_err(|source| PersistBlobIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        file.write_all(&entry.encode_index_entry())
-            .and_then(|()| file.flush())
-            .map_err(|source| PersistBlobIndexError::Write {
-                path: self.path.clone(),
-                source,
-            })
+        self.engine
+            .append_entry(persist_blob_index_entry_to_engine(entry))
+            .map_err(engine_blob_index_error)
     }
 
     /// Looks up the newest location for `key`.
@@ -392,38 +452,8 @@ impl PersistBlobIndex {
         &self,
         key: PersistBlobKey,
     ) -> Result<Option<PersistBlobLocation>, PersistBlobIndexError> {
-        ensure_blob_index_file(&self.path)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(&self.path)
-            .map_err(|source| PersistBlobIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        let len = file
-            .metadata()
-            .map_err(|source| PersistBlobIndexError::Metadata {
-                path: self.path.clone(),
-                source,
-            })?
-            .len();
-        validate_blob_index_len(&self.path, len)?;
-
         let mut found = None;
-        let records = len / PERSIST_BLOB_INDEX_ENTRY_LEN as u64;
-        let mut encoded = [0; PERSIST_BLOB_INDEX_ENTRY_LEN];
-        for _ in 0..records {
-            file.read_exact(&mut encoded)
-                .map_err(|source| PersistBlobIndexError::Read {
-                    path: self.path.clone(),
-                    source,
-                })?;
-            let entry = PersistBlobIndexEntry::decode_index_entry(&encoded).map_err(|source| {
-                PersistBlobIndexError::Format {
-                    path: self.path.clone(),
-                    source,
-                }
-            })?;
+        for entry in self.latest_entries()? {
             if entry.key() == key {
                 found = Some(entry.location());
             }
@@ -442,41 +472,16 @@ impl PersistBlobIndex {
     /// Returns [`PersistBlobIndexError`] if the index cannot be created,
     /// opened, inspected, read, or decoded.
     pub fn latest_entries(&self) -> Result<Vec<PersistBlobIndexEntry>, PersistBlobIndexError> {
-        ensure_blob_index_file(&self.path)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(&self.path)
-            .map_err(|source| PersistBlobIndexError::Open {
-                path: self.path.clone(),
+        self.engine
+            .latest_entries()
+            .map_err(engine_blob_index_error)?
+            .into_iter()
+            .map(engine_blob_index_entry_to_persist)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| PersistBlobIndexError::Format {
+                path: self.path().to_path_buf(),
                 source,
-            })?;
-        let len = file
-            .metadata()
-            .map_err(|source| PersistBlobIndexError::Metadata {
-                path: self.path.clone(),
-                source,
-            })?
-            .len();
-        validate_blob_index_len(&self.path, len)?;
-
-        let mut latest = std::collections::BTreeMap::new();
-        let records = len / PERSIST_BLOB_INDEX_ENTRY_LEN as u64;
-        let mut encoded = [0; PERSIST_BLOB_INDEX_ENTRY_LEN];
-        for _ in 0..records {
-            file.read_exact(&mut encoded)
-                .map_err(|source| PersistBlobIndexError::Read {
-                    path: self.path.clone(),
-                    source,
-                })?;
-            let entry = PersistBlobIndexEntry::decode_index_entry(&encoded).map_err(|source| {
-                PersistBlobIndexError::Format {
-                    path: self.path.clone(),
-                    source,
-                }
-            })?;
-            latest.insert(entry.key().index_bytes(), entry);
-        }
-        Ok(latest.into_values().collect())
+            })
     }
 
     /// Rewrites the sidecar to the newest entry for every blob key.
@@ -517,10 +522,10 @@ impl PersistBlobIndex {
         &self,
         entries: &[PersistBlobIndexEntry],
     ) -> Result<usize, PersistBlobIndexError> {
-        ensure_blob_index_file(&self.path)?;
+        ensure_blob_index_file(self.path())?;
         let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
         let tmp_path = self
-            .path
+            .path()
             .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
         let write_result = (|| {
             let mut file = OpenOptions::new()
@@ -548,10 +553,10 @@ impl PersistBlobIndex {
             let _ = fs::remove_file(&tmp_path);
             return Err(error);
         }
-        fs::rename(&tmp_path, &self.path).map_err(|source| {
+        fs::rename(&tmp_path, self.path()).map_err(|source| {
             let _ = fs::remove_file(&tmp_path);
             PersistBlobIndexError::Write {
-                path: self.path.clone(),
+                path: self.path().to_path_buf(),
                 source,
             }
         })?;

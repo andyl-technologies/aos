@@ -3,7 +3,7 @@
 //! These helpers serialize the individual building blocks of a parse-cache
 //! artifact — AST and IR nodes, their payloads, frames, slices, and the
 //! enum-to-`u8` tag mappings — and read them back. The little-endian framing is
-//! consumed by the top-level serializers in [`format`](super::format).
+//! consumed by the top-level serializers in [`mod@format`].
 
 use super::*;
 
