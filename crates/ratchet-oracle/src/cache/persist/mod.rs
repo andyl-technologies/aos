@@ -115,6 +115,7 @@ pub use cache::{
     PersistBlobLiveRoot, PersistBlobLiveRootSource, PersistBlobPackLivenessPlan,
     PersistBlobPackTrim, PersistCache, PersistCompaction, PersistMissingNodeValueRoot,
     PersistNodeValueRoot, PersistNodeValueRootPlan, PersistStorageMaintenance,
+    PersistValueBlobReachabilityPlan,
 };
 pub use error::{
     PersistBlobIndexError, PersistBlobIndexRebuildError, PersistBlobIndexRebuildPlanError,
@@ -133,6 +134,7 @@ pub use error::{
     PersistParseArtifactMaterializationError, PersistParseBytesIndexedLoadError,
     PersistParseFileIndexedHydrationError, PersistParseFileIndexedLoadError,
     PersistParseSourceIndexedLoadError, PersistStorageMaintenanceError,
+    PersistValueBlobReachabilityPlanError,
 };
 pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,

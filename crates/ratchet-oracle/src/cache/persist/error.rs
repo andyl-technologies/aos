@@ -839,6 +839,41 @@ pub enum PersistNodeValueRootPlanError {
     },
 }
 
+/// Persistent value-pack reachability planning failed.
+#[derive(Debug, Error)]
+pub enum PersistValueBlobReachabilityPlanError {
+    /// Node metadata roots could not be locked or snapshotted.
+    #[error("failed to lock or snapshot persistent node metadata for value reachability")]
+    Metadata {
+        /// The underlying node metadata error.
+        source: PersistNodeMetadataIndexError,
+    },
+    /// The value blob index could not be locked or snapshotted.
+    #[error("failed to lock or snapshot persistent value blob index for reachability")]
+    BlobIndex {
+        /// The underlying value blob-index error.
+        source: PersistBlobIndexError,
+    },
+    /// The value blob index contained a key for the wrong blob namespace.
+    #[error("persistent value blob index entry targets {actual:?}, expected Values")]
+    WrongStoreEntry {
+        /// The blob namespace encoded in the value index entry.
+        actual: PersistBlobStore,
+    },
+    /// A value-index root could not be verified.
+    #[error("failed to verify persistent indexed value blob")]
+    Read {
+        /// The underlying packfile read error.
+        source: PersistBlobPackError,
+    },
+    /// The value blob pack could not be scanned and verified.
+    #[error("failed to scan persistent value blob pack for reachability")]
+    Pack {
+        /// The underlying packfile scan error.
+        source: PersistBlobPackError,
+    },
+}
+
 /// Persistent blob-index rebuild planning failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexRebuildPlanError {

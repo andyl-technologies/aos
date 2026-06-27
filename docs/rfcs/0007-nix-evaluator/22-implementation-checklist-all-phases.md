@@ -1323,6 +1323,16 @@ alone (`M-1`/`Q-A`).
       pack rewriting/deletion, live-record relocation, automatic GC policy,
       cross-process/raw-writer coordination, mmap reads, Attic transport, and
       harness proof remain open (`C-13`/`R-14`).
+- [x] Current read-only value-pack reachability plan:
+      `PersistCache::plan_value_blob_reachability` snapshots latest node
+      metadata and `values/` blob-index entries, verifies node-rooted records,
+      scans the value pack, and classifies physical records as node-rooted,
+      indexed-without-node-root, or absent from latest index roots while
+      reporting missing node metadata links. This is diagnostic classification
+      only; retention windows, metadata pruning, sidecar repair, pack
+      rewriting/deletion, live-record relocation, automatic GC policy,
+      cross-process/raw-writer coordination, mmap reads, Attic transport, and
+      harness proof remain open (`C-13`/`R-14`).
 - [x] Current blob-pack integrity scan primitive:
       `PersistBlobPack::records` scans a pack in record order, validates every
       record header and payload hash, rejects truncated or corrupt tails instead

@@ -509,6 +509,72 @@ impl PersistNodeValueRootPlan {
     }
 }
 
+/// Read-only diagnostics for value-pack reachability.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PersistValueBlobReachabilityPlan {
+    node_roots: Vec<PersistNodeValueRoot>,
+    missing_node_roots: Vec<PersistMissingNodeValueRoot>,
+    node_rooted_records: Vec<PersistBlobPackRecord>,
+    indexed_unrooted_records: Vec<PersistBlobPackRecord>,
+    unindexed_records: Vec<PersistBlobPackRecord>,
+    bytes_before: u64,
+    node_rooted_record_bytes: u64,
+    indexed_unrooted_record_bytes: u64,
+    unindexed_record_bytes: u64,
+}
+
+impl PersistValueBlobReachabilityPlan {
+    /// Returns node-metadata value links resolved to verified value blobs.
+    pub fn node_roots(&self) -> &[PersistNodeValueRoot] {
+        &self.node_roots
+    }
+
+    /// Returns node-metadata value links missing from the value blob index.
+    pub fn missing_node_roots(&self) -> &[PersistMissingNodeValueRoot] {
+        &self.missing_node_roots
+    }
+
+    /// Returns verified physical value records reachable from node metadata.
+    pub fn node_rooted_records(&self) -> &[PersistBlobPackRecord] {
+        &self.node_rooted_records
+    }
+
+    /// Returns verified indexed value records without current node roots.
+    pub fn indexed_unrooted_records(&self) -> &[PersistBlobPackRecord] {
+        &self.indexed_unrooted_records
+    }
+
+    /// Returns verified physical value records absent from current index roots.
+    pub fn unindexed_records(&self) -> &[PersistBlobPackRecord] {
+        &self.unindexed_records
+    }
+
+    /// Returns the value packfile length observed while planning.
+    pub const fn bytes_before(&self) -> u64 {
+        self.bytes_before
+    }
+
+    /// Returns bytes occupied by node-rooted value records.
+    pub const fn node_rooted_record_bytes(&self) -> u64 {
+        self.node_rooted_record_bytes
+    }
+
+    /// Returns bytes occupied by indexed records without current node roots.
+    pub const fn indexed_unrooted_record_bytes(&self) -> u64 {
+        self.indexed_unrooted_record_bytes
+    }
+
+    /// Returns bytes occupied by records absent from current index roots.
+    pub const fn unindexed_record_bytes(&self) -> u64 {
+        self.unindexed_record_bytes
+    }
+
+    /// Returns whether any node-metadata value link is missing from the blob index.
+    pub fn repair_needed(&self) -> bool {
+        !self.missing_node_roots.is_empty()
+    }
+}
+
 /// Results from an explicit persistent storage maintenance sweep.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PersistStorageMaintenance {
@@ -1467,6 +1533,119 @@ impl PersistCache {
             resolved_roots.push(PersistNodeValueRoot::new(entry.key(), value_hash, location));
         }
         Ok(PersistNodeValueRootPlan::new(resolved_roots, missing_roots))
+    }
+
+    /// Plans physical `values/` pack reachability from current metadata/index roots.
+    ///
+    /// This read-only diagnostic snapshots the latest demand-node metadata and
+    /// `values/` blob-index entries, verifies every latest value-index root,
+    /// scans the value pack, and classifies verified physical records as
+    /// node-rooted, indexed without a current node root, or absent from the
+    /// latest value index. Missing node value links are reported separately.
+    /// The method does not choose a retention window, prune metadata, rewrite
+    /// sidecars, delete blobs, relocate records, or coordinate with
+    /// cross-process writers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistValueBlobReachabilityPlanError`] if the same-root
+    /// value-index or node-metadata lock is poisoned, if either sidecar cannot
+    /// be snapshotted, if the value index contains a non-value key, if an
+    /// indexed value blob cannot be verified, or if the value pack cannot be
+    /// fully scanned and verified.
+    pub fn plan_value_blob_reachability(
+        &self,
+    ) -> Result<PersistValueBlobReachabilityPlan, PersistValueBlobReachabilityPlanError> {
+        let metadata_entries = {
+            let _metadata_guard = self
+                .root_locks
+                .lock_node_metadata()
+                .map_err(|source| PersistValueBlobReachabilityPlanError::Metadata { source })?;
+            self.node_metadata_index
+                .latest_entries()
+                .map_err(|source| PersistValueBlobReachabilityPlanError::Metadata { source })?
+        };
+        let _value_guard = self
+            .root_locks
+            .lock_blob_index(PersistBlobStore::Values)
+            .map_err(|source| PersistValueBlobReachabilityPlanError::BlobIndex { source })?;
+        let value_entries = self
+            .value_index
+            .latest_entries()
+            .map_err(|source| PersistValueBlobReachabilityPlanError::BlobIndex { source })?;
+        let mut value_locations = BTreeMap::new();
+        let mut index_identities = BTreeMap::new();
+        for entry in value_entries {
+            let key = entry.key();
+            if key.store() != PersistBlobStore::Values {
+                return Err(PersistValueBlobReachabilityPlanError::WrongStoreEntry {
+                    actual: key.store(),
+                });
+            }
+            self.value_pack
+                .verify_blob(entry.location(), key.hash())
+                .map_err(|source| PersistValueBlobReachabilityPlanError::Read { source })?;
+            value_locations.insert(key.index_bytes(), entry.location());
+            index_identities.insert(blob_record_identity(key, entry.location()), ());
+        }
+        let mut node_roots = Vec::new();
+        let mut missing_node_roots = Vec::new();
+        let mut node_root_identities = BTreeMap::new();
+        for entry in metadata_entries {
+            let Some(value_hash) = entry.value().materialized_value_hash() else {
+                continue;
+            };
+            let blob_key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+            let Some(location) = value_locations.get(&blob_key.index_bytes()).copied() else {
+                missing_node_roots.push(PersistMissingNodeValueRoot::new(entry.key(), value_hash));
+                continue;
+            };
+            node_root_identities.insert(blob_record_identity(blob_key, location), ());
+            node_roots.push(PersistNodeValueRoot::new(entry.key(), value_hash, location));
+        }
+
+        let bytes_before = self
+            .value_pack
+            .len()
+            .map_err(|source| PersistValueBlobReachabilityPlanError::Pack { source })?;
+        let records = self
+            .value_pack
+            .records()
+            .map_err(|source| PersistValueBlobReachabilityPlanError::Pack { source })?;
+        let mut node_rooted_records = Vec::new();
+        let mut indexed_unrooted_records = Vec::new();
+        let mut unindexed_records = Vec::new();
+        let mut node_rooted_record_bytes = 0u64;
+        let mut indexed_unrooted_record_bytes = 0u64;
+        let mut unindexed_record_bytes = 0u64;
+        for record in records {
+            let identity =
+                blob_record_identity(record.key(PersistBlobStore::Values), record.location());
+            let record_bytes = blob_record_bytes(record);
+            if node_root_identities.contains_key(&identity) {
+                node_rooted_record_bytes = node_rooted_record_bytes.saturating_add(record_bytes);
+                node_rooted_records.push(record);
+            } else if index_identities.contains_key(&identity) {
+                indexed_unrooted_record_bytes =
+                    indexed_unrooted_record_bytes.saturating_add(record_bytes);
+                indexed_unrooted_records.push(record);
+            } else {
+                unindexed_record_bytes = unindexed_record_bytes.saturating_add(record_bytes);
+                unindexed_records.push(record);
+            }
+        }
+
+        Ok(PersistValueBlobReachabilityPlan {
+            node_roots,
+            missing_node_roots,
+            node_rooted_records,
+            indexed_unrooted_records,
+            unindexed_records,
+            bytes_before,
+            node_rooted_record_bytes,
+            indexed_unrooted_record_bytes,
+            unindexed_record_bytes,
+        })
     }
 
     /// Records one current-run demand observation for a demand node.

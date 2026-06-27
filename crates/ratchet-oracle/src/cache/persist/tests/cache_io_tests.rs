@@ -4727,6 +4727,200 @@ fn cache_node_value_root_plan_rejects_corrupt_indexed_value_blob() {
 }
 
 #[test]
+fn cache_value_blob_reachability_plan_classifies_value_records() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let missing_node_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"missing node"));
+    let node_payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let node_value_hash = node_payload.value_hash().expect("payload hashes");
+    let node_result = cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &node_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("node payload materializes");
+    let PersistMaterialization::Materialized(node_location) = node_result else {
+        panic!("node payload should materialize");
+    };
+    let indexed_payload = CachedExpressionValue::immediate(Value::int(7)).expect("payload builds");
+    let indexed_value_hash = indexed_payload.value_hash().expect("payload hashes");
+    let indexed_result = cache
+        .materialize_cached_expression_value_indexed(
+            &indexed_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("indexed payload materializes");
+    let PersistMaterialization::Materialized(indexed_location) = indexed_result else {
+        panic!("indexed payload should materialize");
+    };
+    let unindexed_payload = b"unindexed value payload";
+    let unindexed_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(unindexed_payload));
+    let unindexed_location = cache
+        .append_blob(unindexed_key, unindexed_payload)
+        .expect("unindexed value appends");
+    let missing_value_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"missing value"));
+    cache
+        .record_node_materialized_value_hash(missing_node_key, missing_value_hash)
+        .expect("missing node value metadata records");
+    let bytes_before = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata before reachability plan")
+        .len();
+
+    let plan = cache
+        .plan_value_blob_reachability()
+        .expect("value reachability plan builds");
+
+    assert!(plan.repair_needed());
+    assert_eq!(plan.bytes_before(), bytes_before);
+    assert_eq!(plan.node_roots().len(), 1);
+    assert_eq!(plan.node_roots()[0].node_key(), node_key);
+    assert_eq!(plan.node_roots()[0].value_hash(), node_value_hash);
+    assert_eq!(plan.node_roots()[0].location(), node_location);
+    assert_eq!(plan.missing_node_roots().len(), 1);
+    assert_eq!(plan.missing_node_roots()[0].node_key(), missing_node_key);
+    assert_eq!(
+        plan.missing_node_roots()[0].value_hash(),
+        missing_value_hash
+    );
+    assert_eq!(
+        plan.node_rooted_records()
+            .iter()
+            .map(|record| record.location())
+            .collect::<Vec<_>>(),
+        vec![node_location]
+    );
+    assert_eq!(
+        plan.indexed_unrooted_records()
+            .iter()
+            .map(|record| record.location())
+            .collect::<Vec<_>>(),
+        vec![indexed_location]
+    );
+    assert_eq!(
+        plan.unindexed_records()
+            .iter()
+            .map(|record| record.location())
+            .collect::<Vec<_>>(),
+        vec![unindexed_location]
+    );
+    assert_eq!(
+        plan.node_rooted_record_bytes(),
+        PERSIST_BLOB_RECORD_HEADER_LEN as u64 + node_location.payload_len()
+    );
+    assert_eq!(
+        plan.indexed_unrooted_record_bytes(),
+        PERSIST_BLOB_RECORD_HEADER_LEN as u64 + indexed_location.payload_len()
+    );
+    assert_eq!(
+        plan.unindexed_record_bytes(),
+        PERSIST_BLOB_RECORD_HEADER_LEN as u64 + unindexed_location.payload_len()
+    );
+    assert_eq!(
+        cache
+            .load_cached_expression_value_indexed(indexed_value_hash)
+            .expect("indexed value load succeeds")
+            .expect("indexed value exists"),
+        indexed_payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_value_blob_reachability_plan_rejects_corrupt_unindexed_record() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"corrupt unindexed value";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let location = cache
+        .append_blob(key, payload)
+        .expect("unindexed value appends");
+    let payload_offset = location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(cache.value_pack().path())
+        .expect("value pack opens for mutation");
+    file.seek(SeekFrom::Start(payload_offset))
+        .expect("payload offset seeks");
+    file.write_all(b"X").expect("payload corrupts");
+    file.flush().expect("payload corruption flushes");
+
+    let error = cache
+        .plan_value_blob_reachability()
+        .expect_err("corrupt unindexed value blocks plan");
+
+    assert!(matches!(
+        error,
+        PersistValueBlobReachabilityPlanError::Pack {
+            source: PersistBlobPackError::PayloadHashMismatch { .. },
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_value_blob_reachability_plan_rejects_mismatched_value_index_root() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let actual_payload = b"actual indexed payload";
+    let actual_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(actual_payload));
+    let actual_location = cache
+        .append_blob(actual_key, actual_payload)
+        .expect("actual value appends");
+    let expected_key =
+        PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"expected indexed payload"));
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(expected_key, actual_location))
+        .expect("mismatched value index entry appends");
+
+    let error = cache
+        .plan_value_blob_reachability()
+        .expect_err("mismatched indexed value root blocks plan");
+
+    assert!(matches!(
+        error,
+        PersistValueBlobReachabilityPlanError::Read {
+            source: PersistBlobPackError::RecordHashMismatch { .. },
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_value_blob_reachability_plan_rejects_wrong_store_value_index_root() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"file payload"));
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(
+            file_key,
+            PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
+        ))
+        .expect("wrong-store value index entry appends");
+
+    let error = cache
+        .plan_value_blob_reachability()
+        .expect_err("wrong-store indexed value root blocks plan");
+
+    assert!(matches!(
+        error,
+        PersistValueBlobReachabilityPlanError::WrongStoreEntry {
+            actual: PersistBlobStore::Files
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_cached_expression_node_payload_load_with_trace_revalidation_hits_matching_trace() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
