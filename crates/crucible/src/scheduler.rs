@@ -1118,15 +1118,17 @@ pub fn scheduled_event_delivery_time(
 
 /// Drains every event due for `consumer` and returns it in RESOLVE order.
 ///
-/// Events are due when their exact delivery time is at or before
-/// `advanced_to`. Returned events are ordered by the canonical key
-/// `(virtual_time, consumer node, producer node, sequence)` and removed from
-/// `pending_events`; all other events remain queued.
+/// Events are due when their exact delivery time is exactly `advanced_to`.
+/// Returned events are ordered by the canonical key `(virtual_time, consumer
+/// node, producer node, sequence)` and removed from `pending_events`; all other
+/// events remain queued. If an event for `consumer` is already behind
+/// `advanced_to`, the scheduler rejects it rather than delivering it late.
 ///
 /// # Errors
 ///
 /// Returns [`SchedulerError`] when a due event cannot prove the exact virtual
-/// time at which it becomes visible to its consumer.
+/// time at which it becomes visible to its consumer, or when an event's exact
+/// delivery time is before `advanced_to`.
 pub fn resolve_due_scheduled_events(
     pending_events: &mut Vec<ScheduledEvent>,
     consumer: &SchedulerNodeId,
@@ -1143,7 +1145,21 @@ pub fn resolve_due_scheduled_events(
             };
             if key_time <= advanced_to {
                 let delivery_time = scheduled_event_delivery_time(event, shift)?;
-                if delivery_time <= advanced_to {
+                if delivery_time < advanced_to {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "late scheduled event for {}:{:?}: delivery={} advanced_to={} producer={}:{:?} sequence={}",
+                            consumer.node.name,
+                            consumer.kind,
+                            delivery_time.nanos,
+                            advanced_to.nanos,
+                            event.key.producer().node.name,
+                            event.key.producer().kind,
+                            event.key.sequence(),
+                        ),
+                    });
+                }
+                if delivery_time == advanced_to {
                     resolved.push(event.clone());
                     continue;
                 }

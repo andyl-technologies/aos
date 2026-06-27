@@ -76,20 +76,20 @@ fn resolve_due_events_are_independent_of_pending_transport_order() {
     let other = scheduler_node("other", SchedulingNodeKind::Vm);
     let producer_a = scheduler_node("producer-a", SchedulingNodeKind::Vm);
     let producer_b = scheduler_node("producer-b", SchedulingNodeKind::Vm);
-    let due_early = backend_event(3, &consumer, &producer_a, 0, b"due-early");
-    let due_later = backend_event(4, &consumer, &producer_b, 0, b"due-later");
+    let due_first = backend_event(4, &consumer, &producer_a, 0, b"due-first");
+    let due_second = backend_event(4, &consumer, &producer_b, 0, b"due-second");
     let future = backend_event(7, &consumer, &producer_a, 1, b"future");
     let other_consumer = backend_event(3, &other, &producer_a, 0, b"other");
     let mut first_pending = vec![
         future.clone(),
-        due_later.clone(),
+        due_second.clone(),
         other_consumer.clone(),
-        due_early.clone(),
+        due_first.clone(),
     ];
     let mut second_pending = vec![
-        due_early.clone(),
+        due_first.clone(),
         other_consumer.clone(),
-        due_later.clone(),
+        due_second.clone(),
         future.clone(),
     ];
 
@@ -108,7 +108,7 @@ fn resolve_due_events_are_independent_of_pending_transport_order() {
     )
     .expect("second pending order should resolve");
 
-    assert_eq!(first, vec![due_early, due_later]);
+    assert_eq!(first, vec![due_first, due_second]);
     assert_eq!(second, first);
     assert_eq!(
         ordered_event_keys(&first_pending),
@@ -137,6 +137,49 @@ fn resolve_rejects_backend_input_with_mismatched_payload_target() {
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
     assert!(error.to_string().contains("backend input key consumer"));
     assert_eq!(pending.len(), 1);
+}
+
+#[test]
+fn resolve_rejects_late_event_before_advanced_frontier() {
+    let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
+    let producer = scheduler_node("producer", SchedulingNodeKind::Vm);
+    let event = backend_event(3, &consumer, &producer, 0, b"late");
+    let mut pending = vec![event];
+
+    let error =
+        resolve_due_scheduled_events(&mut pending, &consumer, SimInstant { nanos: 4 }, shift(0))
+            .expect_err("late delivery must fail loudly");
+
+    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
+    assert!(error.to_string().contains("late scheduled event"));
+    assert!(error.to_string().contains("delivery=3"));
+    assert!(error.to_string().contains("advanced_to=4"));
+    assert_eq!(pending.len(), 1);
+}
+
+#[test]
+fn single_scheduler_rejects_self_delivery_that_would_be_late() {
+    let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
+    let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
+        "resolve-late-self-delivery",
+        shift(0),
+        8,
+        SimInstant { nanos: 30 },
+        vec![scenario_node("consumer", 5, finite_lookahead(10))],
+        vec![backend_event(4, &consumer, &consumer, 0, b"late-self")],
+    ))
+    .expect("scenario should build");
+
+    let error = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect_err("late self-delivery must fail loudly");
+
+    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
+    assert!(error.to_string().contains("late scheduled event"));
+    assert!(error.to_string().contains("delivery=4"));
 }
 
 #[test]
