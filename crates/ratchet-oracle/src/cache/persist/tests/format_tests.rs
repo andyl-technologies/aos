@@ -2086,3 +2086,30 @@ fn blob_index_lookup_rejects_malformed_records() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn blob_index_compaction_rejects_malformed_records() {
+    let root = temp_root();
+    let index_path = root.join("values").join("index.blob");
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"payload"));
+    let location = PersistBlobLocation::new(123, 456);
+    let mut encoded = PersistBlobIndexEntry::new(key, location).encode_index_entry();
+    encoded[0] = 99;
+    fs::create_dir_all(index_path.parent().expect("index parent")).expect("parent creates");
+    fs::write(&index_path, encoded).expect("malformed index writes");
+    let index = PersistBlobIndex::open(&index_path).expect("index opens by length");
+
+    let error = index
+        .compact_latest_entries()
+        .expect_err("malformed record errors");
+
+    assert!(matches!(
+        error,
+        PersistBlobIndexError::Format {
+            source: PersistPackFormatError::InvalidBlobIndexStoreTag { tag: 99 },
+            ..
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}

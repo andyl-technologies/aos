@@ -522,45 +522,14 @@ impl PersistBlobIndex {
         &self,
         entries: &[PersistBlobIndexEntry],
     ) -> Result<usize, PersistBlobIndexError> {
-        ensure_blob_index_file(self.path())?;
-        let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
-        let tmp_path = self
-            .path()
-            .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
-        let write_result = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp_path)
-                .map_err(|source| PersistBlobIndexError::Write {
-                    path: tmp_path.clone(),
-                    source,
-                })?;
-            for entry in entries {
-                file.write_all(&entry.encode_index_entry())
-                    .map_err(|source| PersistBlobIndexError::Write {
-                        path: tmp_path.clone(),
-                        source,
-                    })?;
-            }
-            file.flush().map_err(|source| PersistBlobIndexError::Write {
-                path: tmp_path.clone(),
-                source,
-            })
-        })();
-        if let Err(error) = write_result {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(error);
-        }
-        fs::rename(&tmp_path, self.path()).map_err(|source| {
-            let _ = fs::remove_file(&tmp_path);
-            PersistBlobIndexError::Write {
-                path: self.path().to_path_buf(),
-                source,
-            }
-        })?;
-        Ok(entries.len())
+        let entries = entries
+            .iter()
+            .copied()
+            .map(persist_blob_index_entry_to_engine)
+            .collect::<Vec<_>>();
+        self.engine
+            .replace_entries(&entries)
+            .map_err(engine_blob_index_error)
     }
 }
 
