@@ -1323,10 +1323,25 @@ application of explorer-supplied preemption decisions
   proves that after the topology-swap record is emitted the scheduler resumes
   independent horizon-bounded advancement instead of pinning nodes to the
   rendezvous time.
-- [ ] **T-SCHED-27** Add the scheduler half of `gate:control-responsive`: a
+- [x] **T-SCHED-27** Add the scheduler half of `gate:control-responsive`: a
   control op submitted to the scheduler actor is applied within a bounded number
   of quanta, only at quantum boundaries. — satisfies [SCHED-3], [SCHED-33]; spec
   §8.2, §8.9.6.
+  Completed by `checks.crucible.phase3.schedulerControlResponsive`.
+  `SchedulerControlApplication` records each scheduler-applied control operation
+  with the quantum count and boundary-yield count visible at admission and at
+  application, and staged records are committed only after the quantum's
+  EMIT/STEP work succeeds. `SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA` fixes the
+  scheduler half of `gate:control-responsive` at one scheduler quantum, and the
+  scheduler rejects application evidence that exceeds that bound. The actor
+  drains queued control/topology messages before each drive, so a submitted
+  control op is not hidden behind deferred drive requests. Controls admitted
+  through the actor mailbox and controls supplied on `QuantumRequest` both become
+  scheduler control events only at the quantum-boundary drain before PICK; the
+  focused gate proves queued actor controls, same-request controls, mixed
+  queued/request controls, deferred-drive responsiveness, and control-only quanta
+  with no runnable node all apply only at quantum boundaries and within the
+  bound.
 - [ ] **T-SCHED-28** Implement RR sub-division inside RUN: divide a multi-vCPU
   node's instruction budget among its vCPUs by `rr_switch_quantum` in fixed
   ascending rotation, plugin-internal and host-timing-independent, with the node
