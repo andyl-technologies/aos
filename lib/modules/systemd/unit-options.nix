@@ -61,7 +61,6 @@
     mkMerge
     mkOption
     mkOptionType
-    singleton
     toList
     types
     ;
@@ -608,9 +607,15 @@ in rec {
       };
 
       jobScripts = mkOption {
-        type = with types; coercedTo path singleton (listOf path);
+        # RFC-0011 F2-A: each entry is the pure record returned by
+        # `makeJobScript` (key/name/scriptName/text/body/mode/placeholder as
+        # strings, plus `path` and the build-side `drv` derivation). The
+        # records are folded into `manifest.jobScripts` and drive the
+        # build-side job-script materialization. Was `listOf path` (bare
+        # store paths) before the render/assemble split.
+        type = with types; listOf (attrsOf (either str package));
         internal = true;
-        description = "A list of all job script derivations of this unit.";
+        description = "Job-script records (RFC-0011 F2-A) for this unit.";
         default = [];
       };
 
@@ -641,49 +646,81 @@ in rec {
     # on the stage-1.5 attrsOf `dischargeProperties` change so the
     # mkDefault wrapper is resolved at the ExecStart / ExecStartPre
     # sub-attribute level inside `serviceConfig = attrsOf unitOption`.
+    #
+    # RFC-0011 F2-A: `makeJobScript` now returns a record (not a bare path).
+    # Each block appends the record to `jobScripts` and plugs the build-side
+    # store path (`js.path`) into the `Exec*=` directive — keeping the exact
+    # value *shape* of the old code (list vs. string, the `script` case's
+    # `path + " " + scriptArgs` form, trailing space when `scriptArgs == ""`)
+    # so the only rendered byte change is the path token itself. `slot` is
+    # the systemd directive each option feeds; index is always 0.
     config = mkMerge [
-      (mkIf (config.preStart != "") rec {
-        jobScripts = makeJobScript {
+      (mkIf (config.preStart != "") (let
+        js = makeJobScript {
+          unit = "${name}.service";
+          slot = "ExecStartPre";
           name = "${name}-pre-start";
           text = config.preStart;
         };
-        serviceConfig.ExecStartPre = lib.mkDefault [jobScripts];
-      })
-      (mkIf (config.script != "") rec {
-        jobScripts = makeJobScript {
+      in {
+        jobScripts = [js];
+        serviceConfig.ExecStartPre = lib.mkDefault [js.path];
+      }))
+      (mkIf (config.script != "") (let
+        js = makeJobScript {
+          unit = "${name}.service";
+          slot = "ExecStart";
           name = "${name}-start";
           text = config.script;
         };
-        serviceConfig.ExecStart = lib.mkDefault (jobScripts + " " + config.scriptArgs);
-      })
-      (mkIf (config.postStart != "") rec {
-        jobScripts = makeJobScript {
+      in {
+        jobScripts = [js];
+        serviceConfig.ExecStart = lib.mkDefault (js.path + " " + config.scriptArgs);
+      }))
+      (mkIf (config.postStart != "") (let
+        js = makeJobScript {
+          unit = "${name}.service";
+          slot = "ExecStartPost";
           name = "${name}-post-start";
           text = config.postStart;
         };
-        serviceConfig.ExecStartPost = lib.mkDefault [jobScripts];
-      })
-      (mkIf (config.reload != "") rec {
-        jobScripts = makeJobScript {
+      in {
+        jobScripts = [js];
+        serviceConfig.ExecStartPost = lib.mkDefault [js.path];
+      }))
+      (mkIf (config.reload != "") (let
+        js = makeJobScript {
+          unit = "${name}.service";
+          slot = "ExecReload";
           name = "${name}-reload";
           text = config.reload;
         };
-        serviceConfig.ExecReload = lib.mkDefault jobScripts;
-      })
-      (mkIf (config.preStop != "") rec {
-        jobScripts = makeJobScript {
+      in {
+        jobScripts = [js];
+        serviceConfig.ExecReload = lib.mkDefault js.path;
+      }))
+      (mkIf (config.preStop != "") (let
+        js = makeJobScript {
+          unit = "${name}.service";
+          slot = "ExecStop";
           name = "${name}-pre-stop";
           text = config.preStop;
         };
-        serviceConfig.ExecStop = lib.mkDefault jobScripts;
-      })
-      (mkIf (config.postStop != "") rec {
-        jobScripts = makeJobScript {
+      in {
+        jobScripts = [js];
+        serviceConfig.ExecStop = lib.mkDefault js.path;
+      }))
+      (mkIf (config.postStop != "") (let
+        js = makeJobScript {
+          unit = "${name}.service";
+          slot = "ExecStopPost";
           name = "${name}-post-stop";
           text = config.postStop;
         };
-        serviceConfig.ExecStopPost = lib.mkDefault jobScripts;
-      })
+      in {
+        jobScripts = [js];
+        serviceConfig.ExecStopPost = lib.mkDefault js.path;
+      }))
     ];
   };
 

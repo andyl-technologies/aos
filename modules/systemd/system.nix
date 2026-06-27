@@ -178,6 +178,48 @@ in {
     '';
   };
 
+  # RFC-0011 render/assemble split (P0): the *pure* unit-body data that the
+  # `systemdSystemUnits` derivation is the imperative materialization of.
+  # `generateUnits` is intentionally left untouched (so the built unit
+  # directory stays byte-for-byte identical except the documented F2-A
+  # job-script ExecStart change); this value surfaces the same rendered
+  # bodies as host-portable data for `system.build.configManifest`. The
+  # `text` here is the *manifest* form: job-script store paths are replaced
+  # by `#aos-jobscript:<key>#` placeholders. (replaceStrings does not strip
+  # string-context, so the value still carries the job-script drvs in context;
+  # toJSON drops context and nothing forces this, so the manifest serializes
+  # with no derivation — the placeholder swap is for the host-portable text,
+  # not a context guarantee.)
+  options.system.build.systemdUnitBodies = lib.mkOption {
+    # Free-form `attrs` values (not a submodule) so the rendered data stays
+    # plain JSON with no injected `_module` key. Each value is
+    # `{ text; enable; aliases; wantedBy; requiredBy; upheldBy; }` where
+    # `text` is the manifest-form unit body (or null when masked).
+    type = lib.types.attrsOf lib.types.attrs;
+    internal = true;
+    default = {};
+    description = ''
+      Pure render of every systemd unit body keyed by full unit name, the
+      data contract behind `system.build.systemdSystemUnits`. RFC-0011 P0.
+    '';
+  };
+
+  # RFC-0011 F2-A: every job script's TEXT, keyed `"<unit>:<slot>.<index>"`,
+  # folded across all services. Consumed by `system.build.configManifest`
+  # (`manifest.jobScripts`); the materializer writes each `text` to a
+  # generation-local `aos-job-scripts/<key>` path and rewrites the matching
+  # `#aos-jobscript:<key>#` placeholder in the unit body to point there.
+  options.system.build.systemdJobScripts = lib.mkOption {
+    # Free-form `attrs` values (not a submodule) to avoid an injected
+    # `_module` key in the manifest JSON. Each value is
+    # `{ text; mode; name; }` (verbatim body incl. shebang, octal mode,
+    # sanitized short name for logs).
+    type = lib.types.attrsOf lib.types.attrs;
+    internal = true;
+    default = {};
+    description = "RFC-0011 F2-A job-script texts keyed by `<unit>:<slot>.<index>`.";
+  };
+
   config = let
     # --- X-* contract eval-time guards (spec §7.3) ---------------------
     #
@@ -300,6 +342,47 @@ in {
       packages = config.systemd.packages;
       package = config.systemd.package;
     };
+
+    # --- RFC-0011 P0 pure render values --------------------------------
+    #
+    # Fold every service's F2-A job-script records into the flat
+    # `systemdJobScripts` map, and build the manifest-form unit bodies by
+    # rewriting each build-side job-script store path to its placeholder.
+    # The build-side `generateUnits` derivation is untouched, so this is
+    # purely additive data — it does not affect `systemdSystemUnits`.
+    system.build.systemdJobScripts = let
+      allJobScripts =
+        lib.concatLists (lib.mapAttrsToList (_: svc: svc.jobScripts) config.systemd.services);
+    in
+      lib.listToAttrs (builtins.map (j:
+        lib.nameValuePair j.key {
+          text = j.body;
+          inherit (j) mode;
+          name = j.scriptName;
+        })
+      allJobScripts);
+
+    system.build.systemdUnitBodies = let
+      allJobScripts =
+        lib.concatLists (lib.mapAttrsToList (_: svc: svc.jobScripts) config.systemd.services);
+      paths = builtins.map (j: j.path) allJobScripts;
+      placeholders = builtins.map (j: j.placeholder) allJobScripts;
+      # Pure string substitution: each build-side job-script store path is
+      # globally unique to its unit, so a flat replace cannot cross-bind.
+      toManifestText = txt:
+        if txt == null
+        then null
+        else builtins.replaceStrings paths placeholders txt;
+    in
+      lib.mapAttrs (_unitName: u: {
+        text = toManifestText u.text;
+        inherit (u) enable;
+        aliases = u.aliases or [];
+        wantedBy = u.wantedBy or [];
+        requiredBy = u.requiredBy or [];
+        upheldBy = u.upheldBy or [];
+      })
+      config.systemd.units;
 
     # Route the rendered unit directory through environment.etc so
     # the EROFS image carries it as a real directory of symlinks (the

@@ -239,6 +239,28 @@ in {
         '';
       };
 
+      ## RFC-0011 `aos.config-manifest/v1` — the pure-data contract.
+      configManifest = lib.mkOption {
+        type = lib.types.attrs;
+        readOnly = true;
+        description = ''
+          The RFC-0011 `aos.config-manifest/v1` value: a pure attrset (no
+          derivations forced, no secrets) describing the rendered `/etc`
+          tree, systemd reconcile actions, F2-A job-script texts, users,
+          presets, pinned store paths, the module ABI, and the eval-input
+          provenance placeholder. This is the data contract the on-host
+          evaluator emits and the imperative materializer consumes
+          (architecture.md §"The manifest"). It is purely additive: the
+          existing `system.build.toplevel` derivation does not consume it
+          yet, so toplevel bytes are unchanged.
+
+          P0 scope note: `etc`/`jobScripts`/`storePaths`/`module_abi` are
+          populated from the live config; `units` reconcile actions and
+          `inputs` provenance are P1 placeholders (the resolver and the
+          attestation pipeline fill them on-host).
+        '';
+      };
+
       ## The `${toplevel}/activate <gen>` script.
       activateScript = lib.mkOption {
         type = lib.types.package;
@@ -491,6 +513,110 @@ in {
         ${./activate.sh.in} > "$out"
       chmod +x "$out"
     '';
+
+    # --- RFC-0011 aos.config-manifest/v1 (pure data) -------------------
+    #
+    # Purely additive: assembled from the same pure render values the
+    # toplevel derivation is built from, but as host-portable data. Not
+    # consumed by `system.build.toplevel` (that path is unchanged), so it
+    # cannot affect the byte-identical toplevel output.
+    system.build.configManifest = let
+      unitBodies = config.system.build.systemdUnitBodies;
+      jobScripts = config.system.build.systemdJobScripts;
+
+      isOctal = m: builtins.match "[0-7]{3,4}" m != null;
+
+      # `/etc` entries contributed by `environment.etc`, minus the
+      # `systemd/system` directory (expanded per-unit below).
+      envEtc = builtins.listToAttrs (builtins.map (e:
+        lib.nameValuePair e.target (
+          if e.text != null
+          then {
+            kind = "text";
+            text = e.text;
+            mode =
+              if isOctal e.mode
+              then e.mode
+              else "0644";
+          }
+          else if isOctal e.mode
+          then {
+            # Octal-mode, store-sourced: content lives in the EROFS basedir;
+            # v1 manifest pins the source path (the materializer recovers
+            # mode/uid/gid from the metadata image). Documented limitation.
+            kind = "store-symlink";
+            target = builtins.toString e.source;
+          }
+          else {
+            kind = "store-symlink";
+            target = builtins.toString e.source;
+          }
+        ))
+      (builtins.filter (e: e.target != "systemd/system") etc'));
+
+      # `/etc/systemd/system/<unit>` text entries plus the install-symlink
+      # farm (.wants/.requires/.upholds + aliases) that `generateUnits`
+      # materializes — mirrored here as pure data.
+      unitTextEntries = lib.concatLists (lib.mapAttrsToList (unitName: u:
+        if u.enable && u.text != null
+        then [(lib.nameValuePair "systemd/system/${unitName}" {kind = "text"; text = u.text; mode = "0644";})]
+        else if !u.enable
+        then [(lib.nameValuePair "systemd/system/${unitName}" {kind = "symlink"; target = "/dev/null";})]
+        else [])
+      unitBodies);
+
+      installSymlinks = lib.concatLists (lib.mapAttrsToList (unitName: u:
+        builtins.map (a: lib.nameValuePair "systemd/system/${a}" {kind = "symlink"; target = unitName;}) u.aliases
+        ++ builtins.map (w: lib.nameValuePair "systemd/system/${w}.wants/${unitName}" {kind = "symlink"; target = "../${unitName}";}) u.wantedBy
+        ++ builtins.map (r: lib.nameValuePair "systemd/system/${r}.requires/${unitName}" {kind = "symlink"; target = "../${unitName}";}) u.requiredBy
+        ++ builtins.map (h: lib.nameValuePair "systemd/system/${h}.upholds/${unitName}" {kind = "symlink"; target = "../${unitName}";}) u.upheldBy)
+      unitBodies);
+
+      etc =
+        envEtc
+        // builtins.listToAttrs (unitTextEntries ++ installSymlinks);
+
+      # Users from `aos.users.*` (best-effort; `or` fallbacks keep this
+      # robust if the users module isn't imported by a given variant).
+      users = lib.mapAttrsToList (uname: u: {
+        name = uname;
+        uid = u.uid;
+        group = u.group;
+        gid = (config.aos.users.groups.${u.group}.gid or null);
+        home = u.home;
+        shell = u.shell;
+        system = u.uid < 1000;
+        description = u.description or "";
+        supplementaryGroups = u.extraGroups or [];
+      }) (config.aos.users.users or {});
+
+      # Presets parsed from the image preset rules ("<policy> <unit>").
+      presets = builtins.filter (p: p != null) (builtins.map (rule: let
+        parts = lib.splitString " " rule;
+      in
+        if builtins.length parts >= 2
+        then {
+          unit = builtins.elemAt parts 1;
+          policy = builtins.head parts;
+          source = "image";
+        }
+        else null)
+      (config.systemd.systemPresetRules or []));
+
+      storePaths =
+        builtins.sort (a: b: a < b)
+        (lib.unique (builtins.map builtins.toString config.environment.systemPackages));
+    in {
+      schema = "aos.config-manifest/v1";
+      inherit etc users presets storePaths;
+      jobScripts = jobScripts;
+      # Per-unit reconcile actions are resolved on-host (P1); empty here.
+      units = {};
+      module_abi = config.aos.system.moduleAbi or 1;
+      # The five content-addressed eval inputs are computed on-host by the
+      # resolver/attestation pipeline (build-spec §inputs); P0 placeholder.
+      inputs = {};
+    };
 
     system.build.kernel = pkgs.linux;
     system.build.systemPath =
