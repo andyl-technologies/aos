@@ -395,6 +395,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerEffectiveHorizon";
       taskIds = ["T-SCHED-13"];
     };
+    schedulerRunCeiling = import ./phase3-scheduler-run-ceiling.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerRunCeiling";
+      taskIds = ["T-SCHED-14"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

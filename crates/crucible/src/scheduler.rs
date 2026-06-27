@@ -61,6 +61,42 @@ pub struct QuantumOutcome {
     pub decisions: Vec<Decision>,
 }
 
+/// The single max-advance ceiling published for one RUN phase.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerRunCeilingPublication {
+    /// Monotone index of this publication in the scheduler's publication log.
+    pub sequence: u64,
+    /// The quantum that published this ceiling.
+    pub quantum: u64,
+    /// The node selected by PICK for the RUN.
+    pub node: SchedulerNodeId,
+    /// The node counter observed before publishing the ceiling.
+    pub current_icount: NodeCounter,
+    /// The scheduler-published `max_advance_icount` ABI field value.
+    pub max_advance_icount: u64,
+    /// The virtual-time horizon that produced `max_advance_icount`.
+    pub target_time: SimInstant,
+}
+
+#[cfg(feature = "test-double")]
+impl SchedulerRunCeilingPublication {
+    /// Converts this scheduler publication to the shared-memory ABI ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crucible_shmem::LookaheadGateError`] when the publication is not
+    /// a valid max-advance ceiling under the shared-memory lookahead gate.
+    pub fn to_shmem_ceiling(
+        &self,
+    ) -> Result<crucible_shmem::AdvanceCeiling, crucible_shmem::LookaheadGateError> {
+        crucible_shmem::authorize_advance_ceiling(
+            self.current_icount.ticks,
+            self.max_advance_icount,
+            None,
+        )
+    }
+}
+
 /// A read-only copy of the state owned by the scheduler actor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchedulerActorStateSnapshot {
@@ -1752,6 +1788,7 @@ pub struct SingleScheduler {
     frontier: VirtualTime,
     quanta: u64,
     boundary_yields: u64,
+    ceiling_publications: Vec<SchedulerRunCeilingPublication>,
     lock_held: bool,
     last_advance: Option<NodeAdvance>,
 }
@@ -1790,6 +1827,7 @@ impl SingleScheduler {
             frontier,
             quanta: 0,
             boundary_yields: 0,
+            ceiling_publications: Vec::new(),
             lock_held: false,
             last_advance: None,
         })
@@ -1811,6 +1849,12 @@ impl SingleScheduler {
     #[must_use]
     pub fn quanta(&self) -> u64 {
         self.quanta
+    }
+
+    /// Returns the RUN max-advance ceilings published by this scheduler.
+    #[must_use]
+    pub fn run_ceiling_publications(&self) -> &[SchedulerRunCeilingPublication] {
+        &self.ceiling_publications
     }
 
     /// Computes terminal quiescence from authoritative scheduler state only.
@@ -2091,6 +2135,34 @@ impl SingleScheduler {
         })
     }
 
+    fn publish_run_ceiling(
+        &mut self,
+        node: SchedulerNodeId,
+        current_icount: NodeCounter,
+        max_advance_icount: u64,
+        target_time: SimInstant,
+    ) -> Result<SchedulerRunCeilingPublication, SchedulerError> {
+        if max_advance_icount < current_icount.ticks {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "RUN max-advance ceiling for {}:{:?} is before current icount: current={} ceiling={}",
+                    node.node.name, node.kind, current_icount.ticks, max_advance_icount
+                ),
+            });
+        }
+
+        let publication = SchedulerRunCeilingPublication {
+            sequence: self.ceiling_publications.len() as u64,
+            quantum: self.quanta,
+            node,
+            current_icount,
+            max_advance_icount,
+            target_time,
+        };
+        self.ceiling_publications.push(publication.clone());
+        Ok(publication)
+    }
+
     fn shared_rendezvous_cap(&self) -> Result<Option<SimInstant>, SchedulerError> {
         rendezvous_cap_for(
             SimInstant {
@@ -2166,6 +2238,7 @@ impl SingleScheduler {
             node: selected_node.clone(),
             before,
             after,
+            ceiling: plan.ceiling.clone(),
             yielded_before_advance,
         });
 
@@ -2285,6 +2358,17 @@ impl SingleScheduler {
         if self.lock_held {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("scheduler lock spans node advance"),
+            });
+        }
+        if plan.ceiling.max_advance_icount != plan.target_counter {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "RUN target for {}:{:?} diverged from published max-advance ceiling: target={} ceiling={}",
+                    plan.node.node.name,
+                    plan.node.kind,
+                    plan.target_counter,
+                    plan.ceiling.max_advance_icount
+                ),
             });
         }
 
@@ -2464,6 +2548,7 @@ struct AdvancePlan {
     node: SchedulerNodeId,
     before: NodeCounter,
     target_counter: u64,
+    ceiling: SchedulerRunCeilingPublication,
     quiescent_horizon: Option<SimInstant>,
 }
 
@@ -2472,6 +2557,7 @@ struct NodeAdvance {
     node: SchedulerNodeId,
     before: NodeCounter,
     after: NodeCounter,
+    ceiling: SchedulerRunCeilingPublication,
     yielded_before_advance: bool,
 }
 
@@ -2510,12 +2596,19 @@ impl<'a> SchedulerCriticalSection<'a> {
                 });
             }
         }
+        let ceiling = self.scheduler.publish_run_ceiling(
+            selected_node.clone(),
+            before,
+            target_counter,
+            candidate.target_time,
+        )?;
 
         Ok(AdvancePlan {
             index: selected_index,
             node: selected_node,
             before,
             target_counter,
+            ceiling,
             quiescent_horizon: candidate.quiescent_horizon,
         })
     }

@@ -65,14 +65,14 @@ pub use scheduler::{
     SchedulerError, SchedulerHorizon, SchedulerHorizonLimit, SchedulerHorizonSource,
     SchedulerLivenessError, SchedulerLivenessReport, SchedulerLivenessScenario,
     SchedulerLookaheadEdge, SchedulerLookaheadGraph, SchedulerNodeActivity, SchedulerQuiescence,
-    SchedulerQuiescenceBlocker, SchedulerRendezvous, SchedulerScenarioNode, SchedulerTerminal,
-    SharedTimeline, SharedTimelineKey, SingleScheduler, UnresolvedCrossNodeDependency,
-    authorize_conservative_advance, check_scheduler_liveness, exact_local_event_from_io_completion,
-    exact_local_event_from_scheduled_event, exact_local_event_from_timer_deadline_ns,
-    horizon_from_exact_local_event, horizon_from_network_lookahead, lookahead_for_node,
-    network_horizon_from_lookahead, next_exact_local_event, next_scheduled_event_key,
-    ordered_scheduled_events, ordered_timeline_keys, rendezvous_cap_for,
-    unresolved_cross_node_dependencies,
+    SchedulerQuiescenceBlocker, SchedulerRendezvous, SchedulerRunCeilingPublication,
+    SchedulerScenarioNode, SchedulerTerminal, SharedTimeline, SharedTimelineKey, SingleScheduler,
+    UnresolvedCrossNodeDependency, authorize_conservative_advance, check_scheduler_liveness,
+    exact_local_event_from_io_completion, exact_local_event_from_scheduled_event,
+    exact_local_event_from_timer_deadline_ns, horizon_from_exact_local_event,
+    horizon_from_network_lookahead, lookahead_for_node, network_horizon_from_lookahead,
+    next_exact_local_event, next_scheduled_event_key, ordered_scheduled_events,
+    ordered_timeline_keys, rendezvous_cap_for, unresolved_cross_node_dependencies,
 };
 #[cfg(feature = "test-double")]
 pub use sim_backend::{
