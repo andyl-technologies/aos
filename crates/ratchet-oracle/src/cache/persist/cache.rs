@@ -1116,32 +1116,12 @@ fn write_repacked_blob_index(
     tmp_path: &Path,
     relocations: &[PersistBlobRecordRelocation],
 ) -> Result<(), PersistBlobIndexError> {
-    match fs::remove_file(tmp_path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(PersistBlobIndexError::Write {
-                path: tmp_path.to_path_buf(),
-                source,
-            });
-        }
-    }
-    let tmp_index = PersistBlobIndex::open(tmp_path.to_path_buf())?;
     let mut entries = relocations
         .iter()
         .map(|relocation| PersistBlobIndexEntry::new(relocation.key(), relocation.new_location()))
         .collect::<Vec<_>>();
     entries.sort_by_key(|entry| entry.key().index_bytes());
-    let write_result = (|| {
-        for entry in entries {
-            tmp_index.append_entry(entry)?;
-        }
-        Ok(())
-    })();
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(tmp_path);
-        return Err(error);
-    }
+    PersistBlobIndex::write_entries_to(tmp_path, &entries)?;
     Ok(())
 }
 
@@ -1211,27 +1191,7 @@ fn write_repacked_file_artifact_index(
     tmp_path: &Path,
     entries: &[PersistFileArtifactIndexEntry],
 ) -> Result<(), PersistFileArtifactIndexError> {
-    match fs::remove_file(tmp_path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(PersistFileArtifactIndexError::Write {
-                path: tmp_path.to_path_buf(),
-                source,
-            });
-        }
-    }
-    let tmp_index = PersistFileArtifactIndex::open(tmp_path.to_path_buf())?;
-    let write_result = (|| {
-        for entry in entries {
-            tmp_index.append_entry(*entry)?;
-        }
-        Ok(())
-    })();
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(tmp_path);
-        return Err(error);
-    }
+    PersistFileArtifactIndex::write_entries_to(tmp_path, entries)?;
     Ok(())
 }
 
@@ -1239,27 +1199,7 @@ fn write_repacked_parse_artifact_index(
     tmp_path: &Path,
     entries: &[PersistParseArtifactIndexEntry],
 ) -> Result<(), PersistParseArtifactIndexError> {
-    match fs::remove_file(tmp_path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(PersistParseArtifactIndexError::Write {
-                path: tmp_path.to_path_buf(),
-                source,
-            });
-        }
-    }
-    let tmp_index = PersistParseArtifactIndex::open(tmp_path.to_path_buf())?;
-    let write_result = (|| {
-        for entry in entries {
-            tmp_index.append_entry(*entry)?;
-        }
-        Ok(())
-    })();
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(tmp_path);
-        return Err(error);
-    }
+    PersistParseArtifactIndex::write_entries_to(tmp_path, entries)?;
     Ok(())
 }
 

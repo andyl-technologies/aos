@@ -1462,6 +1462,17 @@ alone (`M-1`/`Q-A`).
       choreography primitive only; crash transactionality, durable filesystem
       locks/CAS, cross-process/raw writers, and automatic GC policy remain open
       (`C-13`/`R-14`).
+- [x] Current `ratchet-cache` staged repack sidecar writer:
+      `ratchet-cache::blob_index::BlobIndex::write_entries_to` and
+      `ratchet-cache::artifact_index::ArtifactIndex::write_entries_to` replace
+      stale staged sidecar files and write exact caller-supplied entry sets for
+      value/file blob-index and file/parse-artifact repack sidecars before the
+      later multi-file swap. Oracle repack staging now routes through these
+      typed helpers while preserving the existing `Persist*IndexError` surfaces.
+      This is sidecar staging only; live-root selection, same-root locks,
+      durable transaction policy across staged sidecars and packs,
+      cross-process/raw writers, mmap reads, and automatic GC policy remain open
+      (`C-13`/`R-14`).
 - [x] Current explicit value-pack repack helper:
       `PersistCache::repack_value_blob_pack` holds the same-root `values/`
       store lock, plans live-record relocation, stages a compacted value pack

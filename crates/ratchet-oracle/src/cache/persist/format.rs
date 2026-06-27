@@ -552,6 +552,24 @@ impl PersistBlobIndex {
             .replace_entries(&entries)
             .map_err(engine_blob_index_error)
     }
+
+    /// Writes `entries` exactly to `path`, replacing any stale file there.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexError`] if the staged index cannot be removed,
+    /// created, written, or flushed.
+    pub(super) fn write_entries_to(
+        path: impl Into<PathBuf>,
+        entries: &[PersistBlobIndexEntry],
+    ) -> Result<usize, PersistBlobIndexError> {
+        let entries = entries
+            .iter()
+            .copied()
+            .map(persist_blob_index_entry_to_engine)
+            .collect::<Vec<_>>();
+        EngineBlobIndex::write_entries_to(path.into(), &entries).map_err(engine_blob_index_error)
+    }
 }
 
 /// A stable index key for a durable frontend file artifact.
@@ -935,6 +953,25 @@ impl PersistFileArtifactIndex {
             .map_err(engine_file_artifact_index_error)
     }
 
+    /// Writes `entries` exactly to `path`, replacing any stale file there.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexError`] if the staged index cannot be
+    /// removed, created, written, or flushed.
+    pub(super) fn write_entries_to(
+        path: impl Into<PathBuf>,
+        entries: &[PersistFileArtifactIndexEntry],
+    ) -> Result<usize, PersistFileArtifactIndexError> {
+        let entries = entries
+            .iter()
+            .copied()
+            .map(persist_file_artifact_entry_to_engine)
+            .collect::<Vec<_>>();
+        EngineArtifactIndex::write_entries_to(path.into(), &entries)
+            .map_err(engine_file_artifact_index_error)
+    }
+
     fn entries(&self) -> Result<Vec<PersistFileArtifactIndexEntry>, PersistFileArtifactIndexError> {
         self.engine
             .entries()
@@ -1310,6 +1347,25 @@ impl PersistParseArtifactIndex {
             .collect::<Vec<_>>();
         self.engine
             .replace_entries(&entries)
+            .map_err(engine_parse_artifact_index_error)
+    }
+
+    /// Writes `entries` exactly to `path`, replacing any stale file there.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactIndexError`] if the staged index cannot be
+    /// removed, created, written, or flushed.
+    pub(super) fn write_entries_to(
+        path: impl Into<PathBuf>,
+        entries: &[PersistParseArtifactIndexEntry],
+    ) -> Result<usize, PersistParseArtifactIndexError> {
+        let entries = entries
+            .iter()
+            .copied()
+            .map(persist_parse_artifact_entry_to_engine)
+            .collect::<Vec<_>>();
+        EngineArtifactIndex::write_entries_to(path.into(), &entries)
             .map_err(engine_parse_artifact_index_error)
     }
 

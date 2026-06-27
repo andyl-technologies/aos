@@ -183,6 +183,38 @@ impl BlobIndex {
         &self.path
     }
 
+    /// Writes `entries` exactly to `path`, replacing any stale file there.
+    ///
+    /// This staging helper is for callers that need to build a replacement
+    /// sidecar at a separate path before a later multi-file swap. Entries are
+    /// written in caller-supplied order; this helper does not sort, deduplicate,
+    /// or validate namespace policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobIndexError`] if a stale staged file cannot be removed, the
+    /// parent directory cannot be created, or the staged entries cannot be
+    /// written and flushed.
+    pub fn write_entries_to(
+        path: impl Into<PathBuf>,
+        entries: &[BlobIndexEntry],
+    ) -> Result<usize, BlobIndexError> {
+        let path = path.into();
+        remove_blob_index_file_if_exists(&path)?;
+        let write_result = (|| {
+            let index = Self::open(path.clone())?;
+            for entry in entries {
+                index.append_entry(*entry)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&path);
+            return Err(error);
+        }
+        Ok(entries.len())
+    }
+
     /// Appends one hash-to-offset index entry.
     ///
     /// # Errors
@@ -272,28 +304,7 @@ impl BlobIndex {
         let tmp_path = self
             .path
             .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
-        let write_result = (|| {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp_path)
-                .map_err(|source| BlobIndexError::Write {
-                    path: tmp_path.clone(),
-                    source,
-                })?;
-            for entry in entries {
-                file.write_all(&entry.encode())
-                    .map_err(|source| BlobIndexError::Write {
-                        path: tmp_path.clone(),
-                        source,
-                    })?;
-            }
-            file.flush().map_err(|source| BlobIndexError::Write {
-                path: tmp_path.clone(),
-                source,
-            })
-        })();
+        let write_result = write_blob_index_entries(&tmp_path, entries);
         if let Err(error) = write_result {
             let _ = fs::remove_file(&tmp_path);
             return Err(error);
@@ -454,15 +465,7 @@ fn decode_location(bytes: &[u8]) -> Result<BlobPackLocation, BlobIndexFormatErro
 }
 
 fn ensure_blob_index_file(path: &Path) -> Result<(), BlobIndexError> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent).map_err(|source| BlobIndexError::CreateParent {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
+    ensure_blob_index_parent(path)?;
 
     let file = fs::OpenOptions::new()
         .read(true)
@@ -482,6 +485,54 @@ fn ensure_blob_index_file(path: &Path) -> Result<(), BlobIndexError> {
         })?
         .len();
     validate_blob_index_len(path, len)
+}
+
+fn ensure_blob_index_parent(path: &Path) -> Result<(), BlobIndexError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|source| BlobIndexError::CreateParent {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    Ok(())
+}
+
+fn write_blob_index_entries(path: &Path, entries: &[BlobIndexEntry]) -> Result<(), BlobIndexError> {
+    ensure_blob_index_parent(path)?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|source| BlobIndexError::Write {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    for entry in entries {
+        file.write_all(&entry.encode())
+            .map_err(|source| BlobIndexError::Write {
+                path: path.to_path_buf(),
+                source,
+            })?;
+    }
+    file.flush().map_err(|source| BlobIndexError::Write {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn remove_blob_index_file_if_exists(path: &Path) -> Result<(), BlobIndexError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(BlobIndexError::Write {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 fn validate_blob_index_len(path: &Path, len: u64) -> Result<(), BlobIndexError> {
@@ -723,6 +774,32 @@ mod tests {
         );
         assert_eq!(
             fs::read(index.path()).expect("index bytes read"),
+            [first.encode(), second.encode()].concat()
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_index_write_entries_to_replaces_stale_stage() {
+        let path = temp_path("write-entries");
+        let first = BlobIndexEntry::new(
+            BlobIndexKey::new(FILES, BlobPackHash::from_bytes([0xff; 32])),
+            BlobPackLocation::new(24, 1),
+        );
+        let second = BlobIndexEntry::new(
+            BlobIndexKey::new(VALUES, BlobPackHash::from_bytes([0; 32])),
+            BlobPackLocation::new(65, 2),
+        );
+        fs::write(&path, b"stale").expect("stale stage writes");
+
+        assert_eq!(
+            BlobIndex::write_entries_to(&path, &[first, second]).expect("entries stage"),
+            2
+        );
+
+        assert_eq!(
+            fs::read(&path).expect("index bytes read"),
             [first.encode(), second.encode()].concat()
         );
 

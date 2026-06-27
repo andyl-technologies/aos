@@ -208,6 +208,38 @@ impl ArtifactIndex {
         &self.path
     }
 
+    /// Writes `entries` exactly to `path`, replacing any stale file there.
+    ///
+    /// This staging helper is for callers that need to build a replacement
+    /// sidecar at a separate path before a later multi-file swap. Entries are
+    /// written in caller-supplied order; this helper does not sort, deduplicate,
+    /// or validate namespace policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArtifactIndexError`] if a stale staged file cannot be removed,
+    /// the parent directory cannot be created, or the staged entries cannot be
+    /// written and flushed.
+    pub fn write_entries_to(
+        path: impl Into<PathBuf>,
+        entries: &[ArtifactIndexEntry],
+    ) -> Result<usize, ArtifactIndexError> {
+        let path = path.into();
+        remove_artifact_index_file_if_exists(&path)?;
+        let write_result = (|| {
+            let index = Self::open(path.clone())?;
+            for entry in entries {
+                index.append_entry(*entry)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&path);
+            return Err(error);
+        }
+        Ok(entries.len())
+    }
+
     /// Appends one artifact mapping index entry.
     ///
     /// # Errors
@@ -317,28 +349,7 @@ impl ArtifactIndex {
         let tmp_path = self
             .path
             .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
-        let write_result = (|| {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp_path)
-                .map_err(|source| ArtifactIndexError::Write {
-                    path: tmp_path.clone(),
-                    source,
-                })?;
-            for entry in entries {
-                file.write_all(&entry.encode())
-                    .map_err(|source| ArtifactIndexError::Write {
-                        path: tmp_path.clone(),
-                        source,
-                    })?;
-            }
-            file.flush().map_err(|source| ArtifactIndexError::Write {
-                path: tmp_path.clone(),
-                source,
-            })
-        })();
+        let write_result = write_artifact_index_entries(&tmp_path, entries);
         if let Err(error) = write_result {
             let _ = fs::remove_file(&tmp_path);
             return Err(error);
@@ -483,15 +494,7 @@ pub enum ArtifactIndexError {
 }
 
 fn ensure_artifact_index_file(path: &Path) -> Result<(), ArtifactIndexError> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent).map_err(|source| ArtifactIndexError::CreateParent {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
+    ensure_artifact_index_parent(path)?;
 
     let file = fs::OpenOptions::new()
         .read(true)
@@ -511,6 +514,57 @@ fn ensure_artifact_index_file(path: &Path) -> Result<(), ArtifactIndexError> {
         })?
         .len();
     validate_artifact_index_len(path, len)
+}
+
+fn ensure_artifact_index_parent(path: &Path) -> Result<(), ArtifactIndexError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|source| ArtifactIndexError::CreateParent {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    Ok(())
+}
+
+fn write_artifact_index_entries(
+    path: &Path,
+    entries: &[ArtifactIndexEntry],
+) -> Result<(), ArtifactIndexError> {
+    ensure_artifact_index_parent(path)?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|source| ArtifactIndexError::Write {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    for entry in entries {
+        file.write_all(&entry.encode())
+            .map_err(|source| ArtifactIndexError::Write {
+                path: path.to_path_buf(),
+                source,
+            })?;
+    }
+    file.flush().map_err(|source| ArtifactIndexError::Write {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn remove_artifact_index_file_if_exists(path: &Path) -> Result<(), ArtifactIndexError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(ArtifactIndexError::Write {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 fn validate_artifact_index_len(path: &Path, len: u64) -> Result<(), ArtifactIndexError> {
@@ -763,6 +817,26 @@ mod tests {
         );
         assert_eq!(
             fs::read(index.path()).expect("index bytes read"),
+            [first.encode(), second.encode()].concat()
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn artifact_index_write_entries_to_replaces_stale_stage() {
+        let path = temp_path("write-entries");
+        let first = ArtifactIndexEntry::new(artifact_key(PARSE_ARTIFACTS, 0xff), artifact_value(1));
+        let second = ArtifactIndexEntry::new(artifact_key(FILE_ARTIFACTS, 0), artifact_value(2));
+        fs::write(&path, b"stale").expect("stale stage writes");
+
+        assert_eq!(
+            ArtifactIndex::write_entries_to(&path, &[first, second]).expect("entries stage"),
+            2
+        );
+
+        assert_eq!(
+            fs::read(&path).expect("index bytes read"),
             [first.encode(), second.encode()].concat()
         );
 
