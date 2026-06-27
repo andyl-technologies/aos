@@ -3380,6 +3380,7 @@ mod tests {
                     nar_hash: "sha256:test".into(),
                     nar_size: 1,
                 }),
+                config_module: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),

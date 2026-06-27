@@ -68,6 +68,10 @@ pub const FEATURE_BPF_LSM_POLICY_V1: &str = "bpf-lsm-policy-v1";
 /// Registry feature flag for RFC-0001 package attestation metadata.
 pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
 
+/// Registry feature flag for the RFC-0011 second `config` package output and
+/// its config-module metadata (`ConfigOutputMeta` + `ConfigModuleMeta`).
+pub const FEATURE_CONFIG_MODULE_V1: &str = "config-module-v1";
+
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EXPOSE_V1,
     FEATURE_EXPOSE_ARTIFACT_V1,
@@ -81,6 +85,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EBPF_NET_POLICY_V1,
     FEATURE_BPF_LSM_POLICY_V1,
     FEATURE_ATTESTATION_V1,
+    FEATURE_CONFIG_MODULE_V1,
 ];
 
 const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
@@ -569,6 +574,9 @@ pub struct PackageMeta {
     /// Store artifact carrying rendered RFC-0001 unit files and manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_artifact: Option<ExposeArtifactMeta>,
+    /// RFC-0011 config-only module output and its declared interface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_module: Option<ConfigModuleMeta>,
     /// Signed RFC-0001 permission manifest.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
@@ -761,6 +769,366 @@ pub struct ExposeArtifactMeta {
     pub nar_size: u64,
 }
 
+// ---------------------------------------------------------------------------
+// RFC-0011 config-module metadata (second `config` package output)
+// ---------------------------------------------------------------------------
+
+/// Store metadata for a package's second `config` output (RFC-0011).
+///
+/// The `config` output is a store-path NAR carrying the package's config-only
+/// Nix module (`module.nix` at its root) plus any relative-imported private
+/// `.nix`. Its identity is content-addressed exactly like
+/// [`ExposeArtifactMeta`]: a store path, the uncompressed NAR hash, and the NAR
+/// size, plus the module's *direct* store references.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigOutputMeta {
+    /// Store path of the `config` output (contains `module.nix` at its root).
+    pub store_path: String,
+    /// Hash of the uncompressed `config`-output NAR: `"sha256:…"`.
+    pub nar_hash: String,
+    /// Uncompressed NAR size in bytes.
+    pub nar_size: u64,
+    /// Store-path hashes of the `config` output's *direct* references.
+    ///
+    /// The enforced invariant is **no `.drv`** (see `validate_config_output_meta`):
+    /// the config module is config-only and must not pull a derivation into the
+    /// eval. Note that Nix's reference scanner *will* record any binary store path
+    /// the module text names as a reference, so this list is generally non-empty
+    /// and may include `out`-closure paths; those binaries are additionally pinned
+    /// by the manifest's `store_paths`. The no-`.drv` rule is the load-bearing
+    /// part, not the absence of binary references.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
+}
+
+/// RFC-0011 config-module interface declared by a package.
+///
+/// Carries the second [`ConfigOutputMeta`] output, the declared option surface
+/// (the package's `provides`, computed by an options-only eval at publish), the
+/// shared roots it owns or contributes to, and its base-lib ABI compatibility
+/// range. The presence of this block on a [`PackageMeta`] is gated behind
+/// [`FEATURE_CONFIG_MODULE_V1`] and requires DSSE provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigModuleMeta {
+    /// The `config` output store metadata.
+    pub config_output: ConfigOutputMeta,
+    /// Base-lib ABI range this module is compatible with (inclusive).
+    pub module_abi_compat: ModuleAbiCompat,
+    /// Option paths this module *declares* (its `provides`), computed by an
+    /// options-only eval in isolation. Sorted, deduplicated. These become the
+    /// registry inverted-index keys for this `package@version`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declares: Vec<String>,
+    /// Shared roots this module declares exclusive ownership of (e.g.
+    /// `firewall`, `nginx`). Each carries its own interface ABI.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owns_roots: Vec<OwnedRoot>,
+    /// Foreign shared roots this module contributes into, restricted to the
+    /// owner-declared contributable sub-paths (F3-B).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contributes: Vec<RootContribution>,
+    /// Capability tokens this module *sets* (write-provider index entries),
+    /// e.g. `system.capabilities.dns-resolver`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provides_capabilities: Vec<String>,
+}
+
+/// Inclusive base-lib ABI compatibility range for a config module.
+///
+/// The resolver refuses the module unless `min <= running_image_abi <= max`.
+/// This is the RFC-0011 analogue of the SBAT revocation floor: a monotonic
+/// integer band, gated pre-eval and fail-closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleAbiCompat {
+    /// Lowest `module_abi` this module supports.
+    pub min: u32,
+    /// Highest `module_abi` this module supports.
+    pub max: u32,
+}
+
+impl ModuleAbiCompat {
+    /// Returns whether `abi` lies within the inclusive `[min, max]` band.
+    pub fn admits(&self, abi: u32) -> bool {
+        self.min <= abi && abi <= self.max
+    }
+}
+
+/// A shared root a package owns, plus its own interface ABI and the sub-paths
+/// non-owners may contribute into (F3-B capability-scoped surface).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedRoot {
+    /// Root segment, e.g. `firewall`, `nginx`.
+    pub root: String,
+    /// Independent interface ABI for this shared root.
+    pub interface_abi: u32,
+    /// Owner-declared contributable sub-paths (relative to the root), e.g.
+    /// `virtualHosts`, `upstreams`. Owner-only paths (`enable`, globals) are
+    /// excluded. A non-owner write outside these is rejected at publish.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contributable: Vec<String>,
+}
+
+/// A foreign-root contribution declared by a non-owner package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RootContribution {
+    /// The shared root being contributed into, e.g. `nginx`.
+    pub root: String,
+    /// Sub-paths (relative to `root`) this package writes; each MUST be within
+    /// the owner's `contributable` set, checked at resolve.
+    pub paths: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// RFC-0011 registry inverted index (`index/provides.json`)
+// ---------------------------------------------------------------------------
+
+/// Registry inverted index schema tag.
+pub const PROVIDES_INDEX_SCHEMA: &str = "aos.provides-index/v1";
+
+/// `option-path → providers` and `capability-token → setters` inverted index.
+///
+/// The registry publishes one aggregated index, rebuilt on every publish, at
+/// the registry-repo path `index/provides.json`, served alongside
+/// `registry.toml`. It maps every option path a config module *declares* to the
+/// `package@version` providers that declare it, plus the data the resolver needs
+/// to gate provider selection on `module_abi` without a second fetch.
+///
+/// ```json
+/// {
+///   "schema": "aos.provides-index/v1",
+///   "options": {
+///     "firewall.allowedTCPPorts": [
+///       { "package": "firewall", "version": "1.4.0", "platform": "x86_64-linux",
+///         "root": "firewall", "owner": true,
+///         "module_abi_compat": { "min": 1, "max": 2 },
+///         "config_output": "/nix/store/<hash>-firewall-config" }
+///     ]
+///   },
+///   "capabilities": {
+///     "system.capabilities.dns-resolver": [
+///       { "package": "unbound", "version": "1.21.0", "platform": "x86_64-linux",
+///         "module_abi_compat": { "min": 1, "max": 2 } }
+///     ]
+///   }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvidesIndex {
+    /// Always [`PROVIDES_INDEX_SCHEMA`].
+    pub schema: String,
+    /// Declared option path → the packages that declare it (their `provides`).
+    pub options: BTreeMap<String, Vec<IndexEntry>>,
+    /// Capability token → the packages that *set* it (write-provider index).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub capabilities: BTreeMap<String, Vec<CapabilityProvider>>,
+}
+
+/// One provider of a declared option path in a [`ProvidesIndex`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexEntry {
+    /// Provider package name.
+    pub package: String,
+    /// Provider package version.
+    pub version: String,
+    /// Target platform (e.g. `x86_64-linux`).
+    pub platform: String,
+    /// Top-level root of the option path (`firewall.x` → `firewall`).
+    pub root: String,
+    /// Whether this package *owns* `root` (declarer) vs contributes to it.
+    pub owner: bool,
+    /// ABI band this provider is usable under; the resolver filters on it.
+    pub module_abi_compat: ModuleAbiCompat,
+    /// `config` output to fetch when this provider is selected.
+    pub config_output: String,
+}
+
+/// One setter of a capability token in a [`ProvidesIndex`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityProvider {
+    /// Provider package name.
+    pub package: String,
+    /// Provider package version.
+    pub version: String,
+    /// Target platform (e.g. `x86_64-linux`).
+    pub platform: String,
+    /// ABI band this provider is usable under; the resolver filters on it.
+    pub module_abi_compat: ModuleAbiCompat,
+}
+
+impl ProvidesIndex {
+    /// Returns an empty index carrying the current schema tag.
+    pub fn empty() -> Self {
+        Self {
+            schema: PROVIDES_INDEX_SCHEMA.to_string(),
+            options: BTreeMap::new(),
+            capabilities: BTreeMap::new(),
+        }
+    }
+
+    /// Returns the providers for `option_path` that admit base-lib ABI `abi`.
+    ///
+    /// This is the resolver's primary lookup: on a missing-option signal it
+    /// resolves the path to the set of compatible providers, then applies
+    /// owned-root exclusivity and variant conflicts before fetching. Entries
+    /// whose [`ModuleAbiCompat`] band excludes `abi` are filtered out. The
+    /// returned slice preserves the index's stored `(package, version,
+    /// platform)` order.
+    pub fn providers_for(&self, option_path: &str, abi: u32) -> Vec<&IndexEntry> {
+        self.options
+            .get(option_path)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| entry.module_abi_compat.admits(abi))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns the setters of capability `token` that admit base-lib ABI `abi`.
+    pub fn capability_setters(&self, token: &str, abi: u32) -> Vec<&CapabilityProvider> {
+        self.capabilities
+            .get(token)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| entry.module_abi_compat.admits(abi))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Insert every index entry contributed by one published `package@version`.
+    ///
+    /// For each path in `module.declares`, adds one [`IndexEntry`] (with `owner`
+    /// set when the path's root appears in `module.owns_roots`); for each token
+    /// in `module.provides_capabilities`, adds one [`CapabilityProvider`]. Lists
+    /// within each key are kept sorted by `(package, version, platform)` so the
+    /// serialized index is deterministic. Idempotent: re-inserting the same
+    /// `package@version@platform` replaces its entries rather than duplicating.
+    ///
+    /// Returns the number of option-path entries added.
+    pub fn insert_package(
+        &mut self,
+        package: &str,
+        version: &str,
+        platform: &str,
+        module: &ConfigModuleMeta,
+    ) -> usize {
+        let owned_roots: std::collections::BTreeSet<&str> =
+            module.owns_roots.iter().map(|r| r.root.as_str()).collect();
+        let mut added = 0;
+        for path in &module.declares {
+            let root = option_path_root(path).to_string();
+            let owner = owned_roots.contains(root.as_str());
+            let entry = IndexEntry {
+                package: package.to_string(),
+                version: version.to_string(),
+                platform: platform.to_string(),
+                root,
+                owner,
+                module_abi_compat: module.module_abi_compat,
+                config_output: module.config_output.store_path.clone(),
+            };
+            let bucket = self.options.entry(path.clone()).or_default();
+            insert_sorted_index_entry(bucket, entry);
+            added += 1;
+        }
+        for token in &module.provides_capabilities {
+            let provider = CapabilityProvider {
+                package: package.to_string(),
+                version: version.to_string(),
+                platform: platform.to_string(),
+                module_abi_compat: module.module_abi_compat,
+            };
+            let bucket = self.capabilities.entry(token.clone()).or_default();
+            insert_sorted_capability_provider(bucket, provider);
+        }
+        added
+    }
+}
+
+/// Returns the top-level root segment of a dotted option path.
+///
+/// `"firewall.allowedTCPPorts"` → `"firewall"`; a path with no `.` is its own
+/// root.
+pub fn option_path_root(path: &str) -> &str {
+    path.split('.').next().unwrap_or(path)
+}
+
+/// Insert `entry` into `bucket`, replacing any existing entry with the same
+/// `(package, version, platform)` identity and keeping the list sorted.
+fn insert_sorted_index_entry(bucket: &mut Vec<IndexEntry>, entry: IndexEntry) {
+    bucket.retain(|existing| {
+        (
+            existing.package.as_str(),
+            existing.version.as_str(),
+            existing.platform.as_str(),
+        ) != (
+            entry.package.as_str(),
+            entry.version.as_str(),
+            entry.platform.as_str(),
+        )
+    });
+    let pos = bucket
+        .binary_search_by(|existing| {
+            (
+                existing.package.as_str(),
+                existing.version.as_str(),
+                existing.platform.as_str(),
+            )
+                .cmp(&(
+                    entry.package.as_str(),
+                    entry.version.as_str(),
+                    entry.platform.as_str(),
+                ))
+        })
+        .unwrap_or_else(|pos| pos);
+    bucket.insert(pos, entry);
+}
+
+/// Insert `provider` into `bucket`, replacing any existing setter with the same
+/// `(package, version, platform)` identity and keeping the list sorted.
+fn insert_sorted_capability_provider(
+    bucket: &mut Vec<CapabilityProvider>,
+    provider: CapabilityProvider,
+) {
+    bucket.retain(|existing| {
+        (
+            existing.package.as_str(),
+            existing.version.as_str(),
+            existing.platform.as_str(),
+        ) != (
+            provider.package.as_str(),
+            provider.version.as_str(),
+            provider.platform.as_str(),
+        )
+    });
+    let pos = bucket
+        .binary_search_by(|existing| {
+            (
+                existing.package.as_str(),
+                existing.version.as_str(),
+                existing.platform.as_str(),
+            )
+                .cmp(&(
+                    provider.package.as_str(),
+                    provider.version.as_str(),
+                    provider.platform.as_str(),
+                ))
+        })
+        .unwrap_or_else(|pos| pos);
+    bucket.insert(pos, provider);
+}
+
 /// Signed metadata for fleet-managed BPF-LSM policy artifacts.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -815,13 +1183,18 @@ impl AttestationMeta {
 }
 
 /// Returns whether package metadata must be backed by DSSE provenance.
+///
+/// RFC-0001 exposure/permission/BPF-LSM metadata requires provenance via
+/// [`rfc0001_metadata_requires_provenance`]; in addition, an RFC-0011
+/// `config_module` block is privileged metadata that independently forces
+/// provenance.
 pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
     rfc0001_metadata_requires_provenance(
         meta.expose.as_ref(),
         meta.expose_artifact.as_ref(),
         &meta.permissions,
         meta.bpf_lsm.as_ref(),
-    )
+    ) || meta.config_module.is_some()
 }
 
 /// Returns whether RFC-0001 metadata fields must be backed by DSSE provenance.
@@ -1214,9 +1587,19 @@ pub fn validate_supported_package_meta_with(
         validate_attestation_meta(&meta.attestation)
             .with_context(|| format!("invalid attestation metadata for '{}'", meta.name))?;
     }
+    if let Some(config_module) = &meta.config_module {
+        require_feature(meta, FEATURE_CONFIG_MODULE_V1)?;
+        validate_config_module_meta(config_module)
+            .with_context(|| format!("invalid config-module metadata for '{}'", meta.name))?;
+    }
     if package_requires_provenance(meta) && meta.attestation.provenance.is_none() {
+        let reason = if meta.config_module.is_some() {
+            "uses config-module metadata"
+        } else {
+            "uses RFC-0001 exposed or permission metadata"
+        };
         bail!(
-            "package '{}' uses RFC-0001 exposed or permission metadata without attestation provenance",
+            "package '{}' {reason} without attestation provenance",
             meta.name
         );
     }
@@ -1490,6 +1873,186 @@ pub fn validate_expose_artifact_meta(artifact: &ExposeArtifactMeta) -> Result<()
         );
     }
     Ok(())
+}
+
+/// Validate the second `config` package output metadata (RFC-0011).
+///
+/// Mirrors [`validate_expose_artifact_meta`]: the store path must be absolute
+/// and Nix-style, and the NAR hash must be a recognized `sha256` digest. In
+/// addition, every reference entry must be a bare store-path hash, and no
+/// reference may name a `.drv` — the config output is pure data and must never
+/// pull a derivation into its closure (publish lint, architecture.md §Stage-1).
+///
+/// # Errors
+///
+/// Returns an error when the store path is not an absolute Nix-style store path,
+/// the NAR hash is missing or malformed, the NAR size is zero, or a reference is
+/// not a bare store-path hash or names a derivation.
+pub fn validate_config_output_meta(output: &ConfigOutputMeta) -> Result<()> {
+    validate_absolute_path(&output.store_path, "config output store path")?;
+    if store_path_hash_component(&output.store_path).is_none() {
+        bail!(
+            "config output store path is not a Nix-style store path: {}",
+            output.store_path
+        );
+    }
+    if !output.nar_hash.starts_with("sha256:") && !output.nar_hash.starts_with("sha256-") {
+        bail!("config output '{}' has invalid NAR hash", output.store_path);
+    }
+    if output.nar_size == 0 {
+        bail!(
+            "config output '{}' must record a non-zero NAR size",
+            output.store_path
+        );
+    }
+    for reference in &output.references {
+        if reference.contains(".drv") {
+            bail!(
+                "config output '{}' must not reference a derivation: {reference}",
+                output.store_path
+            );
+        }
+        if reference.contains('/')
+            || reference.len() < 2
+            || !reference.chars().all(|ch| ch.is_ascii_alphanumeric())
+        {
+            bail!(
+                "config output '{}' reference is not a bare store-path hash: {reference}",
+                output.store_path
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Validate RFC-0011 config-module metadata.
+///
+/// Checks the embedded [`ConfigOutputMeta`], the inclusive ABI band
+/// (`min <= max`), the option paths, owned roots, and contributions for
+/// well-formedness, and the capability tokens declared by the module.
+///
+/// # Errors
+///
+/// Returns an error when the config output is malformed, the ABI band is
+/// inverted, an option path / root / capability token is empty or malformed, a
+/// declared path's root is not owned-or-contributed, or a contribution targets a
+/// root the module also owns.
+pub fn validate_config_module_meta(module: &ConfigModuleMeta) -> Result<()> {
+    validate_config_output_meta(&module.config_output)?;
+
+    if module.module_abi_compat.min > module.module_abi_compat.max {
+        bail!(
+            "config module module_abi_compat range is inverted: min {} > max {}",
+            module.module_abi_compat.min,
+            module.module_abi_compat.max
+        );
+    }
+
+    let mut declared = std::collections::BTreeSet::new();
+    for path in &module.declares {
+        validate_option_path(path)?;
+        if !declared.insert(path) {
+            bail!("config module declares option path '{path}' more than once");
+        }
+    }
+
+    let mut owned = std::collections::BTreeSet::new();
+    for owned_root in &module.owns_roots {
+        validate_option_root("owned root", &owned_root.root)?;
+        if !owned.insert(owned_root.root.as_str()) {
+            bail!(
+                "config module owns root '{}' more than once",
+                owned_root.root
+            );
+        }
+        let mut contributable = std::collections::BTreeSet::new();
+        for path in &owned_root.contributable {
+            validate_option_subpath(path)?;
+            if !contributable.insert(path) {
+                bail!(
+                    "owned root '{}' lists contributable sub-path '{path}' more than once",
+                    owned_root.root
+                );
+            }
+        }
+    }
+
+    let mut contributed = std::collections::BTreeSet::new();
+    for contribution in &module.contributes {
+        validate_option_root("contribution root", &contribution.root)?;
+        if owned.contains(contribution.root.as_str()) {
+            bail!(
+                "config module both owns and contributes to root '{}'",
+                contribution.root
+            );
+        }
+        if !contributed.insert(contribution.root.as_str()) {
+            bail!(
+                "config module contributes to root '{}' more than once",
+                contribution.root
+            );
+        }
+        if contribution.paths.is_empty() {
+            bail!(
+                "config module contribution to root '{}' lists no paths",
+                contribution.root
+            );
+        }
+        for path in &contribution.paths {
+            validate_option_subpath(path)?;
+        }
+    }
+
+    let mut capabilities = std::collections::BTreeSet::new();
+    for token in &module.provides_capabilities {
+        validate_capability_token(token)?;
+        if !capabilities.insert(token) {
+            bail!("config module sets capability '{token}' more than once");
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate a dotted option path used as an inverted-index key.
+fn validate_option_path(path: &str) -> Result<()> {
+    if path.is_empty() {
+        bail!("option path must not be empty");
+    }
+    if path.starts_with('.') || path.ends_with('.') || path.contains("..") {
+        bail!("invalid option path '{path}': empty path segment");
+    }
+    if !path
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        bail!("invalid option path '{path}': use ASCII letters, digits, '.', '_', '-'");
+    }
+    Ok(())
+}
+
+/// Validate a single option-path root segment (no `.`).
+fn validate_option_root(kind: &str, root: &str) -> Result<()> {
+    if root.is_empty() || root.contains('.') {
+        bail!("invalid {kind} '{root}': must be a single option-path segment");
+    }
+    if !root
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        bail!("invalid {kind} '{root}': use ASCII letters, digits, '_', '-'");
+    }
+    Ok(())
+}
+
+/// Validate an option sub-path relative to a shared root.
+fn validate_option_subpath(path: &str) -> Result<()> {
+    validate_option_path(path)
+}
+
+/// Validate a capability token (a dotted option path).
+fn validate_capability_token(token: &str) -> Result<()> {
+    validate_option_path(token)
 }
 
 /// Validate signed BPF-LSM policy artifact metadata.
@@ -2173,6 +2736,9 @@ pub struct ApmMeta {
     /// Rendered RFC-0001 expose artifact captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_artifact: Option<ExposeArtifactMeta>,
+    /// RFC-0011 config-only module metadata captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_module: Option<ConfigModuleMeta>,
     /// RFC-0001 permission manifest captured at install time.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
@@ -3832,6 +4398,7 @@ last_update = "2026-02-13T10:30:00Z"
                 source_nar_hash: "sha256:source".into(),
                 expose: None,
                 expose_artifact: None,
+                config_module: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -3924,6 +4491,7 @@ last_update = "2026-02-13T10:30:00Z"
                 nar_hash: "sha256:artifact".into(),
                 nar_size: 128,
             }),
+            config_module: None,
             permissions: PermissionsMeta {
                 capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
                 network: Some(NetworkPermission::PrivateOutbound),
@@ -4021,6 +4589,7 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: vec![FEATURE_PERMISSIONS_V1.into(), FEATURE_ATTESTATION_V1.into()],
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta {
                 network: Some(NetworkPermission::Host),
                 ..PermissionsMeta::default()
@@ -4058,6 +4627,7 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta {
                 tcp_connect: vec![443],
                 ..PermissionsMeta::default()
@@ -4106,6 +4676,7 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4155,6 +4726,7 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4195,6 +4767,7 @@ last_update = "2026-02-13T10:30:00Z"
             ],
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta {
                 tcp_bind: vec![0],
                 ..PermissionsMeta::default()
@@ -4235,6 +4808,7 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta {
                 network: Some(NetworkPermission::Host),
                 confinement: Some(ConfinementMeta {
@@ -4307,6 +4881,7 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4368,6 +4943,7 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4531,6 +5107,7 @@ last_update = "2026-02-13T10:30:00Z"
                 }],
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4584,6 +5161,7 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4620,6 +5198,7 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: requires_features.into_iter().map(str::to_string).collect(),
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: Some(BpfLsmPolicyMeta {
                 policies: vec![BpfLsmPolicyArtifactMeta {
@@ -4693,6 +5272,7 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: requires_features.into_iter().map(str::to_string).collect(),
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
@@ -4938,6 +5518,7 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4992,6 +5573,7 @@ last_update = "2026-02-13T10:30:00Z"
                 }],
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -5293,5 +5875,201 @@ pin = "v2026.02"
         assert_eq!(ProfileScope::System.name(), "system");
         assert_eq!(ProfileScope::User.other(), ProfileScope::System);
         assert_eq!(ProfileScope::System.other(), ProfileScope::User);
+    }
+
+    // ----------------------------------------------------------------------
+    // RFC-0011 config-module metadata + inverted index
+    // ----------------------------------------------------------------------
+
+    fn sample_config_module() -> ConfigModuleMeta {
+        ConfigModuleMeta {
+            config_output: ConfigOutputMeta {
+                store_path: "/nix/store/0000000000000000000000000000000a-firewall-config"
+                    .to_string(),
+                nar_hash: "sha256:deadbeef".to_string(),
+                nar_size: 4096,
+                references: vec!["0000000000000000000000000000000b".to_string()],
+            },
+            module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
+            declares: vec![
+                "firewall.allowedTCPPorts".to_string(),
+                "firewall.enable".to_string(),
+            ],
+            owns_roots: vec![OwnedRoot {
+                root: "firewall".to_string(),
+                interface_abi: 1,
+                contributable: vec!["allowedTCPPorts".to_string()],
+            }],
+            contributes: vec![RootContribution {
+                root: "nginx".to_string(),
+                paths: vec!["virtualHosts".to_string()],
+            }],
+            provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
+        }
+    }
+
+    #[test]
+    fn config_module_meta_toml_round_trip() {
+        let module = sample_config_module();
+        let serialized = toml::to_string(&module).expect("serialize");
+        let parsed: ConfigModuleMeta = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(parsed, module);
+    }
+
+    #[test]
+    fn config_module_meta_inside_package_round_trips_and_gates() {
+        // A package carrying config_module must declare the feature and have
+        // attestation provenance, else validation fails.
+        let toml_str = r#"
+name = "firewall"
+version = "1.4.0"
+description = "host firewall"
+license = "MIT"
+maintainer = "aos"
+platform = "x86_64-linux"
+store_path = "/nix/store/0000000000000000000000000000000c-firewall-1.4.0"
+nar_hash = "sha256:aa"
+nar_size = 10
+references = []
+source_drv = "/nix/store/0000000000000000000000000000000d-firewall.drv"
+source_nar_hash = "sha256:bb"
+closure_size = 10
+requires-features = ["config-module-v1", "attestation-v1"]
+
+[config_module.config_output]
+store_path = "/nix/store/0000000000000000000000000000000a-firewall-config"
+nar_hash = "sha256:cc"
+nar_size = 2048
+
+[config_module.module_abi_compat]
+min = 1
+max = 2
+
+[config_module]
+declares = ["firewall.allowedTCPPorts"]
+provides_capabilities = []
+
+[[config_module.owns_roots]]
+root = "firewall"
+interface_abi = 1
+contributable = ["allowedTCPPorts"]
+
+[attestation]
+provenance = "provenance/firewall.jsonl"
+"#;
+        let meta: PackageMeta = toml::from_str(toml_str).expect("parse package meta");
+        assert!(meta.config_module.is_some());
+        validate_supported_package_meta(&meta).expect("valid config-module package");
+    }
+
+    #[test]
+    fn config_module_without_feature_is_rejected() {
+        let mut meta = sample_package_meta();
+        meta.config_module = Some(sample_config_module());
+        // Missing requires-features ⇒ feature gate refuses.
+        let err = validate_supported_package_meta(&meta).expect_err("must refuse");
+        assert!(err.to_string().contains("config-module-v1"), "{err}");
+    }
+
+    #[test]
+    fn config_module_without_provenance_is_rejected() {
+        let mut meta = sample_package_meta();
+        meta.requires_features = vec![FEATURE_CONFIG_MODULE_V1.to_string()];
+        meta.config_module = Some(sample_config_module());
+        let err = validate_supported_package_meta(&meta).expect_err("must refuse");
+        assert!(
+            err.to_string().contains("without attestation provenance"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn config_output_rejects_drv_reference() {
+        let mut output = sample_config_module().config_output;
+        output.references = vec!["abc.drv".to_string()];
+        let err = validate_config_output_meta(&output).expect_err("must refuse .drv ref");
+        assert!(
+            err.to_string().contains("must not reference a derivation"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn config_module_rejects_inverted_abi_band() {
+        let mut module = sample_config_module();
+        module.module_abi_compat = ModuleAbiCompat { min: 3, max: 1 };
+        let err = validate_config_module_meta(&module).expect_err("inverted band");
+        assert!(err.to_string().contains("inverted"), "{err}");
+    }
+
+    #[test]
+    fn provides_index_insert_and_lookup() {
+        let module = sample_config_module();
+        let mut index = ProvidesIndex::empty();
+        let added = index.insert_package("firewall", "1.4.0", "x86_64-linux", &module);
+        assert_eq!(added, 2);
+
+        // Owner flag derived from owns_roots.
+        let owners = index.providers_for("firewall.allowedTCPPorts", 1);
+        assert_eq!(owners.len(), 1);
+        assert!(owners[0].owner);
+        assert_eq!(owners[0].root, "firewall");
+
+        // ABI filtering: image abi 3 is outside [1,2].
+        assert!(
+            index
+                .providers_for("firewall.allowedTCPPorts", 3)
+                .is_empty()
+        );
+
+        // Capability index populated.
+        let setters = index.capability_setters("system.capabilities.dns-resolver", 2);
+        assert_eq!(setters.len(), 1);
+        assert_eq!(setters[0].package, "firewall");
+
+        // Idempotent re-insert does not duplicate.
+        index.insert_package("firewall", "1.4.0", "x86_64-linux", &module);
+        assert_eq!(index.providers_for("firewall.allowedTCPPorts", 1).len(), 1);
+    }
+
+    #[test]
+    fn provides_index_json_round_trip() {
+        let module = sample_config_module();
+        let mut index = ProvidesIndex::empty();
+        index.insert_package("firewall", "1.4.0", "x86_64-linux", &module);
+        let json = serde_json::to_string(&index).expect("serialize");
+        let parsed: ProvidesIndex = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, index);
+        assert_eq!(parsed.schema, PROVIDES_INDEX_SCHEMA);
+    }
+
+    fn sample_package_meta() -> PackageMeta {
+        PackageMeta {
+            name: "firewall".to_string(),
+            version: "1.4.0".to_string(),
+            description: "host firewall".to_string(),
+            homepage: None,
+            license: "MIT".to_string(),
+            maintainer: "aos".to_string(),
+            platform: "x86_64-linux".to_string(),
+            store_path: "/nix/store/0000000000000000000000000000000c-firewall-1.4.0".to_string(),
+            nar_hash: "sha256:aa".to_string(),
+            nar_size: 10,
+            references: vec![],
+            source_drv: "/nix/store/0000000000000000000000000000000d-firewall.drv".to_string(),
+            source_nar_hash: "sha256:bb".to_string(),
+            closure_size: 10,
+            sysroot: false,
+            previous: None,
+            images: vec![],
+            min_format: None,
+            requires_features: vec![],
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: AttestationMeta::default(),
+        }
     }
 }
