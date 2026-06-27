@@ -430,39 +430,6 @@
     sync();
   }
 
-  // Link-a-cache form: grey out the "advertise" toggle when the chosen cache is
-  // less visible than the registry — its consumers couldn't read it, so it can't
-  // be advertised (only GC-rooted). Mirrors the server's link policy so the user
-  // never submits a combination that would be rejected. No-JS fallback: the
-  // server still validates.
-  function initCacheLinkForm(form) {
-    // Works from either side. Registry settings ("Link a cache"): the registry
-    // is fixed (data-registry-visibility), options are caches. Cache page ("Link
-    // a registry"): the cache is fixed (data-cache-visibility), options are
-    // registries. Either way advertise is allowed iff cacheRank >= registryRank.
-    var select = form.querySelector("select[name=cache], select[name=registry]");
-    var advertise = form.querySelector("input[name=advertised]");
-    if (!select || !advertise) return;
-    var rank = { public: 2, internal: 1, private: 0 };
-    var fixedReg = form.getAttribute("data-registry-visibility");
-    var fixedCache = form.getAttribute("data-cache-visibility");
-    function sync() {
-      var opt = select.options[select.selectedIndex];
-      var optRank = rank[opt && opt.getAttribute("data-visibility")] || 0;
-      var allowed =
-        fixedReg != null
-          ? optRank >= (rank[fixedReg] || 0) // option is the cache
-          : (rank[fixedCache] || 0) >= optRank; // option is the registry
-      advertise.disabled = !allowed;
-      if (!allowed) advertise.checked = false;
-      advertise.title = allowed
-        ? ""
-        : "a less-visible cache can't be advertised on a more-visible registry — its consumers couldn't read it";
-    }
-    select.addEventListener("change", sync);
-    sync();
-  }
-
   // The ordered [caches] editor in the structured config form. Row order is
   // preference (priority is derived from order). Clones the last row to add
   // another, and removes a row on its × button. No-JS fallback: the server
@@ -598,7 +565,6 @@
   document.querySelectorAll("[data-copy-target]").forEach(initCopyButton);
   document.querySelectorAll("[data-filter-widget]").forEach(initFilterBox);
   document.querySelectorAll("form[data-binding-kind]").forEach(initBindingForm);
-  document.querySelectorAll("form[data-cache-link]").forEach(initCacheLinkForm);
   document.querySelectorAll("form[data-config-form]").forEach(initCacheRows);
   initHelp();
 })();

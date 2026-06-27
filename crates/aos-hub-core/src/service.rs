@@ -3209,6 +3209,27 @@ impl RpcService {
         }
     }
 
+    /// Resolve the consumer-facing base URL a binary cache is served at.
+    ///
+    /// Mirrors [`registry_consumer_url`](Self::registry_consumer_url) for the
+    /// Nix binary-cache surface: prefers a **direct, advertised** cache
+    /// frontend — the cache's own (an operator override), else one inherited
+    /// from its storage binding (the bucket's public CDN origin, with the
+    /// cache's `prefix` appended) — so substituters fetch `narinfo`/`nar`
+    /// straight from the bucket. Falls back to the hub-served
+    /// `{external_url}/{cache_slug}` when no such frontend exists. This is the
+    /// URL the `/-/settings/caches` reconciliation view matches against the
+    /// registry's committed `[caches]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cache_consumer_url(&self, cache: &crate::db::Cache) -> Result<String, RpcError> {
+        cache_consumer_url(&self.db, &self.external_url, cache)
+            .await
+            .map_err(RpcError::internal)
+    }
+
     /// Resolve a direct, advertised frontend a surface is reachable at, deriving
     /// its consumer-facing base URL — its own `own_frontends` (an operator
     /// override), else one inherited from its storage binding (or the
@@ -5814,6 +5835,51 @@ impl FrontendSurface {
 /// eligible row does. Used by [`RpcService::cache_consumer_url`] and
 /// [`RpcService::registry_consumer_url`] to advertise a bucket-direct URL when
 /// one exists (RFC-0004 §12).
+/// Resolve the consumer-facing base URL a binary cache is served at, over a
+/// bare [`Database`] handle and `external_url` (no [`RpcService`] needed).
+///
+/// Prefers a **direct, advertised** cache frontend — the cache's own, else one
+/// inherited from a public storage binding (with the cache's `prefix`
+/// appended), gated by the cache's per-binding advertise opt-out — and falls
+/// back to the hub-served `{external_url}/{cache_slug}`. The console's
+/// `/-/settings/caches` reconciliation view calls this to match a managed
+/// cache against a registry's committed `[caches]` URLs without constructing a
+/// full [`RpcService`]; [`RpcService::cache_consumer_url`] delegates here.
+///
+/// # Errors
+///
+/// Returns an error on database failure.
+pub async fn cache_consumer_url(
+    db: &Database,
+    external_url: &str,
+    cache: &crate::db::Cache,
+) -> anyhow::Result<String> {
+    let own = db.list_cache_frontends(cache.id).await?;
+    let advertise = db.cache_advertises_storage_frontend(cache.id).await?;
+    if let Some(f) = pick_direct_frontend(&own, FrontendSurface::Cache) {
+        return Ok(frontend_base_url(&f.domain, &f.base_path, ""));
+    }
+    if advertise {
+        let binding = match cache.storage_binding_id {
+            Some(id) => db.storage_binding(id).await?,
+            None => db.instance_default_binding().await?,
+        };
+        if let Some(binding) = binding {
+            if binding.access == "public" {
+                let inherited = db.list_storage_frontends(binding.id).await?;
+                if let Some(f) = pick_direct_frontend(&inherited, FrontendSurface::Cache) {
+                    return Ok(frontend_base_url(&f.domain, &f.base_path, &cache.prefix));
+                }
+            }
+        }
+    }
+    Ok(format!(
+        "{}/{}",
+        external_url.trim_end_matches('/'),
+        cache.slug
+    ))
+}
+
 fn pick_direct_frontend(
     frontends: &[FrontendRecord],
     surface: FrontendSurface,

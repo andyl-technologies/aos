@@ -2049,14 +2049,13 @@ async fn render_cache_detail(
                     &cache.visibility,
                     &registry.slug,
                     &registry.visibility,
-                    l.advertised,
+                    false,
                     l.roots_packages,
                 )
                 .warning;
                 link_rows.push(console::CacheLinkRow {
                     registry_slug: registry.slug.clone(),
                     roots_packages: l.roots_packages,
-                    advertised: l.advertised,
                     warning,
                 });
             }
@@ -4669,6 +4668,33 @@ pub(crate) async fn registry_settings(
     registry_settings_view(&deps, &session, &registry, None, "general", started).await
 }
 
+/// Returns the committed `[caches]` priority for `url`, matching by URL with
+/// trailing slashes normalized so a frontend `https://c/` matches a committed
+/// `https://c`.
+fn committed_priority(
+    committed: &std::collections::BTreeMap<String, u32>,
+    url: &str,
+) -> Option<u32> {
+    let target = url.trim_end_matches('/');
+    committed
+        .iter()
+        .find(|(committed_url, _)| committed_url.trim_end_matches('/') == target)
+        .map(|(_, priority)| *priority)
+}
+
+/// Removes the committed-URL entry matching `url` (trailing-slash-normalized),
+/// so what remains is the set of committed URLs with no managed-cache match.
+fn remove_matching_url(committed: &mut std::collections::BTreeMap<String, u32>, url: &str) {
+    let target = url.trim_end_matches('/').to_string();
+    let key = committed
+        .keys()
+        .find(|committed_url| committed_url.trim_end_matches('/') == target)
+        .cloned();
+    if let Some(key) = key {
+        committed.remove(&key);
+    }
+}
+
 /// Render one registry settings section (`general` / `storage` / `caches` /
 /// `danger`) — the split of the former single dense settings page. All load the
 /// same data and differ only in which section `registry_settings_page` renders.
@@ -4705,36 +4731,44 @@ async fn registry_settings_view(
                 .unwrap_or_default(),
             None => String::new(),
         };
+        // The committed `[caches]` the indexer flattened — the single source of
+        // truth a consumer resolves. The reconciliation view below classifies
+        // each managed cache against this list by its consumer URL.
+        let committed = deps.db.list_advertised_caches(registry.id).await?;
+        let mut committed_unmatched: std::collections::BTreeMap<String, u32> =
+            committed.iter().map(|(u, p)| (u.clone(), *p)).collect();
+
         let mut caches = Vec::new();
         let mut linked_ids = std::collections::HashSet::new();
         for link in deps.db.cache_links_for_registry(registry.id).await? {
             linked_ids.insert(link.cache_id);
             if let Some(cache) = deps.db.cache_by_id(link.cache_id).await? {
                 if cache.deleted_at.is_none() {
-                    // A cache less visible than the registry can't be advertised
-                    // (the shared link policy), so its toggle is greyed out.
-                    let can_advertise = crate::service::assess_cache_link(
-                        &cache.slug,
-                        &cache.visibility,
-                        &registry.slug,
-                        &registry.visibility,
-                        true,
-                        false,
-                    )
-                    .reject
-                    .is_none();
+                    let url =
+                        crate::service::cache_consumer_url(&deps.db, &deps.external_url, &cache)
+                            .await?;
+                    // Served-from-config when the cache's consumer URL appears
+                    // in the committed `[caches]` (compared trim-trailing-slash).
+                    let served = committed_priority(&committed_unmatched, &url);
+                    if served.is_some() {
+                        remove_matching_url(&mut committed_unmatched, &url);
+                    }
                     caches.push(console::RegistryCacheRow {
                         cache_slug: cache.slug,
-                        advertised: link.advertised,
+                        consumer_url: url,
                         roots_packages: link.roots_packages,
-                        can_advertise,
+                        config_priority: served,
                     });
                 }
             }
         }
+        // What is left in the committed list matches no linked managed cache:
+        // third-party or non-hosted URLs the registry advertises directly.
+        let mut external_caches: Vec<(String, u32)> = committed_unmatched.into_iter().collect();
+        external_caches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
         // Caches in this registry's org that aren't linked yet — the options for
-        // the "link a cache" control on the settings page, each with its
-        // visibility so the form can grey out advertise for a less-visible one.
+        // the "link a cache" control on the settings page.
         let mut linkable_caches = Vec::new();
         for c in deps.db.list_caches().await? {
             if c.org_id == registry.org_id && c.deleted_at.is_none() && !linked_ids.contains(&c.id)
@@ -4769,6 +4803,7 @@ async fn registry_settings_view(
             binding_ref,
             &binding_names,
             &caches,
+            &external_caches,
             &linkable_caches,
             can_delete,
             advertise_frontend,
@@ -4915,7 +4950,7 @@ pub(crate) async fn registry_cache_link(
         // A link is an operational association only (GC-root pinning + the
         // config-editor autofill source); it never writes the registry's
         // committed `registry.toml`. Advertising a cache to consumers is an
-        // explicit edit of the `[[caches]]` config — see Settings -> Config.
+        // explicit edit of the `[caches]` config — see Settings -> Config.
         Ok::<Result<String, String>, anyhow::Error>(Ok("Cache link saved.".to_string()))
     }
     .await;
