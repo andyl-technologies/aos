@@ -695,6 +695,43 @@ pub struct RegionAllocation {
     layout: RegionLayout,
 }
 
+/// A scheduler-owned input frame to publish into one consumer's inbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingInputPublication {
+    /// Physical slot that produces this frame.
+    pub src_slot: u32,
+    /// Frame to append to the directed inbox from `src_slot` to the consumer.
+    pub frame: FrameEntry,
+}
+
+impl PendingInputPublication {
+    /// Builds a pending input publication.
+    #[must_use]
+    pub const fn new(src_slot: u32, frame: FrameEntry) -> Self {
+        Self { src_slot, frame }
+    }
+}
+
+/// Result of publishing scheduler inputs, ceiling, and wake for one node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerWakePublication {
+    /// Physical slot that consumed the published inputs and ceiling.
+    pub dst_slot: u32,
+    /// Number of input frames enqueued before the wake signal was incremented.
+    pub pending_input_count: usize,
+    /// The max-advance icount published before the wake signal was incremented.
+    pub max_advance_icount: u64,
+    /// The wake action returned by the node slot.
+    pub wake: WakeAction,
+}
+
+#[derive(Clone, Debug)]
+struct SchedulerWakeEnqueuePlan {
+    ring_index: usize,
+    entry_range: std::ops::Range<usize>,
+    input_index: usize,
+}
+
 impl RegionAllocation {
     /// Allocates and initializes a typed shared-memory region model.
     ///
@@ -808,6 +845,46 @@ impl RegionAllocation {
         Ok(())
     }
 
+    /// Publishes pending inputs, then the scheduler ceiling, then the futex wake.
+    ///
+    /// This is the scheduler-side handoff primitive for RUN publication. Every
+    /// pending frame is release-published to its directed inbox before the node
+    /// slot release-stores `max_advance_icount` and increments `wake_signal`, so
+    /// a woken plugin can acquire-observe a consistent `(ceiling,
+    /// pending-inputs)` snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerWakePublicationError`] when the consumer slot does not
+    /// exist, an inbox ring is missing or full, or the node slot rejects the
+    /// scheduler ceiling or futex wake.
+    pub fn publish_scheduler_inputs_and_ceiling(
+        &mut self,
+        dst_slot: u32,
+        pending_inputs: &[PendingInputPublication],
+        ceiling: AdvanceCeiling,
+    ) -> Result<SchedulerWakePublication, SchedulerWakePublicationError> {
+        let dst_index = self.slot_index(dst_slot)?;
+        self.slots[dst_index].validate_scheduler_ceiling(ceiling)?;
+        let enqueue_plans = self.scheduler_wake_enqueue_plans(dst_slot, pending_inputs)?;
+        self.preflight_scheduler_wake_capacity(&enqueue_plans)?;
+
+        for plan in enqueue_plans {
+            let frame = &pending_inputs[plan.input_index].frame;
+            self.ring_headers[plan.ring_index]
+                .enqueue(&mut self.frame_entries[plan.entry_range], frame)
+                .map_err(RegionAllocationAccessError::from)?;
+        }
+
+        let wake = self.slots[dst_index].publish_prevalidated_scheduler_ceiling(ceiling)?;
+        Ok(SchedulerWakePublication {
+            dst_slot,
+            pending_input_count: pending_inputs.len(),
+            max_advance_icount: ceiling.max_advance_icount,
+            wake,
+        })
+    }
+
     /// Returns the head frame of a directed ring without consuming it.
     ///
     /// # Errors
@@ -857,6 +934,56 @@ impl RegionAllocation {
         let ring_index = self.ring_index(src_slot, dst_slot)?;
         let entry_range = self.entry_range(ring_index)?;
         Ok(self.ring_headers[ring_index].dequeue(&self.frame_entries[entry_range])?)
+    }
+
+    fn slot_index(&self, slot: u32) -> Result<usize, SchedulerWakePublicationError> {
+        let index = usize::try_from(slot)
+            .map_err(|_error| SchedulerWakePublicationError::UnknownNodeSlot { slot })?;
+        if index >= self.slots.len() {
+            Err(SchedulerWakePublicationError::UnknownNodeSlot { slot })
+        } else {
+            Ok(index)
+        }
+    }
+
+    fn scheduler_wake_enqueue_plans(
+        &self,
+        dst_slot: u32,
+        pending_inputs: &[PendingInputPublication],
+    ) -> Result<Vec<SchedulerWakeEnqueuePlan>, SchedulerWakePublicationError> {
+        let mut plans = Vec::with_capacity(pending_inputs.len());
+        for (input_index, input) in pending_inputs.iter().enumerate() {
+            validate_pending_input_source(input_index, input.src_slot, &input.frame)?;
+            let ring_index = self.ring_index(input.src_slot, dst_slot)?;
+            let entry_range = self.entry_range(ring_index)?;
+            plans.push(SchedulerWakeEnqueuePlan {
+                ring_index,
+                entry_range,
+                input_index,
+            });
+        }
+        Ok(plans)
+    }
+
+    fn preflight_scheduler_wake_capacity(
+        &self,
+        plans: &[SchedulerWakeEnqueuePlan],
+    ) -> Result<(), RegionAllocationAccessError> {
+        let mut checked_rings = Vec::new();
+        for plan in plans {
+            if checked_rings.contains(&plan.ring_index) {
+                continue;
+            }
+            checked_rings.push(plan.ring_index);
+            let ring = &self.ring_headers[plan.ring_index];
+            let batch_count = plans
+                .iter()
+                .filter(|candidate| candidate.ring_index == plan.ring_index)
+                .count() as u64;
+            let entries = self.entry_range(plan.ring_index)?;
+            preflight_ring_enqueue_capacity(ring, &self.frame_entries[entries], batch_count)?;
+        }
+        Ok(())
     }
 
     fn ring_index(
@@ -934,6 +1061,43 @@ pub enum RegionAllocationAccessError {
         /// Underlying SPSC ring error.
         #[from]
         source: SpscRingError,
+    },
+}
+
+/// An error produced while publishing scheduler inputs, ceiling, and wake.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum SchedulerWakePublicationError {
+    /// The consumer physical slot does not exist in the region.
+    #[error("region allocation has no node slot {slot}")]
+    UnknownNodeSlot {
+        /// Rejected physical slot index.
+        slot: u32,
+    },
+    /// The directed inbox publication failed.
+    #[error("scheduler wake inbox publication failed")]
+    RegionAccess {
+        /// Underlying region access error.
+        #[from]
+        source: RegionAllocationAccessError,
+    },
+    /// The consumer node slot rejected the ceiling or wake.
+    #[error("scheduler wake node-slot publication failed")]
+    NodeSlot {
+        /// Underlying node-slot error.
+        #[from]
+        source: NodeSlotError,
+    },
+    /// A pending input's embedded source did not match its directed ring source.
+    #[error(
+        "scheduler wake pending input {input_index} frame source {frame_src_node} does not match ring source {expected_src_slot}"
+    )]
+    FrameSourceMismatch {
+        /// Index in the pending-input batch.
+        input_index: usize,
+        /// Source slot selected for the directed ring.
+        expected_src_slot: u32,
+        /// Source node stamped into the frame entry.
+        frame_src_node: u32,
     },
 }
 
@@ -1088,6 +1252,37 @@ fn node_slot_for_physical_index(vm_node_count: u32, slot: usize) -> NodeSlot {
 
 fn usize_to_u64(value: usize) -> Result<u64, RegionLayoutError> {
     u64::try_from(value).map_err(|_| RegionLayoutError::GeometryOverflow)
+}
+
+fn validate_pending_input_source(
+    input_index: usize,
+    expected_src_slot: u32,
+    frame: &FrameEntry,
+) -> Result<(), SchedulerWakePublicationError> {
+    if frame.src_node == expected_src_slot {
+        Ok(())
+    } else {
+        Err(SchedulerWakePublicationError::FrameSourceMismatch {
+            input_index,
+            expected_src_slot,
+            frame_src_node: frame.src_node,
+        })
+    }
+}
+
+fn preflight_ring_enqueue_capacity(
+    ring: &RingHeader,
+    entries: &[FrameEntry],
+    batch_count: impl TryInto<u64>,
+) -> Result<(), SpscRingError> {
+    let capacity = validated_capacity(entries)?;
+    let live = live_count(ring.read_index(), ring.write_index(), capacity)?;
+    let batch_count = batch_count.try_into().unwrap_or(u64::MAX);
+    if batch_count > capacity.saturating_sub(live) {
+        Err(SpscRingError::QueueFull { capacity })
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(unix)]
@@ -1546,19 +1741,53 @@ impl NodeSlot {
         &self,
         ceiling: AdvanceCeiling,
     ) -> Result<WakeAction, NodeSlotError> {
-        let current_icount = self.current_icount.load(Ordering::Acquire);
-        if ceiling.max_advance_icount < current_icount {
-            return Err(NodeSlotError::CeilingBeforePublishedCurrent {
-                current_icount,
-                max_advance_icount: ceiling.max_advance_icount,
-            });
+        self.validate_scheduler_ceiling(ceiling)?;
+
+        self.publish_prevalidated_scheduler_ceiling(ceiling)
+    }
+
+    /// Publishes pending inbox frames, then the scheduler ceiling, then the wake.
+    ///
+    /// This borrowed-ring variant is for runtime adapters that hold one node
+    /// slot and one inbound SPSC ring rather than a typed [`RegionAllocation`].
+    /// It validates the ceiling and ring capacity before publishing any frame,
+    /// release-publishes every frame to the inbox, release-publishes the
+    /// ceiling, and only then increments the non-private futex wake word.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerWakePublicationError`] when the node slot rejects the
+    /// ceiling, an input frame is stamped with a different source than
+    /// `src_slot`, the inbox rejects the batch, or the futex wake fails.
+    pub fn publish_scheduler_inbox_and_ceiling(
+        &self,
+        dst_slot: u32,
+        src_slot: u32,
+        inbox: &RingHeader,
+        inbox_entries: &mut [FrameEntry],
+        pending_inputs: &[FrameEntry],
+        ceiling: AdvanceCeiling,
+    ) -> Result<SchedulerWakePublication, SchedulerWakePublicationError> {
+        self.validate_scheduler_ceiling(ceiling)?;
+        for (input_index, frame) in pending_inputs.iter().enumerate() {
+            validate_pending_input_source(input_index, src_slot, frame)?;
+        }
+        preflight_ring_enqueue_capacity(inbox, inbox_entries, pending_inputs.len())
+            .map_err(RegionAllocationAccessError::from)?;
+
+        for frame in pending_inputs {
+            inbox
+                .enqueue(inbox_entries, frame)
+                .map_err(RegionAllocationAccessError::from)?;
         }
 
-        self.max_advance_icount
-            .store(ceiling.max_advance_icount, Ordering::Release);
-
-        self.wake_after_signal_increment()
-            .map_err(|source| NodeSlotError::FutexWake { source })
+        let wake = self.publish_prevalidated_scheduler_ceiling(ceiling)?;
+        Ok(SchedulerWakePublication {
+            dst_slot,
+            pending_input_count: pending_inputs.len(),
+            max_advance_icount: ceiling.max_advance_icount,
+            wake,
+        })
     }
 
     /// Loads the scheduler-published ceiling with acquire ordering.
@@ -1828,6 +2057,29 @@ impl NodeSlot {
         self.device_io_active
             .store(u8::from(active), Ordering::Release);
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn validate_scheduler_ceiling(&self, ceiling: AdvanceCeiling) -> Result<(), NodeSlotError> {
+        let current_icount = self.current_icount.load(Ordering::Acquire);
+        if ceiling.max_advance_icount < current_icount {
+            Err(NodeSlotError::CeilingBeforePublishedCurrent {
+                current_icount,
+                max_advance_icount: ceiling.max_advance_icount,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn publish_prevalidated_scheduler_ceiling(
+        &self,
+        ceiling: AdvanceCeiling,
+    ) -> Result<WakeAction, NodeSlotError> {
+        self.max_advance_icount
+            .store(ceiling.max_advance_icount, Ordering::Release);
+
+        self.wake_after_signal_increment()
+            .map_err(|source| NodeSlotError::FutexWake { source })
     }
 
     fn is_runnable_after_idle_publish(&self) -> bool {

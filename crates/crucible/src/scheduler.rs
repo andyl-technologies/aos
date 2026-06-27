@@ -174,6 +174,46 @@ impl SchedulerRunCeilingPublication {
             None,
         )
     }
+
+    /// Publishes pending inputs, this ceiling, and the wake through shmem.
+    ///
+    /// Pending inputs are appended to their directed inboxes before the node
+    /// slot ceiling is release-stored and its futex word is incremented.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerRunCeilingHandoffError`] when the publication cannot
+    /// be authorized as a shared-memory ceiling, or when the shared-memory
+    /// region rejects an inbox, ceiling, or wake publication.
+    pub fn publish_to_shmem_after_inputs(
+        &self,
+        region: &mut crucible_shmem::RegionAllocation,
+        dst_slot: u32,
+        pending_inputs: &[crucible_shmem::PendingInputPublication],
+    ) -> Result<crucible_shmem::SchedulerWakePublication, SchedulerRunCeilingHandoffError> {
+        let ceiling = self.to_shmem_ceiling()?;
+        Ok(region.publish_scheduler_inputs_and_ceiling(dst_slot, pending_inputs, ceiling)?)
+    }
+}
+
+/// An error produced while handing a scheduler RUN ceiling to shmem.
+#[cfg(feature = "test-double")]
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SchedulerRunCeilingHandoffError {
+    /// The scheduler publication did not authorize as an ABI ceiling.
+    #[error("scheduler RUN ceiling could not be authorized for shared memory")]
+    Authorization {
+        /// Underlying lookahead-gate error.
+        #[from]
+        source: crucible_shmem::LookaheadGateError,
+    },
+    /// The shared-memory region rejected the ordered publication.
+    #[error("scheduler RUN ceiling shared-memory publication failed")]
+    Publication {
+        /// Underlying shared-memory publication error.
+        #[from]
+        source: crucible_shmem::SchedulerWakePublicationError,
+    },
 }
 
 /// A read-only copy of the state owned by the scheduler actor.

@@ -14,8 +14,8 @@ use crucible::{
 };
 use crucible_shmem::{
     AdvanceCeiling, FrameDeliveryKey, FrameEntry, FrameEntryError, LookaheadGateError, NodeSlot,
-    NodeSlotError, NodeSlotSnapshot, RingHeader, STATUS_IDLE, SpscRingError,
-    authorize_advance_ceiling, validate_frame_delivery_is_future,
+    NodeSlotError, NodeSlotSnapshot, RingHeader, STATUS_IDLE, SchedulerWakePublicationError,
+    SpscRingError, authorize_advance_ceiling, validate_frame_delivery_is_future,
 };
 use thiserror::Error;
 
@@ -364,8 +364,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         frame: QemuInboundFrame,
     ) -> Result<(), QemuQuantumError> {
         let entry = self.inbound_entry_from_frame(frame)?;
-        self.enqueue_inbound_entry(&entry)?;
-        self.wake_for_frame_delivery()?;
+        self.publish_inbound_entry_and_wake(&entry)?;
         Ok(())
     }
 
@@ -441,9 +440,16 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         self.record(QemuQuantumOperation::FutexWake);
         self.view
             .node_slot
-            .publish_scheduler_ceiling(ceiling)
-            .map_err(|source| QemuQuantumError::NodeSlot {
-                operation: "publish scheduler ceiling",
+            .publish_scheduler_inbox_and_ceiling(
+                self.config.vm_slot,
+                self.config.router_slot,
+                self.view.inbound_ring,
+                self.view.inbound_entries,
+                &[],
+                ceiling,
+            )
+            .map_err(|source| QemuQuantumError::SchedulerWakePublication {
+                operation: "publish scheduler inbox and ceiling",
                 source,
             })?;
 
@@ -682,25 +688,30 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         Ok(entry)
     }
 
-    fn enqueue_inbound_entry(&mut self, entry: &FrameEntry) -> Result<(), QemuQuantumError> {
+    fn publish_inbound_entry_and_wake(
+        &mut self,
+        entry: &FrameEntry,
+    ) -> Result<(), QemuQuantumError> {
         self.record(QemuQuantumOperation::EnqueueInboundFrame);
-        self.view
-            .inbound_ring
-            .enqueue(self.view.inbound_entries, entry)
-            .map_err(|source| QemuQuantumError::SpscRing {
-                operation: "enqueue inbound frame",
-                source,
-            })
-    }
-
-    fn wake_for_frame_delivery(&mut self) -> Result<(), QemuQuantumError> {
+        self.record(QemuQuantumOperation::StoreSchedulerCeiling);
         self.record(QemuQuantumOperation::FutexWake);
+        let snapshot = self.view.node_slot.snapshot();
+        let ceiling =
+            authorize_advance_ceiling(snapshot.current_icount, snapshot.max_advance_icount, None)
+                .map_err(|source| QemuQuantumError::Lookahead { source })?;
         self.view
             .node_slot
-            .wake_for_frame_delivery()
-            .map_err(|source| QemuQuantumError::NodeSlot {
-                operation: "wake for frame delivery",
-                source: NodeSlotError::FutexWake { source },
+            .publish_scheduler_inbox_and_ceiling(
+                self.config.vm_slot,
+                entry.src_node,
+                self.view.inbound_ring,
+                self.view.inbound_entries,
+                std::slice::from_ref(entry),
+                ceiling,
+            )
+            .map_err(|source| QemuQuantumError::SchedulerWakePublication {
+                operation: "publish inbound frame and scheduler ceiling",
+                source,
             })?;
         Ok(())
     }
@@ -768,11 +779,9 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
                 payload: input.payload,
             })
             .map_err(QemuNodeChannelError::from)?;
-        self.enqueue_inbound_entry(&entry)
+        self.publish_inbound_entry_and_wake(&entry)
             .map_err(QemuNodeChannelError::from)?;
         self.commit_router_inbound_sequence()
-            .map_err(QemuNodeChannelError::from)?;
-        self.wake_for_frame_delivery()
             .map_err(QemuNodeChannelError::from)
     }
 
@@ -1032,6 +1041,14 @@ pub enum QemuQuantumError {
         /// Underlying node-slot error.
         source: NodeSlotError,
     },
+    /// The ordered scheduler inbox/ceiling/wake publication failed.
+    #[error("QEMU quantum scheduler wake operation {operation} failed: {source}")]
+    SchedulerWakePublication {
+        /// Ordered scheduler wake operation being attempted.
+        operation: &'static str,
+        /// Underlying ordered scheduler wake error.
+        source: SchedulerWakePublicationError,
+    },
     /// No later plugin report is visible in the shared-memory node slot yet.
     #[error(
         "QEMU quantum plugin report is not yet visible at icount {current_icount} before ceiling {ceiling}"
@@ -1064,6 +1081,8 @@ pub enum QemuQuantumError {
 mod tests {
     use super::*;
     use crucible_shmem::{AdvanceCeiling, FrameEntry, NodeSlot, STATUS_IDLE, STATUS_RUNNING};
+
+    const QUANTUM_SOURCE: &str = include_str!("quantum.rs");
 
     #[test]
     fn qemu_quantum_binds_external_shmem_and_finishes_after_plugin_report() {
@@ -1124,6 +1143,47 @@ mod tests {
                 .contains(&QemuQuantumOperation::ObservePluginReport)
         );
         assert_eq!(slot.snapshot().status, STATUS_RUNNING);
+    }
+
+    #[test]
+    fn qemu_quantum_start_uses_ordered_scheduler_wake_handoff() {
+        let source = function_source("pub fn start_quantum(");
+        assert_source_order(
+            source,
+            &[
+                "self.record(QemuQuantumOperation::StoreSchedulerCeiling);",
+                "self.record(QemuQuantumOperation::FutexWake);",
+                ".publish_scheduler_inbox_and_ceiling(",
+                "self.config.vm_slot,",
+                "self.config.router_slot,",
+                "self.view.inbound_ring,",
+                "self.view.inbound_entries,",
+                "&[],",
+                "ceiling,",
+            ],
+            "QEMU start_quantum must publish RUN through the ordered inbox/ceiling/wake helper",
+        );
+    }
+
+    #[test]
+    fn qemu_quantum_inbound_uses_ordered_scheduler_wake_handoff() {
+        let source = function_source("fn publish_inbound_entry_and_wake(");
+        assert_source_order(
+            source,
+            &[
+                "self.record(QemuQuantumOperation::EnqueueInboundFrame);",
+                "self.record(QemuQuantumOperation::StoreSchedulerCeiling);",
+                "self.record(QemuQuantumOperation::FutexWake);",
+                ".publish_scheduler_inbox_and_ceiling(",
+                "self.config.vm_slot,",
+                "entry.src_node,",
+                "self.view.inbound_ring,",
+                "self.view.inbound_entries,",
+                "std::slice::from_ref(entry),",
+                "ceiling,",
+            ],
+            "QEMU inbound publication must publish the nonempty inbox frame through the ordered helper",
+        );
     }
 
     #[test]
@@ -1734,5 +1794,42 @@ mod tests {
         NodeId {
             name: name.to_owned(),
         }
+    }
+
+    fn assert_source_order(source: &str, needles: &[&str], context: &str) {
+        let mut offset = 0;
+        for needle in needles {
+            let remaining = &source[offset..];
+            let Some(relative) = remaining.find(needle) else {
+                panic!("{context}: missing `{needle}` after byte offset {offset}");
+            };
+            offset += relative + needle.len();
+        }
+    }
+
+    fn function_source(signature: &str) -> &str {
+        let Some(start) = QUANTUM_SOURCE.find(signature) else {
+            panic!("missing source signature `{signature}`");
+        };
+        let after_signature = &QUANTUM_SOURCE[start..];
+        let Some(open_relative) = after_signature.find('{') else {
+            panic!("missing body for source signature `{signature}`");
+        };
+        let open = start + open_relative;
+        let mut depth = 0_i32;
+        for (relative, ch) in QUANTUM_SOURCE[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &QUANTUM_SOURCE[start..open + relative + ch.len_utf8()];
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        panic!("unterminated source body for `{signature}`");
     }
 }

@@ -1208,9 +1208,25 @@ application of explorer-supplied preemption decisions
   conversion. Focused regressions cover exact-local, aligned network-lookahead,
   unaligned conservative rejection, and idle-wake horizons with nonzero shifts so
   floor rounding or raw-virtual-time ceilings fail loudly.
-- [ ] **T-SCHED-21** Implement the ceiling-write + futex-wake ordering so a woken
+- [x] **T-SCHED-21** Implement the ceiling-write + futex-wake ordering so a woken
   plugin observes a consistent `(ceiling, pending-inputs)` snapshot (wake after
   inbox write). — satisfies [SCHED-35], [SCHED-36]; spec §8.10.
+  Completed by `checks.crucible.phase3.schedulerWakeOrdering`.
+  `RegionAllocation::publish_scheduler_inputs_and_ceiling` is now the typed
+  shmem handoff for RUN publication: it prevalidates the destination slot and
+  inbox capacity, release-publishes every pending input frame to the directed
+  inbox, release-publishes the node ceiling, and only then increments the
+  non-private futex wake word, preserving wake after inbox write.
+  `NodeSlot::publish_scheduler_inbox_and_ceiling` gives production adapters the
+  same borrowed-ring ordering, and the QEMU RUN hot path now publishes through
+  that helper; QEMU inbound frame wakeups use it with a nonempty pending-input
+  batch and the currently published ceiling. `SchedulerRunCeilingPublication`
+  exposes the test-double adapter that routes scheduler publications through
+  the typed region handoff. Focused regressions cover single-input and
+  batched-input wakeups, borrowed-ring RUN and inbound publication, source-slot
+  mismatch rejection, full-inbox and stale-ceiling no-wake failures, and
+  source-order checks for
+  inbox-before-ceiling-before-futex-wake.
 - [ ] **T-SCHED-22** Implement topology-change handling: recompute lookahead at
   the quantum boundary when faults alter the effective edge set or a latency;
   apply lowered lookahead before the node is next PICKed past the new bound. —
