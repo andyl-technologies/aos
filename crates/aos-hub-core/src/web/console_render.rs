@@ -1396,6 +1396,21 @@ pub struct RegistryCacheRow {
     pub config_priority: Option<u32>,
 }
 
+/// A registry's DB-linked cache offered as a config-editor autofill suggestion.
+///
+/// The config editor lists these so an admin can one-click insert a linked
+/// cache's correct consumer URL into the `[caches]` editor, with a live
+/// present/missing indicator against the current config.
+pub struct LinkedCacheSuggestion {
+    /// The linked cache's slug.
+    pub cache_slug: String,
+    /// The cache's consumer-facing URL (bucket-direct frontend, else the
+    /// hub-served `{external_url}/{cache_slug}`) — what is inserted.
+    pub consumer_url: String,
+    /// Whether this URL is already present in the editor's current `[caches]`.
+    pub present: bool,
+}
+
 /// The org dashboard: projects, registries, members, bindings, audit link.
 ///
 /// `can_manage_members` gates the member-management controls (invite/remove)
@@ -4596,6 +4611,9 @@ pub fn registry_config_form_page(
     csrf: &str,
     model: &crate::web::config_form::ConfigFormModel,
     can_edit: bool,
+    // The registry's DB-linked caches, offered as one-click autofill into the
+    // `[caches]` editor with a live present/missing indicator.
+    linked_caches: &[LinkedCacheSuggestion],
     result: Option<(&str, &str)>,
     started: Instant,
 ) -> String {
@@ -4650,6 +4668,42 @@ pub fn registry_config_form_page(
         ""
     };
 
+    // Autofill panel: the registry's DB-linked caches, each with a live
+    // present/missing indicator against the editor's current `[caches]` and a
+    // one-click "add" that inserts its consumer URL. Hidden for an advanced
+    // stack (the list editor is inactive then).
+    let autofill_panel = if model.has_cache_stack || linked_caches.is_empty() {
+        String::new()
+    } else {
+        let mut panel = String::from(
+            "<details class=\"autofill\" open><summary>Linked caches</summary>\n\
+             <p class=\"dim\">Caches linked to this registry. Add a linked cache's URL \
+             to advertise it to consumers.</p>\n<ul class=\"autofill-list\">\n",
+        );
+        for cache in linked_caches {
+            let action = if cache.present {
+                "<span class=\"chip\">in config</span>".to_string()
+            } else {
+                format!(
+                    "<span class=\"chip warn\">missing</span> \
+                     <button type=\"button\" class=\"row-add\" \
+                     data-add-cache-url=\"{url}\">add</button>",
+                    url = escape(&cache.consumer_url),
+                )
+            };
+            let _ = write!(
+                panel,
+                "<li><span class=\"autofill-name\">{slug}</span> \
+                 <code>{url}</code> {action}</li>\n",
+                slug = escape(&cache.cache_slug),
+                url = escape(&cache.consumer_url),
+                action = action,
+            );
+        }
+        panel.push_str("</ul></details>\n");
+        panel
+    };
+
     let _ = write!(
         body,
         "<form class=\"console\" data-config-form method=\"post\" \
@@ -4666,6 +4720,7 @@ pub fn registry_config_form_page(
          <span class=\"field-label\">binary caches{caches_help}</span>\n\
          <div class=\"cache-rows\" data-cache-rows>\n{cache_rows}</div>\n\
          <button type=\"button\" class=\"row-add\" data-add-cache>+ add cache</button>\n\
+         {autofill_panel}\
          {cache_stack_note}\
          <label>title <input type=\"text\" name=\"cr_title\" \
          placeholder=\"summarize this change\"></label>\n\
@@ -4688,6 +4743,7 @@ pub fn registry_config_form_page(
         },
         caches_help = help::marker("registry.caches"),
         cache_rows = cache_rows,
+        autofill_panel = autofill_panel,
         cache_stack_note = cache_stack_note,
     );
 
@@ -5429,5 +5485,79 @@ mod cache_render_tests {
         // The operational "Link a cache" control still renders.
         assert!(html.contains("/demo/-/settings/cache-link"));
         assert!(html.contains("roots_packages"));
+    }
+
+    #[test]
+    fn config_form_autofill_marks_present_and_missing() {
+        use crate::web::config_form::{CacheRow, ConfigFormModel};
+        let model = ConfigFormModel {
+            name: "demo".into(),
+            content_addressed: true,
+            caches: vec![CacheRow {
+                url: "https://served.example.com".into(),
+                priority: 100,
+            }],
+            ..ConfigFormModel::default()
+        };
+        let linked = [
+            LinkedCacheSuggestion {
+                cache_slug: "served".into(),
+                consumer_url: "https://served.example.com".into(),
+                present: true,
+            },
+            LinkedCacheSuggestion {
+                cache_slug: "missing".into(),
+                consumer_url: "https://missing.example.com".into(),
+                present: false,
+            },
+        ];
+        let html = registry_config_form_page(
+            "a@b.com",
+            &settings_registry(),
+            "csrf-tok",
+            &model,
+            true,
+            &linked,
+            None,
+            Instant::now(),
+        );
+        // The autofill panel lists both linked caches.
+        assert!(html.contains("Linked caches"));
+        assert!(html.contains("https://served.example.com"));
+        assert!(html.contains("https://missing.example.com"));
+        // Present one shows "in config"; missing one offers a one-click add.
+        assert!(html.contains("in config"));
+        assert!(html.contains("data-add-cache-url=\"https://missing.example.com\""));
+        // The existing cache row is rendered in the editor.
+        assert!(html.contains("value=\"https://served.example.com\""));
+    }
+
+    #[test]
+    fn config_form_autofill_hidden_for_advanced_stack() {
+        use crate::web::config_form::ConfigFormModel;
+        let model = ConfigFormModel {
+            name: "demo".into(),
+            content_addressed: true,
+            has_cache_stack: true,
+            ..ConfigFormModel::default()
+        };
+        let linked = [LinkedCacheSuggestion {
+            cache_slug: "c".into(),
+            consumer_url: "https://c.example.com".into(),
+            present: false,
+        }];
+        let html = registry_config_form_page(
+            "a@b.com",
+            &settings_registry(),
+            "csrf-tok",
+            &model,
+            true,
+            &linked,
+            None,
+            Instant::now(),
+        );
+        // The list editor is inactive for an advanced stack, so no autofill.
+        assert!(!html.contains("Linked caches"));
+        assert!(html.contains("advanced"));
     }
 }

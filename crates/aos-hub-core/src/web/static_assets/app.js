@@ -453,19 +453,49 @@
       });
     }
     container.querySelectorAll(".cache-row").forEach(bindDel);
-    if (addBtn) {
-      addBtn.addEventListener("click", function () {
-        var rows = container.querySelectorAll(".cache-row");
-        var clone = rows[rows.length - 1].cloneNode(true);
-        clone.querySelectorAll("input").forEach(function (i) {
+    // Add a row, optionally pre-filled with `value`. Reuses the trailing blank
+    // row when empty; otherwise clones it. Returns the row's URL input.
+    function addRow(value) {
+      var rows = container.querySelectorAll(".cache-row");
+      var last = rows[rows.length - 1];
+      var lastUrl = last.querySelector("input[name=cache_url]");
+      var target;
+      if (lastUrl && !lastUrl.value) {
+        target = last; // fill the existing blank row
+      } else {
+        target = last.cloneNode(true);
+        target.querySelectorAll("input").forEach(function (i) {
           i.value = "";
         });
-        bindDel(clone);
-        container.appendChild(clone);
-        var url = clone.querySelector("input[name=cache_url]");
+        bindDel(target);
+        container.appendChild(target);
+      }
+      var url = target.querySelector("input[name=cache_url]");
+      if (url && value != null) url.value = value;
+      return url;
+    }
+    if (addBtn) {
+      addBtn.addEventListener("click", function () {
+        var url = addRow(null);
         if (url) url.focus();
       });
     }
+    // Autofill: a linked cache's "add" button inserts its consumer URL, marks
+    // itself done, and flips a present indicator so the panel stays live.
+    form.querySelectorAll("[data-add-cache-url]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        addRow(btn.getAttribute("data-add-cache-url"));
+        var item = btn.closest("li");
+        if (item) {
+          var chip = item.querySelector(".chip");
+          if (chip) {
+            chip.textContent = "in config";
+            chip.classList.remove("warn");
+          }
+        }
+        btn.parentNode.removeChild(btn);
+      });
+    });
   }
 
   // Attached help (web/help.rs): turn a `?` marker's hidden segmented card into

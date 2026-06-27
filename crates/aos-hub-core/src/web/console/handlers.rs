@@ -7261,6 +7261,42 @@ pub(crate) async fn config_edit(
     config_edit_view(&deps, &session, &registry, None, started).await
 }
 
+/// Builds the config-editor autofill suggestions: the registry's DB-linked
+/// caches with each cache's consumer URL and whether it is already present in
+/// the form's current `[caches]` (matched trailing-slash-normalized).
+///
+/// # Errors
+///
+/// Returns an error on database failure or when resolving a cache's consumer
+/// URL fails.
+async fn linked_cache_suggestions(
+    deps: &ConsoleDeps,
+    registry: &RegistryRecord,
+    model: &crate::web::config_form::ConfigFormModel,
+) -> anyhow::Result<Vec<console::LinkedCacheSuggestion>> {
+    let present: std::collections::HashSet<String> = model
+        .caches
+        .iter()
+        .map(|row| row.url.trim_end_matches('/').to_string())
+        .collect();
+    let mut suggestions = Vec::new();
+    for link in deps.db.cache_links_for_registry(registry.id).await? {
+        if let Some(cache) = deps.db.cache_by_id(link.cache_id).await? {
+            if cache.deleted_at.is_none() {
+                let url = crate::service::cache_consumer_url(&deps.db, &deps.external_url, &cache)
+                    .await?;
+                let present = present.contains(url.trim_end_matches('/'));
+                suggestions.push(console::LinkedCacheSuggestion {
+                    cache_slug: cache.slug,
+                    consumer_url: url,
+                    present,
+                });
+            }
+        }
+    }
+    Ok(suggestions)
+}
+
 /// Render the config-edit page, optionally with a just-created change-request
 /// `result` (its change id and merge command).
 async fn config_edit_view(
@@ -7283,16 +7319,26 @@ async fn config_edit_view(
     // the schema) and the read-only view both fall back to the raw-TOML page,
     // which shows the committed file verbatim so nothing is hidden or dropped.
     match crate::web::config_form::parse_model(&current) {
-        Some(model) if can_edit => Html(console::registry_config_form_page(
-            &session.email,
-            registry,
-            &session.csrf(),
-            &model,
-            can_edit,
-            result,
-            started,
-        ))
-        .into_response(),
+        Some(model) if can_edit => {
+            // Autofill suggestions: the registry's DB-linked caches, each with
+            // its consumer URL and whether that URL is already in the config the
+            // form currently shows.
+            let linked = match linked_cache_suggestions(deps, registry, &model).await {
+                Ok(linked) => linked,
+                Err(err) => return internal(err),
+            };
+            Html(console::registry_config_form_page(
+                &session.email,
+                registry,
+                &session.csrf(),
+                &model,
+                can_edit,
+                &linked,
+                result,
+                started,
+            ))
+            .into_response()
+        }
         _ => Html(console::config_edit_page(
             &session.email,
             registry,
@@ -7397,18 +7443,23 @@ pub(crate) async fn config_submit(
         }
         Err(err) => {
             // Re-render the form with the error and the user's preserved input;
-            // recover whether an advanced [cache_stack] exists from the file.
+            // recover whether an advanced [caches] stack exists from the file.
             let mut model =
                 crate::web::config_form::model_from_submission(&sub, format!("{err:#}"));
             model.has_cache_stack = crate::web::config_form::parse_model(&existing)
                 .map(|m| m.has_cache_stack)
                 .unwrap_or(false);
+            let linked = match linked_cache_suggestions(&deps, &registry, &model).await {
+                Ok(linked) => linked,
+                Err(err) => return internal(err),
+            };
             Html(console::registry_config_form_page(
                 &session.email,
                 &registry,
                 &session.csrf(),
                 &model,
                 true,
+                &linked,
                 None,
                 started,
             ))
