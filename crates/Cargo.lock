@@ -304,6 +304,8 @@ dependencies = [
  "aos-nix-compat",
  "base64",
  "nix-compat",
+ "ratchet-cache",
+ "ratchet-oracle",
  "serde",
  "serde_json",
  "tempfile",

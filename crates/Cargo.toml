@@ -124,6 +124,7 @@ aos-nix-compat = { path = "aos-nix-compat" }
 aos-nix-harness = { path = "aos-nix-harness" }
 ratchet-core = { path = "ratchet-core" }
 ratchet-dialect = { path = "ratchet-dialect" }
+ratchet-cache = { path = "ratchet-cache" }
 aos-nix-dialect = { path = "aos-nix-dialect" }
 ratchet-value = { path = "ratchet-value" }
 ratchet-oracle = { path = "ratchet-oracle" }

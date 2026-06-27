@@ -17,4 +17,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+ratchet-cache = { workspace = true }
+ratchet-oracle = { workspace = true }
 tempfile = { workspace = true }

@@ -1190,6 +1190,17 @@ alone (`M-1`/`Q-A`).
       automatic mmap-backed indexed hits, out-of-core rematerialization,
       cross-process writer coordination, and harness proof remain open
       (`C-13`/`R-14`).
+- [x] Current oracle-writer/mapped-reader compatibility canary:
+      `aos-nix-harness` has an integration test that writes blob-pack records
+      through the existing safe `ratchet-oracle::cache::PersistBlobPack`
+      buffered writer, maps the resulting file through
+      `ratchet-cache::blob_pack::MappedBlobPack`, and verifies the borrowed
+      mapped payload slices match the original bytes. The unsafe mmap call
+      stays in harness test code rather than the safe oracle crate. This is
+      format compatibility coverage only; production oracle integration, safe
+      cache-root leases, mmap-backed indexed hits, append-writer migration,
+      LMDB/redb offset indexes, out-of-core rematerialization, cross-process
+      writer coordination, and harness proof remain open (`C-13`/`R-14`).
 - [x] Current hash-to-offset index value codec substrate: `PersistBlobKey`
       supplies domain-separated index keys, and `PersistBlobLocation` round-trips
       record offset plus payload length as stable little-endian index metadata.
