@@ -942,13 +942,24 @@ application of explorer-supplied preemption decisions
   minimum inbound live-link latency or positive infinity when no inbound edge
   targets the node. The focused tests cover min-inbound selection, directionality,
   no-inbound infinity, canonical duplicate-stable edges, and the world-derived
-  jitter-reduced minimum latency. Conservative PDES horizon enforcement,
-  topology-change recompute, partition/heal edge swaps, and RESOLVE delivery
-  assertions remain the later unchecked T-SCHED-3, T-SCHED-5, and T-SCHED-18
-  through T-SCHED-24 tasks.
-- [ ] **T-SCHED-3** Implement the conservative-PDES advance rule (no node crosses
+  jitter-reduced minimum latency. Horizon composition, topology-change recompute,
+  partition/heal edge swaps, and RESOLVE delivery assertions remain the later
+  unchecked T-SCHED-5 and T-SCHED-18 through T-SCHED-24 tasks.
+- [x] **T-SCHED-3** Implement the conservative-PDES advance rule (no node crosses
   an unresolved cross-node dependency; no rollback; no speculation). — satisfies
   [SCHED-5]; spec §8.3.
+  Completed by `checks.crucible.phase3.schedulerConservativePdes`: the scheduler
+  now extracts unresolved cross-node `BackendInput` dependencies, authorizes each
+  requested advance through a conservative-PDES guard, rejects rollback requests,
+  clamps the authorized target to the earliest future cross-node dependency, and
+  fails loudly if icount-ceiling conversion would round a dependency cap past the
+  conservative boundary. The focused tests cover safe targets before a dependency,
+  dependency clamping, rollback rejection, cross-node-only dependency extraction,
+  the live `SingleScheduler` stop-at-dependency path, an unaligned nonzero-shift
+  ceiling-overshoot regression, and the current fail-loud behavior for already-due
+  unresolved dependencies. Full horizon composition remains T-SCHED-5, and
+  already-due RESOLVE delivery / late-delivery localization remains T-SCHED-16 and
+  T-SCHED-18.
 - [ ] **T-SCHED-4** Implement and test the liveness guarantee: the
   global-minimum-horizon node is always advanceable; wire `gate:scheduler-liveness`
   to assert the scheduler always reaches quiescence or its limit (no
