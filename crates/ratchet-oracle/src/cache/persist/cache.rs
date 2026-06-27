@@ -1371,351 +1371,128 @@ struct FileRepackStagePaths<'a> {
     parse_artifact_index: &'a Path,
 }
 
-struct FileRepackBackupPaths {
-    pack: PathBuf,
-    blob_index: PathBuf,
-    file_artifact_index: PathBuf,
-    parse_artifact_index: PathBuf,
+fn swap_repacked_file_store(
+    replacements: &FileReplacementSet,
+) -> Result<(), PersistFileBlobPackRepackError> {
+    replacements
+        .replace_all()
+        .map_err(file_repack_replacement_error_to_persist)
 }
 
-fn swap_repacked_file_store(
+const FILE_REPACK_PACK_REPLACEMENT: usize = 0;
+const FILE_REPACK_BLOB_INDEX_REPLACEMENT: usize = 1;
+const FILE_REPACK_FILE_ARTIFACT_REPLACEMENT: usize = 2;
+const FILE_REPACK_PARSE_ARTIFACT_REPLACEMENT: usize = 3;
+
+fn file_repack_replacements(
     paths: FileRepackPaths<'_>,
     stage: FileRepackStagePaths<'_>,
     rewrite_id: u64,
-) -> Result<(), PersistFileBlobPackRepackError> {
-    let backups = FileRepackBackupPaths {
-        pack: paths.pack.with_extension(format!(
-            "repack-backup-pack-{}-{rewrite_id}.tmp",
-            std::process::id()
-        )),
-        blob_index: paths.blob_index.with_extension(format!(
-            "repack-backup-index-{}-{rewrite_id}.tmp",
-            std::process::id()
-        )),
-        file_artifact_index: paths.file_artifact_index.with_extension(format!(
-            "repack-backup-file-artifacts-{}-{rewrite_id}.tmp",
-            std::process::id()
-        )),
-        parse_artifact_index: paths.parse_artifact_index.with_extension(format!(
-            "repack-backup-parse-artifacts-{}-{rewrite_id}.tmp",
-            std::process::id()
-        )),
-    };
-    if let Err(error) = remove_file_repack_pack_temp(&backups.pack) {
-        cleanup_file_repack_stage_temps(stage);
-        return Err(error);
-    }
-    if let Err(error) = remove_file_repack_blob_index_temp(&backups.blob_index) {
-        cleanup_file_repack_stage_temps(stage);
-        return Err(error);
-    }
-    if let Err(error) = remove_file_repack_file_artifact_temp(&backups.file_artifact_index) {
-        cleanup_file_repack_stage_temps(stage);
-        return Err(error);
-    }
-    if let Err(error) = remove_file_repack_parse_artifact_temp(&backups.parse_artifact_index) {
-        cleanup_file_repack_stage_temps(stage);
-        return Err(error);
-    }
-
-    if let Err(source) = fs::rename(paths.pack, &backups.pack) {
-        cleanup_file_repack_stage_temps(stage);
-        return Err(PersistFileBlobPackRepackError::Pack {
-            source: PersistBlobPackError::Write {
-                path: paths.pack.to_path_buf(),
-                source,
-            },
-        });
-    }
-    if let Err(source) = fs::rename(paths.blob_index, &backups.blob_index) {
-        let restore_error = restore_file_repack_pack_backup(paths.pack, &backups.pack).err();
-        cleanup_file_repack_stage_temps(stage);
-        if let Some(error) = restore_error {
-            return Err(error);
-        }
-        return Err(PersistFileBlobPackRepackError::BlobIndex {
-            source: PersistBlobIndexError::Write {
-                path: paths.blob_index.to_path_buf(),
-                source,
-            },
-        });
-    }
-    if let Err(source) = fs::rename(paths.file_artifact_index, &backups.file_artifact_index) {
-        let restore_error = restore_file_repack_pack_and_blob_index_backups(paths, &backups).err();
-        cleanup_file_repack_stage_temps(stage);
-        if let Some(error) = restore_error {
-            return Err(error);
-        }
-        return Err(PersistFileBlobPackRepackError::FileArtifactIndex {
-            source: PersistFileArtifactIndexError::Write {
-                path: paths.file_artifact_index.to_path_buf(),
-                source,
-            },
-        });
-    }
-    if let Err(source) = fs::rename(paths.parse_artifact_index, &backups.parse_artifact_index) {
-        let restore_error =
-            restore_file_repack_pack_blob_and_file_artifact_backups(paths, &backups).err();
-        cleanup_file_repack_stage_temps(stage);
-        if let Some(error) = restore_error {
-            return Err(error);
-        }
-        return Err(PersistFileBlobPackRepackError::ParseArtifactIndex {
-            source: PersistParseArtifactIndexError::Write {
-                path: paths.parse_artifact_index.to_path_buf(),
-                source,
-            },
-        });
-    }
-    if let Err(source) = fs::rename(stage.pack, paths.pack) {
-        let restore_error = restore_file_repack_backups(paths, &backups).err();
-        cleanup_file_repack_stage_temps(stage);
-        if let Some(error) = restore_error {
-            return Err(error);
-        }
-        return Err(PersistFileBlobPackRepackError::Pack {
-            source: PersistBlobPackError::Write {
-                path: paths.pack.to_path_buf(),
-                source,
-            },
-        });
-    }
-    if let Err(source) = fs::rename(stage.blob_index, paths.blob_index) {
-        let restore_error = restore_file_repack_backups(paths, &backups).err();
-        cleanup_file_repack_stage_temps(stage);
-        if let Some(error) = restore_error {
-            return Err(error);
-        }
-        return Err(PersistFileBlobPackRepackError::BlobIndex {
-            source: PersistBlobIndexError::Write {
-                path: paths.blob_index.to_path_buf(),
-                source,
-            },
-        });
-    }
-    if let Err(source) = fs::rename(stage.file_artifact_index, paths.file_artifact_index) {
-        let restore_error = restore_file_repack_backups(paths, &backups).err();
-        cleanup_file_repack_stage_temps(stage);
-        if let Some(error) = restore_error {
-            return Err(error);
-        }
-        return Err(PersistFileBlobPackRepackError::FileArtifactIndex {
-            source: PersistFileArtifactIndexError::Write {
-                path: paths.file_artifact_index.to_path_buf(),
-                source,
-            },
-        });
-    }
-    if let Err(source) = fs::rename(stage.parse_artifact_index, paths.parse_artifact_index) {
-        let restore_error = restore_file_repack_backups(paths, &backups).err();
-        cleanup_file_repack_stage_temps(stage);
-        if let Some(error) = restore_error {
-            return Err(error);
-        }
-        return Err(PersistFileBlobPackRepackError::ParseArtifactIndex {
-            source: PersistParseArtifactIndexError::Write {
-                path: paths.parse_artifact_index.to_path_buf(),
-                source,
-            },
-        });
-    }
-    cleanup_file_repack_stage_temps(stage);
-    cleanup_file_repack_backups(&backups);
-    Ok(())
+) -> FileReplacementSet {
+    FileReplacementSet::new([
+        FileReplacement::new(
+            paths.pack.to_path_buf(),
+            stage.pack.to_path_buf(),
+            paths.pack.with_extension(format!(
+                "repack-backup-pack-{}-{rewrite_id}.tmp",
+                std::process::id()
+            )),
+        ),
+        FileReplacement::new(
+            paths.blob_index.to_path_buf(),
+            stage.blob_index.to_path_buf(),
+            paths.blob_index.with_extension(format!(
+                "repack-backup-index-{}-{rewrite_id}.tmp",
+                std::process::id()
+            )),
+        ),
+        FileReplacement::new(
+            paths.file_artifact_index.to_path_buf(),
+            stage.file_artifact_index.to_path_buf(),
+            paths.file_artifact_index.with_extension(format!(
+                "repack-backup-file-artifacts-{}-{rewrite_id}.tmp",
+                std::process::id()
+            )),
+        ),
+        FileReplacement::new(
+            paths.parse_artifact_index.to_path_buf(),
+            stage.parse_artifact_index.to_path_buf(),
+            paths.parse_artifact_index.with_extension(format!(
+                "repack-backup-parse-artifacts-{}-{rewrite_id}.tmp",
+                std::process::id()
+            )),
+        ),
+    ])
 }
 
-fn remove_file_repack_pack_temp(path: &Path) -> Result<(), PersistFileBlobPackRepackError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(PersistFileBlobPackRepackError::Pack {
-            source: PersistBlobPackError::Write {
-                path: path.to_path_buf(),
-                source,
-            },
-        }),
-    }
-}
-
-fn remove_file_repack_blob_index_temp(path: &Path) -> Result<(), PersistFileBlobPackRepackError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(PersistFileBlobPackRepackError::BlobIndex {
-            source: PersistBlobIndexError::Write {
-                path: path.to_path_buf(),
-                source,
-            },
-        }),
-    }
-}
-
-fn remove_file_repack_file_artifact_temp(
-    path: &Path,
-) -> Result<(), PersistFileBlobPackRepackError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(PersistFileBlobPackRepackError::FileArtifactIndex {
-            source: PersistFileArtifactIndexError::Write {
-                path: path.to_path_buf(),
-                source,
-            },
-        }),
-    }
-}
-
-fn remove_file_repack_parse_artifact_temp(
-    path: &Path,
-) -> Result<(), PersistFileBlobPackRepackError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(PersistFileBlobPackRepackError::ParseArtifactIndex {
-            source: PersistParseArtifactIndexError::Write {
-                path: path.to_path_buf(),
-                source,
-            },
-        }),
-    }
-}
-
-fn restore_file_repack_pack_backup(
-    pack_path: &Path,
-    backup_pack_path: &Path,
-) -> Result<(), PersistFileBlobPackRepackError> {
-    if let Err(source) = fs::remove_file(pack_path) {
-        if source.kind() != io::ErrorKind::NotFound {
-            return Err(PersistFileBlobPackRepackError::Pack {
-                source: PersistBlobPackError::Write {
-                    path: pack_path.to_path_buf(),
-                    source,
-                },
-            });
-        }
-    }
-    fs::rename(backup_pack_path, pack_path).map_err(|source| PersistFileBlobPackRepackError::Pack {
-        source: PersistBlobPackError::Write {
-            path: pack_path.to_path_buf(),
+fn file_repack_replacement_error_to_persist(
+    error: FileReplacementError,
+) -> PersistFileBlobPackRepackError {
+    match error {
+        FileReplacementError::RemoveBackup {
+            index,
+            path,
             source,
+        } => file_repack_file_error(index, path, source),
+        FileReplacementError::BackupTarget {
+            index,
+            target: path,
+            source,
+            ..
+        }
+        | FileReplacementError::InstallStaged {
+            index,
+            target: path,
+            source,
+            ..
+        }
+        | FileReplacementError::RemoveTargetBeforeRestore {
+            index,
+            target: path,
+            source,
+            ..
+        }
+        | FileReplacementError::RestoreBackup {
+            index,
+            target: path,
+            source,
+            ..
+        } => file_repack_file_error(index, path, source),
+    }
+}
+
+fn file_repack_file_error(
+    index: usize,
+    path: PathBuf,
+    source: io::Error,
+) -> PersistFileBlobPackRepackError {
+    match index {
+        FILE_REPACK_PACK_REPLACEMENT => PersistFileBlobPackRepackError::Pack {
+            source: PersistBlobPackError::Write { path, source },
         },
-    })
-}
-
-fn restore_file_repack_blob_index_backup(
-    index_path: &Path,
-    backup_index_path: &Path,
-) -> Result<(), PersistFileBlobPackRepackError> {
-    if let Err(source) = fs::remove_file(index_path) {
-        if source.kind() != io::ErrorKind::NotFound {
-            return Err(PersistFileBlobPackRepackError::BlobIndex {
-                source: PersistBlobIndexError::Write {
-                    path: index_path.to_path_buf(),
-                    source,
-                },
-            });
+        FILE_REPACK_BLOB_INDEX_REPLACEMENT => PersistFileBlobPackRepackError::BlobIndex {
+            source: PersistBlobIndexError::Write { path, source },
+        },
+        FILE_REPACK_FILE_ARTIFACT_REPLACEMENT => {
+            PersistFileBlobPackRepackError::FileArtifactIndex {
+                source: PersistFileArtifactIndexError::Write { path, source },
+            }
+        }
+        FILE_REPACK_PARSE_ARTIFACT_REPLACEMENT => {
+            PersistFileBlobPackRepackError::ParseArtifactIndex {
+                source: PersistParseArtifactIndexError::Write { path, source },
+            }
+        }
+        _ => {
+            debug_assert!(
+                index <= FILE_REPACK_PARSE_ARTIFACT_REPLACEMENT,
+                "unexpected file repack replacement index {index}"
+            );
+            PersistFileBlobPackRepackError::ParseArtifactIndex {
+                source: PersistParseArtifactIndexError::Write { path, source },
+            }
         }
     }
-    fs::rename(backup_index_path, index_path).map_err(|source| {
-        PersistFileBlobPackRepackError::BlobIndex {
-            source: PersistBlobIndexError::Write {
-                path: index_path.to_path_buf(),
-                source,
-            },
-        }
-    })
-}
-
-fn restore_file_repack_file_artifact_backup(
-    index_path: &Path,
-    backup_index_path: &Path,
-) -> Result<(), PersistFileBlobPackRepackError> {
-    if let Err(source) = fs::remove_file(index_path) {
-        if source.kind() != io::ErrorKind::NotFound {
-            return Err(PersistFileBlobPackRepackError::FileArtifactIndex {
-                source: PersistFileArtifactIndexError::Write {
-                    path: index_path.to_path_buf(),
-                    source,
-                },
-            });
-        }
-    }
-    fs::rename(backup_index_path, index_path).map_err(|source| {
-        PersistFileBlobPackRepackError::FileArtifactIndex {
-            source: PersistFileArtifactIndexError::Write {
-                path: index_path.to_path_buf(),
-                source,
-            },
-        }
-    })
-}
-
-fn restore_file_repack_parse_artifact_backup(
-    index_path: &Path,
-    backup_index_path: &Path,
-) -> Result<(), PersistFileBlobPackRepackError> {
-    if let Err(source) = fs::remove_file(index_path) {
-        if source.kind() != io::ErrorKind::NotFound {
-            return Err(PersistFileBlobPackRepackError::ParseArtifactIndex {
-                source: PersistParseArtifactIndexError::Write {
-                    path: index_path.to_path_buf(),
-                    source,
-                },
-            });
-        }
-    }
-    fs::rename(backup_index_path, index_path).map_err(|source| {
-        PersistFileBlobPackRepackError::ParseArtifactIndex {
-            source: PersistParseArtifactIndexError::Write {
-                path: index_path.to_path_buf(),
-                source,
-            },
-        }
-    })
-}
-
-fn restore_file_repack_pack_and_blob_index_backups(
-    paths: FileRepackPaths<'_>,
-    backups: &FileRepackBackupPaths,
-) -> Result<(), PersistFileBlobPackRepackError> {
-    restore_file_repack_pack_backup(paths.pack, &backups.pack)?;
-    restore_file_repack_blob_index_backup(paths.blob_index, &backups.blob_index)
-}
-
-fn restore_file_repack_pack_blob_and_file_artifact_backups(
-    paths: FileRepackPaths<'_>,
-    backups: &FileRepackBackupPaths,
-) -> Result<(), PersistFileBlobPackRepackError> {
-    restore_file_repack_pack_and_blob_index_backups(paths, backups)?;
-    restore_file_repack_file_artifact_backup(
-        paths.file_artifact_index,
-        &backups.file_artifact_index,
-    )
-}
-
-fn restore_file_repack_backups(
-    paths: FileRepackPaths<'_>,
-    backups: &FileRepackBackupPaths,
-) -> Result<(), PersistFileBlobPackRepackError> {
-    restore_file_repack_pack_blob_and_file_artifact_backups(paths, backups)?;
-    restore_file_repack_parse_artifact_backup(
-        paths.parse_artifact_index,
-        &backups.parse_artifact_index,
-    )
-}
-
-fn cleanup_file_repack_stage_temps(stage: FileRepackStagePaths<'_>) {
-    let _ = fs::remove_file(stage.pack);
-    let _ = fs::remove_file(stage.blob_index);
-    let _ = fs::remove_file(stage.file_artifact_index);
-    let _ = fs::remove_file(stage.parse_artifact_index);
-}
-
-fn cleanup_file_repack_backups(backups: &FileRepackBackupPaths) {
-    let _ = fs::remove_file(&backups.pack);
-    let _ = fs::remove_file(&backups.blob_index);
-    let _ = fs::remove_file(&backups.file_artifact_index);
-    let _ = fs::remove_file(&backups.parse_artifact_index);
 }
 
 impl PersistCache {
@@ -3407,39 +3184,37 @@ impl PersistCache {
             file_artifact_index: &tmp_file_artifact_path,
             parse_artifact_index: &tmp_parse_artifact_path,
         };
+        let paths = FileRepackPaths {
+            pack: self.file_pack.path(),
+            blob_index: self.file_index.path(),
+            file_artifact_index: self.file_artifact_index.path(),
+            parse_artifact_index: self.parse_artifact_index.path(),
+        };
+        let replacements = file_repack_replacements(paths, stage, rewrite_id);
         if let Err(source) = self
             .file_pack
             .write_relocated_records_to(&tmp_pack_path, plan.record_relocations())
         {
-            cleanup_file_repack_stage_temps(stage);
+            replacements.cleanup_staged();
             return Err(PersistFileBlobPackRepackError::Pack { source });
         }
         if let Err(source) = write_repacked_blob_index(&tmp_index_path, plan.record_relocations()) {
-            cleanup_file_repack_stage_temps(stage);
+            replacements.cleanup_staged();
             return Err(PersistFileBlobPackRepackError::BlobIndex { source });
         }
         if let Err(source) =
             write_repacked_file_artifact_index(&tmp_file_artifact_path, &file_artifact_entries)
         {
-            cleanup_file_repack_stage_temps(stage);
+            replacements.cleanup_staged();
             return Err(PersistFileBlobPackRepackError::FileArtifactIndex { source });
         }
         if let Err(source) =
             write_repacked_parse_artifact_index(&tmp_parse_artifact_path, &parse_artifact_entries)
         {
-            cleanup_file_repack_stage_temps(stage);
+            replacements.cleanup_staged();
             return Err(PersistFileBlobPackRepackError::ParseArtifactIndex { source });
         }
-        swap_repacked_file_store(
-            FileRepackPaths {
-                pack: self.file_pack.path(),
-                blob_index: self.file_index.path(),
-                file_artifact_index: self.file_artifact_index.path(),
-                parse_artifact_index: self.parse_artifact_index.path(),
-            },
-            stage,
-            rewrite_id,
-        )?;
+        swap_repacked_file_store(&replacements)?;
         Ok(plan)
     }
 
