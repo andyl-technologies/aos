@@ -1282,10 +1282,24 @@ application of explorer-supplied preemption decisions
   old-horizon continuation, idle/no-wake rendezvous advancement, and
   sequence-ordered application when a ready timed change shares a boundary with
   an immediate change.
-- [ ] **T-SCHED-25** Implement bounded host-level concurrency up to the lookahead
+- [x] **T-SCHED-25** Implement bounded host-level concurrency up to the lookahead
   window while serializing RESOLVE/EMIT through the single scheduler; prove
   serial and concurrent runs are bit-identical via `gate:e2e-determinism`. —
   satisfies [SCHED-40], [SCHED-41]; spec §8.12.
+  Completed by `checks.crucible.phase3.schedulerConcurrency`.
+  `ConcurrentQuantumLoop` adds a bounded concurrent RUN set that selects a
+  deterministic `SchedulerConcurrentRunSet` from the same horizon candidates as
+  serial PICK. The run set is bounded by `max_host_workers`, each candidate's
+  conservative lookahead target, and a common-frontier/same-target filter so a
+  skewed peer is not over-admitted past a possible dependency; zero worker
+  budgets fail loudly. The concurrent path publishes the selected ceilings before host dispatch, advances the chosen
+  nodes, then serializes each completion through RESOLVE/EMIT/STEP on the single
+  scheduler. Focused regressions cover worker-bound run-set selection, invalid
+  worker-budget rejection, skewed-peer exclusion, and a serial-vs-concurrent
+  comparison proving the same intermediate frontiers, final configuration,
+  frontier, event-log offset, and event-log entry hashes for simultaneous due
+  inputs. This is the scheduler-side proof used by `gate:e2e-determinism`;
+  broader harness coverage continues to own guest fingerprint equality.
 - [ ] **T-SCHED-26** Restrict the rendezvous to assertion-drain / trigger-eval /
   topology-swap / snapshot-control only (never event delivery), with zero skew at
   the rendezvous and independent resumption after. — satisfies [SCHED-42],
