@@ -3907,6 +3907,7 @@ mod tests {
             requires_features: vec!["attestation-v1".into()],
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {

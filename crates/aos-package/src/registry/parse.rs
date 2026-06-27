@@ -42,9 +42,9 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::types::{
-    AttestationMeta, BpfLsmPolicyMeta, ExposeArtifactMeta, ExposeMeta, PackageMeta,
-    PermissionsMeta, SbatEntry, SysrootImageEntry, package_name_bucket, validate_package_name,
-    validate_supported_package_meta,
+    AttestationMeta, BpfLsmPolicyMeta, ConfigModuleMeta, ExposeArtifactMeta, ExposeMeta,
+    PackageMeta, PermissionsMeta, SbatEntry, SysrootImageEntry, package_name_bucket,
+    validate_package_name, validate_supported_package_meta,
 };
 
 // ---------------------------------------------------------------------------
@@ -140,6 +140,9 @@ struct PlatformEntry {
     /// Store artifact carrying rendered RFC-0001 unit files and manifest.
     #[serde(default)]
     expose_artifact: Option<ExposeArtifactMeta>,
+    /// RFC-0011 config-only module output and its declared interface.
+    #[serde(default)]
+    config_module: Option<ConfigModuleMeta>,
     /// Signed RFC-0001 permission manifest.
     #[serde(default)]
     permissions: PermissionsMeta,
@@ -476,6 +479,7 @@ fn package_metas_for_platform(
                 requires_features,
                 expose: plat.expose.clone(),
                 expose_artifact: plat.expose_artifact.clone(),
+                config_module: plat.config_module.clone(),
                 permissions: plat.permissions.clone(),
                 bpf_lsm: plat.bpf_lsm.clone(),
                 attestation,
