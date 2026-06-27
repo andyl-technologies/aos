@@ -349,7 +349,7 @@ fn credential_lookup(credentials: &[CredentialMeta]) -> BTreeMap<&str, &Credenti
         .collect()
 }
 
-fn validate_provisionable_source(
+pub(crate) fn validate_provisionable_source(
     package: &str,
     credential: &CredentialMeta,
     source: &str,

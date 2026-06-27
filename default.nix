@@ -306,6 +306,10 @@ in {
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
     module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
+    # RFC-0011 off-host config-eval preflight + flat<->module parity gates
+    # (operability.md). Pure eval-time, next to checks.eval, cheap on every PR.
+    config-eval = import ./lib/testing/config-eval.nix {inherit pkgs lib;};
+    config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
     ignition-format = import ./lib/testing/ignition-format.nix {inherit pkgs lib;};
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};

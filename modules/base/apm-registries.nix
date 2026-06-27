@@ -12,6 +12,12 @@
 ##!     certificate(s) `apm` re-verifies cataloged UKIs against at
 ##!     download time (RFC-0006 phase 4). Distinct key, same delivery
 ##!     mechanism as the registry trust anchor, provisioned at install.
+##!   - `/etc/apm/trusted-config-keys.d/<op>.pub` — operator config-signing
+##!     key(s) (`aos.apm.configKeys`). `aos-eval.service` verifies the
+##!     stage-2 `host.nix` detached SSHSIG against these anchors before
+##!     driving the config eval (RFC-0011 trust-and-secrets.md §host.nix
+##!     authenticity). Same baked-into-the-measured-image delivery as
+##!     `trusted-keys.d`; an unsigned/untrusted host.nix yields no manifest.
 ##!
 ##! This is the out-of-band root of trust: first contact with the
 ##! registry verifies against these keys, and all later key rotation
@@ -25,6 +31,7 @@
   ...
 }: let
   cfg = config.aos.apm.registries;
+  configKeys = config.aos.apm.configKeys;
   registryRenderer = import ./_apm-registry-renderer.nix {inherit lib;};
   inherit
     (registryRenderer)
@@ -35,7 +42,25 @@
     trustedSbCerts
     trustKeyPattern
     ;
+  # An operator id is the `<op>.pub` filename stem and the `<op>:` prefix of
+  # every trust line in that file — same grammar as a registry name.
+  configKeyPattern = name: "${lib.escapeRegex name}:Ed25519:[A-Za-z0-9+/]+=*";
 in {
+  options.aos.apm.configKeys = lib.mkOption {
+    default = {};
+    description = ''
+      Operator config-signing keys baked into the image as
+      `/etc/apm/trusted-config-keys.d/<op>.pub`. Each attribute name is an
+      operator id; its value is a list of `<op>:Ed25519:<base64>` public key
+      lines (rotation overlap is a multi-element list). `aos-eval.service`
+      verifies the stage-2 `host.nix` detached SSHSIG against these anchors in
+      the `aos-config` SSHSIG namespace before driving the config eval; an
+      unsigned or untrusted-key host.nix produces no manifest and the box stays
+      on its prior generation (RFC-0011). Mirrors `trusted-keys.d`.
+    '';
+    type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+  };
+
   options.aos.apm.registries = lib.mkOption {
     default.andyl = {
       url = "https://cdn.aos.andyl.org/";
@@ -74,16 +99,52 @@ in {
           })
           registry.trustKeys
       )
-      cfg);
+      cfg)
+    ++ lib.flatten (lib.mapAttrsToList (
+        op: keys:
+          [
+            {
+              assertion = builtins.match registryNamePattern op != null;
+              message = ''
+                aos.apm.configKeys.${op}: operator ids must match
+                ${registryNamePattern} (ASCII letters, digits, '-' and '_').
+              '';
+            }
+            {
+              assertion = keys != [];
+              message = ''
+                aos.apm.configKeys.${op}: at least one '${op}:Ed25519:<base64>'
+                key is required (an empty operator anchor trusts nothing).
+              '';
+            }
+          ]
+          ++ builtins.map (key: {
+            assertion = builtins.match (configKeyPattern op) key != null;
+            message = ''
+              aos.apm.configKeys.${op}: config key '${key}' must be
+              '${op}:Ed25519:<base64>' (the operator prefix has to match the
+              attribute name).
+            '';
+          })
+          keys
+      )
+      configKeys);
 
-    environment.etc = lib.mkMerge (lib.mapAttrsToList (name: registry:
-      {
-        "apm/registries.d/${name}.toml".text = registryToml name registry;
-        "apm/trusted-keys.d/${name}.pub".text = trustedKeys registry;
-      }
-      // lib.optionalAttrs (registry.sbDbCerts != []) {
-        "apm/trusted-sb-certs.d/${name}.pem".text = trustedSbCerts registry;
+    environment.etc = lib.mkMerge (
+      (lib.mapAttrsToList (name: registry:
+        {
+          "apm/registries.d/${name}.toml".text = registryToml name registry;
+          "apm/trusted-keys.d/${name}.pub".text = trustedKeys registry;
+        }
+        // lib.optionalAttrs (registry.sbDbCerts != []) {
+          "apm/trusted-sb-certs.d/${name}.pem".text = trustedSbCerts registry;
+        })
+      cfg)
+      ++ (lib.mapAttrsToList (op: keys: {
+        "apm/trusted-config-keys.d/${op}.pub".text =
+          lib.concatMapStrings (key: key + "\n") keys;
       })
-    cfg);
+      configKeys)
+    );
   };
 }

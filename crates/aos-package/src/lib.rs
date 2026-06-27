@@ -39,6 +39,7 @@
 //! - [`profile`] / [`store`] / [`download`] — profile generations, the local
 //!   store, and the NAR download engine.
 
+pub mod attestation;
 pub mod clean;
 pub mod config;
 pub(crate) mod config_artifact;
@@ -51,6 +52,7 @@ pub use config_artifact::render_package_config;
 pub(crate) mod credential;
 pub(crate) mod credential_artifact;
 pub mod config_eval;
+pub mod config_trust;
 pub mod deps;
 pub mod graph_compile;
 pub mod desired;
@@ -75,6 +77,7 @@ pub mod registry_ops;
 pub mod remove;
 pub mod resolve;
 pub mod rollback;
+pub mod secret_ref;
 pub mod security;
 pub mod source;
 pub mod sshkey;
@@ -518,6 +521,61 @@ pub enum PackageCommand {
         /// The eval root holding entry.nix
         #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
         eval_root: PathBuf,
+        /// Operator trust-anchor dir (trusted-config-keys.d); repeatable. The
+        /// host.nix SSHSIG is verified against these before eval (the stage-2
+        /// gate). Verification is enforced BY DEFAULT (no dir => fail closed).
+        #[arg(long = "trusted-config-keys-dir")]
+        trusted_config_keys_dir: Vec<PathBuf>,
+        /// OFF-HOST/CI ONLY: skip the host.nix authenticity gate (host.nix is a
+        /// trusted checked-out fixture, not user-data). Never use on a host.
+        #[arg(long = "allow-unsigned-host-nix")]
+        allow_unsigned_host_nix: bool,
+    },
+    /// Evaluate the config and diff it against the live generation (RFC-0011).
+    ///
+    /// `--dry-run` runs the evaluator, loads the current generation's
+    /// `gen-N/manifest.json`, prints a structural diff (etc entries, unit
+    /// actions, closure delta), and stops before any generation or `/etc` swap
+    /// — a clean no-op on the live system. The same codepath backs the CI
+    /// `checks.config-eval` gate, so green CI predicts on-box behavior.
+    Switch {
+        /// Evaluate and diff only; never create a generation or touch /etc
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// The operator host.nix to evaluate (defaults to the staged stash leaf)
+        #[arg(long = "from")]
+        from: PathBuf,
+        /// Base manifest to diff against (the live/retained gen-N/manifest.json)
+        #[arg(long = "diff-against")]
+        diff_against: PathBuf,
+        /// Label for the base side of the diff
+        #[arg(long = "base-label", default_value = "current")]
+        base_label: String,
+        /// The in-image module library store path
+        #[arg(long = "base-lib")]
+        base_lib: PathBuf,
+        /// The registry provides index (index/provides.json)
+        #[arg(long)]
+        index: Option<PathBuf>,
+        /// A desired.toml whose `packages` seed the working set
+        #[arg(long)]
+        desired: Option<PathBuf>,
+        /// The running image's base-lib module_abi
+        #[arg(long = "module-abi")]
+        module_abi: u32,
+        /// The eval root holding entry.nix
+        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
+        eval_root: PathBuf,
+        /// Operator trust-anchor dir (trusted-config-keys.d); repeatable.
+        /// Verification is enforced BY DEFAULT (no dir => fail closed).
+        #[arg(long = "trusted-config-keys-dir")]
+        trusted_config_keys_dir: Vec<PathBuf>,
+        /// OFF-HOST/CI ONLY: skip the host.nix authenticity gate. Never on a host.
+        #[arg(long = "allow-unsigned-host-nix")]
+        allow_unsigned_host_nix: bool,
+        /// Where a real (non-dry-run) switch publishes the committed manifest
+        #[arg(long = "live-manifest", default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
+        live_manifest: PathBuf,
     },
     /// Materialize one package's pinned NAR closure into the store (RFC-0011).
     ///
@@ -1982,6 +2040,8 @@ pub async fn run(
         module_abi,
         out,
         eval_root,
+        trusted_config_keys_dir,
+        allow_unsigned_host_nix,
     } = command
     {
         let verbose = u8::from(printer.mode() == OutputMode::Verbose);
@@ -1994,7 +2054,53 @@ pub async fn run(
             out: out.clone(),
             eval_root: eval_root.clone(),
             verbose,
+            trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
+            allow_unsigned_host_nix: *allow_unsigned_host_nix,
         });
+    }
+
+    // `apm switch [--dry-run]` (RFC-0011 operability.md). Eval-only diff against
+    // the live generation; the eval is a pure function of its inputs, so the
+    // same codepath runs off-host (CI) and on-host.
+    if let PackageCommand::Switch {
+        dry_run: switch_dry_run,
+        from,
+        diff_against,
+        base_label,
+        base_lib,
+        index,
+        desired,
+        module_abi,
+        eval_root,
+        trusted_config_keys_dir,
+        allow_unsigned_host_nix,
+        live_manifest,
+    } = command
+    {
+        let verbose = u8::from(printer.mode() == OutputMode::Verbose);
+        let json_out = printer.mode() == OutputMode::Json;
+        // The candidate manifest is evaluated to a temp file; the diff reads it.
+        let candidate = std::env::temp_dir().join(format!("aos-switch-candidate-{}.json", std::process::id()));
+        let params = config_eval::dry_run::SwitchParams {
+            eval: config_eval::EvalCommand {
+                host_nix: from.clone(),
+                base_lib: base_lib.clone(),
+                index: index.clone(),
+                desired: desired.clone(),
+                module_abi: *module_abi,
+                out: candidate,
+                eval_root: eval_root.clone(),
+                verbose,
+                trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
+                allow_unsigned_host_nix: *allow_unsigned_host_nix,
+            },
+            base_manifest: diff_against.clone(),
+            base_label: base_label.clone(),
+            dry_run: *switch_dry_run,
+            live_manifest: live_manifest.clone(),
+            json_out,
+        };
+        return config_eval::dry_run::run_switch(&params).map(|_| ());
     }
 
     // The RFC-0011 graph compiler (`aos-graph-compile.service`) drives systemd
@@ -2402,6 +2508,9 @@ pub async fn run(
         }
         PackageCommand::Eval { .. } => {
             unreachable!("Eval is handled before ApmConfig::load")
+        }
+        PackageCommand::Switch { .. } => {
+            unreachable!("Switch is handled before ApmConfig::load")
         }
         PackageCommand::GraphCompile { .. } => {
             unreachable!("GraphCompile is handled before ApmConfig::load")
