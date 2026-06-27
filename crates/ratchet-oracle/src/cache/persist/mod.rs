@@ -136,7 +136,7 @@ pub use error::{
     PersistParseArtifactMaterializationError, PersistParseBytesIndexedLoadError,
     PersistParseFileIndexedHydrationError, PersistParseFileIndexedLoadError,
     PersistParseSourceIndexedLoadError, PersistStorageMaintenanceError,
-    PersistValueBlobReachabilityPlanError,
+    PersistValueBlobPackRepackError, PersistValueBlobReachabilityPlanError,
 };
 pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,

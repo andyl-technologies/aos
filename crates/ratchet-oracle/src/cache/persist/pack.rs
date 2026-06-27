@@ -433,6 +433,59 @@ impl PersistBlobPack {
         Ok(payload)
     }
 
+    /// Writes a compacted copy of the supplied records to `tmp_path`.
+    ///
+    /// Each relocation is read from the current pack at its old location,
+    /// payload-verified against its key, appended to a temporary pack, and
+    /// checked against the relocation's planned new location. Callers are
+    /// responsible for renaming the completed temporary pack into place with
+    /// whatever sidecar updates make those new locations visible.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the current pack cannot be read, a
+    /// relocated source record fails verification, the temporary pack cannot be
+    /// created or written, a copied record lands at a different location than
+    /// planned, or the completed temporary pack fails validation.
+    pub(super) fn write_relocated_records_to(
+        &self,
+        tmp_path: impl Into<PathBuf>,
+        relocations: &[PersistBlobRecordRelocation],
+    ) -> Result<PersistBlobPack, PersistBlobPackError> {
+        ensure_blob_pack_file(&self.path)?;
+        let tmp_path = tmp_path.into();
+        match fs::remove_file(&tmp_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(PersistBlobPackError::Write {
+                    path: tmp_path,
+                    source,
+                });
+            }
+        }
+        let tmp_pack = PersistBlobPack::open(tmp_path.clone())?;
+        let copy_result = (|| {
+            for relocation in relocations {
+                let payload = self.read_blob(relocation.old_location(), relocation.key().hash())?;
+                let copied = tmp_pack.append_blob(relocation.key().hash(), &payload)?;
+                if copied != relocation.new_location() {
+                    return Err(PersistBlobPackError::RecordLocationMismatch {
+                        expected: relocation.new_location(),
+                        actual: copied,
+                    });
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = copy_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(error);
+        }
+        tmp_pack.len()?;
+        Ok(tmp_pack)
+    }
+
     fn payload_window_from_open_file(
         &self,
         file: &mut fs::File,

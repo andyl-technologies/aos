@@ -11,8 +11,9 @@ use crate::cache::{
 use crate::string::{ContextElement, StringContext};
 use crate::syntax::Span;
 use crate::value::Value;
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
 struct StaticRevalidator {
@@ -970,6 +971,45 @@ fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
             .len(),
         PERSIST_BLOB_INDEX_ENTRY_LEN as u64
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_indexed_read_waits_for_store_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"locked indexed payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    cache
+        .append_blob_indexed(key, payload)
+        .expect("indexed blob appends");
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+        .expect("value store lock acquired");
+    let reader = cache.clone();
+    let (tx, rx) = mpsc::channel();
+    let barrier = Arc::new(Barrier::new(2));
+    let reader_barrier = Arc::clone(&barrier);
+    let handle = thread::spawn(move || {
+        reader_barrier.wait();
+        let result = reader.read_blob_indexed(key);
+        tx.send(result).expect("read result sends");
+    });
+
+    barrier.wait();
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "indexed read should wait while the value store lock is held"
+    );
+    drop(guard);
+    let result = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("indexed read completes after lock release")
+        .expect("indexed read succeeds")
+        .expect("indexed blob exists");
+    handle.join().expect("reader thread joins");
+    assert_eq!(result.as_slice(), payload);
 
     let _ = fs::remove_dir_all(root);
 }
@@ -3777,6 +3817,150 @@ fn cache_blob_pack_repack_plan_maps_value_live_records_to_compacted_offsets() {
             .expect("value pack metadata after repack plan")
             .len(),
         bytes_before
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_value_blob_pack_repack_relocates_live_values_and_rewrites_index() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let prefix_payload = b"unrooted value prefix";
+    let prefix_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(prefix_payload));
+    cache
+        .append_blob(prefix_key, prefix_payload)
+        .expect("unrooted prefix appends");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let node_payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let node_value_hash = node_payload.value_hash().expect("payload hashes");
+    let node_materialized = cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &node_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("node value materializes");
+    let PersistMaterialization::Materialized(node_old_location) = node_materialized else {
+        panic!("node value should materialize");
+    };
+    let middle_payload = b"unrooted value middle";
+    let middle_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(middle_payload));
+    cache
+        .append_blob(middle_key, middle_payload)
+        .expect("unrooted middle appends");
+    let indexed_payload =
+        CachedExpressionValue::immediate(Value::int(7)).expect("indexed payload builds");
+    let indexed_value_hash = indexed_payload
+        .value_hash()
+        .expect("indexed payload hashes");
+    let indexed_materialized = cache
+        .materialize_cached_expression_value_indexed(
+            &indexed_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("indexed value materializes");
+    let PersistMaterialization::Materialized(indexed_old_location) = indexed_materialized else {
+        panic!("indexed value should materialize");
+    };
+    let tail_payload = b"unrooted value tail";
+    let tail_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(tail_payload));
+    let tail_location = cache
+        .append_blob(tail_key, tail_payload)
+        .expect("unrooted tail appends");
+    let bytes_before = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata before repack")
+        .len();
+
+    let plan = cache
+        .repack_value_blob_pack()
+        .expect("value blob pack repacks");
+
+    assert!(plan.reclaimable_bytes() > 0);
+    assert_eq!(plan.bytes_before(), bytes_before);
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata after repack")
+            .len(),
+        plan.bytes_after()
+    );
+    assert_eq!(
+        plan.record_relocations()
+            .iter()
+            .map(|relocation| relocation.old_location())
+            .collect::<Vec<_>>(),
+        vec![node_old_location, indexed_old_location]
+    );
+    let node_new_location = plan.record_relocations()[0].new_location();
+    let indexed_new_location = plan.record_relocations()[1].new_location();
+    assert_eq!(
+        cache
+            .lookup_blob_location(PersistBlobKey::for_value(node_value_hash.as_durable_hash()))
+            .expect("node value index lookup succeeds"),
+        Some(node_new_location)
+    );
+    assert_eq!(
+        cache
+            .lookup_blob_location(PersistBlobKey::for_value(
+                indexed_value_hash.as_durable_hash()
+            ))
+            .expect("indexed value lookup succeeds"),
+        Some(indexed_new_location)
+    );
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_indexed(node_key)
+            .expect("node value load succeeds")
+            .expect("node value exists"),
+        node_payload
+    );
+    assert_eq!(
+        cache
+            .load_cached_expression_value_indexed(indexed_value_hash)
+            .expect("indexed value load succeeds")
+            .expect("indexed value exists"),
+        indexed_payload
+    );
+    assert!(cache.read_blob(tail_key, tail_location).is_err());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_value_blob_pack_repack_reclaims_all_unrooted_values() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let first_payload = b"first unrooted value";
+    let first_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(first_payload));
+    cache
+        .append_blob(first_key, first_payload)
+        .expect("first unrooted value appends");
+    let second_payload = b"second unrooted value";
+    let second_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(second_payload));
+    cache
+        .append_blob(second_key, second_payload)
+        .expect("second unrooted value appends");
+
+    let plan = cache
+        .repack_value_blob_pack()
+        .expect("unrooted value pack repacks");
+
+    assert!(plan.live_roots().is_empty());
+    assert!(plan.record_relocations().is_empty());
+    assert_eq!(plan.unrooted_records().len(), 2);
+    assert_eq!(plan.bytes_after(), PERSIST_BLOB_PACK_HEADER_LEN as u64);
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata after empty repack")
+            .len(),
+        PERSIST_BLOB_PACK_HEADER_LEN as u64
+    );
+    assert!(
+        cache
+            .value_index()
+            .latest_entries()
+            .expect("value index snapshots")
+            .is_empty()
     );
 
     let _ = fs::remove_dir_all(root);

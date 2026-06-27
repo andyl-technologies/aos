@@ -1004,6 +1004,252 @@ const fn blob_record_bytes(record: PersistBlobPackRecord) -> u64 {
     PERSIST_BLOB_RECORD_HEADER_LEN as u64 + record.location().payload_len()
 }
 
+fn blob_pack_repack_plan_from_liveness(
+    store: PersistBlobStore,
+    liveness: PersistBlobPackLivenessPlan,
+) -> Result<PersistBlobPackRepackPlan, PersistBlobPackRepackPlanError> {
+    let mut next_offset = PERSIST_BLOB_PACK_HEADER_LEN as u64;
+    let mut record_relocations = Vec::new();
+    for record in liveness.rooted_records() {
+        let new_location = PersistBlobLocation::new(next_offset, record.location().payload_len());
+        record_relocations.push(PersistBlobRecordRelocation::new(
+            record.key(store),
+            record.location(),
+            new_location,
+        ));
+        let after_header = next_offset
+            .checked_add(PERSIST_BLOB_RECORD_HEADER_LEN as u64)
+            .ok_or(PersistBlobPackRepackPlanError::RecordBoundsOverflow {
+                record_offset: next_offset,
+                payload_len: record.location().payload_len(),
+            })?;
+        next_offset = after_header
+            .checked_add(record.location().payload_len())
+            .ok_or(PersistBlobPackRepackPlanError::RecordBoundsOverflow {
+                record_offset: next_offset,
+                payload_len: record.location().payload_len(),
+            })?;
+    }
+    Ok(PersistBlobPackRepackPlan::new(
+        liveness.live_roots().to_vec(),
+        record_relocations,
+        liveness.unrooted_records().to_vec(),
+        liveness.bytes_before(),
+        next_offset,
+        liveness.rooted_record_bytes(),
+        liveness.unrooted_record_bytes(),
+    ))
+}
+
+fn write_repacked_blob_index(
+    tmp_path: &Path,
+    relocations: &[PersistBlobRecordRelocation],
+) -> Result<(), PersistBlobIndexError> {
+    match fs::remove_file(tmp_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(PersistBlobIndexError::Write {
+                path: tmp_path.to_path_buf(),
+                source,
+            });
+        }
+    }
+    let tmp_index = PersistBlobIndex::open(tmp_path.to_path_buf())?;
+    let mut entries = relocations
+        .iter()
+        .map(|relocation| PersistBlobIndexEntry::new(relocation.key(), relocation.new_location()))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.key().index_bytes());
+    let write_result = (|| {
+        for entry in entries {
+            tmp_index.append_entry(entry)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(tmp_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn swap_repacked_value_store(
+    pack_path: &Path,
+    index_path: &Path,
+    tmp_pack_path: &Path,
+    tmp_index_path: &Path,
+    rewrite_id: u64,
+) -> Result<(), PersistValueBlobPackRepackError> {
+    let backup_pack_path = pack_path.with_extension(format!(
+        "repack-backup-pack-{}-{rewrite_id}.tmp",
+        std::process::id()
+    ));
+    let backup_index_path = index_path.with_extension(format!(
+        "repack-backup-index-{}-{rewrite_id}.tmp",
+        std::process::id()
+    ));
+    if let Err(error) = remove_pack_temp(&backup_pack_path) {
+        cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
+        return Err(error);
+    }
+    if let Err(error) = remove_index_temp(&backup_index_path) {
+        cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
+        return Err(error);
+    }
+
+    if let Err(source) = fs::rename(pack_path, &backup_pack_path) {
+        cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
+        return Err(PersistValueBlobPackRepackError::Pack {
+            source: PersistBlobPackError::Write {
+                path: pack_path.to_path_buf(),
+                source,
+            },
+        });
+    }
+    if let Err(source) = fs::rename(index_path, &backup_index_path) {
+        let restore_error = restore_pack_backup(pack_path, &backup_pack_path).err();
+        cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
+        if let Some(error) = restore_error {
+            return Err(error);
+        }
+        return Err(PersistValueBlobPackRepackError::BlobIndex {
+            source: PersistBlobIndexError::Write {
+                path: index_path.to_path_buf(),
+                source,
+            },
+        });
+    }
+    if let Err(source) = fs::rename(tmp_pack_path, pack_path) {
+        let restore_error =
+            restore_repack_backups(pack_path, index_path, &backup_pack_path, &backup_index_path)
+                .err();
+        cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
+        if let Some(error) = restore_error {
+            return Err(error);
+        }
+        return Err(PersistValueBlobPackRepackError::Pack {
+            source: PersistBlobPackError::Write {
+                path: pack_path.to_path_buf(),
+                source,
+            },
+        });
+    }
+    if let Err(source) = fs::rename(tmp_index_path, index_path) {
+        let _ = fs::remove_file(pack_path);
+        let restore_error =
+            restore_repack_backups(pack_path, index_path, &backup_pack_path, &backup_index_path)
+                .err();
+        cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
+        if let Some(error) = restore_error {
+            return Err(error);
+        }
+        return Err(PersistValueBlobPackRepackError::BlobIndex {
+            source: PersistBlobIndexError::Write {
+                path: index_path.to_path_buf(),
+                source,
+            },
+        });
+    }
+    cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
+    cleanup_repack_backups(&backup_pack_path, &backup_index_path);
+    Ok(())
+}
+
+fn remove_pack_temp(path: &Path) -> Result<(), PersistValueBlobPackRepackError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(PersistValueBlobPackRepackError::Pack {
+            source: PersistBlobPackError::Write {
+                path: path.to_path_buf(),
+                source,
+            },
+        }),
+    }
+}
+
+fn remove_index_temp(path: &Path) -> Result<(), PersistValueBlobPackRepackError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(PersistValueBlobPackRepackError::BlobIndex {
+            source: PersistBlobIndexError::Write {
+                path: path.to_path_buf(),
+                source,
+            },
+        }),
+    }
+}
+
+fn restore_pack_backup(
+    pack_path: &Path,
+    backup_pack_path: &Path,
+) -> Result<(), PersistValueBlobPackRepackError> {
+    if let Err(source) = fs::remove_file(pack_path) {
+        if source.kind() != io::ErrorKind::NotFound {
+            return Err(PersistValueBlobPackRepackError::Pack {
+                source: PersistBlobPackError::Write {
+                    path: pack_path.to_path_buf(),
+                    source,
+                },
+            });
+        }
+    }
+    fs::rename(backup_pack_path, pack_path).map_err(|source| {
+        PersistValueBlobPackRepackError::Pack {
+            source: PersistBlobPackError::Write {
+                path: pack_path.to_path_buf(),
+                source,
+            },
+        }
+    })
+}
+
+fn restore_index_backup(
+    index_path: &Path,
+    backup_index_path: &Path,
+) -> Result<(), PersistValueBlobPackRepackError> {
+    if let Err(source) = fs::remove_file(index_path) {
+        if source.kind() != io::ErrorKind::NotFound {
+            return Err(PersistValueBlobPackRepackError::BlobIndex {
+                source: PersistBlobIndexError::Write {
+                    path: index_path.to_path_buf(),
+                    source,
+                },
+            });
+        }
+    }
+    fs::rename(backup_index_path, index_path).map_err(|source| {
+        PersistValueBlobPackRepackError::BlobIndex {
+            source: PersistBlobIndexError::Write {
+                path: index_path.to_path_buf(),
+                source,
+            },
+        }
+    })
+}
+
+fn restore_repack_backups(
+    pack_path: &Path,
+    index_path: &Path,
+    backup_pack_path: &Path,
+    backup_index_path: &Path,
+) -> Result<(), PersistValueBlobPackRepackError> {
+    restore_pack_backup(pack_path, backup_pack_path)?;
+    restore_index_backup(index_path, backup_index_path)
+}
+
+fn cleanup_repack_stage_temps(tmp_pack_path: &Path, tmp_index_path: &Path) {
+    let _ = fs::remove_file(tmp_pack_path);
+    let _ = fs::remove_file(tmp_index_path);
+}
+
+fn cleanup_repack_backups(backup_pack_path: &Path, backup_index_path: &Path) {
+    let _ = fs::remove_file(backup_pack_path);
+    let _ = fs::remove_file(backup_index_path);
+}
+
 impl PersistCache {
     /// Opens or initializes a persistent eval-cache root.
     ///
@@ -2407,6 +2653,24 @@ impl PersistCache {
         let roots = self
             .snapshot_blob_live_roots_unlocked(store)
             .map_err(|source| PersistBlobPackLivenessPlanError::Roots { source })?;
+        self.plan_blob_pack_liveness_from_roots(store, roots)
+    }
+
+    fn plan_blob_pack_liveness_unlocked(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<PersistBlobPackLivenessPlan, PersistBlobPackLivenessPlanError> {
+        let roots = self
+            .snapshot_blob_live_roots_unlocked(store)
+            .map_err(|source| PersistBlobPackLivenessPlanError::Roots { source })?;
+        self.plan_blob_pack_liveness_from_roots(store, roots)
+    }
+
+    fn plan_blob_pack_liveness_from_roots(
+        &self,
+        store: PersistBlobStore,
+        roots: Vec<PersistBlobLiveRoot>,
+    ) -> Result<PersistBlobPackLivenessPlan, PersistBlobPackLivenessPlanError> {
         let pack = self.blob_pack(store);
         let mut rooted_identities = std::collections::BTreeSet::new();
         let mut live_end = PERSIST_BLOB_PACK_HEADER_LEN as u64;
@@ -2475,38 +2739,75 @@ impl PersistCache {
         let liveness = self
             .plan_blob_pack_liveness(store)
             .map_err(|source| PersistBlobPackRepackPlanError::Liveness { source })?;
-        let mut next_offset = PERSIST_BLOB_PACK_HEADER_LEN as u64;
-        let mut record_relocations = Vec::new();
-        for record in liveness.rooted_records() {
-            let new_location =
-                PersistBlobLocation::new(next_offset, record.location().payload_len());
-            record_relocations.push(PersistBlobRecordRelocation::new(
-                record.key(store),
-                record.location(),
-                new_location,
-            ));
-            let after_header = next_offset
-                .checked_add(PERSIST_BLOB_RECORD_HEADER_LEN as u64)
-                .ok_or(PersistBlobPackRepackPlanError::RecordBoundsOverflow {
-                    record_offset: next_offset,
-                    payload_len: record.location().payload_len(),
-                })?;
-            next_offset = after_header
-                .checked_add(record.location().payload_len())
-                .ok_or(PersistBlobPackRepackPlanError::RecordBoundsOverflow {
-                    record_offset: next_offset,
-                    payload_len: record.location().payload_len(),
-                })?;
+        blob_pack_repack_plan_from_liveness(store, liveness)
+    }
+
+    fn plan_blob_pack_repack_unlocked(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<PersistBlobPackRepackPlan, PersistBlobPackRepackPlanError> {
+        let liveness = self
+            .plan_blob_pack_liveness_unlocked(store)
+            .map_err(|source| PersistBlobPackRepackPlanError::Liveness { source })?;
+        blob_pack_repack_plan_from_liveness(store, liveness)
+    }
+
+    /// Rewrites the `values/` pack to the current live value roots.
+    ///
+    /// This explicit maintenance operation builds a value-pack repack plan
+    /// while holding the same-root value store write lock, stages a compacted
+    /// value pack and replacement value blob index, then swaps both files into
+    /// place with best-effort rollback for ordinary filesystem errors. It
+    /// preserves the latest indexed value roots and omits records that are not
+    /// live under the current value blob index. The cache is advisory: this
+    /// operation is not crash-transactional, does not prune node metadata,
+    /// coordinate with cross-process writers or raw lower-level users, or apply
+    /// the future full GC retention policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistValueBlobPackRepackError`] if the same-root value
+    /// store write lock is poisoned, if repack planning fails, if the compacted
+    /// pack image cannot be written or swapped, or if the replacement value
+    /// index cannot be written or swapped.
+    pub fn repack_value_blob_pack(
+        &self,
+    ) -> Result<PersistBlobPackRepackPlan, PersistValueBlobPackRepackError> {
+        let _write_guard = self
+            .root_locks
+            .blob_store_lock(PersistBlobStore::Values)
+            .lock()
+            .map_err(|_| PersistValueBlobPackRepackError::WriteLockPoisoned)?;
+        let plan = self
+            .plan_blob_pack_repack_unlocked(PersistBlobStore::Values)
+            .map_err(|source| PersistValueBlobPackRepackError::Plan { source })?;
+        if plan.reclaimable_bytes() == 0 {
+            return Ok(plan);
         }
-        Ok(PersistBlobPackRepackPlan::new(
-            liveness.live_roots().to_vec(),
-            record_relocations,
-            liveness.unrooted_records().to_vec(),
-            liveness.bytes_before(),
-            next_offset,
-            liveness.rooted_record_bytes(),
-            liveness.unrooted_record_bytes(),
-        ))
+        let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
+        let tmp_pack_path = self.value_pack.path().with_extension(format!(
+            "repack-pack-{}-{rewrite_id}.tmp",
+            std::process::id()
+        ));
+        let tmp_index_path = self.value_index.path().with_extension(format!(
+            "repack-index-{}-{rewrite_id}.tmp",
+            std::process::id()
+        ));
+        self.value_pack
+            .write_relocated_records_to(&tmp_pack_path, plan.record_relocations())
+            .map_err(|source| PersistValueBlobPackRepackError::Pack { source })?;
+        if let Err(source) = write_repacked_blob_index(&tmp_index_path, plan.record_relocations()) {
+            cleanup_repack_stage_temps(&tmp_pack_path, &tmp_index_path);
+            return Err(PersistValueBlobPackRepackError::BlobIndex { source });
+        }
+        swap_repacked_value_store(
+            self.value_pack.path(),
+            self.value_index.path(),
+            &tmp_pack_path,
+            &tmp_index_path,
+            rewrite_id,
+        )?;
+        Ok(plan)
     }
 
     /// Returns verified pack records as typed blob-index entries for `store`.
@@ -2734,12 +3035,18 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobIndexedReadError`] if the selected index cannot be
-    /// read/decoded or if the indexed pack location cannot be read and verified.
+    /// Returns [`PersistBlobIndexedReadError`] if the same-root store lock is
+    /// poisoned, if the selected index cannot be read/decoded, or if the
+    /// indexed pack location cannot be read and verified.
     pub fn read_blob_indexed(
         &self,
         key: PersistBlobKey,
     ) -> Result<Option<Vec<u8>>, PersistBlobIndexedReadError> {
+        let _read_guard = self
+            .root_locks
+            .blob_store_lock(key.store())
+            .lock()
+            .map_err(|_| PersistBlobIndexedReadError::ReadLockPoisoned { store: key.store() })?;
         let Some(location) = self
             .lookup_blob_location(key)
             .map_err(|source| PersistBlobIndexedReadError::Lookup { source })?

@@ -837,6 +837,32 @@ pub enum PersistBlobPackRepackPlanError {
     },
 }
 
+/// Persistent value blob-pack repack failed.
+#[derive(Debug, Error)]
+pub enum PersistValueBlobPackRepackError {
+    /// The same-root value blob-pack write lock was poisoned.
+    #[error("persistent value blob-pack repack write lock is poisoned")]
+    WriteLockPoisoned,
+    /// The value repack plan could not be produced.
+    #[error("failed to plan persistent value blob-pack repack")]
+    Plan {
+        /// The underlying repack planning error.
+        source: PersistBlobPackRepackPlanError,
+    },
+    /// The compacted value pack could not be written or swapped.
+    #[error("failed to write or swap persistent value blob pack during repack")]
+    Pack {
+        /// The underlying packfile error.
+        source: PersistBlobPackError,
+    },
+    /// The compacted value index could not be written or swapped.
+    #[error("failed to write or swap persistent value blob index during repack")]
+    BlobIndex {
+        /// The underlying blob-index error.
+        source: PersistBlobIndexError,
+    },
+}
+
 /// Persistent node-metadata value-root planning failed.
 #[derive(Debug, Error)]
 pub enum PersistNodeValueRootPlanError {
@@ -1054,6 +1080,12 @@ pub enum PersistBlobIndexedWriteError {
 /// Indexed blob read failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexedReadError {
+    /// The same-root blob-store read lock was poisoned by a prior panic.
+    #[error("persistent indexed blob read lock for {store:?} is poisoned")]
+    ReadLockPoisoned {
+        /// The selected blob store.
+        store: PersistBlobStore,
+    },
     /// The sidecar index lookup failed.
     #[error("failed to look up indexed persistent blob")]
     Lookup {
@@ -1321,6 +1353,14 @@ pub enum PersistBlobPackError {
         expected: u64,
         /// The payload length declared by the record.
         actual: u64,
+    },
+    /// A copied record did not land at the planned pack location.
+    #[error("persistent blob record location mismatch: expected {expected:?}, got {actual:?}")]
+    RecordLocationMismatch {
+        /// The planned location for the copied record.
+        expected: PersistBlobLocation,
+        /// The actual location returned by the destination pack append.
+        actual: PersistBlobLocation,
     },
     /// Record metadata cannot be represented as an in-pack byte range.
     #[error(
