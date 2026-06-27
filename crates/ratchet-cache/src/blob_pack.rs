@@ -218,6 +218,29 @@ pub struct MappedBlobPack {
 /// writes through other file descriptors or processes. Returning `true` for a
 /// file that can be mutated while a mapped payload slice is alive violates the
 /// contract.
+///
+/// The leased mapping cannot outlive the borrowed lease:
+///
+/// ```compile_fail
+/// use std::fs;
+///
+/// use ratchet_cache::blob_pack::{
+///     BlobPackReadLease, LeasedMappedBlobPack, MappedBlobPack,
+/// };
+///
+/// struct TemporaryLease;
+///
+/// unsafe impl BlobPackReadLease for TemporaryLease {
+///     fn covers_file(&self, _file: &fs::File) -> bool {
+///         true
+///     }
+/// }
+///
+/// fn escape_lease(file: &fs::File) -> LeasedMappedBlobPack<'static> {
+///     let lease = TemporaryLease;
+///     MappedBlobPack::map_file_with_lease(file, &lease).unwrap()
+/// }
+/// ```
 pub unsafe trait BlobPackReadLease {
     /// Returns whether this lease covers `file`.
     fn covers_file(&self, file: &fs::File) -> bool;

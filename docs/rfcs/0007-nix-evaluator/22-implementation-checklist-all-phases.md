@@ -1199,6 +1199,8 @@ alone (`M-1`/`Q-A`).
       lease lifetime, and `MappedBlobPack::map_file_with_lease` returns
       `LeasedMappedBlobPack<'lease>` so mapped payload borrows cannot outlive
       that lease. Tests cover accepted leases and rejected non-covering leases.
+      A compile-fail rustdoc canary proves a leased mapping cannot escape a
+      stack lease as `'static`.
       This is a type-boundary substrate only; production cache-root lease
       implementation, same-root lock migration into `ratchet-cache`,
       cross-process/durable filesystem leases, `ratchet-oracle` integration,
