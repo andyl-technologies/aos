@@ -15,9 +15,9 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use crate::{
     BackendError, BackendInput, Configuration, ContentHash, Decision, DecisionRecorder,
     DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset, EventSequenceState, FaultId,
-    Icount, NodeCounter, NodeId, PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef,
-    SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError,
-    VcpuId, VirtualTime, WorldLookaheadEdge, step,
+    Icount, NodeCounter, NodeId, PreemptionDecision, PreemptionKind, RngStreamId,
+    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration,
+    SimInstant, TimeConversionError, VcpuId, VirtualTime, WorldLookaheadEdge, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -241,6 +241,25 @@ pub struct SchedulerRunSubdivisionRecord {
     pub ceiling: SchedulerRunCeilingPublication,
     /// Per-vCPU slices in plugin execution order.
     pub slices: Vec<SchedulerRunSubdivisionSlice>,
+}
+
+/// Evidence that an explorer-supplied preemption was applied by RESOLVE.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerPreemptionApplication {
+    /// Monotone scheduler-local preemption application sequence.
+    pub sequence: u64,
+    /// Scheduler quantum whose RUN admitted this preemption.
+    pub quantum: u64,
+    /// Scheduler node selected for the RUN that admitted the preemption.
+    pub node: SchedulerNodeId,
+    /// Explorer-supplied preemption decision recorded in the schedule.
+    pub decision: PreemptionDecision,
+    /// Inclusive lower icount bound for this RUN's authorized window.
+    pub deadline_icount: Icount,
+    /// Inclusive upper icount bound for this RUN's authorized window.
+    pub horizon_icount: Icount,
+    /// The single scheduler-published node ceiling for this RUN.
+    pub ceiling: SchedulerRunCeilingPublication,
 }
 
 /// The virtual-time clock value used for scheduler lookahead decisions.
@@ -482,6 +501,8 @@ pub struct SchedulerActorStateSnapshot {
     pub decision_rng_cursor: DecisionRngState,
     /// Boundary-applied control operations in scheduler application order.
     pub control_applications: Vec<SchedulerControlApplication>,
+    /// Explorer-supplied preemptions applied by completed RESOLVE phases.
+    pub preemption_applications: Vec<SchedulerPreemptionApplication>,
     /// Number of quantum boundaries at which the scheduler yielded to control.
     pub boundary_yields: u64,
 }
@@ -2262,6 +2283,8 @@ pub struct SchedulerLivenessScenario {
     pub topology_changes: Vec<SchedulerTopologyChange>,
     /// Optional deterministic RR subdivision policies keyed by scheduler node.
     pub run_subdivision_policies: Vec<SchedulerRunSubdivisionPolicy>,
+    /// Explorer-supplied preemption decisions waiting for the owning node RUN.
+    pub preemption_requests: Vec<PreemptionDecision>,
     /// Cross-node, I/O, fault, and control events waiting for scheduler delivery.
     pub pending_events: Vec<ScheduledEvent>,
     /// Saved per-producer/consumer sequence counters for newly emitted events.
@@ -2294,6 +2317,7 @@ impl SchedulerLivenessScenario {
             nodes,
             topology_changes: Vec::new(),
             run_subdivision_policies: Vec::new(),
+            preemption_requests: Vec::new(),
             pending_events,
             event_sequences: EventSequenceState::empty(),
         };
@@ -2357,6 +2381,15 @@ impl SchedulerLivenessScenario {
         self
     }
 
+    /// Adds an explorer-supplied preemption request to the scheduler queue.
+    #[must_use]
+    pub fn with_preemption_request(mut self, decision: PreemptionDecision) -> Self {
+        self.preemption_requests.push(decision);
+        self.preemption_requests.sort_by(preemption_decision_order);
+        self.refresh_configuration();
+        self
+    }
+
     fn refresh_configuration(&mut self) {
         self.configuration = self.canonical_configuration();
     }
@@ -2405,6 +2438,11 @@ fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessScenario) ->
             .map(run_subdivision_policy_material),
     );
 
+    let mut preemption_requests = scenario.preemption_requests.clone();
+    preemption_requests.sort_by(preemption_decision_order);
+    lines.push(format!("preemption_requests={}", preemption_requests.len()));
+    lines.extend(preemption_requests.iter().map(preemption_decision_material));
+
     let pending = ordered_scheduled_events(&scenario.pending_events);
     lines.push(format!("pending_events={}", pending.len()));
     lines.extend(pending.into_iter().map(scheduled_event_material));
@@ -2451,6 +2489,44 @@ fn run_subdivision_policy_material(policy: &SchedulerRunSubdivisionPolicy) -> St
         policy.vcpu_count,
         policy.rr_switch_quantum,
     )
+}
+
+fn preemption_decision_order(
+    left: &PreemptionDecision,
+    right: &PreemptionDecision,
+) -> std::cmp::Ordering {
+    left.at
+        .cmp(&right.at)
+        .then_with(|| left.node.name.cmp(&right.node.name))
+        .then_with(|| preemption_kind_order(&left.kind).cmp(&preemption_kind_order(&right.kind)))
+}
+
+fn preemption_kind_order(kind: &PreemptionKind) -> (u8, u32, u32, u32) {
+    match kind {
+        PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => (0, from_vcpu.index, to_vcpu.index, 0),
+        PreemptionKind::InterruptAt { target_vcpu, irq } => (1, target_vcpu.index, irq.vector, 0),
+    }
+}
+
+fn preemption_decision_material(preemption: &PreemptionDecision) -> String {
+    let mut lines = Vec::new();
+    lines.push(String::from("preemption_request:"));
+    lines.push(format!("node_len={}", preemption.node.name.len()));
+    lines.push(format!("node={}", preemption.node.name));
+    lines.push(format!("at_retired={}", preemption.at.retired));
+    match &preemption.kind {
+        PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
+            lines.push(String::from("preemption_kind=vcpu-switch"));
+            lines.push(format!("from_vcpu={}", from_vcpu.index));
+            lines.push(format!("to_vcpu={}", to_vcpu.index));
+        }
+        PreemptionKind::InterruptAt { target_vcpu, irq } => {
+            lines.push(String::from("preemption_kind=interrupt-at"));
+            lines.push(format!("target_vcpu={}", target_vcpu.index));
+            lines.push(format!("irq={}", irq.vector));
+        }
+    }
+    lines.join("\n")
 }
 
 fn scheduler_lookahead_edge_material(edge: &SchedulerLookaheadEdge) -> String {
@@ -2759,16 +2835,43 @@ fn scheduler_event_log_segment_bytes(
     lines.join("\n").into_bytes()
 }
 
-fn scheduler_decision_event_log_time(decision: &Decision, fallback: SimInstant) -> VirtualTime {
+fn scheduler_ordered_decisions(
+    decisions: Vec<Decision>,
+    fallback: SimInstant,
+    shift: Shift,
+) -> Result<Vec<Decision>, SchedulerError> {
+    let mut keyed = Vec::with_capacity(decisions.len());
+    for (index, decision) in decisions.into_iter().enumerate() {
+        keyed.push((
+            scheduler_decision_event_log_time(&decision, fallback, shift)?,
+            index,
+            decision,
+        ));
+    }
+    keyed.sort_by(|left, right| {
+        left.0
+            .ticks
+            .cmp(&right.0.ticks)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+
+    Ok(keyed.into_iter().map(|(_, _, decision)| decision).collect())
+}
+
+fn scheduler_decision_event_log_time(
+    decision: &Decision,
+    fallback: SimInstant,
+    shift: Shift,
+) -> Result<VirtualTime, SchedulerError> {
     match decision {
-        Decision::DeliveryOrder(order) => order.at,
-        Decision::FaultFires(fault) => fault.at,
-        Decision::RngDraw(_)
-        | Decision::Override(_)
-        | Decision::Preemption(_)
-        | Decision::AppRandom(_) => VirtualTime {
+        Decision::DeliveryOrder(order) => Ok(order.at),
+        Decision::FaultFires(fault) => Ok(fault.at),
+        Decision::Preemption(preemption) => Ok(VirtualTime {
+            ticks: preemption.at.to_virtual(shift)?.nanos,
+        }),
+        Decision::RngDraw(_) | Decision::Override(_) | Decision::AppRandom(_) => Ok(VirtualTime {
             ticks: fallback.nanos,
-        },
+        }),
     }
 }
 
@@ -2989,6 +3092,11 @@ pub enum SchedulerQuiescenceBlocker {
         /// The queued control operation.
         operation: ControlOperation,
     },
+    /// An explorer-supplied preemption is waiting for its node RUN.
+    PendingPreemption {
+        /// The queued preemption decision.
+        decision: PreemptionDecision,
+    },
     /// A topology change is waiting for the next boundary recompute.
     PendingTopologyChange {
         /// Session-local sequence number of the queued topology change.
@@ -3020,6 +3128,8 @@ pub struct SingleScheduler {
     topology_changes: Vec<SchedulerTopologyChange>,
     run_subdivision_policies: Vec<SchedulerRunSubdivisionPolicy>,
     run_subdivision_records: Vec<SchedulerRunSubdivisionRecord>,
+    preemption_requests: Vec<PreemptionDecision>,
+    preemption_applications: Vec<SchedulerPreemptionApplication>,
     control_admissions: Vec<SchedulerControlAdmission>,
     control_applications: Vec<SchedulerControlApplication>,
     pending_events: Vec<ScheduledEvent>,
@@ -3060,6 +3170,8 @@ impl SingleScheduler {
         nodes.sort_by(|left, right| left.id.cmp(&right.id));
         let mut run_subdivision_policies = scenario.run_subdivision_policies;
         run_subdivision_policies.sort();
+        let mut preemption_requests = scenario.preemption_requests;
+        preemption_requests.sort_by(preemption_decision_order);
 
         let frontier = frontier_for(&nodes, scenario.shift)?;
 
@@ -3074,6 +3186,8 @@ impl SingleScheduler {
             topology_changes: scenario.topology_changes,
             run_subdivision_policies,
             run_subdivision_records: Vec::new(),
+            preemption_requests,
+            preemption_applications: Vec::new(),
             control_admissions: Vec::new(),
             control_applications: Vec::new(),
             pending_events: scenario.pending_events,
@@ -3134,6 +3248,12 @@ impl SingleScheduler {
     #[must_use]
     pub fn run_subdivision_records(&self) -> &[SchedulerRunSubdivisionRecord] {
         &self.run_subdivision_records
+    }
+
+    /// Returns explorer-supplied preemptions applied by completed RESOLVE phases.
+    #[must_use]
+    pub fn preemption_applications(&self) -> &[SchedulerPreemptionApplication] {
+        &self.preemption_applications
     }
 
     /// Returns topology changes applied at completed scheduler boundaries.
@@ -3252,6 +3372,14 @@ impl SingleScheduler {
             control
                 .into_iter()
                 .map(|operation| SchedulerQuiescenceBlocker::PendingControl { operation }),
+        );
+
+        let mut preemptions = self.preemption_requests.clone();
+        preemptions.sort_by(preemption_decision_order);
+        blockers.extend(
+            preemptions
+                .into_iter()
+                .map(|decision| SchedulerQuiescenceBlocker::PendingPreemption { decision }),
         );
 
         let mut topology_changes = self.topology_changes.clone();
@@ -3446,6 +3574,7 @@ impl SingleScheduler {
             pending_control_count: self.control_inbox.len(),
             decision_rng_cursor: self.decision_rng_cursor.clone(),
             control_applications: self.control_applications.clone(),
+            preemption_applications: self.preemption_applications.clone(),
             boundary_yields: self.boundary_yields,
         }
     }
@@ -3991,6 +4120,83 @@ impl SingleScheduler {
             });
     }
 
+    fn planned_preemptions_for_run(
+        &self,
+        node: &SchedulerNodeId,
+        current_icount: NodeCounter,
+        ceiling: &SchedulerRunCeilingPublication,
+    ) -> Result<Vec<PlannedPreemptionApplication>, SchedulerError> {
+        let deadline_icount = Icount {
+            retired: current_icount.ticks,
+        };
+        let horizon_icount = Icount {
+            retired: ceiling.max_advance_icount,
+        };
+        let mut decisions = self
+            .preemption_requests
+            .iter()
+            .filter(|decision| decision.node == node.node && node.kind == SchedulingNodeKind::Vm)
+            .cloned()
+            .collect::<Vec<_>>();
+        decisions.sort_by(preemption_decision_order);
+        if decisions.len() > 1 {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "multiple explorer preemptions for one RUN are not supported: node={} count={}",
+                    node.node.name,
+                    decisions.len()
+                ),
+            });
+        }
+
+        let mut planned = Vec::with_capacity(decisions.len());
+        for decision in decisions {
+            if decision.at < deadline_icount || decision.at > horizon_icount {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "explorer preemption for {} outside authorized window: at={} deadline={} horizon={} ceiling={}",
+                        decision.node.name,
+                        decision.at.retired,
+                        deadline_icount.retired,
+                        horizon_icount.retired,
+                        ceiling.max_advance_icount
+                    ),
+                });
+            }
+            planned.push(PlannedPreemptionApplication {
+                node: node.clone(),
+                decision,
+                deadline_icount,
+                horizon_icount,
+                ceiling: ceiling.clone(),
+            });
+        }
+
+        Ok(planned)
+    }
+
+    fn commit_preemption_applications(&mut self, planned: Vec<PlannedPreemptionApplication>) {
+        for planned in planned {
+            if let Some(index) = self
+                .preemption_requests
+                .iter()
+                .position(|decision| decision == &planned.decision)
+            {
+                self.preemption_requests.remove(index);
+            }
+            self.preemption_applications
+                .push(SchedulerPreemptionApplication {
+                    sequence: self.preemption_applications.len() as u64,
+                    quantum: planned.ceiling.quantum,
+                    node: planned.node,
+                    decision: planned.decision,
+                    deadline_icount: planned.deadline_icount,
+                    horizon_icount: planned.horizon_icount,
+                    ceiling: planned.ceiling,
+                });
+        }
+    }
+
     fn topology_activation_ready(
         &self,
         activation_time: SimInstant,
@@ -4098,7 +4304,7 @@ impl SingleScheduler {
             let at = SimInstant {
                 nanos: self.frontier.ticks,
             };
-            let decisions = self.emit_quantum_decisions(&boundary_resolved_events, at);
+            let decisions = self.emit_quantum_decisions(&boundary_resolved_events, &[], at)?;
             let event_log =
                 self.emit_quantum_event_log(&boundary_resolved_events, &decisions, at)?;
             let configuration = self.step_quantum(&decisions);
@@ -4137,8 +4343,32 @@ impl SingleScheduler {
             plans.push(plan);
         }
 
-        let mut outcomes = Vec::with_capacity(plans.len());
-        for plan in plans {
+        let plan_preemptions = plans
+            .iter()
+            .map(|plan| self.planned_preemptions_for_run(&plan.node, plan.before, &plan.ceiling))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut ordered_plans = plans
+            .into_iter()
+            .zip(plan_preemptions.into_iter())
+            .enumerate()
+            .map(|(index, (plan, preemptions))| {
+                Ok((
+                    concurrent_completion_order_key(&plan, &preemptions, self.timeline.shift())?,
+                    index,
+                    plan,
+                    preemptions,
+                ))
+            })
+            .collect::<Result<Vec<_>, SchedulerError>>()?;
+        ordered_plans.sort_by(|left, right| {
+            left.0
+                .ticks
+                .cmp(&right.0.ticks)
+                .then_with(|| left.1.cmp(&right.1))
+        });
+
+        let mut outcomes = Vec::with_capacity(ordered_plans.len());
+        for (_, _, plan, preemptions) in ordered_plans {
             let selected_node = plan.node.clone();
             let before = plan.before;
             let (after, after_time, yielded_before_advance) =
@@ -4161,7 +4391,8 @@ impl SingleScheduler {
                 shift,
             )?);
 
-            let decisions = self.emit_quantum_decisions(&resolved_events, after_time);
+            let decisions =
+                self.emit_quantum_decisions(&resolved_events, &preemptions, after_time)?;
             let event_log =
                 self.emit_quantum_event_log(&resolved_events, &decisions, after_time)?;
             let configuration = self.step_quantum(&decisions);
@@ -4182,6 +4413,7 @@ impl SingleScheduler {
             if let Some(subdivision) = plan.subdivision {
                 self.record_run_subdivision(subdivision, plan.ceiling.clone());
             }
+            self.commit_preemption_applications(preemptions);
 
             outcomes.push(QuantumOutcome {
                 configuration,
@@ -4229,10 +4461,11 @@ impl SingleScheduler {
                 // Control-only EMIT/STEP: no node RUN occurs.
                 let decisions = self.emit_quantum_decisions(
                     &resolved_events,
+                    &[],
                     SimInstant {
                         nanos: self.frontier.ticks,
                     },
-                );
+                )?;
                 let event_log = self.emit_quantum_event_log(
                     &resolved_events,
                     &decisions,
@@ -4273,6 +4506,8 @@ impl SingleScheduler {
 
         let selected_node = plan.node.clone();
         let before = plan.before;
+        let preemptions =
+            self.planned_preemptions_for_run(&selected_node, before, &plan.ceiling)?;
         let (after, after_time, yielded_before_advance) = self.advance_node_after_yield(&plan)?;
         // RESOLVE phase: collect due events for the node that just advanced.
         let shift = self.timeline.shift();
@@ -4284,7 +4519,7 @@ impl SingleScheduler {
         )?);
 
         // EMIT phase: convert happenings into decisions and append event-log entries.
-        let decisions = self.emit_quantum_decisions(&resolved_events, after_time);
+        let decisions = self.emit_quantum_decisions(&resolved_events, &preemptions, after_time)?;
         let event_log = self.emit_quantum_event_log(&resolved_events, &decisions, after_time)?;
         // STEP phase: apply the emitted decisions to the frontier configuration.
         let configuration = self.step_quantum(&decisions);
@@ -4306,6 +4541,7 @@ impl SingleScheduler {
         if let Some(subdivision) = plan.subdivision {
             self.record_run_subdivision(subdivision, plan.ceiling.clone());
         }
+        self.commit_preemption_applications(preemptions);
 
         Ok(QuantumOutcome {
             configuration,
@@ -4323,35 +4559,40 @@ impl SingleScheduler {
     fn emit_quantum_decisions(
         &mut self,
         resolved_events: &[ScheduledEvent],
+        preemptions: &[PlannedPreemptionApplication],
         at: SimInstant,
-    ) -> Vec<Decision> {
-        if resolved_events.is_empty() {
-            return Vec::new();
-        }
-
-        let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
-            at: VirtualTime { ticks: at.nanos },
-            order: resolved_events
-                .iter()
-                .map(|event| EventKey {
-                    virtual_time: event.key.virtual_time(),
-                    consumer: event.key.consumer().clone(),
-                    producer: event.key.producer().clone(),
-                    sequence: event.key.sequence(),
-                })
-                .collect(),
-        });
-        self.advance_decision_rng_cursor();
-        let mut decisions = vec![decision];
-        let probabilistic =
-            resolve_probabilistic_decisions(self.configuration.clone(), resolved_events);
-        for decision in &probabilistic.decisions {
-            if let Decision::RngDraw(draw) = decision {
-                self.advance_decision_rng_cursor_for(draw.stream.clone());
+    ) -> Result<Vec<Decision>, SchedulerError> {
+        let mut decisions = Vec::new();
+        if !resolved_events.is_empty() {
+            let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
+                at: VirtualTime { ticks: at.nanos },
+                order: resolved_events
+                    .iter()
+                    .map(|event| EventKey {
+                        virtual_time: event.key.virtual_time(),
+                        consumer: event.key.consumer().clone(),
+                        producer: event.key.producer().clone(),
+                        sequence: event.key.sequence(),
+                    })
+                    .collect(),
+            });
+            self.advance_decision_rng_cursor();
+            decisions.push(decision);
+            let probabilistic =
+                resolve_probabilistic_decisions(self.configuration.clone(), resolved_events);
+            for decision in &probabilistic.decisions {
+                if let Decision::RngDraw(draw) = decision {
+                    self.advance_decision_rng_cursor_for(draw.stream.clone());
+                }
             }
+            decisions.extend(probabilistic.decisions);
         }
-        decisions.extend(probabilistic.decisions);
-        decisions
+        decisions.extend(
+            preemptions
+                .iter()
+                .map(|application| Decision::Preemption(application.decision.clone())),
+        );
+        scheduler_ordered_decisions(decisions, at, self.timeline.shift())
     }
 
     fn emit_quantum_event_log(
@@ -4360,23 +4601,26 @@ impl SingleScheduler {
         decisions: &[Decision],
         at: SimInstant,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
-        let mut entries = Vec::with_capacity(resolved_events.len() + decisions.len());
+        let mut payloads = Vec::with_capacity(resolved_events.len() + decisions.len());
 
         for event in ordered_scheduled_events(resolved_events) {
-            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
-            entries.push(scheduler_event_log_entry(
-                sequence,
+            payloads.push((
                 event.key.virtual_time(),
                 SchedulerEventLogPayload::ResolvedHappening(event.clone()),
             ));
         }
         for decision in decisions {
-            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
-            entries.push(scheduler_event_log_entry(
-                sequence,
-                scheduler_decision_event_log_time(decision, at),
+            payloads.push((
+                scheduler_decision_event_log_time(decision, at, self.timeline.shift())?,
                 SchedulerEventLogPayload::Decision(decision.clone()),
             ));
+        }
+        payloads.sort_by(|left, right| left.0.ticks.cmp(&right.0.ticks));
+
+        let mut entries = Vec::with_capacity(payloads.len());
+        for (entry_time, payload) in payloads {
+            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
+            entries.push(scheduler_event_log_entry(sequence, entry_time, payload));
         }
 
         if entries.is_empty() {
@@ -4825,6 +5069,31 @@ struct AdvancePlanDraft {
 struct PlannedRunSubdivision {
     policy: SchedulerRunSubdivisionPolicy,
     slices: Vec<SchedulerRunSubdivisionSlice>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PlannedPreemptionApplication {
+    node: SchedulerNodeId,
+    decision: PreemptionDecision,
+    deadline_icount: Icount,
+    horizon_icount: Icount,
+    ceiling: SchedulerRunCeilingPublication,
+}
+
+fn concurrent_completion_order_key(
+    plan: &AdvancePlan,
+    preemptions: &[PlannedPreemptionApplication],
+    shift: Shift,
+) -> Result<VirtualTime, SchedulerError> {
+    let mut key = NodeCounter {
+        ticks: plan.target_counter,
+    }
+    .to_virtual(shift)?;
+    for preemption in preemptions {
+        let preemption_time = preemption.decision.at.to_virtual(shift)?;
+        key = min_instant(key, preemption_time);
+    }
+    Ok(VirtualTime { ticks: key.nanos })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
