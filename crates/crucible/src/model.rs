@@ -2325,10 +2325,14 @@ impl ScenarioDefForm {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or id
-    /// mismatches, or the same validation errors as the component constructors
-    /// when the parsed world, plan, or properties are invalid.
+    /// mismatches, [`EngineError::PlanNegativeTime`],
+    /// [`EngineError::PlanFaultUnknownDirection`], or
+    /// [`EngineError::PlanFaultUnsupportedParam`] for localized serialized plan
+    /// validation failures, or the same validation errors as the component
+    /// constructors when the parsed world, plan, or properties are invalid.
     pub fn from_canonical_toml(input: &str) -> Result<Self, EngineError> {
         validate_no_host_path_image_refs_in_toml(input)?;
+        validate_plan_entries_in_toml(input)?;
         let toml = toml::from_str::<ScenarioDefToml>(input).map_err(|source| {
             scenario_serialization_error(format!("parse scenario TOML: {source}"))
         })?;
@@ -3517,9 +3521,13 @@ impl Plan {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or an id
-    /// mismatch, or a plan validation error when the parsed entries do not layer
-    /// over `world`.
+    /// mismatch, [`EngineError::PlanNegativeTime`],
+    /// [`EngineError::PlanFaultUnknownDirection`], or
+    /// [`EngineError::PlanFaultUnsupportedParam`] for localized serialized plan
+    /// validation failures, or a plan validation error when the parsed entries do
+    /// not layer over `world`.
     pub fn from_canonical_toml_for_world(world: &World, input: &str) -> Result<Self, EngineError> {
+        validate_plan_entries_in_toml(input)?;
         let toml = toml::from_str::<PlanToml>(input)
             .map_err(|source| scenario_serialization_error(format!("parse plan TOML: {source}")))?;
         plan_from_toml(world, toml)
@@ -7140,6 +7148,27 @@ pub enum EngineError {
         /// Virtual time when the hold was scheduled.
         at: VirtualTime,
     },
+    /// A serialized plan entry carries a negative virtual time.
+    PlanNegativeTime {
+        /// Zero-based index of the serialized plan entry.
+        entry: usize,
+        /// The invalid signed tick value.
+        at_ticks: i64,
+    },
+    /// A serialized plan partition uses an unknown direction.
+    PlanFaultUnknownDirection {
+        /// Zero-based index of the serialized plan entry.
+        entry: usize,
+        /// The invalid direction spelling.
+        direction: String,
+    },
+    /// A serialized membership fault carries a parameter the model does not support.
+    PlanFaultUnsupportedParam {
+        /// Zero-based index of the serialized plan entry.
+        entry: usize,
+        /// The unsupported fault parameter name.
+        field: String,
+    },
     /// A properties bundle contains duplicate assertion identifiers.
     PropertyDuplicateAssertionId {
         /// The duplicated assertion id.
@@ -7321,6 +7350,15 @@ impl fmt::Display for EngineError {
             }
             Self::PlanNotYetJoinedAfterStart { .. } => {
                 f.write_str("not-yet-joined fault must be active at run start")
+            }
+            Self::PlanNegativeTime { .. } => {
+                f.write_str("plan entry virtual time must be non-negative")
+            }
+            Self::PlanFaultUnknownDirection { .. } => {
+                f.write_str("plan partition direction is unknown")
+            }
+            Self::PlanFaultUnsupportedParam { field, .. } => {
+                write!(f, "plan membership fault parameter {field} is unsupported")
             }
             Self::PropertyDuplicateAssertionId { .. } => {
                 f.write_str("properties bundle contains a duplicate assertion id")
@@ -10343,6 +10381,114 @@ fn validate_no_host_path_image_refs_in_toml(value: &str) -> Result<(), EngineErr
         scenario_serialization_error(format!("parse TOML before image-ref validation: {source}"))
     })?;
     validate_toml_image_refs_value(&value)
+}
+
+fn validate_plan_entries_in_toml(value: &str) -> Result<(), EngineError> {
+    let value = toml::from_str::<toml::Value>(value).map_err(|source| {
+        scenario_serialization_error(format!("parse TOML before plan validation: {source}"))
+    })?;
+    let Some(plan) = toml_plan_table(&value) else {
+        return Ok(());
+    };
+    let Some(entries) = plan.get("entry") else {
+        return Ok(());
+    };
+    let Some(entries) = entries.as_array() else {
+        return Err(scenario_serialization_error(
+            "serialized plan entry list must be an array",
+        ));
+    };
+
+    for (index, entry) in entries.iter().enumerate() {
+        validate_plan_entry_toml_value(index, entry)?;
+    }
+
+    Ok(())
+}
+
+fn toml_plan_table(value: &toml::Value) -> Option<&toml::map::Map<String, toml::Value>> {
+    let table = value.as_table()?;
+    match table.get("plan") {
+        Some(plan) => plan.as_table(),
+        None => Some(table),
+    }
+}
+
+fn validate_plan_entry_toml_value(index: usize, entry: &toml::Value) -> Result<(), EngineError> {
+    let Some(entry) = entry.as_table() else {
+        return Err(scenario_serialization_error(
+            "serialized plan entry must be a table",
+        ));
+    };
+    if let Some(at_ticks) = entry
+        .get("at_ticks")
+        .and_then(toml::Value::as_integer)
+        .filter(|at_ticks| *at_ticks < 0)
+    {
+        return Err(EngineError::PlanNegativeTime {
+            entry: index,
+            at_ticks,
+        });
+    }
+    if entry.get("kind").and_then(toml::Value::as_str) != Some("activate") {
+        return Ok(());
+    }
+    let Some(fault) = entry.get("fault") else {
+        return Ok(());
+    };
+    validate_membership_fault_toml_value(index, fault)
+}
+
+fn validate_membership_fault_toml_value(
+    index: usize,
+    fault: &toml::Value,
+) -> Result<(), EngineError> {
+    let Some(fault) = fault.as_table() else {
+        return Err(scenario_serialization_error(
+            "serialized membership fault must be a table",
+        ));
+    };
+    let Some(kind) = fault.get("kind").and_then(toml::Value::as_str) else {
+        return Ok(());
+    };
+    let allowed = match kind {
+        "crash" => &["kind", "node", "restart"][..],
+        "partition" => &["kind", "endpoint_a", "endpoint_b", "direction"][..],
+        "isolate" | "not_yet_joined" => &["kind", "node"][..],
+        _ => return Ok(()),
+    };
+    for field in fault.keys() {
+        if !allowed.contains(&field.as_str()) {
+            return Err(EngineError::PlanFaultUnsupportedParam {
+                entry: index,
+                field: field.clone(),
+            });
+        }
+    }
+    if kind == "partition" {
+        validate_partition_direction_toml_value(index, fault)?;
+    }
+    Ok(())
+}
+
+fn validate_partition_direction_toml_value(
+    index: usize,
+    fault: &toml::map::Map<String, toml::Value>,
+) -> Result<(), EngineError> {
+    let Some(direction) = fault.get("direction").and_then(toml::Value::as_str) else {
+        return Ok(());
+    };
+    if matches!(
+        direction,
+        "bidirectional" | "endpoint_a_to_endpoint_b" | "endpoint_b_to_endpoint_a"
+    ) {
+        Ok(())
+    } else {
+        Err(EngineError::PlanFaultUnknownDirection {
+            entry: index,
+            direction: direction.to_owned(),
+        })
+    }
 }
 
 fn validate_toml_image_refs_value(value: &toml::Value) -> Result<(), EngineError> {

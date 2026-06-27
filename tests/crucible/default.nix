@@ -130,6 +130,7 @@ in {
     spatialMembershipFaults = import ./phase1-spatial-membership-faults.nix {inherit pkgs lib;};
     spatialCanonicalization = import ./phase1-spatial-canonicalization.nix {inherit pkgs lib;};
     spatialPlanComponent = import ./phase1-spatial-plan-component.nix {inherit pkgs lib;};
+    spatialPlanValidation = import ./phase1-spatial-plan-validation.nix {inherit pkgs lib;};
     spatialPropertiesComponent = import ./phase1-spatial-properties-component.nix {inherit pkgs lib;};
     spatialReproductionArtifact = import ./phase1-spatial-reproduction-artifact.nix {inherit pkgs lib;};
     spatialScenarioFamily = import ./phase1-spatial-scenario-family.nix {inherit pkgs lib;};
