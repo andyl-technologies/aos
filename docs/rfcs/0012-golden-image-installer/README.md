@@ -128,12 +128,15 @@ target disk of at least that size. The trailing free space is where Ignition
 builds the rest of the layout.
 
 **ESP sizing.** 512 MiB is a build-time constant (`espSizeMiB`, default 512).
-It must hold the UKI (~55 MiB), sd-boot (~150 KiB), `rootfs.bin` (~160 MiB for
-the current server closure, `lib/build/rootfs.nix:297`), `loader.conf`, and FAT
-overhead — comfortably inside 512 MiB today. The builder asserts the contents
-fit and fails the build with a clear message if `rootfs.bin` + UKI outgrow the
-ESP, prompting the operator to raise `espSizeMiB`. (See §Security and §Future
-work for why the root image can't simply spill out of the ESP.)
+It must hold the UKI (dominated by the bundled kernel + initrd — tens of MiB,
+estimated), sd-boot (~150 KiB, estimated), `rootfs.bin` (~160 MiB for the current
+server closure, `lib/build/rootfs.nix:297`), `loader.conf`, and FAT overhead —
+comfortably inside 512 MiB today. The **authoritative** guarantee is not these
+estimates but the builder's fit assertion (`_builder.nix` §2a in
+[implementation.md](implementation.md)): it sums the *actual* ESP contents and
+fails the build with a clear message if `rootfs.bin` + UKI outgrow the ESP,
+prompting the operator to raise `espSizeMiB`. (See §Security and §Future work for
+why the root image can't simply spill out of the ESP.)
 
 ## The typical on-disk layout (recommended, operator-supplied)
 
@@ -183,7 +186,10 @@ config **must** honor them.
   `cryptswap.service` runs `mkswap` on a fresh random-keyed dm-crypt device
   every boot; an Ignition `format: swap` here is unnecessary and discarded.
 - **`root-b`** — `PARTLABEL=root-b`, Linux-data type GUID. Reserved for the
-  future A/B update flow; unused until `apm` learns to write it.
+  future A/B update flow; unused until `apm` learns to write it. (The
+  `install-from-image` test formats it `ext4` so the partition is valid, but
+  nothing mounts it; the typical-layout table above lists its FS as "none yet"
+  because no AOS code consumes `root-b` today.)
 - **XBOOTLDR** — a partition with the XBOOTLDR type GUID
   (`BC13C2FF-…`), formatted FAT32. sd-boot scans it on the same disk it booted
   from and merges its `EFI/Linux/*.efi` and `loader/entries/*.conf` into one
@@ -195,17 +201,18 @@ config **must** honor them.
 - `storage.disks[].wipeTable` **must be `false`** because the operator's config
   does not re-declare the ESP, so a table wipe would delete the partition we
   booted from and brick the system. Ignition's own `refusing to wipe active
-  disk` guard does **not** protect against this here — it only fires when a
-  partition on the target disk is mounted or held
-  (`internal/exec/stages/disks/partitions.go:457-459`, `blockDevInUse:403-425`),
+  disk` guard does **not** protect against this here — it only fires when
+  `wipeTable` is `true` **and** a partition on the target disk is mounted or held
+  (`internal/exec/stages/disks/partitions.go:452-456`, `blockDevInUse` `:391-427`),
   and at `ignition-disks` time the ESP is not yet mounted (the initrd ships an
   empty fstab; `aos-install-root` mounts the ESP only afterwards). New partitions
   are created in the trailing free space with `wipePartitionEntry` defaulting
   off.
 
-A complete example config is maintained in `docs/boot/qemu-uefi.md` and
-exercised verbatim by `checks.fleet.install-from-image`
-([implementation.md](implementation.md) §6–7).
+A complete example config is kept in sync between `docs/boot/qemu-uefi.md` and
+`checks.fleet.install-from-image`, which exercises it
+([implementation.md](implementation.md) §7–8; the doc is updated to this contract
+in §8). _(Today the doc still carries the pre-RFC config; §8 lands the update.)_
 
 ## First boot
 
@@ -237,8 +244,13 @@ install UKI → the kernel + initrd unpack, and PID 1 (systemd) runs:
      mountpoint, `dd if=<esp>/rootfs.bin of=/dev/disk/by-partlabel/root-a`,
      `sync`, then `fsck.erofs` the result to confirm a complete, valid image,
      and unmount the ESP.
-   - Ordered `After=ignition-disks.service` and the `root-a`/`ESP` device
-     units; `Before=sysroot.mount`/`aos-growfs`.
+   - Ordered `After=ignition-disks.service`/`systemd-udev-settle.service`;
+     `Before=sysroot.mount`/`aos-growfs`. It **gates on the ESP and `root-a`
+     partlabels via `ConditionPathExists` only** — it must *not* `Requires=`/`After=`
+     their `.device` units, or a kernel-boot test disk (whose partition 1 is
+     labeled `boot`, not `ESP`) would queue ~90 s on the missing device and fail
+     the boot (implementation.md §3a; cf. the `cryptswap` swap-stub precedent,
+     `lib/testing/vm.nix:53-57`).
 7. **`sysroot.mount`** — synthesized from `root=/dev/disk/by-partlabel/root-a`;
    mounts the now-populated EROFS read-only at `/sysroot`. _(unchanged)_
 8. **`aos-growfs`** — no-op for an EROFS root. _(unchanged)_
@@ -265,7 +277,7 @@ Every first-boot action is guarded so later boots are no-ops:
 | Service | Gate | Subsequent boot |
 |---------|------|-----------------|
 | `aos-gpt-relocate` | `var` partition absent | skips (var present) |
-| `ignition-disks` | Ignition's declarative diff + `/var/etc/.ignition-result.json` | partitions already match → no change |
+| `ignition-disks` | Ignition's declarative diff + the `.ignition-result.json` stamp (`/var/etc/…`, written under `--root=/sysroot` in the initrd) | partitions already match → no change |
 | `aos-install-root` | `root-a` not already the shipped EROFS | skips (root-a holds the image) |
 | `mount-var` | `var` exists | mounts existing `/var` |
 | `aos-seed-profiles` | `state.json` absent | skips (gen-1 already seeded) |
@@ -300,13 +312,15 @@ scan today:
 - **Per-machine entropy:** a golden image clones identical ESP contents to every
   machine. The load-bearing invariant today is that the shipped ESP carries **no**
   `loader/random-seed` file — the builder writes only `loader.conf`
-  (`modules/image/_builder.nix`) and `systemd-boot-random-seed.service` is masked
-  (`modules/base/boot.nix:167-173`), so sd-boot's seed read is a silent no-op and no
-  seed material is shared across clones. Minting a fresh `LoaderSystemToken` per
-  machine (`bootctl random-seed`) is deferred defense-in-depth (it needs a transient
-  ESP remount, since the ESP is read-only); wired with the apm work. A future builder
-  that ever baked a `loader/random-seed` would silently share RNG seed across all
-  clones — guard against it with a test on ESP contents.
+  (`modules/image/_builder.nix:178-183`) and `systemd-boot-random-seed.service` is
+  masked (`modules/base/boot.nix:167-173`), so sd-boot's seed read is a silent no-op
+  and no seed material is shared across clones. Minting a fresh `LoaderSystemToken`
+  per machine (`bootctl random-seed`) is deferred defense-in-depth (it needs a
+  transient ESP remount, since the ESP is read-only); wired with the apm work. A
+  future builder that ever baked a `loader/random-seed` would silently share RNG seed
+  across all clones — this absence is enforced today only by inspection of
+  `_builder.nix:178-183`, so a regression test asserting the shipped ESP contains no
+  `loader/random-seed` should land alongside the future apm ESP-write flow.
 
 ## Encryption
 
@@ -348,13 +362,14 @@ one (systemd v259.1 `src/boot/stub.c:1184-1200`), and `editor no`
 `rd.systemd.unit=emergency.target` / `systemd.debug_shell` / `systemd.setenv=…`
 *typed at the menu* never reach PID 1. (One gap remains: sd-stub still **appends**
 unsigned SMBIOS/addon cmdline *after* the signed section — `stub.c:1273-1274`,
-measured only into PCR 12 — so a hostile hypervisor can inject kargs even under
+measured into PCR 12 (SMBIOS strings also into firmware PCR 1) — so a hostile hypervisor can inject kargs even under
 Secure Boot. That vector is closed separately by the PCR-12 pin and the locked root
 account, §"The root account"; it is *not* closed by the cmdline-drop alone.) The
 emergency entry is therefore a second **signed** boot path:
 
 - **Multi-profile UKI (preferred).** The install UKI carries a second `.profile`
-  whose baked, signed `.cmdline` boots the emergency target. The `@N` profile
+  whose baked, signed `.cmdline` boots a dedicated `aos-recovery.target`
+  (autologin — not `emergency.target`; see below). The `@N` profile
   selector is parsed out before the command line is dropped (`src/boot/stub.c:188`,
   `:1232-1245`) and selects the profile's signed section set (`stub.c:1148-1158`);
   sd-boot renders one menu entry per profile (`src/boot/boot.c:2177-2263`). One
@@ -363,13 +378,17 @@ emergency entry is therefore a second **signed** boot path:
   with the emergency cmdline baked and signed — simpler, but costs a second UKI
   against the `espSizeMiB` budget.
 
-The shell runs in the **initrd** (`rd.systemd.unit=emergency.target`).
-`aos-var-crypt` is itself an initrd service wanted by `initrd-fs.target`
-(`modules/base/secure-boot.nix:311-314`); isolating to `emergency.target` means
-`initrd-fs.target`'s wants — `aos-var-crypt` among them — are never pulled in, so
-the recovery path never auto-unseals `/var`. Even a *manual* unseal attempt fails on
-the dedicated **@1** emergency profile: it measures a PCR-11 the signed `.pcrsig`
-does not bless (precondition 2 below), so the TPM policy rejects it. This holds for
+The @1 recovery shell runs in the **initrd**, via a dedicated
+`rd.systemd.unit=aos-recovery.target` whose signed `.cmdline` boots an autologin
+recovery shell — **not** `emergency.target`, whose `sulogin` would refuse under the
+mandated locked root (§"The root account"). `aos-var-crypt` is itself an initrd
+service wanted by `initrd-fs.target` (`modules/base/secure-boot.nix:311-314`);
+`aos-recovery.target` runs `DefaultDependencies=no` and does not pull in
+`initrd-fs.target`, so `initrd-fs.target`'s wants — `aos-var-crypt` among them — are
+never started, and the recovery path never auto-unseals `/var`. Even a *manual*
+unseal attempt fails on the dedicated **@1** emergency profile: it measures a PCR-11
+the signed `.pcrsig` does not bless (precondition 2 below; mechanism in
+implementation.md §10b), so the TPM policy rejects it. This holds for
 the **@1** profile only — a *normal* **@0** boot that merely *falls* into
 `emergency.target` (e.g. the fail-closed `aos-install-root` drop) carries the
 **blessed** PCR-11 and *can* unseal `/var`; that path is fenced off by the locked
@@ -426,12 +445,15 @@ without the signature.)
 
 The password-less @1 recovery shell is sound only when no *other* path on the
 blessed @0 profile offers an unauthenticated root with `/var` access. That reduces
-to a single requirement: **the root account is locked** (no valid password hash, not
-an empty one) in **both** stages.
+to a single requirement: **under Secure Boot, the root account is locked** (no valid
+password hash, not an empty one) in **both** stages.
 
 - The **initrd** root is currently *empty* (`_initrd-builder.nix:526` =
   `root:::…`), which today already yields a passwordless `sulogin` on any emergency
-  drop. It must become *locked* (`root:!*::…`).
+  drop. Under Secure Boot it must become *locked* (`root:!*::…`); on the unsigned
+  dev image it instead carries a password hash (the non-SB `sulogin`-protected
+  posture), since one static shadow line cannot be both — so the line is gated on
+  `aos.boot.secureBoot.enable` (implementation.md §10c).
 - The **stage-2** root is **already** locked by default (`users.nix:31` emits
   `root:!*::…`; the inline comment at `:28` saying "empty password hash" is stale).
 - The @1 recovery shell is granted by @1's *signed* cmdline (a baked
@@ -522,7 +544,7 @@ deployments that also want a credentialed shell keep a root password.
   the menu*; (2) at *build time*, an assertion (`modules/base/boot.nix:127-141`)
   rejects `ignition.config.url=` in `aos.boot.kernelParams`. Note the residual gap:
   sd-stub still **appends** unsigned SMBIOS/addon cmdline after the signed section
-  (`stub.c:1273-1274`, measured into PCR 12 only), so a hostile hypervisor can inject
+  (`stub.c:1273-1274`, measured into PCR 12; SMBIOS strings also into firmware PCR 1), so a hostile hypervisor can inject
   kargs even under SB — defeated not by the drop but by the verity duplicate-`roothash`
   guard (§9c) and the PCR-12 pin (§10d). Under verity the baked `root=` additionally
   points at the verified mapper (§Emergency and recovery access, precondition 1).
