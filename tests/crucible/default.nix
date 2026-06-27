@@ -410,6 +410,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerResolve";
       taskIds = ["T-SCHED-16"];
     };
+    schedulerResolveRng = import ./phase3-scheduler-resolve-rng.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerResolveRng";
+      taskIds = ["T-SCHED-17"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

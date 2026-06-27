@@ -12,10 +12,10 @@ use std::fmt;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use crate::{
-    BackendError, BackendInput, Configuration, Decision, DecisionRngState, DeliveryOrderDecision,
-    EventKey, EventSequenceState, FaultId, Icount, NodeCounter, NodeId, RngStreamId,
-    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration,
-    SimInstant, TimeConversionError, VirtualTime, WorldLookaheadEdge, step,
+    BackendError, BackendInput, Configuration, Decision, DecisionRecorder, DecisionRngState,
+    DeliveryOrderDecision, EventKey, EventSequenceState, FaultId, Icount, NodeCounter, NodeId,
+    RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift,
+    SimDuration, SimInstant, TimeConversionError, VirtualTime, WorldLookaheadEdge, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -854,8 +854,30 @@ pub enum ScheduledEventResolveClass {
     IoCompletion,
     /// A planned fault activation.
     FaultActivation,
+    /// A probabilistic fault choice resolved by the scheduler.
+    ProbabilisticFault,
     /// A control-plane operation admitted at the boundary.
     Control,
+}
+
+/// A probabilistic fault choice attached to a scheduled RESOLVE event.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerResolveFaultChoice {
+    /// The fault whose probabilistic outcome is being resolved.
+    pub fault: FaultId,
+    /// The seeded decision-RNG stream used for this choice.
+    pub stream: RngStreamId,
+    /// The raw draw threshold below which the fault fires.
+    pub fire_below: u64,
+}
+
+/// The decisions recorded while resolving probabilistic RESOLVE choices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerResolveDecisionRecord {
+    /// The configuration after all recorded probabilistic decisions.
+    pub configuration: Configuration,
+    /// The decisions appended while resolving probabilistic choices.
+    pub decisions: Vec<Decision>,
 }
 
 /// Returns scheduled events in the canonical deterministic resolution order.
@@ -875,6 +897,9 @@ pub fn scheduled_event_resolve_class(event: &ScheduledEvent) -> ScheduledEventRe
         ScheduledEventPayload::BackendInput(_) => ScheduledEventResolveClass::FrameDelivery,
         ScheduledEventPayload::IoCompletion(_) => ScheduledEventResolveClass::IoCompletion,
         ScheduledEventPayload::FaultActivation(_) => ScheduledEventResolveClass::FaultActivation,
+        ScheduledEventPayload::ProbabilisticFault(_) => {
+            ScheduledEventResolveClass::ProbabilisticFault
+        }
         ScheduledEventPayload::Control(_) => ScheduledEventResolveClass::Control,
     }
 }
@@ -888,6 +913,8 @@ pub enum ScheduledEventPayload {
     IoCompletion(IoCompletion),
     /// A fault activation resolved at the boundary.
     FaultActivation(FaultId),
+    /// A probabilistic fault outcome resolved at the boundary.
+    ProbabilisticFault(SchedulerResolveFaultChoice),
     /// A control operation admitted at a quantum boundary.
     Control(ControlOperation),
 }
@@ -1035,7 +1062,9 @@ pub fn exact_local_event_from_scheduled_event(
                 fault: fault.clone(),
             }))
         }
-        ScheduledEventPayload::BackendInput(_) | ScheduledEventPayload::Control(_) => Ok(None),
+        ScheduledEventPayload::BackendInput(_)
+        | ScheduledEventPayload::ProbabilisticFault(_)
+        | ScheduledEventPayload::Control(_) => Ok(None),
     }
 }
 
@@ -1079,11 +1108,11 @@ pub fn scheduled_event_delivery_time(
                     message: String::from("I/O completion visibility time was empty"),
                 })
         }
-        ScheduledEventPayload::FaultActivation(_) | ScheduledEventPayload::Control(_) => {
-            Ok(SimInstant {
-                nanos: event.key.virtual_time().ticks,
-            })
-        }
+        ScheduledEventPayload::FaultActivation(_)
+        | ScheduledEventPayload::ProbabilisticFault(_)
+        | ScheduledEventPayload::Control(_) => Ok(SimInstant {
+            nanos: event.key.virtual_time().ticks,
+        }),
     }
 }
 
@@ -1130,6 +1159,41 @@ pub fn resolve_due_scheduled_events(
     *pending_events = pending;
 
     Ok(ordered)
+}
+
+/// Records every probabilistic RESOLVE choice in canonical event order.
+///
+/// Only [`ScheduledEventPayload::ProbabilisticFault`] payloads produce decisions.
+/// For each such event, this helper draws from the payload's seeded stream and
+/// records the raw [`Decision::RngDraw`] followed by the derived
+/// [`Decision::FaultFires`] outcome. Non-probabilistic events are ignored.
+#[must_use]
+pub fn resolve_probabilistic_decisions(
+    configuration: Configuration,
+    resolved_events: &[ScheduledEvent],
+) -> SchedulerResolveDecisionRecord {
+    let mut recorder = DecisionRecorder::new(configuration);
+    let mut decisions = Vec::new();
+
+    for event in ordered_scheduled_events(resolved_events) {
+        let ScheduledEventPayload::ProbabilisticFault(choice) = &event.payload else {
+            continue;
+        };
+
+        let before = recorder.schedule().len();
+        recorder.decide_fault(
+            event.key.virtual_time(),
+            choice.fault.clone(),
+            choice.stream.clone(),
+            choice.fire_below,
+        );
+        decisions.extend_from_slice(&recorder.schedule().decisions()[before..]);
+    }
+
+    SchedulerResolveDecisionRecord {
+        configuration: recorder.into_configuration(),
+        decisions,
+    }
 }
 
 /// Selects the earliest exact local event for `node`.
@@ -1739,6 +1803,16 @@ fn scheduled_event_payload_material(payload: &ScheduledEventPayload) -> String {
             "payload=fault-activation\npayload_fault_len={}\npayload_fault={}",
             fault.name.len(),
             fault.name,
+        ),
+        ScheduledEventPayload::ProbabilisticFault(choice) => format!(
+            "payload=probabilistic-fault\npayload_fault_len={}\npayload_fault={}\npayload_stream_domain_len={}\npayload_stream_domain={}\npayload_stream_name_len={}\npayload_stream_name={}\npayload_fire_below={}",
+            choice.fault.name.len(),
+            choice.fault.name,
+            choice.stream.domain.len(),
+            choice.stream.domain,
+            choice.stream.name.len(),
+            choice.stream.name,
+            choice.fire_below,
         ),
         ScheduledEventPayload::Control(operation) => format!(
             "payload=control\ncontrol_sequence={}\ncontrol_kind={}",
@@ -2462,7 +2536,16 @@ impl SingleScheduler {
                 .collect(),
         });
         self.advance_decision_rng_cursor();
-        vec![decision]
+        let mut decisions = vec![decision];
+        let probabilistic =
+            resolve_probabilistic_decisions(self.configuration.clone(), resolved_events);
+        for decision in &probabilistic.decisions {
+            if let Decision::RngDraw(draw) = decision {
+                self.advance_decision_rng_cursor_for(draw.stream.clone());
+            }
+        }
+        decisions.extend(probabilistic.decisions);
+        decisions
     }
 
     fn step_quantum(&self, decisions: &[Decision]) -> Configuration {
@@ -2506,6 +2589,10 @@ impl SingleScheduler {
 
     fn advance_decision_rng_cursor(&mut self) {
         let stream = RngStreamId::new(SCHEDULER_ACTOR_RNG_DOMAIN, SCHEDULER_QUANTUM_STREAM);
+        self.advance_decision_rng_cursor_for(stream);
+    }
+
+    fn advance_decision_rng_cursor_for(&mut self, stream: RngStreamId) {
         let position = self
             .decision_rng_cursor
             .positions

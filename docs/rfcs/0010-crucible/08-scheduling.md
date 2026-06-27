@@ -1151,12 +1151,23 @@ application of explorer-supplied preemption decisions
   after RUN, so mixed due frame/I/O/fault events become visible at their delivery
   icount before EMIT/STEP. Focused regressions cover mixed-class due sets,
   pending-order independence, backend target mismatch rejection, and I/O
-  delivery-icount mismatch rejection. Seeded probabilistic RESOLVE choices remain
-  T-SCHED-17, late-delivery localization remains T-SCHED-18, and event-log
-  materialization remains T-SCHED-19.
-- [ ] **T-SCHED-17** Route every probabilistic RESOLVE choice through the seeded
+  delivery-icount mismatch rejection. Late-delivery localization remains
+  T-SCHED-18, and event-log materialization remains T-SCHED-19.
+- [x] **T-SCHED-17** Route every probabilistic RESOLVE choice through the seeded
   decision RNG in total order and record each as a `Decision` in the `Schedule`.
   — satisfies [SCHED-30]; spec §8.9.4.
+  Completed by `checks.crucible.phase3.schedulerResolveRng`.
+  RESOLVE now has an explicit `ScheduledEventPayload::ProbabilisticFault`
+  surface carrying a `SchedulerResolveFaultChoice` with fault id, seeded stream,
+  and integer fire threshold. `resolve_probabilistic_decisions` consumes resolved
+  events in canonical event-key order, uses `DecisionRecorder::decide_fault`, and
+  appends the raw `Decision::RngDraw` followed by the derived
+  `Decision::FaultFires` outcome. The quantum EMIT path appends those decisions
+  after the deterministic delivery-order decision and advances scheduler cursor
+  state for each recorded raw draw. Focused regressions cover reversed pending
+  transport order, repeated quanta hydrating the same stream from the prior
+  schedule, and deterministic RESOLVE events producing no probabilistic
+  decisions.
 - [ ] **T-SCHED-18** Enforce the lookahead guarantee in RESOLVE: a consumer that
   ran past a due event's delivery icount fails loudly and localizes; never
   deliver late. — satisfies [SCHED-31]; spec §8.9.4.
