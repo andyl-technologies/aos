@@ -1,8 +1,8 @@
 {
   pkgs,
   lib,
-  attrPath ? "checks.crucible.phase3.schedulerQuantumLoop",
-  taskIds ? ["T-SCHED-12"],
+  attrPath ? "checks.crucible.phase3.schedulerEmitStep",
+  taskIds ? ["T-SCHED-19"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -13,7 +13,8 @@
 
   scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  quantumTest = builtins.readFile ../../crates/crucible/tests/scheduler_quantum_loop.rs;
+  sessionSource = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  emitStepTest = builtins.readFile ../../crates/crucible/tests/scheduler_emit_step.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -98,87 +99,115 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-12 checked off";
-        needle = "- [x] **T-SCHED-12**";
+        label = "T-SCHED-19 checked off";
+        needle = "- [x] **T-SCHED-19**";
       }
       {
-        label = "T-SCHED-12 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerQuantumLoop`";
+        label = "T-SCHED-19 completion note";
+        needle = "Completed by `checks.crucible.phase3.schedulerEmitStep`";
       }
       {
-        label = "quantum phase requirement";
-        needle = "PICK, RUN, RESOLVE, EMIT, STEP";
+        label = "EMIT requirement";
+        needle = "append ordered, content-addressed event-log";
       }
       {
-        label = "pure sequence requirement";
-        needle = "pure function of `(ScenarioDef, Seed, Schedule)`";
+        label = "STEP requirement";
+        needle = "advance the frontier, then **yield**";
       }
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
       {
-        label = "quantum loop trait";
-        needle = "pub trait QuantumLoop";
+        label = "event-log entry type";
+        needle = "pub struct SchedulerEventLogEntry";
       }
       {
-        label = "single scheduler quantum implementation";
-        needle = "fn drive_authoritative_quantum";
+        label = "event-log payload type";
+        needle = "pub enum SchedulerEventLogPayload";
       }
       {
-        label = "scheduler state enters scenario identity";
-        needle = "fn scheduler_liveness_scenario_material";
+        label = "event-log append type";
+        needle = "pub struct SchedulerEventLogAppend";
       }
       {
-        label = "authored material carried by scenario";
-        needle = "authored_material";
+        label = "quantum outcome entries";
+        needle = "event_log_entries: Vec<SchedulerEventLogEntry>";
       }
       {
-        label = "frontier configuration guard";
-        needle = "request.configuration != self.configuration";
+        label = "quantum outcome offset";
+        needle = "event_log_offset: EventLogOffset";
       }
       {
-        label = "control boundary before pick";
-        needle = "self.admit_control_at_boundary(request.control)";
+        label = "quantum outcome segment bytes";
+        needle = "event_log_segment_bytes: Vec<u8>";
       }
       {
-        label = "PICK candidate selection";
-        needle = "self.pick_global_minimum_horizon_node()?";
-      }
-      {
-        label = "RUN advance plan";
-        needle = "SchedulerCriticalSection::enter(self)";
-      }
-      {
-        label = "RUN after yield";
-        needle = "self.advance_node_after_yield(&plan)?";
-      }
-      {
-        label = "RESOLVE due events";
-        needle = "resolve_due_scheduled_events(\n            &mut self.pending_events";
+        label = "quantum outcome segment hash";
+        needle = "event_log_segment_hash: Option<ContentHash>";
       }
       {
         label = "EMIT helper";
-        needle = "fn emit_quantum_decisions";
+        needle = "fn emit_quantum_event_log";
       }
       {
-        label = "control-only EMIT path";
-        needle = "self.emit_quantum_decisions(\n                    &resolved_events,";
+        label = "resolved happening payload";
+        needle = "SchedulerEventLogPayload::ResolvedHappening";
       }
       {
-        label = "STEP appends decisions";
-        needle = "fn step_quantum";
+        label = "decision payload";
+        needle = "SchedulerEventLogPayload::Decision";
       }
       {
-        label = "STEP updates scheduler frontier";
-        needle = "self.frontier = frontier_for(&self.nodes, self.timeline.shift())?";
+        label = "content-addressed entry";
+        needle = "ContentHash::from_canonical_material";
       }
       {
-        label = "STEP counts one quantum";
-        needle = "self.quanta = self.quanta.saturating_add(1)";
+        label = "content-addressed segment bytes";
+        needle = "ContentHash::from_bytes(&segment_bytes)";
+      }
+      {
+        label = "event-log segment offset";
+        needle = "EventLogOffset::with_appended_segment";
+      }
+      {
+        label = "event-log sequence state";
+        needle = "self.event_log_events";
+      }
+      {
+        label = "STEP helper";
+        needle = "self.step_quantum(&decisions)";
       }
     ]
     ++ orderedNeedlesFor "crates/crucible/src/scheduler.rs" scheduler [
       {
-        label = "control boundary";
+        label = "post-STEP yield";
+        needle = "STEP yield phase";
+      }
+    ]
+    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionSource [
+      {
+        label = "session consumes emitted event-log offset";
+        needle = "outcome.event_log_offset.events";
+      }
+      {
+        label = "session validates event-log mismatch";
+        needle = "EventLogOffsetMismatch";
+      }
+      {
+        label = "session validates event-log regression";
+        needle = "EventLogOffsetRegression";
+      }
+      {
+        label = "session mismatch regression test";
+        needle = "engine_rejects_event_log_offset_mismatch";
+      }
+      {
+        label = "session offset regression test";
+        needle = "engine_rejects_event_log_offset_regression";
+      }
+    ]
+    ++ orderedNeedlesFor "crates/crucible/src/scheduler.rs" scheduler [
+      {
+        label = "boundary admission";
         needle = "self.admit_control_at_boundary(request.control)";
       }
       {
@@ -204,55 +233,59 @@
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" libSource [
       {
-        label = "quantum loop export";
-        needle = "QuantumLoop";
+        label = "event-log entry export";
+        needle = "SchedulerEventLogEntry";
       }
       {
-        label = "quantum request export";
-        needle = "QuantumRequest";
+        label = "event-log payload export";
+        needle = "SchedulerEventLogPayload";
       }
       {
-        label = "quantum outcome export";
-        needle = "QuantumOutcome";
+        label = "event-log append export";
+        needle = "SchedulerEventLogAppend";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_quantum_loop.rs" quantumTest [
+    ++ failuresFor "crates/crucible/tests/scheduler_emit_step.rs" emitStepTest [
       {
-        label = "atomic quantum boundary test";
-        needle = "quantum_loop_pick_run_resolve_and_step_are_one_atomic_boundary";
+        label = "entry order test";
+        needle = "emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes";
       }
       {
-        label = "pure identical scenario test";
-        needle = "quantum_loop_sequence_is_pure_for_identical_scenario_inputs";
+        label = "prefix advance test";
+        needle = "step_advances_schedule_and_event_log_prefix_across_quanta";
       }
       {
-        label = "scheduler state identity test";
-        needle = "quantum_loop_scheduler_state_contributes_to_effective_scenario_def";
+        label = "liveness report test";
+        needle = "liveness_report_includes_deterministic_event_log_hashes";
       }
       {
-        label = "control-only STEP test";
-        needle = "quantum_loop_steps_boundary_control_when_no_node_advances";
+        label = "resolved happening assertion";
+        needle = "SchedulerEventLogPayload::ResolvedHappening";
       }
       {
-        label = "frontier request rejection test";
-        needle = "quantum_loop_rejects_non_frontier_configuration_request";
+        label = "decision assertion";
+        needle = "SchedulerEventLogPayload::Decision";
       }
       {
-        label = "step equivalence assertion";
-        needle = "apply_decisions(&input, &outcome.decisions)";
+        label = "dense sequence assertion";
+        needle = "vec![0, 1, 2, 3, 4]";
       }
       {
-        label = "delivery order decision assertion";
-        needle = "Decision::DeliveryOrder";
+        label = "segment assertion";
+        needle = "event_log_offset.appended_segment.is_some()";
+      }
+      {
+        label = "segment hash assertion";
+        needle = "ContentHash::from_bytes(&outcome.event_log_segment_bytes)";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "phase3 exposes scheduler quantum-loop check";
-        needle = "schedulerQuantumLoop = import ./phase3-scheduler-quantum-loop.nix";
+        label = "phase3 exposes scheduler EMIT/STEP check";
+        needle = "schedulerEmitStep = import ./phase3-scheduler-emit-step.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_quantum_loop.rs" quantumTest [
+    ++ forbiddenFor "crates/crucible/tests/scheduler_emit_step.rs" emitStepTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -261,13 +294,21 @@
         label = "pending placeholder";
         needle = "todo!";
       }
+      {
+        label = "wall-clock dependency";
+        needle = "std::time";
+      }
+      {
+        label = "sleep dependency";
+        needle = "sleep(";
+      }
     ];
 in
   if failures != []
-  then throw "crucible phase3 scheduler quantum-loop check failed:\n${builtins.concatStringsSep "\n" failures}"
+  then throw "crucible phase3 scheduler EMIT/STEP check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
     pkgs.mkDerivation {
-      pname = "crucible-phase3-scheduler-quantum-loop";
+      pname = "crucible-phase3-scheduler-emit-step";
       version = "0";
       src = crucibleSrc;
 
@@ -304,7 +345,7 @@ in
           '';
         }
         {
-          name = "run-scheduler-quantum-loop";
+          name = "run-scheduler-emit-step";
           script = ''
             set -eu
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
@@ -314,17 +355,30 @@ in
             cargo test \
               --frozen \
               --offline \
-              --target-dir "$TMPDIR/crucible-scheduler-quantum-loop-target" \
+              --target-dir "$TMPDIR/crucible-scheduler-emit-step-target" \
+              -p crucible \
+              --test scheduler_emit_step \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-scheduler-emit-step-target" \
               -p crucible \
               --test scheduler_quantum_loop \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
-              --target-dir "$TMPDIR/crucible-scheduler-quantum-loop-target" \
+              --target-dir "$TMPDIR/crucible-scheduler-emit-step-target" \
               -p crucible \
-              --features test-double \
-              --test gate_scheduler_liveness \
+              --test scheduler_resolve_rng \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-scheduler-emit-step-target" \
+              -p crucible-session \
+              --test gate_control_responsive \
               -- --test-threads=1
           '';
         }
@@ -338,11 +392,9 @@ in
             check=${attrPath}
             tasks=${taskList}
             component=crucible-scheduler
-            quantum=PICK-RUN-RESOLVE-decision-EMIT-STEP-boundary
-            pure_sequence=true
-            step_equivalence=true
-            full_event_log_emit=deferred-to-T-SCHED-19
-            frontier_guard=true
+            emit_event_log_entries=true
+            event_log_entries_content_addressed=true
+            step_consumes_decisions=true
             RESULT
           '';
         }
