@@ -1,5 +1,6 @@
 //! Blob-pack reachability planning operations.
 
+use super::repack_helpers::{blob_record_bytes, blob_record_identity};
 use super::*;
 
 impl PersistCache {
