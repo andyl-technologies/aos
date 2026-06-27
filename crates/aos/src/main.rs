@@ -137,6 +137,12 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::cache::run(&printer, command).await;
     }
 
+    // The metadata agent (initrd) reads/writes the /run/aos-metadata stash and
+    // shells out to blkid/mount + IMDS — no NixRunner needed.
+    if let Commands::Metadata { command } = &cli.command {
+        return commands::metadata::run(command).await;
+    }
+
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
 
     match &cli.command {
@@ -235,6 +241,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Token { .. } => unreachable!(),
         Commands::Package { .. } => unreachable!(),
         Commands::Cache { .. } => unreachable!(),
+        Commands::Metadata { .. } => unreachable!(),
     }
 }
 
