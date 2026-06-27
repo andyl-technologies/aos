@@ -206,63 +206,6 @@ fn native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closur
     Ok(())
 }
 
-fn instantiate_file_closure_with_stats(
-    native: &NixNative,
-    file: &Path,
-    attr: &str,
-) -> Result<(NativeDrvClosure, crate::eval::EvalStats)> {
-    let attr_path = attr_path_drv_path_segments(attr)?;
-    let mut options = native.instantiation_options();
-    let file = native_source_file(file, &options)?;
-    let source_name = path_bytes(&file)?;
-    let source_name_text = String::from_utf8_lossy(&source_name);
-    let source = fs::read(&file).map_err(|source| NativeEvalError::EvalError {
-        message: format!(
-            "failed to read native instantiation source {}: {source}",
-            source_name_text
-        ),
-    })?;
-    let diagnostic_source = std::str::from_utf8(&source)
-        .ok()
-        .map(|source| NativeDiagnosticSource::new(source_name_text.as_ref(), source, None));
-    let base = file.parent().unwrap_or_else(|| Path::new("/"));
-    options.set_path_literal_base(path_bytes(base)?)?;
-    let ir = native.lower_native_source_bytes(
-        &source,
-        Some(source_name_text.to_string()),
-        Some(file.as_path()),
-        None,
-        diagnostic_source,
-    )?;
-    if let Some((feature, span)) = native_instantiation_cli_fallback_feature(&ir, &native.options) {
-        return Err(NativeEvalError::Unsupported {
-            feature: feature.to_string(),
-            span: Some(crate::error::SrcSpan {
-                start: span.start,
-                end: span.end,
-            }),
-        }
-        .into());
-    }
-    let outcome = eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
-        &ir,
-        &attr_path,
-        options,
-        source_name.clone(),
-        source.clone(),
-        native.ifd_realizer.clone(),
-        native.eval_cache.clone(),
-    )
-    .map_err(|error| match diagnostic_source {
-        Some(diagnostic_source) => native_eval_error_with_source(error, diagnostic_source),
-        None => native_eval_error(error, None),
-    })?;
-    let stats = *outcome.stats();
-    native.observe_eval_cache(&outcome);
-    let closure = native.native_drv_closure_from_outcome(outcome)?;
-    Ok((closure, stats))
-}
-
 #[test]
 fn native_file_instantiation_force_cache_sidecar_hashes_do_not_leak_into_drv_closure() -> Result<()>
 {

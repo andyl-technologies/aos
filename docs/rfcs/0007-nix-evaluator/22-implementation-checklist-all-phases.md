@@ -2926,19 +2926,26 @@ alone (`M-1`/`Q-A`).
       full cached-vs-uncached AOS closure harness, full leak-invariant harness,
       or future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
-- [x] Current native semantic-no-op leaf edit closure canary:
-      `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`
+- [x] Current native semantic-no-op leaf edit closure canaries:
+      `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`,
+      `native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure`,
       and `native_file_instantiation_unused_leaf_package_edit_preserves_drv_closure`
       evaluate file-root attr paths whose selected derivations depend on a leaf
       import through an input derivation, seed configured parse/persist cache
       with the first leaf source, rewrite either comments/whitespace or an
       unused derivation package in that leaf, and then require cache-disabled
       and cached runs to keep the two-derivation `.drv` closure byte-identical
-      while the changed leaf reparses into the fresh cache root. They also
-      scan uncached/cached first and changed closures for the exercised
+      while the changed leaf reparses into the fresh cache root. The forced-leaf
+      variant additionally persists a `currentSystem` force payload under the
+      first source, proves a same-source fresh runtime can replay it, then runs
+      the comment-only changed source through cached miss and later persistent-hit
+      paths while scanning the byte-identical closure surfaces for the observed
+      forced-payload sidecar hashes and the `currentSystem` hot xxh3 sentinel.
+      The canaries also scan uncached/cached first and changed closures for the exercised
       first/changed leaf parse-cache and file-content BLAKE3 renderings in
-      hex, raw bytes, and Nix base32. This samples one comment/whitespace leaf
-      edit and one unused leaf-package edit, not bounded recomputation
+      hex, raw bytes, and Nix base32. This samples one ordinary
+      comment/whitespace leaf edit, one forced comment/whitespace leaf edit, and
+      one unused leaf-package edit, not bounded recomputation
       measurement, full AOS closure coverage, the full leak invariant, or
       future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).

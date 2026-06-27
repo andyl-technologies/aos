@@ -1,0 +1,241 @@
+//! Tests for semantic no-op native source edits at the `.drv` closure boundary.
+
+use super::*;
+use crate::cache::{DurableBlake3Hash, ParseCache, ParseFileKey};
+
+#[test]
+fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure() -> Result<()> {
+    let root = unique_temp_dir("aos-nix-native-instantiate-forced-semantic-edit");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let _cleanup = TempTreeCleanup::new(root.clone());
+    let store = root.join("store");
+    let first_parse_root = root.join("first-parse");
+    let first_hit_parse_root = root.join("first-hit-parse");
+    let second_parse_root = root.join("second-parse");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join("default.nix");
+    let leaf = dir.join("leaf.nix");
+    fs::write(
+        &file,
+        r#"let
+          leaf = import ./leaf.nix;
+          base = derivationStrict {
+            name = "forced-semantic-edit-base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            args = [ leaf ];
+          };
+        in {
+          pkgs.hello = derivationStrict {
+            name = "forced-semantic-edit-consumer";
+            system = "x86_64-linux";
+            builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+            input = "${base.out}";
+          };
+        }"#,
+    )?;
+    let first_leaf_source = b"# first forced leaf comment\nlet b = builtins; in b.currentSystem\n";
+    let second_leaf_source =
+        b"\n# changed forced leaf comment with whitespace\n\nlet b = builtins; in b.currentSystem\n";
+    fs::write(&leaf, first_leaf_source)?;
+    let leaf_realpath = fs::canonicalize(&leaf)?;
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+
+    let uncached_options = || -> Result<TreeWalkOptions> {
+        let mut options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+        options.set_store_dir(store_bytes.clone())?;
+        Ok(options)
+    };
+    let cached_options = |parse_root: &Path| -> Result<TreeWalkOptions> {
+        let mut options = uncached_options()?;
+        options.set_parse_cache_root(parse_root);
+        options.set_persist_cache_root(&persist_root);
+        options.set_eval_cache_enabled(true);
+        Ok(options)
+    };
+
+    let (uncached_first, uncached_first_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, uncached_options()?)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(uncached_first_stats.force_cache_hits(), 0);
+    assert_eq!(uncached_first_stats.force_cache_misses(), 0);
+    assert_eq!(uncached_first.drvs().len(), 2);
+
+    let (first_cached, first_cached_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, cached_options(&first_parse_root)?)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(first_cached, uncached_first);
+    assert_eq!(first_cached_stats.force_cache_hits(), 0);
+    assert!(
+        first_cached_stats.force_cache_misses() > 0,
+        "first forced leaf run should miss before recording demand"
+    );
+
+    let (first_materialized, first_materialized_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, cached_options(&first_parse_root)?)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(first_materialized, uncached_first);
+    assert_eq!(first_materialized_stats.force_cache_hits(), 0);
+    assert!(
+        first_materialized_stats.force_cache_misses() > 0,
+        "second forced leaf run should miss before materializing a persistent payload"
+    );
+
+    let first_parse_cache = ParseCache::new(&first_parse_root);
+    let first_parse_key = first_parse_cache.key_for_source(first_leaf_source);
+    assert!(
+        first_parse_cache
+            .entry_for_source(first_leaf_source)
+            .is_complete(),
+        "initial forced leaf should be parsed into the first cache root"
+    );
+    let first_force_canaries = assert_persistent_force_cache_payload_entries(&persist_root)?;
+
+    let (first_hit, first_hit_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, cached_options(&first_hit_parse_root)?)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(first_hit, uncached_first);
+    assert!(
+        first_hit_stats.force_cache_hits() > 0,
+        "same-source fresh runtime should load the first forced leaf payload"
+    );
+    assert_eq!(
+        first_hit_stats.force_cache_misses(),
+        0,
+        "same-source fresh runtime should not recompute the first forced leaf payload"
+    );
+
+    fs::write(&leaf, second_leaf_source)?;
+
+    let (uncached_second, uncached_second_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, uncached_options()?)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(uncached_second_stats.force_cache_hits(), 0);
+    assert_eq!(uncached_second_stats.force_cache_misses(), 0);
+    assert_eq!(uncached_second, uncached_first);
+
+    let observed_hits = Arc::new(Mutex::new(Vec::new()));
+    let observed_hits_for_hook = Arc::clone(&observed_hits);
+    let mut changed_native = NixNative::with_options(0, cached_options(&second_parse_root)?)?;
+    changed_native.set_persistent_parse_hit_hook(move |hit| {
+        observed_hits_for_hook
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .push(hit);
+    });
+    let (cached_second, cached_second_stats) =
+        instantiate_file_closure_with_stats(&changed_native, &file, "pkgs.hello")?;
+
+    assert_eq!(cached_second, uncached_first);
+    assert!(
+        cached_second_stats.force_cache_misses() > 0,
+        "comment-only forced leaf edit should not replay only the old source identity"
+    );
+    assert_eq!(
+        observed_hits
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .clone(),
+        vec![NativePersistentParseHit::Source]
+    );
+    let second_parse_cache = ParseCache::new(&second_parse_root);
+    let second_parse_key = second_parse_cache.key_for_source(second_leaf_source);
+    assert!(
+        second_parse_cache
+            .entry_for_source(second_leaf_source)
+            .is_complete(),
+        "changed forced leaf should be reparsed into the fresh cache root"
+    );
+
+    let (changed_hit, changed_hit_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, cached_options(&second_parse_root)?)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(changed_hit, uncached_first);
+    assert!(
+        changed_hit_stats.force_cache_hits() > 0,
+        "second changed-source run should still load a persistent force-cache payload"
+    );
+    assert_eq!(
+        changed_hit_stats.force_cache_misses(),
+        0,
+        "second changed-source run should not recompute the persistent force-cache payload"
+    );
+
+    let first_leaf_key = ParseFileKey::for_source(&leaf_realpath, first_leaf_source);
+    let second_leaf_key = ParseFileKey::for_source(&leaf_realpath, second_leaf_source);
+    let mut canaries = persistent_force_cache_surface_canaries(&persist_root)?;
+    canaries.extend(first_force_canaries);
+    canaries.extend(durable_hash_surface_canaries(
+        "initial forced comment leaf parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(first_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "changed forced comment leaf parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(second_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "initial forced comment leaf content BLAKE3",
+        first_leaf_key.content_hash(),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "changed forced comment leaf content BLAKE3",
+        second_leaf_key.content_hash(),
+    ));
+    canaries.extend(hot_xxh3_surface_canaries(
+        "forced leaf currentSystem hot xxh3",
+        context_free_nix_string_xxh3(b"x86_64-linux"),
+    ));
+
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached initial forced semantic-edit closure",
+        &uncached_first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cached initial forced semantic-edit closure",
+        &first_cached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "materialized initial forced semantic-edit closure",
+        &first_materialized,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "persistent-hit initial forced semantic-edit closure",
+        &first_hit,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached changed forced semantic-edit closure",
+        &uncached_second,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cached changed forced semantic-edit closure",
+        &cached_second,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "persistent-hit changed forced semantic-edit closure",
+        &changed_hit,
+        &canaries,
+    );
+
+    Ok(())
+}
