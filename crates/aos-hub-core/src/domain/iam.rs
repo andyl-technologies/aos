@@ -112,7 +112,9 @@ impl Role {
 ///
 /// The verbs mirror RFC-0004's permission list; [`role_grants`] maps each
 /// role to the exact set it confers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum Permission {
     /// Read registry content (private registries, member lists, etc.).
     Read,
@@ -222,7 +224,9 @@ pub fn role_grants(role: Role) -> &'static [Permission] {
 /// Stored as the raw path string (`""`, `"acme"`, `"acme/infra/prod"`,
 /// `"acme/infra/prod/cdn"`); see the [module docs](self) for the grammar
 /// and containment rules. Construct with [`Scope::parse`].
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct Scope(String);
 
 impl Scope {
@@ -350,11 +354,7 @@ pub fn allow(grants: &[(Scope, Role)], permission: Permission, target: &Scope) -
 /// role still denies even on an unexpired token. The bodies live here (shared by
 /// the native hub and the Cloudflare Worker) rather than in either shell.
 #[must_use]
-pub fn token_allows(
-    claims: &crate::auth::jwt::Claims,
-    perm: Permission,
-    target: &Scope,
-) -> bool {
+pub fn token_allows(claims: &crate::auth::jwt::Claims, perm: Permission, target: &Scope) -> bool {
     let scope = Scope::parse(&claims.scope);
     if !scope.contains(target) {
         return false;

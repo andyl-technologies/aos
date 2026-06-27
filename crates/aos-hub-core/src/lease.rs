@@ -240,12 +240,18 @@ mod tests {
         // First token takes it; same token refreshes; a different token conflicts.
         assert!(lease.acquire(1, "token-a", 1000).await.is_ok());
         assert!(lease.acquire(1, "token-a", 1010).await.is_ok());
-        assert_eq!(lease.acquire(1, "token-b", 1020).await, Err("token-a".into()));
+        assert_eq!(
+            lease.acquire(1, "token-b", 1020).await,
+            Err("token-a".into())
+        );
         // A different registry is independent.
         assert!(lease.acquire(2, "token-b", 1020).await.is_ok());
         // The holder's release frees it for the other token.
         lease.release(1, "token-b").await; // no-op (not holder)
-        assert_eq!(lease.acquire(1, "token-b", 1030).await, Err("token-a".into()));
+        assert_eq!(
+            lease.acquire(1, "token-b", 1030).await,
+            Err("token-a".into())
+        );
         lease.release(1, "token-a").await;
         assert!(lease.acquire(1, "token-b", 1040).await.is_ok());
     }

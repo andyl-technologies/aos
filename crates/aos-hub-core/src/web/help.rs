@@ -173,11 +173,11 @@ pub fn card(key: &str) -> Option<HelpCard> {
         "registry.caches" => c(
             "Binary caches",
             "registry",
-            "Substituters every consumer of this registry should use, highest priority first.",
+            "Substituters every consumer of this registry should use, in preference order (first is highest).",
             &[
                 ("URL", "the base URL of a binary cache the registry advertises to its consumers."),
-                ("Priority", "higher numbers are tried first; the default is 100."),
-                ("Advanced", "a registry may instead define a nestable [cache_stack]; that is preserved here and edited via raw TOML."),
+                ("Order", "rows are tried top to bottom; the first listed cache is highest priority."),
+                ("Advanced", "a registry may define a nestable [caches] stack (a mirror, or nesting); that is preserved here and edited via raw TOML."),
             ],
         ),
         "registry.trust_anchors" => c(

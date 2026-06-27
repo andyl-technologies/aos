@@ -182,10 +182,16 @@ mod tests {
         let kv = InMemoryKv::new();
         assert_eq!(kv.get("sess:a").await.unwrap(), None, "absent key is None");
         kv.put("sess:a", b"hello", None).await.unwrap();
-        assert_eq!(kv.get("sess:a").await.unwrap().as_deref(), Some(&b"hello"[..]));
+        assert_eq!(
+            kv.get("sess:a").await.unwrap().as_deref(),
+            Some(&b"hello"[..])
+        );
         // Overwrite replaces the value.
         kv.put_str("sess:a", "world", None).await.unwrap();
-        assert_eq!(kv.get_str("sess:a").await.unwrap().as_deref(), Some("world"));
+        assert_eq!(
+            kv.get_str("sess:a").await.unwrap().as_deref(),
+            Some("world")
+        );
         kv.delete("sess:a").await.unwrap();
         assert_eq!(kv.get("sess:a").await.unwrap(), None, "deleted key is None");
     }
@@ -203,6 +209,9 @@ mod tests {
     async fn ttl_in_future_is_present() {
         let kv = InMemoryKv::new();
         kv.put("tok:y", b"v", Some(3600)).await.unwrap();
-        assert!(kv.get("tok:y").await.unwrap().is_some(), "future TTL is live");
+        assert!(
+            kv.get("tok:y").await.unwrap().is_some(),
+            "future TTL is live"
+        );
     }
 }

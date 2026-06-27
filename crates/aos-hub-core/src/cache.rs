@@ -103,7 +103,9 @@ mod tests {
             Ok(Some(42u64))
         };
         // First read: miss → load → write-through.
-        let v1: Option<u64> = read_through(&kv, "k", Some(HOT_TTL_SECS), load).await.unwrap();
+        let v1: Option<u64> = read_through(&kv, "k", Some(HOT_TTL_SECS), load)
+            .await
+            .unwrap();
         assert_eq!(v1, Some(42));
         assert_eq!(loads.get(), 1);
         // Second read: hit → loader not called.
@@ -124,9 +126,10 @@ mod tests {
             .await
             .unwrap();
         invalidate(&kv, "k").await;
-        let v: Option<u64> = read_through(&kv, "k", Some(HOT_TTL_SECS), || async { Ok(Some(2u64)) })
-            .await
-            .unwrap();
+        let v: Option<u64> =
+            read_through(&kv, "k", Some(HOT_TTL_SECS), || async { Ok(Some(2u64)) })
+                .await
+                .unwrap();
         assert_eq!(v, Some(2), "reloaded after invalidation");
     }
 
@@ -138,10 +141,11 @@ mod tests {
             .unwrap();
         assert_eq!(v, None);
         // Nothing was written, so a later create is visible immediately.
-        let v2: Option<u64> =
-            read_through(&kv, "absent", Some(HOT_TTL_SECS), || async { Ok(Some(7u64)) })
-                .await
-                .unwrap();
+        let v2: Option<u64> = read_through(&kv, "absent", Some(HOT_TTL_SECS), || async {
+            Ok(Some(7u64))
+        })
+        .await
+        .unwrap();
         assert_eq!(v2, Some(7));
     }
 
@@ -150,9 +154,10 @@ mod tests {
         let kv = InMemoryKv::new();
         // Write a value that is not valid JSON for the requested type.
         kv.put("k", b"not json", Some(HOT_TTL_SECS)).await.unwrap();
-        let v: Option<u64> = read_through(&kv, "k", Some(HOT_TTL_SECS), || async { Ok(Some(5u64)) })
-            .await
-            .unwrap();
+        let v: Option<u64> =
+            read_through(&kv, "k", Some(HOT_TTL_SECS), || async { Ok(Some(5u64)) })
+                .await
+                .unwrap();
         assert_eq!(v, Some(5), "reloaded over the corrupt entry");
     }
 }

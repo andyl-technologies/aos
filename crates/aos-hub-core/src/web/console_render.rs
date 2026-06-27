@@ -4502,18 +4502,17 @@ pub fn config_edit_page(
     registry_settings_chrome(email, slug, "config", &body, started)
 }
 
-/// Renders one editable `[[caches]]` row (URL + priority + remove button).
+/// Renders one editable `[caches]` row (URL + remove button).
 ///
-/// `app.js` clones the trailing row to add more and wires the remove button;
-/// with no JS the server-rendered rows (existing entries plus one blank) are
-/// still fully editable.
-fn cache_row_html(url: &str, priority: u32) -> String {
+/// The unified `[caches]` stack derives priority from order (the first row is
+/// highest), so the row carries only the URL. `app.js` clones the trailing row
+/// to add more and wires the remove button; with no JS the server-rendered rows
+/// (existing entries plus one blank) are still fully editable.
+fn cache_row_html(url: &str) -> String {
     format!(
         "<div class=\"cache-row\">\
          <input type=\"text\" name=\"cache_url\" value=\"{url}\" \
          placeholder=\"https://cache.example.org\" aria-label=\"cache URL\">\
-         <input type=\"number\" name=\"cache_priority\" value=\"{priority}\" min=\"0\" \
-         class=\"cache-prio\" aria-label=\"priority\">\
          <button type=\"button\" class=\"row-del\" aria-label=\"remove cache\">&times;</button>\
          </div>",
         url = escape(url),
@@ -4525,7 +4524,7 @@ fn cache_row_html(url: &str, priority: u32) -> String {
 /// Replaces the raw-TOML textarea with one control per
 /// [`RegistryRootConfig`](aos_registry_surface::manifest::RegistryRootConfig)
 /// field: name, description, readme, the content-addressed toggle, and the
-/// repeatable `[[caches]]` list. On submit the handler rebuilds the committed
+/// ordered `[caches]` list. On submit the handler rebuilds the committed
 /// `registry.toml` and proposes it as the same git-backed change request the
 /// raw editor used, so `result` (the new change id and merge command) and the
 /// `registry.configure` `can_edit` gate behave identically. `model` carries the
@@ -4583,14 +4582,15 @@ pub fn registry_config_form_page(
     // one and `app.js` has a row to clone.
     let mut cache_rows = String::new();
     for cache in &model.caches {
-        cache_rows.push_str(&cache_row_html(&cache.url, cache.priority));
+        cache_rows.push_str(&cache_row_html(&cache.url));
     }
-    cache_rows.push_str(&cache_row_html("", 100));
+    cache_rows.push_str(&cache_row_html(""));
 
     let cache_stack_note = if model.has_cache_stack {
-        "<p class=\"dim\">This registry also defines an advanced \
-         <code>[cache_stack]</code>; it is preserved unchanged here. Edit the \
-         stack expression via raw TOML with <code>apr</code>.</p>\n"
+        "<p class=\"dim\">This registry defines an advanced \
+         <code>[caches]</code> stack (a mirror or nesting) the list editor \
+         cannot represent; it is preserved unchanged. Edit the stack expression \
+         via raw TOML with <code>apr</code>.</p>\n"
     } else {
         ""
     };

@@ -545,9 +545,9 @@ pub struct PackageMeta {
 // contracts and their inherent helpers moved.
 pub use aos_registry_surface::manifest::{
     AttestationMeta, BpfLsmPolicyArtifactMeta, BpfLsmPolicyMeta, CapabilityKind,
-    ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy, ConfinementClass, ConfinementMeta,
-    CredentialMeta, ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta, HostPathMode,
-    HostPathPermission, NetworkPermission, PermissionsMeta, ProvidedCapabilityMeta,
+    ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy, ConfinementClass,
+    ConfinementMeta, CredentialMeta, ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta,
+    HostPathMode, HostPathPermission, NetworkPermission, PermissionsMeta, ProvidedCapabilityMeta,
     RequiredCapabilityMeta, SyscallProfile,
 };
 
@@ -2392,14 +2392,16 @@ pub struct ApmConfFile {
 // ---------------------------------------------------------------------------
 
 // The committed `registry.toml` root-config schema (`RegistryRootConfig`, its
-// `[registry]` metadata, and the `[[caches]]` entry) moved to the wasm-clean
-// `aos-registry-surface` crate (RFC-0004 Phase 5) so the registry hub's indexer
-// and the Cloudflare Worker can deserialize a committed root config without
-// pulling `aos-package` (which is native-only). Re-exported here so
-// `aos_package::types::{RegistryRootConfig, RegistryRootMeta, CacheEntry}` paths
-// are unchanged. The `content_addressed` flag (RFC-0005/0009) lives on the
-// canonical `RegistryRootMeta` in that crate.
-pub use aos_registry_surface::manifest::{CacheEntry, RegistryRootConfig, RegistryRootMeta};
+// `[registry]` metadata, and the unified `[caches]` cache stack) moved to the
+// wasm-clean `aos-registry-surface` crate (RFC-0004 Phase 5) so the registry
+// hub's indexer and the Cloudflare Worker can deserialize a committed root
+// config without pulling `aos-package` (which is native-only). Re-exported here
+// so `aos_package::types::{RegistryRootConfig, RegistryRootMeta, CacheEntry,
+// CachesConfig}` paths are unchanged. The `content_addressed` flag
+// (RFC-0005/0009) lives on the canonical `RegistryRootMeta` in that crate.
+pub use aos_registry_surface::manifest::{
+    CacheEntry, CachesConfig, RegistryRootConfig, RegistryRootMeta,
+};
 
 // ---------------------------------------------------------------------------
 // Sysroot image entry — a pre-compiled image attached to a sysroot package
@@ -3127,8 +3129,10 @@ public_key = "aos-core:Ed25519:base64keyhere"
         let cfg: RegistryRootConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.registry.name, "aos-core");
         assert_eq!(cfg.registry.description.as_deref(), Some("core registry"));
-        assert_eq!(cfg.caches.len(), 1);
-        assert_eq!(cfg.caches[0].url, "https://cache.aos.dev");
+        // Legacy `[[caches]]` array still parses via the backward-compat enum.
+        let caches = cfg.cache_entries();
+        assert_eq!(caches.len(), 1);
+        assert_eq!(caches[0].url, "https://cache.aos.dev");
     }
 
     #[test]

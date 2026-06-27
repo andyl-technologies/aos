@@ -289,7 +289,7 @@
 //!
 //! # Cache freshness probes (v12)
 //!
-//! Phase-1 "frontend freshness probes". For each committed `[[caches]]` URL the
+//! Phase-1 "frontend freshness probes". For each committed `[caches]` URL the
 //! hub knows, a lightweight reachability probe records whether the cache serves
 //! a `nix-cache-info`, how long the probe took, and when it ran. These rows are
 //! purely **observational** (rebuildable from the next probe), so they live in
@@ -710,11 +710,11 @@ pub const MIGRATIONS: &[&str] = &[
     ",
     // v8: committed cache-stack expression (RFC-0004 \"Cache stores, stacks,
     // and consistency validation\"). When a registry's committed
-    // registry.toml carries a [cache_stack] section, the indexer parses it
-    // into the nestable try/mirror model and stores it here as JSON (see
+    // registry.toml carries a [caches] table in stack form, the indexer parses
+    // it into the nestable try/mirror model and stores it here as JSON (see
     // crate::stack), so stack-aware coverage validation can recover the
-    // mirror groups without re-reading the surface. NULL for registries that
-    // only use the flat [[caches]] list; the flattened endpoints still
+    // mirror groups without re-reading the surface. NULL for registries whose
+    // [caches] is a legacy flat list; the flattened endpoints still
     // populate the caches table either way, so the column is purely additive.
     "
     ALTER TABLE registry_index ADD COLUMN cache_stack LONGTEXT; -- JSON cache stack (unbounded; never truncate)
@@ -838,7 +838,7 @@ pub const MIGRATIONS: &[&str] = &[
         ON webhook_deliveries (status, next_attempt_at);
     ",
     // v12: cache freshness probes (phase-1 \"frontend freshness probes\").
-    // Observational reachability/latency for each committed [[caches]] URL,
+    // Observational reachability/latency for each committed [caches] URL,
     // upserted on every probe. Derived/rebuildable, not a system of record.
     "
     CREATE TABLE cache_probes (
@@ -944,8 +944,8 @@ pub const MIGRATIONS: &[&str] = &[
     //   CNAME to an R2 custom domain or CloudFront; the hub only probes it) or
     //   'proxied' (the hub's facade serves it, enabling bearer auth + HTML).
     //   serves_git/serves_cache/serves_web pick the advertised surface subset;
-    //   consumer_priority maps to the [[caches]] priority an advertised cache
-    //   frontend would carry (informational here — registry.toml [[caches]] is
+    //   consumer_priority maps to the [caches] priority an advertised cache
+    //   frontend would carry (informational here — registry.toml [caches] is
     //   signed tree content the hub never silently edits). UNIQUE(domain,
     //   base_path) keeps one frontend per served URL. System of record.
     // - frontend_probes: the latest reachability/freshness observation per
@@ -1077,7 +1077,7 @@ pub const MIGRATIONS: &[&str] = &[
     // The pre-existing rebuildable `caches` table (the flattened advertised
     // cache stack) is renamed `advertised_caches` to free the `caches` name for
     // the managed object; it is rebuilt from each registry's committed
-    // `[cache_stack]` on every index, so the rename loses no system-of-record
+    // `[caches]` on every index, so the rename loses no system-of-record
     // data. `cache_probes`/validation reference a `cache_url` *string*, not a
     // foreign key, so they are unaffected.
     //
@@ -2312,8 +2312,8 @@ pub struct FrontendRecord {
     pub serves_cache: bool,
     /// Whether the frontend serves the static web surface.
     pub serves_web: bool,
-    /// The `[[caches]]` priority an advertised cache frontend would carry
-    /// (informational; the committed mirror list is signed tree content).
+    /// The `[caches]` priority an advertised cache frontend would carry
+    /// (informational; the committed cache stack is signed tree content).
     pub consumer_priority: i64,
     /// Whether the frontend is advertised to consumers.
     pub advertised: bool,
@@ -2356,15 +2356,15 @@ pub struct IndexSnapshot {
     pub description: Option<String>,
     /// Committed registry readme (longer preamble).
     pub readme: Option<String>,
-    /// Committed `[[caches]]` entries as `(url, priority)`.
+    /// The committed `[caches]` stack flattened to `(url, priority)` entries.
     ///
-    /// When the snapshot carries a [`Self::cache_stack`], the stack's
-    /// flattened endpoints are folded into this list (union, for display and
-    /// for stack-unaware clients).
+    /// This is the priority list a stack-unaware client resolves; when the
+    /// snapshot also carries a [`Self::cache_stack`] it is the flattening of
+    /// that same stack.
     pub caches: Vec<(String, u32)>,
-    /// The committed `[cache_stack]` expression as compact JSON
-    /// ([`crate::stack::StackNode::to_json`]), or `None` when the registry
-    /// uses only the flat `[[caches]]` list.
+    /// The committed `[caches]` stack expression as compact JSON
+    /// ([`crate::stack::StackNode::to_json`]), or `None` when the registry's
+    /// `[caches]` is a legacy flat list.
     pub cache_stack: Option<String>,
     /// Roster entries as `(key_id, public_key, status)`.
     pub roster: Vec<(String, String, String)>,
@@ -4881,7 +4881,7 @@ impl Database {
             .collect()
     }
 
-    /// Committed `[[caches]]` entries as `(url, priority)`, highest first.
+    /// Committed `[caches]` entries as `(url, priority)`, highest first.
     ///
     /// These are the cache *endpoints a registry advertises* to consumers (the
     /// flattened cache stack), not the hub's managed [`Cache`] objects — see
@@ -4908,8 +4908,8 @@ impl Database {
     /// The committed cache-stack expression for a registry, parsed.
     ///
     /// Returns the stored stack ([`crate::stack::StackNode`]) when the
-    /// registry's committed `registry.toml` carried a `[cache_stack]` section
-    /// at index time, or `None` when it uses only the flat `[[caches]]` list.
+    /// registry's committed `registry.toml` carried a `[caches]` table in stack
+    /// form at index time, or `None` when its `[caches]` is a legacy flat list.
     ///
     /// # Errors
     ///

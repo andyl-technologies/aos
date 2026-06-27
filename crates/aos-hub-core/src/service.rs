@@ -38,14 +38,14 @@ use crate::auth::jwt::{Claims, JwtKeys};
 use crate::binding::{BindingKind, RuntimeKind};
 use crate::clock;
 use crate::db::{Database, FrontendRecord, IndexStatus, RegistryRecord};
+use crate::domain::iam::{self, claims_principal, token_allows};
+use crate::domain::{Permission, PrincipalKind, Role, Scope};
 use crate::fetch::SurfaceProvider;
 use crate::keymap;
 use crate::lease::PublishLease;
+use crate::ratelimit::{RateClass, RateDecision, RateLimiter, MAX_ORGS_PER_OWNER};
 use crate::reindex::Reindexer;
 use crate::surface_write::SurfaceWriteProvider;
-use crate::domain::iam::{self, claims_principal, token_allows};
-use crate::domain::{Permission, PrincipalKind, Role, Scope};
-use crate::ratelimit::{RateClass, RateDecision, RateLimiter, MAX_ORGS_PER_OWNER};
 
 /// Default page size when a list request leaves `page_size` at zero.
 const DEFAULT_PAGE_SIZE: u32 = 500;
@@ -293,7 +293,11 @@ pub(crate) fn parse_cache_narinfo(
     Some(crate::db::CacheObject {
         cache_id,
         store_hash: store_hash.to_string(),
-        store_name: store_path.rsplit('/').next().unwrap_or(&store_path).to_string(),
+        store_name: store_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&store_path)
+            .to_string(),
         nar_url: nar_url?,
         nar_hash,
         nar_size,
@@ -497,7 +501,9 @@ fn is_instance_key(key: &str) -> bool {
 /// not satisfy that key's constraint.
 fn normalize_instance_value(key: &str, value: &str) -> Result<Option<String>, RpcError> {
     if !is_instance_key(key) {
-        return Err(RpcError::invalid(format!("unknown instance setting: {key}")));
+        return Err(RpcError::invalid(format!(
+            "unknown instance setting: {key}"
+        )));
     }
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -589,7 +595,11 @@ fn binding_message(
         org_slug,
         name: b.name.clone(),
         kind: b.kind.clone(),
-        root: if expose_root { b.root.clone() } else { String::new() },
+        root: if expose_root {
+            b.root.clone()
+        } else {
+            String::new()
+        },
         access: if b.kind == "local_fs" {
             String::new()
         } else {
@@ -861,11 +871,7 @@ impl CachedSession {
     ///
     /// The expiry recheck makes the short cache TTL safe: an entry that expires
     /// mid-window is never served, exactly as `validate_session` would reject it.
-    fn into_resolved(
-        self,
-        secret: &str,
-        now: i64,
-    ) -> Option<crate::web::session::ResolvedSession> {
+    fn into_resolved(self, secret: &str, now: i64) -> Option<crate::web::session::ResolvedSession> {
         if self.expires_at <= now {
             return None;
         }
@@ -1117,9 +1123,7 @@ impl RpcService {
             // 10× the resolution TTL is a generous margin over any cached entry's
             // lifetime (and clock skew); the value is irrelevant (presence is).
             let ttl = crate::cache::HOT_TTL_SECS * 10;
-            let _ = kv
-                .put(&format!("tokrev:{token_id}"), b"1", Some(ttl))
-                .await;
+            let _ = kv.put(&format!("tokrev:{token_id}"), b"1", Some(ttl)).await;
         }
     }
 
@@ -1188,7 +1192,8 @@ impl RpcService {
         perm: Permission,
         scope: &Scope,
     ) -> Result<(), RpcError> {
-        let denied = || RpcError::PermissionDenied(format!("{} permission required", perm.as_str()));
+        let denied =
+            || RpcError::PermissionDenied(format!("{} permission required", perm.as_str()));
         if !token_allows(claims, perm, scope) {
             return Err(denied());
         }
@@ -1422,7 +1427,11 @@ impl RpcService {
     /// Returns [`RpcError::PermissionDenied`] when the caller's email domain is
     /// not allowlisted, and [`RpcError::Internal`] on database failure.
     async fn enforce_signup_domain(&self, claims: &Claims) -> Result<(), RpcError> {
-        let settings = self.db.instance_settings().await.map_err(RpcError::internal)?;
+        let settings = self
+            .db
+            .instance_settings()
+            .await
+            .map_err(RpcError::internal)?;
         if settings.signup_domains.is_empty() {
             return Ok(());
         }
@@ -1499,7 +1508,8 @@ impl RpcService {
         // a slug like "/" or "/victimorg" would otherwise normalize (via
         // `Scope::parse`) into an unintended ancestor scope and hand the caller
         // Owner over the instance root or a victim org (sec CR-2).
-        iam::validate_org_slug(&req.slug).map_err(|e| RpcError::invalid(format!("org slug: {e}")))?;
+        iam::validate_org_slug(&req.slug)
+            .map_err(|e| RpcError::invalid(format!("org slug: {e}")))?;
         // Instance signup policy: `invite_only` requires the caller to already
         // be a member, hold a live invitation, or be an instance admin.
         if self.db.signup_policy().await.map_err(RpcError::internal)?
@@ -1568,7 +1578,9 @@ impl RpcService {
             .org_by_id(id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("org {id} vanished after creation")))?;
+            .ok_or_else(|| {
+                RpcError::internal(anyhow::anyhow!("org {id} vanished after creation"))
+            })?;
         Ok(pb::CreateOrgResponse {
             org: Some(org_message(&org)),
         })
@@ -1591,7 +1603,11 @@ impl RpcService {
         req: pb::ListRegistriesRequest,
     ) -> Result<pb::ListRegistriesResponse, RpcError> {
         let claims = self.optional_claims(auth)?;
-        let records = self.db.list_registries().await.map_err(RpcError::internal)?;
+        let records = self
+            .db
+            .list_registries()
+            .await
+            .map_err(RpcError::internal)?;
         let mut registries = Vec::with_capacity(records.len());
         for record in &records {
             if !self.can_read(claims.as_ref(), record).await {
@@ -2028,7 +2044,11 @@ impl RpcService {
         let claims = self.require_claims(auth)?;
         self.require_permission(&claims, Permission::IamAdmin, &Scope::root())
             .await?;
-        let settings = self.db.instance_settings().await.map_err(RpcError::internal)?;
+        let settings = self
+            .db
+            .instance_settings()
+            .await
+            .map_err(RpcError::internal)?;
         Ok(pb::GetInstanceSettingsResponse {
             settings: Some(instance_settings_to_pb(&settings)),
         })
@@ -2074,7 +2094,9 @@ impl RpcService {
         }
         for key in &req.clear {
             if !is_instance_key(key) {
-                return Err(RpcError::invalid(format!("unknown instance setting: {key}")));
+                return Err(RpcError::invalid(format!(
+                    "unknown instance setting: {key}"
+                )));
             }
             writes.push((key.clone(), None));
         }
@@ -2113,7 +2135,11 @@ impl RpcService {
             tracing::warn!(error = %format!("{err:#}"), "recording instance.settings audit");
         }
 
-        let settings = self.db.instance_settings().await.map_err(RpcError::internal)?;
+        let settings = self
+            .db
+            .instance_settings()
+            .await
+            .map_err(RpcError::internal)?;
         Ok(pb::UpdateInstanceSettingsResponse {
             settings: Some(instance_settings_to_pb(&settings)),
         })
@@ -2187,9 +2213,9 @@ impl RpcService {
                 .await
                 .map_err(RpcError::internal),
             "service_account" => {
-                let (org_slug, name) = principal_ref
-                    .split_once('/')
-                    .ok_or_else(|| RpcError::invalid("service_account ref must be '<org>/<name>'"))?;
+                let (org_slug, name) = principal_ref.split_once('/').ok_or_else(|| {
+                    RpcError::invalid("service_account ref must be '<org>/<name>'")
+                })?;
                 let org = self
                     .db
                     .org_by_slug(org_slug)
@@ -2200,9 +2226,13 @@ impl RpcService {
                     .service_account_by_name(org.id, name)
                     .await
                     .map_err(RpcError::internal)?
-                    .ok_or_else(|| RpcError::invalid(format!("no service account '{principal_ref}'")))
+                    .ok_or_else(|| {
+                        RpcError::invalid(format!("no service account '{principal_ref}'"))
+                    })
             }
-            other => Err(RpcError::invalid(format!("unknown principal kind '{other}'"))),
+            other => Err(RpcError::invalid(format!(
+                "unknown principal kind '{other}'"
+            ))),
         }
     }
 
@@ -2224,13 +2254,18 @@ impl RpcService {
         let scope = Scope::parse(&req.scope);
         self.require_permission(&claims, Permission::IamAdmin, &scope)
             .await?;
-        let role =
-            Role::parse(&req.role).ok_or_else(|| RpcError::invalid(format!("unknown role '{}'", req.role)))?;
+        let role = Role::parse(&req.role)
+            .ok_or_else(|| RpcError::invalid(format!("unknown role '{}'", req.role)))?;
         let principal_id = self
             .resolve_principal_id(&req.principal_kind, &req.principal_ref)
             .await?;
         self.db
-            .grant_membership(&req.principal_kind, principal_id, scope.as_str(), role.as_str())
+            .grant_membership(
+                &req.principal_kind,
+                principal_id,
+                scope.as_str(),
+                role.as_str(),
+            )
             .await
             .map_err(RpcError::internal)?;
         Ok(pb::GrantMembershipResponse {})
@@ -2307,7 +2342,13 @@ impl RpcService {
         perms.retain(|p| iam::allow(&grants, *p, &scope));
         let (token_id, secret) = self
             .db
-            .create_token(owner, scope.as_str(), &perms, Some("minted via IamService"), None)
+            .create_token(
+                owner,
+                scope.as_str(),
+                &perms,
+                Some("minted via IamService"),
+                None,
+            )
             .await
             .map_err(RpcError::internal)?;
         Ok(pb::MintTokenResponse { token_id, secret })
@@ -2350,8 +2391,9 @@ impl RpcService {
         req: pb::ListTokensRequest,
     ) -> Result<pb::ListTokensResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let principal = claims_principal(&claims)
-            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("bearer claims carry no principal")))?;
+        let principal = claims_principal(&claims).ok_or_else(|| {
+            RpcError::internal(anyhow::anyhow!("bearer claims carry no principal"))
+        })?;
         let want = Scope::parse(&req.scope);
         let rows = self
             .db
@@ -2434,8 +2476,12 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("changeset"))?;
-        self.require_permission(&claims, Permission::AuditRead, &Scope::parse(&summary.scope))
-            .await?;
+        self.require_permission(
+            &claims,
+            Permission::AuditRead,
+            &Scope::parse(&summary.scope),
+        )
+        .await?;
         let change_id = crate::config::ChangeId(summary.change_id.clone());
         let revisions: Vec<pb::Revision> = crate::config::review(&self.db, &change_id)
             .await
@@ -2522,8 +2568,12 @@ impl RpcService {
     ) -> Result<pb::CreateRegistryResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         let org = self.org_or_not_found(&req.org_slug).await?;
-        self.require_permission(&claims, Permission::RegistryConfigure, &Scope::parse(&org.slug))
-            .await?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&org.slug),
+        )
+        .await?;
         if req.name.is_empty() {
             return Err(RpcError::invalid("registry name is required"));
         }
@@ -2740,7 +2790,12 @@ impl RpcService {
                 // its caches, mirroring the registry write path's `resolve_writable`
                 // → `org_is_active` gate. Without this, a cache under a deleted
                 // org would keep accepting uploads and charge its quota.
-                if !self.db.org_is_active(id).await.map_err(RpcError::internal)? {
+                if !self
+                    .db
+                    .org_is_active(id)
+                    .await
+                    .map_err(RpcError::internal)?
+                {
                     return Err(RpcError::not_found("cache"));
                 }
                 let org = self
@@ -2749,8 +2804,12 @@ impl RpcService {
                     .await
                     .map_err(RpcError::internal)?
                     .ok_or_else(|| RpcError::not_found("org"))?;
-                self.require_permission(&claims, Permission::RegistryConfigure, &Scope::parse(&org.slug))
-                    .await
+                self.require_permission(
+                    &claims,
+                    Permission::RegistryConfigure,
+                    &Scope::parse(&org.slug),
+                )
+                .await
             }
             None => {
                 self.require_permission(&claims, Permission::IamAdmin, &Scope::root())
@@ -2836,7 +2895,11 @@ impl RpcService {
             None => String::new(),
         };
         let (used_bytes, object_count, link_count, root_count) = if stats {
-            let u = self.db.cache_usage(c.id).await.map_err(RpcError::internal)?;
+            let u = self
+                .db
+                .cache_usage(c.id)
+                .await
+                .map_err(RpcError::internal)?;
             let links = self
                 .db
                 .list_cache_links(c.id)
@@ -2963,7 +3026,9 @@ impl RpcService {
             .cache_by_id(id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("cache {id} vanished after creation")))?;
+            .ok_or_else(|| {
+                RpcError::internal(anyhow::anyhow!("cache {id} vanished after creation"))
+            })?;
         Ok(pb::CreateCacheResponse {
             cache: Some(self.managed_cache_message(&c, true).await?),
         })
@@ -3079,7 +3144,10 @@ impl RpcService {
         let c = self.cache_or_not_found(&req.slug).await?;
         self.require_cache_admin(auth, c.org_id).await?;
         let deleted = if req.hard {
-            self.db.delete_cache(c.id).await.map_err(RpcError::internal)?
+            self.db
+                .delete_cache(c.id)
+                .await
+                .map_err(RpcError::internal)?
         } else {
             let grace = if req.grace_secs == 0 {
                 30 * 86_400
@@ -3172,7 +3240,11 @@ impl RpcService {
             return Ok(None);
         }
         let binding = match storage_binding_id {
-            Some(id) => self.db.storage_binding(id).await.map_err(RpcError::internal)?,
+            Some(id) => self
+                .db
+                .storage_binding(id)
+                .await
+                .map_err(RpcError::internal)?,
             None => self
                 .db
                 .instance_default_binding()
@@ -3212,8 +3284,12 @@ impl RpcService {
         // The advertise flag writes through to the registry's committed
         // registry.toml, so it additionally requires registry.configure on the
         // registry — matching the web console's link handler.
-        self.require_permission(&claims, Permission::RegistryConfigure, &Scope::parse(&r.slug))
-            .await?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&r.slug),
+        )
+        .await?;
         // Cross-visibility safety (RFC-0004 "11-caches"), enforced through the
         // shared chokepoint so the RPC and the web console agree exactly.
         let advisory = assess_cache_link(
@@ -3296,8 +3372,12 @@ impl RpcService {
         self.require_cache_admin(auth, c.org_id).await?;
         let claims = self.require_claims(auth)?;
         let r = self.registry_or_not_found(&req.registry_slug).await?;
-        self.require_permission(&claims, Permission::RegistryConfigure, &Scope::parse(&r.slug))
-            .await?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&r.slug),
+        )
+        .await?;
         let removed = self
             .db
             .unlink_cache(c.id, r.id)
@@ -3598,7 +3678,8 @@ impl RpcService {
             .start_cache_gc_run(cache.id)
             .await
             .map_err(RpcError::internal)?;
-        match crate::gc::sweep_cache(&self.db, self.surface_write.as_ref(), &cache, false, now).await
+        match crate::gc::sweep_cache(&self.db, self.surface_write.as_ref(), &cache, false, now)
+            .await
         {
             Ok(stats) => {
                 self.db
@@ -3841,8 +3922,12 @@ impl RpcService {
     ) -> Result<pb::CreateProjectResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         let org = self.org_or_not_found(&req.org_slug).await?;
-        self.require_permission(&claims, Permission::RegistryConfigure, &Scope::parse(&org.slug))
-            .await?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&org.slug),
+        )
+        .await?;
         if req.name.is_empty() {
             return Err(RpcError::invalid("project name is required"));
         }
@@ -3882,8 +3967,12 @@ impl RpcService {
     ) -> Result<pb::CreateBindingResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         let org = self.org_or_not_found(&req.org_slug).await?;
-        self.require_permission(&claims, Permission::RegistryConfigure, &Scope::parse(&org.slug))
-            .await?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&org.slug),
+        )
+        .await?;
         if req.name.is_empty() || req.root.is_empty() {
             return Err(RpcError::invalid("binding name and root are required"));
         }
@@ -4432,7 +4521,11 @@ impl RpcService {
                 .fetcher(&registry)
                 .await
                 .map_err(RpcError::internal)?;
-            let Some(bytes) = fetch.fetch(machine_path).await.map_err(RpcError::internal)? else {
+            let Some(bytes) = fetch
+                .fetch(machine_path)
+                .await
+                .map_err(RpcError::internal)?
+            else {
                 return Ok(None);
             };
             return Ok(Some(FacadeObject {
@@ -4442,7 +4535,12 @@ impl RpcService {
                 redirect: None,
             }));
         }
-        if let Some(cache) = self.db.cache_by_slug(slug).await.map_err(RpcError::internal)? {
+        if let Some(cache) = self
+            .db
+            .cache_by_slug(slug)
+            .await
+            .map_err(RpcError::internal)?
+        {
             return self.cache_facade_fetch(auth, &cache, machine_path).await;
         }
         Err(RpcError::not_found("registry"))
@@ -4583,9 +4681,10 @@ impl RpcService {
         if binding.access != "private" {
             return Ok(None);
         }
-        let (Some(base_url), Some(credential_ref)) =
-            (binding.endpoint.as_deref(), binding.credential_ref.as_deref())
-        else {
+        let (Some(base_url), Some(credential_ref)) = (
+            binding.endpoint.as_deref(),
+            binding.credential_ref.as_deref(),
+        ) else {
             return Ok(None);
         };
         // The prefix is the cache's isolation boundary within a (possibly shared)
@@ -4653,10 +4752,19 @@ impl RpcService {
     ///
     /// Returns [`RpcError::Internal`] on database failure.
     pub async fn serve_root_robots(&self) -> Result<String, RpcError> {
-        if let Some(body) = self.db.root_robots_body().await.map_err(RpcError::internal)? {
+        if let Some(body) = self
+            .db
+            .root_robots_body()
+            .await
+            .map_err(RpcError::internal)?
+        {
             return Ok(body);
         }
-        let policy = self.db.root_crawl_policy().await.map_err(RpcError::internal)?;
+        let policy = self
+            .db
+            .root_crawl_policy()
+            .await
+            .map_err(RpcError::internal)?;
         let llms_url = format!("{}/llms.txt", self.external_url.trim_end_matches('/'));
         Ok(crate::robots::render_robots(policy, Some(&llms_url)))
     }
@@ -4681,7 +4789,11 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .unwrap_or_default();
-        let registries = self.db.list_registries().await.map_err(RpcError::internal)?;
+        let registries = self
+            .db
+            .list_registries()
+            .await
+            .map_err(RpcError::internal)?;
         let views: Vec<crate::robots::RootRegistryView> = registries
             .into_iter()
             .filter(|r| r.visibility == "public")
@@ -4962,7 +5074,10 @@ impl RpcService {
                 .header(header::CONTENT_TYPE, ct)
                 .header(header::CACHE_CONTROL, cc)
                 .header(header::ACCEPT_RANGES, "bytes")
-                .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{}", read.total))
+                .header(
+                    header::CONTENT_RANGE,
+                    format!("bytes {start}-{end}/{}", read.total),
+                )
                 .header(header::CONTENT_LENGTH, end - start + 1)
                 .body(read.body),
             None => axum::response::Response::builder()
@@ -5044,11 +5159,14 @@ impl RpcService {
                 Ok(text) => text,
                 Err(_) => return FacadeWrite::BadPath("narinfo is not valid UTF-8"),
             };
-            let (key_name, signing_key, _public) =
-                match self.db.load_hosted_signing_key(sealer.as_ref(), key_id).await {
-                    Ok(key) => key,
-                    Err(err) => return internal_write(err),
-                };
+            let (key_name, signing_key, _public) = match self
+                .db
+                .load_hosted_signing_key(sealer.as_ref(), key_id)
+                .await
+            {
+                Ok(key) => key,
+                Err(err) => return internal_write(err),
+            };
             match crate::nix_sign::sign_narinfo(text, &key_name, &signing_key) {
                 Ok(signed) => Some(signed.into_bytes()),
                 Err(err) => return internal_write(err),
@@ -5179,8 +5297,7 @@ impl RpcService {
         registry: &RegistryRecord,
         auth: Option<&str>,
     ) -> Result<String, FacadeWrite> {
-        let value =
-            auth.ok_or(FacadeWrite::Unauthorized("missing Authorization header"))?;
+        let value = auth.ok_or(FacadeWrite::Unauthorized("missing Authorization header"))?;
         let token = value
             .strip_prefix("Bearer ")
             .ok_or(FacadeWrite::Unauthorized(
@@ -5882,7 +5999,10 @@ mod frontend_url_tests {
             "https://cdn.example.com/acme"
         );
         // An empty base_path and prefix (a per-consumer frontend at the root).
-        assert_eq!(frontend_base_url("cdn.example.com", "", ""), "https://cdn.example.com");
+        assert_eq!(
+            frontend_base_url("cdn.example.com", "", ""),
+            "https://cdn.example.com"
+        );
     }
 
     #[test]
