@@ -4,7 +4,7 @@
 //! A tiny in-process *software authenticator* (Ed25519 and P-256) plays the
 //! browser: it mints a keypair, builds `authenticatorData`/`clientDataJSON`,
 //! signs as a real authenticator would, and posts the base64url-encoded result
-//! through the **real router** to the `/account/passkeys/{begin,finish}` and
+//! through the **real router** to the `/-/account/passkeys/{begin,finish}` and
 //! `/auth/passkey/{begin,finish}` endpoints — so a passkey registered over HTTP
 //! can sign a fresh session in over HTTP, exactly as the inline browser script
 //! drives it. Negative cases (wrong origin, replayed/forged challenge, bad
@@ -335,7 +335,7 @@ async fn http_register_then_login(auth: SoftAuthenticator) {
     let begin = send_json(
         &app,
         "POST",
-        "/account/passkeys/begin",
+        "/-/account/passkeys/begin",
         Some(&cookie),
         None,
         Some(format!("csrf={csrf}")),
@@ -356,7 +356,7 @@ async fn http_register_then_login(auth: SoftAuthenticator) {
     let finish = send_json(
         &app,
         "POST",
-        "/account/passkeys/finish",
+        "/-/account/passkeys/finish",
         Some(&cookie),
         Some(finish_body.to_string()),
         None,
