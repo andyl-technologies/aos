@@ -927,8 +927,8 @@ mod tests {
     use std::rc::Rc;
 
     use crucible::{
-        NodeBlobRef, NodeId, ReadyPoint, RngDecision, RngStreamId, Schedule, WhiteBoxPolicy,
-        WorldNode,
+        NodeBlobRef, NodeId, NodeTemplate, ReadyPoint, RngDecision, RngStreamId, Schedule,
+        WhiteBoxPolicy, WorldNode,
     };
 
     use super::*;
@@ -1782,6 +1782,8 @@ mod tests {
                 marker: String::from("ready"),
             },
             white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -1813,6 +1815,8 @@ mod tests {
                 },
                 ready_point: ReadyPoint::AgentSignal,
                 white_box: WhiteBoxPolicy::Disabled,
+                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -1960,6 +1964,8 @@ mod tests {
                 icount: crucible::Icount { retired: 1 },
             },
             white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,

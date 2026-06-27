@@ -1209,6 +1209,22 @@ authority for its shape. The contract those files may rely on:
     test and `checks.crucible.phase1.spatialPlanValidation` gate lock down the
     exact build-time and parse-time error payloads plus canonical
     partition-parameter spelling.
-- [ ] **T-SPAT-21** Implement the full parse/build-time validation pass (the §9
+- [x] **T-SPAT-21** Implement the full parse/build-time validation pass (the §9
   table) rejecting ill-formed scenarios before hashing/running; assert no
   well-formedness check is deferred to runtime. — satisfies [SPAT-32]; spec §9.
+  - Completed by `crates/crucible/src/model.rs` and `crates/crucible-qemu`: the
+    scenario-form constructors, TOML parser, and compact-binary parser validate
+    `World`, `Plan`, and `Properties` before returning a runnable
+    `ScenarioDefForm`; the parse paths also validate component content before
+    checking serialized ids. The spatial pass rejects duplicate nodes, undeclared
+    link endpoints, invalid latency/jitter/loss, bad plan refs,
+    unsupported/unknown plan fault params, dangling heal tags, negative plan
+    times, undeclared property refs, empty compound predicates, white-box ready
+    points without opt-in, zero fixed vCPU counts, and out-of-range fixed icount
+    shifts. `WorldNode` now carries fixed `smp_vcpus` and `icount_shift`, and
+    both fields participate in world/scenario identity; `crucible-qemu`
+    launch-profile validation mirrors those rows before spawn and continues to
+    reject MTTCG/non-pinned launch material. The focused
+    `scenario_def_form_rejects_well_formedness_matrix_before_hashing` test and
+    `checks.crucible.phase1.spatialValidationPass` gate lock the §9 validation
+    matrix to parse/build time.

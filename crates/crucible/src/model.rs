@@ -26,6 +26,7 @@ mod canonical;
 static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Minimum one-way logical link latency in virtual nanoseconds.
 pub const MIN_LINK_LATENCY: SimDuration = SimDuration { nanos: 1 };
+const MAX_WORLD_ICOUNT_SHIFT: u8 = 62;
 const MAX_LINK_LOSS_MILLIONTHS: u32 = 1_000_000;
 const MAX_FAMILY_FAULT_DENSITY_MILLIONTHS: u32 = 1_000_000;
 const MAX_SCENARIO_FAMILY_SEEDS: u32 = 1_000_000;
@@ -702,8 +703,8 @@ impl World {
     ///
     /// # Errors
     ///
-    /// Returns the same topology and ready-point validation errors as
-    /// [`World::from_nodes_and_links`].
+    /// Returns the same topology, ready-point, vCPU-count, and icount-shift
+    /// validation errors as [`World::from_nodes_and_links`].
     pub fn from_recorded_parts(
         id: ContentHash,
         nodes: Vec<WorldNode>,
@@ -744,7 +745,10 @@ impl World {
     /// Returns [`EngineError::DuplicateWorldNodeId`] when a node id appears
     /// more than once, or [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when
     /// a node selects [`ReadyPoint::AgentSignal`] without enabling
-    /// [`WhiteBoxPolicy::Enabled`].
+    /// [`WhiteBoxPolicy::Enabled`]. Returns
+    /// [`EngineError::WorldNodeSmpVcpuCountZero`] or
+    /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
+    /// timing fields are invalid.
     pub fn from_nodes(nodes: Vec<WorldNode>) -> Result<Self, EngineError> {
         Self::from_nodes_and_links(nodes, Vec::new())
     }
@@ -759,8 +763,11 @@ impl World {
     /// Returns [`EngineError::DuplicateWorldNodeId`] when a node id appears
     /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
     /// node selects [`ReadyPoint::AgentSignal`] without enabling
-    /// [`WhiteBoxPolicy::Enabled`], [`EngineError::WorldLinkUnknownNode`] when
-    /// a link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
+    /// [`WhiteBoxPolicy::Enabled`],
+    /// [`EngineError::WorldNodeSmpVcpuCountZero`] or
+    /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
+    /// timing fields are invalid, [`EngineError::WorldLinkUnknownNode`] when a
+    /// link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
     /// when a link's endpoints are equal, or [`EngineError::DuplicateWorldLink`]
     /// when a canonical endpoint pair appears more than once. Returns
     /// [`EngineError::WorldLinkLatencyBelowFloor`] or
@@ -791,7 +798,10 @@ impl World {
     /// Returns [`EngineError::DuplicateWorldNodeId`] when a node id appears
     /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
     /// node selects [`ReadyPoint::AgentSignal`] without enabling
-    /// [`WhiteBoxPolicy::Enabled`], or a link validation error from
+    /// [`WhiteBoxPolicy::Enabled`],
+    /// [`EngineError::WorldNodeSmpVcpuCountZero`] or
+    /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
+    /// timing fields are invalid, or a link validation error from
     /// [`World::validate_topology`].
     pub fn validate_ready_point_policies(&self) -> Result<(), EngineError> {
         self.validate_topology()
@@ -804,8 +814,11 @@ impl World {
     /// Returns [`EngineError::DuplicateWorldNodeId`] when a node id appears
     /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
     /// node selects [`ReadyPoint::AgentSignal`] without enabling
-    /// [`WhiteBoxPolicy::Enabled`], [`EngineError::WorldLinkUnknownNode`] when
-    /// a link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
+    /// [`WhiteBoxPolicy::Enabled`],
+    /// [`EngineError::WorldNodeSmpVcpuCountZero`] or
+    /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
+    /// timing fields are invalid, [`EngineError::WorldLinkUnknownNode`] when a
+    /// link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
     /// when a link's endpoints are equal, or [`EngineError::DuplicateWorldLink`]
     /// when a canonical endpoint pair appears more than once. Returns
     /// [`EngineError::WorldLinkLatencyBelowFloor`] or
@@ -1014,18 +1027,27 @@ impl World {
 pub struct NodeTemplate {
     ready_point: ReadyPoint,
     white_box: WhiteBoxPolicy,
+    smp_vcpus: u16,
+    icount_shift: u8,
     kernel: Option<ContentAddressedBlobRef>,
     root_image: Option<ContentAddressedBlobRef>,
     initrd: Option<ContentAddressedBlobRef>,
 }
 
 impl NodeTemplate {
+    /// The default fixed vCPU count for a world node.
+    pub const DEFAULT_SMP_VCPUS: u16 = 1;
+    /// The default fixed icount shift for a world node.
+    pub const DEFAULT_ICOUNT_SHIFT: u8 = 0;
+
     /// Builds a node template with the supplied ready point and white-box disabled.
     #[must_use]
     pub fn new(ready_point: ReadyPoint) -> Self {
         Self {
             ready_point,
             white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: Self::DEFAULT_SMP_VCPUS,
+            icount_shift: Self::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -1058,6 +1080,8 @@ impl NodeTemplate {
         Self {
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Enabled,
+            smp_vcpus: Self::DEFAULT_SMP_VCPUS,
+            icount_shift: Self::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -1070,6 +1094,8 @@ impl NodeTemplate {
         Self {
             ready_point: node.ready_point.clone(),
             white_box: node.white_box,
+            smp_vcpus: node.smp_vcpus,
+            icount_shift: node.icount_shift,
             kernel: node.kernel,
             root_image: node.root_image,
             initrd: node.initrd,
@@ -1087,6 +1113,20 @@ impl NodeTemplate {
     #[must_use]
     pub fn white_box(mut self, white_box: WhiteBoxPolicy) -> Self {
         self.white_box = white_box;
+        self
+    }
+
+    /// Replaces the fixed vCPU count.
+    #[must_use]
+    pub fn smp_vcpus(mut self, smp_vcpus: u16) -> Self {
+        self.smp_vcpus = smp_vcpus;
+        self
+    }
+
+    /// Replaces the fixed icount shift.
+    #[must_use]
+    pub fn icount_shift(mut self, icount_shift: u8) -> Self {
+        self.icount_shift = icount_shift;
         self
     }
 
@@ -1116,6 +1156,8 @@ impl NodeTemplate {
             id,
             ready_point: self.ready_point.clone(),
             white_box: self.white_box,
+            smp_vcpus: self.smp_vcpus,
+            icount_shift: self.icount_shift,
             kernel: self.kernel,
             root_image: self.root_image,
             initrd: self.initrd,
@@ -3073,6 +3115,10 @@ pub struct WorldNode {
     pub ready_point: ReadyPoint,
     /// Whether this node opts into the white-box guest-host channel.
     pub white_box: WhiteBoxPolicy,
+    /// Fixed QEMU vCPU count for this node.
+    pub smp_vcpus: u16,
+    /// Fixed QEMU icount shift for this node.
+    pub icount_shift: u8,
     /// Optional content-addressed guest kernel blob.
     pub kernel: Option<ContentAddressedBlobRef>,
     /// Optional content-addressed read-only root-image blob.
@@ -7115,6 +7161,20 @@ pub enum EngineError {
         /// The node whose ready-point configuration is invalid.
         node: NodeId,
     },
+    /// A world node has no vCPUs.
+    WorldNodeSmpVcpuCountZero {
+        /// The invalid node.
+        node: NodeId,
+    },
+    /// A world node has an unsupported fixed icount shift.
+    WorldNodeIcountShiftTooLarge {
+        /// The invalid node.
+        node: NodeId,
+        /// The configured shift value.
+        shift: u8,
+        /// The maximum legal shift value.
+        maximum: u8,
+    },
     /// A plan membership fault references an undeclared node.
     PlanFaultUnknownNode {
         /// The undeclared node.
@@ -7335,6 +7395,12 @@ impl fmt::Display for EngineError {
             }
             Self::WhiteBoxReadyPointWithoutOptIn { .. } => {
                 f.write_str("agent-signal ready point requires white-box opt-in")
+            }
+            Self::WorldNodeSmpVcpuCountZero { .. } => {
+                f.write_str("world node fixed vCPU count must be at least one")
+            }
+            Self::WorldNodeIcountShiftTooLarge { .. } => {
+                f.write_str("world node fixed icount shift is outside the legal range")
             }
             Self::PlanFaultUnknownNode { .. } => {
                 f.write_str("plan membership fault references an undeclared node")
@@ -8302,6 +8368,18 @@ fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
                 node: node.id.clone(),
             });
         }
+        if node.smp_vcpus == 0 {
+            return Err(EngineError::WorldNodeSmpVcpuCountZero {
+                node: node.id.clone(),
+            });
+        }
+        if node.icount_shift > MAX_WORLD_ICOUNT_SHIFT {
+            return Err(EngineError::WorldNodeIcountShiftTooLarge {
+                node: node.id.clone(),
+                shift: node.icount_shift,
+                maximum: MAX_WORLD_ICOUNT_SHIFT,
+            });
+        }
     }
 
     Ok(())
@@ -8776,6 +8854,8 @@ struct WorldToml {
 #[serde(deny_unknown_fields)]
 struct WorldNodeToml {
     id: String,
+    smp_vcpus: u16,
+    icount_shift: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kernel: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -9019,6 +9099,8 @@ fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
 fn world_node_to_toml(node: &WorldNode) -> WorldNodeToml {
     WorldNodeToml {
         id: node.id.name.clone(),
+        smp_vcpus: node.smp_vcpus,
+        icount_shift: node.icount_shift,
         kernel: node.kernel.map(ContentAddressedBlobRef::to_uri),
         root_image: node.root_image.map(ContentAddressedBlobRef::to_uri),
         initrd: node.initrd.map(ContentAddressedBlobRef::to_uri),
@@ -9035,6 +9117,8 @@ fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, EngineError> {
         id: NodeId { name: toml.id },
         ready_point: ready_point_from_toml(toml.ready_point),
         white_box: white_box_from_toml(toml.white_box),
+        smp_vcpus: toml.smp_vcpus,
+        icount_shift: toml.icount_shift,
         kernel,
         root_image,
         initrd,
@@ -9868,6 +9952,8 @@ fn read_world_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<World, Eng
 
 fn write_world_node_binary(node: &WorldNode, writer: &mut ScenarioBinaryWriter) {
     writer.write_string(&node.id.name);
+    writer.write_u32(u32::from(node.smp_vcpus));
+    writer.write_u8(node.icount_shift);
     writer.write_optional_blob_ref(node.kernel);
     writer.write_optional_blob_ref(node.root_image);
     writer.write_optional_blob_ref(node.initrd);
@@ -9882,6 +9968,9 @@ fn read_world_node_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<World
     let id = NodeId {
         name: reader.read_string()?,
     };
+    let smp_vcpus = u16::try_from(reader.read_u32()?)
+        .map_err(|_error| scenario_serialization_error("world node vCPU count overflows u16"))?;
+    let icount_shift = reader.read_u8()?;
     let kernel = reader.read_optional_blob_ref()?;
     let root_image = reader.read_optional_blob_ref()?;
     let initrd = reader.read_optional_blob_ref()?;
@@ -9895,6 +9984,8 @@ fn read_world_node_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<World
         id,
         ready_point,
         white_box,
+        smp_vcpus,
+        icount_shift,
         kernel,
         root_image,
         initrd,
@@ -10896,9 +10987,11 @@ fn world_links_material(links: &[LinkDef]) -> String {
 
 fn world_node_material(node: &WorldNode) -> String {
     format!(
-        "node_id_len={}\nnode_id={}\nkernel_ref={}\nroot_image_ref={}\ninitrd_ref={}\n{}\nwhite_box={}",
+        "node_id_len={}\nnode_id={}\nsmp_vcpus={}\nicount_shift={}\nkernel_ref={}\nroot_image_ref={}\ninitrd_ref={}\n{}\nwhite_box={}",
         node.id.name.len(),
         node.id.name,
+        node.smp_vcpus,
+        node.icount_shift,
         optional_blob_ref_material(node.kernel),
         optional_blob_ref_material(node.root_image),
         optional_blob_ref_material(node.initrd),

@@ -1078,6 +1078,8 @@ mod tests {
                 icount: Icount { retired: 10 },
             },
             white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -1151,6 +1153,8 @@ mod tests {
                 icount: Icount { retired: 12 },
             },
             white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -1288,6 +1292,8 @@ mod tests {
                 icount: Icount { retired: 13 },
             },
             white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -1535,6 +1541,8 @@ mod tests {
             id: node_id("d"),
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Enabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -2410,6 +2418,379 @@ rate = 1.5
     }
 
     #[test]
+    fn scenario_def_form_rejects_well_formedness_matrix_before_hashing() {
+        let world = world_from_nodes_and_links(
+            vec![
+                ready_node(
+                    "a",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 1 },
+                    },
+                ),
+                ready_node(
+                    "b",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 2 },
+                    },
+                ),
+                ready_node(
+                    "c",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 3 },
+                    },
+                ),
+            ],
+            vec![link("a", "b")],
+        );
+        let changed_vcpu_world = world_from_nodes_and_links(
+            vec![
+                WorldNode {
+                    smp_vcpus: 2,
+                    ..ready_node(
+                        "a",
+                        ReadyPoint::FixedIcount {
+                            icount: Icount { retired: 1 },
+                        },
+                    )
+                },
+                ready_node(
+                    "b",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 2 },
+                    },
+                ),
+                ready_node(
+                    "c",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 3 },
+                    },
+                ),
+            ],
+            vec![link("a", "b")],
+        );
+        let changed_shift_world = world_from_nodes_and_links(
+            vec![
+                WorldNode {
+                    icount_shift: 1,
+                    ..ready_node(
+                        "a",
+                        ReadyPoint::FixedIcount {
+                            icount: Icount { retired: 1 },
+                        },
+                    )
+                },
+                ready_node(
+                    "b",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 2 },
+                    },
+                ),
+                ready_node(
+                    "c",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 3 },
+                    },
+                ),
+            ],
+            vec![link("a", "b")],
+        );
+        let duplicate_node_ids = World::from_nodes(vec![
+            ready_node(
+                "dup",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 1 },
+                },
+            ),
+            ready_node(
+                "dup",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 2 },
+                },
+            ),
+        ]);
+        let unknown_link_endpoint = World::from_nodes_and_links(
+            vec![ready_node(
+                "a",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 1 },
+                },
+            )],
+            vec![link("a", "missing")],
+        );
+        let latency_below_floor = LinkDef::with_transport(
+            node_id("a"),
+            node_id("b"),
+            SimDuration { nanos: 0 },
+            SimDuration::default(),
+            LinkLossProbability::ZERO,
+            None,
+        );
+        let jitter_below_floor = LinkDef::with_transport(
+            node_id("a"),
+            node_id("b"),
+            SimDuration { nanos: 5 },
+            SimDuration { nanos: 5 },
+            LinkLossProbability::ZERO,
+            None,
+        );
+        let loss_out_of_range = LinkLossProbability::from_millionths(1_000_001);
+        let plan_unknown_node = Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Activate {
+                at: VirtualTime::default(),
+                tag: tag("missing-node"),
+                fault: MembershipFault::Crash {
+                    node: node_id("missing"),
+                    restart: RestartPolicy::StayDown,
+                },
+            }],
+        );
+        let plan_unknown_link = Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Activate {
+                at: VirtualTime::default(),
+                tag: tag("missing-link"),
+                fault: MembershipFault::Partition {
+                    endpoint_a: node_id("b"),
+                    endpoint_b: node_id("c"),
+                    direction: PartitionDirection::Bidirectional,
+                },
+            }],
+        );
+        let unsupported_fault_param_toml = r#"
+id = "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+
+[[entry]]
+kind = "activate"
+at_ticks = 0
+tag = "unsupported-window"
+
+[entry.fault]
+kind = "crash"
+node = "a"
+restart = "stay_down"
+window = 10
+"#;
+        let unsupported_fault_param =
+            Plan::from_canonical_toml_for_world(&world, unsupported_fault_param_toml);
+        let unknown_direction_toml = r#"
+id = "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+
+[[entry]]
+kind = "activate"
+at_ticks = 0
+tag = "bad-direction"
+
+[entry.fault]
+kind = "partition"
+endpoint_a = "a"
+endpoint_b = "b"
+direction = "sideways"
+"#;
+        let unknown_direction = Plan::from_canonical_toml_for_world(&world, unknown_direction_toml);
+        let unknown_heal_tag = Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Heal {
+                at: VirtualTime { ticks: 10 },
+                tag: tag("never-activated"),
+            }],
+        );
+        let negative_plan_time_toml = r#"
+id = "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+
+[[entry]]
+kind = "heal"
+at_ticks = -5
+tag = "negative-time"
+"#;
+        let negative_plan_time =
+            Plan::from_canonical_toml_for_world(&world, negative_plan_time_toml);
+        let unknown_property_ref = Properties::from_assertions_for_world(
+            &world,
+            vec![assertion(
+                "missing",
+                "missing property node",
+                Property::Always {
+                    predicate: named_predicate("node_alive", &["missing"]),
+                },
+            )],
+        );
+        let empty_property_compound = Properties::from_assertions_for_world(
+            &world,
+            vec![assertion(
+                "empty",
+                "empty all-of",
+                Property::Always {
+                    predicate: Predicate::AllOf {
+                        predicates: Vec::new(),
+                    },
+                },
+            )],
+        );
+        let white_box_ready_point_without_opt_in = World::from_nodes(vec![WorldNode {
+            id: node_id("agent"),
+            ready_point: ReadyPoint::AgentSignal,
+            white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+            kernel: None,
+            root_image: None,
+            initrd: None,
+        }]);
+        let zero_vcpu_count = World::from_nodes(vec![WorldNode {
+            id: node_id("zero-vcpu"),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: Icount { retired: 1 },
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: 0,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+            kernel: None,
+            root_image: None,
+            initrd: None,
+        }]);
+        let icount_shift_too_large = World::from_nodes(vec![WorldNode {
+            id: node_id("bad-shift"),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: Icount { retired: 1 },
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: 63,
+            kernel: None,
+            root_image: None,
+            initrd: None,
+        }]);
+        let valid_plan = Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Activate {
+                at: VirtualTime::default(),
+                tag: tag("valid-crash"),
+                fault: MembershipFault::Crash {
+                    node: node_id("a"),
+                    restart: RestartPolicy::StayDown,
+                },
+            }],
+        )
+        .unwrap_or_else(|error| panic!("valid plan should build: {error}"));
+        let valid_form = ScenarioDefForm::from_components(
+            &world,
+            &valid_plan,
+            &Properties::empty(),
+            Seed::from_u64(0x0010_0021),
+        )
+        .unwrap_or_else(|error| panic!("valid scenario form should build: {error}"));
+        let scenario_negative_plan_time = ScenarioDefForm::from_canonical_toml(
+            &valid_form
+                .to_canonical_toml()
+                .unwrap_or_else(|error| panic!("valid scenario should serialize: {error}"))
+                .replace("at_ticks = 0", "at_ticks = -7"),
+        );
+
+        assert!(matches!(
+            duplicate_node_ids,
+            Err(EngineError::DuplicateWorldNodeId { node }) if node == node_id("dup")
+        ));
+        assert!(matches!(
+            unknown_link_endpoint,
+            Err(EngineError::WorldLinkUnknownNode { node, .. })
+                if node == node_id("missing")
+        ));
+        assert!(matches!(
+            latency_below_floor,
+            Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
+                if latency == SimDuration { nanos: 0 } && minimum == MIN_LINK_LATENCY
+        ));
+        assert!(matches!(
+            jitter_below_floor,
+            Err(EngineError::WorldLinkJitterBelowLatencyFloor {
+                latency,
+                jitter,
+                minimum,
+                ..
+            }) if latency == SimDuration { nanos: 5 }
+                && jitter == SimDuration { nanos: 5 }
+                && minimum == MIN_LINK_LATENCY
+        ));
+        assert!(matches!(
+            loss_out_of_range,
+            Err(EngineError::LinkLossProbabilityOutOfRange {
+                millionths,
+                maximum,
+            }) if millionths == 1_000_001 && maximum == 1_000_000
+        ));
+        assert!(matches!(
+            plan_unknown_node,
+            Err(EngineError::PlanFaultUnknownNode { node })
+                if node == node_id("missing")
+        ));
+        assert!(matches!(
+            plan_unknown_link,
+            Err(EngineError::PlanFaultUnknownLink {
+                endpoint_a,
+                endpoint_b,
+            }) if endpoint_a == node_id("b") && endpoint_b == node_id("c")
+        ));
+        assert!(matches!(
+            unsupported_fault_param,
+            Err(EngineError::PlanFaultUnsupportedParam { entry, field })
+                if entry == 0 && field == "window"
+        ));
+        assert!(matches!(
+            unknown_direction,
+            Err(EngineError::PlanFaultUnknownDirection { entry, direction })
+                if entry == 0 && direction == "sideways"
+        ));
+        assert!(matches!(
+            unknown_heal_tag,
+            Err(EngineError::PlanHealUnknownTag { tag })
+                if tag == self::tag("never-activated")
+        ));
+        assert!(matches!(
+            negative_plan_time,
+            Err(EngineError::PlanNegativeTime { entry, at_ticks })
+                if entry == 0 && at_ticks == -5
+        ));
+        assert!(matches!(
+            unknown_property_ref,
+            Err(EngineError::PropertyPredicateUnknownNode { node })
+                if node == node_id("missing")
+        ));
+        assert!(matches!(
+            empty_property_compound,
+            Err(EngineError::PropertyPredicateEmptyCompound { kind }) if kind == "all-of"
+        ));
+        assert!(matches!(
+            white_box_ready_point_without_opt_in,
+            Err(EngineError::WhiteBoxReadyPointWithoutOptIn { node })
+                if node == node_id("agent")
+        ));
+        assert!(matches!(
+            zero_vcpu_count,
+            Err(EngineError::WorldNodeSmpVcpuCountZero { node })
+                if node == node_id("zero-vcpu")
+        ));
+        assert!(matches!(
+            icount_shift_too_large,
+            Err(EngineError::WorldNodeIcountShiftTooLarge {
+                node,
+                shift,
+                maximum,
+            }) if node == node_id("bad-shift") && shift == 63 && maximum == 62
+        ));
+        assert!(matches!(
+            scenario_negative_plan_time,
+            Err(EngineError::PlanNegativeTime { entry, at_ticks })
+                if entry == 0 && at_ticks == -7
+        ));
+        assert_eq!(valid_form.id(), valid_form.scenario_def().id());
+        assert_ne!(world.id(), changed_vcpu_world.id());
+        assert_ne!(world.id(), changed_shift_world.id());
+        assert_ne!(world.scenario_def(), changed_vcpu_world.scenario_def());
+        assert_ne!(world.scenario_def(), changed_shift_world.scenario_def());
+    }
+
+    #[test]
     fn plan_content_address_is_orthogonal_and_canonical() {
         let world = world_from_nodes_and_links(
             two_ready_nodes(),
@@ -2930,6 +3311,8 @@ rate = 1.5
                     id: node_id("agent"),
                     ready_point: ReadyPoint::AgentSignal,
                     white_box: WhiteBoxPolicy::Enabled,
+                    smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                    icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                     kernel: None,
                     root_image: None,
                     initrd: None,
@@ -3015,6 +3398,8 @@ rate = 1.5
                         icount: Icount { retired: 11 },
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                    icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                     kernel: Some(kernel_ref),
                     root_image: Some(root_image_ref),
                     initrd: Some(initrd_ref),
@@ -3617,6 +4002,8 @@ rate = 1.5
                 icount: Icount { retired: 1 },
             },
             white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: Some(kernel),
             root_image: Some(root_image),
             initrd: Some(initrd),
@@ -3627,6 +4014,8 @@ rate = 1.5
                 window: SimDuration { nanos: 12 },
             },
             white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: Some(root_image),
             initrd: None,
@@ -3637,6 +4026,8 @@ rate = 1.5
                 marker: "ready".to_owned(),
             },
             white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: Some(kernel),
             root_image: None,
             initrd: Some(initrd),
@@ -3997,15 +4388,15 @@ rate = 1.5
         assert_eq!(density.millionths(), 125_000);
         assert_eq!(
             authored_world.id().to_hex(),
-            "6fbfe24e4532a48d1efd0bc7178a96259adcf491ec2733c01482fd5d35766038"
+            "6b608a5f359126d4f982e63457be7b98fba6d9dbdbcd08648caded20acd06ad6"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_world.canonical_bytes()).to_hex(),
-            "a05fee2effa1f8012c5eeed0f95934a9481d72f801ebc9b7a83fac113425c657"
+            "254a02cbbc4631b6f34e6016c3bbab6a421a34725a11bf526b9fbe312f527d76"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_world.to_compact_binary()).to_hex(),
-            "8f11b529c24bddf0fdb32082dbac30cf57968e827be2a1105dd541632fd3c9b0"
+            "be81ce79258b923f4e5e4946b1d691c87ba2a4b89629d4f101a5cf815754fff8"
         );
         assert_eq!(
             authored_plan.content_hash().to_hex(),
@@ -4033,15 +4424,15 @@ rate = 1.5
         );
         assert_eq!(
             authored_form.id().to_hex(),
-            "83ac348fed79549807648ace6de0e844c695d59a618ca2bd93eff61639d276d3"
+            "4127da3550c97ed8fbcccca2963ff73114001001bd0644009ed42b3a825ced09"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_form.canonical_bytes()).to_hex(),
-            "4482343ea3ac9997ae77a9d43c6f18018674e86857ea4bb93d9555f2520253b9"
+            "801fb1475d1c26e4b705bc418a7ad58955b8bf115451487d7af85e3cb84d19ab"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_form.to_compact_binary()).to_hex(),
-            "737aadbea915cc5a9ebd6dcbe639941a040e7bd82965b9ad44e2efbd6c4bfe32"
+            "098479af7127a4272235783d0f7c1a6d2a21dac963cb5ce54cc10ac0bc60ed9c"
         );
         assert_eq!(authored_world.id(), canonical_world.id());
         assert_eq!(authored_world.nodes(), canonical_world.nodes());
@@ -4359,6 +4750,8 @@ rate = 1.5
             id: node_id("agent"),
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -4381,6 +4774,8 @@ rate = 1.5
             id: node_id("agent"),
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Enabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -4426,6 +4821,8 @@ rate = 1.5
                 id: node_id(&format!("node-{index}")),
                 ready_point,
                 white_box,
+                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -4459,6 +4856,8 @@ rate = 1.5
                         icount: Icount { retired: 10 },
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                    icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                     kernel: None,
                     root_image: None,
                     initrd: None,
@@ -4469,6 +4868,8 @@ rate = 1.5
                         icount: Icount { retired: 11 },
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                    icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                     kernel: None,
                     root_image: None,
                     initrd: None,
@@ -4482,6 +4883,8 @@ rate = 1.5
                         window: SimDuration { nanos: 250 },
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                    icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                     kernel: None,
                     root_image: None,
                     initrd: None,
@@ -4492,6 +4895,8 @@ rate = 1.5
                         window: SimDuration { nanos: 251 },
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                    icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                     kernel: None,
                     root_image: None,
                     initrd: None,
@@ -4505,6 +4910,8 @@ rate = 1.5
                         marker: String::from("ready"),
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                    icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                     kernel: None,
                     root_image: None,
                     initrd: None,
@@ -4515,6 +4922,8 @@ rate = 1.5
                         marker: String::from("ready-v2"),
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                    icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                     kernel: None,
                     root_image: None,
                     initrd: None,
@@ -4526,6 +4935,8 @@ rate = 1.5
                     id: node_id("node"),
                     ready_point: ReadyPoint::AgentSignal,
                     white_box: WhiteBoxPolicy::Enabled,
+                    smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                    icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                     kernel: None,
                     root_image: None,
                     initrd: None,
@@ -4536,6 +4947,8 @@ rate = 1.5
                         marker: String::from("agent-ready"),
                     },
                     white_box: WhiteBoxPolicy::Enabled,
+                    smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                    icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                     kernel: None,
                     root_image: None,
                     initrd: None,
@@ -4549,6 +4962,8 @@ rate = 1.5
                         icount: Icount { retired: 10 },
                     },
                     white_box: WhiteBoxPolicy::Disabled,
+                    smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                    icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                     kernel: None,
                     root_image: None,
                     initrd: None,
@@ -4559,6 +4974,8 @@ rate = 1.5
                         icount: Icount { retired: 10 },
                     },
                     white_box: WhiteBoxPolicy::Enabled,
+                    smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                    icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                     kernel: None,
                     root_image: None,
                     initrd: None,
@@ -5041,6 +5458,8 @@ rate = 1.5
             id: node_id(name),
             ready_point,
             white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,

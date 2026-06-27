@@ -138,6 +138,7 @@ in {
     spatialSeedComponent = import ./phase1-spatial-seed-component.nix {inherit pkgs lib;};
     spatialSerializableForm = import ./phase1-spatial-serializable-form.nix {inherit pkgs lib;};
     spatialStaticTopology = import ./phase1-spatial-static-topology.nix {inherit pkgs lib;};
+    spatialValidationPass = import ./phase1-spatial-validation-pass.nix {inherit pkgs lib;};
     spatialWorldTopology = import ./phase1-spatial-world-topology.nix {inherit pkgs lib;};
     standaloneDependencies = import ./phase1-standalone-dependencies.nix {inherit pkgs lib;};
     testingStandards = import ./phase1-testing-standards.nix {inherit pkgs lib;};
