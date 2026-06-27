@@ -1124,9 +1124,12 @@ alone (`M-1`/`Q-A`).
       `configured_import_cache_preserves_hash_builtin_surface` evaluates
       `builtins.hashString "sha256" (import file)` with import caching disabled,
       with configured parse/persist roots on a miss/write path, and with a later
-      persistent-hit path, then requires identical SHA-256 hash-string output
-      across all three runs and scans that output for the selected internal
-      parse/import/file-content BLAKE3 and hot xxh3 canaries.
+      persistent-hit path, then mutates the imported source and requires the
+      changed source to produce the changed cache-disabled SHA-256 hash-string
+      output through a fresh content-addressed miss/write path and a later
+      persistent-hit path. It scans all original and changed hashString outputs
+      for selected root/import parse-cache BLAKE3, file-content BLAKE3, and hot
+      xxh3 canaries.
       `configured_cache_preserves_guarded_hash_file_surface` evaluates
       `builtins.hashFile "sha256" ./payload.txt` behind a forced
       `builtins.pathExists ./marker` guard with eval-cache disabled, with
