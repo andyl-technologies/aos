@@ -1714,6 +1714,18 @@ alone (`M-1`/`Q-A`).
       oracle still owns same-root locks, node-trace/value transactionality, and
       cache policy, while LMDB/redb tables, writer batching, mmap reads, GC
       policy, and cross-process coordination remain open (`C-13`/`R-14`).
+- [x] Current `ratchet-cache` variable-length node-trace log substrate:
+      `node_trace_log::NodeTraceLogKey`, `NodeTraceLogValueHash`,
+      `NodeTraceLogEntry`, and `NodeTraceLog` provide the generic engine-band
+      record layout and append/newest/physical-scan/compact/replacement file
+      operations for the current `nodes/traces.log` sidecar without
+      interpreting oracle-specific trace payload semantics. The engine keeps
+      payloads opaque, rejects truncated record headers and payloads, and
+      returns newest entries in stable key order. This is an engine-side
+      migration target only and is not yet consumed by oracle trace storage;
+      LMDB/redb tables, writer batching, mmap reads, node-metadata/value
+      transactionality, cross-process coordination, and full storage-engine
+      harness proof remain open (`C-13`/`R-14`).
 - [x] Current explicit node reuse counter update adapter:
       `PersistCache::record_node_materialization_reuse` and
       `lookup_node_materialization_reuse` expose typed materialization reuse

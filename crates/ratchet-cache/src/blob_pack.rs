@@ -1780,6 +1780,7 @@ fn ensure_blob_pack_file(path: &Path) -> Result<(), BlobPackAppendError> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .map_err(|source| BlobPackAppendError::Open {
             path: path.to_path_buf(),
