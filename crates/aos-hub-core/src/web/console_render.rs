@@ -30,10 +30,10 @@ use std::fmt::Write as _;
 use std::sync::{OnceLock, RwLock};
 
 use crate::db::{
-    AuditRow, Cache, CacheUsage, ChangesetRow, ChannelSummary, FrontendRecord, HostedKeyRecord,
-    IdpConfigRecord, IndexStatus, MirrorSource, OrgDomainRecord, OrgRecord, ProjectRecord,
-    RegistryRecord, ReleaseRow, SignupPolicy, StorageBindingRecord, WebauthnCredentialRecord,
-    WebhookRecord,
+    AuditRow, Cache, CacheGcRun, CacheUsage, ChangesetRow, ChannelSummary, FrontendRecord,
+    HostedKeyRecord, IdpConfigRecord, IndexStatus, MirrorSource, OrgDomainRecord, OrgRecord,
+    ProjectRecord, RegistryRecord, ReleaseRow, SignupPolicy, StorageBindingRecord,
+    WebauthnCredentialRecord, WebhookRecord,
 };
 use crate::domain::{iam, Permission, Role, Scope};
 use crate::web::help;
@@ -1835,11 +1835,14 @@ pub fn cache_page(
     links: &[CacheLinkRow],
     linkable: &[(String, String)],
     pins: &[CachePinRow],
+    // Recent GC runs (newest first), shown as history on the GC & pins tab.
+    gc_runs: &[CacheGcRun],
     can_admin: bool,
     // Whether this cache advertises its inherited storage-binding frontend
-    // (RFC-0004 §12) — the storage section's opt-out checkbox.
+    // (RFC-0004 §12) — the serving tab's opt-out checkbox.
     advertise_storage_frontend: bool,
-    // The active settings section/tab: "general", "links", "pins", or "danger".
+    // The active settings section/tab: "general", "storage", "serving",
+    // "links", "pins", or "danger".
     active: &str,
     notice: Option<&str>,
     started: Instant,
@@ -1876,8 +1879,8 @@ pub fn cache_page(
         );
     }
 
-    // Surface location (admin-only detail — never the credential).
-    if active == "general" && can_admin {
+    // -- Storage tab: binding location + change storage ---------------------
+    if active == "storage" && can_admin {
         let _ = write!(
             body,
             "<p class=\"dim\">binding <code>{binding}</code>{prefix}</p>\n",
@@ -1913,6 +1916,10 @@ pub fn cache_page(
                 options = options,
             );
         }
+    }
+
+    // -- Serving tab: advertise the inherited bucket frontend ---------------
+    if active == "serving" && can_admin {
         // Advertise the inherited storage-binding frontend (RFC-0004 §12): when
         // the bucket is public with a direct frontend, this cache's advertised
         // URL points consumers straight at the bucket.
@@ -2070,6 +2077,7 @@ pub fn cache_page(
                 slug = escape(&cache.slug),
                 csrf = csrf_field(csrf),
             );
+            body.push_str(&cache_gc_history_section(gc_runs));
             body.push_str(&cache_pins_section(org_slug, csrf, cache, pins));
         } else {
             body.push_str(
@@ -2105,6 +2113,57 @@ pub fn cache_page(
     // Render inside the cache settings chrome (its own left-tabs sidebar) with
     // the active section highlighted and a `caches / {slug}` breadcrumb.
     cache_settings_chrome(email, org_slug, cache, active, &body, started)
+}
+
+/// Render the "Recent runs" garbage-collection history for a cache.
+///
+/// One row per recent run (newest first): when it started + its status, the
+/// outcome (objects deleted/retained/scanned, or the error for a failed run, or
+/// "running…" for one still in flight), and the bytes reclaimed.
+fn cache_gc_history_section(gc_runs: &[CacheGcRun]) -> String {
+    let mut body = String::from("<h3>Recent runs</h3>\n");
+    if gc_runs.is_empty() {
+        body.push_str("<p class=\"dim\">No garbage-collection runs recorded yet.</p>\n");
+        return body;
+    }
+    body.push_str(
+        "<table class=\"pins\">\n<thead><tr>\
+         <th>when</th><th>result</th><th>freed</th></tr></thead>\n<tbody>\n",
+    );
+    for run in gc_runs {
+        let status_class = match run.status.as_str() {
+            "ok" => "ok",
+            "failed" => "bad",
+            _ => "dim",
+        };
+        let result = if run.status == "failed" {
+            run.error
+                .as_deref()
+                .map_or_else(|| "<span class=\"bad\">failed</span>".to_string(), escape)
+        } else if run.finished_at.is_none() {
+            "<span class=\"dim\">running…</span>".to_string()
+        } else {
+            format!(
+                "{} deleted · {} retained · {} scanned",
+                run.deleted_objects, run.retained, run.scanned
+            )
+        };
+        let _ = write!(
+            body,
+            "<tr>\
+             <td><div>{when}</div>\
+               <div class=\"subline\"><span class=\"{sc}\">{status}</span></div></td>\
+             <td>{result}</td>\
+             <td>{freed}</td></tr>\n",
+            when = ago(run.started_at),
+            sc = status_class,
+            status = escape(&run.status),
+            result = result,
+            freed = human_size(run.freed_bytes.max(0) as u64),
+        );
+    }
+    body.push_str("</tbody>\n</table>\n");
+    body
 }
 
 /// Render the "Pins (manual GC roots)" section of a cache's detail page.
@@ -2213,8 +2272,7 @@ fn cache_pins_section(org_slug: &str, csrf: &str, cache: &Cache, pins: &[CachePi
          <label>expires in \
          <input type=\"number\" name=\"expires_days\" min=\"1\" autocomplete=\"off\" \
          placeholder=\"days\"> days <span class=\"dim\">(empty = unlimited)</span></label>\n\
-         <button>add pin</button>\n</form>\n\
-         <p class=\"dim\">Re-adding an existing hash renews its expiry in place.</p>\n",
+         <button>add pin</button>\n</form>\n",
         org = org,
         slug = slug,
         csrf = csrf_field(csrf),
@@ -2613,6 +2671,8 @@ fn cache_settings_tabs(org_slug: &str, cache_slug: &str, active: &str) -> Vec<Se
     let base = format!("/-/org/{org_slug}/caches/{cache_slug}");
     vec![
         SettingsTab::new("general", "General", base.clone(), active),
+        SettingsTab::new("storage", "Storage", format!("{base}/storage"), active),
+        SettingsTab::new("serving", "Serving", format!("{base}/serving"), active),
         SettingsTab::new(
             "links",
             "Linked registries",
@@ -5301,6 +5361,18 @@ mod cache_render_tests {
             expires_at: None,
             created_at: 1_700_000_000,
         }];
+        let gc_runs = [crate::db::CacheGcRun {
+            id: 1,
+            cache_id: 1,
+            started_at: 1_700_000_500,
+            finished_at: Some(1_700_000_600),
+            status: "ok".into(),
+            error: None,
+            scanned: 20,
+            retained: 15,
+            deleted_objects: 5,
+            freed_bytes: 1024 * 1024,
+        }];
         let render = |active: &str| {
             cache_page(
                 "a@b.com",
@@ -5313,6 +5385,7 @@ mod cache_render_tests {
                 &[],
                 &[("cdn".to_string(), "public".to_string())],
                 &pins,
+                &gc_runs,
                 true,
                 true,
                 active,
@@ -5335,6 +5408,22 @@ mod cache_render_tests {
         assert!(general.contains("<span class=\"chip\">signed</span>"));
         assert!(general.contains("save"));
         assert!(general.contains("csrf-tok"));
+        // The sidebar carries the Storage and Serving tabs too (mirroring the
+        // registry settings IA); General no longer holds storage/serving.
+        assert!(general.contains("Storage"));
+        assert!(general.contains("Serving"));
+        assert!(!general.contains("Change storage"));
+        assert!(!general.contains("Bucket-direct serving"));
+
+        // Storage tab: the binding + change-storage form.
+        let storage = render("storage");
+        assert!(storage.contains("Change storage"));
+        assert!(storage.contains("action=\"/-/org/acme/caches/build/storage\""));
+
+        // Serving tab: the bucket-direct frontend control.
+        let serving = render("serving");
+        assert!(serving.contains("Bucket-direct serving"));
+        assert!(serving.contains("/-/org/acme/caches/build/advertise-frontend"));
 
         // Links tab: the link form (the `\"` guards against matching the
         // sidebar's `/links` tab href).
@@ -5360,6 +5449,12 @@ mod cache_render_tests {
         assert!(pins_tab.contains("<table class=\"pins\">"));
         assert!(pins_tab.contains("class=\"subline\""));
         assert!(!pins_tab.contains("class=\"linktable\""));
+        // GC run history (newest first) with the outcome + reclaimed bytes.
+        assert!(pins_tab.contains("Recent runs"));
+        assert!(pins_tab.contains("5 deleted · 15 retained · 20 scanned"));
+        assert!(pins_tab.contains("1.0 MiB"));
+        // The removed "Re-adding an existing hash renews…" line is gone.
+        assert!(!pins_tab.contains("Re-adding an existing hash"));
 
         // Danger tab: the delete form, styled like the registry/org remove pages.
         let danger = render("danger");
@@ -5381,6 +5476,7 @@ mod cache_render_tests {
                 &usage(),
                 &[],
                 &[("cdn".to_string(), "public".to_string())],
+                &[],
                 &[],
                 false,
                 true,
@@ -5413,6 +5509,7 @@ mod cache_render_tests {
             "primary",
             &["cold".to_string()],
             &usage(),
+            &[],
             &[],
             &[],
             &[],

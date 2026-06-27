@@ -2092,6 +2092,13 @@ async fn render_cache_detail(
                 });
             }
         }
+        // Recent GC runs back the GC tab's history; only the GC & pins tab renders
+        // them, so only fetch there.
+        let gc_runs = if can_admin && active == "pins" {
+            deps.db.list_cache_gc_runs(cache.id, 10).await?
+        } else {
+            Vec::new()
+        };
         Ok::<_, anyhow::Error>(console::cache_page(
             &session.email,
             &org.slug,
@@ -2103,6 +2110,7 @@ async fn render_cache_detail(
             &link_rows,
             &linkable,
             &pin_rows,
+            &gc_runs,
             can_admin,
             advertise_frontend,
             active,
@@ -2174,6 +2182,28 @@ pub(crate) async fn cache_danger(
     Path((org_slug, cache_slug)): Path<(String, String)>,
 ) -> Response {
     cache_tab(deps, headers, started, org_slug, cache_slug, "danger").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/storage` — the **Storage** tab (binding +
+/// change storage). The same path's `POST` performs the storage move.
+pub(crate) async fn cache_storage_tab(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "storage").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/serving` — the **Serving** tab (bucket-direct
+/// frontend advertisement).
+pub(crate) async fn cache_serving_tab(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "serving").await
 }
 
 /// Shared body for the cache settings tabs: require a session + read on the org,

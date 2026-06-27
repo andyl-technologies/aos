@@ -556,12 +556,25 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/-/org/{org}/caches/{slug}/storage",
-            post(
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                    send_bridge(handlers::cache_storage_tab(from_state(s), h, r, p))
+                },
+            )
+            .post(
                 |State(s): State<SharedState>,
                  h: HeaderMap,
                  p: Path<_>,
                  f: axum::extract::Form<_>| {
                     send_bridge(handlers::cache_change_storage(from_state(s), h, p, f))
+                },
+            ),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}/serving",
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                    send_bridge(handlers::cache_serving_tab(from_state(s), h, r, p))
                 },
             ),
         )
