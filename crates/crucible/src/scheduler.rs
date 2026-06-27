@@ -37,6 +37,24 @@ pub trait QuantumLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError>;
 }
 
+/// Advances one bounded host-concurrent scheduler round.
+///
+/// Implementations may dispatch multiple independent RUN phases before
+/// serializing their RESOLVE/EMIT/STEP completions through the scheduler.
+pub trait ConcurrentQuantumLoop: QuantumLoop {
+    /// Drives one bounded host-concurrent scheduler round.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the round cannot be driven or when the
+    /// scheduler detects an invalid boundary condition.
+    fn drive_concurrent_quantum(
+        &mut self,
+        request: QuantumRequest,
+        max_host_workers: usize,
+    ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError>;
+}
+
 /// Input supplied by the session actor at a quantum boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuantumRequest {
@@ -68,6 +86,37 @@ pub struct QuantumOutcome {
     pub event_log_segment_hash: Option<ContentHash>,
     /// Event-log offset after this quantum's EMIT segment.
     pub event_log_offset: EventLogOffset,
+}
+
+/// Output produced by one bounded host-concurrent scheduler round.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerConcurrentQuantumOutcome {
+    /// RUN set selected from the same scheduler boundary before host dispatch.
+    pub run_set: SchedulerConcurrentRunSet,
+    /// Serialized scheduler completions for the dispatched RUN set.
+    pub outcomes: Vec<QuantumOutcome>,
+}
+
+/// Deterministic set of RUNs eligible for host-level concurrent dispatch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerConcurrentRunSet {
+    /// Caller-supplied maximum host workers for this round.
+    pub max_host_workers: usize,
+    /// RUN candidates selected in deterministic scheduler completion order.
+    pub candidates: Vec<SchedulerConcurrentRunCandidate>,
+}
+
+/// One node RUN selected for bounded host-level concurrent dispatch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerConcurrentRunCandidate {
+    /// Scheduler node selected by PICK for this concurrent round.
+    pub node: SchedulerNodeId,
+    /// Node-local virtual time before RUN.
+    pub current_time: SimInstant,
+    /// Conservative lookahead-bounded virtual time for this RUN.
+    pub target_time: SimInstant,
+    /// Icount ceiling published before host dispatch.
+    pub max_advance_icount: u64,
 }
 
 /// One scheduler-emitted entry in the unified event log.
@@ -2800,6 +2849,25 @@ impl SingleScheduler {
         &self.topology_change_applications
     }
 
+    /// Returns the deterministic RUN set eligible for host-level concurrency.
+    ///
+    /// The set is bounded by both the scheduler's conservative horizon
+    /// computation and `max_host_workers`. RESOLVE and EMIT are not performed by
+    /// this read-only query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] if `max_host_workers` is zero or if horizon
+    /// projection discovers inconsistent scheduler state.
+    pub fn concurrent_run_set(
+        &self,
+        max_host_workers: usize,
+    ) -> Result<SchedulerConcurrentRunSet, SchedulerError> {
+        self.validate_max_host_workers(max_host_workers)?;
+        let candidates = self.advance_candidates()?;
+        self.concurrent_run_set_from_candidates(max_host_workers, &candidates)
+    }
+
     /// Authorizes one cross-node frame emission under the current topology.
     ///
     /// Backends use this as the scheduler-side send freeze: when a topology
@@ -2931,6 +2999,15 @@ impl SingleScheduler {
         self.control_inbox.push(operation);
     }
 
+    fn validate_max_host_workers(&self, max_host_workers: usize) -> Result<(), SchedulerError> {
+        if max_host_workers == 0 {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("concurrent scheduler max_host_workers must be positive"),
+            });
+        }
+        Ok(())
+    }
+
     /// Queues a topology change for the next quantum boundary.
     pub fn queue_topology_change(&mut self, change: SchedulerTopologyChange) {
         self.topology_changes.push(change);
@@ -3052,6 +3129,10 @@ impl SingleScheduler {
     }
 
     fn pick_global_minimum_horizon_node(&self) -> Result<Option<AdvanceCandidate>, SchedulerError> {
+        Ok(self.advance_candidates()?.into_iter().next())
+    }
+
+    fn advance_candidates(&self) -> Result<Vec<AdvanceCandidate>, SchedulerError> {
         let mut candidates = Vec::new();
         let rendezvous_cap = self.shared_rendezvous_cap()?;
         let topology_activation_cap = self.pending_topology_activation_cap()?;
@@ -3072,7 +3153,151 @@ impl SingleScheduler {
                 .then_with(|| left.index.cmp(&right.index))
         });
 
-        Ok(candidates.into_iter().next())
+        Ok(candidates)
+    }
+
+    fn concurrent_run_set_from_candidates(
+        &self,
+        max_host_workers: usize,
+        candidates: &[AdvanceCandidate],
+    ) -> Result<SchedulerConcurrentRunSet, SchedulerError> {
+        self.validate_max_host_workers(max_host_workers)?;
+        let mut selected = Vec::new();
+        let frontier = SimInstant {
+            nanos: self.frontier.ticks,
+        };
+        let target_time = candidates.first().map(|candidate| candidate.target_time);
+
+        for candidate in candidates.iter() {
+            if selected.len() >= max_host_workers {
+                break;
+            }
+            if Some(candidate.target_time) != target_time {
+                break;
+            }
+            let draft = self.advance_plan_draft(candidate)?;
+            let current_time = draft.before.to_virtual(self.timeline.shift())?;
+            if current_time != frontier {
+                continue;
+            }
+            selected.push(SchedulerConcurrentRunCandidate {
+                node: draft.node,
+                current_time,
+                target_time: candidate.target_time,
+                max_advance_icount: draft.target_counter,
+            });
+        }
+
+        Ok(SchedulerConcurrentRunSet {
+            max_host_workers,
+            candidates: selected,
+        })
+    }
+
+    fn advance_plan_draft(
+        &self,
+        candidate: &AdvanceCandidate,
+    ) -> Result<AdvancePlanDraft, SchedulerError> {
+        let selected_index = candidate.index;
+        let selected_node = self.nodes[selected_index].id.clone();
+        let before = self.nodes[selected_index].counter;
+        let target_counter = self
+            .timeline
+            .max_advance_icount_for_horizon(candidate.target_time)?
+            .retired;
+        let projected_target = NodeCounter {
+            ticks: target_counter,
+        }
+        .to_virtual(self.timeline.shift())?;
+        if !candidate.allow_ceil_past_target && projected_target > candidate.target_time {
+            return Err(scheduler_ceiling_overshoot_error(
+                &selected_node,
+                "target_at",
+                candidate.target_time,
+                projected_target,
+            ));
+        }
+        if projected_target > candidate.target_time {
+            let current_time = before.to_virtual(self.timeline.shift())?;
+            let selected_runtime_node = &self.nodes[selected_index];
+            if let NetworkLookahead::Finite(duration) = selected_runtime_node.network_lookahead {
+                let network_target = current_time + duration;
+                if network_target > candidate.target_time && projected_target > network_target {
+                    return Err(scheduler_ceiling_overshoot_error(
+                        &selected_node,
+                        "network_cap_at",
+                        network_target,
+                        projected_target,
+                    ));
+                }
+            }
+            if self.time_limit > candidate.target_time && projected_target > self.time_limit {
+                return Err(scheduler_ceiling_overshoot_error(
+                    &selected_node,
+                    "time_limit_at",
+                    self.time_limit,
+                    projected_target,
+                ));
+            }
+            if let Some(cap) = self.shared_rendezvous_cap()?
+                && cap > candidate.target_time
+                && projected_target > cap
+            {
+                return Err(scheduler_ceiling_overshoot_error(
+                    &selected_node,
+                    "rendezvous_at",
+                    cap,
+                    projected_target,
+                ));
+            }
+            if let Some(dependency) =
+                unresolved_cross_node_dependencies(&selected_node, &self.pending_events)
+                    .into_iter()
+                    .find(|dependency| {
+                        dependency.virtual_time > candidate.target_time
+                            && projected_target > dependency.virtual_time
+                    })
+            {
+                return Err(scheduler_ceiling_overshoot_error(
+                    &selected_node,
+                    "dependency_at",
+                    dependency.virtual_time,
+                    projected_target,
+                ));
+            }
+            for event in &self.pending_events {
+                if event.key.consumer() == &selected_node {
+                    let event_time = SimInstant {
+                        nanos: event.key.virtual_time().ticks,
+                    };
+                    if event_time > candidate.target_time && projected_target > event_time {
+                        return Err(scheduler_ceiling_overshoot_error(
+                            &selected_node,
+                            "pending_event_at",
+                            event_time,
+                            projected_target,
+                        ));
+                    }
+                }
+            }
+        } else if let Some(dependency) = &candidate.conservative_dependency
+            && projected_target > dependency.virtual_time
+        {
+            return Err(scheduler_ceiling_overshoot_error(
+                &selected_node,
+                "dependency_at",
+                dependency.virtual_time,
+                projected_target,
+            ));
+        }
+
+        Ok(AdvancePlanDraft {
+            index: selected_index,
+            node: selected_node,
+            before,
+            target_counter,
+            quiescent_horizon: candidate.quiescent_horizon,
+        })
     }
 
     fn advance_candidate(
@@ -3440,6 +3665,134 @@ impl SingleScheduler {
         })
     }
 
+    fn drive_concurrent_authoritative_quantum(
+        &mut self,
+        request: QuantumRequest,
+        max_host_workers: usize,
+    ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError> {
+        self.validate_max_host_workers(max_host_workers)?;
+        if request.configuration != self.configuration {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "quantum request configuration is not the scheduler frontier",
+                ),
+            });
+        }
+
+        self.last_advance = None;
+        self.last_topology_recompute = false;
+
+        self.admit_control_at_boundary(request.control);
+        let mut boundary_resolved_events = self.drain_control_events()?;
+        let topology_recomputed = self.apply_topology_changes_at_boundary()?;
+        self.last_topology_recompute = topology_recomputed;
+
+        let candidates = self.advance_candidates()?;
+        let run_set = self.concurrent_run_set_from_candidates(max_host_workers, &candidates)?;
+        let selected_candidates = candidates
+            .into_iter()
+            .filter(|candidate| {
+                run_set
+                    .candidates
+                    .iter()
+                    .any(|run| run.node == self.nodes[candidate.index].id)
+            })
+            .collect::<Vec<_>>();
+
+        if selected_candidates.is_empty() {
+            let at = SimInstant {
+                nanos: self.frontier.ticks,
+            };
+            let decisions = self.emit_quantum_decisions(&boundary_resolved_events, at);
+            let event_log =
+                self.emit_quantum_event_log(&boundary_resolved_events, &decisions, at)?;
+            let configuration = self.step_quantum(&decisions);
+            if !decisions.is_empty() {
+                self.configuration = configuration.clone();
+                self.quanta = self.quanta.saturating_add(1);
+                self.yield_to_control_inbox();
+            } else if topology_recomputed {
+                self.quanta = self.quanta.saturating_add(1);
+                self.yield_to_control_inbox();
+            }
+            let outcome = QuantumOutcome {
+                configuration,
+                frontier: self.frontier,
+                advanced_node: None,
+                resolved_events: boundary_resolved_events,
+                decisions,
+                event_log_entries: event_log.entries,
+                event_log_segment_bytes: event_log.segment_bytes,
+                event_log_segment_hash: event_log.segment_hash,
+                event_log_offset: event_log.offset,
+            };
+            return Ok(SchedulerConcurrentQuantumOutcome {
+                run_set,
+                outcomes: vec![outcome],
+            });
+        }
+
+        let mut plans = Vec::with_capacity(selected_candidates.len());
+        for candidate in selected_candidates {
+            let plan = {
+                let critical_section = SchedulerCriticalSection::enter(self);
+                critical_section.advance_plan(candidate)?
+            };
+            plans.push(plan);
+        }
+
+        let mut outcomes = Vec::with_capacity(plans.len());
+        for plan in plans {
+            let selected_node = plan.node.clone();
+            let before = plan.before;
+            let (after, after_time, yielded_before_advance) =
+                self.advance_node_after_yield(&plan)?;
+            let mut resolved_events = if outcomes.is_empty() {
+                std::mem::take(&mut boundary_resolved_events)
+            } else {
+                Vec::new()
+            };
+            let shift = self.timeline.shift();
+            resolved_events.extend(resolve_due_scheduled_events(
+                &mut self.pending_events,
+                &selected_node,
+                after_time,
+                shift,
+            )?);
+
+            let decisions = self.emit_quantum_decisions(&resolved_events, after_time);
+            let event_log =
+                self.emit_quantum_event_log(&resolved_events, &decisions, after_time)?;
+            let configuration = self.step_quantum(&decisions);
+
+            self.configuration = configuration.clone();
+            self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
+            self.quanta = self.quanta.saturating_add(1);
+            self.last_advance = Some(NodeAdvance {
+                node: selected_node.clone(),
+                before,
+                after,
+                ceiling: plan.ceiling.clone(),
+                yielded_before_advance,
+            });
+            self.yield_to_control_inbox();
+
+            outcomes.push(QuantumOutcome {
+                configuration,
+                frontier: self.frontier,
+                advanced_node: Some(selected_node),
+                resolved_events,
+                decisions,
+                event_log_entries: event_log.entries,
+                event_log_segment_bytes: event_log.segment_bytes,
+                event_log_segment_hash: event_log.segment_hash,
+                event_log_offset: event_log.offset,
+            });
+        }
+
+        Ok(SchedulerConcurrentQuantumOutcome { run_set, outcomes })
+    }
+
     fn drive_authoritative_quantum(
         &mut self,
         request: QuantumRequest,
@@ -3791,6 +4144,16 @@ impl QuantumLoop for SingleScheduler {
     }
 }
 
+impl ConcurrentQuantumLoop for SingleScheduler {
+    fn drive_concurrent_quantum(
+        &mut self,
+        request: QuantumRequest,
+        max_host_workers: usize,
+    ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError> {
+        self.drive_concurrent_authoritative_quantum(request, max_host_workers)
+    }
+}
+
 /// Drives the authoritative scheduler until it terminates or fails liveness.
 ///
 /// # Errors
@@ -3962,6 +4325,15 @@ struct AdvancePlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct AdvancePlanDraft {
+    index: usize,
+    node: SchedulerNodeId,
+    before: NodeCounter,
+    target_counter: u64,
+    quiescent_horizon: Option<SimInstant>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct NodeAdvance {
     node: SchedulerNodeId,
     before: NodeCounter,
@@ -3981,115 +4353,21 @@ impl<'a> SchedulerCriticalSection<'a> {
     }
 
     fn advance_plan(self, candidate: AdvanceCandidate) -> Result<AdvancePlan, SchedulerError> {
-        let selected_index = candidate.index;
-        let selected_node = self.scheduler.nodes[selected_index].id.clone();
-        let before = self.scheduler.nodes[selected_index].counter;
-        let target_counter = self
-            .scheduler
-            .timeline
-            .max_advance_icount_for_horizon(candidate.target_time)?
-            .retired;
-        let projected_target = NodeCounter {
-            ticks: target_counter,
-        }
-        .to_virtual(self.scheduler.timeline.shift())?;
-        if !candidate.allow_ceil_past_target && projected_target > candidate.target_time {
-            return Err(scheduler_ceiling_overshoot_error(
-                &selected_node,
-                "target_at",
-                candidate.target_time,
-                projected_target,
-            ));
-        }
-        if projected_target > candidate.target_time {
-            let current_time = before.to_virtual(self.scheduler.timeline.shift())?;
-            let selected_runtime_node = &self.scheduler.nodes[selected_index];
-            if let NetworkLookahead::Finite(duration) = selected_runtime_node.network_lookahead {
-                let network_target = current_time + duration;
-                if network_target > candidate.target_time && projected_target > network_target {
-                    return Err(scheduler_ceiling_overshoot_error(
-                        &selected_node,
-                        "network_cap_at",
-                        network_target,
-                        projected_target,
-                    ));
-                }
-            }
-            if self.scheduler.time_limit > candidate.target_time
-                && projected_target > self.scheduler.time_limit
-            {
-                return Err(scheduler_ceiling_overshoot_error(
-                    &selected_node,
-                    "time_limit_at",
-                    self.scheduler.time_limit,
-                    projected_target,
-                ));
-            }
-            if let Some(cap) = self.scheduler.shared_rendezvous_cap()?
-                && cap > candidate.target_time
-                && projected_target > cap
-            {
-                return Err(scheduler_ceiling_overshoot_error(
-                    &selected_node,
-                    "rendezvous_at",
-                    cap,
-                    projected_target,
-                ));
-            }
-            if let Some(dependency) =
-                unresolved_cross_node_dependencies(&selected_node, &self.scheduler.pending_events)
-                    .into_iter()
-                    .find(|dependency| {
-                        dependency.virtual_time > candidate.target_time
-                            && projected_target > dependency.virtual_time
-                    })
-            {
-                return Err(scheduler_ceiling_overshoot_error(
-                    &selected_node,
-                    "dependency_at",
-                    dependency.virtual_time,
-                    projected_target,
-                ));
-            }
-            for event in &self.scheduler.pending_events {
-                if event.key.consumer() == &selected_node {
-                    let event_time = SimInstant {
-                        nanos: event.key.virtual_time().ticks,
-                    };
-                    if event_time > candidate.target_time && projected_target > event_time {
-                        return Err(scheduler_ceiling_overshoot_error(
-                            &selected_node,
-                            "pending_event_at",
-                            event_time,
-                            projected_target,
-                        ));
-                    }
-                }
-            }
-        } else if let Some(dependency) = candidate.conservative_dependency
-            && projected_target > dependency.virtual_time
-        {
-            return Err(scheduler_ceiling_overshoot_error(
-                &selected_node,
-                "dependency_at",
-                dependency.virtual_time,
-                projected_target,
-            ));
-        }
+        let draft = self.scheduler.advance_plan_draft(&candidate)?;
         let ceiling = self.scheduler.publish_run_ceiling(
-            selected_node.clone(),
-            before,
-            target_counter,
+            draft.node.clone(),
+            draft.before,
+            draft.target_counter,
             candidate.target_time,
         )?;
 
         Ok(AdvancePlan {
-            index: selected_index,
-            node: selected_node,
-            before,
-            target_counter,
+            index: draft.index,
+            node: draft.node,
+            before: draft.before,
+            target_counter: draft.target_counter,
             ceiling,
-            quiescent_horizon: candidate.quiescent_horizon,
+            quiescent_horizon: draft.quiescent_horizon,
         })
     }
 }
