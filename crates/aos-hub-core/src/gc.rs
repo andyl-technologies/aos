@@ -266,7 +266,18 @@ mod tests {
             .await
             .unwrap();
         let cache = db
-            .create_cache(Some(org), "c", "C", Some(binding), "p", None, "public", 40, "zstd", true)
+            .create_cache(
+                Some(org),
+                "c",
+                "C",
+                Some(binding),
+                "p",
+                None,
+                "public",
+                40,
+                "zstd",
+                true,
+            )
             .await
             .unwrap();
         (db, cache)
@@ -299,7 +310,9 @@ mod tests {
         .unwrap();
         let c = db.cache_by_id(cache).await.unwrap().unwrap();
 
-        let stats = sweep_cache(&db, &NoopWriters, &c, false, 1000).await.unwrap();
+        let stats = sweep_cache(&db, &NoopWriters, &c, false, 1000)
+            .await
+            .unwrap();
         assert_eq!(stats.scanned, 4);
         assert_eq!(stats.retained, 3); // root, a, b
         assert_eq!(stats.deleted_objects, 1); // o
@@ -327,7 +340,9 @@ mod tests {
         .await
         .unwrap();
         let c = db.cache_by_id(cache).await.unwrap().unwrap();
-        let stats = sweep_cache(&db, &NoopWriters, &c, false, 1000).await.unwrap();
+        let stats = sweep_cache(&db, &NoopWriters, &c, false, 1000)
+            .await
+            .unwrap();
         assert_eq!(stats.deleted_objects, 1);
         assert!(db.cache_object(cache, "x").await.unwrap().is_none());
     }
@@ -338,7 +353,9 @@ mod tests {
         let (db, cache) = fixture().await;
         db.upsert_cache_object(&obj(cache, "o", &[])).await.unwrap();
         let c = db.cache_by_id(cache).await.unwrap().unwrap();
-        let stats = sweep_cache(&db, &NoopWriters, &c, false, 1000).await.unwrap();
+        let stats = sweep_cache(&db, &NoopWriters, &c, false, 1000)
+            .await
+            .unwrap();
         assert_eq!(stats.deleted_objects, 0);
         assert!(db.cache_object(cache, "o").await.unwrap().is_some());
     }
@@ -360,7 +377,9 @@ mod tests {
         .await
         .unwrap();
         let c = db.cache_by_id(cache).await.unwrap().unwrap();
-        let stats = sweep_cache(&db, &NoopWriters, &c, true, 1000).await.unwrap();
+        let stats = sweep_cache(&db, &NoopWriters, &c, true, 1000)
+            .await
+            .unwrap();
         assert_eq!(stats.deleted_objects, 1);
         assert!(db.cache_object(cache, "o").await.unwrap().is_some()); // not deleted
     }
@@ -389,7 +408,9 @@ mod tests {
         .await
         .unwrap();
         let c = db.cache_by_id(cache).await.unwrap().unwrap();
-        let stats = sweep_cache(&db, &NoopWriters, &c, false, 1000).await.unwrap();
+        let stats = sweep_cache(&db, &NoopWriters, &c, false, 1000)
+            .await
+            .unwrap();
         assert_eq!(stats.deleted_objects, 1);
         assert_eq!(stats.freed_bytes, 10);
         assert!(db.cache_object(cache, "old").await.unwrap().is_none());

@@ -80,7 +80,11 @@ impl<'a> EphemeralStore<'a> {
     pub async fn consume(&self, ns: &str, id: &str) -> Result<Option<Vec<u8>>> {
         let key = Self::key(ns, id);
         // One claim per artifact: a single fixed window (0) with budget 1.
-        if !self.coordinator.admit("ephemeral_consume", &key, 0, 1).await? {
+        if !self
+            .coordinator
+            .admit("ephemeral_consume", &key, 0, 1)
+            .await?
+        {
             return Ok(None);
         }
         let value = self.kv.get(&key).await?;
@@ -103,8 +107,14 @@ mod tests {
         let store = EphemeralStore::new(&kv, &coord);
         store.put("device", "code1", b"pending", 600).await.unwrap();
         // Peek twice: both see it (no claim).
-        assert_eq!(store.peek("device", "code1").await.unwrap().as_deref(), Some(&b"pending"[..]));
-        assert_eq!(store.peek("device", "code1").await.unwrap().as_deref(), Some(&b"pending"[..]));
+        assert_eq!(
+            store.peek("device", "code1").await.unwrap().as_deref(),
+            Some(&b"pending"[..])
+        );
+        assert_eq!(
+            store.peek("device", "code1").await.unwrap().as_deref(),
+            Some(&b"pending"[..])
+        );
     }
 
     #[tokio::test]

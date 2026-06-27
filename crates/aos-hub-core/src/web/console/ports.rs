@@ -108,9 +108,7 @@ impl ConsoleDeps {
     pub async fn invalidate_token_cache(&self, token_id: &str) {
         if let Some(kv) = &self.kv {
             let ttl = crate::cache::HOT_TTL_SECS * 10;
-            let _ = kv
-                .put(&format!("tokrev:{token_id}"), b"1", Some(ttl))
-                .await;
+            let _ = kv.put(&format!("tokrev:{token_id}"), b"1", Some(ttl)).await;
         }
     }
 }

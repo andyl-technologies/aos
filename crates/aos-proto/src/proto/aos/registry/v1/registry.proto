@@ -1214,3 +1214,116 @@ message RegisterCacheNarinfosResponse {
   // Number of narinfos successfully registered.
   int64 registered = 1;
 }
+
+// IAM management: service accounts, scoped role grants, and registry-scoped
+// tokens — the machine API behind the producer console's settings pages, so the
+// CLI and automation administer identities over the authenticated API instead
+// of direct database access (RFC-0004 ch.14 "manage everything via the API").
+//
+// Every method takes a bearer JWT and authorizes against the same grants the
+// console enforces: `iam.admin` at the instance root, or `registry.configure`
+// at the target registry/org scope. A minted token's effective permissions are
+// intersected with the owning principal's grants — a token can never exceed its
+// owner's authority.
+service IamService {
+  // Create (or return the existing) org-owned service account — a non-human
+  // principal for CI/automation, distinct from a user.
+  rpc CreateServiceAccount(CreateServiceAccountRequest)
+      returns (CreateServiceAccountResponse);
+  // Grant a role to a principal (user or service account) at a canonical scope.
+  rpc GrantMembership(GrantMembershipRequest) returns (GrantMembershipResponse);
+  // Revoke a principal's grant at a scope (a no-op when none exists).
+  rpc RevokeMembership(RevokeMembershipRequest)
+      returns (RevokeMembershipResponse);
+  // Mint a registry-scoped bearer token; the secret is returned exactly once.
+  rpc MintToken(MintTokenRequest) returns (MintTokenResponse);
+  // Revoke a token by its id.
+  rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse);
+  // List the tokens visible at a scope (metadata only — never the secret).
+  rpc ListTokens(ListTokensRequest) returns (ListTokensResponse);
+}
+
+message CreateServiceAccountRequest {
+  // Owning org slug.
+  string org_slug = 1;
+  // Service-account name, unique within the org.
+  string name = 2;
+}
+
+// A non-human principal owned by an org.
+message ServiceAccount {
+  int64 id = 1;
+  string org_slug = 2;
+  string name = 3;
+}
+
+message CreateServiceAccountResponse {
+  ServiceAccount service_account = 1;
+}
+
+message GrantMembershipRequest {
+  // Principal kind: "user" or "service_account".
+  string principal_kind = 1;
+  // Principal reference: a user's email, or "<org_slug>/<name>" for a service
+  // account.
+  string principal_ref = 2;
+  // Canonical scope: "" (instance root), "<org>", or "<org>/<registry>".
+  string scope = 3;
+  // Role name: owner | maintainer | member | viewer.
+  string role = 4;
+}
+
+message GrantMembershipResponse {}
+
+message RevokeMembershipRequest {
+  string principal_kind = 1;
+  string principal_ref = 2;
+  string scope = 3;
+}
+
+message RevokeMembershipResponse {}
+
+message MintTokenRequest {
+  // Token owner: "user:<email>" or "service_account:<org_slug>/<name>".
+  string owner = 1;
+  // Canonical registry/org scope the token is bound to.
+  string scope = 2;
+  // Permission verbs the token carries (e.g. "read", "publish"); intersected
+  // with the owner's grants at `scope`.
+  repeated string permissions = 3;
+  // Optional time-to-live in seconds; 0 applies the hub's default policy.
+  int64 ttl_secs = 4;
+}
+
+message MintTokenResponse {
+  // Stable, non-secret token id (used by Revoke/List).
+  string token_id = 1;
+  // The token secret — returned ONCE; only its hash is persisted.
+  string secret = 2;
+}
+
+message RevokeTokenRequest {
+  string token_id = 1;
+}
+
+message RevokeTokenResponse {}
+
+message ListTokensRequest {
+  // Scope whose tokens to list.
+  string scope = 1;
+}
+
+// Token metadata (never includes the secret).
+message TokenInfo {
+  string token_id = 1;
+  string owner = 2;
+  string scope = 3;
+  repeated string permissions = 4;
+  int64 created_at = 5;
+  // Unix seconds the token expires; 0 for non-expiring.
+  int64 expires_at = 6;
+}
+
+message ListTokensResponse {
+  repeated TokenInfo tokens = 1;
+}

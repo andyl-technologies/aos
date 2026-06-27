@@ -61,10 +61,7 @@ pub struct MigrateStats {
 /// Returns an error if the source cannot be listed (a store without enumeration
 /// support), or on any read/write/transport failure — the first failure aborts
 /// the copy.
-pub async fn copy_surface(
-    from: &dyn SurfaceFetch,
-    to: &dyn SurfaceWrite,
-) -> Result<MigrateStats> {
+pub async fn copy_surface(from: &dyn SurfaceFetch, to: &dyn SurfaceWrite) -> Result<MigrateStats> {
     let paths = from.list().await.context("listing source surface")?;
     let mut stats = MigrateStats::default();
     for path in &paths {
@@ -113,7 +110,10 @@ pub async fn migrate_registry_storage(
     if new_binding_id == registry.storage_binding_id {
         bail!("registry is already on that storage");
     }
-    let old_reader = surface.fetcher(registry).await.context("opening current surface")?;
+    let old_reader = surface
+        .fetcher(registry)
+        .await
+        .context("opening current surface")?;
     let mut target = registry.clone();
     target.storage_binding_id = new_binding_id;
     let new_writer = surface_write

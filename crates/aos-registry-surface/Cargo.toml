@@ -18,3 +18,6 @@ serde = { workspace = true }
 # (RFC-0004 Phase 5). Pure-Rust and wasm32-clean; `aos-package` re-exports these
 # so its native git-CLI path keeps the same paths.
 toml = { workspace = true }
+# JSON (de)serialization for the cache-stack database storage form
+# (`stack::StackNode::to_json`). Pure-Rust and wasm32-clean.
+serde_json = { workspace = true }

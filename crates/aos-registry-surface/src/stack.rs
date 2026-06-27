@@ -1,7 +1,7 @@
 //! Cache stacks: the nestable try/mirror expression over cache endpoints.
 //!
-//! RFC-0004 ("Cache stores, stacks, and consistency validation") generalizes
-//! a registry's flat `[[caches]]` preference list into a small, nestable
+//! RFC-0004 ("Cache stores, stacks, and consistency validation") models a
+//! registry's committed `[caches]` preference list as a small, nestable
 //! expression. A [`StackNode`] is one of:
 //!
 //! - **endpoint** — a single cache base URL.
@@ -22,14 +22,13 @@
 //!
 //! # Committed TOML encoding
 //!
-//! A stack is carried in a registry's committed `registry.toml` as an
-//! additive `[cache_stack]` section (old clients ignore it; they keep reading
-//! `[[caches]]`). Each node is a table that is *either* an endpoint
+//! A stack is carried in a registry's committed `registry.toml` as the
+//! `[caches]` table. Each node is a table that is *either* an endpoint
 //! (`{ endpoint = "<url>" }`) *or* an inner node
 //! (`{ kind = "try" | "mirror", members = [ <node>, … ] }`):
 //!
 //! ```toml
-//! [cache_stack]
+//! [caches]
 //! kind = "try"
 //! members = [
 //!   { kind = "mirror", members = [
@@ -42,16 +41,21 @@
 //! ```
 //!
 //! The same node grammar appears at every depth, so the top-level
-//! `[cache_stack]` table may itself be a bare endpoint
-//! (`[cache_stack]` with `endpoint = "…"`).
+//! `[caches]` table may itself be a bare endpoint
+//! (`[caches]` with `endpoint = "…"`). A registry that advertises a single
+//! cache writes `[caches]\nendpoint = "…"`.
 //!
-//! # Flattening to `[[caches]]`
+//! For backward compatibility a legacy `[[caches]]` array of
+//! `{ url, priority }` entries also parses (see
+//! [`CachesConfig`](crate::manifest::CachesConfig)); the unified `[caches]`
+//! stack is the form new tooling writes.
+//!
+//! # Flattening to a priority list
 //!
 //! [`StackNode::flatten`] walks the expression depth-first and yields the
 //! endpoint URLs in priority order — exactly the list a stack-unaware client
 //! gets. [`to_priority_caches`] turns that order into descending
-//! `(url, priority)` pairs the indexer folds into the existing committed-cache
-//! list, so the flattened list keeps working with no schema change.
+//! `(url, priority)` pairs the indexer folds into the committed-cache list.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -72,7 +76,7 @@ pub enum StackNode {
     Mirror(Vec<StackNode>),
 }
 
-/// The wire form of one [`StackNode`] in the committed `[cache_stack]` TOML.
+/// The wire form of one [`StackNode`] in the committed `[caches]` TOML.
 ///
 /// An untagged enum so serde accepts either an endpoint table
 /// (`{ endpoint = "…" }`) or an inner-node table
@@ -168,13 +172,13 @@ impl StackNodeToml {
         match self {
             StackNodeToml::Endpoint { endpoint } => {
                 if endpoint.trim().is_empty() {
-                    anyhow::bail!("cache_stack endpoint URL must not be empty");
+                    anyhow::bail!("[caches] endpoint URL must not be empty");
                 }
                 Ok(StackNode::Endpoint(endpoint))
             }
             StackNodeToml::Inner { kind, members } => {
                 if members.is_empty() {
-                    anyhow::bail!("cache_stack {kind:?} group must have at least one member");
+                    anyhow::bail!("[caches] {kind:?} group must have at least one member");
                 }
                 let members = members
                     .into_iter()
@@ -278,10 +282,10 @@ impl StackNode {
     }
 }
 
-/// Parse a committed `[cache_stack]` section into a [`StackNode`].
+/// Parse a committed `[caches]` section into a [`StackNode`].
 ///
 /// Accepts the [TOML node grammar](self) as a [`toml::Value`] — the raw value
-/// of the `[cache_stack]` table the indexer pulls from the committed
+/// of the `[caches]` table the indexer pulls from the committed
 /// `registry.toml`.
 ///
 /// # Errors
@@ -290,24 +294,22 @@ impl StackNode {
 /// table that is neither an endpoint nor a `kind`/`members` inner node), when
 /// a group has no members, or when an endpoint URL is empty.
 pub fn parse_cache_stack(value: toml::Value) -> Result<StackNode> {
-    let wire: StackNodeToml = value
-        .try_into()
-        .context("parsing committed [cache_stack]")?;
+    let wire: StackNodeToml = value.try_into().context("parsing committed [caches]")?;
     wire.into_node()
 }
 
-/// Parse a committed `[cache_stack]` section from its TOML source text.
+/// Parse a committed `[caches]` section from its TOML source text.
 ///
 /// A convenience wrapper over [`parse_cache_stack`] for callers holding the
-/// raw `[cache_stack]` table text (without the leading `[cache_stack]`
-/// header) — primarily tests and a standalone `cache_stack.toml` file.
+/// raw `[caches]` table text (without the leading `[caches]` header) —
+/// primarily tests.
 ///
 /// # Errors
 ///
 /// Returns an error when the text is not valid TOML or does not match the
 /// node grammar (see [`parse_cache_stack`]).
 pub fn parse_cache_stack_str(text: &str) -> Result<StackNode> {
-    let value: toml::Value = toml::from_str(text).context("parsing cache_stack TOML")?;
+    let value: toml::Value = toml::from_str(text).context("parsing [caches] TOML")?;
     parse_cache_stack(value)
 }
 
@@ -447,7 +449,7 @@ mod tests {
     fn malformed_node_is_rejected() {
         // A table that is neither an endpoint nor a kind/members inner node.
         let err = parse_cache_stack_str(r#"nonsense = true"#).unwrap_err();
-        assert!(format!("{err:#}").contains("cache_stack"), "{err:#}");
+        assert!(format!("{err:#}").contains("caches"), "{err:#}");
     }
 
     #[test]
