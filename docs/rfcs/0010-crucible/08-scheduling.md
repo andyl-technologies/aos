@@ -1112,9 +1112,19 @@ application of explorer-supplied preemption decisions
   horizon. The focused regressions cover mixed RUNNING/IDLE/Halted/DONE
   projection, node-id ties after projection, terminal-node quiescence, all-infinite
   no-advance quanta, exact-local horizon stops, and pending-delivery horizon stops.
-- [ ] **T-SCHED-14** Drive RUN through a single per-node max-advance ceiling
+- [x] **T-SCHED-14** Drive RUN through a single per-node max-advance ceiling
   published once per quantum (no intermediate ceiling), via the shmem ABI. —
   satisfies [SCHED-27], [SCHED-35]; spec §8.9.2, §8.10.
+  Completed by `checks.crucible.phase3.schedulerRunCeiling`. The scheduler now
+  records one `SchedulerRunCeilingPublication` for each RUN after PICK has chosen
+  its candidate and after conservative overshoot validation has fixed the target.
+  That publication carries the shmem ABI `max_advance_icount` value, can be
+  authorized as a `crucible_shmem::AdvanceCeiling` under `test-double`, and is
+  consumed by the node advance path as the RUN target. Focused regressions cover
+  one ceiling per RUN, no intermediate publication across consecutive quanta, no
+  publication for a no-RUN quantum, target consumption from the published ceiling,
+  and acceptance by the existing shared-memory slot publish API. Futex wake /
+  inbound-queue ordering remains T-SCHED-21.
 - [ ] **T-SCHED-15** Implement idle fast-forward: jump an idle node's clock to its
   exact wake time at zero wall-clock cost; idle nodes use wake time as effective
   clock for peers' lookahead. — satisfies [SCHED-28]; spec §8.9.3.
