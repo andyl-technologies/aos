@@ -371,6 +371,11 @@ in {
     };
   };
   phase5 = {
+    cliSkeleton = import ./phase5-cli-skeleton.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliSkeleton";
+      taskIds = ["T-CLI-1"];
+    };
     gates = {
       controlResponsive = import ./phase5-control-responsive.nix {
         inherit pkgs lib;
