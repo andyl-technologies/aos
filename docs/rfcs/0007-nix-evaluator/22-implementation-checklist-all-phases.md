@@ -1451,12 +1451,23 @@ alone (`M-1`/`Q-A`).
       live-record relocation, automatic GC policy, cross-process/raw-writer
       coordination, mmap reads, Attic transport, and harness proof remain open
       (`C-13`/`R-14`).
+- [x] Current `ratchet-cache` staged file-replacement primitive:
+      `ratchet-cache::file_replace::FileReplacementSet` owns ordered staged
+      file replacement with stale-backup removal, target-to-backup moves,
+      staged-file installation, best-effort staged/backup cleanup, and backup
+      restoration after ordinary filesystem failures. The value-pack repack
+      swap now delegates to this primitive while preserving the existing
+      `PersistValueBlobPackRepackError` pack/index surface. This is a swap
+      choreography primitive only; file-pack four-sidecar swap migration,
+      crash transactionality, durable filesystem locks/CAS, cross-process/raw
+      writers, and automatic GC policy remain open (`C-13`/`R-14`).
 - [x] Current explicit value-pack repack helper:
       `PersistCache::repack_value_blob_pack` holds the same-root `values/`
       store lock, plans live-record relocation, stages a compacted value pack
-      plus replacement value blob-index sidecar, and swaps both into place with
-      best-effort rollback for ordinary filesystem errors. It preserves latest
-      indexed value roots and omits unrooted value records. This is
+      plus replacement value blob-index sidecar, and swaps both into place via
+      `ratchet-cache::file_replace::FileReplacementSet` with best-effort
+      rollback for ordinary filesystem errors. It preserves latest indexed
+      value roots and omits unrooted value records. This is
       caller-driven advisory maintenance only; crash transactionality, node
       metadata pruning, automatic GC policy, cross-process/raw-writer
       coordination, mmap reads, Attic transport, and harness proof remain open

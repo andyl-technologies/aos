@@ -6,6 +6,8 @@
 
 use super::*;
 
+use ratchet_cache::file_replace::{FileReplacement, FileReplacementError, FileReplacementSet};
+
 use std::sync::atomic::Ordering;
 
 /// An opened persistent eval-cache root.
@@ -1262,85 +1264,95 @@ fn write_repacked_parse_artifact_index(
 }
 
 fn swap_repacked_value_store(
+    replacements: &FileReplacementSet,
+) -> Result<(), PersistValueBlobPackRepackError> {
+    replacements
+        .replace_all()
+        .map_err(value_repack_replacement_error_to_persist)
+}
+
+const VALUE_REPACK_PACK_REPLACEMENT: usize = 0;
+const VALUE_REPACK_INDEX_REPLACEMENT: usize = 1;
+
+fn value_repack_replacements(
     pack_path: &Path,
     index_path: &Path,
     tmp_pack_path: &Path,
     tmp_index_path: &Path,
     rewrite_id: u64,
-) -> Result<(), PersistValueBlobPackRepackError> {
-    let backup_pack_path = pack_path.with_extension(format!(
-        "repack-backup-pack-{}-{rewrite_id}.tmp",
-        std::process::id()
-    ));
-    let backup_index_path = index_path.with_extension(format!(
-        "repack-backup-index-{}-{rewrite_id}.tmp",
-        std::process::id()
-    ));
-    if let Err(error) = remove_pack_temp(&backup_pack_path) {
-        cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
-        return Err(error);
-    }
-    if let Err(error) = remove_index_temp(&backup_index_path) {
-        cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
-        return Err(error);
-    }
+) -> FileReplacementSet {
+    FileReplacementSet::new([
+        FileReplacement::new(
+            pack_path.to_path_buf(),
+            tmp_pack_path.to_path_buf(),
+            pack_path.with_extension(format!(
+                "repack-backup-pack-{}-{rewrite_id}.tmp",
+                std::process::id()
+            )),
+        ),
+        FileReplacement::new(
+            index_path.to_path_buf(),
+            tmp_index_path.to_path_buf(),
+            index_path.with_extension(format!(
+                "repack-backup-index-{}-{rewrite_id}.tmp",
+                std::process::id()
+            )),
+        ),
+    ])
+}
 
-    if let Err(source) = fs::rename(pack_path, &backup_pack_path) {
-        cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
-        return Err(PersistValueBlobPackRepackError::Pack {
-            source: PersistBlobPackError::Write {
-                path: pack_path.to_path_buf(),
-                source,
-            },
-        });
-    }
-    if let Err(source) = fs::rename(index_path, &backup_index_path) {
-        let restore_error = restore_pack_backup(pack_path, &backup_pack_path).err();
-        cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
-        if let Some(error) = restore_error {
-            return Err(error);
+fn value_repack_replacement_error_to_persist(
+    error: FileReplacementError,
+) -> PersistValueBlobPackRepackError {
+    match error {
+        FileReplacementError::RemoveBackup {
+            index,
+            path,
+            source,
+        } => value_repack_file_error(index, path, source),
+        FileReplacementError::BackupTarget {
+            index,
+            target: path,
+            source,
+            ..
         }
-        return Err(PersistValueBlobPackRepackError::BlobIndex {
-            source: PersistBlobIndexError::Write {
-                path: index_path.to_path_buf(),
-                source,
-            },
-        });
-    }
-    if let Err(source) = fs::rename(tmp_pack_path, pack_path) {
-        let restore_error =
-            restore_repack_backups(pack_path, index_path, &backup_pack_path, &backup_index_path)
-                .err();
-        cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
-        if let Some(error) = restore_error {
-            return Err(error);
+        | FileReplacementError::InstallStaged {
+            index,
+            target: path,
+            source,
+            ..
         }
-        return Err(PersistValueBlobPackRepackError::Pack {
-            source: PersistBlobPackError::Write {
-                path: pack_path.to_path_buf(),
-                source,
-            },
-        });
-    }
-    if let Err(source) = fs::rename(tmp_index_path, index_path) {
-        let _ = fs::remove_file(pack_path);
-        let restore_error =
-            restore_repack_backups(pack_path, index_path, &backup_pack_path, &backup_index_path)
-                .err();
-        cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
-        if let Some(error) = restore_error {
-            return Err(error);
+        | FileReplacementError::RemoveTargetBeforeRestore {
+            index,
+            target: path,
+            source,
+            ..
         }
-        return Err(PersistValueBlobPackRepackError::BlobIndex {
-            source: PersistBlobIndexError::Write {
-                path: index_path.to_path_buf(),
-                source,
-            },
-        });
+        | FileReplacementError::RestoreBackup {
+            index,
+            target: path,
+            source,
+            ..
+        } => value_repack_file_error(index, path, source),
     }
-    cleanup_repack_stage_temps(tmp_pack_path, tmp_index_path);
-    cleanup_repack_backups(&backup_pack_path, &backup_index_path);
-    Ok(())
+}
+
+fn value_repack_file_error(
+    index: usize,
+    path: PathBuf,
+    source: io::Error,
+) -> PersistValueBlobPackRepackError {
+    match index {
+        VALUE_REPACK_PACK_REPLACEMENT => PersistValueBlobPackRepackError::Pack {
+            source: PersistBlobPackError::Write { path, source },
+        },
+        VALUE_REPACK_INDEX_REPLACEMENT => PersistValueBlobPackRepackError::BlobIndex {
+            source: PersistBlobIndexError::Write { path, source },
+        },
+        _ => PersistValueBlobPackRepackError::BlobIndex {
+            source: PersistBlobIndexError::Write { path, source },
+        },
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1510,100 +1522,6 @@ fn swap_repacked_file_store(
     cleanup_file_repack_stage_temps(stage);
     cleanup_file_repack_backups(&backups);
     Ok(())
-}
-
-fn remove_pack_temp(path: &Path) -> Result<(), PersistValueBlobPackRepackError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(PersistValueBlobPackRepackError::Pack {
-            source: PersistBlobPackError::Write {
-                path: path.to_path_buf(),
-                source,
-            },
-        }),
-    }
-}
-
-fn remove_index_temp(path: &Path) -> Result<(), PersistValueBlobPackRepackError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(PersistValueBlobPackRepackError::BlobIndex {
-            source: PersistBlobIndexError::Write {
-                path: path.to_path_buf(),
-                source,
-            },
-        }),
-    }
-}
-
-fn restore_pack_backup(
-    pack_path: &Path,
-    backup_pack_path: &Path,
-) -> Result<(), PersistValueBlobPackRepackError> {
-    if let Err(source) = fs::remove_file(pack_path) {
-        if source.kind() != io::ErrorKind::NotFound {
-            return Err(PersistValueBlobPackRepackError::Pack {
-                source: PersistBlobPackError::Write {
-                    path: pack_path.to_path_buf(),
-                    source,
-                },
-            });
-        }
-    }
-    fs::rename(backup_pack_path, pack_path).map_err(|source| {
-        PersistValueBlobPackRepackError::Pack {
-            source: PersistBlobPackError::Write {
-                path: pack_path.to_path_buf(),
-                source,
-            },
-        }
-    })
-}
-
-fn restore_index_backup(
-    index_path: &Path,
-    backup_index_path: &Path,
-) -> Result<(), PersistValueBlobPackRepackError> {
-    if let Err(source) = fs::remove_file(index_path) {
-        if source.kind() != io::ErrorKind::NotFound {
-            return Err(PersistValueBlobPackRepackError::BlobIndex {
-                source: PersistBlobIndexError::Write {
-                    path: index_path.to_path_buf(),
-                    source,
-                },
-            });
-        }
-    }
-    fs::rename(backup_index_path, index_path).map_err(|source| {
-        PersistValueBlobPackRepackError::BlobIndex {
-            source: PersistBlobIndexError::Write {
-                path: index_path.to_path_buf(),
-                source,
-            },
-        }
-    })
-}
-
-fn restore_repack_backups(
-    pack_path: &Path,
-    index_path: &Path,
-    backup_pack_path: &Path,
-    backup_index_path: &Path,
-) -> Result<(), PersistValueBlobPackRepackError> {
-    restore_pack_backup(pack_path, backup_pack_path)?;
-    restore_index_backup(index_path, backup_index_path)
-}
-
-fn cleanup_repack_stage_temps(tmp_pack_path: &Path, tmp_index_path: &Path) {
-    let _ = fs::remove_file(tmp_pack_path);
-    let _ = fs::remove_file(tmp_index_path);
-}
-
-fn cleanup_repack_backups(backup_pack_path: &Path, backup_index_path: &Path) {
-    let _ = fs::remove_file(backup_pack_path);
-    let _ = fs::remove_file(backup_index_path);
 }
 
 fn remove_file_repack_pack_temp(path: &Path) -> Result<(), PersistFileBlobPackRepackError> {
@@ -3382,20 +3300,21 @@ impl PersistCache {
             "repack-index-{}-{rewrite_id}.tmp",
             std::process::id()
         ));
-        self.value_pack
-            .write_relocated_records_to(&tmp_pack_path, plan.record_relocations())
-            .map_err(|source| PersistValueBlobPackRepackError::Pack { source })?;
-        if let Err(source) = write_repacked_blob_index(&tmp_index_path, plan.record_relocations()) {
-            cleanup_repack_stage_temps(&tmp_pack_path, &tmp_index_path);
-            return Err(PersistValueBlobPackRepackError::BlobIndex { source });
-        }
-        swap_repacked_value_store(
+        let replacements = value_repack_replacements(
             self.value_pack.path(),
             self.value_index.path(),
             &tmp_pack_path,
             &tmp_index_path,
             rewrite_id,
-        )?;
+        );
+        self.value_pack
+            .write_relocated_records_to(&tmp_pack_path, plan.record_relocations())
+            .map_err(|source| PersistValueBlobPackRepackError::Pack { source })?;
+        if let Err(source) = write_repacked_blob_index(&tmp_index_path, plan.record_relocations()) {
+            replacements.cleanup_staged();
+            return Err(PersistValueBlobPackRepackError::BlobIndex { source });
+        }
+        swap_repacked_value_store(&replacements)?;
         Ok(plan)
     }
 
