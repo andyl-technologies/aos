@@ -186,6 +186,8 @@ pub struct SchedulerTopologyChange {
     pub sequence: u64,
     /// The reason this change requires a lookahead recompute.
     pub trigger: SchedulerTopologyChangeTrigger,
+    /// Exact virtual time at which a fault-timed topology change takes effect.
+    pub activation_time: Option<SimInstant>,
     /// The effective-topology effect to apply at the boundary.
     pub effect: SchedulerTopologyChangeEffect,
 }
@@ -201,6 +203,7 @@ impl SchedulerTopologyChange {
         Self {
             sequence,
             trigger,
+            activation_time: None,
             effect: SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(effective_edges),
         }
     }
@@ -211,6 +214,7 @@ impl SchedulerTopologyChange {
         Self {
             sequence,
             trigger: SchedulerTopologyChangeTrigger::FaultActivation,
+            activation_time: None,
             effect: SchedulerTopologyChangeEffect::RemoveEffectiveEdges(removed_edges),
         }
     }
@@ -221,9 +225,27 @@ impl SchedulerTopologyChange {
         Self {
             sequence,
             trigger: SchedulerTopologyChangeTrigger::Heal,
+            activation_time: None,
             effect: SchedulerTopologyChangeEffect::RestoreEffectiveEdges(restored_edges),
         }
     }
+
+    /// Sets the exact activation virtual time for a fault-timed topology change.
+    #[must_use]
+    pub fn with_activation_time(mut self, activation_time: SimInstant) -> Self {
+        self.activation_time = Some(activation_time);
+        self
+    }
+}
+
+fn topology_change_order(
+    left: &SchedulerTopologyChange,
+    right: &SchedulerTopologyChange,
+) -> std::cmp::Ordering {
+    left.sequence
+        .cmp(&right.sequence)
+        .then_with(|| left.trigger.cmp(&right.trigger))
+        .then_with(|| left.activation_time.cmp(&right.activation_time))
 }
 
 /// One node lookahead value recomputed by a topology change.
@@ -246,6 +268,8 @@ pub struct SchedulerTopologyChangeApplication {
     pub sequence: u64,
     /// The reason this change required a lookahead recompute.
     pub trigger: SchedulerTopologyChangeTrigger,
+    /// Exact activation rendezvous time, when the change was fault-timed.
+    pub activation_time: Option<SimInstant>,
     /// Per-node lookahead updates in canonical scheduler-node order.
     pub updates: Vec<SchedulerTopologyLookaheadUpdate>,
 }
@@ -2025,11 +2049,7 @@ impl SchedulerLivenessScenario {
     #[must_use]
     pub fn with_topology_change(mut self, change: SchedulerTopologyChange) -> Self {
         self.topology_changes.push(change);
-        self.topology_changes.sort_by(|left, right| {
-            left.sequence
-                .cmp(&right.sequence)
-                .then_with(|| left.trigger.cmp(&right.trigger))
-        });
+        self.topology_changes.sort_by(topology_change_order);
         self.refresh_configuration();
         self
     }
@@ -2066,11 +2086,7 @@ fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessScenario) ->
     lines.extend(nodes.iter().map(scheduler_scenario_node_material));
 
     let mut topology_changes = scenario.topology_changes.clone();
-    topology_changes.sort_by(|left, right| {
-        left.sequence
-            .cmp(&right.sequence)
-            .then_with(|| left.trigger.cmp(&right.trigger))
-    });
+    topology_changes.sort_by(topology_change_order);
     lines.push(format!("topology_changes={}", topology_changes.len()));
     lines.extend(topology_changes.iter().map(topology_change_material));
 
@@ -2129,6 +2145,13 @@ fn topology_change_material(change: &SchedulerTopologyChange) -> String {
         "topology_change_trigger={}",
         topology_change_trigger_label(change.trigger)
     ));
+    lines.push(match change.activation_time {
+        Some(activation_time) => format!(
+            "topology_change_activation_time_ns={}",
+            activation_time.nanos
+        ),
+        None => String::from("topology_change_activation_time_ns=none"),
+    });
     match &change.effect {
         SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(effective_edges) => {
             let graph = SchedulerLookaheadGraph::from_edges(effective_edges.clone());
@@ -2648,6 +2671,8 @@ pub enum SchedulerQuiescenceBlocker {
         sequence: u64,
         /// The reason this change requires a lookahead recompute.
         trigger: SchedulerTopologyChangeTrigger,
+        /// Exact activation rendezvous time, when the change is fault-timed.
+        activation_time: Option<SimInstant>,
     },
     /// A scheduler node still has an exact local wakeup.
     PendingExactLocalEvent {
@@ -2857,15 +2882,12 @@ impl SingleScheduler {
         );
 
         let mut topology_changes = self.topology_changes.clone();
-        topology_changes.sort_by(|left, right| {
-            left.sequence
-                .cmp(&right.sequence)
-                .then_with(|| left.trigger.cmp(&right.trigger))
-        });
+        topology_changes.sort_by(topology_change_order);
         blockers.extend(topology_changes.into_iter().map(|change| {
             SchedulerQuiescenceBlocker::PendingTopologyChange {
                 sequence: change.sequence,
                 trigger: change.trigger,
+                activation_time: change.activation_time,
             }
         }));
 
@@ -2912,11 +2934,7 @@ impl SingleScheduler {
     /// Queues a topology change for the next quantum boundary.
     pub fn queue_topology_change(&mut self, change: SchedulerTopologyChange) {
         self.topology_changes.push(change);
-        self.topology_changes.sort_by(|left, right| {
-            left.sequence
-                .cmp(&right.sequence)
-                .then_with(|| left.trigger.cmp(&right.trigger))
-        });
+        self.topology_changes.sort_by(topology_change_order);
     }
 
     fn apply_topology_changes_at_boundary(&mut self) -> Result<bool, SchedulerError> {
@@ -2925,16 +2943,22 @@ impl SingleScheduler {
         }
 
         let mut changes = std::mem::take(&mut self.topology_changes);
-        changes.sort_by(|left, right| {
-            left.sequence
-                .cmp(&right.sequence)
-                .then_with(|| left.trigger.cmp(&right.trigger))
-        });
+        changes.sort_by(topology_change_order);
+        let mut deferred = Vec::new();
+        let mut applied = false;
 
         for change in changes {
+            if let Some(activation_time) = change.activation_time {
+                if !self.topology_activation_ready(activation_time)? {
+                    deferred.push(change);
+                    continue;
+                }
+            }
+
             let SchedulerTopologyChange {
                 sequence,
                 trigger,
+                activation_time,
                 effect,
             } = change;
             let graph = match effect {
@@ -2971,11 +2995,16 @@ impl SingleScheduler {
                     topology_epoch: self.topology_epoch,
                     sequence,
                     trigger,
+                    activation_time,
                     updates,
                 });
+            applied = true;
         }
 
-        Ok(true)
+        deferred.sort_by(topology_change_order);
+        self.topology_changes = deferred;
+
+        Ok(applied)
     }
 
     fn actor_state_snapshot(&self) -> SchedulerActorStateSnapshot {
@@ -3025,9 +3054,12 @@ impl SingleScheduler {
     fn pick_global_minimum_horizon_node(&self) -> Result<Option<AdvanceCandidate>, SchedulerError> {
         let mut candidates = Vec::new();
         let rendezvous_cap = self.shared_rendezvous_cap()?;
+        let topology_activation_cap = self.pending_topology_activation_cap()?;
 
         for (index, node) in self.nodes.iter().enumerate() {
-            if let Some(candidate) = self.advance_candidate(index, node, rendezvous_cap)? {
+            if let Some(candidate) =
+                self.advance_candidate(index, node, rendezvous_cap, topology_activation_cap)?
+            {
                 candidates.push(candidate);
             }
         }
@@ -3048,6 +3080,7 @@ impl SingleScheduler {
         index: usize,
         node: &RuntimeSchedulerNode,
         rendezvous_cap: Option<SimInstant>,
+        topology_activation_cap: Option<SimInstant>,
     ) -> Result<Option<AdvanceCandidate>, SchedulerError> {
         let current_time = node.counter.to_virtual(self.timeline.shift())?;
         let EffectiveHorizonProjection::Finite {
@@ -3055,7 +3088,7 @@ impl SingleScheduler {
             quiescent_horizon,
             conservative_dependency,
             allow_ceil_past_target,
-        } = self.effective_horizon(node, current_time, rendezvous_cap)?
+        } = self.effective_horizon(node, current_time, rendezvous_cap, topology_activation_cap)?
         else {
             return Ok(None);
         };
@@ -3081,10 +3114,16 @@ impl SingleScheduler {
         node: &RuntimeSchedulerNode,
         current_time: SimInstant,
         rendezvous_cap: Option<SimInstant>,
+        topology_activation_cap: Option<SimInstant>,
     ) -> Result<EffectiveHorizonProjection, SchedulerError> {
         match node.activity {
             SchedulerNodeActivity::Runnable => {
-                let window = self.advance_window(node, current_time, rendezvous_cap)?;
+                let window = self.advance_window(
+                    node,
+                    current_time,
+                    rendezvous_cap,
+                    topology_activation_cap,
+                )?;
                 Ok(EffectiveHorizonProjection::Finite {
                     target_time: window.target_time,
                     quiescent_horizon: window.quiescent_horizon,
@@ -3092,7 +3131,9 @@ impl SingleScheduler {
                     allow_ceil_past_target: window.allow_ceil_past_target,
                 })
             }
-            SchedulerNodeActivity::Idle => self.idle_advance_candidate(node, rendezvous_cap),
+            SchedulerNodeActivity::Idle => {
+                self.idle_advance_candidate(node, rendezvous_cap, topology_activation_cap)
+            }
             SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done => {
                 Ok(EffectiveHorizonProjection::Infinite)
             }
@@ -3103,9 +3144,22 @@ impl SingleScheduler {
         &self,
         node: &RuntimeSchedulerNode,
         rendezvous_cap: Option<SimInstant>,
+        topology_activation_cap: Option<SimInstant>,
     ) -> Result<EffectiveHorizonProjection, SchedulerError> {
         let projection = self.effective_clock_for_node(node)?;
         if projection.source != SchedulerEffectiveClockSource::IdleWake {
+            if let Some(activation_time) = topology_activation_cap {
+                let requested_target = rendezvous_cap.unwrap_or(activation_time);
+                let target_time = min_instant(requested_target, self.time_limit);
+                if projection.current_time < target_time {
+                    return Ok(EffectiveHorizonProjection::Finite {
+                        target_time,
+                        quiescent_horizon: None,
+                        conservative_dependency: None,
+                        allow_ceil_past_target: false,
+                    });
+                }
+            }
             return Ok(EffectiveHorizonProjection::Infinite);
         }
         let Some(wake_target) = self.idle_wake_target(node)? else {
@@ -3214,6 +3268,7 @@ impl SingleScheduler {
         node: &RuntimeSchedulerNode,
         current_time: SimInstant,
         rendezvous_cap: Option<SimInstant>,
+        topology_activation_cap: Option<SimInstant>,
     ) -> Result<AdvanceWindow, SchedulerError> {
         let exact_local_event = next_exact_local_event(
             &node.id,
@@ -3273,9 +3328,18 @@ impl SingleScheduler {
             }
         }
 
+        let mut quiescent_horizon = horizon.virtual_time();
+        if let (Some(horizon_time), Some(activation_time)) =
+            (quiescent_horizon, topology_activation_cap)
+        {
+            if current_time < activation_time && horizon_time < activation_time {
+                quiescent_horizon = None;
+            }
+        }
+
         Ok(AdvanceWindow {
             target_time,
-            quiescent_horizon: horizon.virtual_time(),
+            quiescent_horizon,
             conservative_dependency,
             allow_ceil_past_target,
         })
@@ -3310,13 +3374,70 @@ impl SingleScheduler {
         Ok(publication)
     }
 
+    fn topology_activation_ready(
+        &self,
+        activation_time: SimInstant,
+    ) -> Result<bool, SchedulerError> {
+        for node in &self.nodes {
+            if matches!(
+                node.activity,
+                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+            ) {
+                continue;
+            }
+
+            let current_time = node.counter.to_virtual(self.timeline.shift())?;
+            if current_time > activation_time {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "topology activation rendezvous missed exact virtual time for {}:{:?}: current={} activation={}",
+                        node.id.node.name, node.id.kind, current_time.nanos, activation_time.nanos
+                    ),
+                });
+            }
+            if current_time < activation_time {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    fn pending_topology_activation_cap(&self) -> Result<Option<SimInstant>, SchedulerError> {
+        let mut cap = None;
+
+        for change in &self.topology_changes {
+            let Some(activation_time) = change.activation_time else {
+                continue;
+            };
+            if self.topology_activation_ready(activation_time)? {
+                continue;
+            }
+
+            cap = Some(match cap {
+                Some(current) => min_instant(current, activation_time),
+                None => activation_time,
+            });
+        }
+
+        Ok(cap)
+    }
+
     fn shared_rendezvous_cap(&self) -> Result<Option<SimInstant>, SchedulerError> {
-        rendezvous_cap_for(
+        let fixed_cap = rendezvous_cap_for(
             SimInstant {
                 nanos: self.frontier.ticks,
             },
             self.rendezvous,
-        )
+        )?;
+        let topology_cap = self.pending_topology_activation_cap()?;
+
+        Ok(match (fixed_cap, topology_cap) {
+            (Some(fixed_cap), Some(topology_cap)) => Some(min_instant(fixed_cap, topology_cap)),
+            (Some(fixed_cap), None) => Some(fixed_cap),
+            (None, Some(topology_cap)) => Some(topology_cap),
+            (None, None) => None,
+        })
     }
 
     fn drive_authoritative_quantum(
