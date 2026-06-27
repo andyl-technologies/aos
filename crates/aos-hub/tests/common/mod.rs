@@ -324,7 +324,7 @@ pub fn standard_registry_with_commit_message(
 
     let registry_toml = fixture.put_blob(
         "[registry]\nname = \"demo\"\ndescription = \"Fixture registry\"\n\n\
-         [[caches]]\nurl = \"https://cache.example.com/\"\npriority = 40\n",
+         [caches]\nendpoint = \"https://cache.example.com/\"\n",
     );
     let keys_toml = fixture.put_blob(&format!(
         "schema = 1\n\n[[keys]]\nid = \"maintainer\"\nkey = \"{}\"\n",

@@ -1218,12 +1218,13 @@ fn registry_content_addressed(dir: &Path) -> bool {
 
 /// Resolves the mirror cache URLs committed in a registry's `registry.toml`.
 ///
-/// Returns the `[[caches]]` entries sorted by descending priority, or an
-/// empty list when the file is missing, unparsable, or lists no caches.
+/// Flattens the committed `[caches]` cache stack (or a legacy `[[caches]]`
+/// array) and returns the entries sorted by descending priority, or an empty
+/// list when the file is missing, unparsable, or lists no caches.
 pub fn resolve_mirrors(dir: &Path) -> Vec<CacheEntry> {
     match read_registry_toml(dir) {
-        Ok(Some(config)) if !config.caches.is_empty() => {
-            let mut caches = config.caches;
+        Ok(Some(config)) => {
+            let mut caches = config.cache_entries();
             caches.sort_by(|a, b| b.priority.cmp(&a.priority));
             caches
         }

@@ -145,7 +145,10 @@ pub trait SurfaceFetch: BackendBounds {
     /// Returns an error when the store cannot enumerate, or on IO/transport
     /// failure.
     async fn list(&self) -> Result<Vec<String>> {
-        anyhow::bail!("this surface ({}) does not support listing", self.describe())
+        anyhow::bail!(
+            "this surface ({}) does not support listing",
+            self.describe()
+        )
     }
 
     /// A human-readable description of the source (for health/audit text).

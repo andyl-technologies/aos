@@ -221,10 +221,7 @@ fn presign_url(method: &str, p: &PresignParams<'_>, extra: &[(&str, String)]) ->
     // `amz_date` is `YYYYMMDDTHHMMSSZ` (validated above); the credential-scope
     // date is its 8-char date part. `get` never panics on a bad boundary.
     let date_stamp = p.amz_date.get(..8).unwrap_or(p.amz_date);
-    let scope = format!(
-        "{date_stamp}/{}/{}/aws4_request",
-        p.region, p.service
-    );
+    let scope = format!("{date_stamp}/{}/{}/aws4_request", p.region, p.service);
     let credential = format!("{}/{scope}", p.access_key);
 
     // Canonical query string: the X-Amz-* params, each key+value URI-encoded
@@ -271,7 +268,10 @@ fn presign_url(method: &str, p: &PresignParams<'_>, extra: &[(&str, String)]) ->
     );
 
     // Derive the signing key and sign.
-    let k_date = hmac(format!("AWS4{}", p.secret_key).as_bytes(), date_stamp.as_bytes());
+    let k_date = hmac(
+        format!("AWS4{}", p.secret_key).as_bytes(),
+        date_stamp.as_bytes(),
+    );
     let k_region = hmac(&k_date, p.region.as_bytes());
     let k_service = hmac(&k_region, p.service.as_bytes());
     let k_signing = hmac(&k_service, b"aws4_request");
@@ -306,10 +306,9 @@ fn validate_host(host: &str) -> Result<()> {
     if host.is_empty() {
         bail!("host must not be empty");
     }
-    if host
-        .bytes()
-        .any(|b| b.is_ascii_control() || b.is_ascii_whitespace() || matches!(b, b'/' | b'?' | b'#' | b'@'))
-    {
+    if host.bytes().any(|b| {
+        b.is_ascii_control() || b.is_ascii_whitespace() || matches!(b, b'/' | b'?' | b'#' | b'@')
+    }) {
         bail!("host '{host}' contains an invalid character");
     }
     Ok(())
@@ -338,12 +337,16 @@ mod tests {
         let url = presign_get_url(&p).unwrap();
         // The expected signature from the AWS worked example.
         assert!(
-            url.ends_with("&X-Amz-Signature=aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404"),
+            url.ends_with(
+                "&X-Amz-Signature=aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404"
+            ),
             "presigned URL signature mismatch: {url}"
         );
         // Sanity: the secret never leaks into the URL.
         assert!(!url.contains("wJalr"), "secret key leaked: {url}");
-        assert!(url.contains("X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request"));
+        assert!(url.contains(
+            "X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request"
+        ));
         assert!(url.contains("X-Amz-Expires=86400"));
     }
 

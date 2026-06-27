@@ -40,7 +40,7 @@ use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_si
 // Re-exported here so `aos_package::registry::keys::{KeysToml, RosterKey,
 // RevokedKey, KEYS_TOML_SCHEMA}` paths are unchanged; the native load/validate/
 // pin helpers below layer on top.
-pub use aos_registry_surface::manifest::{KeysToml, RevokedKey, RosterKey, KEYS_TOML_SCHEMA};
+pub use aos_registry_surface::manifest::{KEYS_TOML_SCHEMA, KeysToml, RevokedKey, RosterKey};
 
 /// Load and validate `keys.toml` from a checked-out registry tree.
 ///

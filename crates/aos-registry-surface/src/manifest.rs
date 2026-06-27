@@ -880,30 +880,89 @@ impl SyscallProfile {
 
 use anyhow::{bail, Context, Result};
 
+use crate::stack::{self, StackNode};
+
 /// The committed `registry.toml` root configuration.
 ///
-/// Lives at the repository root; carries the registry's display metadata, the
-/// flat `[[caches]]` list, and the optional nestable `[cache_stack]`
-/// expression (RFC-0004). A pure, deserialize-only schema with no I/O, so the
-/// wasm-clean indexer and the Cloudflare Worker share it with `aos-package`'s
-/// native git-CLI path (which re-exports it).
+/// Lives at the repository root; carries the registry's display metadata and
+/// the unified `[caches]` cache stack (RFC-0004) — the single source of truth
+/// for which binary caches the registry advertises to consumers. A pure,
+/// deserialize-only schema with no I/O, so the wasm-clean indexer and the
+/// Cloudflare Worker share it with `aos-package`'s native git-CLI path (which
+/// re-exports it).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryRootConfig {
     /// The `[registry]` metadata table.
     pub registry: RegistryRootMeta,
-    /// Committed `[[caches]]` entries: binary caches every consumer of this
-    /// registry should use.
-    #[serde(default)]
-    pub caches: Vec<CacheEntry>,
-    /// Optional committed `[cache_stack]` expression: the nestable
-    /// try/mirror cache stack (RFC-0004). Carried as a raw [`toml::Value`]
-    /// so stack-unaware tooling round-trips it untouched while the hub
-    /// parses it into its own model; absent for registries that only use the
-    /// flat `[[caches]]` list. The section, when present, flattens to the
-    /// same priority list `[[caches]]` would carry, keeping old clients
-    /// working unchanged.
+    /// The committed `[caches]` cache stack: the binary caches every consumer
+    /// of this registry should use, in preference order.
+    ///
+    /// Absent when the registry advertises no caches. Carried as a
+    /// [`CachesConfig`] so a `[caches]` stack table and a legacy `[[caches]]`
+    /// array of `{ url, priority }` entries both parse; resolve the effective
+    /// list with [`RegistryRootConfig::cache_entries`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_stack: Option<toml::Value>,
+    pub caches: Option<CachesConfig>,
+}
+
+/// The committed `[caches]` value: either the unified cache stack or the
+/// legacy flat list.
+///
+/// Untagged so serde tries each form in order: a `[[caches]]` array of
+/// `{ url, priority }` entries matches [`CachesConfig::List`] first, while a
+/// `[caches]` table (a bare endpoint or a `kind`/`members` stack node) falls
+/// through to [`CachesConfig::Stack`]. New tooling writes the [`Stack`] form;
+/// the [`List`] form keeps older committed configs parsing unchanged.
+///
+/// [`Stack`]: CachesConfig::Stack
+/// [`List`]: CachesConfig::List
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CachesConfig {
+    /// Legacy `[[caches]]` array of explicit `{ url, priority }` entries.
+    List(Vec<CacheEntry>),
+    /// The unified `[caches]` cache-stack node, carried as a raw
+    /// [`toml::Value`] so stack-unaware tooling round-trips it untouched while
+    /// the hub parses it into its [`StackNode`] model.
+    Stack(toml::Value),
+}
+
+impl RegistryRootConfig {
+    /// Returns the flattened `(url, priority)` list consumers resolve.
+    ///
+    /// For a [`CachesConfig::Stack`] the stack is parsed and flattened with
+    /// [`stack::to_priority_caches`] (priority descending by depth-first
+    /// order, base `100`); for a legacy [`CachesConfig::List`] the entries are
+    /// returned as committed. A malformed stack yields an empty list rather
+    /// than panicking — callers log the omission.
+    #[must_use]
+    pub fn cache_entries(&self) -> Vec<CacheEntry> {
+        match &self.caches {
+            None => Vec::new(),
+            Some(CachesConfig::List(entries)) => entries.clone(),
+            Some(CachesConfig::Stack(value)) => match stack::parse_cache_stack(value.clone()) {
+                Ok(node) => stack::to_priority_caches(&node, default_cache_priority())
+                    .into_iter()
+                    .map(|(url, priority)| CacheEntry { url, priority })
+                    .collect(),
+                Err(_) => Vec::new(),
+            },
+        }
+    }
+
+    /// Returns the parsed cache stack when `[caches]` is in stack form.
+    ///
+    /// `None` for a legacy [`CachesConfig::List`] (which has no nestable
+    /// structure to validate), for an absent `[caches]`, or for a malformed
+    /// stack — mirror validation treats a missing or unparseable stack as
+    /// "no mirror groups to enforce" rather than panicking.
+    #[must_use]
+    pub fn cache_stack(&self) -> Option<StackNode> {
+        match &self.caches {
+            Some(CachesConfig::Stack(value)) => stack::parse_cache_stack(value.clone()).ok(),
+            _ => None,
+        }
+    }
 }
 
 /// Registry metadata in `registry.toml`.
@@ -1080,4 +1139,73 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
     let toml: PackageToml = toml::from_str(content).context("invalid package TOML")?;
     validate_package_name(&toml.package.name)?;
     Ok(toml)
+}
+
+#[cfg(test)]
+mod root_config_tests {
+    use super::*;
+
+    const META: &str = r#"
+        [registry]
+        name = "example"
+    "#;
+
+    #[test]
+    fn legacy_caches_array_parses_and_flattens() {
+        let src = format!(
+            "{META}\n[[caches]]\nurl = \"https://c1\"\n[[caches]]\nurl = \"https://c2\"\npriority = 50\n"
+        );
+        let cfg: RegistryRootConfig = toml::from_str(&src).unwrap();
+        assert!(matches!(cfg.caches, Some(CachesConfig::List(_))));
+        let entries = cfg.cache_entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].url, "https://c1");
+        assert_eq!(entries[0].priority, 100); // schema default
+        assert_eq!(entries[1].url, "https://c2");
+        assert_eq!(entries[1].priority, 50);
+        // A legacy list has no nestable structure for mirror validation.
+        assert!(cfg.cache_stack().is_none());
+    }
+
+    #[test]
+    fn single_endpoint_stack_parses_and_flattens() {
+        let src = format!("{META}\n[caches]\nendpoint = \"https://only\"\n");
+        let cfg: RegistryRootConfig = toml::from_str(&src).unwrap();
+        assert!(matches!(cfg.caches, Some(CachesConfig::Stack(_))));
+        let entries = cfg.cache_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].url, "https://only");
+        assert_eq!(entries[0].priority, 100);
+        assert_eq!(
+            cfg.cache_stack(),
+            Some(StackNode::Endpoint("https://only".into()))
+        );
+    }
+
+    #[test]
+    fn try_stack_flattens_to_descending_priority() {
+        let src = format!(
+            "{META}\n[caches]\nkind = \"try\"\nmembers = [{{ endpoint = \"https://a\" }}, {{ endpoint = \"https://b\" }}]\n"
+        );
+        let cfg: RegistryRootConfig = toml::from_str(&src).unwrap();
+        let entries = cfg.cache_entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            (entries[0].url.as_str(), entries[0].priority),
+            ("https://a", 100)
+        );
+        assert_eq!(
+            (entries[1].url.as_str(), entries[1].priority),
+            ("https://b", 99)
+        );
+        assert!(matches!(cfg.cache_stack(), Some(StackNode::Try(_))));
+    }
+
+    #[test]
+    fn absent_caches_yields_empty() {
+        let cfg: RegistryRootConfig = toml::from_str(META).unwrap();
+        assert!(cfg.caches.is_none());
+        assert!(cfg.cache_entries().is_empty());
+        assert!(cfg.cache_stack().is_none());
+    }
 }

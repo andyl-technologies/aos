@@ -207,7 +207,11 @@ mod tests {
             ("demo", ""),
         ] {
             let key = r2_key(prefix, path);
-            assert_eq!(relative_key(prefix, &key).as_deref(), Some(path), "{prefix}|{path}");
+            assert_eq!(
+                relative_key(prefix, &key).as_deref(),
+                Some(path),
+                "{prefix}|{path}"
+            );
         }
         // A sibling key that merely shares a string prefix is not under it.
         assert_eq!(relative_key("demo", "democracy/x"), None);

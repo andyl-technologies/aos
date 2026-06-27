@@ -430,42 +430,10 @@
     sync();
   }
 
-  // Link-a-cache form: grey out the "advertise" toggle when the chosen cache is
-  // less visible than the registry — its consumers couldn't read it, so it can't
-  // be advertised (only GC-rooted). Mirrors the server's link policy so the user
-  // never submits a combination that would be rejected. No-JS fallback: the
-  // server still validates.
-  function initCacheLinkForm(form) {
-    // Works from either side. Registry settings ("Link a cache"): the registry
-    // is fixed (data-registry-visibility), options are caches. Cache page ("Link
-    // a registry"): the cache is fixed (data-cache-visibility), options are
-    // registries. Either way advertise is allowed iff cacheRank >= registryRank.
-    var select = form.querySelector("select[name=cache], select[name=registry]");
-    var advertise = form.querySelector("input[name=advertised]");
-    if (!select || !advertise) return;
-    var rank = { public: 2, internal: 1, private: 0 };
-    var fixedReg = form.getAttribute("data-registry-visibility");
-    var fixedCache = form.getAttribute("data-cache-visibility");
-    function sync() {
-      var opt = select.options[select.selectedIndex];
-      var optRank = rank[opt && opt.getAttribute("data-visibility")] || 0;
-      var allowed =
-        fixedReg != null
-          ? optRank >= (rank[fixedReg] || 0) // option is the cache
-          : (rank[fixedCache] || 0) >= optRank; // option is the registry
-      advertise.disabled = !allowed;
-      if (!allowed) advertise.checked = false;
-      advertise.title = allowed
-        ? ""
-        : "a less-visible cache can't be advertised on a more-visible registry — its consumers couldn't read it";
-    }
-    select.addEventListener("change", sync);
-    sync();
-  }
-
-  // The repeatable [[caches]] editor in the structured config form. Clones the
-  // last row to add another, and removes a row on its × button. No-JS fallback:
-  // the server renders the existing rows plus one blank, all editable.
+  // The ordered [caches] editor in the structured config form. Row order is
+  // preference (priority is derived from order). Clones the last row to add
+  // another, and removes a row on its × button. No-JS fallback: the server
+  // renders the existing rows plus one blank, all editable.
   function initCacheRows(form) {
     var container = form.querySelector("[data-cache-rows]");
     var addBtn = form.querySelector("[data-add-cache]");
@@ -479,25 +447,55 @@
           row.parentNode.removeChild(row);
         } else {
           row.querySelectorAll("input").forEach(function (i) {
-            i.value = i.classList.contains("cache-prio") ? "100" : "";
+            i.value = "";
           });
         }
       });
     }
     container.querySelectorAll(".cache-row").forEach(bindDel);
+    // Add a row, optionally pre-filled with `value`. Reuses the trailing blank
+    // row when empty; otherwise clones it. Returns the row's URL input.
+    function addRow(value) {
+      var rows = container.querySelectorAll(".cache-row");
+      var last = rows[rows.length - 1];
+      var lastUrl = last.querySelector("input[name=cache_url]");
+      var target;
+      if (lastUrl && !lastUrl.value) {
+        target = last; // fill the existing blank row
+      } else {
+        target = last.cloneNode(true);
+        target.querySelectorAll("input").forEach(function (i) {
+          i.value = "";
+        });
+        bindDel(target);
+        container.appendChild(target);
+      }
+      var url = target.querySelector("input[name=cache_url]");
+      if (url && value != null) url.value = value;
+      return url;
+    }
     if (addBtn) {
       addBtn.addEventListener("click", function () {
-        var rows = container.querySelectorAll(".cache-row");
-        var clone = rows[rows.length - 1].cloneNode(true);
-        clone.querySelectorAll("input").forEach(function (i) {
-          i.value = i.classList.contains("cache-prio") ? "100" : "";
-        });
-        bindDel(clone);
-        container.appendChild(clone);
-        var url = clone.querySelector("input[name=cache_url]");
+        var url = addRow(null);
         if (url) url.focus();
       });
     }
+    // Autofill: a linked cache's "add" button inserts its consumer URL, marks
+    // itself done, and flips a present indicator so the panel stays live.
+    form.querySelectorAll("[data-add-cache-url]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        addRow(btn.getAttribute("data-add-cache-url"));
+        var item = btn.closest("li");
+        if (item) {
+          var chip = item.querySelector(".chip");
+          if (chip) {
+            chip.textContent = "in config";
+            chip.classList.remove("warn");
+          }
+        }
+        btn.parentNode.removeChild(btn);
+      });
+    });
   }
 
   // Attached help (web/help.rs): turn a `?` marker's hidden segmented card into
@@ -597,7 +595,6 @@
   document.querySelectorAll("[data-copy-target]").forEach(initCopyButton);
   document.querySelectorAll("[data-filter-widget]").forEach(initFilterBox);
   document.querySelectorAll("form[data-binding-kind]").forEach(initBindingForm);
-  document.querySelectorAll("form[data-cache-link]").forEach(initCacheLinkForm);
   document.querySelectorAll("form[data-config-form]").forEach(initCacheRows);
   initHelp();
 })();
