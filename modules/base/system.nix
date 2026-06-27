@@ -140,6 +140,27 @@ in {
       '';
     };
 
+    ## Shared-option-schema ABI integer (RFC-0011 generations OQ).
+    ##
+    ## A monotonic integer identifying the base-lib option schema this image
+    ## ships. It is written to `/etc/os-release` as `AOS_MODULE_ABI` (and so
+    ## into the UKI `.osrel` section measured into PCR 11), and the on-host
+    ## resolver reads it to gate every config module's `module_abi_compat`
+    ## band before evaluation. Orthogonal to `stateVersion` (a /var
+    ## state-migration trigger) — the two gate different artifacts at
+    ## different phases and need not coincide.
+    moduleAbi = lib.mkOption {
+      type = lib.types.int;
+      default = 1;
+      description = ''
+        Shared-option-schema ABI integer for this image. Emitted as
+        `AOS_MODULE_ABI` in /etc/os-release (and the measured UKI .osrel),
+        used by the on-host resolver as the pre-eval admission gate for
+        config modules. Bump on a breaking change to the shared option
+        schema. Independent of `stateVersion`.
+      '';
+    };
+
     ## System locale (LANG environment variable).
     ##
     ## # Examples
@@ -255,6 +276,7 @@ in {
         HOME_URL="https://aos.dev"
         BUG_REPORT_URL="https://aos.dev/issues"
         AOS_STATE_VERSION=${cfg.stateVersion}
+        AOS_MODULE_ABI=${toString cfg.moduleAbi}
       '';
     };
 

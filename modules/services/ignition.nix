@@ -54,6 +54,12 @@
     (lib.makeSearchPath "sbin" ignitionTools)
   ];
 
+  # RFC-0011: when the systemd-repart convention substrate owns disk carving
+  # (modules/services/repart.nix), the Ignition grow/relocate units stand down —
+  # repart adds/grows partitions and rewrites the GPT itself. Default false, so
+  # the Ignition path is unchanged on every existing system.
+  repartEnabled = config.aos.provisioning.repart.enable;
+
   # Shared config for every ignition stage unit: inherit the platform
   # env from aos-platform-detect, wire PATH for the shell-outs, and
   # run a oneshot that stays active across subsequent stages. `root`
@@ -195,7 +201,12 @@ in {
         };
         script = ''
           set -euo pipefail
-
+          ${lib.optionalString repartEnabled ''
+            # systemd-repart relocates the GPT backup header to the device end
+            # as part of growing the last partition; nothing to do here.
+            echo "aos-gpt-relocate: repart owns GPT relocation; skipping"
+            exit 0
+          ''}
           # The var partition is created by ignition, never by the image.
           # Its presence means ignition already provisioned this disk and
           # the GPT spans the full device — nothing to relocate.
@@ -234,12 +245,15 @@ in {
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          # Only a writable ext4 root is grown to fill its partition. A
-          # read-only erofs root is the fixed immutable base (the writable
-          # Nix store layer and all mutable state live on /var), so there is
-          # nothing to grow — running resize2fs on erofs would just fail.
+          # Only a writable ext4 root is grown to fill its partition, and only
+          # when repart is not the carver. A read-only erofs root is the fixed
+          # immutable base (the writable Nix store layer and all mutable state
+          # live on /var) — growing it would change bytes and, under dm-verity
+          # (RFC-0011 F1), break the root hash; running resize2fs on erofs would
+          # also just fail. When the repart substrate is enabled it grows /var
+          # itself, so this unit becomes a no-op.
           ExecStart =
-            if config.aos.filesystems.rootFsType == "ext4"
+            if config.aos.filesystems.rootFsType == "ext4" && !repartEnabled
             then "${pkgs.aos-growfs}/bin/aos-growfs"
             else "${pkgs.coreutils}/bin/true";
           StandardOutput = "journal+console";
