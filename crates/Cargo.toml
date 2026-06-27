@@ -9,6 +9,7 @@ members = [
     "aos-nix-harness",
     "ratchet-core",
     "ratchet-dialect",
+    "ratchet-cache",
     "aos-nix-dialect",
     "ratchet-value",
     "ratchet-oracle",

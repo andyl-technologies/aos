@@ -3699,6 +3699,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ratchet-cache"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "thiserror",
+]
+
+[[package]]
 name = "ratchet-core"
 version = "0.1.0"
 dependencies = [

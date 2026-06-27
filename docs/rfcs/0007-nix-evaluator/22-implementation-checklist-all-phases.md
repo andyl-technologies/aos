@@ -1169,6 +1169,17 @@ alone (`M-1`/`Q-A`).
       verification. This is ordinary `std::fs` IO only; mmap zero-copy reads,
       LMDB/redb index integration, batched writing, crash-durability policy,
       GC/repack, Attic transport, and harness proof remain open (`C-13`).
+- [x] Current `ratchet-cache` unsafe crate and mmap primitive:
+      `ratchet-cache` now exists as the RFC engine-band unsafe crate with
+      `#![deny(unsafe_op_in_unsafe_fn)]`, and `store::ReadOnlyMmap` wraps Unix
+      read-only `mmap` behind an explicitly unsafe constructor, documented file
+      immutability contract, and `// SAFETY:` comments for every unsafe block.
+      `ratchet-oracle` remains `#![forbid(unsafe_code)]` and does not call this
+      primitive yet. This is the unsafe fence and raw mapping substrate only;
+      packfile payload windows, safe cache-root lease protocol, LMDB/redb
+      metadata, mmap-backed indexed hits, out-of-core value rematerialization,
+      cross-process writer coordination, and harness proof remain open
+      (`C-13`/`R-14`).
 - [x] Current hash-to-offset index value codec substrate: `PersistBlobKey`
       supplies domain-separated index keys, and `PersistBlobLocation` round-trips
       record offset plus payload length as stable little-endian index metadata.
