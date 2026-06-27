@@ -3,10 +3,11 @@
 #![forbid(unsafe_code)]
 
 use crucible::{
-    BackendInput, ExactLocalEvent, NodeCounter, NodeId, ScheduledEvent, ScheduledEventKey,
-    ScheduledEventPayload, SchedulerLivenessError, SchedulerLivenessScenario,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulerTerminal,
-    SchedulingNodeKind, Shift, SimInstant, VirtualTime, check_scheduler_liveness,
+    BackendInput, ExactLocalEvent, NodeCounter, NodeId, QuantumLoop, QuantumOutcome,
+    QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    SchedulerLivenessError, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
+    SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, Shift, SimInstant,
+    SingleScheduler, VirtualTime, check_scheduler_liveness,
 };
 use std::fmt::Debug;
 
@@ -73,6 +74,50 @@ fn gate_scheduler_liveness_reaches_time_limit_terminal() {
     assert_eq!(report.terminal, SchedulerTerminal::TimeLimitReached);
     assert_eq!(report.frontier, VirtualTime { ticks: 1 });
     assert_eq!(report.quanta, 1);
+}
+
+#[test]
+fn gate_scheduler_liveness_picks_global_minimum_horizon_before_current_time_order() {
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "global-minimum-horizon-before-current-time-order",
+        shift(0),
+        8,
+        SimInstant { nanos: 16 },
+        vec![
+            scenario_node("early-high-horizon", 0, 10, ExactLocalEvent::NoArmedTimer),
+            scenario_node("late-low-horizon", 3, 4, ExactLocalEvent::NoArmedTimer),
+        ],
+        Vec::new(),
+    );
+
+    let outcome = drive_one_quantum(scenario);
+
+    assert_eq!(
+        outcome.advanced_node,
+        Some(scheduler_node("late-low-horizon", SchedulingNodeKind::Vm))
+    );
+}
+
+#[test]
+fn gate_scheduler_liveness_breaks_equal_horizon_ties_by_node_id() {
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "global-minimum-horizon-node-id-tie",
+        shift(0),
+        8,
+        SimInstant { nanos: 16 },
+        vec![
+            scenario_node("node-b", 0, 5, ExactLocalEvent::NoArmedTimer),
+            scenario_node("node-a", 2, 5, ExactLocalEvent::NoArmedTimer),
+        ],
+        Vec::new(),
+    );
+
+    let outcome = drive_one_quantum(scenario);
+
+    assert_eq!(
+        outcome.advanced_node,
+        Some(scheduler_node("node-a", SchedulingNodeKind::Vm))
+    );
 }
 
 #[test]
@@ -219,6 +264,17 @@ fn assert_scheduler_liveness(
 ) -> crucible::SchedulerLivenessReport {
     let double = SimDouble;
     assert_twice_reduce_canonical_digest(|| double.check_scheduler_liveness(scenario.clone()))
+}
+
+fn drive_one_quantum(scenario: SchedulerLivenessScenario) -> QuantumOutcome {
+    let mut scheduler = SingleScheduler::new(scenario).expect("scenario should be valid");
+    let request = QuantumRequest {
+        configuration: scheduler.configuration().clone(),
+        control: Vec::new(),
+    };
+    scheduler
+        .drive_quantum(request)
+        .expect("scheduler should drive one quantum")
 }
 
 fn scenario_node(

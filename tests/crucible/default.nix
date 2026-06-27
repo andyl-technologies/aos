@@ -359,7 +359,7 @@ in {
       schedulerLiveness = import ./phase3-scheduler-liveness.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase3.gates.schedulerLiveness";
-        taskIds = ["T-PLAN-3" "T-HARN-14"];
+        taskIds = ["T-PLAN-3" "T-HARN-14" "T-SCHED-4"];
       };
       adversarialDeterminism = import ./phase3-adversarial-determinism.nix {
         inherit pkgs lib;
