@@ -1203,6 +1203,55 @@ fn cache_file_artifact_index_records_and_looks_up_entries() {
 }
 
 #[test]
+fn cache_record_file_artifact_acquires_advisory_mapping_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_file_artifacts_for_tests()
+        .expect("file-artifact lock acquires");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let value = PersistFileArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"advisory file artifact"),
+        PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 22),
+    );
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .record_file_artifact(PersistFileArtifactIndexEntry::new(key, value))
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("file-artifact record result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.file_artifact_lock_path());
+    drop(guard);
+
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("file-artifact record completes after same-process lock release")
+        .expect("file-artifact record succeeds");
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.file_artifact_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("file-artifact advisory lock releases after record");
+    drop(released_lock);
+    assert_eq!(
+        cache
+            .lookup_file_artifact(key)
+            .expect("file artifact lookup succeeds"),
+        Some(value)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_file_artifact_index_serializes_independently_opened_same_root_handles() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -1483,6 +1532,129 @@ fn cache_fixed_record_indexes_compact_to_latest_entries() {
 }
 
 #[test]
+fn cache_compact_file_artifact_index_acquires_advisory_mapping_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let first = PersistFileArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"first file artifact"),
+        PersistBlobLocation::new(555, 90),
+    );
+    let latest = PersistFileArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"latest file artifact"),
+        PersistBlobLocation::new(666, 12),
+    );
+    cache
+        .record_file_artifact(PersistFileArtifactIndexEntry::new(key, first))
+        .expect("first file artifact entry records");
+    cache
+        .record_file_artifact(PersistFileArtifactIndexEntry::new(key, latest))
+        .expect("latest file artifact entry records");
+    let guard = cache
+        .lock_file_artifacts_for_tests()
+        .expect("file-artifact lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .compact_file_artifact_index()
+            .map_err(|error| error.to_string());
+        tx.send(result)
+            .expect("file-artifact compaction result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.file_artifact_lock_path());
+    drop(guard);
+
+    let retained = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("file-artifact compaction completes after same-process lock release")
+        .expect("file-artifact compaction succeeds");
+    assert_eq!(retained, 1);
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.file_artifact_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("file-artifact advisory lock releases after compaction");
+    drop(released_lock);
+    assert_eq!(
+        cache
+            .lookup_file_artifact(key)
+            .expect("file artifact lookup succeeds"),
+        Some(latest)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_compact_parse_artifact_index_acquires_advisory_mapping_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+    let first = PersistParseArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"first parse artifact"),
+        PersistBlobLocation::new(777, 34),
+    );
+    let latest = PersistParseArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"latest parse artifact"),
+        PersistBlobLocation::new(888, 56),
+    );
+    cache
+        .record_parse_artifact(PersistParseArtifactIndexEntry::new(key, first))
+        .expect("first parse artifact entry records");
+    cache
+        .record_parse_artifact(PersistParseArtifactIndexEntry::new(key, latest))
+        .expect("latest parse artifact entry records");
+    let guard = cache
+        .lock_parse_artifacts_for_tests()
+        .expect("parse-artifact lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .compact_parse_artifact_index()
+            .map_err(|error| error.to_string());
+        tx.send(result)
+            .expect("parse-artifact compaction result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.parse_artifact_lock_path());
+    drop(guard);
+
+    let retained = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("parse-artifact compaction completes after same-process lock release")
+        .expect("parse-artifact compaction succeeds");
+    assert_eq!(retained, 1);
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.parse_artifact_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("parse-artifact advisory lock releases after compaction");
+    drop(released_lock);
+    assert_eq!(
+        cache
+            .lookup_parse_artifact(key)
+            .expect("parse artifact lookup succeeds"),
+        Some(latest)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_parse_artifact_index_serializes_independently_opened_same_root_handles() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -1539,6 +1711,54 @@ fn cache_parse_artifact_index_serializes_independently_opened_same_root_handles(
             .expect("parse artifact index metadata")
             .len(),
         (PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN * workers) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_record_parse_artifact_acquires_advisory_mapping_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_parse_artifacts_for_tests()
+        .expect("parse-artifact lock acquires");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+    let value = PersistParseArtifactIndexValue::new(
+        DurableBlake3Hash::for_bytes(b"advisory parse artifact"),
+        PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 22),
+    );
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .record_parse_artifact(PersistParseArtifactIndexEntry::new(key, value))
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("parse-artifact record result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.parse_artifact_lock_path());
+    drop(guard);
+
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("parse-artifact record completes after same-process lock release")
+        .expect("parse-artifact record succeeds");
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.parse_artifact_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("parse-artifact advisory lock releases after record");
+    drop(released_lock);
+    assert_eq!(
+        cache
+            .lookup_parse_artifact(key)
+            .expect("parse artifact lookup succeeds"),
+        Some(value)
     );
 
     let _ = fs::remove_dir_all(root);
@@ -3964,6 +4184,82 @@ fn cache_file_blob_pack_tail_trim_acquires_advisory_store_lock_before_same_proce
 }
 
 #[test]
+fn cache_file_blob_pack_tail_trim_acquires_file_artifact_advisory_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_file_artifacts_for_tests()
+        .expect("file-artifact lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .trim_blob_pack_tail(PersistBlobStore::Files)
+            .map(|trim| trim.reclaimed_bytes())
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("file tail-trim result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.file_artifact_lock_path());
+    drop(guard);
+
+    let reclaimed_bytes = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("file blob-pack tail trim completes after file-artifact lock release")
+        .expect("file blob-pack tail trim succeeds");
+    assert_eq!(reclaimed_bytes, 0);
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.file_artifact_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("file-artifact advisory lock releases after tail trim");
+    drop(released_lock);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_pack_tail_trim_acquires_parse_artifact_advisory_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_parse_artifacts_for_tests()
+        .expect("parse-artifact lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .trim_blob_pack_tail(PersistBlobStore::Files)
+            .map(|trim| trim.reclaimed_bytes())
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("file tail-trim result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.parse_artifact_lock_path());
+    drop(guard);
+
+    let reclaimed_bytes = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("file blob-pack tail trim completes after parse-artifact lock release")
+        .expect("file blob-pack tail trim succeeds");
+    assert_eq!(reclaimed_bytes, 0);
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.parse_artifact_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("parse-artifact advisory lock releases after tail trim");
+    drop(released_lock);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_value_blob_pack_repack_acquires_advisory_store_lock_before_same_process_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -4087,6 +4383,150 @@ fn cache_file_blob_pack_repack_acquires_advisory_store_lock_before_same_process_
     assert!(
         cache.read_blob(unrooted_key, unrooted_location).is_err(),
         "unrooted file record should be omitted by repack"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_pack_repack_acquires_file_artifact_advisory_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let unrooted_payload = b"unrooted file before file-artifact repack";
+    let unrooted_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(unrooted_payload));
+    cache
+        .append_blob(unrooted_key, unrooted_payload)
+        .expect("unrooted file appends");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let file_artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let payload = b"rooted file artifact after advisory prefix";
+    let materialized = cache
+        .materialize_file_artifact(
+            &file_key,
+            parse_key,
+            payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("file artifact materializes");
+    let index_entry = materialized
+        .index_entry()
+        .expect("file artifact should materialize");
+    cache
+        .record_file_artifact(index_entry)
+        .expect("file artifact mapping records");
+    let expected_reclaimed = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + unrooted_payload.len() as u64;
+    let guard = cache
+        .lock_file_artifacts_for_tests()
+        .expect("file-artifact lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .repack_file_blob_pack()
+            .map(|plan| (plan.reclaimable_bytes(), plan.record_relocations().len()))
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("file repack result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.file_artifact_lock_path());
+    drop(guard);
+
+    let (reclaimed_bytes, relocated_records) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("file blob-pack repack completes after file-artifact lock release")
+        .expect("file blob-pack repack succeeds");
+    assert_eq!(reclaimed_bytes, expected_reclaimed);
+    assert_eq!(relocated_records, 1);
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.file_artifact_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("file-artifact advisory lock releases after repack");
+    drop(released_lock);
+    let relocated = cache
+        .lookup_file_artifact(file_artifact_key)
+        .expect("file artifact lookup succeeds")
+        .expect("file artifact remains indexed");
+    assert_eq!(
+        cache
+            .read_file_artifact(relocated)
+            .expect("relocated file artifact reads")
+            .as_slice(),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_pack_repack_acquires_parse_artifact_advisory_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let unrooted_payload = b"unrooted file before parse-artifact repack";
+    let unrooted_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(unrooted_payload));
+    cache
+        .append_blob(unrooted_key, unrooted_payload)
+        .expect("unrooted file appends");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let parse_artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+    let payload = b"rooted parse artifact after advisory prefix";
+    let materialized = cache
+        .materialize_parse_artifact(parse_key, payload, MaterializationDecision::Materialize)
+        .expect("parse artifact materializes");
+    let index_entry = materialized
+        .index_entry()
+        .expect("parse artifact should materialize");
+    cache
+        .record_parse_artifact(index_entry)
+        .expect("parse artifact mapping records");
+    let expected_reclaimed = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + unrooted_payload.len() as u64;
+    let guard = cache
+        .lock_parse_artifacts_for_tests()
+        .expect("parse-artifact lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .repack_file_blob_pack()
+            .map(|plan| (plan.reclaimable_bytes(), plan.record_relocations().len()))
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("file repack result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.parse_artifact_lock_path());
+    drop(guard);
+
+    let (reclaimed_bytes, relocated_records) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("file blob-pack repack completes after parse-artifact lock release")
+        .expect("file blob-pack repack succeeds");
+    assert_eq!(reclaimed_bytes, expected_reclaimed);
+    assert_eq!(relocated_records, 1);
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.parse_artifact_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("parse-artifact advisory lock releases after repack");
+    drop(released_lock);
+    let relocated = cache
+        .lookup_parse_artifact(parse_artifact_key)
+        .expect("parse artifact lookup succeeds")
+        .expect("parse artifact remains indexed");
+    assert_eq!(
+        cache
+            .read_parse_artifact(relocated)
+            .expect("relocated parse artifact reads")
+            .as_slice(),
+        payload
     );
 
     let _ = fs::remove_dir_all(root);

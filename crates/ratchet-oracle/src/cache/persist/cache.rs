@@ -1614,11 +1614,11 @@ impl PersistCache {
     ///
     /// This explicit maintenance operation rewrites the value and file blob
     /// indexes, file-artifact and parse-artifact indexes, demand-node metadata
-    /// index, and node verifying-trace log. The blob-index compaction phases
-    /// use the per-store advisory lock; the other sidecar compactions remain
-    /// same-process coordinated only. This does not rewrite blob packs, drop
-    /// unreferenced blobs, coordinate raw lower-level sidecar users, or
-    /// implement an automatic GC policy.
+    /// index, and node verifying-trace log. The blob-index and artifact-mapping
+    /// compaction phases use per-sidecar advisory locks; node metadata and
+    /// trace compactions remain same-process coordinated only. This does not
+    /// rewrite blob packs, drop unreferenced blobs, coordinate raw lower-level
+    /// sidecar users, or implement an automatic GC policy.
     ///
     /// # Errors
     ///
@@ -1666,8 +1666,8 @@ impl PersistCache {
     /// phase fails remains committed. It does not implement an automatic GC
     /// policy, relocate live pack records, coordinate raw lower-level pack or
     /// sidecar users, or replace the future LMDB/redb metadata engine. Only
-    /// the blob-index compaction/rebuild and blob-pack tail-trim phases use the
-    /// per-store advisory lock.
+    /// the blob-index compaction/rebuild, file/parse artifact compaction, and
+    /// blob-pack tail-trim phases use advisory locks.
     ///
     /// # Errors
     ///
@@ -1707,10 +1707,11 @@ impl PersistCache {
     /// and non-transactional: sidecar compaction remains committed if a later
     /// pack repack fails, and value-pack rewrites may remain committed if the
     /// file-pack repack fails. The blob-pack repack phases use each selected
-    /// store's advisory lock file. It does not implement an automatic GC
-    /// policy, coordinate raw lower-level pack or sidecar users or non-blob
-    /// sidecar cross-process writers during file repack, or replace the future
-    /// LMDB/redb metadata engine.
+    /// store's advisory lock file, and file-pack repack also uses file/parse
+    /// artifact advisory locks. It does not implement an automatic GC policy,
+    /// coordinate raw lower-level pack or sidecar users or cross-process
+    /// pending artifact publication, or replace the future LMDB/redb metadata
+    /// engine.
     ///
     /// # Errors
     ///
@@ -1897,6 +1898,26 @@ impl PersistCache {
         Ok((advisory_guard, write_guard))
     }
 
+    fn lock_file_artifact_write(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistFileArtifactIndexError> {
+        let path = self.layout.file_artifact_lock_path();
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Exclusive)
+            .map_err(|source| PersistFileArtifactIndexError::AdvisoryWriteLock { path, source })?;
+        let write_guard = self.root_locks.lock_file_artifacts()?;
+        Ok((advisory_guard, write_guard))
+    }
+
+    fn lock_parse_artifact_write(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistParseArtifactIndexError> {
+        let path = self.layout.parse_artifact_lock_path();
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Exclusive)
+            .map_err(|source| PersistParseArtifactIndexError::AdvisoryWriteLock { path, source })?;
+        let write_guard = self.root_locks.lock_parse_artifacts()?;
+        Ok((advisory_guard, write_guard))
+    }
+
     /// Appends a blob to the packfile selected by `key`.
     ///
     /// # Errors
@@ -1954,14 +1975,15 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistFileArtifactIndexError`] if the same-root file-artifact
-    /// write lock is poisoned or if the sidecar index cannot be opened,
-    /// validated, written, or flushed.
+    /// Returns [`PersistFileArtifactIndexError`] if the advisory mapping lock
+    /// cannot be acquired, if the same-root file-artifact write lock is
+    /// poisoned, or if the sidecar index cannot be opened, validated, written,
+    /// or flushed.
     pub fn record_file_artifact(
         &self,
         entry: PersistFileArtifactIndexEntry,
     ) -> Result<(), PersistFileArtifactIndexError> {
-        let _write_guard = self.root_locks.lock_file_artifacts()?;
+        let (_advisory_guard, _write_guard) = self.lock_file_artifact_write()?;
         self.file_artifact_index.append_entry(entry)?;
         let value = entry.value();
         self.root_locks
@@ -1999,14 +2021,15 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistParseArtifactIndexError`] if the same-root
-    /// parse-artifact write lock is poisoned or if the sidecar index cannot be
-    /// opened, validated, written, or flushed.
+    /// Returns [`PersistParseArtifactIndexError`] if the advisory mapping lock
+    /// cannot be acquired, if the same-root parse-artifact write lock is
+    /// poisoned, or if the sidecar index cannot be opened, validated, written,
+    /// or flushed.
     pub fn record_parse_artifact(
         &self,
         entry: PersistParseArtifactIndexEntry,
     ) -> Result<(), PersistParseArtifactIndexError> {
-        let _write_guard = self.root_locks.lock_parse_artifacts()?;
+        let (_advisory_guard, _write_guard) = self.lock_parse_artifact_write()?;
         self.parse_artifact_index.append_entry(entry)?;
         let value = entry.value();
         self.root_locks
@@ -2042,35 +2065,37 @@ impl PersistCache {
 
     /// Compacts file-artifact mappings to the newest entry for every known key.
     ///
-    /// Same-process writers opened on the same cache root share a file-artifact
-    /// write lock while this method rewrites the sidecar. Cross-process writers
-    /// must still be excluded by the caller.
+    /// Cache-level writers opened on the same cache root share the
+    /// file-artifact advisory lock and same-root write lock while this method
+    /// rewrites the sidecar. Raw lower-level sidecar users and unrelated
+    /// maintenance writers must still be excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistFileArtifactIndexError`] if the same-root file-artifact
-    /// write lock is poisoned or if the sidecar index cannot be created,
-    /// opened, inspected, read, decoded, written, flushed, or renamed into
-    /// place.
+    /// Returns [`PersistFileArtifactIndexError`] if the advisory mapping lock
+    /// cannot be acquired, if the same-root file-artifact write lock is
+    /// poisoned, or if the sidecar index cannot be created, opened, inspected,
+    /// read, decoded, written, flushed, or renamed into place.
     pub fn compact_file_artifact_index(&self) -> Result<usize, PersistFileArtifactIndexError> {
-        let _write_guard = self.root_locks.lock_file_artifacts()?;
+        let (_advisory_guard, _write_guard) = self.lock_file_artifact_write()?;
         self.file_artifact_index.compact_latest_entries()
     }
 
     /// Compacts parse-artifact mappings to the newest entry for every known key.
     ///
-    /// Same-process writers opened on the same cache root share a parse-artifact
-    /// write lock while this method rewrites the sidecar. Cross-process writers
-    /// must still be excluded by the caller.
+    /// Cache-level writers opened on the same cache root share the
+    /// parse-artifact advisory lock and same-root write lock while this method
+    /// rewrites the sidecar. Raw lower-level sidecar users and unrelated
+    /// maintenance writers must still be excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistParseArtifactIndexError`] if the same-root
-    /// parse-artifact write lock is poisoned or if the sidecar index cannot be
-    /// created, opened, inspected, read, decoded, written, flushed, or renamed
-    /// into place.
+    /// Returns [`PersistParseArtifactIndexError`] if the advisory mapping lock
+    /// cannot be acquired, if the same-root parse-artifact write lock is
+    /// poisoned, or if the sidecar index cannot be created, opened, inspected,
+    /// read, decoded, written, flushed, or renamed into place.
     pub fn compact_parse_artifact_index(&self) -> Result<usize, PersistParseArtifactIndexError> {
-        let _write_guard = self.root_locks.lock_parse_artifacts()?;
+        let (_advisory_guard, _write_guard) = self.lock_parse_artifact_write()?;
         self.parse_artifact_index.compact_latest_entries()
     }
 
@@ -2903,9 +2928,10 @@ impl PersistCache {
     /// Cache-level writers opened on the same cache root share the selected
     /// store's advisory lock file and same-process store lock while this method
     /// snapshots roots and truncates the pack; `files/` trims also share the
-    /// file-artifact and parse-artifact mapping locks. Raw lower-level pack or
-    /// sidecar users and unrelated maintenance writers must still be excluded
-    /// by the caller.
+    /// file-artifact and parse-artifact advisory and same-root mapping locks.
+    /// Raw lower-level pack or sidecar users, cross-process pending artifact
+    /// publication, and unrelated maintenance writers must still be excluded by
+    /// the caller.
     ///
     /// # Errors
     ///
@@ -2921,8 +2947,7 @@ impl PersistCache {
         let (_advisory_guard, _blob_guard) = self.lock_blob_pack_tail_trim(store)?;
         let _file_artifact_guard = if store == PersistBlobStore::Files {
             Some(
-                self.root_locks
-                    .lock_file_artifacts()
+                self.lock_file_artifact_write()
                     .map_err(|source| PersistBlobPackTrimError::FileArtifactIndex { source })?,
             )
         } else {
@@ -2930,8 +2955,7 @@ impl PersistCache {
         };
         let _parse_artifact_guard = if store == PersistBlobStore::Files {
             Some(
-                self.root_locks
-                    .lock_parse_artifacts()
+                self.lock_parse_artifact_write()
                     .map_err(|source| PersistBlobPackTrimError::ParseArtifactIndex { source })?,
             )
         } else {
@@ -3172,15 +3196,16 @@ impl PersistCache {
     ///
     /// This explicit maintenance operation builds a file-pack repack plan while
     /// holding the selected store's advisory lock file plus same-root file
-    /// store, file-artifact, and parse-artifact locks, stages a compacted file
-    /// pack plus relocated file blob, file-artifact, and parse-artifact
-    /// sidecars, then swaps them into place with best-effort rollback for
+    /// store lock plus file-artifact and parse-artifact advisory and same-root
+    /// locks, stages a compacted file pack plus relocated file blob,
+    /// file-artifact, and parse-artifact sidecars, then swaps them into place
+    /// with best-effort rollback for
     /// ordinary filesystem errors. It refuses to run while same-process pending
     /// non-indexed artifact roots exist because those callers still hold old
     /// pack locations that would become invalid after relocation. The cache is
     /// advisory: this operation is not crash-transactional, does not coordinate
-    /// with raw lower-level users or non-blob sidecar cross-process writers, and
-    /// does not apply the future full GC retention policy.
+    /// with raw lower-level users or cross-process pending artifact publication,
+    /// and does not apply the future full GC retention policy.
     ///
     /// # Errors
     ///
@@ -3194,12 +3219,10 @@ impl PersistCache {
     ) -> Result<PersistBlobPackRepackPlan, PersistFileBlobPackRepackError> {
         let (_advisory_guard, _file_guard) = self.lock_file_blob_pack_repack()?;
         let _file_artifact_guard = self
-            .root_locks
-            .lock_file_artifacts()
+            .lock_file_artifact_write()
             .map_err(|source| PersistFileBlobPackRepackError::FileArtifactIndex { source })?;
         let _parse_artifact_guard = self
-            .root_locks
-            .lock_parse_artifacts()
+            .lock_parse_artifact_write()
             .map_err(|source| PersistFileBlobPackRepackError::ParseArtifactIndex { source })?;
         let pending_roots = self
             .root_locks
@@ -3293,10 +3316,11 @@ impl PersistCache {
     /// [`Self::repack_value_blob_pack`] and then [`Self::repack_file_blob_pack`].
     /// It is sequential and non-transactional: if the file-pack repack fails,
     /// the value-pack repack may already be committed. Each pack repack holds
-    /// its selected store's advisory lock file. The method does not compact
-    /// unrelated sidecars, rebuild blob indexes from physical pack scans before
-    /// planning, coordinate raw lower-level users or non-blob sidecar
-    /// cross-process writers, or apply the future full GC retention policy.
+    /// its selected store's advisory lock file, and file-pack repack also holds
+    /// artifact-mapping advisory locks. The method does not compact unrelated
+    /// sidecars, rebuild blob indexes from physical pack scans before planning,
+    /// coordinate raw lower-level users or cross-process pending artifact
+    /// publication, or apply the future full GC retention policy.
     ///
     /// # Errors
     ///

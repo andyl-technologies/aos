@@ -46,6 +46,16 @@ impl PersistLayout {
         self.locks_dir().join(name)
     }
 
+    /// Returns the advisory lock path for file-artifact mapping writes.
+    pub fn file_artifact_lock_path(&self) -> PathBuf {
+        self.locks_dir().join("file-artifacts.lock")
+    }
+
+    /// Returns the advisory lock path for parse-artifact mapping writes.
+    pub fn parse_artifact_lock_path(&self) -> PathBuf {
+        self.locks_dir().join("parse-artifacts.lock")
+    }
+
     /// Returns the mutable node metadata directory.
     pub fn nodes_dir(&self) -> PathBuf {
         self.root.join("nodes")

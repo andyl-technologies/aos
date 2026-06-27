@@ -34,6 +34,14 @@ fn open_creates_versioned_layout() {
         layout.blob_store_lock_path(PersistBlobStore::Files),
         layout.locks_dir().join("files.lock")
     );
+    assert_eq!(
+        layout.file_artifact_lock_path(),
+        layout.locks_dir().join("file-artifacts.lock")
+    );
+    assert_eq!(
+        layout.parse_artifact_lock_path(),
+        layout.locks_dir().join("parse-artifacts.lock")
+    );
     assert!(layout.open_lock_path().is_file());
     assert_eq!(cache.value_pack().path(), layout.value_packfile_path());
     assert_eq!(cache.file_pack().path(), layout.file_packfile_path());
