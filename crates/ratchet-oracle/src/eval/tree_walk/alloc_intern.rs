@@ -733,7 +733,7 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?
         {
             ForceClaim::AlreadyForced(value) => {
-                self.lazy_identity_thunks.remove(&forced_payload);
+                self.unmark_lazy_identity_thunk_payload(forced_payload);
                 self.increment_thunk_cache_hits();
                 Ok(value)
             }
@@ -764,7 +764,7 @@ impl TreeWalk {
             let value = guard.finish(value).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
             })?;
-            self.lazy_identity_thunks.remove(&forced_payload);
+            self.unmark_lazy_identity_thunk_payload(forced_payload);
             return Ok(value);
         }
 
@@ -852,7 +852,7 @@ impl TreeWalk {
         let value = guard
             .finish(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
-        self.lazy_identity_thunks.remove(&forced_payload);
+        self.unmark_lazy_identity_thunk_payload(forced_payload);
         if let Some(subject) = &cache_subject {
             self.record_forced_expression_demand(subject);
         }

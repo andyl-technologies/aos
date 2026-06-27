@@ -317,6 +317,7 @@ impl TreeWalk {
                 Ok(Value::int(len))
             }
             StrictUnaryPrimOp::AttrNames => {
+                let value = self.force_lazy_foldl_initial_value(argument, argument_span, value)?;
                 if value.tag() != ValueTag::Attrs {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::Type {
@@ -372,6 +373,7 @@ impl TreeWalk {
                     })
             }
             StrictUnaryPrimOp::AttrValues => {
+                let value = self.force_lazy_foldl_initial_value(argument, argument_span, value)?;
                 if value.tag() != ValueTag::Attrs {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::Type {

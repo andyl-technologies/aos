@@ -241,6 +241,7 @@ impl TreeWalk {
         }
         let segments = self.attr_path_len(id, path_id, node.span)?;
         let mut current = self.eval_node(receiver)?;
+        current = self.force_lazy_foldl_initial_value(id, node.span, current)?;
         self.reject_empty_attr_path_len(id, path_id, node.span, segments)?;
 
         for index in 0..segments {
@@ -273,6 +274,7 @@ impl TreeWalk {
                 return Ok(Value::bool(true));
             }
             current = self.force_value(id, node.span, value)?;
+            current = self.force_lazy_foldl_initial_value(id, node.span, current)?;
         }
 
         Ok(Value::bool(false))

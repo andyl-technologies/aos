@@ -436,7 +436,7 @@ impl TreeWalk {
         let initial_span = self.node(initial_id)?.span;
         let mut accumulator = self.alloc_thunk_for_node(initial_id, initial_id, initial_span)?;
         if elements.is_empty() {
-            return self.eval_lazy_identity_value(initial_id, initial_span, accumulator);
+            return self.eval_lazy_foldl_initial_value(initial_id, initial_span, accumulator);
         }
         for element in elements {
             let step =

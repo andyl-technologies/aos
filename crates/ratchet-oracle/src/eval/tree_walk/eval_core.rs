@@ -147,6 +147,7 @@ impl TreeWalk {
             ifd_realizer: None,
             call_depth: 0,
             lazy_identity_thunks: BTreeSet::new(),
+            lazy_foldl_initial_thunks: BTreeSet::new(),
         }
     }
 
@@ -391,6 +392,18 @@ impl TreeWalk {
         }
     }
 
+    pub(super) fn unmark_lazy_identity_thunk_payload(&mut self, payload: u64) {
+        self.lazy_identity_thunks.remove(&payload);
+        self.lazy_foldl_initial_thunks.remove(&payload);
+    }
+
+    pub(super) fn mark_lazy_foldl_initial_thunk(&mut self, value: Value) {
+        self.mark_lazy_identity_thunk(value);
+        if value.is_thunk() {
+            self.lazy_foldl_initial_thunks.insert(value.payload_bits());
+        }
+    }
+
     pub(super) fn eval_lazy_identity_value(
         &mut self,
         id: IrId,
@@ -401,6 +414,19 @@ impl TreeWalk {
             return self.force_value(id, span, value);
         }
         self.mark_lazy_identity_thunk(value);
+        Ok(value)
+    }
+
+    pub(super) fn eval_lazy_foldl_initial_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if self.is_path_literal_thunk(id, span, value)? {
+            return self.force_value(id, span, value);
+        }
+        self.mark_lazy_foldl_initial_thunk(value);
         Ok(value)
     }
 
@@ -430,10 +456,27 @@ impl TreeWalk {
         value: Value,
     ) -> Result<bool, TreeWalkError> {
         if self.is_suspended_lazy_identity_thunk(id, span, value)? {
-            self.lazy_identity_thunks.remove(&value.payload_bits());
+            self.unmark_lazy_identity_thunk_payload(value.payload_bits());
             return Ok(true);
         }
         Ok(false)
+    }
+
+    pub(super) fn force_lazy_foldl_initial_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if self.is_suspended_lazy_identity_thunk(id, span, value)?
+            && self
+                .lazy_foldl_initial_thunks
+                .contains(&value.payload_bits())
+        {
+            self.unmark_lazy_identity_thunk_payload(value.payload_bits());
+            return self.force_value(id, span, value);
+        }
+        Ok(value)
     }
 
     pub(super) fn force_demanded_value(

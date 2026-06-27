@@ -138,6 +138,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
         let left = self.eval_node(lhs)?;
+        let left = self.force_lazy_foldl_initial_value(lhs, lhs_span, left)?;
         if left.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -157,6 +158,7 @@ impl TreeWalk {
 
         let rhs_span = self.node(rhs)?.span;
         let right = self.eval_node(rhs)?;
+        let right = self.force_lazy_foldl_initial_value(rhs, rhs_span, right)?;
         if right.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {

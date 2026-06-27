@@ -108,6 +108,7 @@ impl TreeWalk {
         if force_receiver {
             current = self.force_value(id, span, current)?;
         }
+        current = self.force_lazy_foldl_initial_value(id, span, current)?;
         for index in 0..segments {
             let segment = self.attr_path_segment(id, path_id, index, span)?;
             let key = self
@@ -154,6 +155,7 @@ impl TreeWalk {
                 return Ok(value);
             }
             current = self.force_value(id, span, value)?;
+            current = self.force_lazy_foldl_initial_value(id, span, current)?;
         }
 
         Err(TreeWalkError::new(

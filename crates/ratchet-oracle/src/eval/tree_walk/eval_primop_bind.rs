@@ -80,7 +80,7 @@ impl TreeWalk {
 
         let mut accumulator = initial_arg.value();
         if elements.is_empty() {
-            return self.eval_lazy_identity_value(
+            return self.eval_lazy_foldl_initial_value(
                 initial_arg.id(),
                 initial_arg.span(),
                 accumulator,

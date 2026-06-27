@@ -753,6 +753,9 @@ pub struct TreeWalk {
     call_depth: usize,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
+    // Empty-list foldl' returns keep the initial accumulator lazy, but attr consumers
+    // must still demand it when coercing to an attrset.
+    lazy_foldl_initial_thunks: BTreeSet<u64>,
 }
 
 /// The *derivation hash modulo* (`hashDerivationModulo`) of a derivation.

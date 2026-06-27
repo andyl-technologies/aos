@@ -418,6 +418,7 @@ impl TreeWalk {
         let key = self.eval_attr_name_primop_argument(name_id)?;
         let attrs_span = self.node(attrs_id)?.span;
         let attrs_value = self.eval_node(attrs_id)?;
+        let attrs_value = self.force_lazy_foldl_initial_value(attrs_id, attrs_span, attrs_value)?;
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -456,6 +457,7 @@ impl TreeWalk {
         let key = self.eval_attr_name_primop_argument(name_id)?;
         let attrs_span = self.node(attrs_id)?.span;
         let attrs_value = self.eval_node(attrs_id)?;
+        let attrs_value = self.force_lazy_foldl_initial_value(attrs_id, attrs_span, attrs_value)?;
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -503,6 +505,7 @@ impl TreeWalk {
         attrs_span: Span,
         attrs_value: Value,
     ) -> Result<Value, TreeWalkError> {
+        let attrs_value = self.force_lazy_foldl_initial_value(attrs_id, attrs_span, attrs_value)?;
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -628,6 +631,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let attrs_span = self.node(attrs_id)?.span;
         let attrs_value = self.eval_node(attrs_id)?;
+        let attrs_value = self.force_lazy_foldl_initial_value(attrs_id, attrs_span, attrs_value)?;
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -745,6 +749,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let left_span = self.node(left_id)?.span;
         let left_value = self.eval_node(left_id)?;
+        let left_value = self.force_lazy_foldl_initial_value(left_id, left_span, left_value)?;
         if left_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -758,6 +763,7 @@ impl TreeWalk {
 
         let right_span = self.node(right_id)?.span;
         let right_value = self.eval_node(right_id)?;
+        let right_value = self.force_lazy_foldl_initial_value(right_id, right_span, right_value)?;
         if right_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -835,6 +841,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let attrs_span = self.node(attrs_id)?.span;
         let attrs_value = self.eval_node(attrs_id)?;
+        let attrs_value = self.force_lazy_foldl_initial_value(attrs_id, attrs_span, attrs_value)?;
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
