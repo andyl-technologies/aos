@@ -69,10 +69,19 @@
       if builtins.isAttrs args && args ? specialArgs
       then args.specialArgs
       else {};
+    # RFC-0011 CS5 seam: the on-host resolver supplies the verified `host.nix`
+    # store path here as an operator-provenance module, so its bare defs are
+    # lifted to the reserved priority-75 band (see `lib/modules.nix`
+    # `operatorModules`). Defaults `[]` — no caller sets it yet, so every
+    # existing system evaluates identically.
+    operatorModules =
+      if builtins.isAttrs args && args ? operatorModules
+      then args.operatorModules
+      else [];
   in
     lib.evalModules {
       modules = modules ++ moduleList;
-      inherit pkgs lib specialArgs;
+      inherit pkgs lib specialArgs operatorModules;
     };
 
   # Auto-discover system definitions from ./systems/*.nix
