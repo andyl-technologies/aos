@@ -11,9 +11,11 @@ use crate::cache::{
 use crate::string::{ContextElement, StringContext};
 use crate::syntax::Span;
 use crate::value::Value;
+use ratchet_cache::file_lock::{AdvisoryFileLock, AdvisoryFileLockError, AdvisoryFileLockMode};
+use std::io::ErrorKind;
 use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 struct StaticRevalidator {
@@ -45,6 +47,26 @@ impl ImpureInputRevalidator for StaticRevalidator {
                 None
             }
         })
+    }
+}
+
+fn wait_until_advisory_try_lock_blocks(path: &std::path::Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match AdvisoryFileLock::try_lock(path, AdvisoryFileLockMode::Exclusive) {
+            Ok(lock) => drop(lock),
+            Err(AdvisoryFileLockError::Lock { source, .. })
+                if source.kind() == ErrorKind::WouldBlock =>
+            {
+                return;
+            }
+            Err(error) => panic!("advisory lock probe failed: {error}"),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "worker did not acquire advisory lock before the deadline"
+        );
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -3487,6 +3509,53 @@ fn cache_indexed_materialization_single_flights_independently_opened_cache_handl
             .as_slice(),
         payload.as_slice()
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_indexed_materialization_acquires_advisory_store_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+        .expect("value store lock acquires");
+    let payload = b"advisory indexed payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
+            .map(|materialization| {
+                matches!(materialization, PersistMaterialization::Materialized(_))
+            })
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("materialization result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(PersistBlobStore::Values));
+    drop(guard);
+
+    let materialized = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("indexed materialization completes after same-process lock release")
+        .expect("indexed materialization succeeds");
+    assert!(materialized);
+    handle.join().expect("worker joins");
+    assert!(
+        layout
+            .blob_store_lock_path(PersistBlobStore::Values)
+            .is_file()
+    );
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.blob_store_lock_path(PersistBlobStore::Values),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("indexed blob advisory lock releases after materialization");
+    drop(released_lock);
 
     let _ = fs::remove_dir_all(root);
 }

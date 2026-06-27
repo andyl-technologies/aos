@@ -1783,6 +1783,21 @@ impl PersistCache {
         }
     }
 
+    fn lock_indexed_blob_write(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistBlobIndexedWriteError> {
+        let path = self.layout.blob_store_lock_path(store);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Exclusive)
+            .map_err(|source| PersistBlobIndexedWriteError::AdvisoryWriteLock {
+                store,
+                path,
+                source,
+            })?;
+        let write_guard = self.root_locks.lock(store)?;
+        Ok((advisory_guard, write_guard))
+    }
+
     /// Appends a blob to the packfile selected by `key`.
     ///
     /// # Errors
@@ -3387,21 +3402,22 @@ impl PersistCache {
     /// This helper is explicit and non-transactional: if the pack append
     /// succeeds but the sidecar index write fails, the blob bytes remain in the
     /// pack without a corresponding durable index record. Same-process writers
-    /// opened on the same cache root share the selected store's blob-store
-    /// write lock while this method writes the pack and sidecar.
+    /// opened on the same cache root share the selected store's blob-store write
+    /// lock while this method writes the pack and sidecar; cooperating
+    /// cross-process writers share the selected store's advisory lock file.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobIndexedWriteError`] if the same-root blob-store
-    /// write lock is poisoned, if the selected packfile cannot append/verify
-    /// the payload, or if the selected sidecar index cannot write the resulting
-    /// hash-to-offset record.
+    /// Returns [`PersistBlobIndexedWriteError`] if the selected advisory lock
+    /// cannot be acquired, the same-root blob-store write lock is poisoned, if
+    /// the selected packfile cannot append/verify the payload, or if the
+    /// selected sidecar index cannot write the resulting hash-to-offset record.
     pub fn append_blob_indexed(
         &self,
         key: PersistBlobKey,
         payload: &[u8],
     ) -> Result<PersistBlobIndexEntry, PersistBlobIndexedWriteError> {
-        let _write_guard = self.root_locks.lock(key.store())?;
+        let (_advisory_guard, _write_guard) = self.lock_indexed_blob_write(key.store())?;
         self.append_blob_indexed_unlocked(key, payload)
     }
 
@@ -3455,7 +3471,7 @@ impl PersistCache {
     /// location is reused without appending duplicate bytes or index records.
     /// Missing, stale, mismatching, or unreadable indexed records append a fresh
     /// blob and record a newer sidecar entry while holding the selected store's
-    /// same-root write lock.
+    /// advisory and same-root write locks.
     ///
     /// This helper is explicit and non-transactional: if a fresh pack append
     /// succeeds but the sidecar index write fails, the blob bytes remain in the
@@ -3463,17 +3479,18 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobIndexedWriteError`] if the selected in-process
-    /// materialization lock is poisoned, if the selected packfile cannot append
-    /// or verify a fresh payload, or if the selected sidecar index cannot write
-    /// a fresh hash-to-offset record. A lookup failure falls back to the append
-    /// path so this helper preserves append-first failure semantics.
+    /// Returns [`PersistBlobIndexedWriteError`] if the selected advisory lock
+    /// cannot be acquired, the selected in-process materialization lock is
+    /// poisoned, if the selected packfile cannot append or verify a fresh
+    /// payload, or if the selected sidecar index cannot write a fresh
+    /// hash-to-offset record. A lookup failure falls back to the append path so
+    /// this helper preserves append-first failure semantics.
     pub fn ensure_blob_indexed(
         &self,
         key: PersistBlobKey,
         payload: &[u8],
     ) -> Result<PersistBlobIndexEntry, PersistBlobIndexedWriteError> {
-        let _write_guard = self.root_locks.lock(key.store())?;
+        let (_advisory_guard, _write_guard) = self.lock_indexed_blob_write(key.store())?;
         if let Ok(Some(location)) = self.lookup_blob_location(key) {
             let pack = self.blob_pack(key.store());
             if matches!(
@@ -3767,10 +3784,11 @@ impl PersistCache {
     ///
     /// Returns [`PersistBlobIndexedWriteError`] when `decision` is
     /// [`MaterializationDecision::Materialize`] and the selected in-process
-    /// materialization lock is poisoned, the selected packfile cannot
-    /// append/verify a fresh payload, or the selected sidecar index cannot
-    /// write a fresh hash-to-offset record. A sidecar lookup failure falls back
-    /// to the append path.
+    /// materialization advisory lock cannot be acquired, the selected
+    /// in-process materialization lock is poisoned, the selected packfile
+    /// cannot append/verify a fresh payload, or the selected sidecar index
+    /// cannot write a fresh hash-to-offset record. A sidecar lookup failure
+    /// falls back to the append path.
     pub fn materialize_blob_indexed(
         &self,
         key: PersistBlobKey,
@@ -3814,10 +3832,11 @@ impl PersistCache {
     ///
     /// Returns [`PersistBlobIndexedWriteError`] when the signals choose
     /// [`MaterializationDecision::Materialize`] and the selected in-process
-    /// materialization lock is poisoned, the selected packfile cannot
-    /// append/verify a fresh payload, or the selected sidecar index cannot
-    /// write a fresh hash-to-offset record. A sidecar lookup failure falls back
-    /// to the append path.
+    /// materialization advisory lock cannot be acquired, the selected
+    /// in-process materialization lock is poisoned, the selected packfile
+    /// cannot append/verify a fresh payload, or the selected sidecar index
+    /// cannot write a fresh hash-to-offset record. A sidecar lookup failure
+    /// falls back to the append path.
     pub fn materialize_blob_indexed_with_signals(
         &self,
         key: PersistBlobKey,

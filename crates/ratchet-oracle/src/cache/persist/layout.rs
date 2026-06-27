@@ -37,6 +37,15 @@ impl PersistLayout {
         self.locks_dir().join("open.lock")
     }
 
+    /// Returns the advisory lock path for indexed blob-store writes.
+    pub fn blob_store_lock_path(&self, store: PersistBlobStore) -> PathBuf {
+        let name = match store {
+            PersistBlobStore::Values => "values.lock",
+            PersistBlobStore::Files => "files.lock",
+        };
+        self.locks_dir().join(name)
+    }
+
     /// Returns the mutable node metadata directory.
     pub fn nodes_dir(&self) -> PathBuf {
         self.root.join("nodes")

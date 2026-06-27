@@ -1585,23 +1585,29 @@ alone (`M-1`/`Q-A`).
       durable filesystem locks/CAS, automatic compaction, GC/repack, mmap
       reads, LMDB/redb indexes, and loom/harness proof remain open
       (`C-13`/`R-4`/`R-14`).
-- [x] Current same-process same-root indexed materialization single-flight
+- [x] Current same-process plus advisory indexed materialization single-flight
       precursor: independently opened `PersistCache` handles in one process now
       store canonicalized layout paths and acquire their per-store blob
       materialization mutexes through `ratchet-cache::root_locks::CacheRootLocks`,
-      whose process-local weak registry is keyed by the canonical persistent
-      cache root. Simultaneous same-key materialization through separate opens
-      of the same root shares the same `ensure_blob_indexed` critical section.
+      whose process-local weak registry is keyed by the canonical persistent cache
+      root. Cache-level indexed blob writes (`ensure_blob_indexed`,
+      `append_blob_indexed`, and callers such as indexed materialization) first
+      acquire an exclusive `ratchet-cache::file_lock::AdvisoryFileLock` at
+      `.locks/values.lock` or `.locks/files.lock`, then acquire the same-process
+      store mutex while they write the pack and blob-index sidecar. Simultaneous
+      same-key materialization through separate opens of the same root shares the
+      same `ensure_blob_indexed` critical section, and cooperating cross-process
+      indexed blob writers share the same advisory file.
       The initially-missing case collapses to one fresh verified pack record and
-      newest sidecar entry for the selected store, public `append_blob` and
-      `append_blob_indexed` use the same lock for cache-level non-idempotent
-      appends, a poisoned same-root lock is mapped back into the existing oracle
-      error surface before any cache-level raw append or indexed append/index
-      write, and an opened symlink-root handle keeps writing the canonical
-      target it opened even if the symlink is retargeted.
-      Different roots, multi-process writers, two-machine misses, durable
-      filesystem locks/CAS, automatic compaction, GC/repack, mmap reads,
-      LMDB/redb indexes, and loom/harness proof remain open
+      newest sidecar entry for the selected store, public `append_blob` still
+      uses only the same-root lock for cache-level raw appends, poisoned same-root
+      locks are mapped back into the existing oracle error surface before any
+      cache-level indexed append/index write, and an opened symlink-root handle
+      keeps writing the canonical target it opened even if the symlink is
+      retargeted. Raw/lower-level `PersistBlobPack`/`PersistBlobIndex` users,
+      cache-level raw `append_blob`, maintenance writers, different roots,
+      two-machine misses, full filesystem-lock/CAS policy, automatic compaction,
+      GC/repack, mmap reads, LMDB/redb indexes, and loom/harness proof remain open
       (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process same-root blob-store maintenance lock precursor:
       cache-level blob-index compaction, blob-index rebuild, blob-pack tail
@@ -1690,11 +1696,13 @@ alone (`M-1`/`Q-A`).
       shared/exclusive locks, and releases the advisory lock when dropped. Unit
       coverage proves lock-file creation, shared/shared compatibility,
       shared/exclusive and exclusive/exclusive nonblocking rejection, and
-      drop-time release; oracle root open now uses it for `.locks/open.lock`.
-      This is filesystem-lock substrate plus open-initialization use only:
-      pack/index writers, broader same-root lock ordering, mmap read leases, CAS
-      protocols, mandatory locking, raw-writer enforcement, two-machine races,
-      and loom/harness proof remain open (`R-4`/`R-14`).
+      drop-time release; oracle root open now uses it for `.locks/open.lock`, and
+      cache-level indexed blob writes use it for `.locks/values.lock` and
+      `.locks/files.lock`. This is filesystem-lock substrate plus
+      open-initialization and indexed-blob-write use only: raw/lower-level
+      pack/index writers, cache-level raw appends, maintenance writers, mmap
+      read leases, CAS protocols, mandatory locking, raw-writer enforcement,
+      two-machine races, and loom/harness proof remain open (`R-4`/`R-14`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and

@@ -1157,6 +1157,18 @@ pub enum PersistBlobIndexedWriteError {
         /// The blob namespace whose lock could not be acquired.
         store: PersistBlobStore,
     },
+    /// The advisory materialization lock could not be acquired.
+    #[error(
+        "failed to acquire persistent indexed blob write advisory lock for {store:?} at {path}"
+    )]
+    AdvisoryWriteLock {
+        /// The selected blob store.
+        store: PersistBlobStore,
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The blob could not be appended to its selected packfile.
     #[error("failed to append indexed persistent blob")]
     Append {
