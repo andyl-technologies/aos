@@ -12,9 +12,10 @@
 //! Module map: [`model`] owns the content-addressed execution vocabulary,
 //! [`decision`] owns seeded decision recording, [`io_subnode`] owns the
 //! deterministic I/O sub-node lifecycle, [`block_subnode`] owns the block
-//! copy-on-write overlay, [`backend`] owns the VM backend boundary,
-//! [`scheduler`] owns the quantum-loop boundary, and `sim_backend` provides the
-//! gated in-process test double.
+//! copy-on-write overlay, [`ninep_subnode`] owns the deterministic 9p served
+//! tree, [`backend`] owns the VM backend boundary, [`scheduler`] owns the
+//! quantum-loop boundary, and `sim_backend` provides the gated in-process test
+//! double.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -25,6 +26,7 @@ pub mod block_subnode;
 pub mod decision;
 pub mod io_subnode;
 pub mod model;
+pub mod ninep_subnode;
 pub mod scheduler;
 #[cfg(feature = "test-double")]
 mod sim_backend;
@@ -71,6 +73,13 @@ pub use model::{
     TimerState, TopologyShape, TopologySizeRange, VcpuId, VirtualInstant, VirtualTime,
     VmArchitecture, VmSnapshotRef, WhiteBoxPolicy, World, WorldLookaheadEdge, WorldNode,
     WorldStaticTopology, bake, instantiate, reduce, step,
+};
+pub use ninep_subnode::{
+    NINEP_BLOCK_COUNT_UNIT, NINEP_DEFAULT_MAXIMUM_MSIZE, NINEP_FIXED_BLOCK_SIZE,
+    NINEP_FIXED_EPOCH_SECONDS, NINEP_FIXED_GID, NINEP_FIXED_NAME_MAX, NINEP_FIXED_QID_VERSION,
+    NINEP_FIXED_UID, NINEP_PROTOCOL_VERSION, NinePAttributes, NinePDirectoryEntry,
+    NinePEntryContent, NinePEntryKind, NinePQid, NinePServedEntry, NinePServedTree,
+    NinePServerError, NinePStatFs, NinePVersionNegotiation,
 };
 #[cfg(feature = "test-double")]
 pub use scheduler::SchedulerRunCeilingHandoffError;

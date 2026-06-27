@@ -792,11 +792,18 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   state with in-flight responses normalized to deterministic order.
   `materialize_image` writes base bytes and then every live overlay page into a
   standalone raw image without mutating the immutable base.
-- [ ] **T-IO-6** Implement the read-only 9P2000.L server with path-hashed QIDs
+- [x] **T-IO-6** Implement the read-only 9P2000.L server with path-hashed QIDs
   (not host inodes), fixed QID version, sorted directory enumeration, and fixed/
   content-derived getattr/statfs attributes; negotiate fixed version +
   deterministic msize. — satisfies [IO-13], [IO-14], [IO-15], [IO-16]; spec
   §15.3.1.
+  Completed by `checks.crucible.phase3.ninePSubnodeServer`.
+  `NinePServedTree` is an in-memory read-only 9P2000.L served-tree model with
+  QID `path` values derived from a stable hash of the path within the served
+  tree, fixed `NINEP_FIXED_QID_VERSION`, and no host inode, filesystem metadata, timestamp, uid/gid, or directory iteration input. `readdir` sorts child names lexicographically and assigns offsets after sorting; repeated enumeration is
+  byte-identical. `getattr` and `statfs` return fixed or content-derived
+  attributes, including fixed epoch/root uid/root gid/block size, no advertised write permission bits, and 512-byte size-derived block counts. `statfs.fsid` derives from served-tree content and ignores negotiation msize. Version negotiation accepts only `9P2000.L` and deterministically
+  chooses `msize = min(client_msize, server_maximum_msize)`.
 - [ ] **T-IO-7** Implement the 9p read/traverse message set, the EROFS boundary
   for all mutating messages, ENOSYS/EINVAL handling, msize enforcement, and
   deterministic fid-state management with snapshot/restore. — satisfies [IO-17],

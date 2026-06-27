@@ -505,6 +505,11 @@ in {
       attrPath = "checks.crucible.phase3.blockSnapshotRestore";
       taskIds = ["T-IO-5"];
     };
+    ninePSubnodeServer = import ./phase3-ninep-subnode-server.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.ninePSubnodeServer";
+      taskIds = ["T-IO-6"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
