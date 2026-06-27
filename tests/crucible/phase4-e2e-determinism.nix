@@ -79,8 +79,40 @@
         needle = "quorum-witness";
       }
       {
+        label = "I/O sub-node schema";
+        needle = "pub struct E2eIoSubnode";
+      }
+      {
+        label = "fault kind schema";
+        needle = "pub enum E2eFaultKind";
+      }
+      {
+        label = "property kind schema";
+        needle = "pub enum E2ePropertyKind";
+      }
+      {
+        label = "block I/O sub-node";
+        needle = "server-block";
+      }
+      {
+        label = "9p I/O sub-node";
+        needle = "server-9p";
+      }
+      {
         label = "fault-injected scenario";
         needle = "partition-client-server";
+      }
+      {
+        label = "loss fault";
+        needle = "loss-server-witness";
+      }
+      {
+        label = "latency fault";
+        needle = "latency-client-server";
+      }
+      {
+        label = "crash fault";
+        needle = "crash-server";
       }
       {
         label = "mock e2e gate runner";
@@ -111,6 +143,18 @@
         needle = "ReproductionMismatch";
       }
       {
+        label = "missing I/O completion rejection";
+        needle = "MissingIoCompletion";
+      }
+      {
+        label = "failed always-property rejection";
+        needle = "FailedAlwaysProperty";
+      }
+      {
+        label = "different profile includes load";
+        needle = "candidate.load != baseline.load";
+      }
+      {
         label = "length-prefixed canonical encoder";
         needle = "fn length_prefixed";
       }
@@ -129,8 +173,28 @@
         needle = "gate_e2e_determinism_rejects_non_fault_injected_scenario";
       }
       {
+        label = "I/O sub-node negative test";
+        needle = "gate_e2e_determinism_rejects_scenario_without_io_subnodes";
+      }
+      {
+        label = "unused I/O sub-node negative test";
+        needle = "gate_e2e_determinism_rejects_unused_io_subnodes";
+      }
+      {
         label = "fault target negative test";
         needle = "gate_e2e_determinism_rejects_unknown_fault_target";
+      }
+      {
+        label = "property observation negative test";
+        needle = "gate_e2e_determinism_rejects_missing_property_observation";
+      }
+      {
+        label = "always property false observation negative test";
+        needle = "gate_e2e_determinism_rejects_false_always_property_observation";
+      }
+      {
+        label = "scheduling-only machine profile positive test";
+        needle = "gate_e2e_determinism_accepts_machine_profile_that_changes_only_scheduling";
       }
       {
         label = "schedule drift negative test";

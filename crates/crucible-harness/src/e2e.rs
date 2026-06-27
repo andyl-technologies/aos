@@ -24,6 +24,17 @@ pub struct E2eNode {
     pub role: String,
 }
 
+/// An I/O sub-node attached to a VM node in a mock e2e scenario.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct E2eIoSubnode {
+    /// Stable I/O sub-node name.
+    pub name: String,
+    /// VM node that owns the sub-node.
+    pub attached_to: String,
+    /// Sub-node family such as `blk` or `9p`.
+    pub kind: String,
+}
+
 /// A directed network link in a mock e2e scenario.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct E2eLink {
@@ -37,17 +48,75 @@ pub struct E2eLink {
     pub latency_ticks: u64,
 }
 
+/// A representative fault class in a mock e2e scenario.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum E2eFaultKind {
+    /// A connectivity partition fault.
+    Partition,
+    /// A packet or operation loss fault.
+    Loss,
+    /// A latency injection fault.
+    Latency,
+    /// A node or sub-node crash fault.
+    Crash,
+}
+
+impl E2eFaultKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Partition => "partition",
+            Self::Loss => "loss",
+            Self::Latency => "latency",
+            Self::Crash => "crash",
+        }
+    }
+}
+
 /// A deterministic fault available to a mock e2e scenario.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct E2eFault {
     /// Stable fault name.
     pub name: String,
+    /// Fault class represented by the fault.
+    pub kind: E2eFaultKind,
     /// Link or node affected by the fault.
     pub target: String,
     /// Virtual tick at which the fault is eligible.
     pub at_tick: u64,
     /// Canonical action description.
     pub action: String,
+}
+
+/// A property assertion class in a mock e2e scenario.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum E2ePropertyKind {
+    /// A property that must hold for the whole run.
+    Always,
+    /// A property that must eventually become true.
+    Eventually,
+    /// A property that must be true at least once.
+    Sometimes,
+}
+
+impl E2ePropertyKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Eventually => "eventually",
+            Self::Sometimes => "sometimes",
+        }
+    }
+}
+
+/// A property assertion in a mock e2e scenario.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct E2eProperty {
+    /// Stable property name.
+    pub name: String,
+    /// Assertion class represented by the property.
+    pub kind: E2ePropertyKind,
+    /// Canonical subject or predicate description.
+    pub subject: String,
 }
 
 /// A representative mock e2e scenario.
@@ -57,10 +126,14 @@ pub struct E2eScenario {
     pub name: String,
     /// VM nodes participating in the run.
     pub nodes: Vec<E2eNode>,
+    /// I/O sub-nodes participating in the run.
+    pub io_subnodes: Vec<E2eIoSubnode>,
     /// Directed links between nodes.
     pub links: Vec<E2eLink>,
     /// Faults that can be injected into the run.
     pub faults: Vec<E2eFault>,
+    /// Property assertions checked against the canonical log.
+    pub properties: Vec<E2eProperty>,
 }
 
 /// One recorded mock e2e schedule decision.
@@ -96,6 +169,26 @@ pub enum E2eDecision {
         request_id: u64,
         /// Recorded random value.
         value: u64,
+    },
+    /// A deterministic I/O completion from a sub-node.
+    IoCompletion {
+        /// Virtual tick at which the I/O completion is observed.
+        at_tick: u64,
+        /// I/O sub-node that completed the request.
+        subnode: String,
+        /// Stable request id.
+        request_id: u64,
+        /// Deterministic completed byte count.
+        bytes: u64,
+    },
+    /// A property observation recorded into the canonical event log.
+    PropertyObservation {
+        /// Virtual tick at which the property was observed.
+        at_tick: u64,
+        /// Property name.
+        property: String,
+        /// Whether the property was satisfied by this observation.
+        satisfied: bool,
     },
 }
 
@@ -164,6 +257,8 @@ pub struct E2eGateReport {
     pub runs: Vec<E2eRun>,
     /// Replayed run reconstructed directly from the artifact.
     pub reproduced: E2eRun,
+    /// Artifact replays executed on different machine profiles.
+    pub cross_machine_reproductions: Vec<E2eRun>,
 }
 
 /// A mock e2e gate failure.
@@ -182,6 +277,47 @@ pub enum E2eGateError {
     MissingFault {
         /// Scenario name.
         scenario: String,
+    },
+    /// The scenario does not include any I/O sub-node.
+    MissingIoSubnode {
+        /// Scenario name.
+        scenario: String,
+    },
+    /// The schedule contains no I/O completion decision.
+    MissingIoCompletion {
+        /// Scenario name.
+        scenario: String,
+    },
+    /// The scenario does not include a required fault class.
+    MissingFaultKind {
+        /// Scenario name.
+        scenario: String,
+        /// Missing fault class.
+        kind: E2eFaultKind,
+    },
+    /// The schedule does not fire a required fault class.
+    MissingFiredFaultKind {
+        /// Scenario name.
+        scenario: String,
+        /// Missing fired fault class.
+        kind: E2eFaultKind,
+    },
+    /// The scenario does not include a required property class.
+    MissingPropertyKind {
+        /// Scenario name.
+        scenario: String,
+        /// Missing property class.
+        kind: E2ePropertyKind,
+    },
+    /// A property did not have a satisfied observation.
+    MissingSatisfiedProperty {
+        /// Property name.
+        property: String,
+    },
+    /// An always property had a false observation.
+    FailedAlwaysProperty {
+        /// Property name.
+        property: String,
     },
     /// The schedule contains no fired fault decision.
     MissingFiredFaultDecision {
@@ -202,15 +338,32 @@ pub enum E2eGateError {
         /// Missing target name.
         target: String,
     },
+    /// An I/O sub-node references a node absent from the scenario.
+    UnknownIoAttachment {
+        /// I/O sub-node name.
+        subnode: String,
+        /// Missing node name.
+        node: String,
+    },
     /// A schedule decision references a node absent from the scenario.
     UnknownDecisionNode {
         /// Missing node name.
         node: String,
     },
+    /// A schedule decision references an I/O sub-node absent from the scenario.
+    UnknownDecisionIoSubnode {
+        /// Missing I/O sub-node name.
+        subnode: String,
+    },
     /// A schedule decision references a fault absent from the scenario.
     UnknownDecisionFault {
         /// Missing fault name.
         fault: String,
+    },
+    /// A schedule decision references a property absent from the scenario.
+    UnknownDecisionProperty {
+        /// Missing property name.
+        property: String,
     },
     /// The reproduction artifact was produced by a different build identity.
     BuildIdentityMismatch {
@@ -223,6 +376,8 @@ pub enum E2eGateError {
     HostAdversary(HostAdversaryError),
     /// Runs diverged under adversarial host profiles.
     AdversarialComparison(AdversarialComparisonError),
+    /// No supplied profile represented a different machine from the baseline.
+    MissingDifferentMachineProfile,
     /// Replaying the artifact did not match the baseline run.
     ReproductionMismatch {
         /// Baseline final fingerprint bytes.
@@ -246,6 +401,36 @@ impl fmt::Display for E2eGateError {
             Self::MissingFault { scenario } => {
                 write!(formatter, "e2e scenario `{scenario}` has no fault")
             }
+            Self::MissingIoSubnode { scenario } => {
+                write!(formatter, "e2e scenario `{scenario}` has no I/O sub-node")
+            }
+            Self::MissingIoCompletion { scenario } => write!(
+                formatter,
+                "e2e scenario `{scenario}` schedule has no I/O completion"
+            ),
+            Self::MissingFaultKind { scenario, kind } => write!(
+                formatter,
+                "e2e scenario `{scenario}` is missing `{}` fault coverage",
+                kind.as_str()
+            ),
+            Self::MissingFiredFaultKind { scenario, kind } => write!(
+                formatter,
+                "e2e scenario `{scenario}` schedule does not fire `{}` fault coverage",
+                kind.as_str()
+            ),
+            Self::MissingPropertyKind { scenario, kind } => write!(
+                formatter,
+                "e2e scenario `{scenario}` is missing `{}` property coverage",
+                kind.as_str()
+            ),
+            Self::MissingSatisfiedProperty { property } => write!(
+                formatter,
+                "e2e property `{property}` has no satisfied observation"
+            ),
+            Self::FailedAlwaysProperty { property } => write!(
+                formatter,
+                "e2e always property `{property}` has an unsatisfied observation"
+            ),
             Self::MissingFiredFaultDecision { scenario } => write!(
                 formatter,
                 "e2e scenario `{scenario}` schedule has no fired fault decision"
@@ -262,12 +447,26 @@ impl fmt::Display for E2eGateError {
                     "e2e fault `{fault}` references unknown target `{target}`"
                 )
             }
+            Self::UnknownIoAttachment { subnode, node } => {
+                write!(
+                    formatter,
+                    "e2e I/O sub-node `{subnode}` references unknown node `{node}`"
+                )
+            }
             Self::UnknownDecisionNode { node } => {
                 write!(formatter, "e2e schedule references unknown node `{node}`")
             }
+            Self::UnknownDecisionIoSubnode { subnode } => write!(
+                formatter,
+                "e2e schedule references unknown I/O sub-node `{subnode}`"
+            ),
             Self::UnknownDecisionFault { fault } => {
                 write!(formatter, "e2e schedule references unknown fault `{fault}`")
             }
+            Self::UnknownDecisionProperty { property } => write!(
+                formatter,
+                "e2e schedule references unknown property `{property}`"
+            ),
             Self::BuildIdentityMismatch { expected, actual } => write!(
                 formatter,
                 "e2e artifact build identity mismatch: expected {:?}, got {:?}",
@@ -275,6 +474,10 @@ impl fmt::Display for E2eGateError {
             ),
             Self::HostAdversary(error) => write!(formatter, "{error}"),
             Self::AdversarialComparison(error) => write!(formatter, "{error}"),
+            Self::MissingDifferentMachineProfile => write!(
+                formatter,
+                "e2e gate requires at least one different machine reproduction profile"
+            ),
             Self::ReproductionMismatch {
                 baseline,
                 reproduced,
@@ -333,6 +536,18 @@ pub fn representative_mock_e2e_artifact() -> E2eReproductionArtifact {
                     role: String::from("quorum-witness"),
                 },
             ],
+            io_subnodes: vec![
+                E2eIoSubnode {
+                    name: String::from("server-block"),
+                    attached_to: String::from("server"),
+                    kind: String::from("blk"),
+                },
+                E2eIoSubnode {
+                    name: String::from("server-9p"),
+                    attached_to: String::from("server"),
+                    kind: String::from("9p"),
+                },
+            ],
             links: vec![
                 E2eLink {
                     name: String::from("client-server"),
@@ -347,12 +562,53 @@ pub fn representative_mock_e2e_artifact() -> E2eReproductionArtifact {
                     latency_ticks: 11,
                 },
             ],
-            faults: vec![E2eFault {
-                name: String::from("partition-client-server"),
-                target: String::from("client-server"),
-                at_tick: 20,
-                action: String::from("drop-link"),
-            }],
+            faults: vec![
+                E2eFault {
+                    name: String::from("partition-client-server"),
+                    kind: E2eFaultKind::Partition,
+                    target: String::from("client-server"),
+                    at_tick: 20,
+                    action: String::from("drop-link"),
+                },
+                E2eFault {
+                    name: String::from("loss-server-witness"),
+                    kind: E2eFaultKind::Loss,
+                    target: String::from("server-witness"),
+                    at_tick: 22,
+                    action: String::from("drop-next-frame"),
+                },
+                E2eFault {
+                    name: String::from("latency-client-server"),
+                    kind: E2eFaultKind::Latency,
+                    target: String::from("client-server"),
+                    at_tick: 24,
+                    action: String::from("delay-13-ticks"),
+                },
+                E2eFault {
+                    name: String::from("crash-server"),
+                    kind: E2eFaultKind::Crash,
+                    target: String::from("server"),
+                    at_tick: 26,
+                    action: String::from("crash-and-restart"),
+                },
+            ],
+            properties: vec![
+                E2eProperty {
+                    name: String::from("no-past-delivery"),
+                    kind: E2ePropertyKind::Always,
+                    subject: String::from("deliveries occur at assigned virtual ticks"),
+                },
+                E2eProperty {
+                    name: String::from("partition-recovers"),
+                    kind: E2ePropertyKind::Eventually,
+                    subject: String::from("client-server traffic resumes after partition"),
+                },
+                E2eProperty {
+                    name: String::from("loss-observed"),
+                    kind: E2ePropertyKind::Sometimes,
+                    subject: String::from("loss fault affects at least one delivery"),
+                },
+            ],
         },
         schedule: E2eSchedule {
             decisions: vec![
@@ -362,9 +618,30 @@ pub fn representative_mock_e2e_artifact() -> E2eReproductionArtifact {
                     to: String::from("server"),
                     sequence: 1,
                 },
+                E2eDecision::IoCompletion {
+                    at_tick: 13,
+                    subnode: String::from("server-block"),
+                    request_id: 1,
+                    bytes: 4096,
+                },
                 E2eDecision::Fault {
                     at_tick: 20,
                     fault: String::from("partition-client-server"),
+                    fired: true,
+                },
+                E2eDecision::Fault {
+                    at_tick: 22,
+                    fault: String::from("loss-server-witness"),
+                    fired: true,
+                },
+                E2eDecision::Fault {
+                    at_tick: 24,
+                    fault: String::from("latency-client-server"),
+                    fired: true,
+                },
+                E2eDecision::Fault {
+                    at_tick: 26,
+                    fault: String::from("crash-server"),
                     fired: true,
                 },
                 E2eDecision::Deliver {
@@ -378,6 +655,27 @@ pub fn representative_mock_e2e_artifact() -> E2eReproductionArtifact {
                     stream: String::from("request-id"),
                     request_id: 3,
                     value: 0x00c0_ffee,
+                },
+                E2eDecision::IoCompletion {
+                    at_tick: 37,
+                    subnode: String::from("server-9p"),
+                    request_id: 2,
+                    bytes: 128,
+                },
+                E2eDecision::PropertyObservation {
+                    at_tick: 39,
+                    property: String::from("no-past-delivery"),
+                    satisfied: true,
+                },
+                E2eDecision::PropertyObservation {
+                    at_tick: 43,
+                    property: String::from("partition-recovers"),
+                    satisfied: true,
+                },
+                E2eDecision::PropertyObservation {
+                    at_tick: 47,
+                    property: String::from("loss-observed"),
+                    satisfied: true,
                 },
             ],
         },
@@ -436,7 +734,34 @@ pub fn run_mock_e2e_determinism_gate(
         });
     }
 
-    Ok(E2eGateReport { runs, reproduced })
+    let baseline_profile = profiles[0];
+    let mut cross_machine_reproductions = Vec::new();
+    for profile in profiles
+        .iter()
+        .copied()
+        .filter(|profile| is_different_machine_profile(baseline_profile, *profile))
+    {
+        let reproduced_on_profile =
+            reproduce_mock_e2e_artifact_on_profile(artifact, profile, expected_build_identity)?;
+        if reproduced_on_profile.canonical_log != baseline.canonical_log
+            || reproduced_on_profile.final_fingerprint != baseline.final_fingerprint
+        {
+            return Err(E2eGateError::ReproductionMismatch {
+                baseline: baseline.final_fingerprint.clone(),
+                reproduced: reproduced_on_profile.final_fingerprint,
+            });
+        }
+        cross_machine_reproductions.push(reproduced_on_profile);
+    }
+    if cross_machine_reproductions.is_empty() {
+        return Err(E2eGateError::MissingDifferentMachineProfile);
+    }
+
+    Ok(E2eGateReport {
+        runs,
+        reproduced,
+        cross_machine_reproductions,
+    })
 }
 
 /// Replays a mock e2e reproduction artifact under the quiet baseline profile.
@@ -454,6 +779,20 @@ pub fn reproduce_mock_e2e_artifact(
         HostAdversaryProfile::quiet_single_core(),
         expected_build_identity,
     )
+}
+
+/// Replays a mock e2e reproduction artifact under the supplied host profile.
+///
+/// # Errors
+///
+/// Returns [`E2eGateError`] if the artifact is malformed, its build identity
+/// does not match the expected identity, or the host-adversary fixture fails.
+pub fn reproduce_mock_e2e_artifact_on_profile(
+    artifact: &E2eReproductionArtifact,
+    profile: HostAdversaryProfile,
+    expected_build_identity: &E2eBuildIdentity,
+) -> Result<E2eRun, E2eGateError> {
+    run_mock_e2e_once(artifact, profile, expected_build_identity)
 }
 
 fn run_mock_e2e_once(
@@ -486,6 +825,17 @@ fn run_mock_e2e_once(
     })
 }
 
+fn is_different_machine_profile(
+    baseline: HostAdversaryProfile,
+    candidate: HostAdversaryProfile,
+) -> bool {
+    candidate.worker_count != baseline.worker_count
+        || candidate.task_order != baseline.task_order
+        || candidate.affinity != baseline.affinity
+        || candidate.load != baseline.load
+        || candidate.producer_consumer_skew != baseline.producer_consumer_skew
+}
+
 impl E2eReproductionArtifact {
     fn validate(&self, expected_build_identity: &E2eBuildIdentity) -> Result<(), E2eGateError> {
         if &self.build_identity != expected_build_identity {
@@ -505,6 +855,21 @@ impl E2eReproductionArtifact {
                 scenario: self.scenario.name.clone(),
             });
         }
+        if self.scenario.io_subnodes.is_empty() {
+            return Err(E2eGateError::MissingIoSubnode {
+                scenario: self.scenario.name.clone(),
+            });
+        }
+        if !self
+            .schedule
+            .decisions
+            .iter()
+            .any(|decision| matches!(decision, E2eDecision::IoCompletion { .. }))
+        {
+            return Err(E2eGateError::MissingIoCompletion {
+                scenario: self.scenario.name.clone(),
+            });
+        }
         if !self
             .schedule
             .decisions
@@ -515,6 +880,55 @@ impl E2eReproductionArtifact {
                 scenario: self.scenario.name.clone(),
             });
         }
+        for required_kind in [
+            E2eFaultKind::Partition,
+            E2eFaultKind::Loss,
+            E2eFaultKind::Latency,
+            E2eFaultKind::Crash,
+        ] {
+            if !self
+                .scenario
+                .faults
+                .iter()
+                .any(|fault| fault.kind == required_kind)
+            {
+                return Err(E2eGateError::MissingFaultKind {
+                    scenario: self.scenario.name.clone(),
+                    kind: required_kind,
+                });
+            }
+            if !self.schedule.decisions.iter().any(|decision| {
+                let E2eDecision::Fault { fault, fired, .. } = decision else {
+                    return false;
+                };
+                *fired
+                    && self.scenario.faults.iter().any(|candidate| {
+                        candidate.name == *fault && candidate.kind == required_kind
+                    })
+            }) {
+                return Err(E2eGateError::MissingFiredFaultKind {
+                    scenario: self.scenario.name.clone(),
+                    kind: required_kind,
+                });
+            }
+        }
+        for required_kind in [
+            E2ePropertyKind::Always,
+            E2ePropertyKind::Eventually,
+            E2ePropertyKind::Sometimes,
+        ] {
+            if !self
+                .scenario
+                .properties
+                .iter()
+                .any(|property| property.kind == required_kind)
+            {
+                return Err(E2eGateError::MissingPropertyKind {
+                    scenario: self.scenario.name.clone(),
+                    kind: required_kind,
+                });
+            }
+        }
 
         let node_names = self
             .scenario
@@ -522,11 +936,23 @@ impl E2eReproductionArtifact {
             .iter()
             .map(|node| node.name.as_str())
             .collect::<Vec<_>>();
+        let io_names = self
+            .scenario
+            .io_subnodes
+            .iter()
+            .map(|io_subnode| io_subnode.name.as_str())
+            .collect::<Vec<_>>();
         let fault_names = self
             .scenario
             .faults
             .iter()
             .map(|fault| fault.name.as_str())
+            .collect::<Vec<_>>();
+        let property_names = self
+            .scenario
+            .properties
+            .iter()
+            .map(|property| property.name.as_str())
             .collect::<Vec<_>>();
         let link_names = self
             .scenario
@@ -549,9 +975,18 @@ impl E2eReproductionArtifact {
                 });
             }
         }
+        for io_subnode in &self.scenario.io_subnodes {
+            if !node_names.contains(&io_subnode.attached_to.as_str()) {
+                return Err(E2eGateError::UnknownIoAttachment {
+                    subnode: io_subnode.name.clone(),
+                    node: io_subnode.attached_to.clone(),
+                });
+            }
+        }
         for fault in &self.scenario.faults {
             if !node_names.contains(&fault.target.as_str())
                 && !link_names.contains(&fault.target.as_str())
+                && !io_names.contains(&fault.target.as_str())
             {
                 return Err(E2eGateError::UnknownFaultTarget {
                     fault: fault.name.clone(),
@@ -582,6 +1017,52 @@ impl E2eReproductionArtifact {
                         return Err(E2eGateError::UnknownDecisionNode { node: node.clone() });
                     }
                 }
+                E2eDecision::IoCompletion { subnode, .. } => {
+                    if !io_names.contains(&subnode.as_str()) {
+                        return Err(E2eGateError::UnknownDecisionIoSubnode {
+                            subnode: subnode.clone(),
+                        });
+                    }
+                }
+                E2eDecision::PropertyObservation { property, .. } => {
+                    if !property_names.contains(&property.as_str()) {
+                        return Err(E2eGateError::UnknownDecisionProperty {
+                            property: property.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        for property in &self.scenario.properties {
+            if property.kind == E2ePropertyKind::Always
+                && self.schedule.decisions.iter().any(|decision| {
+                    matches!(
+                        decision,
+                        E2eDecision::PropertyObservation {
+                            property: observed,
+                            satisfied: false,
+                            ..
+                        } if observed == &property.name
+                    )
+                })
+            {
+                return Err(E2eGateError::FailedAlwaysProperty {
+                    property: property.name.clone(),
+                });
+            }
+            if !self.schedule.decisions.iter().any(|decision| {
+                matches!(
+                    decision,
+                    E2eDecision::PropertyObservation {
+                        property: observed,
+                        satisfied: true,
+                        ..
+                    } if observed == &property.name
+                )
+            }) {
+                return Err(E2eGateError::MissingSatisfiedProperty {
+                    property: property.name.clone(),
+                });
             }
         }
 
@@ -609,6 +1090,16 @@ impl E2eReproductionArtifact {
                 ],
             );
         }
+        for io_subnode in &self.scenario.io_subnodes {
+            material.record(
+                "io-subnode",
+                &[
+                    CanonicalField::Str(&io_subnode.name),
+                    CanonicalField::Str(&io_subnode.attached_to),
+                    CanonicalField::Str(&io_subnode.kind),
+                ],
+            );
+        }
         for link in &self.scenario.links {
             material.record(
                 "link",
@@ -625,9 +1116,20 @@ impl E2eReproductionArtifact {
                 "fault",
                 &[
                     CanonicalField::Str(&fault.name),
+                    CanonicalField::Str(fault.kind.as_str()),
                     CanonicalField::Str(&fault.target),
                     CanonicalField::U64(fault.at_tick),
                     CanonicalField::Str(&fault.action),
+                ],
+            );
+        }
+        for property in &self.scenario.properties {
+            material.record(
+                "property",
+                &[
+                    CanonicalField::Str(&property.name),
+                    CanonicalField::Str(property.kind.as_str()),
+                    CanonicalField::Str(&property.subject),
                 ],
             );
         }
@@ -701,6 +1203,32 @@ fn push_decision_record(material: &mut CanonicalMaterial, decision: &E2eDecision
                 CanonicalField::Str(stream),
                 CanonicalField::U64(*request_id),
                 CanonicalField::U64(*value),
+            ],
+        ),
+        E2eDecision::IoCompletion {
+            at_tick,
+            subnode,
+            request_id,
+            bytes,
+        } => material.record(
+            "decision.io-completion",
+            &[
+                CanonicalField::U64(*at_tick),
+                CanonicalField::Str(subnode),
+                CanonicalField::U64(*request_id),
+                CanonicalField::U64(*bytes),
+            ],
+        ),
+        E2eDecision::PropertyObservation {
+            at_tick,
+            property,
+            satisfied,
+        } => material.record(
+            "decision.property",
+            &[
+                CanonicalField::U64(*at_tick),
+                CanonicalField::Str(property),
+                CanonicalField::Bool(*satisfied),
             ],
         ),
     }
