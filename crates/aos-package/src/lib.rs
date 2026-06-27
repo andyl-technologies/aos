@@ -52,6 +52,7 @@ pub(crate) mod credential;
 pub(crate) mod credential_artifact;
 pub mod config_eval;
 pub mod deps;
+pub mod graph_compile;
 pub mod desired;
 pub mod download;
 pub(crate) mod ebpf_lsm;
@@ -517,6 +518,61 @@ pub enum PackageCommand {
         /// The eval root holding entry.nix
         #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
         eval_root: PathBuf,
+    },
+    /// Materialize one package's pinned NAR closure into the store (RFC-0011).
+    ///
+    /// Backs the `aos-pkg-fetch@.service` template's `ExecStart=`. Reads the
+    /// resolved closure for `<pkg>` from `/run/aos/manifest.json`, realises it
+    /// via the configured substituters, and writes `/run/aos/fetch/<pkg>.ok` on
+    /// success. Idempotent; safe to run concurrently for distinct packages.
+    Fetch {
+        /// Package whose closure to fetch
+        package: String,
+        /// The eval-produced manifest pinning the closure
+        #[arg(long, default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
+        manifest: PathBuf,
+        /// Root holding the per-package completion markers
+        #[arg(long = "marker-root", default_value = graph_compile::subverbs::MARKER_ROOT)]
+        marker_root: PathBuf,
+    },
+    /// Render one package's config artifacts into the staging area (RFC-0011).
+    ///
+    /// Backs the `aos-pkg-install@.service` template's `ExecStart=`. Validates
+    /// the package's `config`/`credentials` blocks against its signed
+    /// `expose.config` metadata, stages the artifacts (never touching live
+    /// `/etc`), and writes `/run/aos/render/<pkg>.ok`. Exits 2 on a config error.
+    #[command(name = "render-one")]
+    RenderOne {
+        /// Package whose config to render
+        package: String,
+        /// The eval-produced manifest carrying the package's config block
+        #[arg(long, default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
+        manifest: PathBuf,
+        /// Root holding the per-package completion markers
+        #[arg(long = "marker-root", default_value = graph_compile::subverbs::MARKER_ROOT)]
+        marker_root: PathBuf,
+        /// Root the rendered artifacts are staged under
+        #[arg(long = "staging-root", default_value = graph_compile::subverbs::STAGING_ROOT)]
+        staging_root: PathBuf,
+    },
+    /// Hidden: compile the eval output into a runtime systemd unit graph.
+    ///
+    /// Called only by `aos-graph-compile.service` (`After=aos-eval`,
+    /// `ConditionPathExists=/run/aos/manifest.json`). Reads `manifest.json` +
+    /// `graph.json`, writes per-instance dropins and `.wants` symlinks under
+    /// `/run/systemd/system`, then `daemon-reload`s and starts
+    /// `aos-config.target`. Talks to systemd over D-Bus and needs no apm config.
+    #[command(name = "__graph-compile", hide = true)]
+    GraphCompile {
+        /// The eval-produced data contract
+        #[arg(long, default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
+        manifest: PathBuf,
+        /// The eval-produced cross-package DAG
+        #[arg(long, default_value = graph_compile::DEFAULT_GRAPH_PATH)]
+        graph: PathBuf,
+        /// Override the `/run/systemd/system` root (development only)
+        #[arg(long = "run-root")]
+        run_root: Option<PathBuf>,
     },
 }
 
@@ -1941,6 +1997,58 @@ pub async fn run(
         });
     }
 
+    // The RFC-0011 graph compiler (`aos-graph-compile.service`) drives systemd
+    // over D-Bus and reads the eval output from /run/aos; it needs no apm
+    // config. Dispatch it before `ApmConfig::load` (like the eval driver).
+    if let PackageCommand::GraphCompile {
+        manifest,
+        graph,
+        run_root,
+    } = command
+    {
+        return graph_compile::run_graph_compile_command(manifest, graph, run_root.as_deref())
+            .await;
+    }
+
+    // The per-package fetch/render subverbs back the template `ExecStart=`s and
+    // run as system services. They own their own exit codes (fetch: 0/1;
+    // render-one: 0/1/2), so they exit directly rather than returning `Err`
+    // (which `main.rs` would flatten to 1) — mirroring the activate split.
+    if let PackageCommand::Fetch {
+        package,
+        manifest,
+        marker_root,
+    } = command
+    {
+        let config = config::ApmConfig::load(ProfileScope::System)?;
+        let json_out = printer.mode() == OutputMode::Json;
+        let code =
+            graph_compile::subverbs::run_fetch(&config, package, manifest, marker_root, json_out, printer)
+                .await;
+        std::process::exit(code);
+    }
+    if let PackageCommand::RenderOne {
+        package,
+        manifest,
+        marker_root,
+        staging_root,
+    } = command
+    {
+        let config = config::ApmConfig::load(ProfileScope::System)?;
+        let json_out = printer.mode() == OutputMode::Json;
+        let code = graph_compile::subverbs::run_render_one(
+            &config,
+            package,
+            manifest,
+            marker_root,
+            staging_root,
+            json_out,
+            printer,
+        )
+        .await;
+        std::process::exit(code);
+    }
+
     if let PackageCommand::TestProducePackageAttestationQuote { nonce, output_dir } = command {
         return run_produce_package_attestation_quote(nonce, output_dir, printer);
     }
@@ -2294,6 +2402,15 @@ pub async fn run(
         }
         PackageCommand::Eval { .. } => {
             unreachable!("Eval is handled before ApmConfig::load")
+        }
+        PackageCommand::GraphCompile { .. } => {
+            unreachable!("GraphCompile is handled before ApmConfig::load")
+        }
+        PackageCommand::Fetch { .. } => {
+            unreachable!("Fetch is handled before ApmConfig::load")
+        }
+        PackageCommand::RenderOne { .. } => {
+            unreachable!("RenderOne is handled before ApmConfig::load")
         }
     }
 }
