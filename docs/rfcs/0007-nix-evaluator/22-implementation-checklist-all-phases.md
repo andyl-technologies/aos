@@ -1273,6 +1273,18 @@ alone (`M-1`/`Q-A`).
       transactions, automatic materialization writes, parse-cache hit
       integration, mmap reads, cross-process writer coordination, GC/repack,
       Attic transport, and harness proof remain open (`C-13`/`R-10`).
+- [x] Current `ratchet-cache` fixed-record artifact-index substrate:
+      `artifact_index::ArtifactIndexKey`, `ArtifactIndexValue`,
+      `ArtifactIndexEntry`, and `ArtifactIndex` provide the generic engine-band
+      33-byte key plus 49-byte value record layout and
+      append/newest/physical-scan/compact/replacement file operations for the
+      current frontend artifact sidecars, including `nodes/file-artifacts.index`
+      and `nodes/parse-artifacts.index`. This is a migration target only;
+      `ratchet-oracle` production file/parse artifact indexes still own the
+      typed wrappers, semantic validation, cache policy, and sidecar writes,
+      while LMDB/redb tables, writer batching, mmap reads, cross-process
+      coordination, GC/repack integration, Attic transport, and harness proof
+      remain open (`C-13`/`R-14`).
 - [x] Current parse-artifact bundle payload codec: `ParseArtifactBundle` frames
       the current `resolved.bin`/`ir.bin`/`symbols.bin`/`meta.toml` artifact
       bytes as one versioned little-endian payload, and
