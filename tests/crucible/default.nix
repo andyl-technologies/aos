@@ -385,6 +385,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerQuiescence";
       taskIds = ["T-SCHED-11"];
     };
+    schedulerQuantumLoop = import ./phase3-scheduler-quantum-loop.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerQuantumLoop";
+      taskIds = ["T-SCHED-12"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
