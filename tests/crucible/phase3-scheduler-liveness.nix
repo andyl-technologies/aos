@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.gates.schedulerLiveness",
-  taskIds ? ["T-PLAN-3" "T-HARN-14"],
+  taskIds ? ["T-PLAN-3" "T-HARN-14" "T-SCHED-4"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -106,6 +106,14 @@
         label = "yield-before-advance evidence";
         needle = "yielded_before_advance";
       }
+      {
+        label = "global minimum horizon pick";
+        needle = "fn pick_global_minimum_horizon_node";
+      }
+      {
+        label = "horizon-first candidate order";
+        needle = "left.target_time";
+      }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" libSource [
       {
@@ -133,6 +141,14 @@
       {
         label = "time-limit terminal assertion";
         needle = "gate_scheduler_liveness_reaches_time_limit_terminal";
+      }
+      {
+        label = "global minimum horizon pick assertion";
+        needle = "gate_scheduler_liveness_picks_global_minimum_horizon_before_current_time_order";
+      }
+      {
+        label = "node-id tie-break assertion";
+        needle = "gate_scheduler_liveness_breaks_equal_horizon_ties_by_node_id";
       }
       {
         label = "deadlock negative control";
@@ -198,6 +214,10 @@
         label = "phase3 scheduler liveness task id";
         needle = "\"T-HARN-14\"";
       }
+      {
+        label = "phase3 scheduler progress task id";
+        needle = "\"T-SCHED-4\"";
+      }
     ]
     ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -220,6 +240,14 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingSpec [
+      {
+        label = "T-SCHED-4 checklist complete";
+        needle = "- [x] **T-SCHED-4**";
+      }
+      {
+        label = "T-SCHED-4 completion note";
+        needle = "Completed by `checks.crucible.phase3.gates.schedulerLiveness`";
+      }
       {
         label = "liveness property text";
         needle = "property `gate:scheduler-liveness` checks";

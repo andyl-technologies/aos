@@ -1191,7 +1191,7 @@ impl SingleScheduler {
         self.quanta >= self.quantum_budget
     }
 
-    fn pick_advanceable_node(&self) -> Result<Option<AdvanceCandidate>, SchedulerError> {
+    fn pick_global_minimum_horizon_node(&self) -> Result<Option<AdvanceCandidate>, SchedulerError> {
         let mut candidates = Vec::new();
 
         for (index, node) in self.nodes.iter().enumerate() {
@@ -1200,7 +1200,13 @@ impl SingleScheduler {
             }
         }
 
-        candidates.sort_by(|left, right| left.key.cmp(&right.key));
+        candidates.sort_by(|left, right| {
+            left.target_time
+                .cmp(&right.target_time)
+                .then_with(|| left.key.node.cmp(&right.key.node))
+                .then_with(|| left.key.virtual_time.cmp(&right.key.virtual_time))
+                .then_with(|| left.index.cmp(&right.index))
+        });
 
         Ok(candidates.into_iter().next())
     }
@@ -1286,7 +1292,7 @@ impl SingleScheduler {
 
         self.yield_to_control_inbox(request.control);
         let mut resolved_events = self.drain_control_events();
-        let candidate = match self.pick_advanceable_node()? {
+        let candidate = match self.pick_global_minimum_horizon_node()? {
             Some(candidate) => candidate,
             None => {
                 return Ok(QuantumOutcome {

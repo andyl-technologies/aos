@@ -960,11 +960,23 @@ application of explorer-supplied preemption decisions
   unresolved dependencies. Full horizon composition remains T-SCHED-5, and
   already-due RESOLVE delivery / late-delivery localization remains T-SCHED-16 and
   T-SCHED-18.
-- [ ] **T-SCHED-4** Implement and test the liveness guarantee: the
+- [x] **T-SCHED-4** Implement and test the liveness guarantee: the
   global-minimum-horizon node is always advanceable; wire `gate:scheduler-liveness`
   to assert the scheduler always reaches quiescence or its limit (no
   deadlock/livelock) and fails loudly on a non-quiescent stall. — satisfies
   [SCHED-7], [SCHED-8]; spec §8.3.2, §8.8.
+  Completed by `checks.crucible.phase3.gates.schedulerLiveness`: the finite
+  scheduler now orders advanceable candidates by their computed post-clamp
+  advance target before node-id tie-breaks, so the current gate advances the
+  executable global-minimum-horizon candidate rather than merely the earliest
+  current-time node. The scheduler-liveness gate drives generated scenarios to
+  quiescence or the configured time/quantum limit and includes fail-loud negative
+  controls for pending-event/no-runnable deadlock and runnable/no-progress
+  livelock. The focused gate tests also cover a case where the minimum-horizon
+  node is not the lowest-current-time node and a same-horizon node-id tie. Full
+  horizon composition remains T-SCHED-5; the full PICK projection over RUNNING,
+  IDLE, HALTED, and DONE nodes remains T-SCHED-13; RESOLVE delivery and
+  late-delivery localization remain T-SCHED-15 through T-SCHED-18.
 - [ ] **T-SCHED-5** Implement `horizon(n) = min(next_exact_local_event(n),
   vt(n) + lookahead(n))`, with the exact-local term applying no conservative
   bound and the lookahead term applying only to guest→guest network. — satisfies
