@@ -796,6 +796,173 @@ fn filter_source_primop_filters_recursive_source_trees() {
 }
 
 #[test]
+fn configured_import_cache_preserves_filter_source_store_path_surface() {
+    fn evaluate_filter_source_surface(
+        source: &str,
+        options: TreeWalkOptions,
+    ) -> (Vec<u8>, (usize, usize)) {
+        let ir = lower(source);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        let value = evaluator
+            .eval_root()
+            .expect("filterSource expression evaluates");
+        let import_stats = evaluator.import_parse_cache_stats();
+        let output = evaluator
+            .heap()
+            .get_string(value)
+            .expect("filterSource result is a string")
+            .bytes()
+            .to_vec();
+        (output, import_stats)
+    }
+
+    fn hot_string_surface_canaries(label: &str, bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let hot_canary = NixString::from_bytes(bytes.to_vec())
+            .structural_hash_xxh3()
+            .raw_for_tests();
+        vec![
+            (
+                format!("{label} hot xxh3 decimal"),
+                hot_canary.to_string().into_bytes(),
+            ),
+            (
+                format!("{label} hot xxh3 hex"),
+                format!("{hot_canary:016x}").into_bytes(),
+            ),
+            (
+                format!("{label} hot xxh3 little-endian bytes"),
+                hot_canary.to_le_bytes().to_vec(),
+            ),
+            (
+                format!("{label} hot xxh3 big-endian bytes"),
+                hot_canary.to_be_bytes().to_vec(),
+            ),
+        ]
+    }
+
+    let root = fs::canonicalize(unique_temp_dir("import-cache-filter-source-surface-parity"))
+        .expect("temp directory canonicalizes");
+    let tree = root.join("tree");
+    fs::create_dir(&tree).expect("tree directory creates");
+    fs::write(tree.join("a"), b"one").expect("included file writes");
+    fs::write(tree.join("b"), b"two").expect("excluded file writes");
+    let first_parse_root = root.join("first-parse-cache");
+    let second_parse_root = root.join("second-parse-cache");
+    let persist_root = root.join("persist-cache");
+    let import_path = root.join("filter-source-path.nix");
+    let tree_path = path_source(&tree);
+    let imported_source = tree_path.as_bytes().to_vec();
+    fs::write(&import_path, &imported_source).expect("filterSource path import writes");
+    let import_realpath = fs::canonicalize(&import_path).expect("import path canonicalizes");
+    let keep = r#"path: type: type != "directory" && builtins.baseNameOf path == "a""#;
+    let source = format!(
+        "builtins.filterSource ({keep}) (import {})",
+        import_path.display()
+    );
+
+    let mut uncached_options = TreeWalkOptions::new();
+    uncached_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    let (uncached_output, uncached_stats) =
+        evaluate_filter_source_surface(&source, uncached_options);
+    assert_eq!(uncached_stats, (0, 0));
+    assert!(
+        uncached_output.ends_with(b"-tree"),
+        "filterSource surface should expose the default source path name: {uncached_output:?}"
+    );
+    assert_ne!(
+        uncached_output,
+        eval_string_bytes(&format!("builtins.path {{ path = {tree_path}; }}")),
+        "filterSource surface should differ from the unfiltered source path"
+    );
+
+    let mut miss_options = TreeWalkOptions::new();
+    miss_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    miss_options.set_parse_cache_root(&first_parse_root);
+    miss_options.set_persist_cache_root(&persist_root);
+    let (miss_output, miss_stats) = evaluate_filter_source_surface(&source, miss_options);
+    assert_eq!(miss_stats, (0, 1));
+    assert_eq!(miss_output, uncached_output);
+
+    let mut hit_options = TreeWalkOptions::new();
+    hit_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    hit_options.set_parse_cache_root(&second_parse_root);
+    hit_options.set_persist_cache_root(&persist_root);
+    let (hit_output, hit_stats) = evaluate_filter_source_surface(&source, hit_options);
+    assert_eq!(hit_stats, (1, 0));
+    assert_eq!(hit_output, uncached_output);
+    assert!(
+        ParseCache::new(&second_parse_root)
+            .entry_for_source(&imported_source)
+            .is_complete(),
+        "persistent hit should hydrate the runtime parse-cache entry"
+    );
+
+    let root_parse_key = ParseCacheKey::for_source(
+        source.as_bytes(),
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let imported_parse_key = ParseCacheKey::for_source(
+        &imported_source,
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let file_key = ParseFileKey::for_source(&import_realpath, &imported_source);
+    let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, imported_parse_key);
+    assert!(
+        PersistCache::open(&persist_root)
+            .expect("persistent cache opens")
+            .lookup_file_artifact(artifact_key)
+            .expect("persistent file-artifact lookup succeeds")
+            .is_some(),
+        "filterSource canary import should materialize a persistent file-artifact mapping"
+    );
+
+    let mut canaries = durable_hash_surface_canaries(
+        "root parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(root_parse_key.as_bytes()),
+    );
+    canaries.extend(durable_hash_surface_canaries(
+        "import parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(imported_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "import file-content BLAKE3",
+        file_key.content_hash(),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "included file BLAKE3 sentinel",
+        DurableBlake3Hash::for_bytes(b"one"),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "excluded file BLAKE3 sentinel",
+        DurableBlake3Hash::for_bytes(b"two"),
+    ));
+    canaries.extend(hot_string_surface_canaries(
+        "source tree path",
+        tree_path.as_bytes(),
+    ));
+    canaries.extend(hot_string_surface_canaries("included file name", b"a"));
+    canaries.extend(hot_string_surface_canaries("excluded file name", b"b"));
+
+    for (surface_name, output) in [
+        ("cache-disabled filterSource surface", &uncached_output),
+        ("persistent miss filterSource surface", &miss_output),
+        ("persistent hit filterSource surface", &hit_output),
+    ] {
+        assert_surface_canaries_absent(surface_name, "store path", output, &canaries);
+    }
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
 fn filter_source_does_not_filter_root_files() {
     let (dir, path) = temp_file_with_bytes("filter-source-root-file", b"abc");
     let path = path_source(&path);
