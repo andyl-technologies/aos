@@ -519,3 +519,31 @@ fn derive_iter_cap_is_bounded_by_ceiling() {
     let index = ProvidesIndex::empty();
     assert_eq!(derive_iter_cap(&index), ITER_CAP_SLACK);
 }
+
+#[test]
+fn host_nix_gate_enforced_by_default_fails_closed_with_no_anchors() {
+    // The stage-2 trust gate is ON by default. With no anchor dir and the
+    // off-host flag unset, run_eval_command must bail BEFORE the evaluator runs
+    // (a clean no-op), never silently fail open — the regression that the CS10
+    // review caught in the on-host service wiring.
+    let tmp = tempfile::tempdir().unwrap();
+    let host_nix = tmp.path().join("host.nix");
+    std::fs::write(&host_nix, b"{ }").unwrap();
+    let out = tmp.path().join("manifest.json");
+    let cmd = EvalCommand {
+        host_nix,
+        base_lib: tmp.path().join("base-lib"),
+        index: None,
+        desired: None,
+        module_abi: 1,
+        out: out.clone(),
+        eval_root: tmp.path().to_path_buf(),
+        verbose: 0,
+        trusted_config_keys_dirs: Vec::new(),
+        allow_unsigned_host_nix: false,
+    };
+    let err = run_eval_command(&cmd).expect_err("gate must fail closed with no anchors");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("authenticity gate"), "wrong error: {msg}");
+    assert!(!out.exists(), "no manifest may be written on a gate failure");
+}

@@ -116,8 +116,14 @@ in {
       script = ''
         set -u
         mkdir -p /run/aos-eval /run/aos
-        # Stage the verified host.nix into the read-write eval root.
+        # Stage the UNTRUSTED host.nix + its detached operator signature into the
+        # eval root. apm __eval authenticates the SSHSIG against the image-baked
+        # trusted-config-keys.d BEFORE evaluating (the stage-2 trust gate); a
+        # missing/bad signature yields no manifest (failure-safe). The signature
+        # is read from <host.nix>.sig; stage it best-effort (its absence makes the
+        # gate fail closed with MissingSignature, which is correct).
         cp -f "${cfg.hostNix}" /run/aos-eval/host.nix
+        cp -f "${cfg.hostNix}.sig" /run/aos-eval/host.nix.sig 2>/dev/null || true
 
         # Prefer the image's recorded module_abi; fall back to the option.
         module_abi="${toString cfg.moduleAbi}"
@@ -146,6 +152,7 @@ in {
           --module-abi "$module_abi" \
           --out "${cfg.manifest}" \
           --eval-root /run/aos-eval \
+          --trusted-config-keys-dir /etc/apm/trusted-config-keys.d \
           $index_arg $desired_arg || exit 1
       '';
     };
