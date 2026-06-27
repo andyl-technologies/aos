@@ -135,6 +135,7 @@ in {
     spatialReproductionArtifact = import ./phase1-spatial-reproduction-artifact.nix {inherit pkgs lib;};
     spatialScenarioFamily = import ./phase1-spatial-scenario-family.nix {inherit pkgs lib;};
     spatialScenarioBuilder = import ./phase1-spatial-scenario-builder.nix {inherit pkgs lib;};
+    spatialScenarioDefValue = import ./phase1-spatial-scenario-def-value.nix {inherit pkgs lib;};
     spatialSeedComponent = import ./phase1-spatial-seed-component.nix {inherit pkgs lib;};
     spatialSerializableForm = import ./phase1-spatial-serializable-form.nix {inherit pkgs lib;};
     spatialStaticTopology = import ./phase1-spatial-static-topology.nix {inherit pkgs lib;};

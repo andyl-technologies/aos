@@ -358,6 +358,161 @@ mod tests {
     }
 
     #[test]
+    fn scenario_def_form_is_immutable_pure_four_tuple_value() {
+        let blob_ref = |label: &str| {
+            ContentAddressedBlobRef::from_hash(ContentHash::from_canonical_material(
+                "crucible.test.scenario-def-value.blob",
+                label,
+            ))
+        };
+        let world = world_from_nodes_and_links(
+            vec![
+                WorldNode {
+                    kernel: Some(blob_ref("kernel-a")),
+                    root_image: Some(blob_ref("root-a")),
+                    initrd: Some(blob_ref("initrd-a")),
+                    ..ready_node(
+                        "a",
+                        ReadyPoint::FixedIcount {
+                            icount: Icount { retired: 11 },
+                        },
+                    )
+                },
+                ready_node(
+                    "b",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 13 },
+                    },
+                ),
+            ],
+            vec![transport_link("a", "b", 10, 1, 0, Some(1_000_000))],
+        );
+        let plan = Plan::from_entries_for_world(
+            &world,
+            vec![
+                PlanEntry::Activate {
+                    at: VirtualTime { ticks: 5 },
+                    tag: tag("crash-b"),
+                    fault: MembershipFault::Crash {
+                        node: node_id("b"),
+                        restart: RestartPolicy::StayDown,
+                    },
+                },
+                PlanEntry::Heal {
+                    at: VirtualTime { ticks: 9 },
+                    tag: tag("crash-b"),
+                },
+            ],
+        )
+        .unwrap_or_else(|error| panic!("plan should be valid: {error}"));
+        let properties = Properties::from_assertions_for_world(
+            &world,
+            vec![assertion(
+                "a-alive",
+                "node a remains alive",
+                Property::Always {
+                    predicate: named_predicate("node_alive", &["a"]),
+                },
+            )],
+        )
+        .unwrap_or_else(|error| panic!("properties should be valid: {error}"));
+        let seed = Seed::from_u64(0x0010_0001);
+        let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)
+            .unwrap_or_else(|error| panic!("scenario form should be valid: {error}"));
+        let scenario = form.scenario_def();
+
+        assert_eq!(form.world(), &world);
+        assert_eq!(form.plan(), &plan);
+        assert_eq!(form.properties(), &properties);
+        assert_eq!(form.seed(), seed);
+        assert_eq!(form.id(), scenario.id());
+        assert_eq!(scenario.seed(), seed);
+
+        for case in 0..8 {
+            let seed = Seed::from_u64(case);
+            let left = ScenarioDefForm::from_components(&world, &plan, &properties, seed)
+                .unwrap_or_else(|error| panic!("left scenario form should be valid: {error}"));
+            let right = ScenarioDefForm::from_components(&world, &plan, &properties, seed)
+                .unwrap_or_else(|error| panic!("right scenario form should be valid: {error}"));
+            assert_eq!(left, right);
+            assert_eq!(left.id(), right.id());
+            assert_eq!(left.scenario_def(), right.scenario_def());
+            assert_eq!(left.canonical_bytes(), right.canonical_bytes());
+        }
+
+        let original_id = form.id();
+        let changed_world = world_from_nodes_and_links(
+            vec![WorldNode {
+                kernel: Some(blob_ref("kernel-b")),
+                ..ready_node(
+                    "a",
+                    ReadyPoint::FixedIcount {
+                        icount: Icount { retired: 11 },
+                    },
+                )
+            }],
+            Vec::new(),
+        );
+        let changed_plan = Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Activate {
+                at: VirtualTime { ticks: 5 },
+                tag: tag("isolate-a"),
+                fault: MembershipFault::Isolate { node: node_id("a") },
+            }],
+        )
+        .unwrap_or_else(|error| panic!("changed plan should be valid: {error}"));
+        let changed_properties = Properties::from_assertions_for_world(
+            &world,
+            vec![assertion(
+                "b-alive",
+                "node b remains alive",
+                Property::Always {
+                    predicate: named_predicate("node_alive", &["b"]),
+                },
+            )],
+        )
+        .unwrap_or_else(|error| panic!("changed properties should be valid: {error}"));
+
+        assert_eq!(form.id(), original_id);
+        assert_eq!(form.world(), &world);
+        assert_ne!(
+            ScenarioDefForm::from_components(
+                &changed_world,
+                &Plan::empty(),
+                &Properties::empty(),
+                seed
+            )
+            .unwrap_or_else(|error| panic!("changed-world form should be valid: {error}"))
+            .id(),
+            original_id
+        );
+        assert_ne!(
+            ScenarioDefForm::from_components(&world, &changed_plan, &properties, seed)
+                .unwrap_or_else(|error| panic!("changed-plan form should be valid: {error}"))
+                .id(),
+            original_id
+        );
+        assert_ne!(
+            ScenarioDefForm::from_components(&world, &plan, &changed_properties, seed)
+                .unwrap_or_else(|error| panic!("changed-properties form should be valid: {error}"))
+                .id(),
+            original_id
+        );
+        assert_ne!(
+            ScenarioDefForm::from_components(&world, &plan, &properties, Seed::from_u64(2))
+                .unwrap_or_else(|error| panic!("changed-seed form should be valid: {error}"))
+                .id(),
+            original_id
+        );
+        assert!(matches!(
+            ContentAddressedBlobRef::parse("kernel", "/nix/store/not-a-content-ref"),
+            Err(EngineError::ScenarioImageReferenceNotContentAddressed { field, .. })
+                if field == "kernel"
+        ));
+    }
+
+    #[test]
     fn configuration_id_is_content_addressed_by_def_and_schedule() {
         let scenario =
             ScenarioDef::from_canonical_material("crucible.test.configuration", "node=a\nseed=1");
