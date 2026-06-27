@@ -15,6 +15,7 @@ impl EvalHeap {
             string_cons: HashConsTable::new(),
             path_cons: HashConsTable::new(),
             list_cons: HashConsTable::new(),
+            attrs_cons: HashConsTable::new(),
         }
     }
 
@@ -32,6 +33,7 @@ impl EvalHeap {
             string_cons: HashConsTable::new(),
             path_cons: HashConsTable::new(),
             list_cons: HashConsTable::new(),
+            attrs_cons: HashConsTable::new(),
         })
     }
 
@@ -150,12 +152,17 @@ impl EvalHeap {
     ///
     /// # Errors
     ///
-    /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
-    /// attrset length cannot fit the runtime slot count, if the bump arena
-    /// cannot reserve an attrset handle, or if the resulting handle violates
-    /// the runtime value alignment contract.
+    /// Returns [`EvalHeapError`] if record or cons-table storage cannot be
+    /// reserved, if the attrset length cannot fit the runtime slot count, if
+    /// the bump arena cannot reserve an attrset handle, or if the resulting
+    /// handle violates the runtime value alignment contract.
     pub fn alloc_attrs(&mut self, shape: u32, attrs: FlatAttrs) -> Result<Value, EvalHeapError> {
+        let hash = attrs_structural_hash(shape, &attrs);
+        if let Some(value) = self.lookup_attrs_cons(hash, shape, &attrs)? {
+            return Ok(value);
+        }
         self.reserve_record_slot()?;
+        let cons_slot = self.reserve_attrs_cons_slot(hash)?;
         let slots = u32::try_from(attrs.len())
             .map_err(|_| EvalHeapError::Arena(ArenaError::SizeOverflow))?;
         let allocation = self
@@ -165,9 +172,10 @@ impl EvalHeap {
         let value = Value::attrs(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
-            structural_hash: None,
-            object: HeapObjectValue::Attrs(attrs),
+            structural_hash: Some(hash),
+            object: HeapObjectValue::Attrs { shape, attrs },
         });
+        self.push_attrs_cons_value(cons_slot, value);
         Ok(value)
     }
 
@@ -362,7 +370,7 @@ impl EvalHeap {
     pub fn get_attrs_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&FlatAttrs, EvalHeapError> {
         let record = self.record_or_unknown(ValueTag::Attrs, ptr)?;
         match &record.object {
-            HeapObjectValue::Attrs(attrs) => Ok(attrs),
+            HeapObjectValue::Attrs { attrs, .. } => Ok(attrs),
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::Attrs,
                 object.tag(),
@@ -583,6 +591,30 @@ impl EvalHeap {
             .map(|value| value.copied())
     }
 
+    fn lookup_attrs_cons(
+        &self,
+        hash: HotXxh3Hash,
+        shape: u32,
+        attrs: &FlatAttrs,
+    ) -> Result<Option<Value>, EvalHeapError> {
+        self.attrs_cons
+            .try_find(&hash, |value| {
+                let value = *value;
+                let ptr = value.as_attrs_ptr().map_err(EvalHeapError::Value)?;
+                let record = self.record_or_unknown(ValueTag::Attrs, ptr)?;
+                let same_hash = record.structural_hash == Some(hash);
+                let same_attrs = matches!(
+                    &record.object,
+                    HeapObjectValue::Attrs {
+                        shape: candidate_shape,
+                        attrs: candidate_attrs,
+                    } if *candidate_shape == shape && attrs_raw_eq(candidate_attrs, attrs)
+                );
+                Ok(same_hash && same_attrs)
+            })
+            .map(|value| value.copied())
+    }
+
     fn reserve_string_cons_slot(
         &mut self,
         hash: HotXxh3Hash,
@@ -610,6 +642,15 @@ impl EvalHeap {
             .map_err(EvalHeapError::from)
     }
 
+    fn reserve_attrs_cons_slot(
+        &mut self,
+        hash: HotXxh3Hash,
+    ) -> Result<HashConsSlot<HotXxh3Hash>, EvalHeapError> {
+        self.attrs_cons
+            .reserve_slot(hash)
+            .map_err(EvalHeapError::from)
+    }
+
     fn push_string_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
         let pushed = self.string_cons.push_reserved(slot, value);
         debug_assert!(
@@ -620,6 +661,14 @@ impl EvalHeap {
 
     fn push_path_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
         let pushed = self.path_cons.push_reserved(slot, value);
+        debug_assert!(
+            pushed,
+            "cons-table slot should be reserved before allocation"
+        );
+    }
+
+    fn push_attrs_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
+        let pushed = self.attrs_cons.push_reserved(slot, value);
         debug_assert!(
             pushed,
             "cons-table slot should be reserved before allocation"
@@ -662,10 +711,48 @@ fn list_structural_hash(list: &NixList) -> HotXxh3Hash {
     HotXxh3Hash::from_xxh3(hasher.finish())
 }
 
+fn attrs_structural_hash(shape: u32, attrs: &FlatAttrs) -> HotXxh3Hash {
+    let mut hasher = Xxh3::new();
+    ValueTag::Attrs.hash(&mut hasher);
+    shape.hash(&mut hasher);
+    attrs.len().hash(&mut hasher);
+    attrs.source_order().hash(&mut hasher);
+    attrs.iteration_order().hash(&mut hasher);
+    for entry in attrs.entries_by_symbol() {
+        entry.key.hash(&mut hasher);
+        entry.value.tag().hash(&mut hasher);
+        entry.value.payload_bits().hash(&mut hasher);
+        match entry.position {
+            Some(position) => {
+                true.hash(&mut hasher);
+                position.module.hash(&mut hasher);
+                position.span.hash(&mut hasher);
+            }
+            None => false.hash(&mut hasher),
+        }
+    }
+    HotXxh3Hash::from_xxh3(hasher.finish())
+}
+
 fn lists_raw_eq(left: &NixList, right: &NixList) -> bool {
     left.len() == right.len()
         && left
             .iter()
             .zip(right.iter())
             .all(|(left, right)| left.raw_eq(*right))
+}
+
+fn attrs_raw_eq(left: &FlatAttrs, right: &FlatAttrs) -> bool {
+    left.len() == right.len()
+        && left.source_order() == right.source_order()
+        && left.iteration_order() == right.iteration_order()
+        && left
+            .entries_by_symbol()
+            .iter()
+            .zip(right.entries_by_symbol())
+            .all(|(left, right)| {
+                left.key == right.key
+                    && left.value.raw_eq(right.value)
+                    && left.position == right.position
+            })
 }

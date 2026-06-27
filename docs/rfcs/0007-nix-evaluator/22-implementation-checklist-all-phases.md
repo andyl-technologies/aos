@@ -1074,25 +1074,28 @@ alone (`M-1`/`Q-A`).
       produce canonical value hashes, compare old/new hashes, stop propagation
       through dependents on no-change, and prove cached/uncached `.drv` parity.
 - [x] Current value-consing precursor outside future `value/hashcons.rs`: the P1
-      evaluator heap already conses heap strings and path values in separate
-      evaluator-local tables using `NixString::structural_hash_xxh3()` plus
-      equality confirmation, preserving context-sensitive identity so identical
-      bytes with different contexts do not collapse. This is limited string/path
-      consing, not generic immutable-value hash-consing, composite value maximal
-      sharing, O(1) equality for all values, durable value hashes, or field-load
-      value-hash support.
+      evaluator heap already conses heap strings, path values, list spines, and
+      shape-aware flat attrsets in separate evaluator-local tables using
+      `HotXxh3Hash` structural hashes plus equality confirmation. String/path
+      consing preserves context-sensitive identity so identical bytes with
+      different contexts do not collapse, list consing compares raw child
+      `Value` identities, and attrset consing includes shape id, source/iteration
+      order metadata, binding positions, and raw child `Value` identities. This
+      is current heap-local consing, not generic post-force immutable-value
+      hash-consing, maximal sharing across all values, O(1) equality for all
+      values, durable value hashes, or field-load value-hash support.
 - [ ] `value/hashcons.rs` — full hash-consing / maximal sharing of immutable
       values: generic post-force interning for composite values, O(1) equality,
       cached value hashes that make value-hashing a field load, and integration
       with the demand graph/early cutoff (`S-7`).
 - [x] Current hash-routing and typed-domain precursor in `cache/hashing.rs`:
-      evaluator-local string/path cons tables use xxh3 structural hashes with
-      equality confirmation and are typed as `HotXxh3Hash`; durable frontend
-      parse-cache keys use BLAKE3 over source bytes plus schema/flags, with
-      file memo keys pairing canonical realpath and BLAKE3(file bytes), and are
-      typed as `DurableBlake3Hash`; Nix-observed `.drv`/store-path surfaces use
-      SHA-256 and hash/fetch builtins use their requested Nix hash APIs rather
-      than evaluator-local xxh3/BLAKE3 digests. This is the current substrate
+      evaluator-local string/path/list/attrset cons tables use xxh3 structural
+      hashes with equality confirmation and are typed as `HotXxh3Hash`; durable
+      frontend parse-cache keys use BLAKE3 over source bytes plus schema/flags,
+      with file memo keys pairing canonical realpath and BLAKE3(file bytes), and
+      are typed as `DurableBlake3Hash`; Nix-observed `.drv`/store-path surfaces
+      use SHA-256 and hash/fetch builtins use their requested Nix hash APIs
+      rather than evaluator-local xxh3/BLAKE3 digests. This is the current substrate
       only, not the full P2 cache hashing layer (`S-15`).
 - [x] Current Nix-observed hash leak canary:
       `internal_cache_hash_canaries_do_not_reach_drv_surfaces` evaluates a

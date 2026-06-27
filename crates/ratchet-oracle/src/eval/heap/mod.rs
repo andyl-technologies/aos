@@ -156,6 +156,7 @@ pub struct EvalHeap {
     string_cons: HashConsTable<HotXxh3Hash, Value>,
     path_cons: HashConsTable<HotXxh3Hash, Value>,
     list_cons: HashConsTable<HotXxh3Hash, Value>,
+    attrs_cons: HashConsTable<HotXxh3Hash, Value>,
 }
 
 impl Default for EvalHeap {
@@ -176,7 +177,7 @@ enum HeapObjectValue {
     String(NixString),
     Path(NixString),
     List(NixList),
-    Attrs(FlatAttrs),
+    Attrs { shape: u32, attrs: FlatAttrs },
     Lambda(Rc<EvalLambda>),
     Primop(Rc<EvalPrimOp>),
     Thunk(Rc<EvalThunk>),
@@ -188,7 +189,7 @@ impl HeapObjectValue {
             Self::String(_) => ValueTag::String,
             Self::Path(_) => ValueTag::Path,
             Self::List(_) => ValueTag::List,
-            Self::Attrs(_) => ValueTag::Attrs,
+            Self::Attrs { .. } => ValueTag::Attrs,
             Self::Lambda(_) => ValueTag::Lambda,
             Self::Primop(_) => ValueTag::Primop,
             Self::Thunk(_) => ValueTag::Thunk,

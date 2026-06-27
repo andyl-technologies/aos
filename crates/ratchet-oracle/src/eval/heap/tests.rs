@@ -2,15 +2,38 @@
 
 use super::super::ThunkState;
 use super::*;
-use crate::attrs::AttrEntry;
+use crate::attrs::{AttrEntry, AttrPosition};
 use crate::runtime::builtins::lookup_builtin;
 use crate::string::{ContextElement, StringContext};
 use crate::syntax::SymbolTable;
 
 fn attrs_with_one_entry() -> FlatAttrs {
+    attrs_with_value(Value::int(7))
+}
+
+fn attrs_with_value(value: Value) -> FlatAttrs {
     let mut symbols = SymbolTable::new();
     let key = symbols.intern(b"name").expect("symbol interns");
-    FlatAttrs::new(vec![AttrEntry::new(key, Value::int(7))], &symbols).expect("attrset builds")
+    FlatAttrs::new(vec![AttrEntry::new(key, value)], &symbols).expect("attrset builds")
+}
+
+fn attrs_with_ordered_entries(first: &[u8], second: &[u8]) -> FlatAttrs {
+    let mut symbols = SymbolTable::new();
+    let a = symbols.intern(b"a").expect("a symbol interns");
+    let b = symbols.intern(b"b").expect("b symbol interns");
+    let key = |name: &[u8]| match name {
+        b"a" => a,
+        b"b" => b,
+        _ => unreachable!("test helper accepts only a/b keys"),
+    };
+    FlatAttrs::new(
+        vec![
+            AttrEntry::new(key(first), Value::int(i64::from(first[0]))),
+            AttrEntry::new(key(second), Value::int(i64::from(second[0]))),
+        ],
+        &symbols,
+    )
+    .expect("attrset builds")
 }
 
 #[test]
@@ -366,6 +389,112 @@ fn allocates_attr_values_and_recovers_entries() {
     assert_eq!(attrs.len(), 1);
     assert_eq!(attrs.get(key).expect("name exists").as_int(), Ok(7));
     assert_eq!(heap.arena_stats().chunks, 1);
+}
+
+#[test]
+fn identical_attr_values_with_same_shape_reuse_heap_record() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let first = heap
+        .alloc_attrs(42, attrs_with_one_entry())
+        .expect("first attrs allocate");
+    let second = heap
+        .alloc_attrs(42, attrs_with_one_entry())
+        .expect("second attrs allocate");
+
+    assert!(first.raw_eq(second));
+    assert_eq!(heap.len(), 1);
+    let attrs = heap.get_attrs(second).expect("second attrs exist");
+    assert_eq!(attrs.len(), 1);
+}
+
+#[test]
+fn attr_values_with_different_shapes_do_not_collapse() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let first = heap
+        .alloc_attrs(1, attrs_with_one_entry())
+        .expect("first attrs allocate");
+    let second = heap
+        .alloc_attrs(2, attrs_with_one_entry())
+        .expect("second attrs allocate");
+
+    assert_ne!(first.payload_bits(), second.payload_bits());
+    assert_eq!(heap.len(), 2);
+}
+
+#[test]
+fn attr_values_with_different_binding_values_do_not_collapse() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let first = heap
+        .alloc_attrs(0, attrs_with_value(Value::int(7)))
+        .expect("first attrs allocate");
+    let second = heap
+        .alloc_attrs(0, attrs_with_value(Value::int(8)))
+        .expect("second attrs allocate");
+    assert_ne!(first.payload_bits(), second.payload_bits());
+
+    let first_thunk = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("first thunk allocates");
+    let second_thunk = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("second thunk allocates");
+    let first_attrs = heap
+        .alloc_attrs(0, attrs_with_value(first_thunk))
+        .expect("first thunk attrs allocate");
+    let second_attrs = heap
+        .alloc_attrs(0, attrs_with_value(second_thunk))
+        .expect("second thunk attrs allocate");
+
+    assert_ne!(first_attrs.payload_bits(), second_attrs.payload_bits());
+    assert_eq!(heap.len(), 6);
+}
+
+#[test]
+fn attr_values_with_different_source_order_do_not_collapse() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+    let first = heap
+        .alloc_attrs(0, attrs_with_ordered_entries(b"a", b"b"))
+        .expect("first attrs allocate");
+    let second = heap
+        .alloc_attrs(0, attrs_with_ordered_entries(b"b", b"a"))
+        .expect("second attrs allocate");
+
+    assert_ne!(first.payload_bits(), second.payload_bits());
+    assert_eq!(heap.len(), 2);
+}
+
+#[test]
+fn attr_values_with_different_positions_do_not_collapse() {
+    let mut symbols = SymbolTable::new();
+    let key = symbols.intern(b"name").expect("symbol interns");
+    let first_attrs = FlatAttrs::new(
+        vec![AttrEntry::with_position(
+            key,
+            Value::int(7),
+            AttrPosition::new(0, Span::new(0, 1)),
+        )],
+        &symbols,
+    )
+    .expect("first attrs build");
+    let second_attrs = FlatAttrs::new(
+        vec![AttrEntry::with_position(
+            key,
+            Value::int(7),
+            AttrPosition::new(0, Span::new(1, 2)),
+        )],
+        &symbols,
+    )
+    .expect("second attrs build");
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let first = heap
+        .alloc_attrs(0, first_attrs)
+        .expect("first attrs allocate");
+    let second = heap
+        .alloc_attrs(0, second_attrs)
+        .expect("second attrs allocate");
+
+    assert_ne!(first.payload_bits(), second.payload_bits());
+    assert_eq!(heap.len(), 2);
 }
 
 #[test]
