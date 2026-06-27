@@ -969,6 +969,65 @@ fn persistent_hash_file_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
 }
 
 #[test]
+fn persistent_partial_hash_file_force_cache_hit_and_stale_miss_preserve_drv_surfaces() {
+    let root = unique_temp_dir("force-cache-partial-hash-file-drv-source");
+    fs::write(root.join("input.txt"), b"first partial hash\0payload").expect("input file writes");
+    let root = fs::canonicalize(root).expect("source root canonicalizes");
+    let input_path = path_bytes(&root.join("input.txt"));
+    let first_trace = vec![
+        ImpureInputFingerprint::hash_file(&input_path, b"first partial hash\0payload")
+            .expect("first fingerprint builds"),
+    ];
+    let changed_trace = vec![
+        ImpureInputFingerprint::hash_file(&input_path, b"changed partial hash\0payload")
+            .expect("changed fingerprint builds"),
+    ];
+    let source = r#"let
+             b = builtins;
+             hash = b.hashFile "sha256";
+           in {
+             pkg = derivationStrict {
+               name = "force-cache-partial-hash-file-drv-surface";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ (hash ./input.txt) ];
+             };
+           }"#;
+    let ir = lower(source);
+
+    assert_cacheable_impure_leaf_force_hit_preserves_drv_surface(
+        "force-cache-partial-hash-file-drv-hit-parity",
+        &ir,
+        source,
+        first_trace.clone(),
+        |options| {
+            options
+                .set_path_literal_base(path_bytes(&root))
+                .expect("path base configures");
+        },
+    );
+
+    assert_cacheable_impure_leaf_force_stale_miss_preserves_drv_surface(
+        "force-cache-partial-hash-file-drv-stale-parity",
+        &ir,
+        source,
+        first_trace,
+        changed_trace,
+        |options| {
+            options
+                .set_path_literal_base(path_bytes(&root))
+                .expect("path base configures");
+        },
+        || {
+            fs::write(root.join("input.txt"), b"changed partial hash\0payload")
+                .expect("input file changes");
+        },
+    );
+
+    fs::remove_dir_all(root).expect("source temp directory removes");
+}
+
+#[test]
 fn persistent_read_dir_force_cache_hit_preserves_drv_surfaces() {
     let root = unique_temp_dir("force-cache-read-dir-drv-source");
     fs::create_dir(root.join("dir")).expect("directory creates");

@@ -2202,7 +2202,7 @@ alone (`M-1`/`Q-A`).
       impure calls share this path through a force-cache subject keyed by
       apply-node identity, builtin name, and argument value hashes: unary
       `import`, `pathExists`, `readDir`, `readFile`, `readFileType`, and
-      `getEnv`, plus full-arity first-class `hashFile`. Hits
+      `getEnv`, plus full-arity and named-partial first-class `hashFile`. Hits
       rehydrate replayable payloads into the
       current evaluator heap, preserving source-order attrset metadata and
       root-or-own-module binding source positions when the durable payload carries those attrset
@@ -2218,9 +2218,8 @@ alone (`M-1`/`Q-A`).
       positioned payloads, and incompatible, multi-module, or non-own positioned
       payloads all fall back to ordinary forcing and clear stale
       durable payload links. This is replayable forced-expression hit selection only:
-      no dirty propagation beyond revalidation miss fallback, partially applied
-      `hashFile` payload caching, lazy-element list or lazy-binding attrset
-      values, broader multi-module/non-own binding-position module-source
+      no dirty propagation beyond revalidation miss fallback, lazy-element list
+      or lazy-binding attrset values, broader multi-module/non-own binding-position module-source
       remapping, transactionality with value materialization, currentTime taint
       propagation through persisted dependents, automatic compaction/GC, mmap
       reads, and cached/uncached harness proof remain open
@@ -2653,13 +2652,15 @@ alone (`M-1`/`Q-A`).
       stale run to miss and recompute, then verifies same-runtime and
       fresh-runtime hits for the changed binary payload with no force-cache
       misses while preserving cache-on/cache-off `.drv` path and ATerm parity
-      for both file versions.
-      This proves selected ordinary filesystem full-arity first-class
-      `hashFile` payload trace admission, binary-safe revalidation, and
-      stale-payload fallback inside a derivation input surface only; partially
-      applied hashFile payload caching, allowed-path/IFD/fetch interactions,
-      text-store-only paths, full automatic demand-edge wiring, and
-      edge-exactness harness coverage remain open
+      for both file versions. The adjacent
+      `persistent_partial_hash_file_force_cache_hit_and_stale_miss_preserve_drv_surfaces`
+      stores `b.hashFile "sha256"` in a binding and applies that named partial
+      later, requiring the same hit, stale-miss, and post-recompute surfaces.
+      This proves selected ordinary filesystem full-arity and named-partial
+      first-class `hashFile` payload trace admission, binary-safe revalidation,
+      and stale-payload fallback inside a derivation input surface only;
+      allowed-path/IFD/fetch interactions, text-store-only paths, full
+      automatic demand-edge wiring, and edge-exactness harness coverage remain open
       (`R-10`/`S-14`).
 - [x] Current cache-side impure leaf substrate: domain-separated
       `DemandCacheKey` construction from typed input identities,
