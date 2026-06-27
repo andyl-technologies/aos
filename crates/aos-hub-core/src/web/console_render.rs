@@ -1641,39 +1641,25 @@ pub fn org_dashboard(
         // and any custom binding is purely additive (no prose needed to say so). Its
         // concrete location is a deployment-global setting shown on instance
         // settings, so the location cell links there rather than repeating it.
-        let mut rows: Vec<Vec<String>> = vec![vec![
-            "<span class=\"chip\">default</span>".to_string(),
-            escape(RuntimeKind::current().default_storage_kind()),
-            "<a href=\"/-/instance/storage\">deployment default →</a>".to_string(),
-            String::new(),
-        ]];
-        rows.extend(bindings.iter().map(|b| {
-            let action = if can_configure {
-                format!(
-                    "<form class=\"console\" method=\"post\" \
-                 action=\"/-/org/{org}/bindings/delete\" style=\"display:inline\">{csrf}\
-                 <input type=\"hidden\" name=\"id\" value=\"{id}\">\
-                 <button class=\"danger\">delete</button></form>",
-                    org = escape(slug),
-                    csrf = csrf_field(csrf),
-                    id = b.id,
-                )
-            } else {
-                String::new()
-            };
-            let location = if b.kind == "local_fs" {
-                format!("<code>{}</code>", escape(&b.root))
-            } else {
-                // Object store: show endpoint + bucket + access mode, never the
-                // sealed credential.
-                let endpoint = b.endpoint.as_deref().unwrap_or("");
-                format!(
-                    "<code>{endpoint}/{bucket}</code> · {access}",
-                    endpoint = escape(endpoint.trim_end_matches('/')),
-                    bucket = escape(&b.root),
-                    access = escape(&b.access),
-                )
-            };
+        // Render bindings as a compact stacked list (see `.binding` in the
+        // stylesheet), not a 4-column table: a long object-store endpoint URL
+        // gets the full content width to wrap into rather than squeezing the
+        // name/kind columns until a name spans two lines and the delete button
+        // hyphenates. The deployment default is always the first block (a
+        // `default` chip, no delete) so it is apparent storage already works and
+        // a binding is additive; its concrete location lives on instance
+        // settings, so the location links there.
+        body.push_str("<div class=\"bindings\">\n");
+        let _ = write!(
+            body,
+            "<div class=\"binding\"><div class=\"binding-head\">\
+             <span class=\"binding-name\"><span class=\"chip\">default</span></span>\
+             <span class=\"chip\">{kind}</span></div>\
+             <div class=\"binding-loc\"><a href=\"/-/instance/storage\">deployment default →</a></div>\
+             </div>\n",
+            kind = escape(RuntimeKind::current().default_storage_kind()),
+        );
+        for b in bindings.iter() {
             // The name links to the binding's serving page (public access +
             // frontends) for those who can configure it (RFC-0004 §12).
             let name_cell = if can_configure {
@@ -1686,9 +1672,49 @@ pub fn org_dashboard(
             } else {
                 escape(&b.name)
             };
-            vec![name_cell, escape(&b.kind), location, action]
-        }));
-        body.push_str(&table(&["name", "kind", "location", ""], &rows));
+            let delete = if can_configure {
+                format!(
+                    "<form class=\"console\" method=\"post\" \
+                     action=\"/-/org/{org}/bindings/delete\">{csrf}\
+                     <input type=\"hidden\" name=\"id\" value=\"{id}\">\
+                     <button class=\"danger\">delete</button></form>",
+                    org = escape(slug),
+                    csrf = csrf_field(csrf),
+                    id = b.id,
+                )
+            } else {
+                String::new()
+            };
+            // Object stores carry an access chip in the head and the
+            // endpoint+bucket on the wrapping location line; never the sealed
+            // credential. local_fs shows its host path.
+            let (access_chip, location) = if b.kind == "local_fs" {
+                (String::new(), format!("<code>{}</code>", escape(&b.root)))
+            } else {
+                let endpoint = b.endpoint.as_deref().unwrap_or("");
+                (
+                    format!("<span class=\"chip\">{}</span>", escape(&b.access)),
+                    format!(
+                        "<code>{endpoint}/{bucket}</code>",
+                        endpoint = escape(endpoint.trim_end_matches('/')),
+                        bucket = escape(&b.root),
+                    ),
+                )
+            };
+            let _ = write!(
+                body,
+                "<div class=\"binding\"><div class=\"binding-head\">\
+                 <span class=\"binding-name\">{name}</span>\
+                 <span class=\"chip\">{kind}</span>{access}{delete}</div>\
+                 <div class=\"binding-loc\">{location}</div></div>\n",
+                name = name_cell,
+                kind = escape(&b.kind),
+                access = access_chip,
+                delete = delete,
+                location = location,
+            );
+        }
+        body.push_str("</div>\n");
         if can_configure {
             let creatable = RuntimeKind::current().creatable_binding_kinds();
             body.push_str("<h4>Add a storage binding</h4>\n");
