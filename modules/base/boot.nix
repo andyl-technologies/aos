@@ -43,6 +43,30 @@ in {
       '';
     };
 
+    ## sd-boot boot-counting tries for durable image rollback (RFC-0011 §5.2).
+    ##
+    ## When non-null, the UKI staged into the ESP is named with the sd-boot
+    ## tries-suffix `aos-<name>-<version>+<tries>.efi`. sd-boot decrements the
+    ## counter on each boot attempt and auto-demotes (`+0-<tries>`) a UKI that
+    ## fails to boot, so a bad new image falls back to the other A/B slot
+    ## without operator action. Durable rollback to an older slot is then
+    ## `bootctl set-default` (apm, at runtime), NOT the `default aos-*.efi`
+    ## lexically-highest glob, which remains only the first-install fallback.
+    ##
+    ## `null` (the default) keeps the un-suffixed name and the legacy glob.
+    bootCountingTries = lib.mkOption {
+      type = lib.types.nullOr lib.types.int;
+      default = null;
+      description = ''
+        sd-boot boot-counting tries-suffix for the staged UKI (RFC-0011
+        durable image rollback). When set to N, the ESP UKI is named
+        `aos-<name>-<version>+N.efi`; sd-boot assesses the boot and demotes a
+        UKI that fails to start, falling back to the other A/B slot. Durable
+        rollback is `bootctl set-default`, not the lexical glob. `null` keeps
+        the un-suffixed filename and the glob-only selection.
+      '';
+    };
+
     initrd = {
       ## Whether to generate a systemd-based initrd.
       enable = lib.mkOption {

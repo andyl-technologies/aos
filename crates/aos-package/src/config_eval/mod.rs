@@ -756,6 +756,59 @@ pub fn run_eval_command(cmd: &EvalCommand) -> Result<()> {
     }
 }
 
+/// Re-evaluate a config-generation across an ABI boundary from its retained
+/// inputs (RFC-0011 build-spec §6, the cross-ABI rollback path).
+///
+/// When a config-gen's `module_abi_pinned` differs from the running image's
+/// `module_abi`, direct re-activation is refused and the generation is instead
+/// **re-evaluated** — never blindly replayed — against the rolled-back image's
+/// evaluator. This entrypoint maps the
+/// [`CrossAbiReEvalInputs`](crate::types::CrossAbiReEvalInputs) the rollback
+/// path looked up (the `host.nix` content-pin, the running base lib, the target
+/// ABI) into an [`EvalCommand`] and drives the existing fixpoint via
+/// [`run_eval_command`]. Because eval is pure and content-addressed, the
+/// recomputation is deterministic and usually cache-hits.
+///
+/// `running_base_lib` is the rolled-back image's base-lib store path (the ABI
+/// artifact retained on `/var` by the `image-gen-N/baselib/<module_abi>` root).
+/// `index`, `desired`, `eval_root`, and `out` mirror [`EvalCommand`]; the seed
+/// set and instance facts are resolved exactly as a normal eval. The §3 pre-eval
+/// ABI gate still applies inside [`run_fixpoint`], so a config module
+/// incompatible with the rolled-back ABI is refused fail-closed and the old gen
+/// stays live.
+///
+/// # Errors
+///
+/// Returns an error when the underlying [`run_eval_command`] fails — the index
+/// or seed set cannot be read, the fixpoint reaches a terminal state (including
+/// the pre-eval ABI gate refusing a module against `to_module_abi`), or the
+/// manifest cannot be written. No manifest is emitted on failure, so nothing
+/// downstream activates and the old config-gen stays live.
+pub fn reeval_cross_abi(
+    retained: &crate::types::CrossAbiReEvalInputs,
+    running_base_lib: &Path,
+    index: Option<PathBuf>,
+    desired: Option<PathBuf>,
+    eval_root: PathBuf,
+    out: PathBuf,
+    verbose: u8,
+) -> Result<()> {
+    let cmd = EvalCommand {
+        // The content-pinned host.nix the rolled-back-to config-gen recorded —
+        // fed back verbatim so re-eval reproduces the intended config (OQ5).
+        host_nix: PathBuf::from(&retained.host_nix_ref),
+        base_lib: running_base_lib.to_path_buf(),
+        index,
+        desired,
+        // Re-eval is pinned to the *running* (rolled-back) image's ABI.
+        module_abi: retained.to_module_abi,
+        out,
+        eval_root,
+        verbose,
+    };
+    run_eval_command(&cmd)
+}
+
 /// Load seed package names from a `desired.toml`, as bare working-set members.
 ///
 /// Only the top-level `packages` array is read; seed config-module metadata
