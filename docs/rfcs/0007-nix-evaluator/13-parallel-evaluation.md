@@ -783,15 +783,17 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       (§4.3, [12](12-incremental-evaluation-cache.md) §6.5) — **P3.5**
       precursor, `R-4`/`R-14`.
 - [x] Current same-root persistent node-metadata writer lock precursor:
-      independently opened `PersistCache` handles in one process now serialize
-      node-metadata read-modify-write operations and metadata compaction through
-      a process-local mutex keyed by the canonical cache root, so concurrent
-      same-root current-demand records preserve every increment and poisoned
-      live metadata locks fail before writing the sidecar. This is
-      same-process fixed-record coordination only, not cross-process
-      locking/CAS, the final LMDB/redb node table, work-stealing integration, or
-      loom/Miri audit (§4.3, [12](12-incremental-evaluation-cache.md) §6.5) —
-      **P3.5** precursor, `R-4`/`S-14`.
+      independently opened `PersistCache` handles now acquire the
+      `.locks/node-metadata.lock` advisory file before a process-local mutex
+      keyed by the canonical cache root, so cache-level node-metadata
+      read-modify-write operations and metadata compaction serialize for
+      cooperating writers. Concurrent same-root current-demand records preserve
+      every increment and poisoned live metadata locks fail before writing the
+      sidecar. This is cache-level fixed-record coordination only, not raw
+      lower-level sidecar enforcement, full locking/CAS, the final LMDB/redb
+      node table, work-stealing integration, or loom/Miri audit (§4.3,
+      [12](12-incremental-evaluation-cache.md) §6.5) — **P3.5** precursor,
+      `R-4`/`S-14`.
 - [x] Current same-root persistent node-trace writer lock precursor:
       independently opened `PersistCache` handles in one process now serialize
       trace-log appends and compaction through a process-local mutex keyed by

@@ -2049,6 +2049,49 @@ fn cache_node_metadata_index_records_and_looks_up_entries() {
 }
 
 #[test]
+fn cache_record_node_metadata_acquires_advisory_metadata_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_node_metadata_for_tests()
+        .expect("node metadata lock acquires");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let value = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(2, 3));
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .record_node_metadata(PersistNodeMetadataIndexEntry::new(key, value))
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("node metadata record result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.node_metadata_lock_path());
+    drop(guard);
+
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("node metadata record completes after same-process lock release")
+        .expect("node metadata record succeeds");
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.node_metadata_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("node metadata advisory lock releases after record");
+    drop(released_lock);
+    assert_eq!(
+        cache
+            .lookup_node_metadata(key)
+            .expect("node metadata lookup succeeds"),
+        Some(value)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_trace_log_records_and_looks_up_payloads() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -2894,6 +2937,49 @@ fn cache_node_materialization_reuse_records_and_looks_up_counters() {
 }
 
 #[test]
+fn cache_record_node_materialization_reuse_uses_advisory_metadata_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_node_metadata_for_tests()
+        .expect("node metadata lock acquires");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let reuse = MaterializationReuse::new(2, 3);
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .record_node_materialization_reuse(key, reuse)
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("node reuse record result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.node_metadata_lock_path());
+    drop(guard);
+
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("node reuse record completes after same-process lock release")
+        .expect("node reuse records");
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.node_metadata_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("node metadata advisory lock releases after reuse record");
+    drop(released_lock);
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(key)
+            .expect("node reuse lookup succeeds"),
+        Some(reuse)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_metadata_preserves_reuse_and_materialized_value_hash() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -2940,6 +3026,54 @@ fn cache_node_metadata_preserves_reuse_and_materialized_value_hash() {
             .len(),
         (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 3) as u64
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_record_node_value_hash_uses_advisory_metadata_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let reuse = MaterializationReuse::new(2, 3);
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+
+    cache
+        .record_node_materialization_reuse(key, reuse)
+        .expect("node reuse records");
+    let guard = cache
+        .lock_node_metadata_for_tests()
+        .expect("node metadata lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .record_node_materialized_value_hash(key, value_hash)
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("value hash record result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.node_metadata_lock_path());
+    drop(guard);
+
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("value hash record completes after same-process lock release")
+        .expect("value hash records");
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.node_metadata_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("node metadata advisory lock releases after value hash record");
+    drop(released_lock);
+    let metadata = cache
+        .lookup_node_metadata(key)
+        .expect("node metadata lookup succeeds")
+        .expect("node metadata exists");
+    assert_eq!(metadata.materialization_reuse(), reuse);
+    assert_eq!(metadata.materialized_value_hash(), Some(value_hash));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -2994,6 +3128,59 @@ fn cache_node_metadata_clear_materialized_value_hash_preserves_reuse() {
 }
 
 #[test]
+fn cache_clear_node_value_hash_uses_advisory_metadata_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let reuse = MaterializationReuse::new(2, 3);
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+
+    cache
+        .record_node_materialization_reuse(key, reuse)
+        .expect("node reuse records");
+    cache
+        .record_node_materialized_value_hash(key, value_hash)
+        .expect("value hash records");
+    let guard = cache
+        .lock_node_metadata_for_tests()
+        .expect("node metadata lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .clear_node_materialized_value_hash(key)
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("value hash clear result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.node_metadata_lock_path());
+    drop(guard);
+
+    let cleared = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("value hash clear completes after same-process lock release")
+        .expect("value hash clears");
+    assert!(cleared);
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.node_metadata_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("node metadata advisory lock releases after value hash clear");
+    drop(released_lock);
+    let metadata = cache
+        .lookup_node_metadata(key)
+        .expect("node metadata lookup succeeds")
+        .expect("node metadata exists");
+    assert_eq!(metadata.materialization_reuse(), reuse);
+    assert_eq!(metadata.materialized_value_hash(), None);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_current_demand_updates_latest_reuse_counters() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -3023,6 +3210,50 @@ fn cache_node_current_demand_updates_latest_reuse_counters() {
             .expect("node metadata index metadata")
             .len(),
         (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 3) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_node_current_demand_acquires_advisory_metadata_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_node_metadata_for_tests()
+        .expect("node metadata lock acquires");
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .record_node_current_demand(key)
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("current-demand record result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.node_metadata_lock_path());
+    drop(guard);
+
+    let recorded = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("current demand completes after same-process lock release")
+        .expect("current demand records");
+    assert_eq!(recorded, MaterializationReuse::new(0, 1));
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.node_metadata_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("node metadata advisory lock releases after current demand");
+    drop(released_lock);
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(key)
+            .expect("node reuse lookup succeeds"),
+        Some(MaterializationReuse::new(0, 1))
     );
 
     let _ = fs::remove_dir_all(root);
@@ -3244,6 +3475,64 @@ fn cache_node_materialization_reuse_advances_run_boundaries() {
 }
 
 #[test]
+fn cache_advance_node_reuse_run_uses_advisory_metadata_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(1, 2))
+        .expect("node reuse records");
+    cache
+        .record_node_materialized_value_hash(key, value_hash)
+        .expect("value hash records");
+    let guard = cache
+        .lock_node_metadata_for_tests()
+        .expect("node metadata lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .advance_node_materialization_reuse_run(key)
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("reuse advance result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.node_metadata_lock_path());
+    drop(guard);
+
+    let advanced = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("reuse advance completes after same-process lock release")
+        .expect("reuse advances");
+    assert_eq!(advanced, Some(MaterializationReuse::new(3, 0)));
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.node_metadata_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("node metadata advisory lock releases after reuse advance");
+    drop(released_lock);
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(key)
+            .expect("node reuse lookup succeeds"),
+        Some(MaterializationReuse::new(3, 0))
+    );
+    assert_eq!(
+        cache
+            .lookup_node_materialized_value_hash(key)
+            .expect("value hash lookup succeeds"),
+        Some(value_hash)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_all_node_materialization_reuse_advances_changed_latest_entries() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -3330,6 +3619,76 @@ fn cache_all_node_materialization_reuse_advances_changed_latest_entries() {
 }
 
 #[test]
+fn cache_advance_all_node_reuse_runs_uses_advisory_metadata_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let other_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(1, 2))
+        .expect("node reuse records");
+    cache
+        .record_node_materialized_value_hash(key, value_hash)
+        .expect("value hash records");
+    cache
+        .record_node_materialization_reuse(other_key, MaterializationReuse::new(5, 0))
+        .expect("other reuse records");
+    let guard = cache
+        .lock_node_metadata_for_tests()
+        .expect("node metadata lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .advance_all_node_materialization_reuse_runs()
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("all reuse advance result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.node_metadata_lock_path());
+    drop(guard);
+
+    let advanced = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("all reuse advance completes after same-process lock release")
+        .expect("all reuse advances");
+    assert_eq!(advanced.len(), 1);
+    assert!(advanced.contains(&PersistNodeMetadataIndexEntry::new(
+        key,
+        PersistNodeMetadataIndexValue::with_materialized_value_hash(
+            MaterializationReuse::new(3, 0),
+            value_hash
+        )
+    )));
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.node_metadata_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("node metadata advisory lock releases after all reuse advance");
+    drop(released_lock);
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(key)
+            .expect("node reuse lookup succeeds"),
+        Some(MaterializationReuse::new(3, 0))
+    );
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(other_key)
+            .expect("other node reuse lookup succeeds"),
+        Some(MaterializationReuse::new(5, 0))
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_metadata_compacts_to_latest_entries() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -3386,6 +3745,58 @@ fn cache_node_metadata_compacts_to_latest_entries() {
             .expect("node metadata index metadata")
             .len(),
         (PERSIST_NODE_METADATA_INDEX_ENTRY_LEN * 2) as u64
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_compact_node_metadata_acquires_advisory_metadata_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(1, 2))
+        .expect("stale reuse records");
+    cache
+        .record_node_materialization_reuse(key, MaterializationReuse::new(5, 6))
+        .expect("latest reuse records");
+    let guard = cache
+        .lock_node_metadata_for_tests()
+        .expect("node metadata lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .compact_node_metadata()
+            .map_err(|error| error.to_string());
+        tx.send(result)
+            .expect("node metadata compaction result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.node_metadata_lock_path());
+    drop(guard);
+
+    let retained = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("node metadata compaction completes after same-process lock release")
+        .expect("node metadata compaction succeeds");
+    assert_eq!(retained, 1);
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.node_metadata_lock_path(),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("node metadata advisory lock releases after compaction");
+    drop(released_lock);
+    assert_eq!(
+        cache
+            .lookup_node_materialization_reuse(key)
+            .expect("node reuse lookup succeeds"),
+        Some(MaterializationReuse::new(5, 6))
     );
 
     let _ = fs::remove_dir_all(root);

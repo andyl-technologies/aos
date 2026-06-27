@@ -630,6 +630,14 @@ pub enum PersistNodeMetadataIndexError {
     /// The in-process node metadata write lock was poisoned by a prior panic.
     #[error("persistent node metadata write lock was poisoned")]
     WriteLockPoisoned,
+    /// The advisory node-metadata write lock could not be acquired.
+    #[error("failed to acquire persistent node metadata advisory write lock at {path}")]
+    AdvisoryWriteLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The index parent directory could not be created.
     #[error("failed to create persistent node metadata index parent {path:?}")]
     CreateParent {

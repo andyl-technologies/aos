@@ -1614,9 +1614,9 @@ impl PersistCache {
     ///
     /// This explicit maintenance operation rewrites the value and file blob
     /// indexes, file-artifact and parse-artifact indexes, demand-node metadata
-    /// index, and node verifying-trace log. The blob-index and artifact-mapping
-    /// compaction phases use per-sidecar advisory locks; node metadata and
-    /// trace compactions remain same-process coordinated only. This does not
+    /// index, and node verifying-trace log. The blob-index, artifact-mapping,
+    /// and node-metadata compaction phases use per-sidecar advisory locks;
+    /// trace compaction remains same-process coordinated only. This does not
     /// rewrite blob packs, drop unreferenced blobs, coordinate raw lower-level
     /// sidecar users, or implement an automatic GC policy.
     ///
@@ -1666,8 +1666,9 @@ impl PersistCache {
     /// phase fails remains committed. It does not implement an automatic GC
     /// policy, relocate live pack records, coordinate raw lower-level pack or
     /// sidecar users, or replace the future LMDB/redb metadata engine. Only
-    /// the blob-index compaction/rebuild, file/parse artifact compaction, and
-    /// blob-pack tail-trim phases use advisory locks.
+    /// the blob-index compaction/rebuild, file/parse artifact compaction,
+    /// node-metadata compaction, and blob-pack tail-trim phases use advisory
+    /// locks.
     ///
     /// # Errors
     ///
@@ -1918,6 +1919,16 @@ impl PersistCache {
         Ok((advisory_guard, write_guard))
     }
 
+    fn lock_node_metadata_write(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistNodeMetadataIndexError> {
+        let path = self.layout.node_metadata_lock_path();
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Exclusive)
+            .map_err(|source| PersistNodeMetadataIndexError::AdvisoryWriteLock { path, source })?;
+        let write_guard = self.root_locks.lock_node_metadata()?;
+        Ok((advisory_guard, write_guard))
+    }
+
     /// Appends a blob to the packfile selected by `key`.
     ///
     /// # Errors
@@ -2103,14 +2114,14 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
-    /// write lock is poisoned or if the sidecar index cannot be opened,
-    /// validated, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the advisory metadata lock
+    /// cannot be acquired, if the same-root metadata write lock is poisoned, or
+    /// if the sidecar index cannot be opened, validated, written, or flushed.
     pub fn record_node_metadata(
         &self,
         entry: PersistNodeMetadataIndexEntry,
     ) -> Result<(), PersistNodeMetadataIndexError> {
-        let _write_guard = self.root_locks.lock_node_metadata()?;
+        let (_advisory_guard, _write_guard) = self.lock_node_metadata_write()?;
         self.record_node_metadata_unlocked(entry)
     }
 
@@ -2226,15 +2237,16 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
-    /// write lock is poisoned or if the sidecar index cannot be opened, read,
-    /// decoded, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the advisory metadata lock
+    /// cannot be acquired, if the same-root metadata write lock is poisoned, or
+    /// if the sidecar index cannot be opened, read, decoded, written, or
+    /// flushed.
     pub fn record_node_materialization_reuse(
         &self,
         key: PersistNodeMetadataKey,
         reuse: MaterializationReuse,
     ) -> Result<(), PersistNodeMetadataIndexError> {
-        let _write_guard = self.root_locks.lock_node_metadata()?;
+        let (_advisory_guard, _write_guard) = self.lock_node_metadata_write()?;
         let value = self
             .lookup_node_metadata_unlocked(key)?
             .unwrap_or_else(|| PersistNodeMetadataIndexValue::new(MaterializationReuse::default()))
@@ -2267,15 +2279,16 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
-    /// write lock is poisoned or if the sidecar index cannot be opened, read,
-    /// decoded, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the advisory metadata lock
+    /// cannot be acquired, if the same-root metadata write lock is poisoned, or
+    /// if the sidecar index cannot be opened, read, decoded, written, or
+    /// flushed.
     pub fn record_node_materialized_value_hash(
         &self,
         key: PersistNodeMetadataKey,
         value_hash: ValueHash,
     ) -> Result<(), PersistNodeMetadataIndexError> {
-        let _write_guard = self.root_locks.lock_node_metadata()?;
+        let (_advisory_guard, _write_guard) = self.lock_node_metadata_write()?;
         let value = self
             .lookup_node_metadata_unlocked(key)?
             .unwrap_or_else(|| PersistNodeMetadataIndexValue::new(MaterializationReuse::default()))
@@ -2292,14 +2305,15 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
-    /// write lock is poisoned or if the sidecar index cannot be opened, read,
-    /// decoded, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the advisory metadata lock
+    /// cannot be acquired, if the same-root metadata write lock is poisoned, or
+    /// if the sidecar index cannot be opened, read, decoded, written, or
+    /// flushed.
     pub fn clear_node_materialized_value_hash(
         &self,
         key: PersistNodeMetadataKey,
     ) -> Result<bool, PersistNodeMetadataIndexError> {
-        let _write_guard = self.root_locks.lock_node_metadata()?;
+        let (_advisory_guard, _write_guard) = self.lock_node_metadata_write()?;
         let Some(value) = self.lookup_node_metadata_unlocked(key)? else {
             return Ok(false);
         };
@@ -2687,20 +2701,22 @@ impl PersistCache {
     /// The helper reads the latest persisted counters, starts from empty
     /// counters on a miss, appends the updated counters while preserving any
     /// materialized value-hash link, and returns the value that was recorded
-    /// while holding the same-root metadata write lock. Cross-process writers
-    /// must still be excluded by the caller because this fixed-record sidecar
-    /// stores absolute counters under newest-record lookup semantics.
+    /// while holding the advisory and same-root metadata write locks. Raw
+    /// lower-level sidecar users must still be excluded by the caller because
+    /// this fixed-record sidecar stores absolute counters under newest-record
+    /// lookup semantics.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
-    /// write lock is poisoned or if the sidecar index cannot be opened, read,
-    /// decoded, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the advisory metadata lock
+    /// cannot be acquired, if the same-root metadata write lock is poisoned, or
+    /// if the sidecar index cannot be opened, read, decoded, written, or
+    /// flushed.
     pub fn record_node_current_demand(
         &self,
         key: PersistNodeMetadataKey,
     ) -> Result<MaterializationReuse, PersistNodeMetadataIndexError> {
-        let _write_guard = self.root_locks.lock_node_metadata()?;
+        let (_advisory_guard, _write_guard) = self.lock_node_metadata_write()?;
         let value = self
             .lookup_node_metadata_unlocked(key)?
             .unwrap_or_else(|| PersistNodeMetadataIndexValue::new(MaterializationReuse::default()));
@@ -2758,19 +2774,20 @@ impl PersistCache {
     /// record. Existing entries append the counters returned by
     /// [`MaterializationReuse::advance_run`], preserve any materialized
     /// value-hash link, and return the recorded reuse counters while holding
-    /// the same-root metadata write lock. Cross-process writers must still be
-    /// excluded by the caller.
+    /// the advisory and same-root metadata write locks. Raw lower-level
+    /// sidecar users must still be excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
-    /// write lock is poisoned or if the sidecar index cannot be opened, read,
-    /// decoded, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the advisory metadata lock
+    /// cannot be acquired, if the same-root metadata write lock is poisoned, or
+    /// if the sidecar index cannot be opened, read, decoded, written, or
+    /// flushed.
     pub fn advance_node_materialization_reuse_run(
         &self,
         key: PersistNodeMetadataKey,
     ) -> Result<Option<MaterializationReuse>, PersistNodeMetadataIndexError> {
-        let _write_guard = self.root_locks.lock_node_metadata()?;
+        let (_advisory_guard, _write_guard) = self.lock_node_metadata_write()?;
         let Some(value) = self.lookup_node_metadata_unlocked(key)? else {
             return Ok(None);
         };
@@ -2789,18 +2806,19 @@ impl PersistCache {
     /// [`MaterializationReuse::advance_run`] for entries whose counters change
     /// while preserving any materialized value-hash link, and returns the
     /// entries that were appended in stable key order while holding the
-    /// same-root metadata write lock. Cross-process writers must still be
-    /// excluded by the caller.
+    /// advisory and same-root metadata write locks. Raw lower-level sidecar
+    /// users must still be excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
-    /// write lock is poisoned or if the sidecar index cannot be opened, read,
-    /// decoded, written, or flushed.
+    /// Returns [`PersistNodeMetadataIndexError`] if the advisory metadata lock
+    /// cannot be acquired, if the same-root metadata write lock is poisoned, or
+    /// if the sidecar index cannot be opened, read, decoded, written, or
+    /// flushed.
     pub fn advance_all_node_materialization_reuse_runs(
         &self,
     ) -> Result<Vec<PersistNodeMetadataIndexEntry>, PersistNodeMetadataIndexError> {
-        let _write_guard = self.root_locks.lock_node_metadata()?;
+        let (_advisory_guard, _write_guard) = self.lock_node_metadata_write()?;
         let mut recorded = Vec::new();
         for entry in self.node_metadata_index.latest_entries()? {
             let reuse = entry.value().materialization_reuse();
@@ -2820,17 +2838,19 @@ impl PersistCache {
 
     /// Compacts node metadata to the newest record for every known demand node.
     ///
-    /// Same-process writers opened on the same cache root share a metadata
-    /// write lock while this method rewrites the sidecar. Cross-process writers
-    /// must still be excluded by the caller.
+    /// Cache-level writers opened on the same cache root share the metadata
+    /// advisory lock and same-root write lock while this method rewrites the
+    /// sidecar. Raw lower-level sidecar users must still be excluded by the
+    /// caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeMetadataIndexError`] if the same-root metadata
-    /// write lock is poisoned or if the sidecar index cannot be opened, read,
-    /// decoded, written, flushed, or renamed into place.
+    /// Returns [`PersistNodeMetadataIndexError`] if the advisory metadata lock
+    /// cannot be acquired, if the same-root metadata write lock is poisoned, or
+    /// if the sidecar index cannot be opened, read, decoded, written, flushed,
+    /// or renamed into place.
     pub fn compact_node_metadata(&self) -> Result<usize, PersistNodeMetadataIndexError> {
-        let _write_guard = self.root_locks.lock_node_metadata()?;
+        let (_advisory_guard, _write_guard) = self.lock_node_metadata_write()?;
         self.node_metadata_index.compact_latest_entries()
     }
 

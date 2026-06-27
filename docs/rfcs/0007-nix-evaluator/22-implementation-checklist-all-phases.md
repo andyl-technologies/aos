@@ -1660,18 +1660,20 @@ alone (`M-1`/`Q-A`).
       pack/index writers, different roots, two-machine misses, full
       filesystem-lock/CAS policy, automatic repair/GC policy, LMDB/redb
       transactions, and loom/harness proof remain open (`C-13`/`R-4`/`R-14`).
-- [x] Current same-process same-root node-metadata writer lock precursor:
-      independently opened `PersistCache` handles in one process acquire their
-      node-metadata write mutex from `ratchet-cache::root_locks`, so raw
-      metadata appends, typed reuse/value-hash read-modify-appends,
-      current-demand increments, run-boundary advancement, and metadata
-      compaction serialize for a live canonical cache root.
-      Concurrent same-root demand records keep every current-run increment, and
-      a poisoned live metadata lock is reported before any sidecar write. Raw
-      lower-level `PersistNodeMetadataIndex` users, different roots,
-      multi-process writers, two-machine races, durable filesystem locks/CAS,
-      LMDB/redb node tables, automatic GC/repack, and loom/harness proof remain
-      open (`C-13`/`R-4`/`S-14`).
+- [x] Current same-process plus advisory node-metadata writer lock precursor:
+      independently opened `PersistCache` handles in one process acquire an
+      exclusive `ratchet-cache::file_lock::AdvisoryFileLock` at
+      `.locks/node-metadata.lock` before acquiring their node-metadata write
+      mutex from `ratchet-cache::root_locks`, so cache-level raw metadata
+      appends, typed reuse/value-hash read-modify-appends, current-demand
+      increments, run-boundary advancement, and metadata compaction serialize
+      for a live canonical cache root. Concurrent same-root demand records keep
+      every current-run increment, poisoned live metadata locks are reported
+      before any sidecar write, and cooperating cross-process cache-level
+      metadata writers share the same advisory file. Raw lower-level
+      `PersistNodeMetadataIndex` users, different roots, two-machine races,
+      full CAS-grade coordination, LMDB/redb node tables, automatic GC/repack,
+      and loom/harness proof remain open (`C-13`/`R-4`/`S-14`).
 - [x] Current same-process same-root node-trace writer lock precursor:
       independently opened `PersistCache` handles in one process acquire their
       node-trace write mutex from `ratchet-cache::root_locks`, so trace appends
@@ -1726,12 +1728,14 @@ alone (`M-1`/`Q-A`).
       blob-pack tail trim, and blob-pack repack use it for `.locks/values.lock`
       and `.locks/files.lock`, and cache-level file/parse artifact mapping
       writes plus file-pack maintenance phases use `.locks/file-artifacts.lock`
-      and `.locks/parse-artifacts.lock`. This is filesystem-lock substrate plus
-      open-initialization and selected cache-level blob-store/mapping
-      writes/maintenance only: raw/lower-level pack/index/sidecar writers,
-      cross-process pending artifact publication, mmap read leases, CAS
-      protocols, mandatory locking, raw-writer enforcement, two-machine races,
-      and loom/harness proof remain open (`R-4`/`R-14`).
+      and `.locks/parse-artifacts.lock`, and cache-level node metadata writes
+      plus metadata compaction use `.locks/node-metadata.lock`. This is
+      filesystem-lock substrate plus open-initialization and selected
+      cache-level blob-store/mapping/metadata writes/maintenance only:
+      raw/lower-level pack/index/sidecar writers, cross-process pending artifact
+      publication, mmap read leases, CAS protocols, mandatory locking,
+      raw-writer enforcement, two-machine races, and loom/harness proof remain
+      open (`R-4`/`R-14`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and
@@ -1845,33 +1849,38 @@ alone (`M-1`/`Q-A`).
       counters on a miss, appends a saturated current-demand increment, and
       returns the recorded value. Reuse updates preserve any existing
       materialized cached-expression value-hash link in the same metadata
-      record, and same-process same-root writers share the metadata write lock
-      for the read-modify-append critical section. This is caller-driven and
-      append-only; evaluator call-site integration is covered by the
-      force-cache accounting and public run-boundary rows below, while
-      cross-process writer coordination, LMDB/redb node tables, compaction/GC,
-      and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
+      record, and cache-level writers acquire `.locks/node-metadata.lock`
+      before the same-root metadata write lock for the read-modify-append
+      critical section. This is caller-driven and append-only; evaluator
+      call-site integration is covered by the force-cache accounting and public
+      run-boundary rows below, while raw lower-level sidecar users, different
+      cache roots, full two-machine/CAS-grade coordination, LMDB/redb node
+      tables, compaction/GC policy, and AOS tuning remain open
+      (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node reuse run-boundary adapter:
       `PersistCache::advance_node_materialization_reuse_run` looks up the
       newest counters for one node key, returns `None` without writing on a
       miss, and otherwise appends `MaterializationReuse::advance_run` so
       current-run observations become prior-run reuse signal for later runs
       while preserving any materialized value-hash link. This is caller-driven
-      and append-only, with same-process same-root writers serialized by the
-      metadata write lock; Drop/panic/error-path process-boundary orchestration,
-      cross-process writer coordination, LMDB/redb node tables, compaction/GC,
-      and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
+      and append-only, with cache-level writers serialized by
+      `.locks/node-metadata.lock` plus the same-root metadata write lock;
+      Drop/panic/error-path process-boundary orchestration, raw lower-level
+      sidecar users, different cache roots, full two-machine/CAS-grade
+      coordination, LMDB/redb node tables, compaction/GC policy, and AOS tuning
+      remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node reuse sidecar advancement:
       `PersistNodeMetadataIndex::latest_entries` scans the fixed-record
       metadata sidecar into deterministic newest-entry-per-key order, and
       `PersistCache::advance_all_node_materialization_reuse_runs` appends
       changed `MaterializationReuse::advance_run` records for all known node
       keys while preserving materialized value-hash links and skipping no-op
-      counters. This is caller-driven and append-only, with same-process
-      same-root writers serialized by the metadata write lock;
-      Drop/panic/error-path process-boundary orchestration, cross-process
-      writer coordination, LMDB/redb node tables, automatic compaction/GC
-      policy, and AOS tuning remain open
+      counters. This is caller-driven and append-only, with cache-level writers
+      serialized by `.locks/node-metadata.lock` plus the same-root metadata
+      write lock; Drop/panic/error-path process-boundary orchestration, raw
+      lower-level sidecar users, different cache roots,
+      full two-machine/CAS-grade coordination, LMDB/redb node tables, automatic
+      compaction/GC policy, and AOS tuning remain open
       (`C-13`/`C-14`/`S-14`).
 - [x] Current public evaluator reuse run-boundary advancement:
       successful public tree-walk free-function evaluation exits (`eval_whnf*`,
@@ -1883,20 +1892,21 @@ alone (`M-1`/`Q-A`).
       materialization history without creating a persistent cache for
       evaluations that never touched it. This is public free-function
       entry-point orchestration only; low-level `TreeWalk::eval_root`/`eval_node`
-      advancement, Drop/panic/error-path advancement, cross-process writer
-      locking, LMDB/redb node tables, automatic compaction/GC policy, and AOS
-      tuning remain open (`C-13`/`C-14`/`S-14`).
+      advancement, Drop/panic/error-path advancement, raw lower-level sidecar
+      coordination, full two-machine/CAS-grade coordination, LMDB/redb node
+      tables, automatic compaction/GC policy, and AOS tuning remain open
+      (`C-13`/`C-14`/`S-14`).
 - [x] Current explicit node metadata sidecar compaction:
       `PersistNodeMetadataIndex::compact_latest_entries` rewrites
       `nodes/metadata.index` through a temporary file and rename so only the
       newest record for each node metadata key remains in stable key order,
       including any materialized value-hash link, and
       `PersistCache::compact_node_metadata` exposes that operation through the
-      opened cache root. This is caller-driven, with same-process same-root
-      writers serialized by the metadata write lock; automatic
-      process-boundary orchestration, cross-process writer coordination,
-      LMDB/redb node tables, automatic compaction/GC policy, and AOS tuning
-      remain open (`C-13`/`C-14`/`S-14`).
+      opened cache root. This is caller-driven, with cache-level writers
+      serialized by the node-metadata advisory lock plus same-process same-root
+      metadata write lock; automatic process-boundary orchestration, raw
+      lower-level sidecar coordination, LMDB/redb node tables, automatic
+      compaction/GC policy, and AOS tuning remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current force-cache persistent demand accounting:
       tree-walk `force_value` derives `PersistNodeMetadataKey` from the same
       lookup-safe `ForceCacheSubject` identity and ordered free-variable hashes
@@ -1907,9 +1917,10 @@ alone (`M-1`/`Q-A`).
       `currentTime` have no metadata identity and are not counted. This is
       current-run demand accounting only; public successful run-boundary
       advancement is covered above, while Drop/panic/error-path advancement,
-      cross-process writer coordination, durable cached-payload hit selection,
-      LMDB/redb node tables, automatic compaction/GC policy, and AOS tuning
-      remain open (`C-13`/`C-14`/`S-14`).
+      raw lower-level sidecar coordination, full two-machine/CAS-grade
+      coordination, durable cached-payload hit selection, LMDB/redb node tables,
+      automatic compaction/GC policy, and AOS tuning remain open
+      (`C-13`/`C-14`/`S-14`).
 - [x] Current node-reuse materialization decision adapter:
       `PersistCache::node_materialization_signals` and
       `node_materialization_decision` read the newest persisted
@@ -2096,13 +2107,13 @@ alone (`M-1`/`Q-A`).
       counts for the newest entries retained by each sidecar, with
       `PersistCompactionError` preserving the failing sidecar type. This is a
       caller-driven maintenance helper only; it is sequential rather than
-      transactional, gives advisory coordination to the value/file blob-index
-      and file/parse artifact compaction phases, requires callers to serialize
-      raw lower-level sidecar writes and node-sidecar cross-process writers that
-      bypass the current same-root locks, does not rewrite blob packs or drop
-      unreferenced blobs, and still leaves automatic compaction/GC policy,
-      LMDB/redb indexes, pack GC/repack, mmap reads, Attic transport, and
-      cached/uncached harness proof open
+      transactional, gives advisory coordination to the value/file blob-index,
+      file/parse artifact, and node-metadata compaction phases, requires callers
+      to serialize raw lower-level sidecar writes and trace-sidecar
+      cross-process writers that bypass the current same-root locks, does not
+      rewrite blob packs or drop unreferenced blobs, and still leaves automatic
+      compaction/GC policy, LMDB/redb indexes, pack GC/repack, mmap reads, Attic
+      transport, and cached/uncached harness proof open
       (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the
       all-sidecar compaction cache test.
 - [x] Current explicit storage maintenance sweep:
@@ -2119,12 +2130,13 @@ alone (`M-1`/`Q-A`).
       records become indexed roots before trimming. This is sequential
       caller-driven maintenance only; it does not run the explicit full-pack
       repack helpers, gives advisory coordination to blob-index
-      compaction/rebuild, file/parse artifact compaction, and blob-pack
-      tail-trim phases, and automatic compaction/GC policy, transactionality
-      across sidecar/rebuild/pack phases, raw lower-level pack or sidecar writer
-      coordination, node-sidecar cross-process writer coordination,
-      cross-process pending artifact publication, LMDB/redb indexes, mmap reads,
-      Attic transport, and cached/uncached harness proof remain open
+      compaction/rebuild, file/parse artifact compaction, node-metadata
+      compaction, and blob-pack tail-trim phases, and automatic compaction/GC
+      policy, transactionality across sidecar/rebuild/pack phases, raw
+      lower-level pack or sidecar writer coordination, trace-sidecar
+      cross-process writer coordination, cross-process pending artifact
+      publication, LMDB/redb indexes, mmap reads, Attic transport, and
+      cached/uncached harness proof remain open
       (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the storage maintenance cache
       tests.
 - [x] Current explicit storage repack sweep:
@@ -2141,7 +2153,7 @@ alone (`M-1`/`Q-A`).
       committed before that failure. This is sequential caller-driven
       maintenance only; automatic compaction/GC policy, transactionality across
       sidecar/repack phases, raw lower-level pack or sidecar writer
-      coordination, node-sidecar cross-process writer coordination,
+      coordination, trace-sidecar cross-process writer coordination,
       cross-process pending artifact publication, LMDB/redb indexes, mmap reads,
       Attic transport, and cached/uncached harness proof remain open
       (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the storage repack cache tests.
