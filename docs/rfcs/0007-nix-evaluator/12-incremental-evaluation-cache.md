@@ -1045,13 +1045,20 @@ harness, never cut for scope.
       surface to differ from the unfiltered `builtins.path` surface, and scans
       those filterSource surfaces for root/import parse-cache BLAKE3,
       imported-file content BLAKE3, included/excluded file-content BLAKE3
-      sentinels, and hot xxh3 canaries. These sample selected
+      sentinels, and hot xxh3 canaries.
+      `configured_import_cache_preserves_to_file_store_path_surface` evaluates
+      `builtins.toFile (import nameFile) (import contentsFile)` with import
+      caching disabled, with configured parse/persist roots on a miss/write
+      path, and with a later persistent-hit path, requires identical text-store
+      path strings across all three runs, and scans those toFile surfaces for
+      root/name/content parse-cache BLAKE3, imported-file content BLAKE3, and
+      hot xxh3 canaries. These sample selected
       `hashString`/`hashFile`/`fetchurl`/`fetchTarball`/`fetchGit`/`fetchTree`/
-      `builtins.path`/`filterSource` output surfaces only; they do not prove
-      every hash/fetch/source-path builtin or the full type-enforced
+      `builtins.path`/`filterSource`/`toFile` output surfaces only; they do not
+      prove every hash/fetch/source/text-path builtin or the full type-enforced
       leak-invariant path ([§5.2](#52-the-leak-invariant),
       [§8.3](#83-kill-switch-and-cache-off-mode)) — P1/P2 precursor, `S-15`;
-      gate: focused hash/fetch/source-path cache-surface canary tests.
+      gate: focused hash/fetch/source/text-path cache-surface canary tests.
 - [ ] Full P2 cache hashing remains: xxh3 demand-graph/in-process cache keys, BLAKE3 durable value-hashes and CA-store keys for persisted values/files, full type-enforced leak-invariant boundaries, and harness coverage proving xxh3/BLAKE3 cannot reach SHA-256 store-path or `.drv` hashes ([§5](#5-hashing-policy), [§5.2](#52-the-leak-invariant)) — P2, `S-15`.
 - [ ] **Leak invariant**: no xxh3/blake3 output ever reaches a SHA-256 store-path/`.drv` hash; type-enforced ([§5.2](#52-the-leak-invariant)) — P2, `S-15`; gate: differential `.drv` harness.
 

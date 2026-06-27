@@ -1,6 +1,11 @@
 //! Tree-walk evaluator tests: context 3.
 
 use super::*;
+use crate::cache::{
+    DurableBlake3Hash, PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags, ParseCacheKey,
+    ParseFileKey, PersistCache, PersistFileArtifactKey,
+};
+use crate::string::NixString;
 
 #[test]
 fn store_path_primop_returns_context_bearing_store_strings() {
@@ -245,6 +250,212 @@ fn to_file_primop_builds_text_store_paths_and_context() {
             eval_json_bytes(source),
             br#"{"ctx":{"/nix/store/vxjiwkjkn7x4079qvh1jkl5pn05j2aw0-foo":{"path":true}},"dot":"/nix/store/1x49d9g8znzikskxdsx7k6kk2qzcdrps-.x","firstClass":"/nix/store/4falznnjmyg7iqca3qlskx9l79bh6hwd-hello","nested":"/nix/store/5xd714cbfnkz02h2vbsj4fm03x3f15nf-baz","nestedCtx":{"/nix/store/5xd714cbfnkz02h2vbsj4fm03x3f15nf-baz":{"path":true}},"path":"/nix/store/vxjiwkjkn7x4079qvh1jkl5pn05j2aw0-foo"}"#.to_vec()
         );
+}
+
+#[test]
+fn configured_import_cache_preserves_to_file_store_path_surface() {
+    fn evaluate_to_file_surface(
+        source: &str,
+        options: TreeWalkOptions,
+    ) -> (Vec<u8>, (usize, usize)) {
+        let ir = lower(source);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        let value = evaluator.eval_root().expect("toFile expression evaluates");
+        let import_stats = evaluator.import_parse_cache_stats();
+        let output = evaluator
+            .heap()
+            .get_string(value)
+            .expect("toFile result is a string")
+            .bytes()
+            .to_vec();
+        (output, import_stats)
+    }
+
+    fn configured_options(root: &Path, store_dir: &Path) -> TreeWalkOptions {
+        let mut options = TreeWalkOptions::with_store_dir(path_bytes(store_dir))
+            .expect("store directory configures");
+        options
+            .set_path_literal_base(path_bytes(root))
+            .expect("path base configures");
+        options
+    }
+
+    fn checked_store_path(output: &[u8], store_dir: &Path) -> PathBuf {
+        let path = PathBuf::from(std::str::from_utf8(output).expect("store path is UTF-8"));
+        assert!(
+            path.starts_with(store_dir),
+            "toFile store path {path:?} should stay under configured store dir {store_dir:?}"
+        );
+        path
+    }
+
+    fn assert_persistent_artifact(
+        persist_root: &Path,
+        realpath: &Path,
+        source: &[u8],
+        parse_key: ParseCacheKey,
+    ) {
+        let file_key = ParseFileKey::for_source(realpath, source);
+        let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+        assert!(
+            PersistCache::open(persist_root)
+                .expect("persistent cache opens")
+                .lookup_file_artifact(artifact_key)
+                .expect("persistent file-artifact lookup succeeds")
+                .is_some(),
+            "toFile canary import should materialize a persistent file-artifact mapping"
+        );
+    }
+
+    fn hot_string_surface_canaries(label: &str, bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let hot_canary = NixString::from_bytes(bytes.to_vec())
+            .structural_hash_xxh3()
+            .raw_for_tests();
+        vec![
+            (
+                format!("{label} hot xxh3 decimal"),
+                hot_canary.to_string().into_bytes(),
+            ),
+            (
+                format!("{label} hot xxh3 hex"),
+                format!("{hot_canary:016x}").into_bytes(),
+            ),
+            (
+                format!("{label} hot xxh3 little-endian bytes"),
+                hot_canary.to_le_bytes().to_vec(),
+            ),
+            (
+                format!("{label} hot xxh3 big-endian bytes"),
+                hot_canary.to_be_bytes().to_vec(),
+            ),
+        ]
+    }
+
+    let root = fs::canonicalize(unique_temp_dir("import-cache-to-file-surface-parity"))
+        .expect("temp directory canonicalizes");
+    let first_parse_root = root.join("first-parse-cache");
+    let second_parse_root = root.join("second-parse-cache");
+    let persist_root = root.join("persist-cache");
+    let store_dir = root.join("store");
+    fs::create_dir(&store_dir).expect("store directory creates");
+    let name_path = root.join("to-file-name.nix");
+    let contents_path = root.join("to-file-contents.nix");
+    let name = b"cache-surface-to-file";
+    let contents = b"toFile cache surface payload";
+    let name_source = format!(
+        "{}\n",
+        nix_string_literal(std::str::from_utf8(name).expect("name is UTF-8"))
+    )
+    .into_bytes();
+    let contents_source = format!(
+        "{}\n",
+        nix_string_literal(std::str::from_utf8(contents).expect("contents are UTF-8"))
+    )
+    .into_bytes();
+    fs::write(&name_path, &name_source).expect("toFile name import writes");
+    fs::write(&contents_path, &contents_source).expect("toFile contents import writes");
+    let name_realpath = fs::canonicalize(&name_path).expect("name path canonicalizes");
+    let contents_realpath = fs::canonicalize(&contents_path).expect("contents path canonicalizes");
+    let source = format!(
+        "builtins.toFile (import {}) (import {})",
+        path_source(&name_path),
+        path_source(&contents_path)
+    );
+
+    let uncached_options = configured_options(&root, &store_dir);
+    let (uncached_output, uncached_stats) = evaluate_to_file_surface(&source, uncached_options);
+    assert_eq!(uncached_stats, (0, 0));
+    assert!(
+        uncached_output.ends_with(b"-cache-surface-to-file"),
+        "toFile surface should expose the requested name: {uncached_output:?}"
+    );
+    checked_store_path(&uncached_output, &store_dir);
+
+    let mut miss_options = configured_options(&root, &store_dir);
+    miss_options.set_parse_cache_root(&first_parse_root);
+    miss_options.set_persist_cache_root(&persist_root);
+    let (miss_output, miss_stats) = evaluate_to_file_surface(&source, miss_options);
+    assert_eq!(miss_stats, (0, 2));
+    assert_eq!(miss_output, uncached_output);
+
+    let mut hit_options = configured_options(&root, &store_dir);
+    hit_options.set_parse_cache_root(&second_parse_root);
+    hit_options.set_persist_cache_root(&persist_root);
+    let (hit_output, hit_stats) = evaluate_to_file_surface(&source, hit_options);
+    assert_eq!(hit_stats, (2, 0));
+    assert_eq!(hit_output, uncached_output);
+
+    let second_parse = ParseCache::new(&second_parse_root);
+    assert!(
+        second_parse.entry_for_source(&name_source).is_complete(),
+        "persistent hit should hydrate the imported name parse-cache entry"
+    );
+    assert!(
+        second_parse
+            .entry_for_source(&contents_source)
+            .is_complete(),
+        "persistent hit should hydrate the imported contents parse-cache entry"
+    );
+
+    let root_parse_key = ParseCacheKey::for_source(
+        source.as_bytes(),
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let name_parse_key = ParseCacheKey::for_source(
+        &name_source,
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let contents_parse_key = ParseCacheKey::for_source(
+        &contents_source,
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    assert_persistent_artifact(&persist_root, &name_realpath, &name_source, name_parse_key);
+    assert_persistent_artifact(
+        &persist_root,
+        &contents_realpath,
+        &contents_source,
+        contents_parse_key,
+    );
+
+    let mut canaries = durable_hash_surface_canaries(
+        "root parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(root_parse_key.as_bytes()),
+    );
+    canaries.extend(durable_hash_surface_canaries(
+        "name import parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(name_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "contents import parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(contents_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "name import file-content BLAKE3",
+        ParseFileKey::for_source(&name_realpath, &name_source).content_hash(),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "contents import file-content BLAKE3",
+        ParseFileKey::for_source(&contents_realpath, &contents_source).content_hash(),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "toFile contents BLAKE3 sentinel",
+        DurableBlake3Hash::for_bytes(contents),
+    ));
+    canaries.extend(hot_string_surface_canaries("toFile name", name));
+    canaries.extend(hot_string_surface_canaries("toFile contents", contents));
+
+    for (surface_name, output) in [
+        ("cache-disabled toFile surface", &uncached_output),
+        ("persistent miss toFile surface", &miss_output),
+        ("persistent hit toFile surface", &hit_output),
+    ] {
+        assert_surface_canaries_absent(surface_name, "store path", output, &canaries);
+    }
+
+    fs::remove_dir_all(root).expect("temp directory removes");
 }
 
 #[test]
