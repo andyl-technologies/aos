@@ -2202,8 +2202,8 @@ alone (`M-1`/`Q-A`).
       impure calls share this path through a force-cache subject keyed by
       apply-node identity, builtin name, and argument value hashes: unary
       `import`, `pathExists`, `readDir`, `readFile`, `readFileType`, and
-      `getEnv`, plus full-arity, named-partial, and immutable text-store
-      `hashFile`. Hits
+      `getEnv`, including selected immutable text-store `readFile`, plus
+      full-arity, named-partial, and immutable text-store `hashFile`. Hits
       rehydrate replayable payloads into the
       current evaluator heap, preserving source-order attrset metadata and
       root-or-own-module binding source positions when the durable payload carries those attrset
@@ -2296,15 +2296,22 @@ alone (`M-1`/`Q-A`).
       hits and load the expected force-cache metadata keys, require
       materializing runs to persist the exact filesystem traces, and require
       persistent-hit revalidation to replay the matching filesystem
-      fingerprints into the enclosing impure-input trace. They also
-      scan those derivation surfaces for the exercised trace
+      fingerprints into the enclosing impure-input trace. The adjacent
+      `persistent_text_store_read_file_force_cache_hit_preserves_drv_surfaces`
+      forces an immutable `builtins.toFile` payload before reading it through
+      `readFile`, then requires the zero-input persistent trace to materialize
+      and replay without leaking force-cache hashes into the `.drv` path or
+      ATerm. These canaries also scan those derivation surfaces for the
+      exercised trace
       identity/observation hashes plus persisted force-cache node/value/trace
       hashes in hex, raw bytes, and Nix base32. This samples the current
-      replayable filesystem impure-leaf hit paths inside derivation input
+      replayable filesystem impure-leaf and selected immutable text-store
+      `readFile` hit paths inside derivation input
       surfaces; it does not cover full cached-vs-uncached closure parity, the
       full leak invariant, derivationStrict-node SHA-256 early cutoff,
       stale-input miss surfaces beyond the canaries below, lazy replay payloads,
-      mmap reads, GC/repack, or future value-memoization safety net
+      broader lazy text-store call shapes, mmap reads, GC/repack, or future
+      value-memoization safety net
       (`R-10`/`S-14`).
 - [x] Current stale filesystem impure-leaf persistent force-value `.drv`
       surface canaries:
@@ -2666,8 +2673,9 @@ alone (`M-1`/`Q-A`).
       named-partial first-class `hashFile` payload trace admission, binary-safe
       revalidation, stale-payload fallback, and immutable text-store `hashFile`
       zero-input trace replay inside derivation input surfaces only;
-      allowed-path/IFD/fetch interactions, text-store import/readFile paths,
-      full automatic demand-edge wiring, and edge-exactness harness coverage remain open
+      allowed-path/IFD/fetch interactions, text-store import paths, broader
+      lazy text-store call shapes, full automatic demand-edge wiring, and
+      edge-exactness harness coverage remain open
       (`R-10`/`S-14`).
 - [x] Current cache-side impure leaf substrate: domain-separated
       `DemandCacheKey` construction from typed input identities,
