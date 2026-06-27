@@ -2320,17 +2320,21 @@ alone (`M-1`/`Q-A`).
 - [x] Current stale filesystem impure-leaf persistent force-value `.drv`
       surface canaries:
       `persistent_read_file_force_cache_stale_miss_preserves_drv_surfaces`,
+      `persistent_context_read_file_force_cache_stale_miss_preserves_drv_surfaces`,
       `persistent_read_dir_force_cache_stale_miss_preserves_drv_surfaces`, and
       `persistent_read_file_type_force_cache_stale_miss_preserves_drv_surfaces`
-      materialize trace-verified `builtins.readFile ./input.txt`,
+      materialize trace-verified context-free `builtins.readFile ./input.txt`,
       `builtins.readDir ./dir`, and `builtins.readFileType ./target`
-      forced-value payloads inside derivation `args`, mutate the backing
-      filesystem input, then evaluate through the same persistent cache root.
-      They require stale persistent observations not to reuse old filesystem
-      payloads, require baseline materialization to persist the exact
-      filesystem traces, require recomputation to replay and persist the changed
-      filesystem fingerprints under the same force-cache metadata keys with
-      different materialized value hashes, require same-runtime and
+      forced-value payloads inside derivation `args`, plus a context-bearing
+      `builtins.readFile ./input.txt` payload, mutate the backing filesystem
+      input, then evaluate through the same persistent cache root. The
+      context-bearing `readFile` stale canary also requires the old and changed
+      store-path contexts to appear as decoded derivation input sources before
+      and after mutation. They require stale persistent observations not to
+      reuse old filesystem payloads, require baseline materialization to persist
+      the exact filesystem traces, require recomputation to replay and persist
+      the changed filesystem fingerprints under the same force-cache metadata
+      keys with different materialized value hashes, require same-runtime and
       fresh-runtime post-recompute changed-input runs to hit without
       force-cache misses and require the fresh-runtime runs to load the changed
       force-cache metadata keys, and require the resulting `.drv` paths and
@@ -2339,11 +2343,12 @@ alone (`M-1`/`Q-A`).
       changed/stale/post-recompute surfaces for the exercised trace
       identity/observation hashes plus persisted force-cache node/value/trace
       hashes in hex, raw bytes, and Nix base32. This samples stale filesystem
-      leaf fallback inside derivation input surfaces; it does not cover full
-      cached-vs-uncached closure parity, the full leak invariant,
-      derivationStrict-node SHA-256 early cutoff, dirty propagation beyond
-      fallback, lazy replay payloads, mmap reads, GC/repack, or future
-      value-memoization safety net (`R-10`/`S-14`).
+      leaf fallback inside derivation input surfaces, including context-bearing
+      `readFile` context replacement; it does not cover full cached-vs-uncached
+      closure parity, the full leak invariant, derivationStrict-node SHA-256
+      early cutoff, dirty propagation beyond fallback, lazy replay payloads,
+      mmap reads, GC/repack, or future value-memoization safety net
+      (`R-10`/`S-14`).
 - [x] Current `getEnv` configured-environment persistent force-value `.drv`
       surface canary:
       `persistent_get_env_force_cache_hit_and_stale_miss_preserve_drv_surfaces`
