@@ -85,3 +85,58 @@ fn wrong_schema_format_errors_without_discarding_payload() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn missing_schema_format_errors_without_discarding_payload() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let value_file = sentinel(layout.values_dir().join("value"));
+    fs::write(layout.schema_path(), "schema_version = 5\n").expect("schema rewrites");
+
+    let error = PersistCache::open(&root).expect_err("missing format errors");
+
+    assert!(matches!(error, PersistError::MissingFormat { .. }));
+    assert!(value_file.is_file());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn missing_schema_version_errors_without_discarding_payload() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let value_file = sentinel(layout.values_dir().join("value"));
+    fs::write(layout.schema_path(), "format = \"aos-nix-eval-cache\"\n").expect("schema rewrites");
+
+    let error = PersistCache::open(&root).expect_err("missing version errors");
+
+    assert!(matches!(error, PersistError::MissingSchemaVersion { .. }));
+    assert!(value_file.is_file());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn unsupported_schema_version_errors_without_discarding_payload() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let value_file = sentinel(layout.values_dir().join("value"));
+    fs::write(
+        layout.schema_path(),
+        "format = \"aos-nix-eval-cache\"\nschema_version = -1\n",
+    )
+    .expect("schema rewrites");
+
+    let error = PersistCache::open(&root).expect_err("unsupported version errors");
+
+    assert!(matches!(
+        error,
+        PersistError::InvalidSchemaVersion { version: -1, .. }
+    ));
+    assert!(value_file.is_file());
+
+    let _ = fs::remove_dir_all(root);
+}

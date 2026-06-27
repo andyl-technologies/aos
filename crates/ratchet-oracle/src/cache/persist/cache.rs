@@ -6,6 +6,8 @@
 
 use super::*;
 
+use std::sync::atomic::Ordering;
+
 /// An opened persistent eval-cache root.
 #[derive(Clone, Debug)]
 pub struct PersistCache {

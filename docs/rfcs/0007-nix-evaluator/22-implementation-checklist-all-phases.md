@@ -1146,9 +1146,15 @@ alone (`M-1`/`Q-A`).
 - [x] Current `cache/persist.rs` layout/schema substrate: creates an
       evaluator-cache root with versioned `nodes/`, `values/`, `files/`, and
       `schema.toml` metadata carrying a stable format marker plus schema
-      version; matching schemas preserve payloads, well-formed version mismatch
-      discards only owned payload paths, and malformed/wrong-format metadata
-      errors without deleting payloads.
+      version; `ratchet-cache::schema::CacheSchema` owns the TOML
+      read/parse/validation and temp-file replacement write primitive while
+      `ratchet-oracle` preserves schema-mismatch discard policy and the
+      `PersistError` surface. Matching schemas preserve payloads, well-formed
+      version mismatch discards only owned payload paths, and malformed or
+      wrong-format metadata errors without deleting payloads. This is
+      layout/versioning plus schema-sidecar migration only; node/value/file
+      serialization, mmap packfiles, LMDB/redb metadata, Attic transport, GC,
+      and full harness proof remain open (`R-14`).
 - [x] Current content-addressed blob key/packfile path substrate:
       `PersistLayout` fixes store-specific append-only packfile paths under
       `values/` and `files/`, while `PersistBlobStore`/`PersistBlobKey` produce

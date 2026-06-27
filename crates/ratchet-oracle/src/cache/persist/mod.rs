@@ -9,7 +9,7 @@ use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use thiserror::Error;
@@ -89,7 +89,6 @@ pub const PERSIST_NODE_TRACE_LOG_VALUE_HASH_LEN: usize = 32;
 pub const PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN: usize =
     PERSIST_NODE_METADATA_INDEX_KEY_LEN + PERSIST_NODE_TRACE_LOG_VALUE_HASH_LEN + 8;
 
-static SCHEMA_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 static INDEX_REWRITE_ID: AtomicU64 = AtomicU64::new(0);
 const PERSIST_FILE_ARTIFACT_INDEX_TAG: u8 = 3;
 const PERSIST_FILE_ARTIFACT_KEY_PERSONALIZATION: &[u8] = b"aos-nix-persist-file-artifact-key-v1";

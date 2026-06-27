@@ -3707,6 +3707,7 @@ dependencies = [
  "blake3",
  "libc",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

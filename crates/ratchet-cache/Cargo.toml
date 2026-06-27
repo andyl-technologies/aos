@@ -10,3 +10,4 @@ default = []
 blake3 = { workspace = true }
 libc = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }

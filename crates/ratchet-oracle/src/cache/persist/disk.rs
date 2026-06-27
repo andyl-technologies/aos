@@ -1,20 +1,41 @@
 //! Internal disk helpers for the persistent eval-cache stores.
 //!
-//! Owns the low-level integer decoders, the append-only index file invariants,
-//! and the schema-version sidecar that each store directory carries. Every
-//! helper is `pub(super)` so the sibling `format`, `pack`, and `cache` modules
-//! can reach it through `use super::*`.
+//! Owns the low-level integer decoders, append-only index file invariants, and
+//! root schema-version sidecar adapter. Every helper is `pub(super)` so the
+//! sibling `format`, `pack`, and `cache` modules can reach it through
+//! `use super::*`.
 //!
-//! Each store directory holds three on-disk artifacts:
+//! A persistent root currently holds these top-level artifacts:
 //!
 //! ```text
-//! <store>/
-//!   pack        immutable blob packfile (magic header + length-prefixed records)
-//!   index       append-only hash-to-offset entries (fixed-width records)
-//!   schema      schema-version sidecar ("<format>\n<version>\n")
+//! <root>/
+//!   schema.toml   format marker and schema version
+//!   nodes/        mutable metadata and frontend artifact indexes
+//!   values/       value blob pack and hash-to-offset index
+//!   files/        file/frontend blob pack and hash-to-offset index
 //! ```
 
 use super::*;
+
+use ratchet_cache::schema::{CacheSchema, CacheSchemaError};
+
+fn engine_schema_error_to_persist(error: CacheSchemaError) -> PersistError {
+    match error {
+        CacheSchemaError::Read { path, source } => PersistError::ReadSchema { path, source },
+        CacheSchemaError::Parse { path, source } => PersistError::ParseSchema { path, source },
+        CacheSchemaError::MissingSchemaVersion { path } => {
+            PersistError::MissingSchemaVersion { path }
+        }
+        CacheSchemaError::MissingFormat { path } => PersistError::MissingFormat { path },
+        CacheSchemaError::InvalidFormat { path, format } => {
+            PersistError::InvalidFormat { path, format }
+        }
+        CacheSchemaError::InvalidSchemaVersion { path, version } => {
+            PersistError::InvalidSchemaVersion { path, version }
+        }
+        CacheSchemaError::Write { path, source } => PersistError::WriteSchema { path, source },
+    }
+}
 
 pub(super) fn read_u32(bytes: &[u8]) -> u32 {
     let mut raw = [0; 4];
@@ -73,35 +94,9 @@ pub(super) fn remove_path_if_exists(path: &Path) -> Result<(), PersistError> {
 }
 
 pub(super) fn read_schema_version(layout: &PersistLayout) -> Result<Option<u32>, PersistError> {
-    let path = layout.schema_path();
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => return Err(PersistError::ReadSchema { path, source }),
-    };
-    let value = text
-        .parse::<toml::Value>()
-        .map_err(|source| PersistError::ParseSchema {
-            path: path.clone(),
-            source,
-        })?;
-    let format = value
-        .get("format")
-        .and_then(toml::Value::as_str)
-        .ok_or_else(|| PersistError::MissingFormat { path: path.clone() })?;
-    if format != PERSIST_CACHE_FORMAT {
-        return Err(PersistError::InvalidFormat {
-            path,
-            format: format.to_owned(),
-        });
-    }
-    let version = value
-        .get("schema_version")
-        .and_then(toml::Value::as_integer)
-        .ok_or_else(|| PersistError::MissingSchemaVersion { path: path.clone() })?;
-    let version =
-        u32::try_from(version).map_err(|_| PersistError::InvalidSchemaVersion { path, version })?;
-    Ok(Some(version))
+    CacheSchema::new(layout.schema_path())
+        .read_version(PERSIST_CACHE_FORMAT)
+        .map_err(engine_schema_error_to_persist)
 }
 
 pub(super) fn write_schema(layout: &PersistLayout) -> Result<(), PersistError> {
@@ -109,20 +104,7 @@ pub(super) fn write_schema(layout: &PersistLayout) -> Result<(), PersistError> {
         path: layout.root().to_path_buf(),
         source,
     })?;
-    let path = layout.schema_path();
-    let write_id = SCHEMA_WRITE_ID.fetch_add(1, Ordering::Relaxed);
-    let tmp_path = layout
-        .root()
-        .join(format!("schema.toml.tmp-{}-{write_id}", std::process::id()));
-    let text = format!(
-        "format = {PERSIST_CACHE_FORMAT:?}\nschema_version = {PERSIST_CACHE_SCHEMA_VERSION}\n"
-    );
-    fs::write(&tmp_path, text).map_err(|source| PersistError::WriteSchema {
-        path: tmp_path.clone(),
-        source,
-    })?;
-    fs::rename(&tmp_path, &path).map_err(|source| {
-        let _ = fs::remove_file(&tmp_path);
-        PersistError::WriteSchema { path, source }
-    })
+    CacheSchema::new(layout.schema_path())
+        .write_version(PERSIST_CACHE_FORMAT, PERSIST_CACHE_SCHEMA_VERSION)
+        .map_err(engine_schema_error_to_persist)
 }
