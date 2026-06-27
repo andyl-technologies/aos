@@ -7,6 +7,7 @@ struct CachedDerivationSurface {
     path: String,
     aterm: Vec<u8>,
     trace: Vec<ImpureInputFingerprint>,
+    trace_complete: bool,
     thunks_forced: u64,
     cache_hits: u64,
     force_cache_hits: u64,
@@ -142,6 +143,7 @@ fn evaluate_cached_derivation_surface_with_cache(
             .expect("static derivation has ATerm bytes")
             .to_vec(),
         trace: outcome.impure_input_trace().to_vec(),
+        trace_complete: outcome.impure_input_trace_complete(),
         thunks_forced: outcome.stats().thunks_forced(),
         cache_hits: outcome.stats().cache_hits(),
         force_cache_hits: outcome.stats().force_cache_hits(),
@@ -695,6 +697,89 @@ fn persistent_text_store_read_file_force_cache_hit_preserves_drv_surfaces() {
         source,
         "text-store readFile",
     );
+}
+
+#[test]
+fn persistent_text_store_import_force_cache_no_replay_preserves_drv_surfaces() {
+    let persist_root = unique_temp_dir("force-cache-text-store-import-drv-no-replay");
+    let source = r#"let
+             b = builtins;
+           in {
+             pkg = derivationStrict {
+               name = "force-cache-text-store-import-drv-surface";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [
+                 (b.import (b.toFile
+                   "force-cache-text-store-import-payload.nix"
+                   "\"text store import payload\""))
+               ];
+             };
+           }"#;
+    let ir = lower(source);
+
+    let uncached = evaluate_cached_derivation_surface(
+        &ir,
+        source,
+        TreeWalkOptions::new(),
+        EvalCacheRuntime::disabled(),
+    );
+    assert!(uncached.trace.is_empty());
+    assert!(
+        !uncached.trace_complete,
+        "text-store imports should mark the enclosing impure trace incomplete"
+    );
+    assert_eq!(uncached.cache_hits, 0);
+    assert_eq!(uncached.force_cache_hits, 0);
+    assert_eq!(uncached.force_cache_misses, 0);
+
+    let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    first_options.set_persist_cache_root(&persist_root);
+    let first =
+        evaluate_cached_derivation_surface(&ir, source, first_options, EvalCacheRuntime::enabled());
+    assert_eq!(first.path, uncached.path);
+    assert_eq!(first.aterm, uncached.aterm);
+    assert!(first.trace.is_empty());
+    assert!(
+        !first.trace_complete,
+        "first text-store import pass should remain cache-unusable"
+    );
+    assert_eq!(first.cache_hits, 0);
+    assert_eq!(first.force_cache_hits, 0);
+    assert_eq!(first.force_cache_misses, 0);
+    assert_persistent_force_cache_sidecars_empty(
+        &persist_root,
+        "first text-store import derivation no-replay canary",
+    );
+
+    let mut replay_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    replay_options.set_persist_cache_root(&persist_root);
+    let replay = evaluate_cached_derivation_surface(
+        &ir,
+        source,
+        replay_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(replay.path, uncached.path);
+    assert_eq!(replay.aterm, uncached.aterm);
+    assert!(replay.trace.is_empty());
+    assert!(
+        !replay.trace_complete,
+        "repeat text-store import pass should remain cache-unusable"
+    );
+    assert!(
+        replay.thunks_forced > 0,
+        "text-store imports should recompute instead of hitting persistent force cache"
+    );
+    assert_eq!(replay.cache_hits, 0);
+    assert_eq!(replay.force_cache_hits, 0);
+    assert_eq!(replay.force_cache_misses, 0);
+    assert_persistent_force_cache_sidecars_empty(
+        &persist_root,
+        "text-store import derivation no-replay canary",
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
 }
 
 #[test]

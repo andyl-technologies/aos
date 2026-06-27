@@ -2379,6 +2379,21 @@ alone (`M-1`/`Q-A`).
       parity, the full leak invariant, derivationStrict-node SHA-256 early
       cutoff, lazy replay payloads, mmap reads, GC/repack, or future
       value-memoization safety net (`R-10`/`S-14`).
+- [x] Current text-store `import` no-replay `.drv` surface canary:
+      `persistent_text_store_import_force_cache_no_replay_preserves_drv_surfaces`
+      evaluates a derivation attr path whose `args` depend on
+      `let b = builtins; in b.import (b.toFile
+      "force-cache-text-store-import-payload.nix" "...")`, first with eval
+      cache disabled and then through a configured persistent cache root. It
+      requires cached runs to match the cache-disabled `.drv` path and ATerm
+      bytes, requires each run to expose the current empty-but-incomplete
+      text-store import trace, requires no force-cache hits or misses, and
+      asserts that persistent force metadata and trace sidecars remain empty.
+      This guards the current text-store import exclusion inside one derivation
+      input surface; implementing replay for text-store imports, broader lazy
+      text-store call shapes, full cached-vs-uncached closure parity,
+      derivationStrict-node SHA-256 early cutoff, mmap reads, GC/repack, and
+      future value-memoization safety net remain open (`R-10`/`S-14`).
 - [x] Current stale effectful persistent force-value `.drv` surface parity
       canary: `persistent_effectful_force_cache_stale_miss_preserves_drv_surfaces`
       materializes a trace-verified `builtins.pathExists ./marker`
