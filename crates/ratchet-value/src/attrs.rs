@@ -217,6 +217,28 @@ impl FlatAttrs {
         &self.iteration_order
     }
 
+    /// Returns representation-level flat-attrset equality.
+    ///
+    /// This is not Nix semantic equality: binding values compare by raw
+    /// [`Value`] identity, and the source-order, lexicographic-order, and
+    /// binding-position metadata all participate. Callers must compare attrsets
+    /// whose symbols come from the same symbol universe described by
+    /// [`FlatAttrs::new`].
+    pub fn raw_eq(&self, other: &Self) -> bool {
+        self.len() == other.len()
+            && self.source_order() == other.source_order()
+            && self.iteration_order() == other.iteration_order()
+            && self
+                .entries_by_symbol()
+                .iter()
+                .zip(other.entries_by_symbol())
+                .all(|(left, right)| {
+                    left.key == right.key
+                        && left.value.raw_eq(right.value)
+                        && left.position == right.position
+                })
+    }
+
     /// Iterates entries in internal symbol-id order.
     pub fn iter_by_symbol(&self) -> std::slice::Iter<'_, AttrEntry> {
         self.entries.iter()
@@ -411,6 +433,59 @@ mod tests {
             ]
         );
         assert_eq!(attrs.iteration_order(), &[2, 3, 1, 0]);
+    }
+
+    #[test]
+    fn raw_equality_includes_values_order_and_positions() {
+        let (symbols, ids) = symbols(&[b"a", b"b"]);
+        let base = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(1)),
+                AttrEntry::new(ids[1], Value::int(2)),
+            ],
+            &symbols,
+        )
+        .expect("attrset builds");
+        let same = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(1)),
+                AttrEntry::new(ids[1], Value::int(2)),
+            ],
+            &symbols,
+        )
+        .expect("matching attrset builds");
+        let different_value = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(1)),
+                AttrEntry::new(ids[1], Value::int(3)),
+            ],
+            &symbols,
+        )
+        .expect("different-value attrset builds");
+        let different_order = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[1], Value::int(2)),
+                AttrEntry::new(ids[0], Value::int(1)),
+            ],
+            &symbols,
+        )
+        .expect("different-order attrset builds");
+        let positioned = FlatAttrs::new(
+            vec![AttrEntry::with_position(
+                ids[0],
+                Value::int(1),
+                AttrPosition::new(0, Span::new(0, 1)),
+            )],
+            &symbols,
+        )
+        .expect("positioned attrset builds");
+        let unpositioned = FlatAttrs::new(vec![AttrEntry::new(ids[0], Value::int(1))], &symbols)
+            .expect("unpositioned attrset builds");
+
+        assert!(base.raw_eq(&same));
+        assert!(!base.raw_eq(&different_value));
+        assert!(!base.raw_eq(&different_order));
+        assert!(!positioned.raw_eq(&unpositioned));
     }
 
     #[test]

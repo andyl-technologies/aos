@@ -584,7 +584,7 @@ impl EvalHeap {
                 let same_hash = record.structural_hash == Some(hash);
                 let same_list = matches!(
                     &record.object,
-                    HeapObjectValue::List(candidate) if lists_raw_eq(candidate, list)
+                    HeapObjectValue::List(candidate) if candidate.raw_eq(list)
                 );
                 Ok(same_hash && same_list)
             })
@@ -608,7 +608,7 @@ impl EvalHeap {
                     HeapObjectValue::Attrs {
                         shape: candidate_shape,
                         attrs: candidate_attrs,
-                    } if *candidate_shape == shape && attrs_raw_eq(candidate_attrs, attrs)
+                    } if *candidate_shape == shape && candidate_attrs.raw_eq(attrs)
                 );
                 Ok(same_hash && same_attrs)
             })
@@ -732,27 +732,4 @@ fn attrs_structural_hash(shape: u32, attrs: &FlatAttrs) -> HotXxh3Hash {
         }
     }
     HotXxh3Hash::from_xxh3(hasher.finish())
-}
-
-fn lists_raw_eq(left: &NixList, right: &NixList) -> bool {
-    left.len() == right.len()
-        && left
-            .iter()
-            .zip(right.iter())
-            .all(|(left, right)| left.raw_eq(*right))
-}
-
-fn attrs_raw_eq(left: &FlatAttrs, right: &FlatAttrs) -> bool {
-    left.len() == right.len()
-        && left.source_order() == right.source_order()
-        && left.iteration_order() == right.iteration_order()
-        && left
-            .entries_by_symbol()
-            .iter()
-            .zip(right.entries_by_symbol())
-            .all(|(left, right)| {
-                left.key == right.key
-                    && left.value.raw_eq(right.value)
-                    && left.position == right.position
-            })
 }

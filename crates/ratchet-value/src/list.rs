@@ -58,6 +58,20 @@ impl NixList {
         &self.elements
     }
 
+    /// Returns representation-level list spine equality.
+    ///
+    /// This is not Nix semantic equality: element thunks are not forced and
+    /// heap-backed children compare by their raw runtime handles. Hash-consing
+    /// tables use this after a structural-hash hit to confirm whether a list
+    /// spine can be shared safely.
+    pub fn raw_eq(&self, other: &Self) -> bool {
+        self.len() == other.len()
+            && self
+                .iter()
+                .zip(other.iter())
+                .all(|(left, right)| left.raw_eq(*right))
+    }
+
     /// Concatenates two list spines without forcing their elements.
     ///
     /// The returned list contains copied [`Value`] handles in source order.
@@ -200,6 +214,29 @@ mod tests {
         assert!(concat.get(1).expect("second").raw_eq(left_thunk));
         assert!(concat.get(2).expect("third").raw_eq(right_thunk));
         assert_eq!(concat.get(3).expect("fourth").as_int(), Ok(4));
+    }
+
+    #[test]
+    fn raw_equality_compares_element_handles_without_forcing() {
+        let shared_ptr =
+            std::ptr::NonNull::new(8usize as *mut HeapObject).expect("non-null pointer");
+        let distinct_ptr =
+            std::ptr::NonNull::new(16usize as *mut HeapObject).expect("non-null pointer");
+        let shared_thunk = Value::thunk(shared_ptr).expect("thunk pointer");
+        let distinct_thunk = Value::thunk(distinct_ptr).expect("thunk pointer");
+
+        assert!(
+            NixList::new(vec![Value::int(1), shared_thunk])
+                .raw_eq(&NixList::new(vec![Value::int(1), shared_thunk]))
+        );
+        assert!(
+            !NixList::new(vec![Value::int(1), shared_thunk])
+                .raw_eq(&NixList::new(vec![Value::int(1), distinct_thunk]))
+        );
+        assert!(
+            !NixList::new(vec![Value::int(1)])
+                .raw_eq(&NixList::new(vec![Value::int(1), Value::int(2)]))
+        );
     }
 
     #[test]
