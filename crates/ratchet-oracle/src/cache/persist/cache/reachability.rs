@@ -191,10 +191,11 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistFileBlobReachabilityPlanError`] if the same-root file
-    /// blob-index, file-artifact, or parse-artifact lock is poisoned, if roots
-    /// cannot be snapshotted, if the file blob index contains a non-file key,
-    /// if any captured root cannot be verified, or if the file pack cannot be
-    /// fully scanned and verified.
+    /// blob-index, file-artifact, or parse-artifact lock is poisoned, if an
+    /// artifact mapping advisory read lock cannot be acquired, if roots cannot
+    /// be snapshotted, if the file blob index contains a non-file key, if any
+    /// captured root cannot be verified, or if the file pack cannot be fully
+    /// scanned and verified.
     pub fn plan_file_blob_reachability(
         &self,
     ) -> Result<PersistFileBlobReachabilityPlan, PersistFileBlobReachabilityPlanError> {
@@ -207,9 +208,10 @@ impl PersistCache {
             .pending_file_roots()
             .map_err(|source| PersistFileBlobReachabilityPlanError::Roots { source })?;
         let file_artifact_roots = {
-            let _file_artifact_guard = self.root_locks.lock_file_artifacts().map_err(|source| {
-                PersistFileBlobReachabilityPlanError::FileArtifactIndex { source }
-            })?;
+            let (_file_artifact_advisory_guard, _file_artifact_guard) =
+                self.lock_file_artifact_read().map_err(|source| {
+                    PersistFileBlobReachabilityPlanError::FileArtifactIndex { source }
+                })?;
             self.file_artifact_index
                 .latest_entries()
                 .map_err(
@@ -227,8 +229,8 @@ impl PersistCache {
                 .collect::<Vec<_>>()
         };
         let parse_artifact_roots = {
-            let _parse_artifact_guard =
-                self.root_locks.lock_parse_artifacts().map_err(|source| {
+            let (_parse_artifact_advisory_guard, _parse_artifact_guard) =
+                self.lock_parse_artifact_read().map_err(|source| {
                     PersistFileBlobReachabilityPlanError::ParseArtifactIndex { source }
                 })?;
             self.parse_artifact_index

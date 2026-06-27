@@ -390,6 +390,78 @@ fn cache_file_blob_reachability_plan_classifies_file_records() {
 }
 
 #[test]
+fn cache_file_blob_reachability_plan_acquires_file_artifact_advisory_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_file_artifacts_for_tests()
+        .expect("file-artifact lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .plan_file_blob_reachability()
+            .map(|plan| plan.file_artifact_roots().len())
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("reachability plan result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.file_artifact_lock_path());
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "file reachability planning should wait while the file-artifact lock is held"
+    );
+    drop(guard);
+
+    let file_roots = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("reachability plan completes after file-artifact lock release")
+        .expect("reachability plan succeeds");
+    handle.join().expect("worker joins");
+    assert_eq!(file_roots, 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_reachability_plan_acquires_parse_artifact_advisory_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_parse_artifacts_for_tests()
+        .expect("parse-artifact lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .plan_file_blob_reachability()
+            .map(|plan| plan.parse_artifact_roots().len())
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("reachability plan result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.parse_artifact_lock_path());
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "file reachability planning should wait while the parse-artifact lock is held"
+    );
+    drop(guard);
+
+    let parse_roots = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("reachability plan completes after parse-artifact lock release")
+        .expect("reachability plan succeeds");
+    handle.join().expect("worker joins");
+    assert_eq!(parse_roots, 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_file_blob_reachability_plan_rejects_corrupt_unindexed_record() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

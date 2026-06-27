@@ -144,9 +144,10 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistBlobPackLivenessPlanError`] if a same-root root-sidecar
-    /// lock is poisoned, if roots cannot be snapshotted, if a blob-index entry
-    /// targets the wrong store, if any latest live root fails verification, or
-    /// if the selected pack cannot be fully scanned and verified.
+    /// lock is poisoned, if an artifact mapping advisory read lock cannot be
+    /// acquired, if roots cannot be snapshotted, if a blob-index entry targets
+    /// the wrong store, if any latest live root fails verification, or if the
+    /// selected pack cannot be fully scanned and verified.
     pub fn plan_blob_pack_liveness(
         &self,
         store: PersistBlobStore,
@@ -157,7 +158,7 @@ impl PersistCache {
             }
         })?;
         let _file_artifact_guard = if store == PersistBlobStore::Files {
-            Some(self.root_locks.lock_file_artifacts().map_err(|source| {
+            Some(self.lock_file_artifact_read().map_err(|source| {
                 PersistBlobPackLivenessPlanError::Roots {
                     source: PersistBlobLiveRootError::FileArtifactIndex { source },
                 }
@@ -166,7 +167,7 @@ impl PersistCache {
             None
         };
         let _parse_artifact_guard = if store == PersistBlobStore::Files {
-            Some(self.root_locks.lock_parse_artifacts().map_err(|source| {
+            Some(self.lock_parse_artifact_read().map_err(|source| {
                 PersistBlobPackLivenessPlanError::Roots {
                     source: PersistBlobLiveRootError::ParseArtifactIndex { source },
                 }

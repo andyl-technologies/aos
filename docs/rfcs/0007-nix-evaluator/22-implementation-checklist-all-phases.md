@@ -1489,12 +1489,13 @@ alone (`M-1`/`Q-A`).
       latest live roots used by tail trimming plus same-process pending
       file/parse artifact roots, scans the selected pack, and classifies
       verified physical records as rooted or sidecar-unrooted with byte counts
-      for current tail-trim candidates. This is diagnostic planning only, not
-      the final RFC GC root model: node metadata reachability is covered by the
-      value reachability plan below, applied pack rewriting is covered by the
-      explicit repack helpers below, and automatic GC policy,
-      cross-process/raw-writer coordination, mmap reads, Attic transport, and
-      harness proof remain open
+      for current tail-trim candidates. For `files/`, file/parse artifact
+      sidecar snapshots hold shared mapping advisory locks plus the same-root
+      mapping locks. This is diagnostic planning only, not the final RFC GC root
+      model: node metadata reachability is covered by the value reachability
+      plan below, applied pack rewriting is covered by the explicit repack
+      helpers below, and automatic GC policy, full cross-process/raw-writer
+      coordination, mmap reads, Attic transport, and harness proof remain open
       (`C-13`/`R-14`).
 - [x] Current read-only blob-pack repack plan:
       `PersistCache::plan_blob_pack_repack` builds the selected store's
@@ -1530,11 +1531,12 @@ alone (`M-1`/`Q-A`).
       pending artifact roots, verifies captured roots, scans the file pack, and
       classifies physical records as file-artifact-rooted,
       parse-artifact-rooted, pending-artifact-rooted, indexed-without-artifact,
-      or absent from all captured roots. This is diagnostic classification
-      only; retention windows, sidecar repair, pack rewriting/deletion,
-      live-record relocation, automatic GC policy, cross-process/raw-writer
-      coordination, mmap reads, Attic transport, and harness proof remain open
-      (`C-13`/`R-14`).
+      or absent from all captured roots. File/parse artifact sidecar snapshots
+      hold shared mapping advisory locks plus the same-root mapping locks. This
+      is diagnostic classification only; retention windows, sidecar repair, pack
+      rewriting/deletion, live-record relocation, automatic GC policy, full
+      cross-process/raw-writer coordination, mmap reads, Attic transport, and
+      harness proof remain open (`C-13`/`R-14`).
 - [x] Current `ratchet-cache` staged file-replacement primitive:
       `ratchet-cache::file_replace::FileReplacementSet` owns ordered staged
       file replacement with stale-backup removal, target-to-backup moves,
@@ -1785,18 +1787,19 @@ alone (`M-1`/`Q-A`).
       `.locks/file-artifacts.lock` and `.locks/parse-artifacts.lock` before
       acquiring file-artifact and parse-artifact mapping mutexes from
       `ratchet-cache::root_locks`, so cache-level mapping appends, raw mapping
-      lookups, mapping compaction, indexed hydration reads, and file-pack tail
-      trim/repack mapping phases serialize for a live canonical cache root.
-      Mapping writers and maintenance phases hold exclusive mapping advisory
-      locks; raw file-artifact and parse-artifact mapping lookups hold shared
-      mapping advisory locks before the same-root locks while they read the
-      sidecar; indexed hydration reads additionally hold the shared `files` store
-      advisory and same-root file-store lock while they perform the referenced
-      `files/` pack read. Concurrent same-root appends keep every complete
-      mapping record readable, poisoned live mapping locks are reported before
-      any sidecar write, mapping lookup, or indexed hydration read, and
-      cooperating cross-process cache-level mapping readers and writers share the
-      same advisory files. Raw lower-level
+      lookups, liveness/reachability sidecar snapshots, mapping compaction,
+      indexed hydration reads, and file-pack tail trim/repack mapping phases
+      serialize for a live canonical cache root. Mapping writers and maintenance
+      phases hold exclusive mapping advisory locks; raw file-artifact and
+      parse-artifact mapping lookups plus liveness/reachability sidecar snapshots
+      hold shared mapping advisory locks before the same-root locks while they
+      read the sidecar; indexed hydration reads additionally hold the shared
+      `files` store advisory and same-root file-store lock while they perform the
+      referenced `files/` pack read. Concurrent same-root appends keep every
+      complete mapping record readable, poisoned live mapping locks are reported
+      before any sidecar write, mapping lookup, liveness/reachability snapshot,
+      or indexed hydration read, and cooperating cross-process cache-level
+      mapping readers and writers share the same advisory files. Raw lower-level
       `PersistFileArtifactIndex`/`PersistParseArtifactIndex` users, different
       roots, cross-process pending artifact publication, two-machine races,
       durable filesystem locks/CAS, LMDB/redb indexes, automatic GC/repack, and
@@ -1829,10 +1832,10 @@ alone (`M-1`/`Q-A`).
       raw/indexed blob writes plus blob-index compaction/rebuild, blob-pack tail
       trim, and blob-pack repack use it for `.locks/values.lock` and
       `.locks/files.lock`, and cache-level file/parse artifact raw mapping
-      lookups, mapping writes, indexed artifact hydration reads, and file-pack
-      maintenance phases use `.locks/file-artifacts.lock` and
-      `.locks/parse-artifacts.lock`, cache-level node metadata writes plus
-      metadata compaction use
+      lookups, liveness/reachability sidecar snapshots, mapping writes, indexed
+      artifact hydration reads, and file-pack maintenance phases use
+      `.locks/file-artifacts.lock` and `.locks/parse-artifacts.lock`, cache-level
+      node metadata writes plus metadata compaction use
       `.locks/node-metadata.lock`, and cache-level node trace writes plus trace
       compaction use `.locks/node-traces.lock`. This is
       filesystem-lock substrate plus open-initialization and selected

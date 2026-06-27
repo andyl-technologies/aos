@@ -475,6 +475,78 @@ fn cache_blob_pack_liveness_plan_includes_file_artifact_roots() {
 }
 
 #[test]
+fn cache_blob_pack_liveness_plan_acquires_file_artifact_advisory_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_file_artifacts_for_tests()
+        .expect("file-artifact lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .plan_blob_pack_liveness(PersistBlobStore::Files)
+            .map(|plan| plan.live_roots().len())
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("liveness plan result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.file_artifact_lock_path());
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "liveness planning should wait while the file-artifact lock is held"
+    );
+    drop(guard);
+
+    let live_roots = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("liveness plan completes after file-artifact lock release")
+        .expect("liveness plan succeeds");
+    handle.join().expect("worker joins");
+    assert_eq!(live_roots, 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_blob_pack_liveness_plan_acquires_parse_artifact_advisory_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_parse_artifacts_for_tests()
+        .expect("parse-artifact lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .plan_blob_pack_liveness(PersistBlobStore::Files)
+            .map(|plan| plan.live_roots().len())
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("liveness plan result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.parse_artifact_lock_path());
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "liveness planning should wait while the parse-artifact lock is held"
+    );
+    drop(guard);
+
+    let live_roots = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("liveness plan completes after parse-artifact lock release")
+        .expect("liveness plan succeeds");
+    handle.join().expect("worker joins");
+    assert_eq!(live_roots, 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_pack_repack_plan_includes_file_artifact_and_pending_roots() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
