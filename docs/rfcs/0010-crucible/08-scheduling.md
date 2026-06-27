@@ -1096,11 +1096,22 @@ application of explorer-supplied preemption decisions
   scheduler-state contribution to scenario identity, control-only EMIT/STEP with
   no runnable node, and fail-loud rejection of stale configuration input. Full
   event-log EMIT materialization remains T-SCHED-19.
-- [ ] **T-SCHED-13** Implement PICK (global-minimum horizon, ties by node_id) and
+- [x] **T-SCHED-13** Implement PICK (global-minimum horizon, ties by node_id) and
   RUN (advance under `-icount` to horizon; never past it), taking the argmin over a
   single unified `effective_horizon(node)` projection (DONE/Halted → +∞, IDLE →
   idle wake icount, else running horizon). — satisfies
   [SCHED-25], [SCHED-26], [SCHED-44]; spec §8.9.1, §8.9.2.
+  Completed by `checks.crucible.phase3.schedulerEffectiveHorizon`. PICK now
+  constructs every candidate through one `effective_horizon` projection:
+  runnable nodes use the running advance window, idle nodes use their finite
+  idle-wake icount, and halted or done nodes project to `+∞` and are never
+  selected. Candidate ordering remains `(effective_horizon, node_id, virtual_time,
+  input index)`, so equal projected horizons tie by stable scheduler-node id. RUN
+  converts the selected target with the fixed-shift icount ceiling and preserves
+  the conservative overshoot guard so a selected node never advances past its
+  horizon. The focused regressions cover mixed RUNNING/IDLE/Halted/DONE
+  projection, node-id ties after projection, terminal-node quiescence, all-infinite
+  no-advance quanta, exact-local horizon stops, and pending-delivery horizon stops.
 - [ ] **T-SCHED-14** Drive RUN through a single per-node max-advance ceiling
   published once per quantum (no intermediate ceiling), via the shmem ABI. —
   satisfies [SCHED-27], [SCHED-35]; spec §8.9.2, §8.10.

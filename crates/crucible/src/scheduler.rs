@@ -1302,7 +1302,7 @@ pub struct SchedulerScenarioNode {
     pub id: SchedulerNodeId,
     /// The node-local counter at the start of the run.
     pub counter: NodeCounter,
-    /// Whether the node starts runnable or already idle.
+    /// The node's effective scheduling state at the start of the run.
     pub activity: SchedulerNodeActivity,
     /// The conservative cross-node lookahead for this node.
     pub network_lookahead: NetworkLookahead,
@@ -1317,6 +1317,10 @@ pub enum SchedulerNodeActivity {
     Runnable,
     /// The node is idle, has no local timer or I/O work, and cannot advance.
     Idle,
+    /// The node is halted and contributes an infinite effective horizon.
+    Halted,
+    /// The node is complete and is never selected by PICK.
+    Done,
 }
 
 /// A finite scheduler scenario for checking quantum-loop liveness.
@@ -1466,6 +1470,8 @@ fn scheduler_node_activity_label(activity: SchedulerNodeActivity) -> &'static st
     match activity {
         SchedulerNodeActivity::Runnable => "runnable",
         SchedulerNodeActivity::Idle => "idle",
+        SchedulerNodeActivity::Halted => "halted",
+        SchedulerNodeActivity::Done => "done",
     }
 }
 
@@ -1839,10 +1845,14 @@ impl SingleScheduler {
         );
 
         for node in &self.nodes {
-            if node.activity == SchedulerNodeActivity::Runnable {
-                blockers.push(SchedulerQuiescenceBlocker::RunnableNode {
-                    node: node.id.clone(),
-                });
+            match node.activity {
+                SchedulerNodeActivity::Runnable => {
+                    blockers.push(SchedulerQuiescenceBlocker::RunnableNode {
+                        node: node.id.clone(),
+                    });
+                }
+                SchedulerNodeActivity::Idle => {}
+                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done => continue,
             }
 
             let exact_local_event = next_exact_local_event(
@@ -1889,9 +1899,12 @@ impl SingleScheduler {
         let mut saw_time_limited_state = false;
 
         for node in &self.nodes {
-            if node.activity == SchedulerNodeActivity::Runnable
-                || self.idle_wake_time(node)?.is_some()
-            {
+            let has_finite_projection = match node.activity {
+                SchedulerNodeActivity::Runnable => true,
+                SchedulerNodeActivity::Idle => self.idle_wake_time(node)?.is_some(),
+                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done => false,
+            };
+            if has_finite_projection {
                 saw_time_limited_state = true;
                 let current_time = node.counter.to_virtual(self.timeline.shift())?;
                 if current_time < self.time_limit {
@@ -1935,13 +1948,16 @@ impl SingleScheduler {
         rendezvous_cap: Option<SimInstant>,
     ) -> Result<Option<AdvanceCandidate>, SchedulerError> {
         let current_time = node.counter.to_virtual(self.timeline.shift())?;
-        if node.activity == SchedulerNodeActivity::Idle {
-            return self.idle_advance_candidate(index, node, current_time, rendezvous_cap);
-        }
+        let EffectiveHorizonProjection::Finite {
+            target_time,
+            quiescent_horizon,
+            conservative_dependency,
+        } = self.effective_horizon(node, current_time, rendezvous_cap)?
+        else {
+            return Ok(None);
+        };
 
-        let window = self.advance_window(node, current_time, rendezvous_cap)?;
-
-        if current_time >= window.target_time {
+        if current_time >= target_time {
             return Ok(None);
         }
 
@@ -1950,39 +1966,52 @@ impl SingleScheduler {
             key: self
                 .timeline
                 .timeline_key(node.id.clone(), node.counter, index as u64)?,
-            target_time: window.target_time,
-            quiescent_horizon: window.quiescent_horizon,
-            conservative_dependency: window.conservative_dependency,
+            target_time,
+            quiescent_horizon,
+            conservative_dependency,
         }))
+    }
+
+    fn effective_horizon(
+        &self,
+        node: &RuntimeSchedulerNode,
+        current_time: SimInstant,
+        rendezvous_cap: Option<SimInstant>,
+    ) -> Result<EffectiveHorizonProjection, SchedulerError> {
+        match node.activity {
+            SchedulerNodeActivity::Runnable => {
+                let window = self.advance_window(node, current_time, rendezvous_cap)?;
+                Ok(EffectiveHorizonProjection::Finite {
+                    target_time: window.target_time,
+                    quiescent_horizon: window.quiescent_horizon,
+                    conservative_dependency: window.conservative_dependency,
+                })
+            }
+            SchedulerNodeActivity::Idle => self.idle_advance_candidate(node, rendezvous_cap),
+            SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done => {
+                Ok(EffectiveHorizonProjection::Infinite)
+            }
+        }
     }
 
     fn idle_advance_candidate(
         &self,
-        index: usize,
         node: &RuntimeSchedulerNode,
-        current_time: SimInstant,
         rendezvous_cap: Option<SimInstant>,
-    ) -> Result<Option<AdvanceCandidate>, SchedulerError> {
+    ) -> Result<EffectiveHorizonProjection, SchedulerError> {
         let Some(mut wake_time) = self.idle_wake_time(node)? else {
-            return Ok(None);
+            return Ok(EffectiveHorizonProjection::Infinite);
         };
         wake_time = min_instant(wake_time, self.time_limit);
         if let Some(cap) = rendezvous_cap {
             wake_time = min_instant(wake_time, cap);
         }
-        if current_time >= wake_time {
-            return Ok(None);
-        }
 
-        Ok(Some(AdvanceCandidate {
-            index,
-            key: self
-                .timeline
-                .timeline_key(node.id.clone(), node.counter, index as u64)?,
+        Ok(EffectiveHorizonProjection::Finite {
             target_time: wake_time,
             quiescent_horizon: Some(wake_time),
             conservative_dependency: None,
-        }))
+        })
     }
 
     fn idle_wake_time(
@@ -2410,6 +2439,16 @@ struct AdvanceCandidate {
     target_time: SimInstant,
     quiescent_horizon: Option<SimInstant>,
     conservative_dependency: Option<UnresolvedCrossNodeDependency>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum EffectiveHorizonProjection {
+    Infinite,
+    Finite {
+        target_time: SimInstant,
+        quiescent_horizon: Option<SimInstant>,
+        conservative_dependency: Option<UnresolvedCrossNodeDependency>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
