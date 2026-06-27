@@ -166,6 +166,31 @@ th {
 }
 td.num { text-align: right; }
 
+/* Storage bindings — a compact stacked list, not a 4-column table: a long
+ * object-store endpoint URL gets the full content width to wrap into rather
+ * than squeezing the name/kind columns (which forced a name onto two lines and
+ * hyphenated the delete button). Each binding is one block separated by the
+ * faint data-row rule, matching the "rules as layout" aesthetic. */
+.bindings { margin: 0.6rem 0 1.6rem; }
+.binding {
+  border-bottom: 1px solid var(--rule-faint);
+  padding: 0.55rem 0;
+}
+.binding:first-child { border-top: 1px solid var(--rule); }
+/* Name + kind/access chips on one line; the delete control pushed to the end. */
+.binding-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.7rem;
+}
+.binding-head form { margin-left: auto; }
+.binding-name { font-weight: 700; }
+/* The endpoint/bucket URL on its own full-width line, wrapping anywhere so even
+ * a very long object-store URL fits with no horizontal scrollbar. */
+.binding-loc { margin-top: 0.35rem; }
+.binding-loc code { overflow-wrap: anywhere; word-break: break-all; }
+
 code, pre {
   font-family: inherit;
   background: color-mix(in srgb, var(--ink) 6%, var(--paper));
@@ -487,6 +512,9 @@ input[type="button"] {
   cursor: pointer;
   line-height: 1.2;
   vertical-align: baseline;
+  /* A control's label is a single token — never hyphenate it across lines
+   * ("dele-te") when its cell or flex track is narrow. */
+  white-space: nowrap;
 }
 button:hover,
 input[type="submit"]:hover,
