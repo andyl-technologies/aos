@@ -375,6 +375,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerOrderingLint";
       taskIds = ["T-SCHED-9"];
     };
+    schedulerLinkLatencyFloor = import ./phase3-scheduler-link-latency-floor.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerLinkLatencyFloor";
+      taskIds = ["T-SCHED-10"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
