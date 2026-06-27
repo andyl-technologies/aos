@@ -7,6 +7,12 @@
 
 use super::*;
 
+use ratchet_cache::artifact_index::{
+    ArtifactIndex as EngineArtifactIndex, ArtifactIndexEntry as EngineArtifactIndexEntry,
+    ArtifactIndexError as EngineArtifactIndexError,
+    ArtifactIndexFormatError as EngineArtifactIndexFormatError,
+    ArtifactIndexKey as EngineArtifactIndexKey, ArtifactIndexValue as EngineArtifactIndexValue,
+};
 use ratchet_cache::blob_index::{
     BlobIndex as EngineBlobIndex, BlobIndexEntry as EngineBlobIndexEntry,
     BlobIndexError as EngineBlobIndexError, BlobIndexFormatError as EngineBlobIndexFormatError,
@@ -707,10 +713,9 @@ impl PersistFileArtifactIndexEntry {
 
     /// Encodes this record as stable file-artifact index bytes.
     pub fn encode_index_entry(self) -> [u8; PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN] {
+        let encoded = persist_file_artifact_entry_to_engine(self).encode();
         let mut bytes = [0; PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN];
-        bytes[..PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN].copy_from_slice(&self.key.index_bytes());
-        bytes[PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN..]
-            .copy_from_slice(&self.value.encode_index_value());
+        bytes.copy_from_slice(&encoded);
         bytes
     }
 
@@ -722,19 +727,93 @@ impl PersistFileArtifactIndexEntry {
     /// [`PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN`], if the key is malformed, or
     /// if the value is malformed.
     pub fn decode_index_entry(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
-        if bytes.len() < PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN {
-            return Err(PersistPackFormatError::ShortFileArtifactIndexEntry {
-                expected: PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN,
-                actual: bytes.len(),
-            });
+        let entry =
+            EngineArtifactIndexEntry::decode(bytes).map_err(engine_file_artifact_format_error)?;
+        engine_file_artifact_entry_to_persist(entry)
+    }
+}
+
+fn persist_file_artifact_key_to_engine(key: PersistFileArtifactKey) -> EngineArtifactIndexKey {
+    EngineArtifactIndexKey::new(PERSIST_FILE_ARTIFACT_INDEX_TAG, key.hash().as_bytes())
+}
+
+fn engine_file_artifact_key_to_persist(
+    key: EngineArtifactIndexKey,
+) -> Result<PersistFileArtifactKey, PersistPackFormatError> {
+    PersistFileArtifactKey::decode_index_bytes(&key.encode())
+}
+
+fn persist_file_artifact_value_to_engine(
+    value: PersistFileArtifactIndexValue,
+) -> EngineArtifactIndexValue {
+    EngineArtifactIndexValue::from_bytes(value.encode_index_value())
+}
+
+fn engine_file_artifact_value_to_persist(
+    value: EngineArtifactIndexValue,
+) -> Result<PersistFileArtifactIndexValue, PersistPackFormatError> {
+    PersistFileArtifactIndexValue::decode_index_value(&value.encode())
+}
+
+fn persist_file_artifact_entry_to_engine(
+    entry: PersistFileArtifactIndexEntry,
+) -> EngineArtifactIndexEntry {
+    EngineArtifactIndexEntry::new(
+        persist_file_artifact_key_to_engine(entry.key()),
+        persist_file_artifact_value_to_engine(entry.value()),
+    )
+}
+
+fn engine_file_artifact_entry_to_persist(
+    entry: EngineArtifactIndexEntry,
+) -> Result<PersistFileArtifactIndexEntry, PersistPackFormatError> {
+    Ok(PersistFileArtifactIndexEntry::new(
+        engine_file_artifact_key_to_persist(entry.key())?,
+        engine_file_artifact_value_to_persist(entry.value())?,
+    ))
+}
+
+fn engine_file_artifact_index_error(
+    error: EngineArtifactIndexError,
+) -> PersistFileArtifactIndexError {
+    match error {
+        EngineArtifactIndexError::CreateParent { path, source } => {
+            PersistFileArtifactIndexError::CreateParent { path, source }
         }
-        let key = PersistFileArtifactKey::decode_index_bytes(
-            &bytes[..PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN],
-        )?;
-        let value = PersistFileArtifactIndexValue::decode_index_value(
-            &bytes[PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN..],
-        )?;
-        Ok(Self::new(key, value))
+        EngineArtifactIndexError::Open { path, source } => {
+            PersistFileArtifactIndexError::Open { path, source }
+        }
+        EngineArtifactIndexError::Metadata { path, source } => {
+            PersistFileArtifactIndexError::Metadata { path, source }
+        }
+        EngineArtifactIndexError::Read { path, source } => {
+            PersistFileArtifactIndexError::Read { path, source }
+        }
+        EngineArtifactIndexError::Write { path, source } => {
+            PersistFileArtifactIndexError::Write { path, source }
+        }
+        EngineArtifactIndexError::Format { path, source } => {
+            PersistFileArtifactIndexError::Format {
+                path,
+                source: engine_file_artifact_format_error(source),
+            }
+        }
+    }
+}
+
+fn engine_file_artifact_format_error(
+    error: EngineArtifactIndexFormatError,
+) -> PersistPackFormatError {
+    match error {
+        EngineArtifactIndexFormatError::ShortKey { expected, actual } => {
+            PersistPackFormatError::ShortFileArtifactIndexKey { expected, actual }
+        }
+        EngineArtifactIndexFormatError::ShortValue { expected, actual } => {
+            PersistPackFormatError::ShortFileArtifactIndexValue { expected, actual }
+        }
+        EngineArtifactIndexFormatError::ShortEntry { expected, actual } => {
+            PersistPackFormatError::ShortFileArtifactIndexEntry { expected, actual }
+        }
     }
 }
 
@@ -746,7 +825,7 @@ impl PersistFileArtifactIndexEntry {
 /// matching entry.
 #[derive(Clone, Debug)]
 pub struct PersistFileArtifactIndex {
-    path: PathBuf,
+    engine: EngineArtifactIndex,
 }
 
 impl PersistFileArtifactIndex {
@@ -758,14 +837,14 @@ impl PersistFileArtifactIndex {
     /// index file cannot be created/opened, or if the existing file ends with a
     /// partial fixed-width record.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistFileArtifactIndexError> {
-        let path = path.into();
-        ensure_file_artifact_index_file(&path)?;
-        Ok(Self { path })
+        let engine =
+            EngineArtifactIndex::open(path.into()).map_err(engine_file_artifact_index_error)?;
+        Ok(Self { engine })
     }
 
     /// Returns this index file's filesystem path.
     pub fn path(&self) -> &Path {
-        &self.path
+        self.engine.path()
     }
 
     /// Appends one file-artifact index entry.
@@ -778,20 +857,9 @@ impl PersistFileArtifactIndex {
         &self,
         entry: PersistFileArtifactIndexEntry,
     ) -> Result<(), PersistFileArtifactIndexError> {
-        ensure_file_artifact_index_file(&self.path)?;
-        let mut file = OpenOptions::new()
-            .append(true)
-            .open(&self.path)
-            .map_err(|source| PersistFileArtifactIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        file.write_all(&entry.encode_index_entry())
-            .and_then(|()| file.flush())
-            .map_err(|source| PersistFileArtifactIndexError::Write {
-                path: self.path.clone(),
-                source,
-            })
+        self.engine
+            .append_entry(persist_file_artifact_entry_to_engine(entry))
+            .map_err(engine_file_artifact_index_error)
     }
 
     /// Looks up the newest file-artifact value for `key`.
@@ -804,40 +872,8 @@ impl PersistFileArtifactIndex {
         &self,
         key: PersistFileArtifactKey,
     ) -> Result<Option<PersistFileArtifactIndexValue>, PersistFileArtifactIndexError> {
-        ensure_file_artifact_index_file(&self.path)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(&self.path)
-            .map_err(|source| PersistFileArtifactIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        let len = file
-            .metadata()
-            .map_err(|source| PersistFileArtifactIndexError::Metadata {
-                path: self.path.clone(),
-                source,
-            })?
-            .len();
-        validate_file_artifact_index_len(&self.path, len)?;
-
         let mut found = None;
-        let records = len / PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN as u64;
-        let mut encoded = [0; PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN];
-        for _ in 0..records {
-            file.read_exact(&mut encoded).map_err(|source| {
-                PersistFileArtifactIndexError::Read {
-                    path: self.path.clone(),
-                    source,
-                }
-            })?;
-            let entry =
-                PersistFileArtifactIndexEntry::decode_index_entry(&encoded).map_err(|source| {
-                    PersistFileArtifactIndexError::Format {
-                        path: self.path.clone(),
-                        source,
-                    }
-                })?;
+        for entry in self.entries()? {
             if entry.key() == key {
                 found = Some(entry.value());
             }
@@ -858,40 +894,8 @@ impl PersistFileArtifactIndex {
     pub fn latest_entries(
         &self,
     ) -> Result<Vec<PersistFileArtifactIndexEntry>, PersistFileArtifactIndexError> {
-        ensure_file_artifact_index_file(&self.path)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(&self.path)
-            .map_err(|source| PersistFileArtifactIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        let len = file
-            .metadata()
-            .map_err(|source| PersistFileArtifactIndexError::Metadata {
-                path: self.path.clone(),
-                source,
-            })?
-            .len();
-        validate_file_artifact_index_len(&self.path, len)?;
-
         let mut latest = std::collections::BTreeMap::new();
-        let records = len / PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN as u64;
-        let mut encoded = [0; PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN];
-        for _ in 0..records {
-            file.read_exact(&mut encoded).map_err(|source| {
-                PersistFileArtifactIndexError::Read {
-                    path: self.path.clone(),
-                    source,
-                }
-            })?;
-            let entry =
-                PersistFileArtifactIndexEntry::decode_index_entry(&encoded).map_err(|source| {
-                    PersistFileArtifactIndexError::Format {
-                        path: self.path.clone(),
-                        source,
-                    }
-                })?;
+        for entry in self.entries()? {
             latest.insert(entry.key().index_bytes(), entry);
         }
         Ok(latest.into_values().collect())
@@ -913,45 +917,27 @@ impl PersistFileArtifactIndex {
     /// into place.
     pub fn compact_latest_entries(&self) -> Result<usize, PersistFileArtifactIndexError> {
         let entries = self.latest_entries()?;
-        let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
-        let tmp_path = self
-            .path
-            .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
-        let write_result = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp_path)
-                .map_err(|source| PersistFileArtifactIndexError::Write {
-                    path: tmp_path.clone(),
-                    source,
-                })?;
-            for entry in &entries {
-                file.write_all(&entry.encode_index_entry())
-                    .map_err(|source| PersistFileArtifactIndexError::Write {
-                        path: tmp_path.clone(),
-                        source,
-                    })?;
-            }
-            file.flush()
-                .map_err(|source| PersistFileArtifactIndexError::Write {
-                    path: tmp_path.clone(),
-                    source,
-                })
-        })();
-        if let Err(error) = write_result {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(error);
-        }
-        fs::rename(&tmp_path, &self.path).map_err(|source| {
-            let _ = fs::remove_file(&tmp_path);
-            PersistFileArtifactIndexError::Write {
-                path: self.path.clone(),
+        let entries = entries
+            .iter()
+            .copied()
+            .map(persist_file_artifact_entry_to_engine)
+            .collect::<Vec<_>>();
+        self.engine
+            .replace_entries(&entries)
+            .map_err(engine_file_artifact_index_error)
+    }
+
+    fn entries(&self) -> Result<Vec<PersistFileArtifactIndexEntry>, PersistFileArtifactIndexError> {
+        self.engine
+            .entries()
+            .map_err(engine_file_artifact_index_error)?
+            .into_iter()
+            .map(engine_file_artifact_entry_to_persist)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| PersistFileArtifactIndexError::Format {
+                path: self.path().to_path_buf(),
                 source,
-            }
-        })?;
-        Ok(entries.len())
+            })
     }
 }
 
@@ -1105,10 +1091,9 @@ impl PersistParseArtifactIndexEntry {
 
     /// Encodes this record as stable parse-artifact index bytes.
     pub fn encode_index_entry(self) -> [u8; PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN] {
+        let encoded = persist_parse_artifact_entry_to_engine(self).encode();
         let mut bytes = [0; PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN];
-        bytes[..PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN].copy_from_slice(&self.key.index_bytes());
-        bytes[PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN..]
-            .copy_from_slice(&self.value.encode_index_value());
+        bytes.copy_from_slice(&encoded);
         bytes
     }
 
@@ -1120,19 +1105,93 @@ impl PersistParseArtifactIndexEntry {
     /// [`PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN`], if the key is malformed, or
     /// if the value is malformed.
     pub fn decode_index_entry(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
-        if bytes.len() < PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN {
-            return Err(PersistPackFormatError::ShortParseArtifactIndexEntry {
-                expected: PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN,
-                actual: bytes.len(),
-            });
+        let entry =
+            EngineArtifactIndexEntry::decode(bytes).map_err(engine_parse_artifact_format_error)?;
+        engine_parse_artifact_entry_to_persist(entry)
+    }
+}
+
+fn persist_parse_artifact_key_to_engine(key: PersistParseArtifactKey) -> EngineArtifactIndexKey {
+    EngineArtifactIndexKey::new(PERSIST_PARSE_ARTIFACT_INDEX_TAG, key.hash().as_bytes())
+}
+
+fn engine_parse_artifact_key_to_persist(
+    key: EngineArtifactIndexKey,
+) -> Result<PersistParseArtifactKey, PersistPackFormatError> {
+    PersistParseArtifactKey::decode_index_bytes(&key.encode())
+}
+
+fn persist_parse_artifact_value_to_engine(
+    value: PersistParseArtifactIndexValue,
+) -> EngineArtifactIndexValue {
+    EngineArtifactIndexValue::from_bytes(value.encode_index_value())
+}
+
+fn engine_parse_artifact_value_to_persist(
+    value: EngineArtifactIndexValue,
+) -> Result<PersistParseArtifactIndexValue, PersistPackFormatError> {
+    PersistParseArtifactIndexValue::decode_index_value(&value.encode())
+}
+
+fn persist_parse_artifact_entry_to_engine(
+    entry: PersistParseArtifactIndexEntry,
+) -> EngineArtifactIndexEntry {
+    EngineArtifactIndexEntry::new(
+        persist_parse_artifact_key_to_engine(entry.key()),
+        persist_parse_artifact_value_to_engine(entry.value()),
+    )
+}
+
+fn engine_parse_artifact_entry_to_persist(
+    entry: EngineArtifactIndexEntry,
+) -> Result<PersistParseArtifactIndexEntry, PersistPackFormatError> {
+    Ok(PersistParseArtifactIndexEntry::new(
+        engine_parse_artifact_key_to_persist(entry.key())?,
+        engine_parse_artifact_value_to_persist(entry.value())?,
+    ))
+}
+
+fn engine_parse_artifact_index_error(
+    error: EngineArtifactIndexError,
+) -> PersistParseArtifactIndexError {
+    match error {
+        EngineArtifactIndexError::CreateParent { path, source } => {
+            PersistParseArtifactIndexError::CreateParent { path, source }
         }
-        let key = PersistParseArtifactKey::decode_index_bytes(
-            &bytes[..PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN],
-        )?;
-        let value = PersistParseArtifactIndexValue::decode_index_value(
-            &bytes[PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN..],
-        )?;
-        Ok(Self::new(key, value))
+        EngineArtifactIndexError::Open { path, source } => {
+            PersistParseArtifactIndexError::Open { path, source }
+        }
+        EngineArtifactIndexError::Metadata { path, source } => {
+            PersistParseArtifactIndexError::Metadata { path, source }
+        }
+        EngineArtifactIndexError::Read { path, source } => {
+            PersistParseArtifactIndexError::Read { path, source }
+        }
+        EngineArtifactIndexError::Write { path, source } => {
+            PersistParseArtifactIndexError::Write { path, source }
+        }
+        EngineArtifactIndexError::Format { path, source } => {
+            PersistParseArtifactIndexError::Format {
+                path,
+                source: engine_parse_artifact_format_error(source),
+            }
+        }
+    }
+}
+
+fn engine_parse_artifact_format_error(
+    error: EngineArtifactIndexFormatError,
+) -> PersistPackFormatError {
+    match error {
+        EngineArtifactIndexFormatError::ShortKey { expected, actual } => {
+            PersistPackFormatError::ShortParseArtifactIndexKey { expected, actual }
+        }
+        EngineArtifactIndexFormatError::ShortValue { expected, actual } => {
+            PersistPackFormatError::ShortParseArtifactIndexValue { expected, actual }
+        }
+        EngineArtifactIndexFormatError::ShortEntry { expected, actual } => {
+            PersistPackFormatError::ShortParseArtifactIndexEntry { expected, actual }
+        }
     }
 }
 
@@ -1144,7 +1203,7 @@ impl PersistParseArtifactIndexEntry {
 /// matching entry.
 #[derive(Clone, Debug)]
 pub struct PersistParseArtifactIndex {
-    path: PathBuf,
+    engine: EngineArtifactIndex,
 }
 
 impl PersistParseArtifactIndex {
@@ -1156,14 +1215,14 @@ impl PersistParseArtifactIndex {
     /// index file cannot be created/opened, or if the existing file ends with a
     /// partial fixed-width record.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistParseArtifactIndexError> {
-        let path = path.into();
-        ensure_parse_artifact_index_file(&path)?;
-        Ok(Self { path })
+        let engine =
+            EngineArtifactIndex::open(path.into()).map_err(engine_parse_artifact_index_error)?;
+        Ok(Self { engine })
     }
 
     /// Returns this index file's filesystem path.
     pub fn path(&self) -> &Path {
-        &self.path
+        self.engine.path()
     }
 
     /// Appends one parse-artifact index entry.
@@ -1176,20 +1235,9 @@ impl PersistParseArtifactIndex {
         &self,
         entry: PersistParseArtifactIndexEntry,
     ) -> Result<(), PersistParseArtifactIndexError> {
-        ensure_parse_artifact_index_file(&self.path)?;
-        let mut file = OpenOptions::new()
-            .append(true)
-            .open(&self.path)
-            .map_err(|source| PersistParseArtifactIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        file.write_all(&entry.encode_index_entry())
-            .and_then(|()| file.flush())
-            .map_err(|source| PersistParseArtifactIndexError::Write {
-                path: self.path.clone(),
-                source,
-            })
+        self.engine
+            .append_entry(persist_parse_artifact_entry_to_engine(entry))
+            .map_err(engine_parse_artifact_index_error)
     }
 
     /// Looks up the newest parse-artifact value for `key`.
@@ -1202,40 +1250,8 @@ impl PersistParseArtifactIndex {
         &self,
         key: PersistParseArtifactKey,
     ) -> Result<Option<PersistParseArtifactIndexValue>, PersistParseArtifactIndexError> {
-        ensure_parse_artifact_index_file(&self.path)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(&self.path)
-            .map_err(|source| PersistParseArtifactIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        let len = file
-            .metadata()
-            .map_err(|source| PersistParseArtifactIndexError::Metadata {
-                path: self.path.clone(),
-                source,
-            })?
-            .len();
-        validate_parse_artifact_index_len(&self.path, len)?;
-
         let mut found = None;
-        let records = len / PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN as u64;
-        let mut encoded = [0; PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN];
-        for _ in 0..records {
-            file.read_exact(&mut encoded).map_err(|source| {
-                PersistParseArtifactIndexError::Read {
-                    path: self.path.clone(),
-                    source,
-                }
-            })?;
-            let entry =
-                PersistParseArtifactIndexEntry::decode_index_entry(&encoded).map_err(|source| {
-                    PersistParseArtifactIndexError::Format {
-                        path: self.path.clone(),
-                        source,
-                    }
-                })?;
+        for entry in self.entries()? {
             if entry.key() == key {
                 found = Some(entry.value());
             }
@@ -1256,40 +1272,8 @@ impl PersistParseArtifactIndex {
     pub fn latest_entries(
         &self,
     ) -> Result<Vec<PersistParseArtifactIndexEntry>, PersistParseArtifactIndexError> {
-        ensure_parse_artifact_index_file(&self.path)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(&self.path)
-            .map_err(|source| PersistParseArtifactIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        let len = file
-            .metadata()
-            .map_err(|source| PersistParseArtifactIndexError::Metadata {
-                path: self.path.clone(),
-                source,
-            })?
-            .len();
-        validate_parse_artifact_index_len(&self.path, len)?;
-
         let mut latest = std::collections::BTreeMap::new();
-        let records = len / PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN as u64;
-        let mut encoded = [0; PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN];
-        for _ in 0..records {
-            file.read_exact(&mut encoded).map_err(|source| {
-                PersistParseArtifactIndexError::Read {
-                    path: self.path.clone(),
-                    source,
-                }
-            })?;
-            let entry =
-                PersistParseArtifactIndexEntry::decode_index_entry(&encoded).map_err(|source| {
-                    PersistParseArtifactIndexError::Format {
-                        path: self.path.clone(),
-                        source,
-                    }
-                })?;
+        for entry in self.entries()? {
             latest.insert(entry.key().index_bytes(), entry);
         }
         Ok(latest.into_values().collect())
@@ -1311,45 +1295,29 @@ impl PersistParseArtifactIndex {
     /// into place.
     pub fn compact_latest_entries(&self) -> Result<usize, PersistParseArtifactIndexError> {
         let entries = self.latest_entries()?;
-        let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
-        let tmp_path = self
-            .path
-            .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
-        let write_result = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp_path)
-                .map_err(|source| PersistParseArtifactIndexError::Write {
-                    path: tmp_path.clone(),
-                    source,
-                })?;
-            for entry in &entries {
-                file.write_all(&entry.encode_index_entry())
-                    .map_err(|source| PersistParseArtifactIndexError::Write {
-                        path: tmp_path.clone(),
-                        source,
-                    })?;
-            }
-            file.flush()
-                .map_err(|source| PersistParseArtifactIndexError::Write {
-                    path: tmp_path.clone(),
-                    source,
-                })
-        })();
-        if let Err(error) = write_result {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(error);
-        }
-        fs::rename(&tmp_path, &self.path).map_err(|source| {
-            let _ = fs::remove_file(&tmp_path);
-            PersistParseArtifactIndexError::Write {
-                path: self.path.clone(),
+        let entries = entries
+            .iter()
+            .copied()
+            .map(persist_parse_artifact_entry_to_engine)
+            .collect::<Vec<_>>();
+        self.engine
+            .replace_entries(&entries)
+            .map_err(engine_parse_artifact_index_error)
+    }
+
+    fn entries(
+        &self,
+    ) -> Result<Vec<PersistParseArtifactIndexEntry>, PersistParseArtifactIndexError> {
+        self.engine
+            .entries()
+            .map_err(engine_parse_artifact_index_error)?
+            .into_iter()
+            .map(engine_parse_artifact_entry_to_persist)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| PersistParseArtifactIndexError::Format {
+                path: self.path().to_path_buf(),
                 source,
-            }
-        })?;
-        Ok(entries.len())
+            })
     }
 }
 

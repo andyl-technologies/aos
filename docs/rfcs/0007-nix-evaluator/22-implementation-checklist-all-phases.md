@@ -1279,12 +1279,25 @@ alone (`M-1`/`Q-A`).
       33-byte key plus 49-byte value record layout and
       append/newest/physical-scan/compact/replacement file operations for the
       current frontend artifact sidecars, including `nodes/file-artifacts.index`
-      and `nodes/parse-artifacts.index`. This is a migration target only;
-      `ratchet-oracle` production file/parse artifact indexes still own the
-      typed wrappers, semantic validation, cache policy, and sidecar writes,
-      while LMDB/redb tables, writer batching, mmap reads, cross-process
-      coordination, GC/repack integration, Attic transport, and harness proof
-      remain open (`C-13`/`R-14`).
+      and `nodes/parse-artifacts.index`. The engine can also return every
+      physical entry so typed adapters can validate stale records before
+      applying newest-wins semantics. This is a fixed-record sidecar primitive
+      only; LMDB/redb tables, writer batching, mmap reads, cross-process
+      coordination, GC/repack integration, Attic transport, and full
+      storage-engine harness proof remain open (`C-13`/`R-14`).
+- [x] Current oracle file/parse artifact sidecar migration:
+      `PersistFileArtifactIndex` and `PersistParseArtifactIndex` now wrap
+      `ratchet-cache::artifact_index::ArtifactIndex` for open, append, physical
+      scans, newest-entry scans, and compaction rewrites while routing every
+      engine record back through the typed file/parse artifact codecs. Invalid
+      namespace tags, malformed embedded blob-store values, and stale malformed
+      records therefore still fail through the existing artifact index errors.
+      Cross-crate compatibility tests prove both writer directions and invalid
+      generic engine records. This is the append-only sidecar migration only;
+      oracle still owns same-root locks, cache policy, blob payload validation,
+      and parse/file materialization semantics, while LMDB/redb tables, writer
+      batching, mmap reads, GC/repack engine migration, Attic transport, and
+      cross-process coordination remain open (`C-13`/`R-14`).
 - [x] Current parse-artifact bundle payload codec: `ParseArtifactBundle` frames
       the current `resolved.bin`/`ir.bin`/`symbols.bin`/`meta.toml` artifact
       bytes as one versioned little-endian payload, and
