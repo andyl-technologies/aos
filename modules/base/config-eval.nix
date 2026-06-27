@@ -1,0 +1,153 @@
+##! modules/base/config-eval.nix — RFC-0011 on-host config evaluation
+##!
+##! Authors `aos-eval.service`: the stage-2 systemd unit that drives the
+##! resolve↔eval fixpoint (`apm __eval`) over the in-image base library, the
+##! per-package `config` modules fetched from the registry, and the verified
+##! leaf `host.nix`. It emits ONLY a manifest (`/run/aos/manifest.json`) and
+##! never activates — a failed eval or fetch leaves the box live on the gen-0
+##! seed for the operator to fix `host.nix`.
+##!
+##! Additive and inert by default (`aos.config.evalAtBoot.enable = false`): with
+##! the flag off the unit is not emitted and every existing system evaluates
+##! identically. `aos-install-packages.service` is intentionally left in place;
+##! a later changeset rewires it to consume the manifest.
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.aos.config.evalAtBoot;
+in {
+  options.aos.config.evalAtBoot = {
+    enable = lib.mkEnableOption "the RFC-0011 on-host config-eval fixpoint service";
+
+    hostNix = lib.mkOption {
+      type = lib.types.str;
+      default = "/etc/aos/host.nix";
+      description = ''
+        Path to the verified leaf `host.nix` delivered by Ignition. The service
+        is `ConditionPathExists`-guarded on this path, so with no `host.nix` the
+        eval is a clean no-op.
+      '';
+    };
+
+    baseLib = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = ''
+        Store path of the in-image, ABI-pinned module library passed to the
+        evaluator as `--base-lib`. Required when {option}`enable` is set.
+      '';
+    };
+
+    moduleAbi = lib.mkOption {
+      type = lib.types.int;
+      default = 1;
+      description = ''
+        Fallback base-lib `module_abi` used when `/etc/os-release` does not
+        carry `AOS_MODULE_ABI`. The resolver gates every config module against
+        this value before it enters the eval.
+      '';
+    };
+
+    desired = lib.mkOption {
+      type = lib.types.str;
+      default = "/etc/aos/packages.d/desired.toml";
+      description = "Desired-package TOML whose `packages` seed the working set.";
+    };
+
+    index = lib.mkOption {
+      type = lib.types.str;
+      default = "/var/lib/apm/index/provides.json";
+      description = "Registry `provides` index used for option→provider lookup.";
+    };
+
+    manifest = lib.mkOption {
+      type = lib.types.str;
+      default = "/run/aos/manifest.json";
+      description = "Where the converged manifest is written (only on success).";
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.baseLib != "";
+        message = "aos.config.evalAtBoot.enable requires aos.config.evalAtBoot.baseLib to be set to the in-image base library store path.";
+      }
+    ];
+
+    systemd.services.aos-eval = {
+      description = "RFC-0011 on-host config evaluation (resolve↔eval fixpoint)";
+      wantedBy = ["multi-user.target"];
+      wants = ["network-online.target"];
+      after = [
+        "network-online.target"
+        "nix-overlay-setup.service"
+        "ignition-files.service"
+        "aos-seed-profiles.service"
+      ];
+      before = [
+        "aos-install-packages.service"
+        "multi-user.target"
+      ];
+      # No host.nix ⇒ nothing to evaluate ⇒ clean no-op.
+      unitConfig.ConditionPathExists = cfg.hostNix;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        # Per-eval hardened budget — the limits ARE the perf budget
+        # (build-spec §3). A runaway is OOM-/timeout-killed by the cgroup.
+        RuntimeMaxSec = 120;
+        MemoryMax = "2G";
+        MemoryHigh = "1536M";
+        TasksMax = 4096;
+        # Hardened scope: inputs read-only, only /run/aos* writable.
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        NoNewPrivileges = true;
+        ReadWritePaths = ["/run/aos" "/run/aos-eval"];
+        # Best-effort: a failed eval must never fail the boot. The manifest is
+        # the only product, and its absence makes the downstream a no-op.
+        SuccessExitStatus = "0 1";
+      };
+      script = ''
+        set -u
+        mkdir -p /run/aos-eval /run/aos
+        # Stage the verified host.nix into the read-write eval root.
+        cp -f "${cfg.hostNix}" /run/aos-eval/host.nix
+
+        # Prefer the image's recorded module_abi; fall back to the option.
+        module_abi="${toString cfg.moduleAbi}"
+        if [ -r /etc/os-release ]; then
+          # shellcheck disable=SC1091
+          . /etc/os-release
+          if [ -n "''${AOS_MODULE_ABI:-}" ]; then
+            module_abi="$AOS_MODULE_ABI"
+          fi
+        fi
+
+        index_arg=""
+        if [ -r "${cfg.index}" ]; then
+          index_arg="--index ${cfg.index}"
+        fi
+        desired_arg=""
+        if [ -r "${cfg.desired}" ]; then
+          desired_arg="--desired ${cfg.desired}"
+        fi
+
+        # Failure-safe: on any error apm __eval writes no manifest and exits
+        # non-zero; SuccessExitStatus keeps the boot green either way.
+        ${pkgs.aos}/bin/apm __eval \
+          --host-nix /run/aos-eval/host.nix \
+          --base-lib "${cfg.baseLib}" \
+          --module-abi "$module_abi" \
+          --out "${cfg.manifest}" \
+          --eval-root /run/aos-eval \
+          $index_arg $desired_arg || exit 1
+      '';
+    };
+  };
+}
