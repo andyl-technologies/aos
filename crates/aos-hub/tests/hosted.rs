@@ -149,7 +149,7 @@ fn two_release_surface(surface: &Path) -> common::Fixture {
     // and tags it as 1.0.0; reconstruct those oids the same way it did.
     let registry_toml = fixture.put_blob(
         "[registry]\nname = \"demo\"\ndescription = \"Fixture registry\"\n\n\
-         [[caches]]\nurl = \"https://cache.example.com/\"\npriority = 40\n",
+         [caches]\nendpoint = \"https://cache.example.com/\"\n",
     );
     let keys_toml = fixture.put_blob(&format!(
         "schema = 1\n\n[[keys]]\nid = \"maintainer\"\nkey = \"{}\"\n",
