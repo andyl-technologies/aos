@@ -1902,7 +1902,7 @@ fn render_cache_stack(stack: &StackNode, coverage_by_url: &BTreeMap<&str, String
 /// The health page: the cache × coverage validation matrix plus the
 /// missing-hash drill-down for each cache with gaps.
 ///
-/// When the registry committed a `[cache_stack]`, the stack is rendered as an
+/// When the registry committed a `[caches]` stack, the stack is rendered as an
 /// ASCII tree with per-endpoint coverage, and any `mirror` group whose
 /// members are not individually complete is flagged as a replication
 /// shortfall above the matrix.
@@ -2089,8 +2089,8 @@ pub fn health_page(
     }
 
     // Frontends + their freshness (RFC-0004 "Frontends: direct and proxied
-    // domains"). Advertised cache frontends map informationally to [[caches]]
-    // priority entries; the committed registry.toml mirror list is signed tree
+    // domains"). Advertised cache frontends map informationally to [caches]
+    // priority entries; the committed registry.toml cache stack is signed tree
     // content the hub never silently edits.
     if !frontends.is_empty() {
         body.push_str("<h2>Frontends</h2>\n");
