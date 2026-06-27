@@ -449,6 +449,16 @@ impl BlockOperation {
             Self::GetLength => 3,
         }
     }
+
+    fn from_wire(operation: u8) -> Result<Self, BlockWireError> {
+        match operation {
+            0 => Ok(Self::Read),
+            1 => Ok(Self::Write),
+            2 => Ok(Self::Flush),
+            3 => Ok(Self::GetLength),
+            other => Err(BlockWireError::UnknownOperation { operation: other }),
+        }
+    }
 }
 
 /// A guest block request before it is assigned a wire request id.
@@ -535,7 +545,14 @@ impl BlockRequest {
         &self.payload
     }
 
-    fn encode(&self, request_id: u32) -> Result<Vec<u8>, BlockWireError> {
+    /// Encodes a request in the block wire format with the supplied request id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockWireError`] when the request payload is inconsistent with
+    /// the operation kind or the encoded frame would exceed the shared-memory
+    /// frame payload capacity.
+    pub fn encode(&self, request_id: u32) -> Result<Vec<u8>, BlockWireError> {
         if self.operation == BlockOperation::Write && self.payload.len() != self.count as usize {
             return Err(BlockWireError::CountPayloadMismatch {
                 count: self.count,
@@ -570,6 +587,91 @@ impl BlockRequest {
         out.extend_from_slice(&self.count.to_le_bytes());
         out.extend_from_slice(&self.payload);
         Ok(out)
+    }
+
+    /// Decodes a request from the block wire format.
+    ///
+    /// The returned tuple contains the wire request id and the logical request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockWireError`] when the payload is shorter than the fixed
+    /// header, uses an unsupported version or operation, carries nonzero
+    /// reserved bits, or contains an operation-inconsistent body.
+    pub fn decode(payload: &[u8]) -> Result<(u32, Self), BlockWireError> {
+        if payload.len() < BLOCK_REQUEST_HEADER_LEN {
+            return Err(BlockWireError::ShortRequest { len: payload.len() });
+        }
+        let operation = BlockOperation::from_wire(payload[0])?;
+        if payload[1] != BLOCK_WIRE_VERSION {
+            return Err(BlockWireError::UnsupportedVersion {
+                version: payload[1],
+            });
+        }
+        let reserved = u16::from_le_bytes(
+            payload[2..4]
+                .try_into()
+                .map_err(|_| BlockWireError::ShortRequest { len: payload.len() })?,
+        );
+        if reserved != 0 {
+            return Err(BlockWireError::NonZeroReserved { reserved });
+        }
+        let request_id = u32::from_le_bytes(
+            payload[4..8]
+                .try_into()
+                .map_err(|_| BlockWireError::ShortRequest { len: payload.len() })?,
+        );
+        let offset = u64::from_le_bytes(
+            payload[8..16]
+                .try_into()
+                .map_err(|_| BlockWireError::ShortRequest { len: payload.len() })?,
+        );
+        let count = u32::from_le_bytes(
+            payload[16..20]
+                .try_into()
+                .map_err(|_| BlockWireError::ShortRequest { len: payload.len() })?,
+        );
+        let payload_bytes = &payload[BLOCK_REQUEST_HEADER_LEN..];
+        match operation {
+            BlockOperation::Write => {
+                let count_usize = usize::try_from(count)
+                    .map_err(|_| BlockWireError::CountLengthOverflow { count })?;
+                if count_usize > payload_bytes.len() {
+                    return Err(BlockWireError::RequestCountExceedsPayload {
+                        count,
+                        available: payload_bytes.len(),
+                    });
+                }
+                if count_usize != payload_bytes.len() {
+                    return Err(BlockWireError::RequestCountPayloadMismatch {
+                        count,
+                        payload_len: payload_bytes.len(),
+                    });
+                }
+                Ok((
+                    request_id,
+                    Self {
+                        operation,
+                        offset,
+                        count,
+                        payload: payload_bytes.to_vec(),
+                    },
+                ))
+            }
+            _ if !payload_bytes.is_empty() => Err(BlockWireError::UnexpectedPayload {
+                operation,
+                payload_len: payload_bytes.len(),
+            }),
+            _ => Ok((
+                request_id,
+                Self {
+                    operation,
+                    offset,
+                    count,
+                    payload: Vec::new(),
+                },
+            )),
+        }
     }
 }
 
@@ -1009,20 +1111,32 @@ pub enum BlockWireError {
         /// The frame payload error.
         source: FrameEntryError,
     },
+    /// Request is shorter than the fixed header.
+    #[error("block request length {len} is shorter than header")]
+    ShortRequest {
+        /// The observed payload length.
+        len: usize,
+    },
+    /// Request operation is unknown.
+    #[error("block request operation {operation} is unknown")]
+    UnknownOperation {
+        /// The unknown operation byte.
+        operation: u8,
+    },
     /// Response is shorter than the fixed header.
     #[error("block response length {len} is shorter than header")]
     ShortResponse {
         /// The observed payload length.
         len: usize,
     },
-    /// Response version is unsupported.
+    /// Block wire version is unsupported.
     #[error("block wire version {version} is unsupported")]
     UnsupportedVersion {
         /// The unsupported version byte.
         version: u8,
     },
-    /// Response reserved header bits were nonzero.
-    #[error("block response reserved field {reserved} is nonzero")]
+    /// Block wire reserved header bits were nonzero.
+    #[error("block wire reserved field {reserved} is nonzero")]
     NonZeroReserved {
         /// The decoded reserved field.
         reserved: u16,
@@ -1038,6 +1152,22 @@ pub enum BlockWireError {
     CountLengthOverflow {
         /// The unrepresentable wire count.
         count: u32,
+    },
+    /// Request count exceeds the available payload bytes.
+    #[error("block request count {count} exceeds available payload {available}")]
+    RequestCountExceedsPayload {
+        /// The declared request byte count.
+        count: u32,
+        /// The available payload bytes after the header.
+        available: usize,
+    },
+    /// Request count did not exactly match the write payload length.
+    #[error("block request count {count} does not match payload length {payload_len}")]
+    RequestCountPayloadMismatch {
+        /// The declared request byte count.
+        count: u32,
+        /// The actual payload length after the header.
+        payload_len: usize,
     },
     /// Response count exceeds the available payload bytes.
     #[error("block response count {count} exceeds available payload {available}")]

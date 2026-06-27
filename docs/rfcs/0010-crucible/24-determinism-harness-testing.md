@@ -975,8 +975,20 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [x] **T-HARN-18** Implement the SPSC queue concurrency model-checker + property
   tests (no loss/dup, FIFO, full/empty, wraparound). — satisfies [HARN-33];
   spec §8.2.
-- [ ] **T-HARN-19** Implement the protocol-codec and 9p/blk wire fuzzers with the
+- [x] **T-HARN-19** Implement the protocol-codec and 9p/blk wire fuzzers with the
   round-trip property and a regression corpus. — satisfies [HARN-34]; spec §8.3.
+  Completed by `checks.crucible.phase2.protocolCodecFuzz`: the gate now runs the
+  existing structure-aware `crucible-protocol::codec_fuzz` target plus the
+  `crucible-qemu-plugin::io_wire_fuzz` target, both through
+  `gate:abi-conformance`. The I/O target carries a seeded regression corpus for
+  malformed/adversarial block request payloads, block response payloads, and raw
+  9p message envelopes; asserts no panic through `catch_unwind`; checks
+  channel-specific typed rejection or deterministic decode; enforces a fixed
+  negotiated 9p `msize`; emits a well-formed synthetic 9p error response for
+  arbitrary 9p bytes; and verifies `decode(encode(x)) == x` for generated
+  well-formed block requests, block responses, and 9p envelopes. Full 9p
+  filesystem semantics and block sub-node execution remain owned by the
+  `15-io-subnodes.md` implementation tasks.
 - [x] **T-HARN-20** Implement the per-patch QEMU micro-test framework and
   `gate:patch-microtests` (each patch has a focused test absent on stock QEMU). —
   satisfies [HARN-20]; spec §10.
